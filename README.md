@@ -11,6 +11,7 @@ Azazel-Edge is the core decision and enforcement node. Azazel-Knowledge and Azaz
 ## What this repository contains
 
 - [System architecture](docs/architecture.md) — components, data paths, trust boundaries, and interface contracts.
+- [M.I.O. dual cognition doctrine](docs/mio-dual-cognition.md) — the local/remote cognition model, safety invariants, operating states, and data contracts.
 - [Operational design](docs/operations.md) — deployment kit, degradation states, resource tiers, and failure handling.
 - [Implementation roadmap](docs/roadmap.md) — staged delivery plan and acceptance criteria.
 
@@ -45,6 +46,12 @@ Azazel-Edge is the core decision and enforcement node. Azazel-Knowledge and Azaz
 - **Evidence before interpretation.** Raw artifacts, normalized events, decisions, and enforcement results are correlated and retained with provenance.
 - **Least disclosure.** External cognition receives only data produced by a mission-specific sanitizer and never gets enforcement credentials or direct control-plane access.
 - **Modular missions.** Knowledge and deception capabilities connect through explicit contracts, are independently degradable, and cannot expand the core node's authority.
+
+## Azazel role model
+
+> **Edge decides. M.I.O. understands and explains. Knowledge remembers. Deception provides the engagement space.**
+
+This division is intentional. It keeps the authority to change the field boundary in one deterministic place, while allowing the operator to benefit from richer context and analysis.
 
 ## Explicit scope boundaries
 

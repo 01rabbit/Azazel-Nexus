@@ -99,6 +99,8 @@ Deception telemetry returns to the Evidence Plane as a separately labeled source
 
 M.I.O. is an explanatory and investigative assistant, not an enforcement mechanism. Its output schema is advisory: summary, confidence, cited evidence IDs, discrepancies, recommended next checks, and explicitly marked unknowns.
 
+The detailed doctrine, operating states, route-selection modes, and data contracts are defined in [M.I.O. Dual Cognition](mio-dual-cognition.md). The governing invariant is simple: **M.I.O. may advise the Edge, but it never acquires authority to decide or enforce.**
+
 ### 5.1 Cognitive Router
 
 The router selects a path based on connectivity, data classification, latency budget, model health, task type, and mission policy:
