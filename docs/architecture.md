@@ -10,7 +10,7 @@ The architecture separates three concerns deliberately:
 2. **Decision and enforcement** evaluate declared policy deterministically and apply only authorized controls.
 3. **Cognition** helps humans understand and investigate the situation, but never becomes a direct actuator.
 
-AZ-01 Azazel-Edge is the system of record for the first two concerns. Mission modules and M.I.O. enrich the third concern through constrained interfaces.
+AZ-01 Azazel-Edge is the system of record for the first two concerns. A Nexus embeds Knowledge Lite and Deception Lite alongside Edge and M.I.O.; optional full nodes enrich those capabilities through constrained interfaces. The [Integrated-node doctrine](nexus-integrated-node.md) defines this baseline and extension model.
 
 ## 2. Deployment topology
 
@@ -21,7 +21,7 @@ AZ-01 Azazel-Edge is the system of record for the first two concerns. Mission mo
                     +---------+---------+
                               |
  +----------------------------+-----------------------------+
- | AZ-01 Azazel-Edge: rugged Linux PC                        |
+ | AZAZEL-NEXUS: rugged Linux integrated node                |
  |                                                            |
  |  capture adapters --> Observe --> Evidence Plane           |
  |                              |             |               |
@@ -33,14 +33,15 @@ AZ-01 Azazel-Edge is the system of record for the first two concerns. Mission mo
  |                              |              nftables / tc  |
  |                       Decision Explanation                  |
  |                              |                             |
+ |       Knowledge Lite / Deception Lite (embedded)            |
  |                  M.I.O. Cognitive Router                    |
  |                    |                 |                     |
  |                 local model       Sanitizer --> remote API  |
  |                    +-------- Cognition Merger --------+    |
  +----------------------------+-----------------------------+
               |                                     |
-      AZ-04 Azazel-Knowledge                AZ-06 Azazel-Deception
-      signed intelligence/context            isolated engagement services
+      AZ-04 Full Knowledge                  AZ-06 Full Deception
+      optional deep-memory node              optional engagement host
 ```
 
 The rugged PC is a class of hardware, not a named device dependency. A field build should use an x86_64 Linux-compatible unit with at least two independently manageable network interfaces, a TPM where available, hardware-backed or disk-encrypted storage, battery power, and an operator-accessible display. USB radios and adapters are treated as replaceable mission equipment, not part of the trusted computing base.
@@ -81,19 +82,33 @@ intent -> validate scope -> apply -> verify effective state -> receipt
 
 Verification failure is a failed action, not a presumed success. Emergency controls are predeclared policies (for example, isolate a named segment or revoke a temporary route) rather than free-form administrative commands.
 
-## 4. Mission modules
+## 4. Embedded capabilities and external extensions
 
-### 4.1 AZ-04 Azazel-Knowledge
+Nexus is normally operated in its self-contained configuration: AZ-01 Edge, M.I.O., Knowledge Lite, and Deception Lite are all available on the rugged Linux PC. External nodes are additive; losing them must return Nexus to its normal embedded capability rather than remove knowledge or redirection outright.
 
-Azazel-Knowledge supplies signed, versioned, mission-approved context: detection content, indicators, asset context, playbook references, and local retrieval material. It is an input to evaluators and M.I.O.; it has no enforcement authority.
+### 4.1 Embedded Tactical Knowledge Cache (Knowledge Lite)
 
-The contract is pull-oriented where possible: Edge requests a content-addressed package, verifies signature and compatibility, then records the package version in its evidence ledger. If unavailable, Edge retains its currently active, verified package and exposes the resulting freshness state.
+Knowledge Lite is a bounded cache and short-term mission memory, not a replica of AZ-04. It retains the context required for standalone operation: recent high-confidence indicators, behavioural patterns, local allow/deny knowledge, minimal technique and vulnerability references, operator annotations, and recent incident/attacker-reaction history.
 
-### 4.2 AZ-06 Azazel-Deception
+It emits a cited `ContextResult` such as `seen_before`, `behavior_hint`, `ioc_match`, `recent_history`, and confidence. Any recommended action is advisory-only. Its retention and size limits are mission-profile controlled.
 
-Azazel-Deception provides explicitly bounded decoy or engagement services in a segregated network zone. It receives only the configuration and event contracts needed for its mission. It cannot route to the protected network, issue Edge enforcement intents, or receive unrestricted evidence.
+### 4.2 Embedded Tactical Decoy Runtime (Deception Lite)
 
-Deception telemetry returns to the Evidence Plane as a separately labeled source. Enabling, disabling, or reconfiguring a deception service requires an arbiter-approved policy action and an auditable receipt.
+Deception Lite ensures a safe redirection destination exists without AZ-06. It hosts a deliberately small, isolated set of decoys—such as SSH, web, and an optional administration-facing service—on a dedicated decoy bridge. The default security rule is absolute: **decoy traffic cannot reach the protected network, host control plane, or Internet.**
+
+Edge selects and enables redirection only through an arbiter-approved action. Lite telemetry is labeled separately in the Evidence Plane.
+
+### 4.3 AZ-04 Azazel-Knowledge
+
+Azazel-Knowledge supplies signed, versioned, mission-approved deep context: broader detection content, indicators, asset context, playbook references, retrieval material, and historical intelligence. It is an input to evaluators and M.I.O.; it has no enforcement authority.
+
+The contract is pull-oriented where possible: Edge requests a content-addressed package, verifies signature and compatibility, merges eligible fresh context with Knowledge Lite, and records package version in its evidence ledger. Priority is fresh trusted AZ-04 context, then embedded cache, then no context. Important approved context is synchronized into a signed tactical bundle so loss of AZ-04 returns the node from `FULL` to `LITE`, not to an empty state.
+
+### 4.4 AZ-06 Azazel-Deception
+
+Azazel-Deception provides fuller, explicitly bounded decoy or engagement services in a segregated network zone. It receives only the configuration and event contracts needed for its mission. It cannot route to the protected network, issue Edge enforcement intents, or receive unrestricted evidence.
+
+Deception telemetry returns to the Evidence Plane as a separately labeled source. Enabling, disabling, or reconfiguring a deception service requires an arbiter-approved policy action and an auditable receipt. Edge may select Lite for simple probes and AZ-06 for sustained or complex engagement. If AZ-06 becomes unavailable, it stops new full-node redirects and returns eligible redirect policy to Deception Lite.
 
 ## 5. M.I.O. dual cognition
 

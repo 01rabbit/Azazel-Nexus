@@ -1,0 +1,143 @@
+# Azazel-Nexus Integrated-Node Doctrine
+
+## Definition
+
+Azazel-Nexus is a **rugged Linux integrated node that independently completes the minimum defensive loop—judgement, tactical knowledge, and deception—and expands in depth through external nodes when they are available.**
+
+The normal Nexus baseline is not a degraded controller awaiting attachments. A single deployed node can:
+
+```text
+Detect -> Understand -> Decide -> Delay / Isolate / Redirect -> Explain -> Audit
+```
+
+AZ-04 Azazel-Knowledge and AZ-06 Azazel-Deception are capacity extensions. They increase the depth, history, and engagement endurance of a complete Nexus; they do not supply capabilities that the core deployment lacks.
+
+## Integrated topology
+
+```text
+                         AZAZEL-NEXUS
+                 Rugged Linux Integrated Node
+
+ +-----------------------------------------------------------+
+ | Operator Plane: touch UI / console / voice / audit         |
+ |                         |                                  |
+ |                  M.I.O. Dual Cognition                     |
+ |                    local <-> remote assist                 |
+ |                         |                                  |
+ | AZ-01 Edge Core: evidence -> evaluate -> arbitrate -> act  |
+ |          |                 |                  |            |
+ |   Enforcement Plane   Knowledge Lite       Deception Lite   |
+ |                    embedded cache       embedded runtime   |
+ +----------+------------------+-------------------+-----------+
+            |                  |                   |
+      protected network     AZ-04 Full         AZ-06 Full
+                            Knowledge          Deception
+                         optional extension  optional extension
+```
+
+## Role model
+
+| Component | Role | Authority boundary |
+| --- | --- | --- |
+| AZ-01 Edge | Judgement | Sole authority for policy-bound decisions and enforcement intents. |
+| M.I.O. | Cognition and explanation | Advisory only; cannot decide or actuate. |
+| Knowledge Lite | Short-term tactical memory | Provides cited context; never an action authority. |
+| AZ-04 Knowledge | Deep mission memory | Extends context and retention; never an action authority. |
+| Deception Lite | Immediate decoy | Provides a safe, local redirect destination. |
+| AZ-06 Deception | Engagement environment | Extends decoy realism and sustained engagement. |
+| Nexus | Integration and command | Hosts the baseline and arbitrates all capability use. |
+
+## Embedded baseline
+
+### Knowledge Lite
+
+Knowledge Lite is an Embedded Tactical Knowledge Cache. It is sized for the field node's active mission, not for retaining an entire intelligence platform.
+
+It retains:
+
+- recent high-confidence indicators and behavioral patterns;
+- recent incidents and attacker reactions;
+- mission-local allow/deny knowledge and operator annotations; and
+- a minimal, mission-relevant reference subset for techniques and vulnerabilities.
+
+Typical retention is measured in recent days for indicators and a bounded number of observations for patterns and incidents. The exact limits are mission profile settings. Its output is a cited `ContextResult` with fields such as `seen_before`, `behavior_hint`, `ioc_match`, `recent_history`, and confidence. `recommended_action`, if present, remains advisory.
+
+### Deception Lite
+
+Deception Lite is an Embedded Tactical Decoy Runtime. It deliberately hosts only a few mission-approved decoys—normally SSH and web, with an optional administration-facing decoy—rather than attempting to reproduce a complete engagement environment.
+
+```text
+protected LAN -> Edge -> approved redirect -> decoy bridge -> Lite containers
+```
+
+The decoy bridge is separate from forwarding and management zones. Default policy denies all paths from Lite decoys to the protected LAN, the Nexus control plane, and the Internet. Each redirect requires an Arbiter-approved intent, and decoy telemetry enters Evidence as a separately labeled source.
+
+## External extension model
+
+AZ-04 and AZ-06 are additive and may be used simultaneously with their embedded counterparts.
+
+```text
+knowledge query:  fresh trusted AZ-04 + Knowledge Lite -> context merge
+redirect choice:  Edge policy -> Lite or AZ-06 destination
+```
+
+When AZ-04 is connected, it supplies broader history and richer retrieval. A priority filter synchronizes mission-relevant, signed tactical bundles back to Knowledge Lite. If the link is lost, the node continues from the last verified embedded context.
+
+When AZ-06 is connected, Edge may route simple probes to Lite and use AZ-06 for sustained or complex engagement where policy permits. If AZ-06 fails, new full-node redirects stop, eligible redirects fall back to Lite, and the change is visible in the operator plane and audit record.
+
+## Operating modes
+
+| Mode | Composition | Meaning |
+| --- | --- | --- |
+| `CORE` | Edge only | Recovery or constrained profile; deterministic protection continues. |
+| `SELF-CONTAINED` | Edge + M.I.O. + Knowledge Lite + Deception Lite | Normal standalone Nexus operation. |
+| `KNOWLEDGE-EXTENDED` | Self-contained + AZ-04 | Deeper memory and context are available. |
+| `DECEPTION-EXTENDED` | Self-contained + AZ-06 | Expanded engagement capacity is available. |
+| `FULL` | Self-contained + AZ-04 + AZ-06 | All local and external mission capacity is available. |
+
+The expected degradation path is explicit:
+
+```text
+FULL -> Knowledge Lite and/or Deception Lite -> Local M.I.O. -> CORE
+```
+
+External loss never silently removes local knowledge or the ability to redirect. Local-model loss never removes the deterministic Edge Core.
+
+## Deployment and service boundaries
+
+The rugged PC baseline should provide at least two controlled network interfaces, TPM 2.0 where available, encrypted storage, and battery-supported operation. A complete self-contained Nexus requires at least 4 CPU cores / 8 threads, 16 GB RAM, and 512 GB encrypted NVMe; 6+ cores / 12 threads, 32 GB RAM, and 1 TB NVMe are recommended for sustained field work.
+
+Persistent content is separated under `/data/` by retention domain:
+
+```text
+/data/evidence/          /data/audit/              /data/models/
+/data/knowledge-lite/    /data/deception-lite/     /data/bundles/
+/data/cache/
+```
+
+The module manager owns capability discovery, signature/compatibility verification, state reporting, and safe handoff between embedded and external services. It does not grant an external module control-plane access. A practical service set includes:
+
+```text
+azazel-knowledge-lite.service
+azazel-deception-lite.service
+azazel-module-manager.service
+azazel-context-merger.service
+```
+
+## Operator visibility
+
+The top-level UI presents actual capability rather than merely process health:
+
+```text
+SYSTEM      READY                 NETWORK    PROTECTED
+EDGE        READY                 RISK       NORMAL
+M.I.O.      LOCAL / HYBRID
+KNOWLEDGE   LITE / LITE + FULL
+DECEPTION   LITE / LITE + FULL
+```
+
+This makes extension loss legible without suggesting that the node itself has ceased to be operational.
+
+## Design invariant
+
+> **Nexus is not a device that becomes useful when modules arrive. It is a complete field node whose external modules increase depth and endurance.**

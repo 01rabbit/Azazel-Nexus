@@ -34,13 +34,15 @@ This roadmap prioritizes proof of control and evidence integrity before richer a
 
 **Exit criterion:** an operator can identify a state change, inspect its evidence, approve or decline a permitted action, and confirm its result without a terminal session.
 
-## Phase 4 — Mission modules
+## Phase 4 — Integrated capabilities and external expansion
 
-- Deliver signed package retrieval and freshness labeling for AZ-04 Azazel-Knowledge.
-- Deliver segmented AZ-06 Azazel-Deception contracts and safe enable/disable control through the arbiter.
-- Validate that either module may fail without degrading the Edge core beyond its declared state.
+- Deliver Knowledge Lite as a bounded, signed tactical cache and short-term mission memory.
+- Deliver Deception Lite as an isolated embedded decoy runtime with arbiter-controlled redirection and no route to the protected network.
+- Deliver signed AZ-04 package retrieval, context merge, tactical-bundle synchronization, and freshness labeling.
+- Deliver AZ-06 segmentation, Lite/full destination selection, safe enable/disable control, and Lite fallback through the arbiter.
+- Validate that loss of an external node returns Nexus to its embedded capability and that loss of either embedded service has a declared safe state.
 
-**Exit criterion:** module loss, stale content, and invalid signatures result in visible constrained states with no expansion of authority.
+**Exit criterion:** a Nexus operates detect-to-explain-to-redirect without external nodes; module loss, stale content, and invalid signatures result in visible constrained states with no expansion of authority.
 
 ## Phase 5 — M.I.O. dual cognition
 

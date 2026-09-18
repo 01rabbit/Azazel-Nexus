@@ -6,11 +6,12 @@ The system is designed around a simple operational rule:
 
 > The field node remains safe and useful when disconnected.
 
-Azazel-Edge is the core decision and enforcement node. Azazel-Knowledge and Azazel-Deception are optional mission modules that extend the node without becoming prerequisites for safe local operation. M.I.O. (Mission Intelligence Operator) provides a dual-cognition layer: local/offline assistance is always available within provisioned capacity, while remote/online assistance is an optional, sanitized enhancement.
+Azazel-Edge is the core decision and enforcement node. Every Nexus contains an embedded tactical knowledge cache and an embedded decoy runtime, so it is a complete field node rather than a dependent controller. AZ-04 Azazel-Knowledge and AZ-06 Azazel-Deception extend retained context and engagement capacity when present. M.I.O. (Mission Intelligence Operator) provides a dual-cognition layer: local/offline assistance is always available within provisioned capacity, while remote/online assistance is an optional, sanitized enhancement.
 
 ## What this repository contains
 
 - [System architecture](docs/architecture.md) — components, data paths, trust boundaries, and interface contracts.
+- [Integrated-node doctrine](docs/nexus-integrated-node.md) — the self-contained Nexus baseline, embedded Lite services, and external expansion model.
 - [M.I.O. dual cognition doctrine](docs/mio-dual-cognition.md) — the local/remote cognition model, safety invariants, operating states, and data contracts.
 - [Operational design](docs/operations.md) — deployment kit, degradation states, resource tiers, and failure handling.
 - [Implementation roadmap](docs/roadmap.md) — staged delivery plan and acceptance criteria.
@@ -23,12 +24,13 @@ Azazel-Edge is the core decision and enforcement node. Azazel-Knowledge and Azaz
                         Touch UI / voice alerts
                                 |
      +---------------------------------------------------------+
-     | AZ-01  Azazel-Edge — rugged Linux PC                   |
+     | AZAZEL-NEXUS — rugged Linux integrated node            |
      |                                                         |
-     |  Observe -> Evidence -> Deterministic Core -> Arbiter   |
+     |  AZ-01 Edge: Observe -> Evidence -> Core -> Arbiter     |
      |                                   |             |       |
      |                            M.I.O. cognition    Enforce  |
      |                              local / remote    tc/nft   |
+     |              Knowledge Lite / Deception Lite            |
      +-----------------------+--------------------+------------+
                              |                    |
                     optional mission links   protected boundary
@@ -45,7 +47,7 @@ Azazel-Edge is the core decision and enforcement node. Azazel-Knowledge and Azaz
 - **Offline-safe default.** Loss of cloud access, a mission module, or an AI service never disables local evidence collection, policy evaluation, audit, or configured containment.
 - **Evidence before interpretation.** Raw artifacts, normalized events, decisions, and enforcement results are correlated and retained with provenance.
 - **Least disclosure.** External cognition receives only data produced by a mission-specific sanitizer and never gets enforcement credentials or direct control-plane access.
-- **Modular missions.** Knowledge and deception capabilities connect through explicit contracts, are independently degradable, and cannot expand the core node's authority.
+- **Self-contained first.** Knowledge Lite and Deception Lite are normal embedded capabilities, not external prerequisites. Full external nodes expand depth and endurance through explicit contracts and cannot expand the core node's authority.
 
 ## Azazel role model
 

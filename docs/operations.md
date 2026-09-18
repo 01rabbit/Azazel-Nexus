@@ -2,13 +2,14 @@
 
 ## 1. Resource tiers
 
-The same architecture scales by disabling optional capacity before compromising core safety.
+The same architecture scales by disabling optional capacity before compromising core safety. `Nexus Self-Contained` is the normal field baseline; `Edge Core` is a deliberately reduced recovery or constrained profile, not the intended complete Nexus configuration.
 
 | Tier | Typical capacity | Required capability | Optional capability |
 | --- | --- | --- | --- |
-| Field Lite | 4 CPU cores, 16 GB RAM, 512 GB encrypted SSD | Evidence, rules, basic packet metadata, enforcement, UI, voice | small local cognition, limited retention |
-| Field Standard | 8 CPU cores, 32 GB RAM, 1 TB encrypted SSD | Full Edge core, Suricata, local cognition, concurrent UI | larger retention, module links, dual cognition |
-| Field Extended | 12+ CPU cores, 64 GB RAM, 2 TB+ encrypted SSD | Standard tier with sustained capture/analysis | richer local models, replicated evidence, more sensors |
+| Edge Core | 4 CPU cores / 8 threads, 8 GB RAM, 512 GB encrypted SSD | Evidence, rules, basic packet metadata, enforcement, UI, deterministic voice | No embedded cognition, knowledge, or decoy services beyond policy essentials |
+| Nexus Self-Contained | 4 CPU cores / 8 threads, 16 GB RAM, 512 GB encrypted SSD | Edge, Suricata, local cognition, Knowledge Lite, Deception Lite, UI, voice | limited retention and small local cognition backend |
+| Nexus Standard | 6+ CPU cores / 12 threads, 32 GB RAM, 1 TB encrypted SSD | Self-contained Nexus with concurrent analysis and module links | larger retention, dual cognition, extended Lite capacity |
+| Nexus Extended | 12+ CPU cores, 64 GB RAM, 2 TB+ encrypted SSD | Standard tier with sustained capture/analysis | richer local models, replicated evidence, more sensors |
 
 Tier selection is recorded in the mission profile. The system continuously observes CPU, memory, disk, thermal, battery, and interface capacity; it uses those signals to select safe feature limits, not to weaken policy.
 
@@ -21,7 +22,8 @@ Each state is explicit in the operator interface and audit ledger. A degradation
 | Nominal | Health checks pass | All enabled components | None | Green status |
 | Constrained | Resource threshold crossed | Evidence, existing policy, core enforcement | lower-priority analysis; reduced local model context | Amber capacity notice |
 | Offline | Remote route unavailable | Local cognition, Evidence, deterministic core, enforcement | Remote cognition | “Offline: local cognition active” |
-| Module unavailable | Knowledge or Deception health failure | Edge core and verified cached knowledge | affected module action; stale data is labeled | Amber module status |
+| External module unavailable | AZ-04 or AZ-06 health failure | Edge core, Knowledge Lite, Deception Lite, and verified cached context | affected full-node action; stale external data is labeled | Amber extension status; embedded Lite remains ready |
+| Embedded Lite impaired | Knowledge Lite or Deception Lite health failure | Edge core and unaffected embedded/external capability | actions requiring the impaired Lite service; full-node capability remains separately evaluated | Red source-specific warning |
 | Sensor impaired | Capture adapter or sensor failure | Other sources, prior evidence, policy checks | Actions requiring missing sensor corroboration | Red source-specific warning |
 | Enforcement degraded | Adapter cannot verify control state | Evidence, evaluation, operator guidance | New automated enforcement through that adapter | Critical warning and safe hold |
 | Integrity recovery | Boot, signature, clock, or ledger anomaly | Limited diagnostics and protected evidence access | Policy activation, remote egress, module changes | Critical service-required state |
