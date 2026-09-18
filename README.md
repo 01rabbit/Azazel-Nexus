@@ -15,6 +15,7 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - [M.I.O. dual cognition doctrine](docs/mio-dual-cognition.md) — the local/remote cognition model, safety invariants, operating states, and data contracts.
 - [Operational design](docs/operations.md) — deployment kit, degradation states, resource tiers, and failure handling.
 - [Implementation roadmap](docs/roadmap.md) — staged delivery plan and acceptance criteria.
+- [Implementation specification](docs/IMPLEMENTATION_SPEC.md) — deployable service boundaries, contracts, configuration, data, health, security, and recovery requirements.
 
 ## System at a glance
 
@@ -54,10 +55,6 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 > **Edge decides. M.I.O. understands and explains. Knowledge remembers. Deception provides the engagement space.**
 
 This division is intentional. It keeps the authority to change the field boundary in one deterministic place, while allowing the operator to benefit from richer context and analysis.
-
-## Explicit scope boundaries
-
-This architecture does **not** support Android platforms. It also contains no event-specific deployment or marketing assumptions; the system is documented as an operational field capability.
 
 ## Status
 
