@@ -1,0 +1,35 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: Internal documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # This repository declares no runtime matrix of its own — see
+          # docs/support-matrix.md §7. The version here is the CI runner's,
+          # not a product claim, and the check is standard library only.
+          python-version: "3.11"
+
+      - name: Check internal Markdown links
+        run: python3 tools/check_docs_links.py

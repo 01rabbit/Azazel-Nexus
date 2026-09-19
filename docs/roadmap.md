@@ -7,7 +7,11 @@ Status: **target contract**. No phase below has started in this repository.
 ## Phase 0 — Repository and contract bootstrap
 
 - Publish license, security policy, contribution guide, package layout,
-  dependency manifest, and CI. None of these exist yet; see
+  dependency manifest, and CI. Published so far: the license, the security
+  policy, the contribution guide, and the [support matrix](support-matrix.md),
+  [update channel](update-channel.md), and [recovery](recovery.md) documents the
+  R0 exit criteria name. Still absent: the package layout and dependency
+  manifest; CI covers documentation links only. See
   [contract ownership](contract-ownership.md) §6.
 - Adopt an **exact Azazel-Fabric release pin** and build adapters against the
   Fabric-owned records that already exist. Nexus does not define shared

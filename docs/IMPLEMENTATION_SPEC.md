@@ -5,9 +5,10 @@
 This specification turns the architecture documents into implementation units for a generic rugged x86_64 Linux PC. Terms **MUST**, **SHOULD**, and **MAY** describe requirements, recommendations, and allowed options.
 
 Status: **target contract**. This repository contains no package, dependency
-manifest, Fabric pin, CI, or license. Nothing below is implemented or verified
-here, and no statement in this document may be cited as implementation
-evidence. Outstanding bootstrap work is listed in
+manifest, or Fabric pin, and no automated check beyond the documentation link
+check. Nothing below is implemented or verified here, and no statement in this
+document may be cited as implementation evidence. Outstanding bootstrap work is
+listed in
 [contract ownership](contract-ownership.md) §6.
 
 The baseline is a self-contained node. It MUST keep collecting evidence, evaluating signed policy, presenting deterministic explanations, auditing, and applying already supported bounded controls without cloud connectivity or external modules. AZ-04 and AZ-06 increase depth; they never provide the prerequisite for baseline operation.
@@ -586,10 +587,10 @@ A release MUST demonstrate the following in an isolated lab before a production 
 
 Implement in dependency order:
 
-1. **Repository bootstrap** — license, security policy, contribution guide,
-   package layout, dependency manifest, CI, and an explicit Fabric pin. Until
-   this exists nothing below can be released or attested; see
-   [contract ownership](contract-ownership.md) §6.
+1. **Repository bootstrap** — the license, security policy, and contribution
+   guide are published; the package layout, dependency manifest, and an
+   explicit Fabric pin are not. Until they exist nothing below can be released
+   or attested; see [contract ownership](contract-ownership.md) §6.
 2. **Fabric adapters against the pinned release** — consume the Fabric-owned
    records that already exist rather than declaring local equivalents.
 3. **Inventory, commissioning, and the activation controller** — composite

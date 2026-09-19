@@ -21,6 +21,10 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - [Commissioning and activation](docs/commissioning.md) — composite interface identity, operator-confirmed roles, verified generations, and the management failsafe.
 - [M.I.O. runtime control plane](docs/mio-runtime.md) — Nexus-owned provider admission, confinement, routing, deterministic sanitizer, fallback, and the per-dimension reasons published with each capability state.
 - [Edge-to-Nexus inheritance ledger](docs/inheritance-ledger.md) — what Nexus inherits from Azazel-Edge, on what evidence, what is explicitly not inherited, and the gates a capability passes before adoption.
+- [Support matrix](docs/support-matrix.md) — the platform envelope a release will have to declare, why the hardware compatibility list is empty, and what the program's documents leave undeclared.
+- [Update channel](docs/update-channel.md) — signed online manifests and encrypted offline bundles, product-local release admission, and why no channel exists.
+- [Recovery](docs/recovery.md) — what a failed update, a failed activation, a lost asset, or a changed interface leaves behind, and what recovery may never restore.
+- [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) — how to report a defect in the target contract, and the review rules a change is judged against.
 
 ## System at a glance
 
@@ -71,11 +75,15 @@ This division is intentional. It keeps the authority to change the field boundar
 ## Status
 
 **Target contract.** This repository contains architecture and specification
-documents only. It has no package, dependency manifest, Azazel-Fabric pin, CI,
-license, security policy, contribution guide, support matrix, update channel,
-or recovery procedure. Nothing here is implemented or verified, and no
-statement in this repository may be cited as implementation evidence or as an
-operational claim.
+documents only. It has no package, dependency manifest, or Azazel-Fabric pin,
+and its only automated check is the documentation link check. It now publishes
+a license, a security policy, a contribution guide, a
+[support matrix](docs/support-matrix.md), an
+[update channel](docs/update-channel.md) description, and a
+[recovery procedure](docs/recovery.md) — each of which describes what a release
+will have to carry, and none of which is implemented, exercised, or evidenced.
+Nothing here is implemented or verified, and no statement in this repository
+may be cited as implementation evidence or as an operational claim.
 
 The outstanding bootstrap work is listed in
 [contract ownership](docs/contract-ownership.md) §6 and sequenced as Phase 0 of
@@ -92,4 +100,4 @@ exist), *experimental* (bounded concept or HIL work), and *retired*
 
 ## License
 
-No license has been selected yet. Do not assume permission to use, redistribute, or contribute code until a license is added.
+MIT — see [LICENSE](LICENSE).

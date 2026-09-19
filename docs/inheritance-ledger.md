@@ -2,7 +2,8 @@
 
 Status: **target contract**. This ledger records what Azazel-Nexus intends to
 inherit and on what evidence. It is not a claim that any entry is implemented
-in this repository, which still has no package, pin, or CI.
+in this repository, which still has no package and no pin, and whose only
+automated check covers documentation links.
 
 Related: [Contract ownership](contract-ownership.md) ·
 [Capability model](capability-model.md) · [Commissioning](commissioning.md) ·
