@@ -27,15 +27,16 @@ resource profile. Nothing in this document creates an exception.
 ## 2. Capacity envelopes and their vocabulary
 
 Nexus uses one selector, defined in [capability model](capability-model.md) §2.
-Three vocabularies exist for the same four envelopes; they are synonyms only
-where this table says so, and must not be multiplied further.
+The table below maps each **resource envelope** to the eligibility that envelope
+*permits*. That is the only mapping this document holds, and provider admission
+(§3) is what needs it.
 
-| Usable RAM (MiB, after firmware reservation) | Nexus envelope name | Eligibility phrasing |
+| Usable RAM (MiB, after firmware reservation) | Nexus envelope name | Eligibility the envelope permits |
 | --- | --- | --- |
 | `< 7168` | `diagnostic` | diagnostics only |
 | `7168` – `15359` | `core` | Core |
 | `15360` – `31743` | `lite` | "Lite-capable" |
-| `>= 31744` | `standard` | "Full-capable" / Edge's "Full-eligible" |
+| `>= 31744` | `standard` | "Full-capable" |
 
 Each threshold is the nominal module size it admits minus a **1024 MiB
 firmware-reservation allowance** (8192 − 1024, 16384 − 1024, 32768 − 1024),
@@ -54,6 +55,20 @@ given model fits.
 the topology, verified-asset, and trust/health dimensions independently agree.
 Documents that assert capability use the eligibility phrasing; documents that
 assert measurement use the envelope name.
+
+**An envelope never derives a capability state.** The four selector values
+(`diagnostic`, `core`, `lite`, `standard`) and the three capability states this
+document publishes in §8 (`CORE`, `LITE`, `FULL`) are different kinds of thing,
+and no mapping between them exists in either direction: `standard` and `FULL`
+are not synonyms, and `diagnostic` has no capability-state counterpart. The
+envelope and the capability state are separate published fields (§8), and a host
+on `standard` may report `CORE`. [Capability model](capability-model.md) §1.1
+holds the rule and its reasoning, which are not restated here.
+
+Edge's `Full-eligible` belongs to the capability-state vocabulary and is
+therefore absent from the table above.
+[Inheritance ledger](inheritance-ledger.md) §4.3 records why Nexus keeps
+`standard` and why the two must not be used interchangeably.
 
 **Capacity is not topology and is not authority.** No envelope enables a
 capability by itself.

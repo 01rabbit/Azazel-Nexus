@@ -38,6 +38,45 @@ Azazel-Edge's deterministic arbiter holds the same and only decision and
 enforcement authority in every state. Degrading from `FULL` to `CORE` removes
 optional capacity; it never removes, transfers, or expands authority.
 
+### 1.1 Resource profile and capability state are different kinds of thing
+
+**A resource tier never derives a capability state.** "Resource tier" is the
+program plan's name for the selector's output, which §2 records as the resource
+profile and the envelope it selects; the rule holds under either name, and
+neither name is a third vocabulary. The four selector values (`diagnostic`,
+`core`, `lite`, `standard`) and the three capability states (`CORE`, `LITE`,
+`FULL`) are different kinds of thing, and no mapping between them exists in
+either direction.
+
+- `standard` and `FULL` are **not synonyms**.
+- `diagnostic` has **no capability-state counterpart**, because it names the
+  **absence** of capability rather than a kind of it. Its absence from the three
+  states above is the rule, not an omission.
+- A product MUST report the resource profile and the capability state
+  **separately**. Neither may be derived from the other.
+
+**Why.** A mapping from profile to state would let the resource dimension decide
+the product of the four dimensions intersected above. That is the same error the
+rule above states directly — **RAM capacity never enables NIC roles, capture,
+enforcement, or Deception**. Declaring the two vocabularies synonymous would
+write that error into the vocabulary itself, where it would be invisible.
+
+**What a product reports.** A host that selects `standard` reports `standard` as
+its resource profile and, independently, whatever capability state the
+four-dimensional intersection yields — which may be `CORE`. That is not a
+contradiction to be reconciled; it is the intended and common case. §6.1 works
+exactly that case through: a 32 GB rugged PC on a `standard` resource profile,
+one interface, no second commissioned role, reporting `CORE` and observe-only.
+
+No tier is renamed and no capability state is added or removed by this rule.
+Azazel-Edge's `Full-eligible` keeps its meaning — an outcome of the
+intersection, which is why it was never `standard`'s synonym; see
+[inheritance ledger](inheritance-ledger.md) §4.3.
+
+This is the program-level resolution of open finding **OF-02**
+([program plan §15](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md#15-open-program-findings)),
+not a Nexus-local preference.
+
 ## 2. Resource profile
 
 The resource profile records measured capacity only: CPU cores and features,
@@ -96,8 +135,11 @@ separate `extended` selector output.
 
 `lite` and `standard` name the **envelope**; "Lite-capable" and "Full-capable"
 name what that envelope permits once the other three dimensions agree. They are
-not separate tiers. [M.I.O. runtime control plane](mio-runtime.md) §2 holds the
-mapping, including Edge's "Full-eligible" wording.
+not separate tiers, and neither is a capability state (§1.1).
+[M.I.O. runtime control plane](mio-runtime.md) §2 holds that
+envelope-to-eligibility mapping. Edge's "Full-eligible" is not part of it: it
+names an outcome of the intersection, per
+[inheritance ledger](inheritance-ledger.md) §4.3.
 
 > **Retired:** the earlier four-tier scheme (`core` / `lite` / `standard` /
 > `extended`, each stated with a NIC count) is retired. It conflated resource
