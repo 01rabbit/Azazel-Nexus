@@ -47,15 +47,34 @@ The reference OS is a supported long-term-support Linux distribution with system
 
 The resource profile records measured capacity only. It MUST NOT enable any
 capability by itself. One product-local selector reads usable RAM in **MiB
-after firmware reservation**, subtracts the measured Core reserve, and produces
-exactly one value:
+after firmware reservation** and produces exactly one value. That reading is the
+selector's only input: the measured Core reserve MUST NOT be subtracted before
+selection.
 
-| Usable RAM (MiB) | Resource profile | Resource envelope permitted |
+| Usable RAM (MiB, after firmware reservation) | Resource profile | Resource envelope permitted |
 | --- | --- | --- |
-| `< 8192` | `diagnostic` | diagnostics and inventory only; no policy activation |
-| `8192` – `16383` | `core` | evidence, evaluators, arbiter, audit, UI/API, deterministic voice |
-| `16384` – `32767` | `lite` | `core` envelope plus Knowledge Lite, Deception Lite, and local M.I.O. **capacity** |
-| `>= 32768` | `standard` | `lite` envelope plus concurrent analysis, wider local models, and module-link capacity |
+| `< 7168` | `diagnostic` | diagnostics and inventory only; no policy activation |
+| `7168` – `15359` | `core` | evidence, evaluators, arbiter, audit, UI/API, deterministic voice |
+| `15360` – `31743` | `lite` | `core` envelope plus Knowledge Lite, Deception Lite, and local M.I.O. **capacity** |
+| `>= 31744` | `standard` | `lite` envelope plus concurrent analysis, wider local models, and module-link capacity |
+
+Each threshold is the nominal module size it is meant to admit **minus a
+1024 MiB firmware-reservation allowance**: 8192 − 1024 = 7168,
+16384 − 1024 = 15360, 32768 − 1024 = 31744. Thresholds set at the nominal size
+itself are wrong, because usable RAM is always below nominal: on x86_64 the
+firmware reserves memory for UEFI runtime services, ACPI tables,
+kernel-reserved regions, and — the large and variable term — integrated-GPU
+stolen memory (the UMA aperture), commonly 512 MiB and BIOS-configurable. A
+measured nominal 16 GB Linux host reported `MemTotal: 16481980 kB` = 16,095 MiB
+usable, 289 MiB short of 16384. The 1024 MiB allowance covers that measured case
+with room for a 512 MiB aperture and margin. **Residual risk:** a host reserving
+more than 1024 MiB, such as one with a 2 GiB iGPU aperture, still selects one
+tier low; the remedy is measurement on real hardware, not a larger allowance.
+
+The selected profile names a **hardware class**. Whether that class can carry a
+given workload is decided separately and remains subject to the measured Core
+reserve, which is not yet measured for Nexus. An implementation MUST NOT treat
+the selected profile as evidence that a capability fits.
 
 Retention and concurrency limits are recorded against the resource profile:
 `core` retains metadata only; `lite` permits a 7-day tactical cache, up to
