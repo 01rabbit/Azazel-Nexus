@@ -85,9 +85,14 @@ When AZ-04 is connected, it supplies broader history and richer retrieval. A pri
 
 When AZ-06 is connected, Edge may route simple probes to Lite and use AZ-06 for sustained or complex engagement where policy permits. If AZ-06 fails, new full-node redirects stop, eligible redirects fall back to Lite, and the change is visible in the operator plane and audit record.
 
-## Operating modes
+## Composition modes
 
-| Mode | Composition | Meaning |
+A composition mode names **which optional modules are attached**. It is not a
+capability state, and the two are never derived from each other — see
+[capability model](capability-model.md) §1.1, which holds the same rule for the
+resource profile.
+
+| Composition mode | Composition | Meaning |
 | --- | --- | --- |
 | `CORE` | Edge only | Recovery, constrained, or topology-limited profile; deterministic protection continues. |
 | `SELF-CONTAINED` | Edge + M.I.O. + Knowledge Lite + Deception Lite | Normal standalone Nexus operation. |
@@ -103,7 +108,23 @@ FULL -> Knowledge Lite and/or Deception Lite -> Local M.I.O. -> CORE
 
 External loss never silently removes local knowledge or the ability to redirect. Local-model loss never removes the deterministic Edge Core.
 
-These are **capability states, not authority levels**. Azazel-Edge's
+**A composition mode is not a capability state.** The capability states are
+`CORE`, `LITE`, and `FULL` ([capability model](capability-model.md) §1), and
+they are the outcome of the four-dimensional intersection. What is *attached* is
+part of the verified asset set — one dimension of that intersection, not the
+product of it. A `KNOWLEDGE-EXTENDED` node whose interfaces are uncommissioned
+reports the capability state `CORE`, and that is the intended case rather than a
+contradiction: attaching a module supplies capacity, and capacity is not
+capability.
+
+`CORE` and `FULL` appear in both vocabularies, which is what makes the two easy
+to confuse. In this section they name compositions; in
+[capability model](capability-model.md) §1 they name capability states. A
+document that uses either word must say which it means. `SELF-CONTAINED`,
+`KNOWLEDGE-EXTENDED`, and `DECEPTION-EXTENDED` are composition modes only and
+are never capability states.
+
+Composition modes are **not authority levels** either. Azazel-Edge's
 deterministic arbiter holds the same and only decision and enforcement
 authority in `CORE`, `SELF-CONTAINED`, and `FULL` alike. Degradation removes
 optional capacity; it never removes, transfers, or expands authority, and an

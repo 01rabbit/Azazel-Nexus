@@ -73,6 +73,15 @@ Azazel-Edge's `Full-eligible` keeps its meaning — an outcome of the
 intersection, which is why it was never `standard`'s synonym; see
 [inheritance ledger](inheritance-ledger.md) §4.3.
 
+The same rule holds for a third axis. A **composition mode** — which optional
+modules are attached, enumerated in
+[integrated-node doctrine](nexus-integrated-node.md) — is not a capability state
+either, and neither derives the other. What is attached belongs to the verified
+asset set, one dimension of the intersection above, not to its product. `CORE`
+and `FULL` name both a composition and a capability state, so a document using
+either word must say which it means; `SELF-CONTAINED`, `KNOWLEDGE-EXTENDED`, and
+`DECEPTION-EXTENDED` are composition modes only. This is open finding **OF-04**.
+
 This is the program-level resolution of open finding **OF-02**
 ([program plan §15](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md#15-open-program-findings)),
 not a Nexus-local preference.
