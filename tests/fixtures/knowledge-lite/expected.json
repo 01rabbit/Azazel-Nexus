@@ -1,0 +1,89 @@
+{
+  "bundle_sha256": "94a1f77030a7c9b3b962c45f425d17dd74cb8e61ca015a7658ae1110a22d2102",
+  "files": {
+    "tables/attack_technique.jsonl": "78f817690892394de64803654e960f1f493ad869e862cf890812fc2a695e4b04",
+    "tables/ioc.jsonl": "3bb6ed39c43c049648b492fe1fbb096cdcd8d3e51f0b28347f3e7f88a74816e6",
+    "tables/kev.jsonl": "7ac6e86ca4a10b47d20f7568bba2d980e3853f43117655909f8fdc69c56d28e8"
+  },
+  "notes": {
+    "alias_scope": "fixture-mission",
+    "aliased_field": "ioc.value is aliased; no raw indicator appears in the bundle",
+    "export_policy": "built with config/lite-export-policy.yaml, this node's default profile",
+    "negative_fixtures": "see negative.json",
+    "stale_row_excluded": "203.0.113.99 predates the freshness window and must be absent"
+  },
+  "profile": {
+    "ceilings": {
+      "freshness_window_days": 30,
+      "max_bytes_per_dataset": 134217728,
+      "max_datasets": 8,
+      "max_rows_per_dataset": 250000,
+      "max_rows_total": 750000,
+      "max_uncompressed_bytes": 201326592
+    },
+    "counts": {
+      "datasets": 3,
+      "rows": 7,
+      "uncompressed_bytes": 938
+    },
+    "profile_id": "knowledge-lite-16g",
+    "provenance": {
+      "attack_technique": {
+        "dataset": {
+          "citation": "MITRE ATT&CK technique, as ingested into azazel-knowledge intel.attack_technique",
+          "confidence_ceiling": "not a scored claim; carries no confidence and must not be treated as evidence of anything",
+          "decay": "reference material is not scored and does not decay",
+          "expiry": "does not expire on a clock; a row is superseded when this node ingests a later attack_version",
+          "freshness": "static reference material: versioned, not dated; the pinned attack_version is the freshness statement",
+          "limitations": "a technique label is a description, not an attribution and not a recommendation (ADR-0015 D7)",
+          "source": "MITRE ATT&CK Enterprise, pinned to the attack_version carried on each row"
+        },
+        "row": {
+          "generation": "attack_version"
+        }
+      },
+      "ioc": {
+        "dataset": {
+          "citation": "azazel-knowledge intel.ioc, keyed by (type, value)",
+          "decay": "confidence decays with age per docs/scoring.md; a consumer may lower it, never raise it",
+          "generation": "the intel_generation recorded in this bundle's profile.selection_inputs",
+          "limitations": "advisory only; carries no enforcement authority, no activation, and no command (ADR-0015 D7)",
+          "source": "aggregated feed intake across this node's configured feeds; per-feed attribution is not exported by the default policy"
+        },
+        "row": {
+          "confidence_ceiling": "agg_raw_confidence",
+          "expiry": "agg_next_expiry",
+          "freshness": "last_seen"
+        }
+      },
+      "kev": {
+        "dataset": {
+          "citation": "CISA Known Exploited Vulnerabilities catalogue, as ingested into azazel-knowledge intel.kev",
+          "confidence_ceiling": "a catalogue membership statement, not a scored claim; presence is binary and carries no confidence",
+          "decay": "a KEV listing does not decay: an exploited vulnerability does not become less exploited with time",
+          "expiry": "entries are not withdrawn on a clock; a row is superseded when this node ingests a later catalog_version",
+          "generation": "carried by the intel_generation of the artifact; the catalogue is replaced wholesale, never patched",
+          "limitations": "says a CVE is known-exploited somewhere, not that it is present or exploitable here (ADR-0015 D7)",
+          "source": "CISA KEV, pinned to the catalog_version carried on each row"
+        },
+        "row": {
+          "freshness": "date_added"
+        }
+      }
+    },
+    "selection_inputs": {
+      "as_of": "2026-09-19T00:00:00Z",
+      "attack_version": "fixture-v1",
+      "config_hash": "fixture-config-hash",
+      "export_policy_digest": "c75b4e31c65108ea5e843328109d71317a6215956b09997e70b23348de1f8da9",
+      "intel_generation": 1,
+      "profile_id": "knowledge-lite-16g",
+      "stats_generation": 1
+    }
+  },
+  "tables": [
+    "attack_technique",
+    "ioc",
+    "kev"
+  ]
+}

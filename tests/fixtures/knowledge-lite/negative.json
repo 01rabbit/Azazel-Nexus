@@ -1,0 +1,73 @@
+{
+  "anchors": "anchors.toml",
+  "fixtures": [
+    {
+      "description": "One hex digit of the ed25519 signature is flipped; the key id and the manifest are untouched, so the artifact is well-formed and its content is intact. It is refused on trust alone, before a single content byte is read out of the archive.",
+      "exists": true,
+      "expected_error_code": "BUNDLE_SIGNATURE_THRESHOLD_NOT_MET",
+      "expected_exception": "BundleVerifyError",
+      "gate": "signature threshold",
+      "name": "corrupt-signature",
+      "path": "negative/corrupt-signature.tar.gz",
+      "sha256": "371a1dc07b582798fcb2b467da118e4cfedcc26bd6c78842d88dec1aae869911",
+      "staging_written": false,
+      "verifies": false
+    },
+    {
+      "description": "An indicator's agg_raw_confidence is raised from 72.5 to 99.9 inside tables/ioc.jsonl. manifest.json and manifest.sig are untouched and still verify, so every trust gate passes and only the per-member SHA-256 catches it. The tampered bytes ARE written into the staging directory before the check fails: a reader must never promote staging on a failed verification. This is the tamper ADR-0015 D4 names -- bounding the data must not sharpen it.",
+      "exists": true,
+      "expected_error_code": "BUNDLE_FILE_HASH_MISMATCH",
+      "expected_exception": "BundleVerifyError",
+      "gate": "per-member content digest",
+      "name": "corrupt-payload",
+      "path": "negative/corrupt-payload.tar.gz",
+      "sha256": "27ec584f28e7b3c882595e61b457f939dcb3c1553b7a7c2708b8b8c295de17b0",
+      "staging_written": true,
+      "verifies": false
+    },
+    {
+      "description": "The tar stream ends part-way through tables/kev.jsonl; the gzip container itself is intact, so the cut shows up at the tar layer. manifest.json and manifest.sig are complete and verify, and every earlier content member is complete, staged, and digest-checked before the decoder gives up -- a reader can be holding fully verified content and must still promote none of it. NOTE FOR READERS: this one does NOT produce a BUNDLE_* error code; the tar decoder raises first. A reader that catches only the verifier's own exception type will let this through as an unhandled error, so treat ANY exception from verification as a refusal.",
+      "exists": true,
+      "expected_error_code": "BUNDLE_ARCHIVE_UNREADABLE",
+      "expected_exception": "BundleVerifyError",
+      "gate": "archive decode",
+      "name": "corrupt-truncated",
+      "path": "negative/corrupt-truncated.tar.gz",
+      "sha256": "84a8d7a8ab51d44ef7c3b83f37e38ab51f2f9fabce6839184f600d3107f625cd",
+      "staging_written": true,
+      "truncated_member": "tables/kev.jsonl",
+      "verifies": false
+    },
+    {
+      "description": "A valid, correctly signed artifact that passes every verification gate. Every row in tables/ioc.jsonl carries agg_next_expiry = 2021-01-01T00:00:00Z. Expiry has no manifest field and no filename convention: ADR-0015 D4 puts it per claim, evaluated by the consumer against its own query_as_of. A conforming reader verifies this artifact and then serves NO indicator from it -- an expired entry is unavailable, not merely labelled. tables/attack_technique.jsonl is static reference material whose dataset-level provenance says it does not expire on a clock, and it is here so that withholding the expired indicators can be told apart from discarding the whole artifact.",
+      "exists": true,
+      "expected_error_code": null,
+      "expected_exception": null,
+      "gate": "none -- this is a consumer-side expiry test, not a verification failure",
+      "indicator_expiry": "2021-01-01T00:00:00Z",
+      "name": "expired",
+      "path": "negative/expired.tar.gz",
+      "sha256": "a19a8ae4974ce12f958f963cbd98f3f01ac487b57846dd8e7d889bd9e8fb267a",
+      "staging_written": true,
+      "valid_indicator_expiry": "2027-01-01T00:00:00Z",
+      "verifies": true
+    },
+    {
+      "description": "This path is guaranteed not to be written by tools/lite_fixture.py, and the emitter removes anything found there, so a consumer can point its reader at it and get the same answer on every machine and every run. anchors.toml beside it DOES exist, so a fail-open test against this path is testing a missing artifact rather than a missing trust anchor. Absence of knowledge is not an error condition for a consumer: Edge Core is never blocked by missing knowledge (ADR-0015 D7, Absolute Constraint 1), so the expected outcome here is a node that keeps running, not an exception with a code.",
+      "exists": false,
+      "expected_error_code": null,
+      "expected_exception": null,
+      "gate": "no artifact at all",
+      "name": "absent",
+      "path": "negative/absent-lite.tar.gz",
+      "sha256": null,
+      "staging_written": false,
+      "verifies": false
+    }
+  ],
+  "notes": {
+    "forgery": "These are emitted by Knowledge rather than forged in the consumer's own tests on purpose (ADR-0015 D7). A locally forged broken artifact differs from what Knowledge emits in ways nobody can enumerate.",
+    "state": "Verify each fixture with a FRESH state.toml. They all declare bundle_version 1 because they are independent cases, not a sequence; reusing one watermark across them would trip anti-rollback and mask the gate under test."
+  },
+  "valid": "lite.tar.gz"
+}

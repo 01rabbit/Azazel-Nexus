@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the ceiling of what pyproject.toml declares. This is
+        # the CI runner's matrix, not a product support claim -- Nexus declares
+        # no supported runtime of its own (docs/support-matrix.md §7).
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -q
+
+  core-has-no-optional-dependency:
+    name: CORE imports with nothing installed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The doctrine sentence, checked rather than asserted: Nexus must be
+      # useful as CORE with no external Knowledge, no Deception, no remote
+      # cognition and no cloud connectivity. A third-party import that crept
+      # into the deterministic path would fail here, on a runner where nothing
+      # but the standard library is available.
+      - name: Import the CORE modules with no dependencies installed
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import sys
+          before = set(sys.modules)
+          import azazel_nexus.capability  # noqa: F401
+          import azazel_nexus.lite_cache  # noqa: F401
+          third_party = sorted(
+              name.split(".")[0]
+              for name in set(sys.modules) - before
+              if not name.startswith(("azazel_nexus", "_"))
+              and getattr(sys.modules[name], "__file__", "") or ""
+          )
+          stdlib = set(sys.stdlib_module_names)
+          offenders = sorted({n for n in third_party if n not in stdlib})
+          if offenders:
+              raise SystemExit(f"CORE path imports non-stdlib modules: {offenders}")
+          print("CORE path is standard library only")
+          PY

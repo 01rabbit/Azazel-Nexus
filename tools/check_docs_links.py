@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check internal links between this repository's Markdown documents.
 
-Azazel-Nexus is a documentation-only repository, so its documents linking to
-each other correctly is the whole of what CI can check here. This verifies that
+Azazel-Nexus was a documentation-only repository until the Knowledge Lite
+consumer landed (Nexus#15); its unit tests now run in their own CI job, and
+this check remains what holds the documents themselves together. It verifies
+that
 every relative link in a Markdown file points at a file that exists, and that a
 `#fragment` on a Markdown target names a heading that exists in it. External
 links (http, https, mailto, ...) are not fetched: this check must pass offline
