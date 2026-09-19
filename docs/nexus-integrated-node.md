@@ -113,9 +113,14 @@ optional component's failure never blocks the deterministic control path.
 
 The rugged PC baseline provides TPM 2.0 where available, encrypted storage, and
 battery-supported operation. A self-contained Nexus needs a `lite` resource
-envelope or better — 16384 MiB of usable RAM or more, with 4 cores / 8 threads
-and 512 GB encrypted NVMe as companion hardware; 6+ cores / 12 threads, a
-`standard` envelope, and 1 TB NVMe suit sustained field work.
+envelope or better — 15360 MiB of usable RAM after firmware reservation or
+more, with 4 cores / 8 threads and 512 GB encrypted NVMe as companion hardware;
+6+ cores / 12 threads, a `standard` envelope, and 1 TB NVMe suit sustained field
+work. That figure is the `lite` boundary from
+[capability model](capability-model.md) §2 restated, not a second requirement:
+16384 nominal minus the 1024 MiB firmware-reservation allowance, so a machine
+sold as 16 GB reaches it. Meeting it is a statement about the hardware class
+only, and remains subject to the measured Core reserve.
 
 RAM and core count establish **capacity only**. Whether this node may capture,
 enforce, or run Deception Lite depends on interfaces commissioned to confirmed

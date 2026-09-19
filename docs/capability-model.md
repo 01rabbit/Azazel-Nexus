@@ -45,15 +45,43 @@ usable RAM, storage, and thermal/power budget. It says nothing about the
 network.
 
 Usable RAM is measured in **MiB after firmware reservation**, not nominal
-module size, and the measured Core reserve is subtracted before selection. One
-product-local selector produces exactly one of four values:
+module size. That measurement is the selector's only input; the measured Core
+reserve is **not** subtracted before selection. One product-local selector
+produces exactly one of four values:
 
 | Usable RAM (MiB, after firmware reservation) | Resource profile | Resource envelope permitted |
 | --- | --- | --- |
-| `< 8192` | `diagnostic` | diagnostics and inventory only; no policy activation |
-| `8192` – `16383` | `core` | evidence, evaluators, arbiter, audit, UI, deterministic voice |
-| `16384` – `32767` | `lite` | `core` capacity plus Knowledge Lite, Deception Lite, and local M.I.O. **capacity** |
-| `>= 32768` | `standard` | `lite` capacity plus concurrent analysis, wider local models, and module-link capacity |
+| `< 7168` | `diagnostic` | diagnostics and inventory only; no policy activation |
+| `7168` – `15359` | `core` | evidence, evaluators, arbiter, audit, UI, deterministic voice |
+| `15360` – `31743` | `lite` | `core` capacity plus Knowledge Lite, Deception Lite, and local M.I.O. **capacity** |
+| `>= 31744` | `standard` | `lite` capacity plus concurrent analysis, wider local models, and module-link capacity |
+
+Each threshold is the nominal module size it is meant to admit **minus a
+1024 MiB firmware-reservation allowance**: 8192 − 1024 = 7168,
+16384 − 1024 = 15360, 32768 − 1024 = 31744. The numbers are derived, not
+chosen.
+
+The allowance exists because usable RAM is always below nominal, so a threshold
+set at the nominal size it names can never be reached by the class it names.
+On x86_64 the firmware reserves memory for UEFI runtime services, ACPI tables,
+and kernel-reserved regions, and — the large and variable term — integrated-GPU
+stolen memory, the UMA aperture, commonly 512 MiB and BIOS-configurable. A
+measured nominal 16 GB Linux host reported `MemTotal: 16481980 kB`, which is
+16,095 MiB usable: 289 MiB short of 16384, and under the previous thresholds it
+selected `core` instead of `lite`. An allowance of 1024 MiB covers that measured
+case with room for a 512 MiB aperture and margin.
+
+> **Residual risk, accepted and stated.** A host whose firmware reserves more
+> than 1024 MiB — a 2 GiB iGPU aperture, for instance — still selects one tier
+> low. The remedy is measurement on real hardware, not a larger guess. This
+> limitation stands until such a host is measured.
+
+The profile names a **hardware class**, not a capability. Whether that class can
+actually carry the work is decided separately, subject to the measured Core
+reserve, which for Nexus is still **unmeasured**. That separation is what makes
+a generous allowance safe: widening the allowance can admit a host to the class
+above, but it grants nothing, because the Core reserve and the other three
+dimensions — not the threshold — decide what the host may do.
 
 The words "capacity" and "envelope" are load-bearing. A `lite` resource profile
 means the host has room for Deception Lite. It does **not** mean Deception Lite
@@ -139,7 +167,7 @@ A 32 GB rugged PC with a single usable NIC and no independent management path.
 
 | Dimension | Value |
 | --- | --- |
-| resource | `standard` (32768 MiB or more) |
+| resource | `standard` (31744 MiB or more usable after firmware reservation) |
 | topology | one interface; no second commissioned role; no independent management path; no decoy bridge |
 | verified assets | Edge package and local model both verified |
 | trust/health | nominal |

@@ -32,10 +32,22 @@ where this table says so, and must not be multiplied further.
 
 | Usable RAM (MiB, after firmware reservation) | Nexus envelope name | Eligibility phrasing |
 | --- | --- | --- |
-| `< 8192` | `diagnostic` | diagnostics only |
-| `8192` – `16383` | `core` | Core |
-| `16384` – `32767` | `lite` | "Lite-capable" |
-| `>= 32768` | `standard` | "Full-capable" / Edge's "Full-eligible" |
+| `< 7168` | `diagnostic` | diagnostics only |
+| `7168` – `15359` | `core` | Core |
+| `15360` – `31743` | `lite` | "Lite-capable" |
+| `>= 31744` | `standard` | "Full-capable" / Edge's "Full-eligible" |
+
+Each threshold is the nominal module size it admits minus a **1024 MiB
+firmware-reservation allowance** (8192 − 1024, 16384 − 1024, 32768 − 1024),
+because usable RAM never reaches nominal — firmware takes UEFI runtime services,
+ACPI tables, kernel-reserved regions, and integrated-GPU stolen memory, which
+alone is commonly 512 MiB. [Capability model](capability-model.md) §2 holds the
+derivation, the measured case behind it, and the residual risk that a host
+reserving more than 1024 MiB still selects one envelope low.
+
+The envelope is selected from that reading alone. The Core reserve is applied
+afterwards, per provider, in §3 below — an envelope is never a statement that a
+given model fits.
 
 `lite` and `standard` name a **resource envelope**. "Lite-capable" and
 "Full-capable" name what that envelope *permits*, which is only realized when

@@ -11,16 +11,32 @@ examples are in [capability model](capability-model.md); the summary an
 operator needs in the field is below.
 
 The resource profile is selected from **usable RAM in MiB after firmware
-reservation**, with the measured Core reserve subtracted. Interface count is
-deliberately absent from this table — it belongs to the topology profile and is
-established by [commissioning](commissioning.md).
+reservation** — the figure the host actually reports, not the nominal module
+size. That figure is the selector's only input; the measured Core reserve is
+applied separately, after selection. Interface count is deliberately absent from
+this table — it belongs to the topology profile and is established by
+[commissioning](commissioning.md).
 
-| Usable RAM (MiB) | Resource profile | Capacity permitted | Typical companion hardware |
+| Usable RAM (MiB, after firmware reservation) | Resource profile | Capacity permitted | Typical companion hardware |
 | --- | --- | --- | --- |
-| `< 8192` | `diagnostic` | inventory and diagnostics only; no policy activation | — |
-| `8192` – `16383` | `core` | evidence, rules, packet metadata, enforcement, UI, deterministic voice | 4 cores / 8 threads, 512 GB encrypted SSD |
-| `16384` – `32767` | `lite` | `core` capacity plus Suricata, local cognition, Knowledge Lite, and Deception Lite | 4 cores / 8 threads, 512 GB encrypted SSD |
-| `>= 32768` | `standard` | `lite` capacity plus concurrent analysis, wider local models, and module links | 6+ cores / 12 threads, 1 TB encrypted SSD |
+| `< 7168` | `diagnostic` | inventory and diagnostics only; no policy activation | — |
+| `7168` – `15359` | `core` | evidence, rules, packet metadata, enforcement, UI, deterministic voice | 4 cores / 8 threads, 512 GB encrypted SSD |
+| `15360` – `31743` | `lite` | `core` capacity plus Suricata, local cognition, Knowledge Lite, and Deception Lite | 4 cores / 8 threads, 512 GB encrypted SSD |
+| `>= 31744` | `standard` | `lite` capacity plus concurrent analysis, wider local models, and module links | 6+ cores / 12 threads, 1 TB encrypted SSD |
+
+Each threshold is the nominal size it admits minus a **1024 MiB
+firmware-reservation allowance** (8192 − 1024, 16384 − 1024, 32768 − 1024), so
+a machine sold as 8, 16, or 32 GB reaches the row named after it. Firmware takes
+its cut before Linux sees the memory — UEFI runtime services, ACPI tables,
+kernel-reserved regions, and above all integrated-GPU stolen memory, commonly
+512 MiB and adjustable in BIOS. A measured 16 GB host reported 16,095 MiB
+usable, 289 MiB under 16384.
+
+**In the field:** if a host selects a lower profile than its label suggests,
+read `MemTotal` in `/proc/meminfo` and check the BIOS video-memory aperture. A
+host reserving more than 1024 MiB — a 2 GiB aperture, for instance — will still
+land one row low. Report it with the measurement; it is fixed by measuring real
+hardware, not by widening the allowance.
 
 A 64 GB host with 12+ cores and 2 TB of storage selects `standard` and is
 measured as the 64 GB performance class. It is not a separate tier.
