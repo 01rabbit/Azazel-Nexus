@@ -19,6 +19,12 @@ effective capability = resource profile
                      ∩ current trust/health state
 ```
 
+`ResourceProfile`, `TopologyProfile`, `InterfaceAssignment`, and
+`CommissioningRecord` are assigned to Azazel-Fabric `provisioning_contracts`,
+which is **not released yet**; the verified-asset set and the trust/health
+evaluation are Nexus-local. See [contract ownership](contract-ownership.md)
+§3.4.
+
 No single dimension enables a capability. In particular:
 
 > **RAM capacity never enables NIC roles, capture, enforcement, or Deception.**

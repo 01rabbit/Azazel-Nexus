@@ -1,17 +1,41 @@
 # Field Operations Design
 
-## 1. Resource tiers
+## 1. Resource envelopes
 
-The same architecture scales by disabling optional capacity before compromising core safety. `Nexus Self-Contained` is the normal field baseline; `Edge Core` is a deliberately reduced recovery or constrained profile, not the intended complete Nexus configuration.
+Status: **target contract**. Nothing in this document is implemented in this
+repository.
 
-| Tier | Typical capacity | Required capability | Optional capability |
+A resource envelope states how much the host can carry. It never states what
+the host is permitted to do to the network. The full rule and its worked
+examples are in [capability model](capability-model.md); the summary an
+operator needs in the field is below.
+
+The resource profile is selected from **usable RAM in MiB after firmware
+reservation**, with the measured Core reserve subtracted. Interface count is
+deliberately absent from this table — it belongs to the topology profile and is
+established by [commissioning](commissioning.md).
+
+| Usable RAM (MiB) | Resource profile | Capacity permitted | Typical companion hardware |
 | --- | --- | --- | --- |
-| Edge Core | 4 CPU cores / 8 threads, 8 GB RAM, 512 GB encrypted SSD | Evidence, rules, basic packet metadata, enforcement, UI, deterministic voice | No embedded cognition, knowledge, or decoy services beyond policy essentials |
-| Nexus Self-Contained | 4 CPU cores / 8 threads, 16 GB RAM, 512 GB encrypted SSD | Edge, Suricata, local cognition, Knowledge Lite, Deception Lite, UI, voice | limited retention and small local cognition backend |
-| Nexus Standard | 6+ CPU cores / 12 threads, 32 GB RAM, 1 TB encrypted SSD | Self-contained Nexus with concurrent analysis and module links | larger retention, dual cognition, extended Lite capacity |
-| Nexus Extended | 12+ CPU cores, 64 GB RAM, 2 TB+ encrypted SSD | Standard tier with sustained capture/analysis | richer local models, replicated evidence, more sensors |
+| `< 8192` | `diagnostic` | inventory and diagnostics only; no policy activation | — |
+| `8192` – `16383` | `core` | evidence, rules, packet metadata, enforcement, UI, deterministic voice | 4 cores / 8 threads, 512 GB encrypted SSD |
+| `16384` – `32767` | `lite` | `core` capacity plus Suricata, local cognition, Knowledge Lite, and Deception Lite | 4 cores / 8 threads, 512 GB encrypted SSD |
+| `>= 32768` | `standard` | `lite` capacity plus concurrent analysis, wider local models, and module links | 6+ cores / 12 threads, 1 TB encrypted SSD |
 
-Tier selection is recorded in the mission profile. The system continuously observes CPU, memory, disk, thermal, battery, and interface capacity; it uses those signals to select safe feature limits, not to weaken policy.
+A 64 GB host with 12+ cores and 2 TB of storage selects `standard` and is
+measured as the 64 GB performance class. It is not a separate tier.
+
+**A resource profile grants capacity, never capability.** A `standard` host
+whose interfaces are uncommissioned, whose management path is not independent
+of the enforced path, or whose decoy isolation is unproven remains observe-only.
+The operator interface shows each capability separately as well as the overall
+`CORE`, `LITE`, or `FULL` summary, so a capable-looking machine is never
+mistaken for a permitted one.
+
+The system continuously observes CPU, memory, disk, thermal, battery, and
+interface capacity. It uses those signals to shed optional work within the
+envelope; it never uses them to weaken policy or to grant a capability that
+topology, assets, or trust do not support.
 
 ## 2. Graceful degradation states
 
@@ -29,6 +53,12 @@ Each state is explicit in the operator interface and audit ledger. A degradation
 | Integrity recovery | Boot, signature, clock, or ledger anomaly | Limited diagnostics and protected evidence access | Policy activation, remote egress, module changes | Critical service-required state |
 
 Transitions are evented, signed into audit, and surfaced in the UI and voice policy where severity warrants it. Returning to a higher state requires health verification; it is not automatic merely because a process restarted.
+
+Every state above is a **capability** state. Azazel-Edge's deterministic
+arbiter holds the same and only decision and enforcement authority in each of
+them, and the records published to the operator and the audit ledger are
+Azazel-Fabric contracts, not Nexus-local inventions. See
+[contract ownership](contract-ownership.md).
 
 ## 3. Failure modes and responses
 
@@ -59,10 +89,10 @@ A deployment kit is intentionally serviceable and equipment-neutral:
 ## 5. Field workflow
 
 1. Inspect seals, inventory, power, clock health, storage encryption, and policy/knowledge signatures.
-2. Label interfaces and establish the intended protected, observation, management, and module zones before enabling bridge or route functions.
-3. Start in observe-only mode; validate visibility and evidence flow.
+2. Run read-only inventory, then commission each interface: confirm its composite identity and its logical role (protected, observation, management, decoy, egress/module) explicitly. Roles are never inferred from an interface name, link state, or default route, and an unconfirmed interface stays unassigned and unusable. See [commissioning](commissioning.md).
+3. Activate the verified generation; until it exists no operational service is running. Start in observe-only mode and validate visibility, evidence flow, and that the observation interface has transmitted nothing.
 4. Load the approved mission profile; confirm the displayed enforcement scope and rollback conditions.
-5. Enable bounded controls only after an operator acknowledgement where the policy requires it.
+5. Enable bounded controls only after an operator acknowledgement where the policy requires it. A high-impact network change additionally requires an independent management path or physical console and a two-stage commit: acknowledge verified reachability within the lease window or the change rolls back automatically.
 6. During operation, use the UI for evidence and decision review; treat M.I.O. as an investigator, not an actuator.
 7. On exit, export or seal evidence according to the mission retention policy, revoke temporary credentials, and record hardware custody.
 

@@ -12,6 +12,16 @@ The architecture separates three concerns deliberately:
 
 AZ-01 Azazel-Edge is the system of record for the first two concerns. A Nexus embeds Knowledge Lite and Deception Lite alongside Edge and M.I.O.; optional full nodes enrich those capabilities through constrained interfaces. The [Integrated-node doctrine](nexus-integrated-node.md) defines this baseline and extension model.
 
+Shared contracts belong to AZ-05 Azazel-Fabric, not to this repository:
+**Fabric describes, Knowledge advises, Edge decides and enforces, Deception
+materializes an Edge-approved environment, and Nexus integrates released
+components without creating another decision authority.**
+[Contract ownership](contract-ownership.md) maps every record used here to
+Fabric or to Nexus and marks which Fabric contracts do not exist yet.
+
+Status: **target contract**. This repository has no package, Fabric pin, CI, or
+license; nothing below is implemented or verified here.
+
 ## 2. Deployment topology
 
 ```text
@@ -44,7 +54,19 @@ AZ-01 Azazel-Edge is the system of record for the first two concerns. A Nexus em
       optional deep-memory node              optional engagement host
 ```
 
-The rugged PC is a class of hardware, not a named device dependency. A field build should use an x86_64 Linux-compatible unit with at least two independently manageable network interfaces, a TPM where available, hardware-backed or disk-encrypted storage, battery power, and an operator-accessible display. USB radios and adapters are treated as replaceable mission equipment, not part of the trusted computing base.
+The rugged PC is a class of hardware, not a named device dependency. A field build should use an x86_64 Linux-compatible unit with a TPM where available, hardware-backed or disk-encrypted storage, battery power, and an operator-accessible display. USB radios and adapters are treated as replaceable mission equipment, not part of the trusted computing base.
+
+Network interfaces are a **topology** question, not a hardware checklist item.
+The zones drawn above exist only where an interface has been commissioned to
+that logical role by explicit operator confirmation against a composite
+identity. A host with fewer usable interfaces than roles simply has fewer
+capabilities; it does not fall back to sharing one interface between roles, and
+it does not infer a role from an interface name, link state, or default route.
+See [commissioning](commissioning.md) and [capability model](capability-model.md).
+
+Nexus does not invoke or inherit Azazel-Edge's device-specific network
+installer, its NIC fixed values, or its unit defaults. Edge is consumed as a
+released, signed package behind an explicit adapter.
 
 ## 3. Core node: AZ-01 Azazel-Edge
 
@@ -150,15 +172,19 @@ It never averages away disagreement. When local and remote views conflict, it hi
 
 The user interface and service implementations are replaceable behind stable contracts.
 
-| Boundary | Contract | Implementations may vary |
+| Boundary | Contract owner | Implementations may vary |
 | --- | --- | --- |
-| Sensor input | versioned normalized event envelope | Suricata, interface monitor, mission sensors |
-| Evidence | append-only artifact and correlation API | local encrypted store, replicated store |
-| Evaluation | evidence in; assessment with citations out | rules engine, approved analyzers |
-| Enforcement | scoped idempotent intent and receipt | nftables, tc, route/bridge adapter |
-| Cognition | advisory request/result schema | local model, remote provider, deterministic fallback |
-| Operator UI | read model plus approval/acknowledgement commands | touchscreen, external console, API client |
-| Alerts | severity, message, repeat and acknowledgement contract | local audio, visual UI, optional relay |
+| Sensor input | Nexus-local ingest envelope | Suricata, interface monitor, mission sensors |
+| Evidence citation | **Fabric** `schema.evidence` | local encrypted store, replicated store |
+| Evaluation | Nexus-local assessment; **Fabric** `schema.decision` for the operator-facing explanation | rules engine, approved analyzers |
+| Enforcement | **Fabric** `schema.action` intent and plans; Nexus owns the receipt and lease state | nftables, tc, route/bridge adapter |
+| Knowledge context | **Fabric** `cti_contracts` | Knowledge Lite cache, AZ-04 full node |
+| Deception | **Fabric** `deception_contracts` | Deception Lite runtime, AZ-06 full host |
+| Cognition | **Fabric** `mio_contracts` — *target contract, not released* | local model, remote provider, deterministic fallback |
+| Operator UI | **Fabric** `view.status`; Nexus owns sessions and approval handling | touchscreen, external console, API client |
+| Alerts | **Fabric** `notify.model`; Nexus owns the priority queue | local audio, visual UI, optional relay |
+| Audit | **Fabric** `schema.audit` envelope; Nexus owns chain enforcement and anchoring | append-only ledger, signed checkpoints |
+| Provisioning and commissioning | **Fabric** `provisioning_contracts` — *target contract, not released*; Nexus owns admission, rendering, and activation | inventory, commissioning record, generation |
 
 No interface allows a renderer, model, or module to bypass the arbiter. Backend selection is made at deployment configuration time and recorded in the system inventory.
 

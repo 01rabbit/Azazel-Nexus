@@ -181,6 +181,14 @@ Both layers share acknowledgement, suppression, severity, and visual-fallback ru
 
 ## Data contracts
 
+**Owner: Azazel-Fabric `mio_contracts` — target contract, not released.** The
+shapes below state what Nexus needs from that module. They are illustrative,
+not canonical: Nexus MUST NOT publish a local canonical form for a frame that
+crosses a product boundary, and MUST NOT adopt an M.I.O. contract pin before
+Fabric publishes one. The sanitizer policy, alias key material, and redaction
+records themselves are Nexus-local; only the redaction record *reference* is
+carried in the frame. See [contract ownership](contract-ownership.md) §3.3.
+
 M.I.O. never receives an unstructured stream of arbitrary evidence. The Edge compiles a versioned, traceable situation record.
 
 ```text
@@ -189,7 +197,7 @@ MioSituationFrame -> Local Cognition
 MioSituationFrame -> Sanitizer -> MioRemoteFrame -> Remote Cognition
 ```
 
-Minimal illustrative `MioSituationFrame`:
+Illustrative `MioSituationFrame` (Nexus view of a target Fabric contract):
 
 ```json
 {

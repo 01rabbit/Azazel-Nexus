@@ -2,19 +2,44 @@
 
 This roadmap prioritizes proof of control and evidence integrity before richer assistance. Each phase has a demonstrable boundary and a safe rollback path.
 
-## Phase 0 — Foundation
+Status: **target contract**. No phase below has started in this repository.
 
-- Define the versioned event, evidence, assessment, enforcement-intent, receipt, and cognition-result schemas.
-- Establish a reproducible rugged Linux PC baseline: disk encryption, service identities, network default deny, audited configuration, and recovery process.
-- Build a lab topology that represents protected, observation, management, module, and egress zones.
+## Phase 0 — Repository and contract bootstrap
 
-**Exit criterion:** a fresh device can be provisioned, verified, and recovered using the written procedure.
+- Publish license, security policy, contribution guide, package layout,
+  dependency manifest, and CI. None of these exist yet; see
+  [contract ownership](contract-ownership.md) §6.
+- Adopt an **exact Azazel-Fabric release pin** and build adapters against the
+  Fabric-owned records that already exist. Nexus does not define shared
+  schemas; where a Fabric contract is missing (`provisioning_contracts`,
+  `mio_contracts`), the dependent work waits for Fabric R1 rather than
+  inventing a local canonical form.
+- Establish a reproducible rugged Linux PC baseline: disk encryption, service
+  identities, network default deny, audited configuration, and recovery
+  process.
+- Build a lab topology that represents protected, observation, management,
+  decoy, and egress zones.
+
+**Exit criterion:** the repository can produce a pinned, signed artifact, and every record it exchanges is traceable to a Fabric release or is explicitly marked Nexus-local.
+
+## Phase 0b — Inventory, commissioning, and activation
+
+- Implement read-only hardware and interface inventory with composite identity
+  and fail-closed ambiguity handling.
+- Implement operator-confirmed logical role assignment and the signed
+  commissioning record. No role is inferred from name, link state, or route.
+- Implement the product admission policy: delegated trust roles, exact tested
+  compatibility tuples, security epoch, and the bounded extractor.
+- Implement the activation controller, verified generations, preset-disabled
+  units, staged rendering, and the management failsafe.
+
+**Exit criterion:** a fresh device can be inventoried, commissioned, activated, verified, and recovered using the written procedure; before a verified generation exists it starts no operational network service and transmits nothing outside the bounded asset-acquisition state.
 
 ## Phase 1 — Evidence and deterministic evaluation
 
 - Integrate packet/sensor ingestion and normalized evidence storage.
 - Implement NOC and SOC evaluators with citations to immutable evidence IDs.
-- Add the append-only audit ledger and operator evidence viewer.
+- Add the append-only audit ledger, signed checkpoints, the independent anchor, and the operator evidence viewer.
 
 **Exit criterion:** a recorded scenario can be replayed and yields a traceable assessment without any model dependency.
 
@@ -46,7 +71,7 @@ This roadmap prioritizes proof of control and evidence integrity before richer a
 
 ## Phase 5 — M.I.O. dual cognition
 
-- Add local cognition with a strict advisory schema and resource governor.
+- Add local cognition with a resource governor, using the Fabric `mio_contracts` advisory shape once it is released.
 - Implement sanitizer policy, egress boundary, remote connector, request log, and deny-safe behavior.
 - Build the router and merger, including disagreement presentation and evidence citations.
 
