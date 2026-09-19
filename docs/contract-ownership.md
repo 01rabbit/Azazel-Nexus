@@ -201,7 +201,10 @@ Nexus consumes Edge, Knowledge, and Deception as **released, signed packages**.
 - Nexus MUST NOT call Azazel-Edge's device-specific network installer, inherit
   its NIC fixed values, or reuse its unit defaults. That installer remains a
   compatibility path for constrained-device Edge deployments and is out of
-  scope for Nexus. See [commissioning](commissioning.md) §1.
+  scope for Nexus. See [commissioning](commissioning.md) §1. Azazel-Edge's own
+  `docs/X86_64_INTEGRATION_BOUNDARY.md` states the same prohibition; the
+  [inheritance ledger](inheritance-ledger.md) §4.3 records what that package
+  boundary does and does not yet establish.
 - Nexus MUST NOT convert a configuration overlay, package manifest, model
   response, M.I.O. recommendation, or capability report into executable
   authority.

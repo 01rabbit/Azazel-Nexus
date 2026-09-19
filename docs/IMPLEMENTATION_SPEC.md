@@ -21,6 +21,8 @@ Evidence -> evaluators -> Action Arbiter -> enforcement adapter
 
 Only `azazel-arbiterd` can create an enforcement intent. M.I.O., either Knowledge service, either Deception service, the UI, and remote services MUST use requests or advisories that the arbiter independently validates. No service may hold the arbiter signing key and an enforcement-adapter privilege at the same time.
 
+This single-issuer rule is a **condition Nexus places on the Edge package it admits**, not a property already demonstrated upstream: Azazel-Edge currently contains two independent decision/enforcement paths and has not declared which is authoritative for the x86_64 profile. Nexus MUST NOT admit an Edge package that does not declare a single authoritative decision and enforcement boundary. See [inheritance ledger](inheritance-ledger.md) §4.2.
+
 Shared contracts are owned by Azazel-Fabric. Nexus owns only what it performs
 on the host: product admission, installation, commissioning, activation,
 rendering, service confinement, storage layout, audit chain enforcement,

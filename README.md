@@ -19,6 +19,7 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - [Contract ownership](docs/contract-ownership.md) — which records belong to Azazel-Fabric, which are Nexus-local, which Fabric contracts do not exist yet, and the product admission sequence.
 - [Capability model](docs/capability-model.md) — why effective capability is the intersection of resource, topology, verified assets, and trust/health, with worked examples.
 - [Commissioning and activation](docs/commissioning.md) — composite interface identity, operator-confirmed roles, verified generations, and the management failsafe.
+- [Edge-to-Nexus inheritance ledger](docs/inheritance-ledger.md) — what Nexus inherits from Azazel-Edge, on what evidence, what is explicitly not inherited, and the gates a capability passes before adoption.
 
 ## System at a glance
 
