@@ -116,9 +116,18 @@ arbiter" in the singular but does not state which of the two paths it is, so
 the question is open rather than answered. Edge
 [#410](https://github.com/01rabbit/Azazel-Edge/issues/410), which defined that
 boundary, is **closed**. Under §2.4 a closed issue must not be reopened or used
-as the entry point for this work, so closing this gap requires a **new Edge
-issue**. None exists at the audit date. Until one does, this row stays open and
-Nexus treats the single-boundary requirement as an unmet admission condition.
+as the entry point for this work, so closing this gap required a **new Edge
+issue**: [#412](https://github.com/01rabbit/Azazel-Edge/issues/412) asks which
+path is authoritative for the x86_64 profile, what becomes of the other, how a
+consumer verifies the answer from the released artifact, and whether the
+constrained-device profile answers differently.
+
+That issue asks the question; it does not answer it, and Nexus proposes no
+answer. Until Edge states one, this row stays open and Nexus treats the
+single-boundary requirement as an **unmet admission condition**. Nexus admits
+no Edge package that does not declare a single authoritative decision and
+enforcement boundary, and this ledger records the arbitration row as
+`reference-core` in class but not proven at its boundary.
 
 ### 4.3 The x86_64 package boundary Nexus consumes
 
