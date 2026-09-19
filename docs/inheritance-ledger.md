@@ -157,6 +157,13 @@ because it names a **resource envelope**, whereas "Full-eligible" names an
 outcome of the intersection; the two are not synonyms and must not be used
 interchangeably in either repository.
 
+That is now the program-level resolution of open finding **OF-02**
+([program plan §15](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md#15-open-program-findings)):
+a resource tier never derives a capability state, and no mapping between the two
+vocabularies exists in either direction. The rule is settled rather than one
+repository's preference, and [capability model](capability-model.md) §1.1
+carries it and its reasoning for Nexus.
+
 ## 5. Capability ledger
 
 ### 5.1 Deterministic core
@@ -173,10 +180,11 @@ interchangeably in either repository.
 ### 5.2 M.I.O. cognitive plane
 
 Every Edge M.I.O. module below has an **open** completion issue, so none is
-`verified`. The Nexus tier column is a **Nexus-side eligibility assertion**,
-not an Edge statement, and is conditional on the gates in §6.
+`verified`. That column is a **Nexus-side eligibility assertion**, not an Edge
+statement, and is conditional on the gates in §6. Its values name capability
+eligibility, never a resource tier; the two are different kinds of thing (§4.3).
 
-| M.I.O. capability | Class | Edge module | Open Edge issue | Nexus tier |
+| M.I.O. capability | Class | Edge module | Open Edge issue | Nexus eligibility |
 | --- | --- | --- | --- | --- |
 | No-model fallback / deterministic explanation | `reference-core` | `model_adapter.py` | [#385](https://github.com/01rabbit/Azazel-Edge/issues/385) | **CORE** — must work with no model asset present |
 | SituationFrame construction | `reference-core` | `frame_builder.py` | [#383](https://github.com/01rabbit/Azazel-Edge/issues/383) | **CORE** — deterministic, built from evidence |
