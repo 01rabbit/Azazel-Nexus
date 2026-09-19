@@ -401,6 +401,11 @@ Deception uses an equivalent but separate `DeceptionLease`. Lite containers live
 
 ## 10. M.I.O. route selection and voice queue
 
+Provider admission, confinement, request budgets, deterministic sanitizer
+requirements, the full fallback table, and the per-dimension reasons published
+with each capability state are specified in
+[M.I.O. runtime control plane](mio-runtime.md).
+
 The router selects `local`, `remote`, `local_then_remote`, or `parallel` from mission policy, privacy class, remote health, latency budget, local resource headroom, and incident severity. `remote` is eligible only for P0/P1 frames with a valid sanitizer decision. The default is `local_then_remote`. A remote deadline expiration returns the local result unchanged and records only the sanitized request fingerprint; it never queues P2/P3 data for later submission.
 
 The merger compares claims by cited evidence and outcome. It labels material conflict `ANALYSIS_DISAGREEMENT`; this label never changes an arbiter decision. Remote text is rendered as inert text, with no tool calls, links automatically followed, or instructions treated as commands.
