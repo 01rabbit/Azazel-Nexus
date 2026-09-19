@@ -89,7 +89,7 @@ When AZ-06 is connected, Edge may route simple probes to Lite and use AZ-06 for 
 
 | Mode | Composition | Meaning |
 | --- | --- | --- |
-| `CORE` | Edge only | Recovery or constrained profile; deterministic protection continues. |
+| `CORE` | Edge only | Recovery, constrained, or topology-limited profile; deterministic protection continues. |
 | `SELF-CONTAINED` | Edge + M.I.O. + Knowledge Lite + Deception Lite | Normal standalone Nexus operation. |
 | `KNOWLEDGE-EXTENDED` | Self-contained + AZ-04 | Deeper memory and context are available. |
 | `DECEPTION-EXTENDED` | Self-contained + AZ-06 | Expanded engagement capacity is available. |
@@ -103,9 +103,27 @@ FULL -> Knowledge Lite and/or Deception Lite -> Local M.I.O. -> CORE
 
 External loss never silently removes local knowledge or the ability to redirect. Local-model loss never removes the deterministic Edge Core.
 
+These are **capability states, not authority levels**. Azazel-Edge's
+deterministic arbiter holds the same and only decision and enforcement
+authority in `CORE`, `SELF-CONTAINED`, and `FULL` alike. Degradation removes
+optional capacity; it never removes, transfers, or expands authority, and an
+optional component's failure never blocks the deterministic control path.
+
 ## Deployment and service boundaries
 
-The rugged PC baseline should provide at least two controlled network interfaces, TPM 2.0 where available, encrypted storage, and battery-supported operation. A complete self-contained Nexus requires at least 4 CPU cores / 8 threads, 16 GB RAM, and 512 GB encrypted NVMe; 6+ cores / 12 threads, 32 GB RAM, and 1 TB NVMe are recommended for sustained field work.
+The rugged PC baseline provides TPM 2.0 where available, encrypted storage, and
+battery-supported operation. A self-contained Nexus needs a `lite` resource
+envelope or better — 16384 MiB of usable RAM or more, with 4 cores / 8 threads
+and 512 GB encrypted NVMe as companion hardware; 6+ cores / 12 threads, a
+`standard` envelope, and 1 TB NVMe suit sustained field work.
+
+RAM and core count establish **capacity only**. Whether this node may capture,
+enforce, or run Deception Lite depends on interfaces commissioned to confirmed
+logical roles, on verified assets, and on current trust and health — evaluated
+independently and intersected. A high-memory host with no commissioned
+observation role, no independent management path, or no proven decoy isolation
+is observe-only. See [capability model](capability-model.md) and
+[commissioning](commissioning.md).
 
 Persistent content is separated under `/data/` by retention domain:
 
@@ -141,3 +159,8 @@ This makes extension loss legible without suggesting that the node itself has ce
 ## Design invariant
 
 > **Nexus is not a device that becomes useful when modules arrive. It is a complete field node whose external modules increase depth and endurance.**
+
+Completeness is about capability, not about contract ownership. The records
+Nexus exchanges with Edge, Knowledge, and Deception belong to Azazel-Fabric;
+Nexus consumes them behind an exact release pin and adds no decision authority
+of its own. See [contract ownership](contract-ownership.md).

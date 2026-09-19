@@ -13,9 +13,12 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - [System architecture](docs/architecture.md) — components, data paths, trust boundaries, and interface contracts.
 - [Integrated-node doctrine](docs/nexus-integrated-node.md) — the self-contained Nexus baseline, embedded Lite services, and external expansion model.
 - [M.I.O. dual cognition doctrine](docs/mio-dual-cognition.md) — the local/remote cognition model, safety invariants, operating states, and data contracts.
-- [Operational design](docs/operations.md) — deployment kit, degradation states, resource tiers, and failure handling.
+- [Operational design](docs/operations.md) — deployment kit, degradation states, resource envelopes, and failure handling.
 - [Implementation roadmap](docs/roadmap.md) — staged delivery plan and acceptance criteria.
 - [Implementation specification](docs/IMPLEMENTATION_SPEC.md) — deployable service boundaries, contracts, configuration, data, health, security, and recovery requirements.
+- [Contract ownership](docs/contract-ownership.md) — which records belong to Azazel-Fabric, which are Nexus-local, which Fabric contracts do not exist yet, and the product admission sequence.
+- [Capability model](docs/capability-model.md) — why effective capability is the intersection of resource, topology, verified assets, and trust/health, with worked examples.
+- [Commissioning and activation](docs/commissioning.md) — composite interface identity, operator-confirmed roles, verified generations, and the management failsafe.
 
 ## System at a glance
 
@@ -49,16 +52,41 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - **Evidence before interpretation.** Raw artifacts, normalized events, decisions, and enforcement results are correlated and retained with provenance.
 - **Least disclosure.** External cognition receives only data produced by a mission-specific sanitizer and never gets enforcement credentials or direct control-plane access.
 - **Self-contained first.** Knowledge Lite and Deception Lite are normal embedded capabilities, not external prerequisites. Full external nodes expand depth and endurance through explicit contracts and cannot expand the core node's authority.
+- **Fabric owns the shared contracts.** Nexus does not define a canonical form for any record that crosses a product boundary; it consumes Azazel-Fabric behind an exact release pin and owns only what it performs on the host.
+- **Capacity is not capability.** RAM selects a resource envelope and nothing more. Capture, enforcement, and Deception additionally require commissioned interfaces, verified assets, and current trust — evaluated independently and intersected.
+- **Roles are confirmed, never inferred.** An interface gets a logical role only through read-only inventory plus explicit operator confirmation against a composite identity, never from an interface name, link state, or default route.
 
 ## Azazel role model
 
+> **Fabric describes. Knowledge advises. Edge decides and enforces. Deception materializes an Edge-approved environment. Nexus integrates released components without creating another decision authority.**
+
+Or, from the operator's side of the console:
+
 > **Edge decides. M.I.O. understands and explains. Knowledge remembers. Deception provides the engagement space.**
 
-This division is intentional. It keeps the authority to change the field boundary in one deterministic place, while allowing the operator to benefit from richer context and analysis.
+This division is intentional. It keeps the authority to change the field boundary in one deterministic place, while allowing the operator to benefit from richer context and analysis. `CORE`, `LITE`, and `FULL` describe how much capability is currently available; they never describe how much authority anything holds.
 
 ## Status
 
-The repository currently captures the architecture and delivery plan. Production components should be implemented incrementally according to the roadmap, with each enforcement capability tested first in a controlled lab topology.
+**Target contract.** This repository contains architecture and specification
+documents only. It has no package, dependency manifest, Azazel-Fabric pin, CI,
+license, security policy, contribution guide, support matrix, update channel,
+or recovery procedure. Nothing here is implemented or verified, and no
+statement in this repository may be cited as implementation evidence or as an
+operational claim.
+
+The outstanding bootstrap work is listed in
+[contract ownership](docs/contract-ownership.md) §6 and sequenced as Phase 0 of
+the [roadmap](docs/roadmap.md). Production components should be implemented
+incrementally according to that roadmap, with each enforcement capability
+tested first in a controlled lab topology.
+
+Terms used for status across these documents have fixed meanings: *target
+contract* (intended behavior, no release evidence), *implemented* (code and
+focused tests exist), *verified* (a declared evidence gate has passed),
+*supported* (documented release, security posture, and operational evidence
+exist), *experimental* (bounded concept or HIL work), and *retired*
+(intentionally not inherited).
 
 ## License
 

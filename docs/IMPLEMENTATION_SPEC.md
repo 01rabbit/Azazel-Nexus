@@ -2,7 +2,13 @@
 
 ## 1. Status, scope, and invariants
 
-This specification turns the architecture documents into implementation units for a generic rugged x86_64 Linux PC. It is a normative baseline for an initial production-capable implementation. Terms **MUST**, **SHOULD**, and **MAY** describe requirements, recommendations, and allowed options.
+This specification turns the architecture documents into implementation units for a generic rugged x86_64 Linux PC. Terms **MUST**, **SHOULD**, and **MAY** describe requirements, recommendations, and allowed options.
+
+Status: **target contract**. This repository contains no package, dependency
+manifest, Fabric pin, CI, or license. Nothing below is implemented or verified
+here, and no statement in this document may be cited as implementation
+evidence. Outstanding bootstrap work is listed in
+[contract ownership](contract-ownership.md) §6.
 
 The baseline is a self-contained node. It MUST keep collecting evidence, evaluating signed policy, presenting deterministic explanations, auditing, and applying already supported bounded controls without cloud connectivity or external modules. AZ-04 and AZ-06 increase depth; they never provide the prerequisite for baseline operation.
 
@@ -15,20 +21,111 @@ Evidence -> evaluators -> Action Arbiter -> enforcement adapter
 
 Only `azazel-arbiterd` can create an enforcement intent. M.I.O., either Knowledge service, either Deception service, the UI, and remote services MUST use requests or advisories that the arbiter independently validates. No service may hold the arbiter signing key and an enforcement-adapter privilege at the same time.
 
+Shared contracts are owned by Azazel-Fabric. Nexus owns only what it performs
+on the host: product admission, installation, commissioning, activation,
+rendering, service confinement, storage layout, audit chain enforcement,
+update, and recovery. Nexus MUST NOT define a local canonical form for a record
+that crosses a product boundary. [Contract ownership](contract-ownership.md)
+maps every record in this specification to Fabric or to Nexus, and marks which
+Fabric contracts do not exist yet.
+
+Edge, Knowledge, and Deception are consumed as released, signed packages behind
+explicit adapters. Nexus MUST NOT vendor a product source tree, and MUST NOT
+invoke or inherit Azazel-Edge's device-specific network installer, its NIC
+fixed values, or its unit defaults; see
+[commissioning](commissioning.md) §1.
+
 Out of scope: any device-vendor-specific implementation and a cloud dependency for local protection.
 
-## 2. Target platform and deployment profiles
+## 2. Target platform, resource envelopes, commissioning, and admission
 
 The reference OS is a supported long-term-support Linux distribution with systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools, LUKS2, and a current kernel. The implementation MUST support a headless console; a touchscreen is an optional presentation device.
 
-| Profile | Minimum hardware | Enabled capability | Retention and limits |
-| --- | --- | --- | --- |
-| `core` | 4 cores / 8 GB RAM / 512 GB NVMe / two managed NICs | evidence, evaluators, arbiter, enforcement, UI/API, deterministic voice | metadata only; M.I.O., Lite services disabled |
-| `lite` | 4 cores / 16 GB RAM / 512 GB NVMe | `core` plus Knowledge Lite, Deception Lite, local M.I.O. | 7-day tactical cache, 3 Lite decoys, one local request |
-| `standard` | 6 cores / 32 GB RAM / 1 TB NVMe | normal standalone node; local and eligible remote M.I.O.; AZ-04/AZ-06 links | 30-day tactical cache, 3 Lite decoys, two local requests |
-| `extended` | 12 cores / 64 GB RAM / 2 TB NVMe | sustained capture, wider local models, full extensions | profile-defined; audit remains protected |
+### 2.1 Resource profile selection
 
-All profiles require separate protected, observation, management, decoy, and egress/module zones where their functions are enabled. A production profile MUST define interface names by stable MAC or PCI path, not by ephemeral kernel device numbering.
+The resource profile records measured capacity only. It MUST NOT enable any
+capability by itself. One product-local selector reads usable RAM in **MiB
+after firmware reservation**, subtracts the measured Core reserve, and produces
+exactly one value:
+
+| Usable RAM (MiB) | Resource profile | Resource envelope permitted |
+| --- | --- | --- |
+| `< 8192` | `diagnostic` | diagnostics and inventory only; no policy activation |
+| `8192` – `16383` | `core` | evidence, evaluators, arbiter, audit, UI/API, deterministic voice |
+| `16384` – `32767` | `lite` | `core` envelope plus Knowledge Lite, Deception Lite, and local M.I.O. **capacity** |
+| `>= 32768` | `standard` | `lite` envelope plus concurrent analysis, wider local models, and module-link capacity |
+
+Retention and concurrency limits are recorded against the resource profile:
+`core` retains metadata only; `lite` permits a 7-day tactical cache, up to
+three Lite decoys, and one concurrent local request; `standard` permits a
+30-day tactical cache, up to three Lite decoys, and two concurrent local
+requests. Audit and lease-journal reserves are protected in every profile.
+Performance targets are measured separately for the 8, 16, 32, and 64 GB
+classes; a 64 GB host selects `standard`.
+
+CPU cores and storage are recorded and MAY independently reduce the envelope.
+They MUST NOT raise it above the RAM-selected value.
+
+### 2.2 The resource profile is not a capability
+
+A resource profile states that the host has **room** for a capability, not that
+the capability is permitted. Effective capability is the intersection of the
+resource profile, the topology profile, the verified asset set, and the current
+trust/health state, evaluated independently:
+
+```text
+effective capability = resource ∩ topology ∩ verified assets ∩ trust/health
+```
+
+A `standard` host with one usable NIC and no independent management path is
+observe-only: it runs Core and local cognition, and capture, enforcement, and
+Deception are all unavailable. [Capability model](capability-model.md) defines
+each dimension and works this example through in §6.1.
+
+Separate protected, observation, management, decoy, and egress/module zones are
+a **topology** requirement for the functions that need them. They are assigned
+only by [commissioning](commissioning.md), and an interface is identified by a
+composite identity — never by kernel device numbering, and never by MAC address
+alone.
+
+### 2.3 Commissioning and activation preconditions
+
+Installation MUST NOT start an operational network service. Every operational
+unit is installed **preset disabled** and stays masked until the activation
+controller validates a verified generation. Until then the node transmits
+nothing on any interface outside the bounded `ASSET_ACQUISITION` state.
+
+The following are normative and are specified in
+[commissioning](commissioning.md):
+
+- interfaces are identified by composite identity; zero or multiple matches
+  fail closed to `COMMISSIONING_REQUIRED` (§3);
+- logical roles are assigned only by explicit operator confirmation, never
+  inferred from interface name, link state, or default route (§4);
+- an observation-role interface transmits zero frames, verified across link
+  flap, resume, and driver reload (§5);
+- asset acquisition runs in a bounded outbound-only state on one
+  operator-selected interface and grants no capability (§6);
+- the activation controller is the only component that may unmask operational
+  services or issue generation-scoped credentials, and it revalidates every
+  digest on every boot (§7);
+- Suricata and all other generated configuration render from commissioned
+  logical roles with no physical-name or default-route fallback (§8);
+- a high-impact network change requires an independent management path or
+  physical console and a two-stage commit (§9);
+- commissioning closes after activation; re-entry requires a physical local
+  action, strong administrator authentication, maintenance state, and explicit
+  handling of active leases (§10).
+
+### 2.4 Product admission
+
+A signature is one input to admission, not admission itself. Assets pass
+`authenticity -> exact tested compatibility tuple -> semantic content policy ->
+resource/topology admission -> approval -> staged activation`, in that order,
+with any gate able to reject. The tuple fields, delegated trust roles, and the
+monotonic-reduction rule for deployment overlays are specified in
+[contract ownership](contract-ownership.md) §4 and §5. A correctly signed but
+obsolete, cross-role, or policy-incompatible artifact is rejected.
 
 ## 3. Filesystem layout and identities
 
@@ -36,7 +133,11 @@ All profiles require separate protected, observation, management, decoy, and egr
 
 ```text
 /etc/azazel/
-  node.yaml                    # node identity, profile, interface-role map
+  node.yaml                    # node identity, resource profile, declared logical roles
+  commissioning/active.record   # operator-signed role/identity bindings (read-only to daemons)
+  commissioning/inventory.json  # read-only hardware and interface inventory + digest
+  admission/policy.yaml         # delegated trust roles, tested tuples, security epoch
+  admission/roots.d/*.pem       # separately provisioned offline roots per asset class
   policy/active.bundle          # signed policy bundle (read-only to daemons)
   policy/trust.d/*.pem          # policy and module trust anchors
   mio/sanitizer.yaml            # remote privacy classes and allowlists
@@ -51,6 +152,7 @@ All profiles require separate protected, observation, management, decoy, and egr
 /var/lib/azazel/
   run/                          # sockets, PID-free transient state (0750)
   state/                        # durable state machines and idempotency index
+  generations/<n>/              # private versioned staging tree; promoted, never edited in place
   secrets/                      # root-only credential material, preferably tmpfs-backed
 /data/azazel/
   evidence/objects/             # content-addressed encrypted artifacts
@@ -88,6 +190,8 @@ All local APIs use Unix domain sockets under `/var/lib/azazel/run/` unless an ex
 | `azazel-mio-merger.service` | `azmio` | `mio-merge.sock` | merged advisory cache | retains per-claim provenance and disagreement |
 | `azazel-voiced.service` | `azvoice` | `voice.sock` | priority queue and acknowledgement state | deterministic alerts precede explanatory speech |
 | `azazel-uid.service` | `azui` | loopback `127.0.0.1:8443` | operator sessions/read model | authenticated UI; no privileged direct controls |
+| `azazel-commissiond.service` | `root` | local console / authenticated UI session | inventory, proposed role map, signed commissioning record | read-only inventory; assigns a role only on explicit operator confirmation; closes after activation and refuses remote re-entry |
+| `azazel-activated.service` | `root` | commissioning record, admitted assets | generation counter, staging trees, generated-file digests | sole component permitted to unmask operational units and issue generation-scoped credentials; may install but not read the arbiter intent-signing credential |
 | `azazel-watchdog.service` | `root` | systemd watchdog notifications, health sockets | degradation coordinator | fences failed capabilities; never restarts into a broader authority state |
 
 `azazel-enforced` is the only daemon granted narrowly constrained `CAP_NET_ADMIN`. Its service MUST use `NoNewPrivileges=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `PrivateDevices=yes` except explicit NIC access, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`, and a systemd `SystemCallFilter` appropriate to netlink operations. The audit daemon writes through a root-owned append-only helper rather than granting write access to other daemons.
@@ -113,11 +217,35 @@ All request and response bodies are versioned JSON or protobuf messages using `s
 
 No API exposes shell command execution, arbitrary policy upload, arbitrary container start, packet capture retrieval, or a general network-control primitive. The external AZ-06 control API receives a signed `DeceptionLease`, not an Edge enforcement intent.
 
-## 6. Canonical data schemas
+## 6. Data contracts and record ownership
 
-Every record has `schema_version`, ULID `id`, RFC 3339 UTC `occurred_at`, `trace_id`, `producer`, `classification`, and `integrity` fields. Timestamps include a `time_confidence` value: `trusted`, `degraded`, or `untrusted`.
+**Azazel-Fabric owns the canonical form of every record that crosses a product
+boundary.** This section does not define one. The JSON below is illustrative —
+it shows which fields Nexus depends on and how it uses them. Where a record is
+Fabric-owned, the canonical serialization, digest rules, validation, and golden
+fixtures live in Fabric, and Nexus consumes them behind an exact release pin.
+Where a Fabric contract does not exist yet, the record is a **target contract**
+and Nexus MUST NOT publish a local canonical form in its place.
+
+[Contract ownership](contract-ownership.md) §3 is the authoritative map. A
+summary for this section:
+
+| Subsection | Owner | Fabric artifact |
+| --- | --- | --- |
+| 6.1 evidence citation, decision explanation | Fabric (available) | `schema.evidence.EvidenceRef`, `schema.decision.DecisionExplanation` |
+| 6.1 observation and assessment envelopes | **Nexus-local** | product-local ingest records; only the citation and explanation projections cross a boundary |
+| 6.2 enforcement intent and action plan | Fabric (available) | `schema.action.ActionIntent` and its plan variants |
+| 6.2 receipt, lease timer, rollback state | **Nexus-local** | product-local durable state |
+| 6.3 `MioSituationFrame`, `MioRemoteFrame`, advisory result, merge output | Fabric (**target, R1**) | `mio_contracts` — not released |
+| 6.3 sanitizer policy, alias keys, redaction records | **Nexus-local** | only the redaction record *reference* is carried in the Fabric frame |
+| 6.4 audit event envelope and canonical bytes | Fabric (available) | `schema.audit.AuditEvent`, `audit.jsonl` |
+| 6.4 hash chain, checkpoints, ledger genesis | **Nexus-local** | chain enforcement is a product-local trust decision |
+
+Every record carries `schema_version`, a ULID `id`, RFC 3339 UTC `occurred_at`, `trace_id`, `producer`, `classification`, and `integrity` fields. Timestamps include a `time_confidence` value: `trusted`, `degraded`, or `untrusted`.
 
 ### 6.1 Evidence and assessment
+
+Owner: the observation and assessment envelopes are Nexus-local ingest records. Evidence citations and operator-facing decision explanations use the Fabric models named above, and MUST NOT be re-declared here.
 
 ```json
 {
@@ -151,6 +279,8 @@ Every record has `schema_version`, ULID `id`, RFC 3339 UTC `occurred_at`, `trace
 
 ### 6.2 Intent, lease, receipt, and rollback
 
+Owner: Fabric defines the intent and its action plans; Nexus persists the receipt, lease timer, and rollback state. The example below is the Nexus view of a Fabric-owned intent, not a competing definition.
+
 An intent is immutable and has exactly one lifecycle. An action lease bounds any non-permanent control; expiration is enforced independently by `azazel-enforced` even if the arbiter disappears.
 
 ```json
@@ -173,6 +303,8 @@ An intent is immutable and has exactly one lifecycle. An action lease bounds any
 
 ### 6.3 M.I.O. and privacy classes
 
+Owner: **Fabric `mio_contracts` — target contract, not released.** The frames and result shape below describe what Nexus needs from that module. Nexus MUST NOT adopt a provisioning or M.I.O. contract pin before Fabric publishes one, and MUST NOT treat the shapes below as an interoperable canonical form. Privacy classes, sanitizer policy, and alias key material are Nexus-local.
+
 `MioSituationFrame` is local-only and may cite evidence IDs. `MioRemoteFrame` is separately built, carries `sanitizer_policy_version`, `redaction_record_id`, `remote_privacy_class`, and contains no raw artifacts or internal addressing.
 
 | Privacy class | Remote eligibility | Examples |
@@ -185,6 +317,8 @@ An intent is immutable and has exactly one lifecycle. An action lease bounds any
 `MioResult` has `summary`, `claims[]`, `confidence`, `evidence_ids[]`, `next_checks[]`, `limitations[]`, and `source` (`local`, `remote`, `merged`). Each claim includes `provenance` and can be shown as untrusted remote content. It contains no executable action field.
 
 ### 6.4 Audit ledger
+
+Owner: Fabric defines the audit event envelope and its canonical bytes. Nexus owns chain enforcement — whether a chain is continuous, anchored, or broken is a product-local trust decision that Fabric MUST NOT make. Audit assurance is reported as `ROLLBACK_ANCHORED` or `LOCAL_CONTINUITY_ONLY`; see [capability model](capability-model.md) §5.
 
 The audit event is a canonical serialized envelope with `event_type`, actor, target IDs, outcome, and redacted details. Each segment stores:
 
@@ -199,17 +333,25 @@ At rotation (at least daily and on shutdown), `azazel-auditd` writes a signed ch
 The node exposes one computed capability state and individual service states. State changes are appended to audit before being published to the UI.
 
 ```text
-BOOTSTRAP -> VERIFYING -> CORE -> LITE -> FULL
-                          ^       |       |
-                          |       +-------+ external or embedded capability loss
-                          +--------------- resource shed / local capability loss
+BOOTSTRAP -> INVENTORY -> COMMISSIONING_REQUIRED -> ACTIVATING -> VERIFYING
+                                |                                     |
+                        (ASSET_ACQUISITION, bounded)                  v
+                                                          CORE -> LITE -> FULL
+                                                           ^       |       |
+                                                           |       +-------+ external or embedded capability loss
+                                                           +--------------- resource shed / local capability loss
 VERIFYING -> INTEGRITY_RECOVERY -> RECOVERY -> CORE
+any state -> COMMISSIONING_REQUIRED   (interface identity changed or ambiguous)
 ```
 
 | State | Preconditions | Permitted operation |
 | --- | --- | --- |
 | `BOOTSTRAP` | encrypted data unavailable | diagnostics only; no policy activation |
-| `VERIFYING` | data mounted | verify boot, policy, audit checkpoint, interfaces, clock |
+| `INVENTORY` | node powered, no roles assigned | read-only hardware and interface inventory; zero transmitted frames |
+| `COMMISSIONING_REQUIRED` | a role is unassigned, ambiguous, or its interface identity changed | operator confirmation of roles; the affected capability is unavailable; operational units stay masked |
+| `ASSET_ACQUISITION` | operator selected one interface for asset fetch | bounded outbound-only fetch with endpoint allowlists; no forwarding, listening, capture, enforcement, or role assignment |
+| `ACTIVATING` | signed commissioning record and admitted assets present | activation controller renders to staging, preflights, establishes the management failsafe, and switches policy-owned objects in the fixed order |
+| `VERIFYING` | data mounted | verify boot, policy, audit checkpoint, generation digests, interfaces, clock |
 | `CORE` | Edge health and signed policy valid | evidence, evaluation, deterministic enforcement, UI, audit, deterministic voice |
 | `LITE` | `CORE` plus both embedded Lite services healthy | standalone Knowledge/Deception and local M.I.O. if provisioned |
 | `FULL` | `LITE` plus verified fresh AZ-04 and AZ-06 links | external capacity under signed leases |
@@ -296,6 +438,8 @@ Acceptance requires certificate chain and pin validation, manifest signature, al
 
 The production assumption is UEFI Secure Boot where supported, TPM 2.0 measured boot, and LUKS2-encrypted system and data volumes. The LUKS data key SHOULD be TPM-sealed to approved PCR measurements with a recovery passphrase held under mission custody. If a TPM is unavailable, require a boot-time operator secret and label measured-boot evidence unavailable; do not silently claim hardware attestation.
 
+The activation controller is the only component permitted to unmask operational services and issue generation-scoped systemd credentials. On every boot it validates the operator/site signature, hardware inventory digest, policy digest, security epoch, generation counter, expiry, renderer digest, and every generated-file digest. Any mismatch leaves operational units masked. An old-generation replay, a replaced renderer, a substituted path, a parallel boot race, and a service-default fallback MUST each produce zero operational packets and zero actions. Activation failure withdraws exposure, expires affected leases, stops or quarantines Deception, restores only owned last-known-good resources, and reports `ROLLBACK_INCOMPLETE` until observed state matches. Software rollback never restores obsolete trust state, policy, or hardware bindings. The controller MAY install the arbiter's intent-signing credential but MUST NOT be able to read or reuse it.
+
 Security boundaries are: untrusted ingress -> observation; operator -> authenticated management; arbiter -> privileged enforcement; decoy -> isolated execution; module -> mTLS/signed contract; remote cognition -> sanitizer-controlled egress. Default host firewall policy is deny, with explicit rules for these paths only. Management services bind only to the management zone. Decoys use rootless containers or dedicated namespaces, read-only images, dropped capabilities, and no host socket mounts.
 
 Updates use an A/B or transactional OS deployment with signed repository metadata and pinned package versions. An update bundle includes software SBOM, unit/config migration, schema compatibility, policy compatibility, and rollback manifest. Apply only in maintenance state after: audit checkpoint, encrypted backup of configuration and indexes, and free-space check. Boot the candidate slot, run health and segmentation tests, and promote only after an operator-approved soak window. Failure returns to the prior slot without deleting evidence. Schema migrations MUST be forward-compatible or include a tested reverse migration.
@@ -304,23 +448,62 @@ Recovery media is encrypted, signed, and versioned. It can boot diagnostics, ver
 
 ## 13. Required configuration examples
 
-The following example is deliberately generic and belongs in a deployed node as `/etc/azazel/node.yaml`:
+The following example is deliberately generic and belongs in a deployed node as `/etc/azazel/node.yaml`.
+
+`node.yaml` declares **logical roles only**. It does not name an interface. The
+binding from a logical role to a physical interface exists solely in the signed
+commissioning record, which is produced by operator confirmation and validated
+on every boot. A role with no commissioning entry renders nothing and enables
+nothing; there is no physical-name, kernel-index, or default-route fallback.
+See [commissioning](commissioning.md) §3, §4, and §8.
 
 ```yaml
 node_id: nexus-field-01
-profile: standard
-interfaces:
-  protected: {match: "pci-0000:04:00.0", zone: protected}
-  observation: {match: "pci-0000:05:00.0", zone: observation}
-  management: {match: "pci-0000:06:00.0", zone: management}
-  decoy: {match: "az-decoy0", zone: decoy}
+resource_profile: standard          # selected from measured usable MiB; capacity only
+commissioning:
+  record: /etc/azazel/commissioning/active.record
+  require_signed: true
+roles:                              # declared intent; eligibility comes from the record
+  protected:   {required: true}
+  observation: {required: true, zero_transmit: required}
+  management:  {required: true, independent_of_enforced_path: required}
+  decoy:       {required: false, isolation_attestation: continuous}
+  egress:      {required: false}
 policy:
   active_bundle: /etc/azazel/policy/active.bundle
   require_signed: true
 audit:
   checkpoint_interval: 24h
   minimum_free_gib: 8
+  assurance: rollback_anchored      # else LOCAL_CONTINUITY_ONLY with its restrictions
 ```
+
+The commissioning record holds the composite identity for each confirmed role.
+It is operator-signed, digest-bound to the hardware inventory, and is the only
+input the renderer accepts for an interface:
+
+```yaml
+# /etc/azazel/commissioning/active.record  (illustrative; Fabric CommissioningRecord is a target contract)
+generation: 7
+inventory_digest: sha256:...
+assignments:
+  - role: observation
+    identity:
+      bus_path: pci-0000:05:00.0
+      permanent_mac: "..."          # ethtool -P, not the current MAC
+      pci_id: "8086:1572"
+      serial: "..."
+      driver: "i40e"
+      driver_version: "..."
+      physical_label: "NIC-2 (tap)"
+    confirmed_by: op-17
+    confirmed_at: "..."
+signature: {key_id: site-2026-01, ed25519: "..."}
+```
+
+Zero matches or more than one match for a composite identity is not resolved by
+preference order: the affected capability returns to `COMMISSIONING_REQUIRED`
+and the competing candidates are reported to the operator.
 
 ```yaml
 # /etc/azazel/mio/sanitizer.yaml
@@ -363,7 +546,43 @@ A release MUST demonstrate the following in an isolated lab before a production 
 - Audit tampering, checkpoint mismatch, and trusted-clock rollback enter `INTEGRITY_RECOVERY`.
 - CPU, memory, disk, thermal, and battery pressure exercises prove shedding order preserves evidence, audit, arbiter, and lease expiry.
 - Candidate update rollback and encrypted recovery media preserve the latest valid audit checkpoint and evidence index.
+- A clean installation starts no operational network service: before a verified generation exists, capture, forwarding, wireless association, module links, and remote cognition are all absent, and every operational unit is masked.
+- An interface whose composite identity is ambiguous or changed returns its capability to `COMMISSIONING_REQUIRED`; the node does not rebind by kernel name, index, or default route.
+- An observation-role interface records zero transmitted frames across a link flap, suspend/resume, and driver reload interval.
+- Old-generation replay, renderer or generated-file digest mismatch, path substitution, a parallel boot race, and service-default fallback each produce zero operational packets and zero actions.
+- A deployment overlay attempting to change Edge action policy, approval requirements, lease ceilings, trust roots, routes, firewall rules, services, container capabilities, or any authority field is rejected as a non-monotonic reduction.
+- A correctly signed artifact that matches no tested compatibility tuple, carries the wrong delegated role, or falls below the minimum security epoch is rejected.
+- A `standard`-resource host with one usable NIC and no independent management path reaches Core and local cognition and reports capture, enforcement, and Deception as unavailable.
+- A high-impact network change that is not acknowledged over an independent management path within its lease window is rolled back automatically.
+- Loss of the independent audit anchor moves audit assurance to `LOCAL_CONTINUITY_ONLY`, fences live Deception and new disruptive actions, and labels exports as not rollback verified.
 
 ## 15. Implementation order
 
-Implement in dependency order: common schemas/identity/audit; evidence and evaluators; arbiter and one verified enforcement adapter; UI/voice; Lite services and their isolation checks; module manager; local M.I.O.; sanitizer/remote/merger; finally update/recovery automation. No later capability may bypass or revise the authority and audit contracts established by the first stages.
+Implement in dependency order:
+
+1. **Repository bootstrap** — license, security policy, contribution guide,
+   package layout, dependency manifest, CI, and an explicit Fabric pin. Until
+   this exists nothing below can be released or attested; see
+   [contract ownership](contract-ownership.md) §6.
+2. **Fabric adapters against the pinned release** — consume the Fabric-owned
+   records that already exist rather than declaring local equivalents.
+3. **Inventory, commissioning, and the activation controller** — composite
+   identity, operator role confirmation, verified generations, preset-disabled
+   units, and rendering from logical roles. This precedes every operational
+   capability because no capability may run before a verified generation.
+4. **Product admission policy** — delegated trust roles, tested compatibility
+   tuples, security epoch, and the bounded extractor.
+5. **Identity and audit** — service accounts, socket ACLs, hash-chain ledger,
+   checkpoints, and the independent anchor.
+6. **Evidence and evaluators.**
+7. **Arbiter and one verified enforcement adapter**, with leases, verification,
+   rollback, and the two-stage management commit.
+8. **UI and deterministic voice.**
+9. **Lite services and their continuous isolation attestation.**
+10. **Module manager** for optional AZ-04/AZ-06 peers.
+11. **Local M.I.O.**, then sanitizer, remote adapter, and merger — the last two
+    blocked on the Fabric `mio_contracts` release.
+12. **Update and recovery automation.**
+
+No later capability may bypass or revise the authority, commissioning, or audit
+contracts established by the earlier stages.
