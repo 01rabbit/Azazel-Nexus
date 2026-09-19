@@ -85,6 +85,10 @@ The correct privacy posture is: **the remote service can understand the situatio
 
 ## Cognitive Router
 
+The doctrine below is Edge-owned. How Nexus admits providers, confines them,
+bounds each request, and publishes the resulting capability state is specified
+separately in the [M.I.O. runtime control plane](mio-runtime.md).
+
 The router does more than test whether a network connection exists. It selects a cognition route from explicit mission conditions:
 
 - connectivity and remote endpoint health;

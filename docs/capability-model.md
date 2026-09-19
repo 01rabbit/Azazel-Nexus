@@ -66,6 +66,11 @@ Performance and retention targets are measured and recorded separately for the
 8, 16, 32, and 64 GB classes. A 64 GB host selects `standard`; there is no
 separate `extended` selector output.
 
+`lite` and `standard` name the **envelope**; "Lite-capable" and "Full-capable"
+name what that envelope permits once the other three dimensions agree. They are
+not separate tiers. [M.I.O. runtime control plane](mio-runtime.md) §2 holds the
+mapping, including Edge's "Full-eligible" wording.
+
 > **Retired:** the earlier four-tier scheme (`core` / `lite` / `standard` /
 > `extended`, each stated with a NIC count) is retired. It conflated resource
 > capacity with network topology, which SR-02 identified as unsafe. Its
