@@ -222,12 +222,18 @@ subsequent bootstrap work rather than as satisfied requirements:
 
 | Missing | Consequence today |
 | --- | --- |
-| license | the repository states no license; use and contribution permissions are undefined |
-| security policy and contribution guide | no disclosure or contribution path is published |
 | package layout, `pyproject.toml`, dependency manifest | no installable Nexus artifact exists |
 | Fabric pin | no contract version is bound; §3 mappings are unenforced |
-| CI and conformance attestation | no automated check enforces any statement in this repository |
-| support matrix, update channel, recovery procedure | R0 exit criteria for a supported release are unmet |
+| conformance attestation | no check enforces any §3 mapping; CI covers documentation links only |
 
-Until these exist, every Nexus document is a **target contract**. No statement
-in this repository may be cited as implementation or verification evidence.
+Published since this section was written, and satisfying the *publication* half
+of the corresponding R0 exit criterion only: the [license](../LICENSE), the
+[security policy](../SECURITY.md), the [contribution guide](../CONTRIBUTING.md),
+the [support matrix](support-matrix.md), the
+[update channel](update-channel.md), and the [recovery procedure](recovery.md).
+Each states what a release will have to carry; none is evidence that Nexus
+carries it, and the support matrix's hardware list is empty.
+
+Until the rows above are closed, every Nexus document is a **target contract**.
+No statement in this repository may be cited as implementation or verification
+evidence.

@@ -19,8 +19,9 @@ components without creating another decision authority.**
 [Contract ownership](contract-ownership.md) maps every record used here to
 Fabric or to Nexus and marks which Fabric contracts do not exist yet.
 
-Status: **target contract**. This repository has no package, Fabric pin, CI, or
-license; nothing below is implemented or verified here.
+Status: **target contract**. This repository has no package and no Fabric pin,
+and its only automated check is the documentation link check; nothing below is
+implemented or verified here.
 
 ## 2. Deployment topology
 
