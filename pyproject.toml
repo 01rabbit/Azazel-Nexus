@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azazel-nexus"
+version = "0.0.1.dev0"
+description = "AZ-07 Nexus Gateway: integrated node runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+# Deliberately empty.
+#
+# Nexus must be useful as CORE with no external Knowledge, no Deception, no
+# remote cognition and no cloud connectivity. A dependency added here is a
+# dependency the CORE path can fail on, so the bootstrap carries none and a
+# later addition has to justify itself against that sentence.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

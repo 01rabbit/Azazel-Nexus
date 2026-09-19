@@ -23,6 +23,7 @@ Azazel-Edge is the core decision and enforcement node. Every Nexus contains an e
 - [Edge-to-Nexus inheritance ledger](docs/inheritance-ledger.md) — what Nexus inherits from Azazel-Edge, on what evidence, what is explicitly not inherited, and the gates a capability passes before adoption.
 - [Support matrix](docs/support-matrix.md) — the platform envelope a release will have to declare, why the hardware compatibility list is empty, and what the program's documents leave undeclared.
 - [Update channel](docs/update-channel.md) — signed online manifests and encrypted offline bundles, product-local release admission, and why no channel exists.
+- [Knowledge Lite consumer](docs/knowledge-lite-consumer.md) — what the node does when a Lite artifact is missing, corrupt, or expired, and why that is a degradation to `CORE` rather than a fault.
 - [Recovery](docs/recovery.md) — what a failed update, a failed activation, a lost asset, or a changed interface leaves behind, and what recovery may never restore.
 - [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) — how to report a defect in the target contract, and the review rules a change is judged against.
 

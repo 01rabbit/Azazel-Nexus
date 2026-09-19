@@ -1,0 +1,5 @@
+# Fixture trust anchor. The key below is published in tools/lite_fixture.py
+# and must never appear in a production anchor.
+threshold = 1
+[keys]
+"c561fa9f" = "c561fa9f643fe5c60113cce9db282fde2b9e5ca5fc6b6fc0d1679bb339c9f72f"
