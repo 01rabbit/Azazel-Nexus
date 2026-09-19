@@ -37,7 +37,7 @@ fixed values, or its unit defaults; see
 
 Out of scope: any device-vendor-specific implementation and a cloud dependency for local protection.
 
-## 2. Target platform and deployment profiles
+## 2. Target platform, resource envelopes, commissioning, and admission
 
 The reference OS is a supported long-term-support Linux distribution with systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools, LUKS2, and a current kernel. The implementation MUST support a headless console; a touchscreen is an optional presentation device.
 

@@ -29,6 +29,11 @@ A record is therefore classified exactly one of:
 
 - **Fabric-owned (available)** — a model observed in Azazel-Fabric `main`
   during the R0 audit. Nexus consumes it behind an exact release pin.
+  "Available" means the model exists in Fabric. It does **not** mean the
+  mapping in §3 has been tested: no Nexus adapter, pin, or conformance run
+  exists yet, so every stated fit is a design assertion awaiting a conformance
+  attestation, not verified evidence. A mapping that fails conformance is
+  corrected here, not worked around with a Nexus-local copy.
 - **Fabric-owned (target, R1)** — a model the program plan assigns to Fabric
   but which does not exist yet. Nexus MUST NOT invent a local canonical form
   or a provisioning pin for it before Fabric releases it.
