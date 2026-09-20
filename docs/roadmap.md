@@ -33,7 +33,19 @@ Status: **target contract**. No phase below has started in this repository.
 ## Phase 0b — Inventory, commissioning, and activation
 
 - Implement read-only hardware and interface inventory with composite identity
-  and fail-closed ambiguity handling.
+  and fail-closed ambiguity handling. **Interfaces done**
+  (`src/azazel_nexus/inventory.py`): the nine composite components are read,
+  the kernel name is recorded and excluded from identity, and an interface
+  whose identity cannot be established is returned with its reasons rather than
+  guessed. The matching rule is **not** restated here — it is applied by
+  Fabric's `resolve_interface_assignment` through the boundary module. Hardware
+  inventory beyond interfaces (`HardwareInventory`, `ResourceProfile`) is not
+  started.
+
+  The permanent MAC needs the `ETHTOOL_GPERMADDR` ioctl and no interface has
+  been commissioned, so the default reader reads nothing and every interface
+  resolves to `COMMISSIONING_REQUIRED`. That is the correct answer for a host
+  whose identity has not been read, not a gap being papered over.
 - Implement operator-confirmed logical role assignment and the signed
   commissioning record. No role is inferred from name, link state, or route.
 - Implement the product admission policy: delegated trust roles, exact tested

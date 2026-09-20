@@ -71,6 +71,15 @@ Matching rules are fail-closed:
 
 MAC-only matching is insufficient and MUST NOT be accepted as an identity.
 
+**These rules are applied by Fabric, not restated by Nexus.**
+`azazel_nexus.fabric_boundary.identify_interface` calls
+`azazel_fabric.provisioning_contracts.resolve_interface_assignment`, which
+treats zero matches and several as the same fail-closed answer. A MAC-only
+selector cannot even be constructed: `InterfaceIdentitySelector` refuses one
+at validation, a layer earlier than the resolver's own guard. A third
+statement of the rule in this repository would be a third thing to keep in
+step.
+
 A changed composite identity — adapter swap, driver change, slot move — returns
 the affected capability to `COMMISSIONING_REQUIRED`. It does not silently
 rebind, and it does not fall back to a kernel name or a default route.
