@@ -79,6 +79,14 @@ jobs:
           import azazel_nexus.operator  # noqa: F401
           import azazel_nexus.wizard  # noqa: F401
           import azazel_nexus.cli as cli  # noqa: F401
+          # The degradation matrix. It describes what a node keeps when every
+          # optional component is gone, so the job with nothing installed is
+          # the one configuration it must import on.
+          import azazel_nexus.degradation as degradation  # noqa: F401
+          if not all(row[3] for row in degradation.MATRIX):
+              raise SystemExit(
+                  "a degradation cell reports the deterministic path broken"
+              )
           # The boundary module too. It names azazel_fabric and must still
           # import here: its Fabric import is deferred to call time precisely
           # so that a missing optional extra is a bounded condition and not

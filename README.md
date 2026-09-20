@@ -95,7 +95,10 @@ resource-profile selection, the commissioning record, generations with a
 re-derivable digest, the hash-chain audit ledger, the activation controller and
 its privilege boundary, the filesystem layout the installer applies, and the
 `azazel-nexus` operator CLI (`inventory`, `profile`, `commission`, `status`,
-`health`) — every subcommand answerable with no network.
+`health`) — every subcommand answerable with no network — and the
+[degradation matrix](docs/degradation-matrix.md): 8 conditions × 5 failure
+modes, each asserting that no optional component's failure subtracts a core
+capability.
 
 **What is not.** No daemon executable is built, so nothing here runs as a
 service — and because reading an interface's permanent MAC needs a privileged
