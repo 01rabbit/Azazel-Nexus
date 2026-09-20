@@ -1,8 +1,8 @@
 # Contract Ownership and Admission Records
 
 Status: **target contract**. This document states where each record used by
-Azazel-Nexus is defined. It does not assert that Nexus implements any of them;
-Nexus currently contains no package, dependency manifest, or Fabric pin.
+Azazel-Nexus is defined. It does not assert that Nexus implements any of them.
+It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence.
 
 Related: [Azazel program plan](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md) ·
 [R0 baseline](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-r0-baseline.md) ·
@@ -42,10 +42,22 @@ A record is therefore classified exactly one of:
 
 ## 2. Observed Fabric state
 
-These modules were observed in `01rabbit/Azazel-Fabric` on `main` during the R0
-baseline audit; the package declares version `0.8.0`. This is an observation of
-the source tree, not a statement that every model below is release-verified for
-Nexus use.
+These modules were observed in `01rabbit/Azazel-Fabric` at **`v0.8.0`** during
+the R0 baseline audit. This is an observation of one tag's source tree, not a
+statement that every model below is release-verified for Nexus use — and,
+because Nexus declares no Fabric dependency, not something this repository's
+tests can re-check. An observation is therefore written against a named tag and
+stays valid for that tag only.
+
+**The observation is already out of date, and two of its conclusions have been
+overtaken.** `provisioning_contracts` and `mio_contracts` were absent at
+`v0.8.0` and are present from `v0.9.0rc1` onward. Azazel-Boot, which does pin
+Fabric, records that directly: its `PLANNED_FABRIC_MODULES` names both and its
+projection reports nothing missing at `v0.9.0rc1` (ADR-0007). §3.3 and §3.4
+below still call every record in those two families a *target*; what has
+changed is that the module now exists to be consumed, not that any mapping has
+been verified. Nexus MUST still not adopt a pin for them without a conformance
+attestation.
 
 | Fabric module | Records observed |
 | --- | --- |
@@ -222,9 +234,16 @@ subsequent bootstrap work rather than as satisfied requirements:
 
 | Missing | Consequence today |
 | --- | --- |
-| package layout, `pyproject.toml`, dependency manifest | no installable Nexus artifact exists |
 | Fabric pin | no contract version is bound; §3 mappings are unenforced |
-| conformance attestation | no check enforces any §3 mapping; CI covers documentation links only |
+| conformance attestation | no check enforces any §3 mapping |
+
+Closed since this section was written: the package layout, `pyproject.toml` and
+dependency manifest arrived with the Knowledge Lite consumer (#18), and the
+repository now runs a unit suite rather than the documentation link check
+alone. `tests/unit/test_repository_status_claims.py` exists because those two
+rows stayed in five documents after they were closed — a status sentence that
+nothing checks goes stale silently, and a reader planning work from it plans
+around a repository that no longer exists.
 
 Published since this section was written, and satisfying the *publication* half
 of the corresponding R0 exit criterion only: the [license](../LICENSE), the

@@ -2,8 +2,7 @@
 
 Status: **target contract**. This ledger records what Azazel-Nexus intends to
 inherit and on what evidence. It is not a claim that any entry is implemented
-in this repository, which still has no package and no pin, and whose only
-automated check covers documentation links.
+in this repository. It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence.
 
 Related: [Contract ownership](contract-ownership.md) ·
 [Capability model](capability-model.md) · [Commissioning](commissioning.md) ·
