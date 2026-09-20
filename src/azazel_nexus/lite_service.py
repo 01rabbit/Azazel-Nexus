@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from .content_store import ContentRefused, ContentStore, digest_bytes
-from .lite_cache import Freshness, classify_freshness
+from .lite_cache import split_by_freshness
 from .lite_generation import LiteGeneration, LiteGenerationRefused, LiteGenerationStore
 from .lite_trust import TrustRefused, TrustStore
 from .revocation import RevocationRefused, RevocationStore
@@ -281,7 +281,7 @@ class KnowledgeLite:
                 live, f"the artifact is present and cannot be read: {exc}"
             )
 
-        served, withheld = _split_by_freshness(claims, as_of=as_of)
+        served, withheld = split_by_freshness(claims, as_of=as_of)
         if served:
             return _reading(
                 live,
@@ -334,21 +334,6 @@ def _first_key_that_verifies(
         except SignatureRefused:
             continue
     return None
-
-
-def _split_by_freshness(
-    claims: Sequence[Mapping], *, as_of: str
-) -> tuple[list[Mapping], list[Mapping]]:
-    served: list[Mapping] = []
-    withheld: list[Mapping] = []
-    for claim in claims:
-        freshness = classify_freshness(claim.get("expiry"), as_of=as_of)
-        labelled = {**claim, "freshness": freshness.value}
-        if freshness in (Freshness.CURRENT, Freshness.NOT_CLOCK_BOUND):
-            served.append(labelled)
-        else:
-            withheld.append(labelled)
-    return served, withheld
 
 
 def _reading(
