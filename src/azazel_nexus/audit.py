@@ -173,7 +173,11 @@ class AuditLedger:
     # -- writing ---------------------------------------------------------
 
     def append(
-        self, event: Mapping[str, Any], *, expected_head: Optional[str] = None
+        self,
+        event: Mapping[str, Any],
+        *,
+        expected_head: Optional[str] = None,
+        chain_from: Optional[tuple[int, str]] = None,
     ) -> AuditEntry:
         """Add one entry, or add nothing and raise.
 
@@ -181,9 +185,24 @@ class AuditLedger:
         extending. Supplying it turns a concurrent append from silent
         interleaving into a refusal, which is the behaviour a ledger owes a
         reader who will later be asked whether the order is real.
+
+        `chain_from` says the chain's head is somewhere this file cannot see.
+        It exists for a ledger split across daily segments, where the head of
+        the chain lives in the previous file and reading this one would make
+        every segment restart at sequence one -- a set of short chains that
+        each verify, which is the property an attacker deleting a file would
+        rely on.
+
+        It is the one way to write an entry at a position this file did not
+        derive, so the caller supplying it is the caller responsible for
+        having derived it from the whole chain.
+        `azazel_nexus_runtime.auditd.SegmentedLedger` is that caller, and it
+        reads every segment first.
         """
 
-        sequence, previous_hash = self.head()
+        sequence, previous_hash = (
+            chain_from if chain_from is not None else self.head()
+        )
         if expected_head is not None and expected_head != previous_hash:
             raise AuditChainBroken(
                 f"the chain head is {previous_hash!r}, not {expected_head!r}; "

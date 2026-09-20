@@ -32,13 +32,12 @@ lookup and not an interpolation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
     ActivationController,
     ActivationLease,
     ActivationOutcome,
-    ActivationRefused,
     CORE_UNITS,
     EdgeBaselineState,
     UnitController,
@@ -49,7 +48,7 @@ from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.generation import GenerationStore
 
-from .units import UnitManager, UnitOperationFailed
+from .units import UnitManager
 
 __all__ = ["ActivationDaemon", "ManagedUnitController", "RollbackFailed"]
 

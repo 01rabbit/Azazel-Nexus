@@ -48,6 +48,18 @@ __all__ = [
 #: A digest as this protocol accepts one. Compared, never dereferenced.
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+#: An RFC3339 instant in UTC. A fixed grammar, not a date parser.
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
+
+#: A name: an operator, a service account, a host-local identity.
+#:
+#: The one kind that carries text a caller chose, and it is bounded on both
+#: axes -- 64 characters, and an alphabet with no whitespace, no control
+#: characters and no shell metacharacters. An actor has to be recordable for
+#: an audit entry to mean anything; the bound and the alphabet are what keep
+#: the field from being a channel into the ledger.
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9._@:+-]{1,64}$")
+
 #: Keys a caller might use to assert who they are.
 #:
 #: Refused with their own reason rather than as generic undeclared keys, so
@@ -111,6 +123,10 @@ class ArgumentKind(str, Enum):
     ENUM = "enum"
     #: `sha256:` plus sixty-four hex digits. Compared, never dereferenced.
     DIGEST = "digest"
+    #: An RFC3339 UTC instant, by grammar.
+    TIMESTAMP = "timestamp"
+    #: A bounded name: 64 characters from a fixed alphabet. See `_IDENTIFIER`.
+    IDENTIFIER = "identifier"
 
 
 @dataclass(frozen=True)
@@ -163,7 +179,12 @@ class Argument:
             return value
         if not isinstance(value, str):
             raise RequestRefused(Refusal.ARGUMENT_TYPE, self.name)
-        if not _DIGEST.match(value):
+        grammar = {
+            ArgumentKind.DIGEST: _DIGEST,
+            ArgumentKind.TIMESTAMP: _TIMESTAMP,
+            ArgumentKind.IDENTIFIER: _IDENTIFIER,
+        }[self.kind]
+        if not grammar.match(value):
             raise RequestRefused(Refusal.ARGUMENT_RANGE, self.name)
         return value
 
@@ -175,6 +196,13 @@ class Verb:
     name: str
     arguments: tuple[Argument, ...] = ()
     admits: frozenset[PrincipalClass] = frozenset()
+    #: Whether this verb carries a second, separately validated object.
+    #:
+    #: Exactly one verb does: `audit.append`, whose payload is an audit event
+    #: checked against a declared schema per event type. A payload sent to any
+    #: other verb is refused -- an object nothing validates is an object that
+    #: reaches the daemon unchecked.
+    accepts_payload: bool = False
 
     def __post_init__(self) -> None:
         if not self.admits:
