@@ -75,9 +75,7 @@ This division is intentional. It keeps the authority to change the field boundar
 
 ## Status
 
-**Target contract.** This repository contains architecture and specification
-documents only. It has no package, dependency manifest, or Azazel-Fabric pin,
-and its only automated check is the documentation link check. It now publishes
+**Target contract.** It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence. It now publishes
 a license, a security policy, a contribution guide, a
 [support matrix](docs/support-matrix.md), an
 [update channel](docs/update-channel.md) description, and a

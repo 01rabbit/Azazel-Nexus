@@ -4,10 +4,9 @@
 
 This specification turns the architecture documents into implementation units for a generic rugged x86_64 Linux PC. Terms **MUST**, **SHOULD**, and **MAY** describe requirements, recommendations, and allowed options.
 
-Status: **target contract**. This repository contains no package, dependency
-manifest, or Fabric pin, and no automated check beyond the documentation link
-check. Nothing below is implemented or verified here, and no statement in this
-document may be cited as implementation evidence. Outstanding bootstrap work is
+Status: **target contract**. It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence. Nothing below is implemented or
+verified here, and no statement in this document may be cited as implementation
+evidence. Outstanding bootstrap work is
 listed in
 [contract ownership](contract-ownership.md) §6.
 

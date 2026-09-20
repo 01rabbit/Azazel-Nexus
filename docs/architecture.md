@@ -19,9 +19,8 @@ components without creating another decision authority.**
 [Contract ownership](contract-ownership.md) maps every record used here to
 Fabric or to Nexus and marks which Fabric contracts do not exist yet.
 
-Status: **target contract**. This repository has no package and no Fabric pin,
-and its only automated check is the documentation link check; nothing below is
-implemented or verified here.
+Status: **target contract**. It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence. Nothing below is implemented or
+verified here.
 
 ## 2. Deployment topology
 
