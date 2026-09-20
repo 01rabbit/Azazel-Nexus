@@ -86,9 +86,37 @@ rebind, and it does not fall back to a kernel name or a default route.
 
 ## 4. Roles come from the operator, not from inference
 
-Logical roles are `protected`, `observation`, `management`, `decoy`, and
-`egress/module`. A role is assigned only by explicit operator confirmation
-against the inventory.
+Logical roles are **Azazel-Fabric's registered set**: `asset_acquisition`,
+`deception_bridge`, `management`, `observation`, and `unassigned`
+(`azazel_fabric.provisioning_contracts.INTERFACE_ROLES`). An operator may
+confirm any of them except `unassigned`, which is what an interface is before
+anyone confirms anything. `azazel_nexus.commissioning` mirrors the list locally
+because commissioning is a `CORE` path and Fabric reaches this package through
+one boundary module only ([ADR-0001](adr/0001-fabric-pin.md)); a test pins the
+mirror against Fabric's list.
+
+**This paragraph previously named a different set**, and the correction is
+recorded rather than quietly applied. It read `protected`, `observation`,
+`management`, `decoy`, `egress/module`. There were four lists in play —
+Fabric's, this one, Azazel-Boot's `commissioning.py` (`observe`, `internal`,
+`external`, `management`, `capture`, `decoy`) and Azazel-Boot's own
+`architecture.md`, which agreed with this document and not with its own code.
+**`management` was the only value all four shared**, and no product consumed
+Fabric's list, so nothing had ever compared them.
+
+The old lists mixed two questions. *What does the node do on this interface?*
+is the **role**: it is what another product needs to know, and it is what
+Fabric registers. *Which side of the boundary does this interface face?* —
+`protected`, `egress/module` — is **topology**: it is Nexus's own, and it never
+crosses a product boundary as a role. Nexus assigns no zone today and names
+none in code; a second local vocabulary to hold one would repeat the mistake.
+
+Fabric's published vocabulary did not change. The reconciliation closed
+entirely on the consumer side, because the words that did not fit were never
+roles.
+
+A role is assigned only by explicit operator confirmation against the
+inventory.
 
 Nexus MUST NOT infer a role from:
 
@@ -98,9 +126,31 @@ Nexus MUST NOT infer a role from:
 - an address learned by autoconfiguration;
 - RAM capacity or any other resource measurement.
 
-The operator reviews a proposed mapping, confirms each role, and the result is
-recorded as a signed commissioning record. Unassigned interfaces stay
-unassigned; an unassigned interface has no capability.
+The operator reviews a proposal, confirms each role, and the result is recorded
+as a signed commissioning record. Unassigned interfaces stay unassigned; an
+unassigned interface has no capability.
+
+"Proposal" is narrower than it sounds, and `azazel_nexus.commissioning` is
+built so that it cannot be otherwise. It reports which interfaces carry an
+unambiguous composite identity, what an operator can physically check about
+each, and which roles exist. **It pairs no interface with a role** — not as a
+default, not as a suggestion, not as an ordering. Every fact that would make a
+pairing possible is a fact this section forbids reading, and none of them is
+read by `azazel_nexus.inventory` at all, so there is nothing to infer from.
+
+`azazel_nexus.fabric_boundary.confirm_role` turns one operator confirmation
+into a Fabric `InterfaceAssignment`. Every argument is required and none has a
+default: a confirmation Nexus could produce without being told who confirmed,
+how, and when is a confirmation Nexus made on the operator's behalf.
+
+**The signed record itself is not yet producible, and the reason is worth
+stating rather than deferring.** Fabric's `CommissioningRecord` requires
+`hardware_inventory_digest`, `resource_profile_digest` and
+`topology_profile_digest`; Nexus produces the first and has neither
+`ResourceProfile` nor `TopologyProfile`. A placeholder for the other two would
+make the record claim to cover profiles that do not exist, and its own
+`record_digest` would then vouch for that claim. The boundary refuses and names
+what is missing.
 
 ## 5. Zero-transmit observation
 

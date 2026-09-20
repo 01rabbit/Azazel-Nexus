@@ -48,6 +48,21 @@ Status: **target contract**. No phase below has started in this repository.
   whose identity has not been read, not a gap being papered over.
 - Implement operator-confirmed logical role assignment and the signed
   commissioning record. No role is inferred from name, link state, or route.
+  **Assignment done** (`src/azazel_nexus/commissioning.py`,
+  `fabric_boundary.confirm_role`): a proposal reports which interfaces carry an
+  unambiguous composite identity and what an operator can physically check
+  about each, and pairs none of them with a role. One confirmation becomes a
+  Fabric `InterfaceAssignment`; every argument is required, so Nexus cannot
+  produce one without being told who confirmed, how, and when. The role
+  vocabulary is Fabric's registered set — see
+  [commissioning](commissioning.md) §4 for the four lists that preceded it.
+
+  **The signed record is not producible yet, by measurement rather than by
+  omission.** `CommissioningRecord` requires `resource_profile_digest` and
+  `topology_profile_digest`; Nexus produces neither, and a placeholder would
+  make the record's own digest vouch for profiles that do not exist. The
+  boundary refuses and names what is missing. It becomes possible when
+  `ResourceProfile` and `TopologyProfile` do.
 - Implement the product admission policy: delegated trust roles, exact tested
   compatibility tuples, security epoch, and the bounded extractor.
 - Implement the activation controller, verified generations, preset-disabled
