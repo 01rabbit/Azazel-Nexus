@@ -179,6 +179,11 @@ CONDITIONS = (
         "the embedded bounded-environment runtime",
     ),
     Condition(
+        "edge_core_absent",
+        OptionalComponent.EDGE_CORE,
+        "the deterministic baseline this node may claim",
+    ),
+    Condition(
         "audit_pressure",
         None,
         "records with the longest retention. The chain itself does not stop",

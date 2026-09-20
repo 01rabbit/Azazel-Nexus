@@ -43,6 +43,10 @@ class OptionalComponent(str, Enum):
     DECEPTION_LITE = "deception_lite"
     LOCAL_MODEL = "local_model"
     REMOTE_COGNITION = "remote_cognition"
+    #: The local Edge Core. Optional to *this* node's capability set and not
+    #: to the product: without it Nexus keeps inventory, commissioning, audit
+    #: and status, and claims no deterministic baseline.
+    EDGE_CORE = "edge_core"
 
 
 #: What survives with every optional component gone.
@@ -71,6 +75,7 @@ _CAPABILITY_SOURCE = {
     "deception_lite": OptionalComponent.DECEPTION_LITE,
     "local_cognition": OptionalComponent.LOCAL_MODEL,
     "remote_cognition": OptionalComponent.REMOTE_COGNITION,
+    "edge_baseline": OptionalComponent.EDGE_CORE,
 }
 
 

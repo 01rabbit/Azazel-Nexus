@@ -367,3 +367,88 @@ def test_a_cli_commissioning_the_operator_abandons_writes_nothing(tmp_path):
 def test_the_console_script_points_at_the_entry_point():
     text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text("utf-8")
     assert 'azazel-nexus = "azazel_nexus.cli:main"' in text
+
+
+# -- the local Edge Core, which this node has not looked for --------------
+
+
+def test_status_names_the_edge_core_rather_than_omitting_it(tmp_path):
+    """A screen with no Edge row reads as a node with no Edge concern.
+
+    Nexus#44: what is reported is the absence, with the reason. There is no
+    producer of `EdgeBaselineState` in this repository and the row does not
+    pretend otherwise.
+    """
+
+    _, text = _run(["status"], tmp_path)
+    line = next(l for l in text.splitlines() if "Edge Core (local)" in l)
+    assert "absent" in line
+    assert "not built yet" in line
+    assert "Azazel-Edge#424" in line
+
+
+def test_status_says_edge_baseline_ready_is_no(tmp_path):
+    _, text = _run(["status"], tmp_path)
+    assert "edge-baseline-ready: no" in text
+
+
+def test_status_never_claims_edge_baseline_ready(tmp_path):
+    """The one string that would be a claim, refused wherever it appears.
+
+    `EdgeBaselineState` is what the decision needs and nothing here builds
+    one, so any rendering of "yes" would be a claim with nothing behind it.
+    """
+
+    from azazel_nexus.cli import EDGE_BASELINE
+
+    _, text = _run(["status"], tmp_path)
+    assert "edge-baseline-ready: yes" not in text
+
+    # The *name* and the *reason* are checked separately. An earlier version
+    # allowed any reassuring word on a line that also said "not claimed" --
+    # which let the name itself become "Edge Core (local) running and
+    # healthy", because the reason on the same line carried the exemption.
+    name, reason = EDGE_BASELINE
+    lowered = name.lower()
+    for reassurance in ("ready", "healthy", "verified", "running", "connected"):
+        assert reassurance not in lowered, (
+            f"the module's name says {reassurance!r}; a name is not a place "
+            "to put a finding"
+        )
+    assert "not claimed" in reason.lower()
+
+
+def test_nothing_in_the_package_produces_an_edge_baseline_state():
+    """The rule that keeps the row from becoming a stub.
+
+    A producer written before the package exists would report on nothing
+    while looking exactly like a check. Construction in tests is how the
+    decision is exercised; construction in the product is what is forbidden.
+    """
+
+    import ast
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parents[2] / "src" / "azazel_nexus"
+    runtime = (
+        Path(__file__).resolve().parents[2]
+        / "runtime"
+        / "src"
+        / "azazel_nexus_runtime"
+    )
+    offenders = []
+    for root in (package, runtime):
+        for path in sorted(root.rglob("*.py")):
+            if path.name == "activation.py":
+                continue  # where the type is declared
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "EdgeBaselineState"
+                ):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == [], (
+        f"{offenders} construct an EdgeBaselineState. Nothing in the product "
+        "may, until there is a package to derive one from (Azazel-Edge#424)"
+    )
