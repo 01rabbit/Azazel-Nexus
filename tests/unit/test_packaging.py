@@ -99,6 +99,21 @@ def test_each_unit_file_declares_the_account_its_definition_names():
         )
 
 
+def test_no_governed_unit_runs_as_root():
+    """The activation controller is root. The three it governs are not.
+
+    A design where all four are root is one where least privilege is a
+    comment -- and the only thing between a bug in the netlink parser and the
+    whole host is that the parser has no bug.
+    """
+
+    assert [d.account for d in CORE_UNITS].count("root") == 0
+    assert len({d.account for d in CORE_UNITS}) == len(CORE_UNITS), (
+        "two governed daemons share an account, so a fault in one runs with "
+        "the other's access"
+    )
+
+
 def test_each_unit_file_refuses_privilege_escalation():
     """`NoNewPrivileges=yes` on every unit, including the controller.
 
@@ -219,13 +234,17 @@ def test_the_installer_creates_exactly_the_declared_layout():
     """
 
     found = {
-        path: int(mode, 8)
-        for mode, path in re.findall(
-            r"^install -d -m (\d{4}) (/\S+)$", _installer(), re.M
+        path: (int(mode, 8), owner, group)
+        for mode, owner, group, path in re.findall(
+            r"^install -d -m (\d{4}) -o (\S+) -g (\S+) (/\S+)$", _installer(), re.M
         )
     }
-    declared = {spec.path: spec.mode for spec in LAYOUT}
-    assert found == declared
+    declared = {spec.path: (spec.mode, spec.owner, spec.group) for spec in LAYOUT}
+    assert found == declared, (
+        "the installer and the layout disagree about a directory's mode, "
+        "owner or group. A writable path nobody declared is a path nobody set "
+        "the owner of"
+    )
 
 
 def test_the_declared_modes_survive_creation(tmp_path):

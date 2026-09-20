@@ -1,25 +1,44 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Reads IFLA_PERM_ADDRESS over a route netlink socket, which needs neither CAP_NET_ADMIN nor an internet address family.
+# It gets neither.
+# It is not root.
+
 [Unit]
 Description=Azazel-Nexus commissioning daemon
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/commissioning.md
 After=azazel-activated.service
 Requires=azazel-activated.service
 
-# Read-only inventory and operator confirmation only. It proposes role
-# bindings and records what an operator confirmed; it never infers a role from
-# an interface name, a link state or a default route (commissioning.md 4), and
-# it has no path to unmask anything -- including itself.
-
 [Service]
 Type=notify
-User=root
+User=azcommission
 ExecStart=/usr/libexec/azazel/az-commissiond
+RuntimeDirectory=azazel
+RuntimeDirectoryMode=0750
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadWritePaths=/etc/azazel/commissioning
+ReadWritePaths=/var/lib/azazel/run
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
-ReadWritePaths=/etc/azazel/commissioning /var/lib/azazel/run
-ReadOnlyPaths=/sys/class/net
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

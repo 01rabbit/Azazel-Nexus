@@ -1,29 +1,43 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The one daemon that runs as root, and the reason the other three do not: unmasking a unit means writing under /etc/systemd/system, and isolating that here is what leaves the rest unprivileged.
+
 [Unit]
 Description=Azazel-Nexus activation controller
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md
-DefaultDependencies=no
-After=local-fs.target
-Before=azazel-commissiond.service azazel-auditd.service azazel-watchdog.service
-
-# This unit is the privilege boundary described in IMPLEMENTATION_SPEC 2.3 and
-# 4. It runs once per boot, re-derives the digest of the current generation,
-# and unmasks only what that generation and the commissioning record admit. It
-# is the one unit the installer enables, because a controller that never runs
-# revalidates nothing -- and it opens no socket and touches no interface, so
-# enabling it starts no operational network service.
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 User=root
-ExecStart=/usr/libexec/azazel/az-activated --boot
+ExecStart=/usr/libexec/azazel/az-activated
+RuntimeDirectory=azazel
+RuntimeDirectoryMode=0750
+RemainAfterExit=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel
+ReadWritePaths=/var/lib/azazel/generations
+ReadWritePaths=/var/lib/azazel/state
+ReadWritePaths=/etc/systemd/system
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/azazel /etc/systemd/system
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target
