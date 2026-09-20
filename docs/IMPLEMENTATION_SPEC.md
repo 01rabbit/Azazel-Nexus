@@ -188,6 +188,25 @@ installer refuses rather than enabling a unit whose `ExecStart` is absent. The
 controller's decisions are implemented and tested; the daemons that would
 carry them out are not, and no green pipeline says otherwise.
 
+**Tiers (#39).** Activation preconditions differ by unit tier, and treating
+them alike is the failure the split prevents. `SUPPORTING` (commissioning, the
+ledger, the watchdog) needs a verified generation, health and a valid lease.
+`EDGE_BASELINE` needs a verified local Edge Core on top. `ENFORCEMENT` needs a
+complete commissioning record on top of that.
+
+A node whose ledger and watchdog are running can account for itself. It has
+said nothing about an Edge Core and must not be read as having:
+`edge_baseline_ready` is derived from what was established about Edge, **not**
+from whether the Edge tier's units were granted — over an empty tier the
+latter is vacuously true, which would make a node with no Edge Core at all the
+most confident node on the network.
+
+**Leases.** Activation requires a time-bounded authorization naming the
+generation digest it was granted against. An authorization with no expiry
+cannot be withdrawn by doing nothing, and every other way of withdrawing it
+needs the thing that went wrong to still be working. The clock is passed in;
+nothing in the decision reads one.
+
 **Residual risk.** A verified generation establishes that the tree on disk is
 the tree that was promoted. It does not establish that what was promoted is
 safe: admission (§2.4) is what judges content, and it is not built yet. Until

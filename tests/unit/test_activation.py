@@ -22,6 +22,8 @@ import pytest
 
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
+    ActivationLease,
+    EdgeBaselineState,
     CORE_UNITS,
     ActivationAuthorization,
     ActivationController,
@@ -43,9 +45,20 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "azazel_nexus"
 NOW = "2026-09-20T00:00:00Z"
 ACTOR = "operator@console"
 
+
+def _lease(digest: str = "sha256:" + "0" * 64) -> ActivationLease:
+    """A lease covering `NOW`. Every activation needs one (#39)."""
+
+    return ActivationLease(
+        granted_by=ACTOR,
+        granted_at="2026-09-19T00:00:00Z",
+        expires_at="2026-09-21T00:00:00Z",
+        generation_digest=digest,
+    )
+
 ENFORCING = UnitDefinition(
     "azazel-enforced.service",
-    UnitTier.OPERATIONAL,
+    UnitTier.ENFORCEMENT,
     "azenforce",
     "applies one approved intent and emits a receipt",
 )
@@ -141,7 +154,7 @@ def test_an_authorization_is_not_transferable_between_units(tmp_path):
         generations=_store_with_generation(tmp_path),
         ledger=AuditLedger(tmp_path / "ledger.jsonl"),
     )
-    controller.activate(now=NOW, actor=ACTOR)
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert captured, "nothing was granted, so nothing was captured to replay"
 
     token = captured[0]
@@ -232,7 +245,7 @@ def test_the_controller_does_not_govern_itself():
             definitions=CORE_UNITS
             + (
                 UnitDefinition(
-                    ACTIVATION_CONTROLLER_UNIT, UnitTier.BOOTSTRAP, "root", "itself"
+                    ACTIVATION_CONTROLLER_UNIT, UnitTier.SUPPORTING, "root", "itself"
                 ),
             ),
         )
@@ -256,7 +269,7 @@ def test_with_no_generation_nothing_is_unmasked(tmp_path):
         generations=GenerationStore(tmp_path / "generations"),
         ledger=ledger,
     )
-    outcome = controller.activate(now=NOW, actor=ACTOR)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert outcome.granted == ()
     assert set(outcome.withheld) == {d.name for d in CORE_UNITS}
@@ -268,7 +281,7 @@ def test_a_generation_whose_tree_moved_does_not_pass_activation(tmp_path):
     controller, units, ledger, store = _controller(tmp_path)
     (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"role: enforcement\n")
 
-    outcome = controller.activate(now=NOW, actor=ACTOR)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert outcome.granted == ()
     assert all(call[0] == "mask" for call in units.calls)
@@ -285,11 +298,11 @@ def test_the_digest_is_re_derived_on_every_activation(tmp_path):
     """
 
     controller, units, _, store = _controller(tmp_path)
-    first = controller.activate(now=NOW, actor=ACTOR)
+    first = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert set(first.granted) == {d.name for d in CORE_UNITS}
 
     (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"tampered\n")
-    second = controller.activate(now=NOW, actor=ACTOR)
+    second = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert second.granted == ()
     assert all(
@@ -299,7 +312,7 @@ def test_the_digest_is_re_derived_on_every_activation(tmp_path):
 
 def test_an_operational_unit_is_withheld_with_no_commissioning_record(tmp_path):
     controller, units, _, _ = _controller(tmp_path, CORE_UNITS + (ENFORCING,))
-    outcome = controller.activate(now=NOW, actor=ACTOR)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert ENFORCING.name in outcome.withheld
     assert set(outcome.granted) == {d.name for d in CORE_UNITS}
@@ -312,6 +325,7 @@ def test_an_operational_unit_is_withheld_while_a_profile_is_missing(tmp_path):
     outcome = controller.activate(
         now=NOW,
         actor=ACTOR,
+        lease=_lease(),
         record=_record(roles=(_confirmed_role(),), profiles=("hardware", "resource")),
     )
 
@@ -331,7 +345,7 @@ def test_an_operational_unit_is_withheld_while_the_node_is_observe_only(tmp_path
     """
 
     controller, _, _, _ = _controller(tmp_path, CORE_UNITS + (ENFORCING,))
-    outcome = controller.activate(now=NOW, actor=ACTOR, record=_record())
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), record=_record())
 
     verdict = next(v for v in outcome.verdicts if v.unit == ENFORCING.name)
     assert not verdict.granted
@@ -341,7 +355,7 @@ def test_an_operational_unit_is_withheld_while_the_node_is_observe_only(tmp_path
 def test_an_operational_unit_is_granted_once_commissioning_is_complete(tmp_path):
     controller, units, _, _ = _controller(tmp_path, CORE_UNITS + (ENFORCING,))
     outcome = controller.activate(
-        now=NOW, actor=ACTOR, record=_record(roles=(_confirmed_role(),))
+        now=NOW, actor=ACTOR, lease=_lease(), record=_record(roles=(_confirmed_role(),))
     )
 
     assert ENFORCING.name in outcome.granted
@@ -356,7 +370,7 @@ def test_a_bootstrap_unit_runs_before_anyone_has_commissioned_anything(tmp_path)
     """
 
     controller, _, _, _ = _controller(tmp_path)
-    outcome = controller.activate(now=NOW, actor=ACTOR, record=None)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), record=None)
 
     assert "azazel-commissiond.service" in outcome.granted
 
@@ -393,7 +407,7 @@ def test_a_grant_is_recorded_before_the_unit_is_widened(tmp_path):
     controller = ActivationController(
         units=units, generations=_store_with_generation(tmp_path), ledger=ledger
     )
-    controller.activate(now=NOW, actor=ACTOR)
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     expected = []
     for definition in CORE_UNITS:
@@ -424,7 +438,7 @@ def test_an_activation_that_cannot_be_recorded_does_not_happen(tmp_path):
     )
 
     with pytest.raises(AuditUnavailable):
-        controller.activate(now=NOW, actor=ACTOR)
+        controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert [c[0] for c in units.calls] == ["mask"] * len(CORE_UNITS)
     assert all(units.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
@@ -455,7 +469,7 @@ def test_a_unit_that_fails_to_widen_is_masked_again_and_recorded(tmp_path):
     controller = ActivationController(
         units=units, generations=_store_with_generation(tmp_path), ledger=ledger
     )
-    outcome = controller.activate(now=NOW, actor=ACTOR)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert FAILING in outcome.withheld
     assert units.state(FAILING) is UnitState.MASKED, (
@@ -471,8 +485,8 @@ def test_a_unit_that_fails_to_widen_is_masked_again_and_recorded(tmp_path):
 
 def test_the_activation_events_extend_one_unbroken_chain(tmp_path):
     controller, _, ledger, _ = _controller(tmp_path)
-    controller.activate(now=NOW, actor=ACTOR)
-    controller.activate(now=NOW, actor=ACTOR)
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     ledger.verify()
     assert len(list(ledger)) == 2 * len(CORE_UNITS)
@@ -481,7 +495,7 @@ def test_the_activation_events_extend_one_unbroken_chain(tmp_path):
 def test_a_refusal_names_the_generation_it_refused(tmp_path):
     controller, _, ledger, store = _controller(tmp_path)
     (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"tampered\n")
-    controller.activate(now=NOW, actor=ACTOR)
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     refusal = next(e for e in ledger if e.event["event_type"] == "activation.refused")
     assert refusal.event["generation"] == 1
@@ -621,3 +635,54 @@ def test_the_systemd_controller_masks_with_now(tmp_path):
     controller = SystemdUnitController(run=lambda argv: calls.append(argv))
     controller.mask("azazel-auditd.service", reason="digest mismatch")
     assert calls == [["systemctl", "mask", "--now", "azazel-auditd.service"]]
+
+
+# -- narrowing must not raise out of a pass ------------------------------
+
+
+def test_a_unit_that_will_not_mask_does_not_end_the_pass(tmp_path):
+    """Found by a runtime test, and the failure was in this layer.
+
+    A `mask` that raised propagated out of `activate` entirely: no outcome was
+    returned, the remaining units were never decided, and **the units this
+    pass had already widened stayed widened** with nothing left running to
+    take them back. An exception on the narrowing path was behaving as a
+    widening.
+    """
+
+    class WontMask(RecordingUnitController):
+        def _mask(self, unit):
+            raise OSError(f"{unit} will not mask")
+
+    units = WontMask(d.name for d in CORE_UNITS)
+    ledger = AuditLedger(tmp_path / "ledger.jsonl")
+    controller = ActivationController(
+        units=units,
+        generations=GenerationStore(tmp_path / "empty"),
+        ledger=ledger,
+    )
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    assert outcome.granted == (), "nothing may be granted when nothing can be masked"
+    assert controller.unmaskable == {d.name for d in CORE_UNITS}
+    assert "activation.unit_would_not_mask" in _event_types(ledger)
+
+
+def test_every_unit_is_still_decided_when_one_will_not_mask(tmp_path):
+    """The pass continues withholding rather than stopping at the first refusal."""
+
+    class WontMaskOne(RecordingUnitController):
+        def _mask(self, unit):
+            if unit == "azazel-commissiond.service":
+                raise OSError("stuck")
+            super()._mask(unit)
+
+    units = WontMaskOne(d.name for d in CORE_UNITS)
+    controller = ActivationController(
+        units=units,
+        generations=GenerationStore(tmp_path / "empty"),
+        ledger=AuditLedger(tmp_path / "ledger.jsonl"),
+    )
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert len(outcome.verdicts) == len(CORE_UNITS)
+    assert controller.unmaskable == {"azazel-commissiond.service"}
