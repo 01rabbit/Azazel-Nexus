@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 __all__ = [
     "DEGRADED_CAPABILITY",
@@ -50,6 +50,7 @@ __all__ = [
     "Verdict",
     "classify_freshness",
     "refuse_everything",
+    "split_by_freshness",
 ]
 
 #: Where a node lands when Lite is unavailable for any reason.
@@ -165,6 +166,35 @@ def classify_freshness(expiry: str | None, *, as_of: str) -> Freshness:
     return Freshness.CURRENT if expires > now else Freshness.EXPIRED
 
 
+def split_by_freshness(
+    claims: Sequence[Mapping], *, as_of: str
+) -> tuple[list[dict], list[dict]]:
+    """Split claims into what may be served now and what is withheld.
+
+    An expired claim is **unavailable, not merely labelled** -- it does not
+    appear in the served list. The artifact around it is not discarded:
+    claims that are not clock-bound keep being served, which is how
+    withholding the expired entries stays distinguishable from throwing the
+    artifact away.
+
+    This is the only implementation of that rule. `StagedReader.serve` and
+    `lite_service.KnowledgeLite.read` both call it rather than each deciding
+    for itself, because two copies of a serving rule agree only until one of
+    them is edited.
+    """
+
+    served: list[dict] = []
+    withheld: list[dict] = []
+    for claim in claims:
+        freshness = classify_freshness(claim.get("expiry"), as_of=as_of)
+        labelled = {**claim, "freshness": freshness.value}
+        if freshness in (Freshness.CURRENT, Freshness.NOT_CLOCK_BOUND):
+            served.append(labelled)
+        else:
+            withheld.append(labelled)
+    return served, withheld
+
+
 def _parse_instant(raw: str) -> datetime:
     text = raw.strip()
     if text.endswith("Z"):
@@ -190,7 +220,17 @@ class StagedReader:
 
     @property
     def live(self) -> Path:
-        return self.root / "live"
+        """Where a verified archive is unpacked and served from.
+
+        Deliberately **not** `root/live`. `LiteGenerationStore` keeps its live
+        *pointer* -- a file -- at that name, and a node whose staged reader and
+        generation store share a root had one of them overwrite the other's
+        `live` and the next promotion raise `NotADirectoryError` out of
+        `shutil.rmtree`. A module whose docstring says it never raises for the
+        node must not have a second module able to make it raise.
+        """
+
+        return self.root / "admitted"
 
     @property
     def staging(self) -> Path:
@@ -268,23 +308,12 @@ class StagedReader:
     ) -> tuple[list[dict], list[dict]]:
         """Split claims into what may be served and what is withheld.
 
-        An expired claim is **unavailable, not merely labelled** -- it does not
-        appear in the served list. The artifact around it is not discarded:
-        claims that are not clock-bound keep being served, which is how
-        withholding the expired entries stays distinguishable from throwing the
-        artifact away.
+        Delegates to `split_by_freshness`. The rule has one implementation
+        because two copies of "which claims may be served" agree only until
+        one of them is edited.
         """
 
-        served: list[dict] = []
-        withheld: list[dict] = []
-        for claim in claims:
-            freshness = classify_freshness(claim.get("expiry"), as_of=as_of)
-            labelled = {**claim, "freshness": freshness.value}
-            if freshness in (Freshness.CURRENT, Freshness.NOT_CLOCK_BOUND):
-                served.append(labelled)
-            else:
-                withheld.append(labelled)
-        return served, withheld
+        return split_by_freshness(claims, as_of=as_of)
 
     # -- internals ---------------------------------------------------------
 

@@ -194,13 +194,44 @@ next read, with no restart and no new artifact.
 That is why `LiteGeneration` names a `signature_digest` as well as an
 `artifact_digest`: the signature has to still be there to be checked again.
 
-## 8. What this change does not claim
+## 8. Two paths, one cache, one serving rule
+
+Two modules can hold a Knowledge Lite artifact: `lite_cache.StagedReader`,
+which faces Azazel-Knowledge's archives and its negative fixtures, and
+`lite_service.KnowledgeLite`, which is the product path. That is two
+implementations of one concern, and two implementations agree only until one
+of them is edited. Three things keep them from drifting.
+
+**They do not share a live cache.** `LiteGenerationStore` keeps its live
+*pointer* — a file — at `root/live`. `StagedReader` unpacks into
+`root/admitted`. They used to share the name: a node with both at one root had
+one overwrite the other's `live`, and the next promotion raised
+`NotADirectoryError` out of `shutil.rmtree` — an unhandled exception from a
+module whose own docstring says it never raises for the node.
+`tests/unit/test_lite_one_cache.py` is the regression, in both orders.
+
+**They share one serving rule.** `split_by_freshness` has a single
+implementation; `StagedReader.serve` delegates to it and `KnowledgeLite.read`
+calls it. The test parses `serve` rather than grepping it, because its
+docstring names the shared function too and a mention is not a call.
+
+**Their vocabularies answer different questions, and are disjoint.**
+`Admission` (`admitted` / `absent` / `refused` / `unverifiable`) says how one
+admission attempt ended. `LiteState` (`available` / `stale` / `unavailable` /
+`quarantined`) says what the cache is now. No value appears in both sets, so
+no later reader can assume a mapping that does not exist.
+
+**Open:** folding the archive path into the service would need Knowledge's own
+signature format, which this repository does not have. `StagedReader` takes an
+injected verifier for that reason. Unifying them is an open item on
+[#6](https://github.com/01rabbit/Azazel-Nexus/issues/6), not something to
+invent here.
+
+## 9. What this change does not claim
 
 - **No status, CLI, degradation or audit wiring.** Nothing in `cli.py`,
   `status.py`, `degradation.py` or the runtime daemons consults `LiteState`
   yet. That is E4 ([#55](https://github.com/01rabbit/Azazel-Nexus/issues/55)).
-- **`lite_cache.Admission` is unchanged.** The older staged reader keeps its
-  own four outcomes; it is not yet expressed in terms of this service.
 - **No artifact format.** Azazel-Knowledge owns it. The claim reader is
   injected, and the default refuses — a caller that forgets one gets
   `quarantined`, never `available`.
@@ -208,7 +239,7 @@ That is why `LiteGeneration` names a `signature_digest` as well as an
   and the hardware gates are unaffected, and no claim here moves
   `edge-baseline-ready`.
 
-## 9. Where the tests are
+## 10. Where the tests are
 
 | File | Holds |
 | --- | --- |
@@ -218,9 +249,11 @@ That is why `LiteGeneration` names a `signature_digest` as well as an
 | `tests/unit/test_lite_revocation.py` | replay, the unreadable list, the revoked signer |
 | `tests/unit/test_lite_trust.py` | the commissioning binding, pinning once, the empty set |
 | `tests/unit/test_lite_service.py` | the four states, and that they are four |
+| `tests/unit/test_lite_one_cache.py` | the two paths not colliding, and one serving rule |
 
 Every guard in these six modules was removed in turn and the suite re-run:
-41 mutations for the primitives, 17 more for the trust store and the service.
+41 mutations for the primitives, 17 for the trust store and the service, 5 for
+the unification.
 
 One survived, in the first round: `artifact_of` could read a blob directly
 instead of through `ContentStore.get`, and every test still passed — because
@@ -231,3 +264,8 @@ One test also passed for the wrong reason and was rewritten: the four-states
 test drove one shared service through all four states in sequence, so an
 earlier state left the service somewhere the next one did not put it. Each
 state now gets its own store.
+
+And one *change* turned out not to be load-bearing: renaming `root/retired`
+alongside `root/admitted` survived its mutation, because nothing else uses
+that name. It was reverted rather than kept for symmetry — a change no test
+can miss is a change with no reason.
