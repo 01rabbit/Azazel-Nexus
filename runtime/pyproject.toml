@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azazel-nexus-runtime"
+version = "0.0.1.dev0"
+description = "AZ-07 Nexus: the OS service layer, separated from the library it serves"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# `azazel-nexus` is the library this layer serves, and the dependency runs
+# one way only. The library holds the state, contract, decision and audit
+# models and imports nothing that can spawn a process, open a socket or touch
+# host storage; this distribution is where all of that lives.
+#
+# A second entry here would be a second thing the privileged layer can be made
+# to load. There is none, and `tests/unit/test_runtime_boundary.py` is what
+# keeps it that way.
+dependencies = ["azazel-nexus"]
+
+[project.scripts]
+az-commissiond = "azazel_nexus_runtime.commissiond:main"
+az-activated = "azazel_nexus_runtime.activated:main"
+az-auditd = "azazel_nexus_runtime.auditd:main"
+az-watchdog = "azazel_nexus_runtime.watchdog:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

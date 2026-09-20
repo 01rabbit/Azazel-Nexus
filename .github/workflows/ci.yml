@@ -38,6 +38,12 @@ jobs:
       - name: Install
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
 
+      # Installed as its own distribution, which is the claim being made: the
+      # privileged layer is separable, and the library above was installed
+      # without it.
+      - name: Install the runtime distribution
+        run: python -m pip install -e ./runtime
+
       - name: Run unit tests
         run: python -m pytest tests/unit -q
 
@@ -86,6 +92,19 @@ jobs:
           if not all(row[3] for row in degradation.MATRIX):
               raise SystemExit(
                   "a degradation cell reports the deterministic path broken"
+              )
+          # And the privileged layer must be absent here. This job installs
+          # nothing, so if `azazel_nexus_runtime` imported it would mean the
+          # library had pulled it in -- which is the one-way dependency
+          # failing in the only configuration that can show it.
+          try:
+              import azazel_nexus_runtime  # noqa: F401
+          except ImportError:
+              pass
+          else:
+              raise SystemExit(
+                  "azazel_nexus_runtime is importable in the job that installs "
+                  "nothing; the library reached the privileged layer"
               )
           # The boundary module too. It names azazel_fabric and must still
           # import here: its Fabric import is deferred to call time precisely

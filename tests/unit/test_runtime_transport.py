@@ -1,0 +1,663 @@
+"""The socket, the frame, and who the server decides is calling (#37).
+
+Every test here uses a **real** `AF_UNIX` socket. A transport tested against a
+mock is a transport whose framing has never met a stream, and framing bugs are
+exactly what a stream socket produces: short reads, split headers, bytes that
+arrive after the message.
+
+Nothing here waits. Deadlines are set to a small finite value and the peer
+that triggers them is a socket nobody writes to, so the test finishes when the
+deadline does. No test sleeps.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import struct
+import threading
+import time
+
+import pytest
+
+from azazel_nexus_runtime.principal import (
+    Principal,
+    PrincipalClass,
+    PrincipalPolicy,
+    SocketMisconfigured,
+    verify_socket,
+)
+from azazel_nexus_runtime.protocol import (
+    Argument,
+    ArgumentKind,
+    Refusal,
+    RequestRefused,
+    Verb,
+    VerbRegistry,
+    fingerprint,
+)
+from azazel_nexus_runtime.transport import (
+    MAX_FRAME_BYTES,
+    SocketServer,
+    bind_socket,
+    read_frame,
+    send_frame,
+)
+
+HEADER = struct.Struct("!I")
+
+PING = Verb("node.ping", admits=frozenset({PrincipalClass.ROOT, PrincipalClass.OPERATOR}))
+PICK = Verb(
+    "node.pick",
+    arguments=(
+        Argument("ordinal", ArgumentKind.ORDINAL, maximum=7),
+        Argument("snapshot", ArgumentKind.DIGEST),
+        Argument("dry_run", ArgumentKind.FLAG),
+        Argument("unit", ArgumentKind.ENUM, choices=("auditd", "watchdog")),
+    ),
+    admits=frozenset({PrincipalClass.ROOT}),
+)
+#: Admits a class this test process can never hold: the policy below
+#: resolves no service uids, so this verb is denied whatever uid CI runs
+#: as. Without it the denial test would pass for one reason as root and
+#: another otherwise, which is two tests neither of which was written.
+SERVICE_ONLY = Verb("node.service_only", admits=frozenset({PrincipalClass.SERVICE}))
+
+REGISTRY = VerbRegistry([PING, PICK, SERVICE_ONLY])
+DIGEST = "sha256:" + "ab" * 32
+
+
+def _policy(**kwargs) -> PrincipalPolicy:
+    """A policy that classes this test process as root, so verbs are reachable.
+
+    The tests run as whatever uid CI provides. Classing that uid explicitly is
+    the honest way to exercise the admitted path without weakening the check
+    being tested -- `classify` still derives everything from the credentials
+    the kernel reports.
+    """
+
+    kwargs.setdefault("operator_gid", None)
+    kwargs.setdefault("service_uids", frozenset())
+    return PrincipalPolicy(**kwargs)
+
+
+def _root_policy() -> PrincipalPolicy:
+    """A policy under which `node.ping` is admitted whatever uid CI runs as.
+
+    `PING` admits ROOT or OPERATOR; this grants OPERATOR to the test
+    process's own gid. So the served path is reachable deterministically,
+    and `node.service_only` is deterministically denied, because no service
+    uid is resolved. Neither outcome depends on whether the suite happens to
+    run as root.
+    """
+
+    return _policy(operator_gid=os.getgid())
+
+
+@pytest.fixture
+def server(tmp_path):
+    recorded: list[dict] = []
+    listener = bind_socket(tmp_path / "test.sock")
+    engine = SocketServer(
+        registry=REGISTRY,
+        policy=_root_policy(),
+        audit=recorded.append,
+        deadline=0.5,
+    )
+    yield listener, engine, recorded, tmp_path / "test.sock"
+    listener.close()
+
+
+def _exchange(server, payload, *, raw: bytes | None = None, handler=None):
+    """Send one request and return `(reply, recorded events)`."""
+
+    listener, engine, recorded, path = server
+    handler = handler or (lambda request: {"verb": request.verb.name})
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(2.0)
+    client.connect(str(path))
+
+    def serve():
+        connection, _ = listener.accept()
+        with connection:
+            engine.serve_connection(connection, handler)
+
+    worker = threading.Thread(target=serve)
+    worker.start()
+    try:
+        if raw is not None:
+            client.sendall(raw)
+        else:
+            send_frame(client, payload)
+        client.shutdown(socket.SHUT_WR)
+        reply = client.recv(MAX_FRAME_BYTES)
+    finally:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "the server did not finish within the deadline"
+        client.close()
+    body = json.loads(reply[HEADER.size :]) if reply else None
+    return body, recorded
+
+
+# -- the socket itself ---------------------------------------------------
+
+
+def test_a_socket_is_bound_with_the_declared_mode(tmp_path):
+    path = tmp_path / "declared.sock"
+    listener = bind_socket(path)
+    try:
+        verify_socket(path)
+        assert path.stat().st_mode & 0o777 == 0o660
+    finally:
+        listener.close()
+
+
+def test_the_umask_does_not_decide_the_socket_mode(tmp_path):
+    """`bind` respects the umask; the `chmod` after it is what overrides that.
+
+    A daemon started under an unexpected umask would otherwise create a
+    socket whose permissions differ from its packaging, and nothing would
+    notice until someone reached it.
+    """
+
+    previous = os.umask(0o077)
+    try:
+        path = tmp_path / "umask.sock"
+        listener = bind_socket(path)
+        try:
+            assert path.stat().st_mode & 0o777 == 0o660
+        finally:
+            listener.close()
+    finally:
+        os.umask(previous)
+
+
+def test_a_world_writable_socket_is_refused(tmp_path):
+    path = tmp_path / "loose.sock"
+    listener = bind_socket(path)
+    try:
+        path.chmod(0o666)
+        with pytest.raises(SocketMisconfigured):
+            verify_socket(path)
+    finally:
+        listener.close()
+
+
+def test_binding_closes_the_listener_when_verification_fails(tmp_path, monkeypatch):
+    """A daemon that raises while holding a bound socket occupies the path.
+
+    The next start then finds something at the address and has to decide
+    whether removing it is safe -- which is a decision nobody should be
+    making at boot.
+    """
+
+    import azazel_nexus_runtime.transport as transport_module
+
+    created: list[socket.socket] = []
+    real_socket = socket.socket
+
+    def recording_socket(*args, **kwargs):
+        made = real_socket(*args, **kwargs)
+        created.append(made)
+        return made
+
+    def refuse(path, **kwargs):
+        raise SocketMisconfigured("something replaced the socket")
+
+    monkeypatch.setattr(transport_module, "verify_socket", refuse)
+    monkeypatch.setattr(transport_module.socket, "socket", recording_socket)
+
+    with pytest.raises(SocketMisconfigured):
+        bind_socket(tmp_path / "doomed.sock")
+
+    # Asserted on the object itself, not inferred from being able to rebind:
+    # CPython would close it by refcount as soon as the frame unwound, so a
+    # rebind test passes whether the close is there or not.
+    assert created, "no socket was created"
+    assert created[0].fileno() == -1, (
+        "the listener was left open; a daemon that raises while holding a "
+        "bound socket occupies the path for its next start"
+    )
+
+
+def test_something_that_is_not_a_socket_is_refused(tmp_path):
+    ordinary = tmp_path / "not-a-socket"
+    ordinary.write_text("")
+    ordinary.chmod(0o660)
+    with pytest.raises(SocketMisconfigured):
+        verify_socket(ordinary)
+
+
+# -- the principal is the server's to decide -----------------------------
+
+
+def test_the_principal_comes_from_the_kernel_not_the_request(server):
+    """A request carrying a role is refused, and refused as that.
+
+    Not as a typo. An attempt to supply a principal should be visible in the
+    ledger as an attempt to supply a principal.
+    """
+
+    reply, recorded = _exchange(
+        server, {"verb": "node.ping", "arguments": {"role": "root"}}
+    )
+    assert reply == {"ok": False, "refusal": "client_asserted_principal"}
+    assert recorded[0]["reason"] == "client_asserted_principal"
+
+
+@pytest.mark.parametrize("key", ["principal", "uid", "as_user", "sudo", "authority"])
+def test_every_reserved_principal_key_is_refused(server, key):
+    reply, _ = _exchange(server, {"verb": "node.ping", "arguments": {key: "x"}})
+    assert reply["refusal"] == "client_asserted_principal"
+
+
+def test_no_verb_may_declare_an_argument_that_names_a_principal():
+    for name in ("principal", "role", "uid", "sudo"):
+        with pytest.raises(ValueError):
+            Argument(name, ArgumentKind.FLAG)
+
+
+def test_a_verb_that_admits_nobody_cannot_be_built():
+    """Default deny as a property of the type, not a branch somebody writes."""
+
+    with pytest.raises(ValueError):
+        Verb("node.orphan")
+
+
+def test_a_caller_outside_the_admitted_classes_is_denied_and_recorded(server):
+    """Denied before the arguments are looked at, and recorded with the verb.
+
+    The verb name is safe to record here precisely because it is one this
+    daemon declared -- unlike an unknown verb's name, which is the caller's.
+    """
+
+    reply, recorded = _exchange(server, {"verb": "node.service_only", "arguments": {}})
+    assert reply == {"ok": False, "refusal": "principal_denied"}
+    assert recorded[0]["verb"] == "node.service_only"
+    assert recorded[0]["uid"] == os.getuid()
+    assert recorded[0]["pid"] == os.getpid()
+
+
+def test_the_server_classifies_exactly_what_the_kernel_reported(server):
+    """The wiring, checked without depending on which uid the suite runs as.
+
+    A mutation replacing the reported credentials with a constant survived
+    the first time, because this container runs the suite as root and the
+    constant happened to be root. A guard that only fires under some uids is
+    a guard that is absent under the others.
+    """
+
+    import azazel_nexus_runtime.transport as transport_module
+
+    listener, engine, recorded, path = server
+    seen: list[tuple[int, int, int]] = []
+    # Values this process could not hold, so the assertion cannot be
+    # satisfied by coincidence. The first version compared against
+    # `os.getuid()`, which is 0 in this container -- and the mutation that
+    # replaced the credentials with a constant 0 passed it.
+    REPORTED = (4444, 4242, 4343)  # (pid, uid, gid), as SO_PEERCRED orders them
+
+    class Spy(PrincipalPolicy):
+        def classify(self, uid, gid, pid):
+            seen.append((uid, gid, pid))
+            return super().classify(uid, gid, pid)
+
+    engine.policy = Spy(operator_gid=4343, service_uids=frozenset())
+    original = transport_module.peer_credentials
+    transport_module.peer_credentials = lambda connection: REPORTED
+    try:
+        reply, _ = _exchange(server, {"verb": "node.ping", "arguments": {}})
+    finally:
+        transport_module.peer_credentials = original
+
+    assert seen == [(4242, 4343, 4444)], (
+        "the server did not pass on what the credential read returned; it "
+        "used something else to decide who was calling"
+    )
+    assert reply["ok"] is True
+
+
+def test_reaching_the_socket_is_not_itself_a_permission(server):
+    """The connection succeeded. That decided nothing.
+
+    The socket's mode answers who can connect; peer credentials answer who
+    did. Neither substitutes for the other, and this is the second.
+    """
+
+    policy = PrincipalPolicy(operator_gid=None, service_uids=frozenset())
+    principal = policy.classify(uid=12345, gid=12345, pid=1)
+    assert principal.classes == frozenset()
+    assert not principal.admits(PING.admits)
+
+
+def test_a_principals_audit_fields_carry_nothing_a_caller_chose(server):
+    principal = Principal(uid=1, gid=2, pid=3, classes=frozenset({PrincipalClass.ROOT}))
+    fields = principal.as_audit_fields()
+    assert set(fields) == {"uid", "gid", "pid", "classes"}
+    assert all(isinstance(v, (int, list)) for v in fields.values())
+
+
+# -- the frame -----------------------------------------------------------
+
+
+def test_a_well_formed_request_is_served(server):
+    reply, recorded = _exchange(server, {"verb": "node.ping", "arguments": {}})
+    assert reply == {"ok": True, "result": {"verb": "node.ping"}}
+    assert recorded == [], "a served request is not a refusal"
+
+
+def test_a_frame_larger_than_the_ceiling_is_refused_without_reading_the_body(server):
+    """The ceiling is enforced on the declared length, not after the fact.
+
+    A limit checked after reading everything has already spent the memory it
+    exists to protect.
+    """
+
+    listener, engine, recorded, path = server
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(2.0)
+    client.connect(str(path))
+
+    def serve():
+        connection, _ = listener.accept()
+        with connection:
+            engine.serve_connection(connection, lambda request: {})
+
+    worker = threading.Thread(target=serve)
+    worker.start()
+    try:
+        # A header claiming far more than the ceiling, and **no body at all**.
+        # If the server read before checking, it would block here until its
+        # deadline and report a different refusal.
+        client.sendall(HEADER.pack(MAX_FRAME_BYTES + 1))
+        reply = client.recv(4096)
+    finally:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        client.close()
+
+    body = json.loads(reply[HEADER.size :])
+    assert body["refusal"] == "frame_too_large"
+    assert recorded[0]["reason"] == "frame_too_large"
+
+
+def test_a_truncated_frame_is_refused_as_truncated(server):
+    reply, recorded = _exchange(server, None, raw=HEADER.pack(64) + b"{}")
+    assert reply["refusal"] == "truncated_frame"
+
+
+def test_the_three_malformed_frames_are_recorded_as_three_different_things(server):
+    """A zero length, a missing header, and bytes that are not JSON.
+
+    All three are malformed frames and all three are different events at a
+    socket. Recording one word for the lot would make a peer that never
+    sends a header indistinguishable from one that sends garbage -- and the
+    detail is safe to record here because all three strings are literals in
+    this daemon, not the caller's.
+    """
+
+    _, zero = _exchange(server, None, raw=HEADER.pack(0))
+    assert zero[-1]["reason"] == "malformed_frame"
+    assert zero[-1]["argument"] == "zero length"
+
+    _, no_header = _exchange(server, None, raw=b"\x00\x00")
+    assert no_header[-1]["argument"] == "no length header"
+
+    _, not_json = _exchange(server, None, raw=HEADER.pack(3) + b"\xff\xfe\xfd")
+    assert not_json[-1]["argument"] == "not json"
+
+
+def test_a_zero_length_frame_is_malformed(server):
+    reply, _ = _exchange(server, None, raw=HEADER.pack(0))
+    assert reply["refusal"] == "malformed_frame"
+
+
+def test_a_header_that_never_arrives_is_malformed(server):
+    reply, _ = _exchange(server, None, raw=b"\x00\x00")
+    assert reply["refusal"] == "malformed_frame"
+
+
+def test_bytes_after_the_frame_are_refused(server):
+    """One request per connection, and the protocol says so.
+
+    Ignoring the extra bytes would mean a caller could append a second request
+    that is neither served nor reported.
+    """
+
+    body = json.dumps({"verb": "node.ping", "arguments": {}}).encode()
+    reply, _ = _exchange(
+        server, None, raw=HEADER.pack(len(body)) + body + b"extra"
+    )
+    assert reply["refusal"] == "trailing_bytes"
+
+
+def test_a_frame_that_is_not_json_is_malformed(server):
+    reply, _ = _exchange(server, None, raw=HEADER.pack(3) + b"\xff\xfe\xfd")
+    assert reply["refusal"] == "malformed_frame"
+
+
+def test_valid_json_that_is_not_an_object_is_refused_as_that(server):
+    body = json.dumps([1, 2, 3]).encode()
+    reply, _ = _exchange(server, None, raw=HEADER.pack(len(body)) + body)
+    assert reply["refusal"] == "not_an_object"
+
+
+def test_a_peer_that_stops_sending_hits_the_deadline_and_does_not_hang(server):
+    """The cheapest denial of service there is, refused in finite time."""
+
+    listener, engine, recorded, path = server
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(str(path))
+    started = time.monotonic()
+
+    def serve():
+        connection, _ = listener.accept()
+        with connection:
+            engine.serve_connection(connection, lambda request: {})
+
+    worker = threading.Thread(target=serve)
+    worker.start()
+    try:
+        client.sendall(HEADER.pack(32))  # promises 32 bytes, sends none
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "the server waited past its deadline"
+    finally:
+        client.close()
+    assert time.monotonic() - started < 4
+    assert recorded[0]["reason"] == "read_deadline"
+
+
+def test_a_split_header_is_still_read_as_one_frame(server):
+    """A stream socket has no message boundaries.
+
+    A reader that assumed one `recv` returns a whole header would work on
+    every test and fail on a loaded machine.
+    """
+
+    listener, engine, recorded, path = server
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(2.0)
+    client.connect(str(path))
+    body = json.dumps({"verb": "node.ping", "arguments": {}}).encode()
+    header = HEADER.pack(len(body))
+
+    def serve():
+        connection, _ = listener.accept()
+        with connection:
+            engine.serve_connection(connection, lambda request: {"served": True})
+
+    worker = threading.Thread(target=serve)
+    worker.start()
+    try:
+        for byte in header:
+            client.sendall(bytes([byte]))
+        for index in range(0, len(body), 3):
+            client.sendall(body[index : index + 3])
+        client.shutdown(socket.SHUT_WR)
+        reply = client.recv(4096)
+    finally:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        client.close()
+    body_out = json.loads(reply[HEADER.size :])
+    assert body_out == {"ok": True, "result": {"served": True}}
+
+
+# -- the verb allowlist --------------------------------------------------
+
+
+def test_an_unknown_verb_is_refused(server):
+    reply, _ = _exchange(server, {"verb": "node.definitely_not", "arguments": {}})
+    assert reply["refusal"] == "unknown_verb"
+
+
+def test_an_unknown_verbs_name_is_never_written_to_the_ledger(server):
+    """A rejected frame is attacker-supplied by definition.
+
+    Recording its contents would make the audit chain a place anyone who can
+    reach the socket may write text into. The fingerprint is what correlates
+    repeats.
+    """
+
+    marker = "verb_" + "z" * 200
+    reply, recorded = _exchange(server, {"verb": marker, "arguments": {}})
+    assert reply["refusal"] == "unknown_verb"
+    serialized = json.dumps(recorded[0])
+    assert marker not in serialized
+    assert "verb" not in recorded[0]
+    assert len(recorded[0]["request_fingerprint"]) == 16
+
+
+def test_an_undeclared_arguments_name_is_never_written_to_the_ledger(server):
+    """Its key was chosen by the caller, so it is the caller's text.
+
+    This is the case the first version of the recorder got wrong: the
+    declared-argument names are ours and safe to record, and this one is not,
+    and they were being treated alike.
+    """
+
+    marker = "key_" + "q" * 200
+    reply, recorded = _exchange(
+        server, {"verb": "node.ping", "arguments": {marker: 1}}
+    )
+    assert reply["refusal"] == "undeclared_argument"
+    assert marker not in json.dumps(recorded[0])
+    assert "argument" not in recorded[0], (
+        "the recorder kept a key the caller chose; declared argument names "
+        "are ours to record and this one is not"
+    )
+
+
+def test_the_same_rejected_frame_fingerprints_the_same_way(server):
+    """So an operator can see one unknown verb arriving four hundred times."""
+
+    _exchange(server, {"verb": "nope", "arguments": {}})
+    _, recorded = _exchange(server, {"verb": "nope", "arguments": {}})
+    assert len(recorded) == 2
+    assert recorded[0]["request_fingerprint"] == recorded[1]["request_fingerprint"]
+
+
+def test_two_different_frames_fingerprint_differently():
+    assert fingerprint(b"a") != fingerprint(b"b")
+    assert len(fingerprint(b"a")) == 16
+
+
+# -- arguments have no free-text kind ------------------------------------
+
+
+def test_no_argument_kind_carries_free_text():
+    """The whole type system, and nothing in it is a string a caller picks.
+
+    `DIGEST` is a string with a fixed grammar that is compared and never
+    dereferenced; `ENUM` is a choice from a set the verb declares. There is no
+    kind that would let a caller name a path, a unit or a command.
+    """
+
+    assert {kind.value for kind in ArgumentKind} == {
+        "ordinal",
+        "flag",
+        "enum",
+        "digest",
+    }
+
+
+def test_an_ordinal_is_bounded_at_declaration():
+    with pytest.raises(ValueError):
+        Argument("index", ArgumentKind.ORDINAL)
+
+
+def test_an_enum_that_enumerates_nothing_is_refused():
+    with pytest.raises(ValueError):
+        Argument("unit", ArgumentKind.ENUM)
+
+
+def test_a_boolean_is_not_an_ordinal():
+    """`bool` is an `int` in Python, and `True` would address element one."""
+
+    argument = Argument("ordinal", ArgumentKind.ORDINAL, maximum=7)
+    with pytest.raises(RequestRefused) as refused:
+        argument.coerce(True)
+    assert refused.value.refusal is Refusal.ARGUMENT_TYPE
+
+
+def test_an_ordinal_out_of_range_is_refused_rather_than_clamped():
+    argument = Argument("ordinal", ArgumentKind.ORDINAL, maximum=7)
+    with pytest.raises(RequestRefused) as refused:
+        argument.coerce(8)
+    assert refused.value.refusal is Refusal.ARGUMENT_RANGE
+
+
+def test_a_digest_must_match_the_grammar_exactly():
+    argument = Argument("snapshot", ArgumentKind.DIGEST)
+    assert argument.coerce(DIGEST) == DIGEST
+    for bad in ("sha256:xyz", "../etc/passwd", DIGEST.upper(), DIGEST + "a"):
+        with pytest.raises(RequestRefused):
+            argument.coerce(bad)
+
+
+def test_an_enum_value_outside_the_declared_set_is_refused():
+    argument = Argument("unit", ArgumentKind.ENUM, choices=("auditd", "watchdog"))
+    assert argument.coerce("auditd") == "auditd"
+    with pytest.raises(RequestRefused):
+        argument.coerce("azazel-enforced.service")
+
+
+def test_a_missing_argument_is_refused_separately_from_an_undeclared_one():
+    principal = Principal(uid=0, gid=0, pid=1, classes=frozenset({PrincipalClass.ROOT}))
+    verb = REGISTRY.resolve("node.pick", principal)
+    with pytest.raises(RequestRefused) as missing:
+        verb.bind({"ordinal": 1})
+    assert missing.value.refusal is Refusal.MISSING_ARGUMENT
+
+    with pytest.raises(RequestRefused) as undeclared:
+        verb.bind(
+            {
+                "ordinal": 1,
+                "snapshot": DIGEST,
+                "dry_run": False,
+                "unit": "auditd",
+                "surprise": 1,
+            }
+        )
+    assert undeclared.value.refusal is Refusal.UNDECLARED_ARGUMENT
+
+
+def test_a_complete_request_binds():
+    principal = Principal(uid=0, gid=0, pid=1, classes=frozenset({PrincipalClass.ROOT}))
+    verb = REGISTRY.resolve("node.pick", principal)
+    bound = verb.bind(
+        {"ordinal": 7, "snapshot": DIGEST, "dry_run": True, "unit": "watchdog"}
+    )
+    assert bound == {
+        "ordinal": 7,
+        "snapshot": DIGEST,
+        "dry_run": True,
+        "unit": "watchdog",
+    }
+
+
+def test_a_registry_refuses_a_duplicate_verb():
+    with pytest.raises(ValueError):
+        VerbRegistry([PING, PING])
