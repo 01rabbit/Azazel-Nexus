@@ -181,7 +181,11 @@ def test_a_root_too_long_for_a_unix_socket_is_refused_with_the_arithmetic():
 
 #: The sequence issue #43 gives, in its order.
 REQUIRED_STAGES = (
-    "install",
+    # Installation is three halves needing three privileges: write access to
+    # the prefix, root, and a running systemd. One stage would have to claim
+    # all three or none.
+    "install files",
+    "install accounts",
     "units masked and disabled",
     "inventory",
     "operator-confirmed commissioning",
@@ -197,6 +201,36 @@ REQUIRED_STAGES = (
 def test_every_stage_the_issue_lists_is_run_in_order():
     found = re.findall(r'harness\.stage\(\s*"([^"]+)"', STAGES)
     assert tuple(found) == REQUIRED_STAGES
+
+
+def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_path):
+    """Nothing about the product went wrong, so nothing may read as broken.
+
+    Found on CI: the runner is not root, `useradd` failed, and five later
+    stages then failed with `AttributeError` because the first had not set
+    anything up. Five failures for one missing privilege buries the skip that
+    explains them.
+    """
+
+    harness = Harness(tmp_path)
+
+    def skip():
+        raise NotExecuted("not root here")
+
+    harness.stage("install accounts", skip)
+    harness.stage("inventory", lambda: "unreached", requires=("install accounts",))
+
+    blocked = harness.report.stages[1]
+    assert blocked.status == NOT_EXECUTED
+    assert "install accounts" in blocked.detail
+    assert harness.report.ok() is True
+
+
+def test_a_stage_whose_prerequisite_ran_is_not_skipped(tmp_path):
+    harness = Harness(tmp_path)
+    harness.stage("install accounts", lambda: "created")
+    harness.stage("inventory", lambda: "listed", requires=("install accounts",))
+    assert harness.report.stages[1].status == EXECUTED
 
 
 def test_no_stage_claims_the_run_was_on_real_hardware():
@@ -226,8 +260,11 @@ def test_the_installer_refuses_rather_than_pretending_without_systemd(tmp_path):
     if Path("/run/systemd/system").is_dir():
         pytest.skip("systemd is running here, so the refusal is not reachable")
 
+    # `--without-accounts` so that the account refusal, which fires first for
+    # a non-root caller, does not stand in for the one under test. The two
+    # refusals have different exit codes precisely so they can be told apart.
     result = subprocess.run(
-        ["sh", str(REPO_ROOT / "packaging" / "install.sh")],
+        ["sh", str(REPO_ROOT / "packaging" / "install.sh"), "--without-accounts"],
         env={"DESTDIR": str(tmp_path), "PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
         capture_output=True,
         text=True,
@@ -244,6 +281,44 @@ def test_the_installer_refuses_rather_than_pretending_without_systemd(tmp_path):
 def test_the_without_service_manager_mode_says_loudly_what_it_did_not_do():
     assert "SERVICE-MANAGER STAGE NOT EXECUTED" in INSTALLER
     assert "nothing here established that it would not" in INSTALLER
+
+
+def test_the_two_refusals_have_different_exit_codes():
+    """So a caller can tell "no systemd" from "not root" without parsing text."""
+
+    assert "exit 3" in INSTALLER and "exit 4" in INSTALLER
+
+
+def test_the_installer_refuses_to_create_accounts_without_root(tmp_path):
+    """The other half that needs a privilege, refused rather than attempted.
+
+    This is what CI hit: `useradd: Permission denied` from a script that had
+    already started installing. A refusal that has changed the host is a
+    partial install.
+    """
+
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("this process is root, so the refusal is not reachable")
+
+    result = subprocess.run(
+        ["sh", str(REPO_ROOT / "packaging" / "install.sh"), "--without-service-manager"],
+        env={"DESTDIR": str(tmp_path), "PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "accounts and directory ownership need root" in result.stderr
+    assert not (tmp_path / "etc").exists()
+
+
+def test_the_without_accounts_mode_says_that_ownership_was_not_applied():
+    assert "ACCOUNT STAGE NOT EXECUTED" in INSTALLER
+    # Matched within one `echo`: the sentence is split across two, and a
+    # search for the joined phrase finds nothing however correct the message.
+    assert "ownership the layout declares is not" in INSTALLER
 
 
 def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
@@ -264,16 +339,20 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
         shim.chmod(0o755)
 
     result = subprocess.run(
-        ["sh", str(REPO_ROOT / "packaging" / "install.sh"), "--without-service-manager"],
+        [
+            "sh",
+            str(REPO_ROOT / "packaging" / "install.sh"),
+            "--without-service-manager",
+            "--without-accounts",
+        ],
         env={"DESTDIR": str(tmp_path), "PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
         capture_output=True,
         text=True,
         timeout=60,
     )
-    if result.returncode != 0 and "useradd" in result.stderr:
-        pytest.skip(f"the accounts cannot be created here: {result.stderr.strip()[:120]}")
     assert result.returncode == 0, result.stderr
     assert "SERVICE-MANAGER STAGE NOT EXECUTED" in result.stdout
+    assert "ACCOUNT STAGE NOT EXECUTED" in result.stdout
 
     for spec in LAYOUT:
         created = tmp_path / spec.path.lstrip("/")

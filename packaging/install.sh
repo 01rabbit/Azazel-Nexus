@@ -30,13 +30,30 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # marker it prints is what keeps "did not run" from being read as "passed":
 # tests/unit/test_e2e_harness.py refuses a report that counts a stage it
 # skipped as a success.
+#
+# `--without-accounts` is the same idea for the half that needs root. Creating
+# a system account and setting a directory's owner both do; a packaging or
+# integration run on a machine where the caller is not root can do neither,
+# and pretending otherwise would install directories whose ownership is
+# whoever ran the script.
 WITH_SERVICE_MANAGER=yes
+WITH_ACCOUNTS=yes
 for argument in "$@"; do
     case "$argument" in
         --without-service-manager) WITH_SERVICE_MANAGER=no ;;
+        --without-accounts) WITH_ACCOUNTS=no ;;
         *) echo "unknown option: $argument" >&2; exit 2 ;;
     esac
 done
+
+if [ "$WITH_ACCOUNTS" = yes ] && [ "$(id -u)" -ne 0 ]; then
+    echo "refusing to install: accounts and directory ownership need root." >&2
+    echo "Pass --without-accounts to install the files at their declared" >&2
+    echo "modes without owners. The daemons will not have accounts to run" >&2
+    echo "as, and this script will say so rather than reporting a" >&2
+    echo "completed install." >&2
+    exit 4
+fi
 
 if [ "$WITH_SERVICE_MANAGER" = yes ] && [ ! -d /run/systemd/system ]; then
     echo "refusing to install: systemd is not running on this host." >&2
@@ -60,23 +77,39 @@ done
 
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
-for account in azcommission azaudit azwatch; do
-    if ! getent passwd "$account" >/dev/null 2>&1; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
+if [ "$WITH_ACCOUNTS" = yes ]; then
+    for account in azcommission azaudit azwatch; do
+        if ! getent passwd "$account" >/dev/null 2>&1; then
+            useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
+        fi
+    done
+    if ! getent group azazel-operator >/dev/null 2>&1; then
+        groupadd --system azazel-operator
     fi
-done
-if ! getent group azazel-operator >/dev/null 2>&1; then
-    groupadd --system azazel-operator
+else
+    echo "ACCOUNT STAGE NOT EXECUTED: no account or group was created, and"
+    echo "no directory was given an owner. The modes below are applied; the"
+    echo "ownership the layout declares is not."
 fi
 
-install -d -m 0755 -o root -g root "${DESTDIR:-}"/etc/azazel
-install -d -m 0750 -o root -g azcommission "${DESTDIR:-}"/etc/azazel/commissioning
-install -d -m 0755 -o root -g root "${DESTDIR:-}"/etc/azazel/systemd
-install -d -m 0750 -o root -g root "${DESTDIR:-}"/var/lib/azazel
-install -d -m 0750 -o root -g azazel-operator "${DESTDIR:-}"/var/lib/azazel/run
-install -d -m 0750 -o root -g azaudit "${DESTDIR:-}"/var/lib/azazel/state
-install -d -m 0700 -o root -g root "${DESTDIR:-}"/var/lib/azazel/generations
-install -d -m 0700 -o root -g root "${DESTDIR:-}"/var/lib/azazel/secrets
+# One declaration, two ways of applying it. The ownership is what needs root,
+# so it is the part that varies; the mode never does.
+make_dir() {  # mode group path
+    if [ "$WITH_ACCOUNTS" = yes ]; then
+        install -d -m "$1" -o root -g "$2" "${DESTDIR:-}$3"
+    else
+        install -d -m "$1" "${DESTDIR:-}$3"
+    fi
+}
+
+make_dir 0755 root /etc/azazel
+make_dir 0750 azcommission /etc/azazel/commissioning
+make_dir 0755 root /etc/azazel/systemd
+make_dir 0750 root /var/lib/azazel
+make_dir 0750 azazel-operator /var/lib/azazel/run
+make_dir 0750 azaudit /var/lib/azazel/state
+make_dir 0700 root /var/lib/azazel/generations
+make_dir 0700 root /var/lib/azazel/secrets
 
 install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
 install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"

@@ -126,7 +126,38 @@ class Harness:
             "PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'runtime' / 'src'}",
         }
 
-    def stage(self, name: str, run: Callable[[], Optional[str]]) -> None:
+    def executed(self, name: str) -> bool:
+        return any(
+            stage.name == name and stage.status == EXECUTED for stage in self.report.stages
+        )
+
+    def stage(
+        self,
+        name: str,
+        run: Callable[[], Optional[str]],
+        *,
+        requires: tuple[str, ...] = (),
+    ) -> None:
+        """Run a stage, unless something it needs did not run.
+
+        A stage blocked by a skipped prerequisite is `not_executed`, not
+        `failed`: nothing about the product went wrong, and reporting it as a
+        failure would bury the one skip that explains all of them.
+
+        The dependency is named in the reason, so a reader can tell a stage
+        that was blocked from one that decided for itself it could not run.
+        """
+
+        missing = [required for required in requires if not self.executed(required)]
+        if missing:
+            self.report.stages.append(
+                StageResult(
+                    name,
+                    NOT_EXECUTED,
+                    f"depends on {missing[0]!r}, which was not executed",
+                )
+            )
+            return
         started = time.monotonic()
         try:
             detail = run()

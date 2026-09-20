@@ -234,18 +234,23 @@ def test_the_installer_creates_exactly_the_declared_layout():
     """
 
     found = {
-        path: (int(mode, 8), owner, group)
-        for mode, owner, group, path in re.findall(
-            r'^install -d -m (\d{4}) -o (\S+) -g (\S+) "\$\{DESTDIR:-\}"(/\S+)$',
-            _installer(),
-            re.M,
+        path: (int(mode, 8), group)
+        for mode, group, path in re.findall(
+            r"^make_dir (\d{4}) (\S+) (/\S+)$", _installer(), re.M
         )
     }
-    declared = {spec.path: (spec.mode, spec.owner, spec.group) for spec in LAYOUT}
+    declared = {spec.path: (spec.mode, spec.group) for spec in LAYOUT}
     assert found == declared, (
-        "the installer and the layout disagree about a directory's mode, "
-        "owner or group. A writable path nobody declared is a path nobody set "
-        "the owner of"
+        "the installer and the layout disagree about a directory's mode or "
+        "group. A writable path nobody declared is a path nobody set the "
+        "owner of"
+    )
+    assert all(spec.owner == "root" for spec in LAYOUT), (
+        "a directory is declared to a non-root owner and `make_dir` always "
+        "passes `-o root`; the two would disagree silently"
+    )
+    assert '-o root -g "$2"' in _installer(), (
+        "`make_dir` no longer applies the declared ownership"
     )
 
 

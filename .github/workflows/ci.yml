@@ -168,11 +168,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . -e ./runtime
 
-      # The runner has systemd binaries and no running systemd, so the
-      # service-manager stage reports itself not executed. That is the
-      # honest outcome and the harness refuses to count it as a pass --
-      # `--require-all` is what a host with systemd would add, and this job
-      # deliberately does not.
+      # This runner is neither root nor running systemd, so three stages
+      # report themselves not executed: the accounts, the units being masked,
+      # and the inventory that needs a principal the accounts would create.
+      # That is the honest outcome and the harness refuses to count any of
+      # them as a pass -- `--require-all` is what a host with both would add,
+      # and this job deliberately does not.
+      #
+      # The first version of this job installed as root in a container and so
+      # never saw the non-root path. The harness reported five cascading
+      # failures for one missing privilege; it now reports one skip and names
+      # it as the reason for the rest.
       - name: Run the integration harness
         run: |
           sudo mkdir -p /tmp/az-e2e
@@ -195,8 +201,12 @@ jobs:
               sys.exit("the summary does not add up")
           # A run where nothing executed is a run that proved nothing, and a
           # green job for it would be the worst kind of green.
-          if passed < 2:
-              sys.exit(f"only {passed} stages executed; this proves nothing")
+          # A run where almost nothing executed is a run that proved almost
+          # nothing, and a green job for it would be the worst kind of green.
+          # Eight is what this runner reaches: everything but the three that
+          # need root or a service manager.
+          if passed < 8:
+              sys.exit(f"only {passed} of {total} stages executed; expected 8")
           PY
 
   fabric-extra:

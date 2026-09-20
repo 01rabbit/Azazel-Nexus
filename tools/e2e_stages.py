@@ -20,24 +20,41 @@ NOW = "2026-09-20T12:00:00Z"
 ACTOR = "e2e@harness"
 
 
+#: Installation has three halves and they need different privileges.
+#:
+#: Files need write access to the prefix. Accounts and directory ownership
+#: need root. Masking a unit needs a running systemd. A single `install`
+#: stage would have to claim all three or none, and on a CI runner that is
+#: neither root nor running systemd it would claim failure for something that
+#: simply cannot be done there.
 def run_all(harness: Harness) -> None:
-    harness.stage("install", lambda: _install(harness))
+    harness.stage("install files", lambda: _install_files(harness))
+    harness.stage("install accounts", lambda: _install_accounts(harness))
     harness.stage("units masked and disabled", lambda: _masked(harness))
-    harness.stage("inventory", lambda: _inventory(harness))
-    harness.stage("operator-confirmed commissioning", lambda: _commission(harness))
-    harness.stage("verified generation", lambda: _generation(harness))
-    harness.stage("activation", lambda: _activation(harness))
+    harness.stage(
+        "inventory",
+        lambda: _inventory(harness),
+        requires=("install accounts",),
+    )
+    harness.stage("operator-confirmed commissioning", lambda: _commission(harness),
+                  requires=("install files",))
+    harness.stage("verified generation", lambda: _generation(harness),
+                  requires=("operator-confirmed commissioning",))
+    harness.stage("activation", lambda: _activation(harness),
+                  requires=("verified generation",))
     harness.stage("health and status", lambda: _health(harness))
     harness.stage("daemon failure", lambda: _failure(harness))
-    harness.stage("remask and rollback", lambda: _rollback(harness))
-    harness.stage("audit chain", lambda: _audit(harness))
+    harness.stage("remask and rollback", lambda: _rollback(harness),
+                  requires=("verified generation",))
+    harness.stage("audit chain", lambda: _audit(harness),
+                  requires=("verified generation",))
 
 
-def _install(harness: Harness) -> str:
-    """Run the real installer against a prefix, files and accounts only.
+def _install_files(harness: Harness) -> str:
+    """Run the real installer against a prefix. Not a reimplementation of it.
 
-    The accounts are created on the host either way -- an installer that
-    pretended to create them would be testing a different script.
+    Without the account half, which needs root: the modes are applied and the
+    ownership is not, and the installer says so.
     """
 
     libexec = harness.root / "usr/libexec/azazel"
@@ -53,7 +70,12 @@ def _install(harness: Harness) -> str:
         shim.chmod(0o755)
 
     result = subprocess.run(
-        ["sh", str(ROOT / "packaging" / "install.sh"), "--without-service-manager"],
+        [
+            "sh",
+            str(ROOT / "packaging" / "install.sh"),
+            "--without-service-manager",
+            "--without-accounts",
+        ],
         env={**harness.env, "DESTDIR": str(harness.root)},
         capture_output=True,
         text=True,
@@ -62,11 +84,12 @@ def _install(harness: Harness) -> str:
         raise RuntimeError(
             f"install.sh exited {result.returncode}: {result.stderr.strip()[:400]}"
         )
-    if "SERVICE-MANAGER STAGE NOT EXECUTED" not in result.stdout:
-        raise RuntimeError(
-            "install.sh completed without saying the service-manager stage "
-            "did not run; a silent skip is what this harness exists to refuse"
-        )
+    for marker in ("SERVICE-MANAGER STAGE NOT EXECUTED", "ACCOUNT STAGE NOT EXECUTED"):
+        if marker not in result.stdout:
+            raise RuntimeError(
+                f"install.sh completed without printing {marker!r}; a silent "
+                "skip is what this harness exists to refuse"
+            )
 
     from azazel_nexus.layout import LAYOUT
 
@@ -84,7 +107,43 @@ def _install(harness: Harness) -> str:
     ]
     if wrong:
         raise RuntimeError(f"{wrong} were created with the wrong mode")
-    return f"{len(LAYOUT)} directories at their declared modes; executables in place"
+    return (
+        f"{len(LAYOUT)} directories at their declared modes; executables in "
+        "place. Ownership was not applied -- that is the account stage"
+    )
+
+
+def _install_accounts(harness: Harness) -> str:
+    """The half that needs root: system accounts and directory ownership."""
+
+    if os.geteuid() != 0:
+        raise NotExecuted(
+            f"this process runs as uid {os.geteuid()} and creating a system "
+            "account needs root, so no account exists and nothing established "
+            "that the daemons could run as one"
+        )
+    result = subprocess.run(
+        ["sh", str(ROOT / "packaging" / "install.sh"), "--without-service-manager"],
+        env={**harness.env, "DESTDIR": str(harness.root)},
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"install.sh exited {result.returncode}: {result.stderr.strip()[:400]}"
+        )
+
+    import grp
+    import pwd
+
+    from azazel_nexus_runtime.hardening import SYSTEM_ACCOUNTS
+
+    for account in SYSTEM_ACCOUNTS:
+        entry = pwd.getpwnam(account)
+        if "nologin" not in entry.pw_shell and "false" not in entry.pw_shell:
+            raise RuntimeError(f"{account} has a login shell: {entry.pw_shell}")
+    grp.getgrnam("azazel-operator")
+    return f"{len(SYSTEM_ACCOUNTS)} non-login accounts and the operator group"
 
 
 def _masked(harness: Harness) -> str:
