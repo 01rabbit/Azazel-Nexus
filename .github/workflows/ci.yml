@@ -71,6 +71,34 @@ jobs:
           before = set(sys.modules)
           import azazel_nexus.capability  # noqa: F401
           import azazel_nexus.lite_cache  # noqa: F401
+          # The Knowledge Lite trust chain (#6). Verification, content
+          # addressing, generations and revocation are what decide whether a
+          # cache may be served at all, so they have to import on a node that
+          # has nothing installed -- otherwise the one node that most needs to
+          # refuse an artifact would be the one unable to check it. A pure
+          # standard-library Ed25519 verifier is why this holds; a library
+          # dependency here would fail in this job.
+          import azazel_nexus.signature as signature  # noqa: F401
+          import azazel_nexus.content_store  # noqa: F401
+          import azazel_nexus.lite_generation  # noqa: F401
+          import azazel_nexus.revocation  # noqa: F401
+          # And it must really verify here, not merely import. RFC 8032 §7.1
+          # vector 2, inline: an import that succeeded while the arithmetic
+          # silently needed something unavailable would pass this job.
+          if not signature.verify_detached(
+              public_key=bytes.fromhex(
+                  "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+              ),
+              message=bytes.fromhex("72"),
+              signature=bytes.fromhex(
+                  "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+                  "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+              ),
+          ):
+              raise SystemExit(
+                  "the Ed25519 verifier does not verify a known-good signature "
+                  "on a runner with nothing installed"
+              )
           # The activation controller and the layout it installs. These are
           # the CORE path at its most literal: the controller is what runs on
           # a node that has just been installed and has nothing else. If it
