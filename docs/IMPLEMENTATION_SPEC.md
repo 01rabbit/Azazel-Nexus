@@ -93,6 +93,30 @@ classes; a 64 GB host selects `standard`.
 CPU cores and storage are recorded and MAY independently reduce the envelope.
 They MUST NOT raise it above the RAM-selected value.
 
+**Implemented in `azazel_nexus.resource_profile`** (Nexus#26). Three points
+about the implementation are load-bearing rather than incidental:
+
+- **The reading is used as reported.** `MemTotal` is usable RAM after firmware
+  has taken its share, which is the quantity these floors are written against.
+  Subtracting the 1024 MiB allowance from the reading as well applies it twice
+  and selects one tier low — on the host measured above, 16,095 MiB becomes
+  `core` instead of `lite`, undoing the allowance's whole purpose.
+  `test_the_firmware_allowance_is_not_applied_to_the_reading_as_well` pins the
+  four readings where the second subtraction changes the answer; a reading in
+  the middle of a band absorbs it silently.
+- **A failed reading refuses.** An unreadable `/proc/meminfo`, a missing
+  `MemTotal`, or a non-positive count raises rather than returning a small
+  number, because a small number selects `diagnostic` and that would be a
+  hardware class asserted on no measurement.
+- **The module cannot express a capability.** It does not import the
+  capability vocabulary, so no edit to it can return a capability set. §2.2 is
+  a sentence; this is what keeps it true.
+
+**Residual risk, unchanged:** a host reserving more than 1024 MiB — a 2 GiB
+iGPU aperture, for instance — still selects one tier low. The remedy is
+measurement on real hardware (Nexus#4), not a larger allowance, and no
+simulated result establishes it.
+
 ### 2.2 The resource profile is not a capability
 
 A resource profile states that the host has **room** for a capability, not that
