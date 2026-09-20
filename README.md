@@ -75,7 +75,13 @@ This division is intentional. It keeps the authority to change the field boundar
 
 ## Status
 
-**Target contract.** It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence. It now publishes
+**Target contract.** It carries a package (`pyproject.toml`,
+`src/azazel_nexus/`) with a deliberately empty required-dependency list, a unit
+suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc2`,
+ADR-0001), consumed through one boundary module. One mapping is attested by
+that boundary — capability/mode publication; every other contract mapping
+remains a design assertion awaiting a conformance attestation, not verified
+evidence. It now publishes
 a license, a security policy, a contribution guide, a
 [support matrix](docs/support-matrix.md), an
 [update channel](docs/update-channel.md) description, and a

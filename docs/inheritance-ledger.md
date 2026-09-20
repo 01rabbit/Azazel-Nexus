@@ -2,7 +2,13 @@
 
 Status: **target contract**. This ledger records what Azazel-Nexus intends to
 inherit and on what evidence. It is not a claim that any entry is implemented
-in this repository. It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence.
+in this repository. It carries a package (`pyproject.toml`,
+`src/azazel_nexus/`) with a deliberately empty required-dependency list, a unit
+suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc2`,
+ADR-0001), consumed through one boundary module. One mapping is attested by
+that boundary — capability/mode publication; every other contract mapping
+remains a design assertion awaiting a conformance attestation, not verified
+evidence.
 
 Related: [Contract ownership](contract-ownership.md) ·
 [Capability model](capability-model.md) · [Commissioning](commissioning.md) ·
@@ -77,13 +83,32 @@ Read from `01rabbit/Azazel-Edge` `main` on the audit date.
 | Fabric dependency nature | **optional integration extra** — the file states baseline Edge behavior is unchanged without it |
 | Device-specific installer | `installer/` exists and is Edge-owned |
 
-### 4.1 The Fabric dependency is not inherited unchanged
+### 4.1 The Fabric dependency is inherited, optionality included
 
-Edge treats Fabric as an optional extra. Nexus cannot: integration across
-products *is* the Nexus product, so Nexus requires a Fabric pin as a hard
-dependency. The **pin policy** is inherited (an exact tag, never a branch or a
-development commit); the **optionality** is not. Nexus has no pin yet; adopting
-one is Phase 0 work in the [roadmap](roadmap.md).
+**This section previously said the opposite**, and the correction is recorded
+rather than quietly applied. It read: "Edge treats Fabric as an optional extra.
+Nexus cannot: integration across products *is* the Nexus product, so Nexus
+requires a Fabric pin as a hard dependency."
+
+That reasoning did not survive contact with the doctrine sentence this
+repository is built around. Nexus must be useful as `CORE` with no external
+Knowledge, no Deception, no remote cognition and no cloud connectivity;
+`pyproject.toml` states it and the CI job "CORE imports with nothing installed"
+checks it. Integration *is* the Nexus product — for a **release**. It is not
+what `CORE` is, and a `CORE` path that fails when a contract library is absent
+is not a `CORE` path.
+
+So both the **pin policy** (an exact tag, never a branch or a development
+commit) and the **optionality** are inherited. Fabric is declared as the
+`fabric` extra, pinned to `v0.9.0rc2`, and consumed through the single boundary
+module `azazel_nexus.fabric_boundary` — see [ADR-0001](adr/0001-fabric-pin.md)
+for the decision and its alternatives. Azazel-Boot, which carries the same
+`CORE` doctrine, reached the same shape in its ADR-0004.
+
+What a release requires is a separate question this ledger does not answer.
+Moving Fabric into `dependencies` would be a change of product posture with its
+own decision record; ADR-0001 §Consequences names what would have to be true
+first.
 
 ### 4.2 Open: Edge has two decision/enforcement paths
 

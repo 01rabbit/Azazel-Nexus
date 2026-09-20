@@ -21,6 +21,13 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+# Optional, never required. Nexus must be useful as CORE with no external
+# Knowledge, no Deception, no remote cognition and no cloud connectivity, so
+# Fabric cannot enter `dependencies` above -- a CORE path that fails when a
+# contract library is missing is not a CORE path. An exact tag, never a branch
+# and never a development commit (ADR-0001).
+fabric = ["azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@v0.9.0rc2"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

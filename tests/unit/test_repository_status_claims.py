@@ -14,6 +14,24 @@ The check is keyed on the **fact**, not on the sentence. Each pattern below is
 refused only while the repository contradicts it, so this file also works in
 the other direction: when Nexus adopts a Fabric pin, "no Fabric pin" becomes a
 banned phrase and these documents have to say what is true instead.
+
+What this file cannot do
+------------------------
+It checks claims about **this repository**, because those are the ones it can
+measure. A claim about another repository -- "`mio_contracts` is not released",
+"Azazel-Gadget is on `v0.4.0`" -- is unreachable from here: Nexus declares no
+Fabric dependency and has no view of any sibling. Both of those claims were
+stale too, and neither would be caught by anything below.
+
+Two different answers, because they are two different kinds of claim. A pin
+another product holds is a fact somebody else already records, so
+`test_the_support_matrix_does_not_restate_another_products_pin` refuses the
+copy and the document cites Fabric's table instead. A one-off observation of
+another repository cannot be cited away, so it is **dated against a named tag**
+and checked for that dating
+(`test_the_fabric_observation_is_written_against_a_named_tag`). Neither makes
+the underlying claim verifiable here; they make an unverifiable claim visible
+as one.
 """
 
 from __future__ import annotations
@@ -36,6 +54,14 @@ STATUS_DOCUMENTS = (
     "docs/architecture.md",
     "docs/contract-ownership.md",
     "docs/inheritance-ledger.md",
+    # Added after the first pass missed them. The roadmap carried the same
+    # stale bootstrap claim in a different shape ("Still absent: the package
+    # layout and dependency manifest; CI covers documentation links only"),
+    # and the support matrix carried it as a table row. A list of documents
+    # that only covers the ones written in the house phrasing catches the
+    # claims that were easy to find.
+    "docs/roadmap.md",
+    "docs/support-matrix.md",
 )
 
 
@@ -78,21 +104,35 @@ def _has_automated_tests() -> bool:
 #: Patterns rather than sentences: "no package" catches "contains no package",
 #: "has no package" and "still has no package" alike, so a rewrite cannot
 #: quietly reintroduce the claim in a new shape.
+#: Ways of saying a thing is missing. Kept as one alternation so every claim
+#: below inherits the same vocabulary: the roadmap said "still absent" where
+#: five other documents said "no", and a check that only knew "no" passed it.
+_MISSING = r"(?:\bno\b|\babsent\b|\blacks?\b|\bwithout\b)"
+
 CLAIMS = (
-    (_has_package, re.compile(r"\bno package\b", re.I), "a package"),
+    (
+        _has_package,
+        re.compile(rf"\bno package\b(?! manager)|{_MISSING}[^.]{{0,60}}\bpackage layout\b", re.I),
+        "a package",
+    ),
     (
         _has_dependency_manifest,
-        re.compile(r"\bno\b[^.]{0,60}\bdependency manifest\b", re.I),
+        re.compile(rf"{_MISSING}[^.]{{0,60}}\bdependency manifest\b", re.I),
         "a dependency manifest",
     ),
     (
         _has_fabric_pin,
-        re.compile(r"\bno\b[^.]{0,80}\b(?:Azazel-)?Fabric pin\b|\bno pin\b", re.I),
+        re.compile(rf"{_MISSING}[^.]{{0,80}}\b(?:Azazel-)?Fabric pin\b|\bno pin\b", re.I),
         "an Azazel-Fabric pin",
     ),
     (
         _has_automated_tests,
-        re.compile(r"\b(?:only|no)\b[^.]{0,90}\bautomated check", re.I),
+        re.compile(
+            r"\b(?:only|no)\b[^.]{0,90}\bautomated check"
+            r"|\bdocumentation links? only\b"
+            r"|\bonly automated check\b",
+            re.I,
+        ),
         "an automated test suite",
     ),
 )
@@ -112,20 +152,35 @@ def test_no_document_denies_something_this_repository_has(relative, fact, patter
     )
 
 
-def test_the_repository_still_has_no_fabric_pin():
-    """The one original claim that is still true, pinned as a fact.
+def test_the_fabric_pin_is_an_optional_extra_and_not_a_required_dependency():
+    """The successor to a guard that has now fired.
 
-    Not decoration. It is what makes the skip above meaningful: without it, a
-    Fabric pin could be added and every claim check would simply start
-    skipping, reporting nothing. This turns that same event into a failure
-    that names the documents to revisit.
+    This file used to assert that Nexus had **no** Fabric pin. That assertion
+    did its job: adopting the pin turned seven tests red at once and named
+    every document carrying a sentence that had just stopped being true. A
+    guard whose event has happened is replaced by one for the invariant that
+    matters next, not deleted.
+
+    What matters next is the *shape* of the dependency. Nexus must be useful as
+    `CORE` with no external Knowledge, no Deception, no remote cognition and no
+    cloud connectivity (ADR-0001). Fabric moving from `[project.optional-
+    dependencies]` into `dependencies` would end that quietly -- an import
+    line, no document touched -- so it ends loudly here instead.
     """
 
-    assert not _has_fabric_pin(), (
-        "Nexus now declares an azazel-fabric dependency. Update the status "
-        f"sentence in each of {list(STATUS_DOCUMENTS)}, and revisit "
-        "docs/contract-ownership.md §3, whose mappings were written as design "
-        "assertions precisely because no pin bound them."
+    text = (ROOT / "pyproject.toml").read_text("utf-8")
+    required = text.split("[project.optional-dependencies]", 1)[0]
+
+    assert "azazel-fabric" not in required, (
+        "azazel-fabric appears in the required dependency list. Nexus declares "
+        "it as the optional `fabric` extra so that CORE works with nothing "
+        "installed; making it required is a change of product posture and "
+        "needs its own ADR (see docs/adr/0001-fabric-pin.md §Consequences) "
+        "plus a revision of docs/inheritance-ledger.md §4.1."
+    )
+    assert "azazel-fabric" in text, (
+        "the Fabric pin has disappeared from pyproject.toml; "
+        "src/azazel_nexus/fabric_boundary.py names a tag that nothing installs"
     )
 
 
@@ -153,4 +208,42 @@ def test_the_fabric_observation_is_written_against_a_named_tag():
         f"the Fabric observation opens with {first_sentence!r} and dates itself "
         "against no tag. Nexus cannot re-check it, so an undated observation is "
         "a claim about whatever Fabric happens to be."
+    )
+
+
+#: The table in `support-matrix.md` that used to copy other products' pins.
+_FABRIC_FACTS_HEADING = "| Fact | State |"
+
+
+def test_the_support_matrix_does_not_restate_another_products_pin():
+    """Cite the record; do not copy it.
+
+    This table said the Edge, Deception, Knowledge and Boot pins all agreed on
+    `v0.8.0`, and that Azazel-Gadget was on `v0.4.0`. By the time anyone read
+    it, four of the five had moved. Nexus cannot check another repository's
+    pin, so a version literal for another product here is a second statement
+    of somebody else's record with nothing to keep it honest -- the same
+    failure as the undated Fabric observation in contract-ownership.md §2.
+
+    Nexus's *own* pin is exempt, because that is a fact this repository holds.
+    """
+
+    text = _text("docs/support-matrix.md")
+    start = text.find(_FABRIC_FACTS_HEADING)
+    assert start != -1, "support-matrix.md lost its Fabric facts table"
+    table = text[start:].split("A release will additionally pin", 1)[0]
+
+    offenders = []
+    for row in re.findall(r"\|[^|]*\|[^|]*\|", table):
+        if "Nexus's Fabric pin" in row:
+            continue
+        for product, version in re.findall(
+            r"(Azazel-[A-Za-z]+|Azazel-Gadget)[^|]{0,120}?`(v\d+\.\d+\.\d+[^`]*)`", row
+        ):
+            offenders.append(f"{product} pinned at {version}")
+
+    assert offenders == [], (
+        f"the Fabric facts table states another product's version: {offenders}. "
+        "Link to Azazel-Fabric's release-compatibility table instead; a copy "
+        "here is a second statement of a record this repository cannot check."
     )

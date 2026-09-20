@@ -65,6 +65,21 @@ jobs:
           before = set(sys.modules)
           import azazel_nexus.capability  # noqa: F401
           import azazel_nexus.lite_cache  # noqa: F401
+          # The boundary module too. It names azazel_fabric and must still
+          # import here: its Fabric import is deferred to call time precisely
+          # so that a missing optional extra is a bounded condition and not
+          # the crash the boundary exists to prevent (ADR-0001).
+          import azazel_nexus.fabric_boundary as boundary  # noqa: F401
+          projection = boundary.project_capability(
+              azazel_nexus.capability.CapabilityState.CORE,
+              azazel_nexus.capability.CORE_CAPABILITIES,
+          )
+          if projection.available or not projection.reason:
+              raise SystemExit(
+                  "with no Fabric installed the projection must be unavailable "
+                  f"and say why, got available={projection.available!r} "
+                  f"reason={projection.reason!r}"
+              )
           third_party = sorted(
               name.split(".")[0]
               for name in set(sys.modules) - before
@@ -77,3 +92,34 @@ jobs:
               raise SystemExit(f"CORE path imports non-stdlib modules: {offenders}")
           print("CORE path is standard library only")
           PY
+
+  fabric-extra:
+    name: Fabric extra at the pinned tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A pin that nothing installs is a claim, not a dependency. The boundary
+      # tests skip themselves when Fabric is absent -- which is correct for a
+      # contributor without network access and useless as a gate, so this job
+      # is where they are not allowed to skip.
+      - name: Install with the Fabric extra
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,fabric]'
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -q
+
+      - name: Refuse a run where the boundary tests skipped
+        run: |
+          python -m pytest tests/unit/test_fabric_boundary.py -q --no-header -rs \
+            | tee /tmp/boundary.txt
+          if grep -qE '[0-9]+ skipped' /tmp/boundary.txt; then
+            echo "the boundary tests skipped on the job that installs Fabric" >&2
+            exit 1
+          fi

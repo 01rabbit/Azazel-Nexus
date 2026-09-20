@@ -7,17 +7,21 @@ Status: **target contract**. No phase below has started in this repository.
 ## Phase 0 — Repository and contract bootstrap
 
 - Publish license, security policy, contribution guide, package layout,
-  dependency manifest, and CI. Published so far: the license, the security
-  policy, the contribution guide, and the [support matrix](support-matrix.md),
-  [update channel](update-channel.md), and [recovery](recovery.md) documents the
-  R0 exit criteria name. Still absent: the package layout and dependency
-  manifest; CI covers documentation links only. See
-  [contract ownership](contract-ownership.md) §6.
+  dependency manifest, and CI. **Done**: the license, the security policy, the
+  contribution guide, the [support matrix](support-matrix.md),
+  [update channel](update-channel.md) and [recovery](recovery.md) documents the
+  R0 exit criteria name, and — with the Knowledge Lite consumer — the package
+  layout, the dependency manifest, and a CI unit suite beside the
+  documentation link check. See [contract ownership](contract-ownership.md) §6
+  for what is left.
 - Adopt an **exact Azazel-Fabric release pin** and build adapters against the
   Fabric-owned records that already exist. Nexus does not define shared
-  schemas; where a Fabric contract is missing (`provisioning_contracts`,
-  `mio_contracts`), the dependent work waits for Fabric R1 rather than
-  inventing a local canonical form.
+  schemas. This item is the one remaining bootstrap row and nothing else in
+  Phase 0 waits on Fabric any more: `provisioning_contracts` and
+  `mio_contracts` were the two missing families, and both have existed since
+  `v0.9.0rc1`. What is unblocked is the *work*, not the mapping — a released
+  module is something to write an adapter against, not evidence that any
+  §3 mapping holds.
 - Establish a reproducible rugged Linux PC baseline: disk encryption, service
   identities, network default deny, audited configuration, and recovery
   process.
