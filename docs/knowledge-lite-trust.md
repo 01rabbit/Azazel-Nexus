@@ -1,11 +1,12 @@
 # Knowledge Lite: the trust chain under the cache
 
 Status: **implemented** (`src/azazel_nexus/signature.py`,
-`content_store.py`, `lite_generation.py`, `revocation.py`), unit tested and
-mutation checked. This is E1 of [#53](https://github.com/01rabbit/Azazel-Nexus/issues/53),
-the first half: the primitives. The service that composes them into the
-`available` / `stale` / `unavailable` / `quarantined` states an operator sees
-is the second half and is **not** in this change.
+`content_store.py`, `lite_generation.py`, `revocation.py`, `lite_trust.py`,
+`lite_service.py`), unit tested and mutation checked. This is E1 of
+[#53](https://github.com/01rabbit/Azazel-Nexus/issues/53): the primitives
+(§2–§5), the trust store (§6) and the service that composes them into the four
+states an operator sees (§7). Wiring those states into `cli.py`, `status.py`,
+`degradation.py` and the audit ledger is E4 and is **not** in this change.
 
 Related: [the Knowledge Lite consumer](knowledge-lite-consumer.md) ·
 [capability model](capability-model.md) · [contract ownership](contract-ownership.md)
@@ -32,6 +33,8 @@ away the generation it just replaced has nothing to go back to.
 | Generation management | configuration only (`generation.py`) | `lite_generation.py` |
 | Rollback | **impossible by construction** | `lite_generation.py` |
 | Revocation | — | `revocation.py` |
+| Trust store | — | `lite_trust.py` |
+| `available` / `stale` / `unavailable` / `quarantined` | — | `lite_service.py` |
 
 ## 2. Verification, and the signer that does not exist
 
@@ -128,23 +131,84 @@ The signed file is 64 bytes of detached signature followed by the payload
 exactly as it was signed. One file, one atomic replace, and no canonicalisation
 step that a signer and a verifier could disagree about.
 
-## 6. What this change does not claim
+## 6. The trust store
 
-- **No service, no status, no audit wiring.** These are primitives. Nothing in
-  `cli.py`, `status.py`, `degradation.py` or the runtime daemons consults them
-  yet; that is E1's second half.
-- **No `quarantined` state yet.** `lite_cache.Admission` still has
-  `ABSENT` / `REFUSED` / `UNVERIFIABLE` / `ADMITTED`. The distinction between
-  "we do not have it" and "we had it and it is not trustworthy" is stated in
-  [#53](https://github.com/01rabbit/Azazel-Nexus/issues/53) and is not
-  implemented here.
-- **No trust store.** Admitted public keys are passed in by the caller. Pinning
-  them at commissioning is not done.
+A verifier without a trust store verifies against whatever it is handed, which
+is not verification. `lite_trust.py` is the set of public keys a node will
+accept an artifact under.
+
+**Keys are bound to a commissioning, not to a node.** The file records the
+commissioning digest it was pinned under, and reading it requires naming that
+same digest. Re-commissioning changes what the node is and who runs it; keys
+pinned for the previous commissioning are refused rather than carried across,
+because *"these were the right keys for the node this used to be"* is not an
+argument for trusting them now.
+
+**Pinning happens once.** `pin` refuses to overwrite. Replacing the set is
+`repin`, which records why and who — the rule `lite_generation.py` applies to a
+rollback, for the same reason.
+
+**An empty trust set is refused at pin time.** A node with no admitted keys
+admits nothing, which is correct as a *consequence* and almost always a
+mistake as a *configuration* — one that presents as "Knowledge Lite never
+works" rather than as an error. A malformed key is parsed and refused at pin
+time for the same reason.
+
+## 7. The four states
+
+`lite_service.py` is the one place that puts the primitives together and
+answers the question an operator actually asks.
+
+| state | means | operator response |
+| --- | --- | --- |
+| `available` | verified, unrevoked, and something in it may be served | none |
+| `stale` | verified and unrevoked; nothing in it may be served **now** | refresh the artifact |
+| `unavailable` | nothing has been admitted | install an artifact |
+| `quarantined` | something was admitted and may not be trusted | investigate, then roll back or re-admit |
+
+**`stale` serves nothing.** An expired claim is withheld, not labelled and
+passed along. The freshness label exists so the operator plane can say which
+claims were withheld; it is not a disclaimer attached to data served anyway.
+
+**`unavailable` and `quarantined` are different facts.** "We do not have it"
+and "we had it and it is not trustworthy" call for different actions, and a
+node reporting the first when the second is true has said that nothing
+happened. A quarantined reading still carries the generation, digest and
+signer it was — being held is not being forgotten.
+
+**Only `available` sources the `knowledge_lite` capability.** A capability
+present in name while serving nothing is a claim this product does not make.
+
+**None of the four blocks the deterministic path**, and the tests assert
+`blocks_core()` in every state rather than in the convenient one.
+
+### Verification happens again on every read
+
+Content addressing binds bytes to a digest. Nothing else binds the digest *in
+a generation record* to a key, so a tampered record could name a different
+admitted artifact under a signer that never signed it. Re-verifying the
+detached signature on each read is what makes `signer_key` a proven fact —
+and it is what makes revoking a key stop the cache that key signed, on the
+next read, with no restart and no new artifact.
+
+That is why `LiteGeneration` names a `signature_digest` as well as an
+`artifact_digest`: the signature has to still be there to be checked again.
+
+## 8. What this change does not claim
+
+- **No status, CLI, degradation or audit wiring.** Nothing in `cli.py`,
+  `status.py`, `degradation.py` or the runtime daemons consults `LiteState`
+  yet. That is E4 ([#55](https://github.com/01rabbit/Azazel-Nexus/issues/55)).
+- **`lite_cache.Admission` is unchanged.** The older staged reader keeps its
+  own four outcomes; it is not yet expressed in terms of this service.
+- **No artifact format.** Azazel-Knowledge owns it. The claim reader is
+  injected, and the default refuses — a caller that forgets one gets
+  `quarantined`, never `available`.
 - **Nothing about Edge.** [#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)
   and the hardware gates are unaffected, and no claim here moves
   `edge-baseline-ready`.
 
-## 7. Where the tests are
+## 9. Where the tests are
 
 | File | Holds |
 | --- | --- |
@@ -152,9 +216,18 @@ step that a signer and a verifier could disagree about.
 | `tests/unit/test_lite_content_store.py` | re-derivation on read, tampering reported not repaired, digests that are not paths |
 | `tests/unit/test_lite_generation.py` | promotion does not destroy what it displaced, rollback, pruning that does not orphan |
 | `tests/unit/test_lite_revocation.py` | replay, the unreadable list, the revoked signer |
+| `tests/unit/test_lite_trust.py` | the commissioning binding, pinning once, the empty set |
+| `tests/unit/test_lite_service.py` | the four states, and that they are four |
 
-Every guard in these four modules was removed in turn and the suite re-run.
-One survived: `artifact_of` could read a blob directly instead of through
-`ContentStore.get`, and every test still passed — because nothing served the
-live artifact after tampering with it. That test now exists. A guard that is
-never exercised is not a guard.
+Every guard in these six modules was removed in turn and the suite re-run:
+41 mutations for the primitives, 17 more for the trust store and the service.
+
+One survived, in the first round: `artifact_of` could read a blob directly
+instead of through `ContentStore.get`, and every test still passed — because
+nothing served the live artifact after tampering with it. That test now
+exists. **A guard that is never exercised is not a guard.**
+
+One test also passed for the wrong reason and was rewritten: the four-states
+test drove one shared service through all four states in sequence, so an
+earlier state left the service somewhere the next one did not put it. Each
+state now gets its own store.

@@ -58,6 +58,7 @@ class LiteGeneration:
 
     number: int
     artifact_digest: str
+    signature_digest: str
     signer_key: str
     admitted_at: str
     supersedes: Optional[int] = None
@@ -69,6 +70,7 @@ class LiteGeneration:
         if self.number < 1:
             raise LiteGenerationRefused("generation numbers start at 1")
         parse_digest(self.artifact_digest)
+        parse_digest(self.signature_digest)
         if len(self.signer_key) != PUBLIC_KEY_BYTES * 2:
             raise LiteGenerationRefused(
                 f"a signer key is {PUBLIC_KEY_BYTES * 2} hex characters; a "
@@ -103,6 +105,7 @@ class LiteGeneration:
             else "lite.generation.promoted",
             "generation": self.number,
             "artifact_digest": self.artifact_digest,
+            "signature_digest": self.signature_digest,
             "signer_key": self.signer_key,
             "admitted_at": self.admitted_at,
             "supersedes": self.supersedes,
@@ -184,12 +187,26 @@ class LiteGenerationStore:
 
         return self.content.get(generation.artifact_digest)
 
+    def signature_of(self, generation: LiteGeneration) -> bytes:
+        """The detached signature that admitted this artifact.
+
+        Kept so that the signature can be checked **again** at serve time. The
+        content address already binds the bytes to the digest, but nothing
+        else binds the digest in a generation record to a key: a tampered
+        record could name a different admitted artifact. Re-verifying is what
+        makes `signer_key` a proven fact rather than a recorded claim -- and it
+        is how revoking a key stops the cache it signed.
+        """
+
+        return self.content.get(generation.signature_digest)
+
     # -- writing -----------------------------------------------------------
 
     def promote(
         self,
         *,
         artifact_digest: str,
+        signature_digest: str,
         signer_key: str,
         admitted_at: str,
         rolled_back_from: Optional[int] = None,
@@ -203,17 +220,19 @@ class LiteGenerationStore:
         pointer to an artifact that cannot be served.
         """
 
-        if not self.content.has(artifact_digest):
-            raise LiteGenerationRefused(
-                f"no content addressed {artifact_digest}; a generation names an "
-                "artifact that is already stored, never one that might arrive"
-            )
+        for label, digest in (("artifact", artifact_digest), ("signature", signature_digest)):
+            if not self.content.has(digest):
+                raise LiteGenerationRefused(
+                    f"no content addressed {digest}; a generation names an "
+                    f"{label} that is already stored, never one that might arrive"
+                )
 
         numbers = self.numbers()
         number = (numbers[-1] + 1) if numbers else 1
         generation = LiteGeneration(
             number=number,
             artifact_digest=artifact_digest,
+            signature_digest=signature_digest,
             signer_key=signer_key,
             admitted_at=admitted_at,
             supersedes=numbers[-1] if numbers else None,
@@ -256,17 +275,19 @@ class LiteGenerationStore:
                 "generation would record a reversal that did not happen"
             )
 
-        try:
-            self.content.get(target.artifact_digest)
-        except ContentTampered as exc:
-            raise LiteGenerationRefused(
-                f"generation {number} names {target.artifact_digest}, which no "
-                f"longer hashes to it ({exc.actual}); rolling back to an altered "
-                "artifact is the one rollback that must fail"
-            ) from exc
+        for digest in (target.artifact_digest, target.signature_digest):
+            try:
+                self.content.get(digest)
+            except ContentTampered as exc:
+                raise LiteGenerationRefused(
+                    f"generation {number} names {digest}, which no longer hashes "
+                    f"to it ({exc.actual}); rolling back to an altered artifact "
+                    "is the one rollback that must fail"
+                ) from exc
 
         return self.promote(
             artifact_digest=target.artifact_digest,
+            signature_digest=target.signature_digest,
             signer_key=target.signer_key,
             admitted_at=admitted_at,
             rolled_back_from=current.number,
@@ -297,14 +318,18 @@ class LiteGenerationStore:
             keep.add(live.number)
 
         removed = tuple(number for number in numbers if number not in keep)
-        still_named = {
-            self.read(number).artifact_digest for number in numbers if number in keep
-        }
+        still_named: set[str] = set()
+        for number in numbers:
+            if number in keep:
+                retained = self.read(number)
+                still_named.add(retained.artifact_digest)
+                still_named.add(retained.signature_digest)
         for number in removed:
             generation = self.read(number)
             _remove_tree(self.generations / str(number))
-            if generation.artifact_digest not in still_named:
-                self.content.path_for(generation.artifact_digest).unlink(missing_ok=True)
+            for digest in (generation.artifact_digest, generation.signature_digest):
+                if digest not in still_named:
+                    self.content.path_for(digest).unlink(missing_ok=True)
         return removed
 
 

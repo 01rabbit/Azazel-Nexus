@@ -30,8 +30,21 @@ def store(tmp_path: Path) -> LiteGenerationStore:
 
 
 def admit(store: LiteGenerationStore, payload: bytes, *, at: str, signer: str = SIGNER):
+    """Store an artifact and a stand-in detached signature, then promote.
+
+    The signature bytes here are not a real signature -- this module does not
+    verify, it records. `test_lite_service.py` is where a signature has to be
+    one.
+    """
+
     digest = store.content.put(payload)
-    return store.promote(artifact_digest=digest, signer_key=signer, admitted_at=at)
+    signature_digest = store.content.put(b"signature-over-" + payload)
+    return store.promote(
+        artifact_digest=digest,
+        signature_digest=signature_digest,
+        signer_key=signer,
+        admitted_at=at,
+    )
 
 
 # -- the property that did not exist before --------------------------------
@@ -99,6 +112,7 @@ def test_a_rollback_without_a_reason_or_an_actor_is_refused(reason: str, actor: 
         LiteGeneration(
             number=3,
             artifact_digest=digest_bytes(b"x"),
+            signature_digest=digest_bytes(b"sig"),
             signer_key=SIGNER,
             admitted_at="2026-09-03T00:00:00Z",
             supersedes=2,
@@ -155,9 +169,11 @@ def test_generation_numbers_only_increase(store: LiteGenerationStore) -> None:
 def test_a_generation_names_content_that_is_already_stored(store: LiteGenerationStore) -> None:
     """A live pointer to an address holding nothing would serve nothing."""
 
+    stored_signature = store.content.put(b"sig")
     with pytest.raises(LiteGenerationRefused) as caught:
         store.promote(
             artifact_digest=digest_bytes(b"never stored"),
+            signature_digest=stored_signature,
             signer_key=SIGNER,
             admitted_at="2026-09-01T00:00:00Z",
         )
@@ -177,6 +193,7 @@ def test_a_generation_without_a_full_signer_key_is_refused(signer: str) -> None:
         LiteGeneration(
             number=1,
             artifact_digest=digest_bytes(b"x"),
+            signature_digest=digest_bytes(b"sig"),
             signer_key=signer,
             admitted_at="2026-09-01T00:00:00Z",
         )
@@ -188,6 +205,7 @@ def test_a_generation_that_supersedes_a_later_one_is_refused() -> None:
         LiteGeneration(
             number=2,
             artifact_digest=digest_bytes(b"x"),
+            signature_digest=digest_bytes(b"sig"),
             signer_key=SIGNER,
             admitted_at="2026-09-01T00:00:00Z",
             supersedes=3,
@@ -211,6 +229,60 @@ def test_serving_the_live_artifact_re_derives_its_digest(store: LiteGenerationSt
     store.content.path_for(live.artifact_digest).write_bytes(b"bundle onE")
     with pytest.raises(ContentTampered):
         store.artifact_of(store.live())
+
+
+def test_serving_the_signature_re_derives_its_digest(store: LiteGenerationStore) -> None:
+    """The signature is checked again later, so it too must arrive intact."""
+
+    admit(store, b"bundle one", at="2026-09-01T00:00:00Z")
+    live = store.live()
+    assert store.signature_of(live) == b"signature-over-bundle one"
+
+    store.content.path_for(live.signature_digest).write_bytes(b"signature-over-bundle onE")
+    with pytest.raises(ContentTampered):
+        store.signature_of(store.live())
+
+
+def test_a_generation_names_a_signature_that_is_already_stored(
+    store: LiteGenerationStore,
+) -> None:
+    stored_artifact = store.content.put(b"bundle one")
+    with pytest.raises(LiteGenerationRefused) as caught:
+        store.promote(
+            artifact_digest=stored_artifact,
+            signature_digest=digest_bytes(b"a signature never stored"),
+            signer_key=SIGNER,
+            admitted_at="2026-09-01T00:00:00Z",
+        )
+    assert "signature that is already stored" in str(caught.value)
+    assert store.live() is None
+
+
+def test_rolling_back_to_an_altered_signature_is_refused(store: LiteGenerationStore) -> None:
+    """The artifact is intact; only the signature that admitted it changed."""
+
+    first = admit(store, b"bundle one", at="2026-09-01T00:00:00Z")
+    admit(store, b"bundle two", at="2026-09-02T00:00:00Z")
+    store.content.path_for(first.signature_digest).write_bytes(b"signature-over-something else")
+
+    with pytest.raises(LiteGenerationRefused) as caught:
+        store.roll_back_to(1, admitted_at="2026-09-03T00:00:00Z", reason="r", actor="a")
+    assert "no longer hashes" in str(caught.value)
+    assert store.artifact_of(store.read(1)) == b"bundle one", "the artifact was never the problem"
+    assert store.live().number == 2
+
+
+def test_pruning_keeps_the_signature_a_retained_generation_names(
+    store: LiteGenerationStore,
+) -> None:
+    """A rollback shares the signature as well as the artifact."""
+
+    admit(store, b"a", at="2026-09-01T00:00:00Z")
+    admit(store, b"b", at="2026-09-02T00:00:00Z")
+    store.roll_back_to(1, admitted_at="2026-09-03T00:00:00Z", reason="r", actor="op")
+
+    store.prune(retain=2)
+    assert store.signature_of(store.live()) == b"signature-over-a"
 
 
 def test_the_event_carries_provenance_and_no_content(store: LiteGenerationStore) -> None:
@@ -256,10 +328,12 @@ def test_a_failed_pointer_write_leaves_no_debris(store: LiteGenerationStore, mon
 
     admit(store, b"one", at="2026-09-01T00:00:00Z")
     store.content.put(b"two")
+    store.content.put(b"signature-over-two")
     monkeypatch.setattr(os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
     with pytest.raises(OSError):
         store.promote(
             artifact_digest=digest_bytes(b"two"),
+            signature_digest=digest_bytes(b"signature-over-two"),
             signer_key=SIGNER,
             admitted_at="2026-09-02T00:00:00Z",
         )
