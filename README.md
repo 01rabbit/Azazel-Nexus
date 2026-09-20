@@ -93,10 +93,15 @@ tests exist — not *verified*, which requires a declared evidence gate to have
 passed): the CORE path from inventory to activation. Hardware inventory,
 resource-profile selection, the commissioning record, generations with a
 re-derivable digest, the hash-chain audit ledger, the activation controller and
-its privilege boundary, and the filesystem layout the installer applies.
+its privilege boundary, the filesystem layout the installer applies, and the
+`azazel-nexus` operator CLI (`inventory`, `profile`, `commission`, `status`,
+`health`) — every subcommand answerable with no network.
 
 **What is not.** No daemon executable is built, so nothing here runs as a
-service. The claims that depend on a real host — that installation leaves the
+service — and because reading an interface's permanent MAC needs a privileged
+driver query this package does not make, commissioning cannot be completed on a
+real host by this build alone (`HG-04`). The wizard says so rather than falling
+back to the current MAC. The claims that depend on a real host — that installation leaves the
 operational units masked, that only the activation controller can unmask one,
 that an observation interface transmits nothing — are open and registered in
 [hardware gates](docs/hardware-gates.md). A green pipeline is evidence about

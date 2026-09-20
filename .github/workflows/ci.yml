@@ -72,6 +72,13 @@ jobs:
           # what it may run at exactly the moment nothing is installed.
           import azazel_nexus.activation  # noqa: F401
           import azazel_nexus.layout  # noqa: F401
+          # The operator's own path. `azazel-nexus status` exists to explain a
+          # node that has nothing -- no connectivity, no optional extra, no
+          # commissioning. A status command that needed an extra installed
+          # would be unavailable exactly when it is the only thing to run.
+          import azazel_nexus.operator  # noqa: F401
+          import azazel_nexus.wizard  # noqa: F401
+          import azazel_nexus.cli as cli  # noqa: F401
           # The boundary module too. It names azazel_fabric and must still
           # import here: its Fabric import is deferred to call time precisely
           # so that a missing optional extra is a bounded condition and not
