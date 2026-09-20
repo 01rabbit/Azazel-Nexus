@@ -139,6 +139,7 @@ pin until R1 publishes one.
 
 | Record | Owner | Status |
 | --- | --- | --- |
+| `InterfaceIdentity`, `InterfaceIdentitySelector` | Fabric | **consumed** — `src/azazel_nexus/fabric_boundary.py` projects a read-only interface inventory into `InterfaceIdentity` and resolves a selector with Fabric's own `resolve_interface_assignment`. Nexus defines no record for either, and does not restate the fail-closed matching rule |
 | `HardwareInventory` | Fabric | target, R1 |
 | `ResourceProfile` | Fabric | target, R1 |
 | `TopologyProfile` | Fabric | target, R1 |
@@ -155,6 +156,22 @@ pin until R1 publishes one.
 A descriptive provisioning record MUST NOT carry a command, unit name, route,
 firewall rule, device path, executor, boolean authorization, or trust decision.
 A record that does is a product-local record, not a shared contract.
+
+**The interface-role vocabularies do not agree, and nothing had ever compared
+them.** Fabric registers `asset_acquisition`, `deception_bridge`, `management`,
+`observation`, `unassigned`; [`commissioning.md`](commissioning.md) §4 names
+`protected`, `observation`, `management`, `decoy`, `egress/module`; Azazel-Boot
+holds `observe`, `internal`, `external`, `management`, `capture`, `decoy`.
+**`management` is the only value all three share**, and two pairs are
+near-misses that read as agreement — `observation`/`observe`,
+`deception_bridge`/`decoy`. No product consumed Fabric's list, so the
+divergence had never surfaced.
+
+Nexus enumerates **no** interface role in code, and
+`tests/unit/test_inventory.py` refuses one that appears. Writing this
+document's five words into the package would create a fourth vocabulary and
+settle the question by accident. Reconciling the three is a product decision;
+the test records the measurement and fails when any of them moves.
 
 ## 4. Admission and compatibility records
 

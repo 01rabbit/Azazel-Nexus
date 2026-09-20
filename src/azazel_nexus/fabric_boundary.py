@@ -33,6 +33,21 @@ owner — publishing one as the other is the confusion Nexus#OF-04 already had t
 correct once. The capability state travels in `product_view`, Nexus's own
 namespace, and a test refuses it anywhere in `mode`.
 
+Interface identity, and why the rules are not restated here
+-----------------------------------------------------------
+`azazel_nexus.inventory` reads a host's interfaces into plain mappings and
+never defines a record for one. This module turns a readout into Fabric's
+`InterfaceIdentity`, and answers "which interface does this selector mean?"
+by calling Fabric's `resolve_interface_assignment` rather than implementing
+the rule again.
+
+That matters more than it looks. `docs/commissioning.md` §3 states the rule --
+exactly one match identifies, zero and several are the same fail-closed answer
+-- and Fabric's resolver states it too. A third statement in Nexus would be a
+third thing to keep in step, and the series has already paid for that: two
+products each kept an independent copy of `outcome_contracts`' rules and both
+were missing the same two keys Fabric had added.
+
 What a present Fabric does and does not prove
 ---------------------------------------------
 A successful projection attests **one** mapping in
@@ -46,17 +61,33 @@ maps, reported and never assumed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from azazel_nexus.capability import CapabilityState
+from azazel_nexus.inventory import InterfaceReadout
 
 __all__ = [
     "FABRIC_PIN",
     "PLANNED_FABRIC_MODULES",
     "REQUIRED_FABRIC_MODULES",
+    "IdentityUnavailable",
+    "InventoryProjection",
     "Projection",
+    "identify_interface",
     "project_capability",
+    "project_interface_identity",
+    "project_inventory",
 ]
+
+
+class IdentityUnavailable(Exception):
+    """An interface identity could not be produced, and why.
+
+    Distinct from Fabric's own resolution error: this one means Nexus could
+    not build the record at all, because the host did not give up the facts or
+    because Fabric is absent. Collapsing the two would make "we never read it"
+    indistinguishable from "we read it and it matched nothing".
+    """
 
 #: The exact tag this module is written against (ADR-0001). No branch pin, no
 #: submodule, no copied source. `v0.9.0rc2` is the newest published candidate
@@ -210,4 +241,139 @@ def project_capability(
         fabric_version=version,
         view=view,
         missing_planned=_missing_planned(),
+    )
+
+
+@dataclass(frozen=True)
+class InventoryProjection:
+    """Which interfaces became identities, and which could not, with reasons.
+
+    The refusals travel with the result rather than being dropped. An inventory
+    that silently omitted the interfaces it could not identify would read as a
+    complete inventory of a smaller machine, and an operator would have no way
+    to tell that the adapter they are looking for was seen and discarded.
+    """
+
+    available: bool
+    reason: str
+    identities: tuple[Any, ...] = ()
+    #: `(kernel_name, reasons)` for each interface no role may be confirmed
+    #: against. Every one of these is a `COMMISSIONING_REQUIRED` answer.
+    refused: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+def _interface_key(identity: Any) -> str:
+    """A stable key for one identity, derived from the identity itself.
+
+    Built from Fabric's own `interface_composite_key`, so the key cannot
+    disagree with the tuple Fabric matches on: anything that would change which
+    interface a selector resolves to changes the key too. The kernel name is
+    excluded because that function excludes it.
+    """
+
+    import hashlib  # noqa: PLC0415
+    from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+        interface_composite_key,
+    )
+
+    material = "\x1f".join("" if part is None else str(part)
+                           for part in interface_composite_key(identity))
+    return "if-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def project_interface_identity(readout: InterfaceReadout) -> Any:
+    """Render one readout as `InterfaceIdentity`, or refuse and say why.
+
+    An incomplete readout is refused rather than filled in. Fabric requires a
+    `driver` this host may not expose and an identity Nexus may not have read,
+    and any plausible default here would let a role be confirmed against an
+    identity nobody established -- which is the one thing
+    `docs/commissioning.md` §3 exists to prevent.
+    """
+
+    if readout.incomplete_reasons:
+        raise IdentityUnavailable(
+            f"{readout.kernel_name}: {'; '.join(readout.incomplete_reasons)}"
+        )
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        raise IdentityUnavailable(failure)
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            InterfaceIdentity,
+        )
+    except ImportError as exc:
+        raise IdentityUnavailable(
+            f"provisioning_contracts is unavailable at the pinned tag ({exc})"
+        ) from exc
+
+    fields = dict(readout.fields)
+    driver = fields.pop("driver", None)
+    if not driver:
+        raise IdentityUnavailable(
+            f"{readout.kernel_name}: Fabric's identity requires a driver name "
+            "and this host exposed none"
+        )
+
+    partial = InterfaceIdentity(
+        interface_key="if-pending",
+        driver=driver,
+        driver_version=readout.driver_version,
+        kernel_name_observed=readout.kernel_name,
+        **fields,
+    )
+    return partial.model_copy(update={"interface_key": _interface_key(partial)})
+
+
+def project_inventory(readouts: Sequence[InterfaceReadout]) -> InventoryProjection:
+    """Project a whole inventory, keeping the refusals."""
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        return InventoryProjection(available=False, reason=failure)
+
+    identities: list[Any] = []
+    refused: list[tuple[str, tuple[str, ...]]] = []
+    for readout in readouts:
+        try:
+            identities.append(project_interface_identity(readout))
+        except IdentityUnavailable as exc:
+            reasons = readout.incomplete_reasons or (str(exc),)
+            refused.append((readout.kernel_name, reasons))
+    return InventoryProjection(
+        available=True,
+        reason="",
+        identities=tuple(identities),
+        refused=tuple(refused),
+    )
+
+
+def identify_interface(identities: Sequence[Any], selector: Any) -> Any:
+    """Return the one interface a composite selector means. Fail closed.
+
+    The rule -- exactly one identifies, zero and several are the same answer --
+    is **Fabric's**, applied by calling its resolver. Nexus does not implement
+    it here, does not wrap it in a softer one, and does not add a fallback:
+    `docs/commissioning.md` §3 says the node refuses to choose, and a resolver
+    that picked the first of several would be that fallback.
+
+    Raises Fabric's `InterfaceResolutionError` for a selector that is not
+    composite, matches nothing, or matches more than one.
+    """
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        raise IdentityUnavailable(failure)
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            resolve_interface_assignment,
+        )
+    except ImportError as exc:
+        raise IdentityUnavailable(
+            f"provisioning_contracts is unavailable at the pinned tag ({exc})"
+        ) from exc
+
+    return resolve_interface_assignment(
+        {"interfaces": tuple(identities)}, {"selector": selector}
     )
