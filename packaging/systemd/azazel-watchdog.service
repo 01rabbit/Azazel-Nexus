@@ -1,25 +1,43 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Can mask and cannot unmask.
+# Masking a unit it does not own is brokered by the activation controller's socket, so it needs no privilege of its own.
+
 [Unit]
 Description=Azazel-Nexus degradation coordinator
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/capability-model.md
 After=azazel-auditd.service
 Requires=azazel-activated.service
 
-# Fences failed capabilities and never restarts into a broader authority state
-# (IMPLEMENTATION_SPEC 4). It can mask; it cannot unmask. Returning a fenced
-# unit to service is the activation controller's decision on the next boot,
-# against a revalidated generation.
-
 [Service]
 Type=notify
-User=root
+User=azwatch
 ExecStart=/usr/libexec/azazel/az-watchdog
+RuntimeDirectory=azazel
+RuntimeDirectoryMode=0750
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/run
+ReadWritePaths=/var/lib/azazel/state
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/azazel/run /var/lib/azazel/state
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

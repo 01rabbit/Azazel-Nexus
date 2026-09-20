@@ -30,11 +30,21 @@ __all__ = ["LAYOUT", "PathSpec", "create_layout", "spec_for"]
 
 @dataclass(frozen=True)
 class PathSpec:
-    """One directory the node requires, and why it has the mode it has."""
+    """One directory the node requires, and why it has the mode and owner it has.
+
+    `owner` and `group` are part of the declaration for the same reason the
+    mode is: a directory the installer creates and nobody assigns is a
+    directory owned by whoever ran the installer. The daemons run under their
+    own accounts (§3), so which account may write where is the difference
+    between least privilege and a set of directories that happen to work
+    because everything is root.
+    """
 
     path: str
     mode: int
     purpose: str
+    owner: str = "root"
+    group: str = "root"
 
     def __post_init__(self) -> None:
         if not self.path.startswith("/"):
@@ -49,6 +59,18 @@ class PathSpec:
                 f"{self.path!r} has no stated purpose; a directory nobody can "
                 "say the reason for is a directory nobody can say the mode for"
             )
+        for field_name in ("owner", "group"):
+            if not str(getattr(self, field_name)).strip():
+                raise ValueError(
+                    f"{self.path!r} names no {field_name}; it would then belong "
+                    "to whoever ran the installer"
+                )
+        if self.group != "root" and not self.mode & 0o070:
+            raise ValueError(
+                f"{self.path!r} is grouped to {self.group!r} and gives the "
+                f"group nothing ({self.mode:04o}); a group that grants no "
+                "access is a group that explains nothing"
+            )
 
 
 #: The CORE subset of `IMPLEMENTATION_SPEC.md` §3.
@@ -62,8 +84,9 @@ LAYOUT = (
     PathSpec("/etc/azazel", 0o755, "node configuration; world-readable by design"),
     PathSpec(
         "/etc/azazel/commissioning",
-        0o755,
+        0o750,
         "operator-confirmed role bindings and the read-only inventory",
+        group="azcommission",
     ),
     PathSpec(
         "/etc/azazel/systemd",
@@ -75,8 +98,14 @@ LAYOUT = (
         "/var/lib/azazel/run",
         0o750,
         "unix domain sockets; socket ACLs are the first authorization boundary",
+        group="azazel-operator",
     ),
-    PathSpec("/var/lib/azazel/state", 0o750, "durable state machines"),
+    PathSpec(
+        "/var/lib/azazel/state",
+        0o750,
+        "durable state machines, the audit chain and the watchdog's fences",
+        group="azaudit",
+    ),
     PathSpec(
         "/var/lib/azazel/generations",
         0o700,

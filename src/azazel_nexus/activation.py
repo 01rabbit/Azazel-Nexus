@@ -143,6 +143,10 @@ ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
 
 #: The governed set for the CORE slice.
 #:
+#: Each carries its own non-login account (#42). None of the three is root:
+#: the activation controller is, and isolating the privilege there is what
+#: leaves these unprivileged.
+#:
 #: The enforcement, M.I.O., Knowledge Lite, Deception Lite and module-manager
 #: units are absent because they belong to slices that are not built yet --
 #: **not** because they are optional to the product. `docs/roadmap.md` holds
@@ -151,19 +155,19 @@ CORE_UNITS = (
     UnitDefinition(
         "azazel-commissiond.service",
         UnitTier.SUPPORTING,
-        "root",
+        "azcommission",
         "read-only inventory, operator confirmation, commissioning record",
     ),
     UnitDefinition(
         "azazel-auditd.service",
         UnitTier.SUPPORTING,
-        "root",
+        "azaudit",
         "hash-chain ledger; refuses chain discontinuity",
     ),
     UnitDefinition(
         "azazel-watchdog.service",
         UnitTier.SUPPORTING,
-        "root",
+        "azwatch",
         "degradation coordinator; never restarts into a broader authority state",
     ),
 )

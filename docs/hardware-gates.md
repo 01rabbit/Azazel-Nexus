@@ -30,13 +30,21 @@ service has started (`IMPLEMENTATION_SPEC.md` §2.3).
 **What CI executed.** `tests/unit/test_packaging.py` reads the installer and
 the preset as text: it checks that every governed unit is masked, that nothing
 is started, that the single enabled unit is the activation controller, and
-that the preset disables the rest. `SystemdUnitController`'s argument vectors
-are checked against an injected runner.
+that the preset disables the rest. `tests/unit/test_runtime_hardening.py`
+checks the unit files against the declaration they are generated from, by
+value rather than by the presence of a word: the account each runs as, its
+allowed address families, its writable paths against the filesystem layout,
+an empty capability bounding set, `IPAddressDeny=any`, and the runtime
+directory's mode against the socket directory's.
 
 **Why that is not the claim.** The installer was never run. A `systemctl mask`
 that fails, a distribution preset that re-enables a unit on the next
 `preset-all`, a unit file rejected by a systemd version older than the one
-these files were written against — none of those are visible to a text scan.
+these files were written against, a `RestrictAddressFamilies` the running
+systemd silently ignores — none of those are visible to a text scan. What the
+checks above establish is that **the distribution does not contradict
+itself**, which is a different and smaller claim than that the host enforces
+any of it.
 
 **What would settle it.** Install on the target image, then read
 `systemctl list-unit-files 'azazel-*'` and `systemctl is-active` for each
@@ -62,6 +70,10 @@ None of that exists on a CI runner.
 **What would settle it.** On the target image, run each daemon under its own
 account and attempt `systemctl unmask` from it; record the refusal and the
 account. Repeat after the accounts are created by the package, not by hand.
+
+Since #42 the accounts are separate and declared — `azcommission`, `azaudit`,
+`azwatch`, and `root` for the activation controller alone — so the experiment
+is now well defined. It has not been run.
 
 ## `HG-03` — an observation interface transmits nothing
 
