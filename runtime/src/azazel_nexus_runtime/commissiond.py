@@ -47,7 +47,8 @@ from azazel_nexus.commissioning import describe_for_operator
 from azazel_nexus.inventory import InterfaceReadout, read_interfaces
 
 from .netlink import LinkRecord, NetlinkUnavailable, read_links
-from .principal import PrincipalClass
+from .principal import PrincipalClass, PrincipalPolicy
+from .serve import serve_forever
 from .protocol import Argument, ArgumentKind, Refusal, RequestRefused, Verb, VerbRegistry
 
 __all__ = [
@@ -246,10 +247,32 @@ class CommissionService:
         return {"readable": True, "permanent_mac": mac, "snapshot": snapshot.digest}
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - needs a host
-    """Serve until stopped. Exercised by the E2E harness (#43), not by CI."""
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    stop: Callable[[], bool] = lambda: False,
+    ready: Optional[Callable[[], None]] = None,
+) -> int:
+    """Serve until stopped.
 
-    raise SystemExit(
-        "az-commissiond's service loop is wired in #42; the request handling "
-        "it will serve is implemented and tested here"
+    `stop` and `ready` are injected so the E2E harness can start this daemon
+    and end it on a condition it controls, in bounded time. A daemon that
+    could only be stopped by a signal is one whose shutdown path is never
+    exercised.
+    """
+
+    from .runtime_paths import audit_sink, socket_path
+
+    return serve_forever(
+        path=socket_path("commission"),
+        registry=REGISTRY,
+        policy=PrincipalPolicy.resolve(),
+        audit=audit_sink(),
+        handler=CommissionService().handle,
+        stop=stop,
+        ready=ready,
     )
+
+
+if __name__ == "__main__":  # pragma: no cover - the entry point
+    raise SystemExit(main())

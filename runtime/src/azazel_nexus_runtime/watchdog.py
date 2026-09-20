@@ -275,8 +275,39 @@ class WatchdogService:
         )
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - needs a host
-    raise SystemExit(
-        "az-watchdog's service loop is wired in #42; the detection and "
-        "fencing it performs are implemented and tested here"
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    stop: Callable[[], bool] = lambda: False,
+    ready: Optional[Callable[[], None]] = None,
+) -> int:
+    from .principal import PrincipalPolicy
+    from .runtime_paths import audit_sink, ledger_dir, socket_path, state_dir
+    from .serve import serve_forever
+    from .units import DbusUnitManager
+
+    def refuse(method: str, unit: str) -> object:
+        raise NotImplementedError(
+            "a D-Bus connection is supplied by the service manager; running "
+            "this daemon outside one is what the E2E harness does, and it "
+            "injects its own"
+        )
+
+    service = WatchdogService(
+        manager=DbusUnitManager(call=refuse),
+        ledger=AuditLedger(ledger_dir() / "watchdog.jsonl"),
+        fences=FenceStore(state_dir() / "fences.json"),
     )
+    return serve_forever(
+        path=socket_path("watchdog"),
+        registry=REGISTRY,
+        policy=PrincipalPolicy.resolve(),
+        audit=audit_sink(),
+        handler=service.handle,
+        stop=stop,
+        ready=ready,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover - the entry point
+    raise SystemExit(main())

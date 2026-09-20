@@ -51,6 +51,12 @@ any of it.
 governed unit, plus a packet count on every interface across the install.
 Record the systemd version with the result; the answer is version-specific.
 
+**What the integration run adds (#43).** `tools/e2e.py` runs `install.sh` for
+real against a prefix and checks the directories it creates against the
+layout. On a host without a running systemd it reports the service-manager
+stage `not_executed`, with the reason, and does not count it as a pass. See
+[integration evidence](integration-evidence.md).
+
 ## `HG-02` — the privilege boundary on a running host
 
 **Claimed.** Only `azazel-activated.service` can unmask an operational unit.

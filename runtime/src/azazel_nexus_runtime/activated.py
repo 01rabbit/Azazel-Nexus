@@ -217,8 +217,25 @@ def _is_failure(verdict) -> bool:
     return verdict.reason.startswith("activation_failed")
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - needs a host
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """One activation pass, then exit. `Type=oneshot`, and that is the point.
+
+    A controller that stayed running would be a controller that could be
+    asked to activate again without a boot in between -- and the whole
+    discipline is that every pass re-derives the generation's digest from
+    the tree, which is a thing to do at boot rather than on request.
+
+    Refuses outside a service manager: there is no D-Bus connection to take,
+    and inventing one would mean this daemon deciding what a unit manager is.
+    """
+
     raise SystemExit(
-        "az-activated's boot-time entry point is wired in #42; the activation "
-        "pass and its rollback are implemented and tested here"
+        "az-activated runs one pass per boot under systemd and takes its unit "
+        "manager from the service manager. Outside one there is nothing to "
+        "connect to; the pass itself is implemented in ActivationDaemon and "
+        "is what the E2E harness drives with an injected manager."
     )
+
+
+if __name__ == "__main__":  # pragma: no cover - the entry point
+    raise SystemExit(main())

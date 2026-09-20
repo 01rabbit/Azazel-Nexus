@@ -236,7 +236,9 @@ def test_the_installer_creates_exactly_the_declared_layout():
     found = {
         path: (int(mode, 8), owner, group)
         for mode, owner, group, path in re.findall(
-            r"^install -d -m (\d{4}) -o (\S+) -g (\S+) (/\S+)$", _installer(), re.M
+            r'^install -d -m (\d{4}) -o (\S+) -g (\S+) "\$\{DESTDIR:-\}"(/\S+)$',
+            _installer(),
+            re.M,
         )
     }
     declared = {spec.path: (spec.mode, spec.owner, spec.group) for spec in LAYOUT}

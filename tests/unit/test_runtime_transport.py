@@ -174,6 +174,26 @@ def test_the_umask_does_not_decide_the_socket_mode(tmp_path):
         os.umask(previous)
 
 
+def test_a_socket_path_too_long_to_bind_is_refused_before_binding(tmp_path):
+    """`AF_UNIX path too long` from a subprocess at boot is a puzzle.
+
+    The integration harness hit it from a scratch directory whose name was
+    long, and the kernel's message names neither the limit nor the path's
+    length. Refused here, with the arithmetic.
+    """
+
+    from azazel_nexus_runtime.transport import MAX_SOCKET_PATH_BYTES
+
+    deep = tmp_path
+    while len(str(deep / "x.sock")) <= MAX_SOCKET_PATH_BYTES:
+        deep = deep / "dddddddddd"
+    deep.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(SocketMisconfigured) as refused:
+        bind_socket(deep / "x.sock")
+    assert str(MAX_SOCKET_PATH_BYTES) in str(refused.value)
+
+
 def test_a_world_writable_socket_is_refused(tmp_path):
     path = tmp_path / "loose.sock"
     listener = bind_socket(path)

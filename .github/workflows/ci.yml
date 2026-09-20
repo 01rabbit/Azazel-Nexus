@@ -151,6 +151,54 @@ jobs:
           print("CORE path is standard library only")
           PY
 
+  integration:
+    name: Install-to-status integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install both distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . -e ./runtime
+
+      # The runner has systemd binaries and no running systemd, so the
+      # service-manager stage reports itself not executed. That is the
+      # honest outcome and the harness refuses to count it as a pass --
+      # `--require-all` is what a host with systemd would add, and this job
+      # deliberately does not.
+      - name: Run the integration harness
+        run: |
+          sudo mkdir -p /tmp/az-e2e
+          sudo chown "$(id -u):$(id -g)" /tmp/az-e2e
+          python tools/e2e.py --root /tmp/az-e2e --report /tmp/az-e2e/report.md
+
+      - name: Refuse a report whose stages all skipped
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("/tmp/az-e2e/report.md").read_text()
+          print(text)
+          match = re.search(r"passed (\d+), not executed (\d+), failed (\d+), of (\d+)", text)
+          if not match:
+              sys.exit("the report has no summary line")
+          passed, skipped, failed, total = (int(g) for g in match.groups())
+          if failed:
+              sys.exit(f"{failed} stages failed")
+          if passed < total - skipped:
+              sys.exit("the summary does not add up")
+          # A run where nothing executed is a run that proved nothing, and a
+          # green job for it would be the worst kind of green.
+          if passed < 2:
+              sys.exit(f"only {passed} stages executed; this proves nothing")
+          PY
+
   fabric-extra:
     name: Fabric extra at the pinned tag
     runs-on: ubuntu-latest
