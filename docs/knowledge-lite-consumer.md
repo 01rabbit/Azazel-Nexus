@@ -5,9 +5,14 @@ Status: **implemented** (`src/azazel_nexus/lite_cache.py`,
 Azazel-Knowledge actually emits. This is the first code in this repository; it
 is not a release, and nothing here is *verified* in the program's sense.
 
-Related: [capability model](capability-model.md) ·
+Related: [the trust chain under the cache](knowledge-lite-trust.md) ·
+[capability model](capability-model.md) ·
 [contract ownership](contract-ownership.md) ·
 [commissioning](commissioning.md) · [recovery](recovery.md)
+
+> The verifier this document calls "injected" now has an implementation, and
+> the rollback it does not mention was structurally impossible until E1. See
+> [the trust chain under the cache](knowledge-lite-trust.md).
 
 ## 1. The split, and why this document exists
 
