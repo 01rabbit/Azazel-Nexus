@@ -125,6 +125,56 @@ product versions observed on `main` during the R0 audit (Edge: no single
 product package version; Knowledge `0.1.0`; Deception `0.2.0.dev0`) are
 observations of source trees, not a supported combination.
 
+## 4.1 How a status claim carries its evidence
+
+`azazel_nexus.status` is where a claim's strength stops being a matter of
+phrasing. Every claim is one of four states, and the state a claim may reach
+is decided by what backs it, at construction — not by a checker that runs over
+finished claims, because a malformed claim that exists until something
+validates it is one that gets rendered, logged and read in between.
+
+| State | What it requires | Example |
+| --- | --- | --- |
+| `verified` | Re-derivable **here and now**, from this repository's manifest or a distribution installed in this environment. Available only for a subject in this repository | which Fabric tag `pyproject.toml` pins |
+| `observed` | Somebody looked, once: the revision they looked at, where, and when. A branch name is not a revision — `main` is a subscription to one | "at `v0.9.0rc3`, Fabric shipped *X*", dated |
+| `unknown` | Nothing was established, plus the reason | which tag each other product pins |
+| `unavailable` | The source could not be consulted, plus the reason | Fabric is not installed in this environment |
+
+Each claim carries `evidence_kind`, `source_ref`, `observed_at` and
+`verification_state`, and either names its evidence or says why it has none —
+never both, never neither.
+
+**A claim about another repository can never be `verified`.** Not "should not
+be": the constructor refuses it. Three stale claims produced this rule and all
+three failed identically — a statement about a repository Nexus cannot read,
+written in the grammar of a fact, which nothing here could afterwards tell
+from one:
+
+- this document's own Fabric-facts table restated four other products' pins,
+  and four of the five had moved by the time anyone read it;
+- [contract ownership](contract-ownership.md) §2 asserted for months that two
+  Fabric modules did not exist, after they did;
+- `fabric_boundary.py` ranked one Fabric candidate against the rest, and a
+  later Fabric release falsified it silently.
+
+The sharpest case was not the unverifiable one. Six documents here denied two
+of Fabric's contract families outright, while **the Fabric tag this repository
+pins shipped both** — installed, importable, and never asked.
+`tests/unit/test_status_claims.py` now asks, enumerating the families from the
+installed Fabric rather than from a list kept here, so one published later is
+covered the moment the pin moves to it. Which two they were, and what each
+document said, is recorded there rather than restated here: a scan cannot tell
+a claim from its own retraction, and this paragraph would be the first thing
+it flagged.
+
+**The whole check runs offline.** ADR-0001 requires CORE to be useful with no
+cloud connectivity, and a status check that reached out would answer
+differently — and worse — on exactly the node that most needs it. The test for
+this breaks sockets rather than watching them, and raises something derived
+from `BaseException`: the first version raised `AssertionError` and a check
+that reached out behind `except Exception` swallowed it, leaving the test green
+over the behaviour it forbids.
+
 ## 5. The shape of a qualified entry
 
 An entry may be added only when **every** field below is present and evidenced.

@@ -94,10 +94,16 @@ class IdentityUnavailable(Exception):
     """
 
 #: The exact tag this module is written against (ADR-0001). No branch pin, no
-#: submodule, no copied source. `v0.9.0rc2` is the newest published candidate
-#: and it is signed; Azazel-Edge, Azazel-Deception and Azazel-Knowledge are all
-#: on it. A release candidate is still an exact tag — it promises no
-#: stability, so this moves to `v0.9.0` when Fabric cuts it.
+#: submodule, no copied source. A release candidate is still an exact tag — it
+#: promises no stability, so this moves to `v0.9.0` when Fabric cuts it.
+#:
+#: What this comment does *not* say is as deliberate as what it does. Where
+#: this tag stands among Fabric's releases, and what any other product pins,
+#: are facts about repositories Nexus cannot read. It stated both anyway, as
+#: facts, and both had stopped being true before anyone re-read them.
+#: `azazel_nexus.status` now reports them as `unknown` and points at Fabric's
+#: `docs/release-compatibility.md`, which holds the answer (#23).
+#: `tests/unit/test_status_claims.py` keeps the retired phrasing out.
 FABRIC_PIN = "v0.9.0rc2"
 
 #: What this module needs to produce a projection at all.

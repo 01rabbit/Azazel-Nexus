@@ -218,7 +218,7 @@ eligibility, never a resource tier; the two are different kinds of thing (§4.3)
 | Hypothesis and falsification | `reference-core` | `reasoning.py` | [#385](https://github.com/01rabbit/Azazel-Edge/issues/385) | **LITE** — local model required |
 | Local model inference | `integrated` | `model_adapter.py`, `resource_profile.py` | [#383](https://github.com/01rabbit/Azazel-Edge/issues/383), [#372](https://github.com/01rabbit/Azazel-Edge/issues/372) | **LITE** — needs `lite` envelope **and** a verified model asset |
 | Replay and evaluation harness | `integrated` | `replay.py` | [#372](https://github.com/01rabbit/Azazel-Edge/issues/372) | **LITE** — offline harness merged; Pi-class HIL measurements still required |
-| Remote cognition, sanitizer, merger | `integrated` | Nexus-side; Fabric `mio_contracts` **not released** | — | **FULL-eligible** — needs commissioned egress topology and a valid sanitizer decision |
+| Remote cognition, sanitizer, merger | `integrated` | Nexus-side; Fabric `mio_contracts` **published, not adopted** | — | **FULL-eligible** — needs commissioned egress topology and a valid sanitizer decision |
 
 Resource tier never grants a cognition capability on its own. A `standard` host
 with no verified model asset reports `CORE ONLY`; see
@@ -298,7 +298,7 @@ complete; all are `target contract`.
 
 | Nexus issue | Capability | Depends on |
 | --- | --- | --- |
-| [#2](https://github.com/01rabbit/Azazel-Nexus/issues/2) | Fabric source of truth and product-local provisioning boundary | Fabric `v0.8.0` observed; `provisioning_contracts` not released |
+| [#2](https://github.com/01rabbit/Azazel-Nexus/issues/2) | Fabric source of truth and product-local provisioning boundary | Fabric `v0.8.0` observed at the time; `provisioning_contracts` has since been published |
 | [#3](https://github.com/01rabbit/Azazel-Nexus/issues/3) | Signed offline M.I.O. Mission Pack lifecycle | admission policy (§6), signed model assets |
 | [#4](https://github.com/01rabbit/Azazel-Nexus/issues/4) | Rugged x86_64 M.I.O. HIL and degraded-mode validation | physical hardware; Edge [#372](https://github.com/01rabbit/Azazel-Edge/issues/372) Pi-class results |
 | [#5](https://github.com/01rabbit/Azazel-Nexus/issues/5) | Runtime profiles, local/remote routing, `FULL -> LITE -> CORE` | [capability model](capability-model.md); Fabric `mio_contracts` for the remote path |
