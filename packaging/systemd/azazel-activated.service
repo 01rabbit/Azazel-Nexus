@@ -1,0 +1,29 @@
+[Unit]
+Description=Azazel-Nexus activation controller
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md
+DefaultDependencies=no
+After=local-fs.target
+Before=azazel-commissiond.service azazel-auditd.service azazel-watchdog.service
+
+# This unit is the privilege boundary described in IMPLEMENTATION_SPEC 2.3 and
+# 4. It runs once per boot, re-derives the digest of the current generation,
+# and unmasks only what that generation and the commissioning record admit. It
+# is the one unit the installer enables, because a controller that never runs
+# revalidates nothing -- and it opens no socket and touches no interface, so
+# enabling it starts no operational network service.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart=/usr/libexec/azazel/az-activated --boot
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel /etc/systemd/system
+
+[Install]
+WantedBy=multi-user.target

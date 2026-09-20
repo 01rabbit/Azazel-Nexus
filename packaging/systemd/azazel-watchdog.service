@@ -1,0 +1,25 @@
+[Unit]
+Description=Azazel-Nexus degradation coordinator
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/capability-model.md
+After=azazel-auditd.service
+Requires=azazel-activated.service
+
+# Fences failed capabilities and never restarts into a broader authority state
+# (IMPLEMENTATION_SPEC 4). It can mask; it cannot unmask. Returning a fenced
+# unit to service is the activation controller's decision on the next boot,
+# against a revalidated generation.
+
+[Service]
+Type=notify
+User=root
+ExecStart=/usr/libexec/azazel/az-watchdog
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/run /var/lib/azazel/state
+
+[Install]
+WantedBy=multi-user.target

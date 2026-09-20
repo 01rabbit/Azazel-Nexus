@@ -99,6 +99,21 @@ def _has_automated_tests() -> bool:
     return any((ROOT / "tests").rglob("test_*.py"))
 
 
+def _has_implemented_modules() -> bool:
+    """Code with focused tests behind it -- this repository's own definition.
+
+    A module with no test is not implemented in the sense the status
+    vocabulary uses, so the pairing is what is counted rather than the file.
+    """
+
+    package = ROOT / "src" / "azazel_nexus"
+    tests = {path.name for path in (ROOT / "tests" / "unit").glob("test_*.py")}
+    return any(
+        path.stem != "__init__" and f"test_{path.stem}.py" in tests
+        for path in package.glob("*.py")
+    )
+
+
 #: (what the repository has, the phrasing that denies it, a human name).
 #:
 #: Patterns rather than sentences: "no package" catches "contains no package",
@@ -124,6 +139,16 @@ CLAIMS = (
         _has_fabric_pin,
         re.compile(rf"{_MISSING}[^.]{{0,80}}\b(?:Azazel-)?Fabric pin\b|\bno pin\b", re.I),
         "an Azazel-Fabric pin",
+    ),
+    (
+        _has_implemented_modules,
+        # Narrow on purpose. This repository legitimately says of its
+        # *documents* that none of them is implemented, and that stays true.
+        # What went stale was the blanket sentence about the repository.
+        re.compile(
+            r"\bnothing (?:here|in this repository) is implemented\b", re.I
+        ),
+        "implemented modules",
     ),
     (
         _has_automated_tests,

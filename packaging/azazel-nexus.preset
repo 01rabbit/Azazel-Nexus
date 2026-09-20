@@ -1,0 +1,16 @@
+# systemd preset for Azazel-Nexus.
+#
+# IMPLEMENTATION_SPEC 2.3: installation MUST NOT start an operational network
+# service. `disable` here is what makes `systemctl preset-all` -- which a
+# distribution may run at any time -- leave the governed units alone instead
+# of enabling them because they carry an [Install] section.
+#
+# The activation controller is the one exception, and it is exact rather than
+# a glob: it opens no socket and reaches no interface, and it is what
+# revalidates the current generation on every boot. A preset that enabled
+# `azazel-*` would have re-enabled the operational units on the next
+# preset-all, which is the whole failure this file prevents.
+disable azazel-commissiond.service
+disable azazel-auditd.service
+disable azazel-watchdog.service
+enable azazel-activated.service

@@ -1,0 +1,25 @@
+[Unit]
+Description=Azazel-Nexus audit ledger
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+# Accepts canonical events only and refuses chain discontinuity
+# (IMPLEMENTATION_SPEC 4, 6.4). A write it cannot complete is reported as a
+# failure rather than dropped: the next entry's hash depends on this one, so a
+# silently missing entry is a broken chain that reports itself as intact.
+
+[Service]
+Type=notify
+User=root
+ExecStart=/usr/libexec/azazel/az-auditd
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/run /var/lib/azazel/state
+
+[Install]
+WantedBy=multi-user.target
