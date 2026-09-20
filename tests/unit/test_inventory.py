@@ -429,53 +429,56 @@ def test_a_mac_only_selector_never_reaches_the_resolver():
 # --------------------------------------------------------------------------
 
 
-#: What each product calls an interface role today, copied literally.
+#: What each product called an interface role **before** the reconciliation,
+#: copied literally. History now, kept so the correction stays legible.
 #:
-#: Nothing here is changed by this file -- reconciling three vocabularies is a
-#: product decision, not a test's. What the test does is stop the divergence
-#: being invisible, which it has been: no product consumes Fabric's list, so
-#: nothing has ever compared them.
-NEXUS_DOCUMENTED_ROLES = ("protected", "observation", "management", "decoy", "egress/module")
-BOOT_LOCAL_ROLES = ("observe", "internal", "external", "management", "capture", "decoy")
+#: There were four lists, not three: Azazel-Boot's `architecture.md` named a
+#: fifth-column set that its own `commissioning.py` did not hold.
+#: `management` was the only value all four shared.
+RETIRED_NEXUS_ROLES = ("protected", "observation", "management", "decoy", "egress/module")
+RETIRED_BOOT_ROLES = ("observe", "internal", "external", "management", "capture", "decoy")
 
 
-def test_the_three_role_vocabularies_still_disagree_as_measured():
-    """Recorded so the next reader does not re-derive it.
+def test_the_role_vocabularies_were_reconciled_onto_fabrics():
+    """The measurement this file used to record, and what came of it.
 
-    `management` is the only value all three share. Two pairs are near-misses
-    that would read as agreement to anyone skimming -- Fabric's `observation`
-    against Boot's `observe`, Fabric's `deception_bridge` against Boot's and
-    Nexus's `decoy` -- and a near-miss is worse than a clean difference,
-    because it survives review.
+    It read "the three vocabularies still disagree" and was written to fail
+    when any of them moved. They moved: Azazel-Nexus and Azazel-Boot both
+    adopted Fabric's registered list, and Fabric's own list did not change --
+    the reconciliation cost nothing in the released contract because the words
+    that did not fit were never roles.
 
-    This test fails when any vocabulary changes, which is the intent: a change
-    should be a decision recorded here, not a silent divergence or a silent
-    convergence.
+    `protected`, `internal`, `external`, `egress` answer *which side of the
+    boundary does this interface face*. That is topology, it is product-local,
+    and it never crossed a product boundary as a role. What remained --
+    observation, management, deception bridging, asset acquisition -- is what
+    another product needs to know, which is what Fabric registers.
     """
-
-    common = set(INTERFACE_ROLES) & set(NEXUS_DOCUMENTED_ROLES) & set(BOOT_LOCAL_ROLES)
-    assert common == {"management"}
 
     assert set(INTERFACE_ROLES) == {
         "asset_acquisition", "deception_bridge", "management", "observation", "unassigned"
     }
-    assert "observe" not in INTERFACE_ROLES and "observation" not in BOOT_LOCAL_ROLES
-    assert "decoy" not in INTERFACE_ROLES
+
+    zones = {"protected", "internal", "external", "egress/module"}
+    assert set(RETIRED_NEXUS_ROLES) & zones
+    assert set(RETIRED_BOOT_ROLES) & zones
+    assert zones & set(INTERFACE_ROLES) == set(), (
+        "a topology word is back in the role list; that merge is how four "
+        "vocabularies came to disagree"
+    )
 
 
-def test_nexus_holds_no_role_vocabulary_of_its_own_in_code():
-    """The documented list stays in the document until it is reconciled.
+def test_nexus_now_names_roles_and_they_are_exactly_fabrics():
+    """The successor to a guard that has fired.
 
-    Writing Nexus's five words into the package would create a fourth
-    vocabulary and make the choice by accident. Roles enter this codebase when
-    Fabric's list is adopted or extended, by decision.
+    This file used to assert that Nexus named **no** role in code, because
+    naming its documented five would have created a fourth vocabulary and
+    settled the question by accident. The question is settled now, deliberately
+    and in Fabric's favour, so the guard's job is done. A guard whose event has
+    happened is replaced by one for the invariant that matters next -- here,
+    that the local mirror is still a mirror.
     """
 
-    source = (ROOT / "src" / "azazel_nexus").rglob("*.py")
-    for path in source:
-        text = path.read_text(encoding="utf-8")
-        for role in ("protected", "egress/module", "deception_bridge", "asset_acquisition"):
-            assert f'"{role}"' not in text, (
-                f"{path.name} names the interface role {role!r}; roles are not "
-                "Nexus's to enumerate until the three vocabularies are reconciled"
-            )
+    from azazel_nexus.commissioning import INTERFACE_ROLES as LOCAL
+
+    assert LOCAL == INTERFACE_ROLES

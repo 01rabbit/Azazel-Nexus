@@ -73,7 +73,11 @@ __all__ = [
     "IdentityUnavailable",
     "InventoryProjection",
     "Projection",
+    "CONFIRMATION_METHODS",
+    "CommissioningRecordUnavailable",
+    "confirm_role",
     "identify_interface",
+    "inventory_digest",
     "project_capability",
     "project_interface_identity",
     "project_inventory",
@@ -376,4 +380,168 @@ def identify_interface(identities: Sequence[Any], selector: Any) -> Any:
 
     return resolve_interface_assignment(
         {"interfaces": tuple(identities)}, {"selector": selector}
+    )
+
+
+#: How an operator may confirm a role, as Fabric registers it.
+#:
+#: Mirrored for the same reason the role list is, and pinned by the same kind
+#: of test. Every one of these describes a person doing something physical or
+#: signing something; none of them can be satisfied by the node observing
+#: itself, which is what keeps confirmation a human act.
+CONFIRMATION_METHODS = (
+    "physical_port_label_confirmed",
+    "port_identify_blink_confirmed",
+    "operator_console_confirmed",
+    "signed_site_approval",
+)
+
+
+class CommissioningRecordUnavailable(Exception):
+    """Nexus cannot yet produce the record Fabric describes, and why."""
+
+
+def inventory_digest(identities: Sequence[Any]) -> str:
+    """The digest an assignment cites, computed by Fabric over Fabric's records.
+
+    An assignment names the inventory it was confirmed against, so that a
+    record made on one machine cannot be read as describing another. The digest
+    is over the projected `InterfaceIdentity` records in a fixed order -- not
+    over the local readouts -- because the identities are what the assignment's
+    selector matches against, and a digest of something else would vouch for
+    the wrong thing.
+
+    It covers **the composite identity and nothing else**, via Fabric's own
+    `interface_composite_key` -- the same tuple a selector matches on.
+
+    That is narrower than it first looks, and the narrowing is the point. The
+    obvious implementation digests the whole `InterfaceIdentity`, which carries
+    `kernel_name_observed`; a kernel rename would then change the inventory
+    digest, every assignment citing it would read as stale, and the node would
+    ask for re-commissioning because an interface got a different name. That is
+    the rebinding-by-name failure `docs/commissioning.md` §3 exists to prevent,
+    reintroduced through the back door. (It was the first implementation here,
+    and a test caught it.)
+
+    `driver_version` is excluded for the same reason: it is not a composite
+    identity field, so a driver update must not invalidate a commissioning.
+    `firmware_version` *is* one, so a firmware change does -- which §3 states.
+
+    Sorted by the tuple itself, so the order cannot move when a name does.
+    """
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        raise IdentityUnavailable(failure)
+    from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+        COMPOSITE_IDENTITY_FIELDS,
+        content_digest,
+        interface_composite_key,
+    )
+
+    covered = [
+        dict(zip(COMPOSITE_IDENTITY_FIELDS, interface_composite_key(identity)))
+        for identity in identities
+    ]
+    ordered = sorted(
+        covered,
+        key=lambda payload: tuple(
+            "" if value is None else value for value in payload.values()
+        ),
+    )
+    return content_digest({"interfaces": ordered})
+
+
+def confirm_role(
+    readout: InterfaceReadout,
+    *,
+    role: str,
+    node_id: str,
+    operator_ref: str,
+    method: str,
+    confirmed_at: str,
+    inventory_digest: str,
+    evidence_refs: Sequence[str] = (),
+) -> Any:
+    """Record that an operator confirmed one role against one interface.
+
+    Every argument is required and none has a default. That is the whole
+    design: a confirmation Nexus could produce without being told who
+    confirmed, how, and when is a confirmation Nexus made on the operator's
+    behalf, and `docs/commissioning.md` §4 exists to forbid exactly that.
+
+    The selector is built from the interface's composite identity, so what the
+    assignment refers to is the physical adapter rather than the name it had
+    when the operator was looking at it.
+    """
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        raise IdentityUnavailable(failure)
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            InterfaceAssignment,
+            InterfaceIdentitySelector,
+            OperatorConfirmation,
+            assert_no_role_inference,
+        )
+    except ImportError as exc:
+        raise IdentityUnavailable(
+            f"provisioning_contracts is unavailable at the pinned tag ({exc})"
+        ) from exc
+
+    identity = project_interface_identity(readout)
+
+    selector = InterfaceIdentitySelector(
+        **{
+            name: getattr(identity, name)
+            for name in InterfaceIdentitySelector.model_fields
+            if name != "schema_version"
+        }
+    )
+    assignment = InterfaceAssignment(
+        assignment_id=f"assignment:{identity.interface_key.removeprefix('if-')}.{role}",
+        node_id=node_id,
+        role=role,
+        selector=selector,
+        inventory_digest=inventory_digest,
+        confirmation=OperatorConfirmation(
+            operator_ref=operator_ref,
+            method=method,
+            confirmed_at=confirmed_at,
+            evidence_refs=tuple(evidence_refs),
+        ),
+        assigned_at=confirmed_at,
+    )
+    # Fabric refuses the concepts §4 forbids by name. Nothing here supplies
+    # one, so this can only ever pass -- which is the point of running it: it
+    # is what would notice if something started to.
+    assert_no_role_inference(assignment.model_dump(mode="json"))
+    return assignment
+
+
+def build_commissioning_record(**_fields: Any) -> Any:
+    """Refused. Nexus cannot produce this record honestly yet.
+
+    `CommissioningRecord` requires three digests -- `hardware_inventory_digest`,
+    `resource_profile_digest` and `topology_profile_digest` -- and Nexus
+    produces one of them. There is no `ResourceProfile` and no
+    `TopologyProfile` in this repository: Phase 0b's first row covered
+    interfaces only.
+
+    A placeholder for the two missing digests would make the record claim to
+    cover profiles that do not exist, and the record's own `record_digest`
+    would then vouch for that claim. A commissioning record is the artifact an
+    operator and an auditor read to decide what this node was commissioned as;
+    a digest over a fiction is worse than no record.
+
+    So this refuses and names what is missing. It becomes possible when the two
+    profiles do.
+    """
+
+    raise CommissioningRecordUnavailable(
+        "a CommissioningRecord requires resource_profile_digest and "
+        "topology_profile_digest; Nexus produces neither yet (no ResourceProfile, "
+        "no TopologyProfile). A placeholder would make the record's own digest "
+        "vouch for profiles that do not exist"
     )
