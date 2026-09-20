@@ -51,6 +51,8 @@ from .generation import GenerationRefused, GenerationStore
 
 __all__ = [
     "ACTIVATION_CONTROLLER_UNIT",
+    "ActivationLease",
+    "EdgeBaselineState",
     "CORE_UNITS",
     "ActivationAuthorization",
     "ActivationController",
@@ -84,20 +86,31 @@ class UnitState(str, Enum):
 
 
 class UnitTier(str, Enum):
-    """What a unit needs before it may be granted.
+    """What a unit needs before it may be granted. Three answers, not one.
 
-    `BOOTSTRAP` units are how an uncommissioned node becomes commissioned and
-    how it accounts for itself while it is: commissioning, the ledger, the
-    watchdog. Requiring a completed commissioning before the daemon that
-    performs commissioning may run would leave no path from an installed node
-    to a commissioned one.
+    Collapsing these is the failure the tiers exist to prevent: a node whose
+    ledger and watchdog are running is a node that can account for itself, and
+    that is **not** a node that may claim a deterministic baseline or enforce
+    anything. One readiness condition covering all three would let the easiest
+    of them speak for the other two.
 
-    `OPERATIONAL` units act on the network the operator confirmed, and are
-    granted only against a complete commissioning record.
+    `SUPPORTING` is how an uncommissioned node becomes commissioned and
+    accounts for itself while it is: commissioning, the ledger, the watchdog.
+    Requiring a completed commissioning before the daemon that performs
+    commissioning may run would leave no path from an installed node to a
+    commissioned one.
+
+    `EDGE_BASELINE` is the local Edge Core. It needs a verified Edge package
+    on top of everything `SUPPORTING` needs, and nothing else may cause
+    `edge-baseline-ready` to be claimed.
+
+    `ENFORCEMENT` acts on the network an operator confirmed, and needs a
+    complete commissioning record on top of the rest.
     """
 
-    BOOTSTRAP = "bootstrap"
-    OPERATIONAL = "operational"
+    SUPPORTING = "supporting"
+    EDGE_BASELINE = "edge_baseline"
+    ENFORCEMENT = "enforcement"
 
 
 @dataclass(frozen=True)
@@ -137,23 +150,120 @@ ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
 CORE_UNITS = (
     UnitDefinition(
         "azazel-commissiond.service",
-        UnitTier.BOOTSTRAP,
+        UnitTier.SUPPORTING,
         "root",
         "read-only inventory, operator confirmation, commissioning record",
     ),
     UnitDefinition(
         "azazel-auditd.service",
-        UnitTier.BOOTSTRAP,
+        UnitTier.SUPPORTING,
         "root",
         "hash-chain ledger; refuses chain discontinuity",
     ),
     UnitDefinition(
         "azazel-watchdog.service",
-        UnitTier.BOOTSTRAP,
+        UnitTier.SUPPORTING,
         "root",
         "degradation coordinator; never restarts into a broader authority state",
     ),
 )
+
+
+@dataclass(frozen=True)
+class ActivationLease:
+    """Time-bounded permission to activate one generation.
+
+    An authorization with no expiry is one that cannot be withdrawn by doing
+    nothing, and every other way of withdrawing it needs the thing that went
+    wrong to still be working.
+
+    The lease names the generation digest it was granted against. A lease is
+    not a standing permission to activate whatever is current: the operator
+    approved a configuration, not a slot.
+    """
+
+    granted_by: str
+    granted_at: str
+    expires_at: str
+    generation_digest: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("granted_by", "granted_at", "expires_at", "generation_digest"):
+            if not str(getattr(self, field_name)).strip():
+                raise ActivationRefused(
+                    f"a lease with no {field_name} is not a lease; it is a "
+                    "permission nobody can be shown to have granted"
+                )
+        if self.expires_at <= self.granted_at:
+            raise ActivationRefused(
+                f"the lease expires at {self.expires_at} and was granted at "
+                f"{self.granted_at}; a lease that is over before it starts "
+                "would be refused on every boot and read as a fault"
+            )
+
+    def valid_at(self, now: str) -> bool:
+        """RFC3339 timestamps compare correctly as strings when zoned alike.
+
+        The caller supplies `now`; nothing here reads a clock. A component
+        that decided its own permission's expiry from a clock it read itself
+        is a component whose permission depends on its own clock.
+        """
+
+        return self.granted_at <= now < self.expires_at
+
+
+@dataclass(frozen=True)
+class EdgeBaselineState:
+    """What was established about the local Edge Core. All five, or none.
+
+    There is deliberately **no function in this repository that produces
+    one**. Nexus consumes an Edge package that does not exist yet
+    ([Nexus#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)), and a
+    producer written ahead of it would be a stub that reports on nothing while
+    looking exactly like a check.
+
+    So the decision is implemented and tested, the type says what the decision
+    needs, and until Edge ships the package the answer is `None` -- which
+    means unknown, and unknown never grants.
+    """
+
+    package_present: bool
+    version_matches: bool
+    digest_matches: bool
+    health_endpoint_healthy: bool
+    running: bool
+
+    @property
+    def ready(self) -> bool:
+        return all(
+            (
+                self.package_present,
+                self.version_matches,
+                self.digest_matches,
+                self.health_endpoint_healthy,
+                self.running,
+            )
+        )
+
+    def missing(self) -> tuple[str, ...]:
+        """Which checks failed, by name.
+
+        "Edge is not ready" and "Edge is present, running, and its digest does
+        not match what we pinned" call for different operator actions, and the
+        second one is a security finding.
+        """
+
+        return tuple(
+            name
+            for name, held in (
+                ("package_present", self.package_present),
+                ("version_matches", self.version_matches),
+                ("digest_matches", self.digest_matches),
+                ("health_endpoint_healthy", self.health_endpoint_healthy),
+                ("running", self.running),
+            )
+            if not held
+        )
 
 
 #: The sentinel an authorization must carry. Held by `ActivationController`
@@ -325,6 +435,11 @@ class UnitVerdict:
 class ActivationOutcome:
     generation: Optional[int]
     verdicts: tuple[UnitVerdict, ...]
+    #: What was established about the local Edge Core during this pass.
+    #: `None` means nothing was, which is what it is until Nexus#44 ships.
+    edge: Optional["EdgeBaselineState"] = None
+    #: The commissioning record this pass decided against.
+    record: Optional[CommissioningRecord] = None
 
     @property
     def granted(self) -> tuple[str, ...]:
@@ -333,6 +448,39 @@ class ActivationOutcome:
     @property
     def withheld(self) -> tuple[str, ...]:
         return tuple(v.unit for v in self.verdicts if not v.granted)
+
+    @property
+    def edge_baseline_ready(self) -> bool:
+        """Derived from the Edge state, **not** from the Edge tier's verdicts.
+
+        The difference decides the answer on a node that has no Edge units at
+        all. "Every unit in this tier was granted" over an empty tier is
+        vacuously true, and would make a node with no Edge Core whatsoever the
+        most confident node on the network -- which is the absence of evidence
+        rendered as health, in its purest form.
+        """
+
+        return self.edge is not None and self.edge.ready
+
+    @property
+    def enforcement_ready(self) -> bool:
+        """Both halves: a complete commissioning **and** a granted enforcement unit.
+
+        A record alone says an operator settled what this node is attached to.
+        It does not say anything is running that could act on it.
+        """
+
+        if self.record is None or not self.record.enforcement_ready:
+            return False
+        return any(
+            verdict.granted and verdict.unit in self._enforcement_units
+            for verdict in self.verdicts
+        )
+
+    #: Filled by the controller, which knows the tiers. An outcome built by
+    #: hand carries none, so `enforcement_ready` is False for it -- the safe
+    #: direction for a value nobody supplied.
+    _enforcement_units: frozenset[str] = frozenset()
 
 
 class ActivationController:
@@ -363,6 +511,16 @@ class ActivationController:
         self.generations = generations
         self.ledger = ledger
         self.definitions = tuple(definitions)
+        # Set for the duration of one pass. Initialised to the refusing values
+        # so that a controller asked to decide without a pass in progress
+        # withholds rather than reading whatever the last pass left.
+        #: Units this controller asked to mask and could not. Read by the
+        #: runtime layer, which is the half that can escalate.
+        self.unmaskable: set[str] = set()
+        self._now = ""
+        self._lease: Optional[ActivationLease] = None
+        self._edge: Optional[EdgeBaselineState] = None
+        self._healthy = False
 
     def activate(
         self,
@@ -370,6 +528,9 @@ class ActivationController:
         now: str,
         actor: str,
         record: Optional[CommissioningRecord] = None,
+        lease: Optional[ActivationLease] = None,
+        edge: Optional[EdgeBaselineState] = None,
+        healthy: bool = True,
     ) -> ActivationOutcome:
         """Run one activation pass. Called on every boot.
 
@@ -377,12 +538,20 @@ class ActivationController:
         to consult, because a cached verdict is a statement about the tree at
         the moment it was cached.
 
+        Four preconditions, and the tiers differ in which they need: a
+        verified generation, health, a valid lease, and -- per tier -- a
+        verified Edge package or a complete commissioning record.
+
         On any failure to establish a verified generation, every governed unit
         is masked and nothing is granted -- the node ends in the state the
         installer left it in rather than in whatever state the previous boot
         happened to reach.
         """
 
+        self._now = now
+        self._lease = lease
+        self._edge = edge
+        self._healthy = healthy
         current = self.generations.current()
         if current is None:
             return self._withhold_everything(
@@ -413,7 +582,15 @@ class ActivationController:
             self._mask_all("audit_unavailable: the ledger could not record this "
                            "activation, so the activation does not happen")
             raise
-        return ActivationOutcome(generation.number, tuple(verdicts))
+        return ActivationOutcome(
+            generation.number,
+            tuple(verdicts),
+            edge=self._edge,
+            record=record,
+            _enforcement_units=frozenset(
+                d.name for d in self.definitions if d.tier is UnitTier.ENFORCEMENT
+            ),
+        )
 
     def _decide(
         self,
@@ -465,7 +642,7 @@ class ActivationController:
             raise
         except Exception as exc:
             reason = f"activation_failed: {exc}"
-            self.units.mask(definition.name, reason=reason)
+            self._narrow(definition.name, reason)
             self._record(
                 "activation.unit_failed",
                 definition,
@@ -477,12 +654,37 @@ class ActivationController:
             return UnitVerdict(definition.name, False, reason)
         return UnitVerdict(definition.name, True, "granted")
 
-    @staticmethod
     def _withholding_reason(
-        definition: UnitDefinition, record: Optional[CommissioningRecord]
+        self, definition: UnitDefinition, record: Optional[CommissioningRecord]
     ) -> Optional[str]:
-        if definition.tier is UnitTier.BOOTSTRAP:
+        """Per tier, in order of what each one adds to the one before it."""
+
+        # Required by every tier. A node that cannot answer for its own
+        # health does not get to widen on the strength of not having noticed.
+        if not self._healthy:
+            return (
+                "health_not_established: this node did not confirm its own "
+                "health, and an unchecked node is not a healthy one"
+            )
+        lease_refusal = self._lease_refusal()
+        if lease_refusal is not None:
+            return lease_refusal
+
+        if definition.tier is UnitTier.SUPPORTING:
             return None
+
+        if definition.tier is UnitTier.EDGE_BASELINE:
+            if self._edge is None:
+                return (
+                    "edge_unknown: nothing has established anything about a "
+                    "local Edge Core. Unknown is not absent and neither is "
+                    "ready (Nexus#44)"
+                )
+            if not self._edge.ready:
+                return "edge_not_ready: " + ",".join(self._edge.missing())
+            return None
+
+        # ENFORCEMENT adds a complete commissioning record to all of the above.
         if record is None:
             return (
                 "commissioning_absent: no operator has confirmed what this node "
@@ -495,6 +697,19 @@ class ActivationController:
             return (
                 "commissioning_observe_only: every profile is present and no "
                 "interface carries a confirmed role"
+            )
+        return None
+
+    def _lease_refusal(self) -> Optional[str]:
+        if self._lease is None:
+            return (
+                "lease_absent: no operator has granted permission to activate "
+                "this generation"
+            )
+        if not self._lease.valid_at(self._now):
+            return (
+                f"lease_expired: the lease ran from {self._lease.granted_at} to "
+                f"{self._lease.expires_at} and it is now {self._now}"
             )
         return None
 
@@ -519,7 +734,42 @@ class ActivationController:
 
     def _mask_all(self, reason: str) -> None:
         for definition in self.definitions:
-            self.units.mask(definition.name, reason=reason)
+            self._narrow(definition.name, reason)
+
+    def _narrow(self, unit: str, reason: str) -> bool:
+        """Mask, and never let a failure to mask escape this pass.
+
+        Found by a test that made masking fail: the exception left `activate`
+        entirely, so no outcome was returned, the remaining units were never
+        decided, and **the units already widened by this pass stayed widened
+        with nothing left running to take them back**. An exception on the
+        narrowing path was propagating as a widening.
+
+        So a failure here is recorded and the pass continues withholding. The
+        caller is told by the verdict, and a runtime layer that can escalate
+        (`azazel_nexus_runtime.activated`) does.
+        """
+
+        try:
+            self.units.mask(unit, reason=reason)
+            return True
+        except Exception as exc:  # noqa: BLE001 - recorded, then reported
+            self.unmaskable.add(unit)
+            try:
+                self.ledger.append(
+                    {
+                        "event_type": "activation.unit_would_not_mask",
+                        "unit": unit,
+                        "reason": reason,
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            except AuditUnavailable:
+                # The node is already as narrow as this component can make
+                # it. Refusing to continue because the ledger is unavailable
+                # would leave the rest of the units undecided as well.
+                pass
+            return False
 
     def _record(
         self,
