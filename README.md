@@ -100,11 +100,20 @@ its privilege boundary, the filesystem layout the installer applies, and the
 modes, each asserting that no optional component's failure subtracts a core
 capability.
 
-**What is not.** No daemon executable is built, so nothing here runs as a
-service — and because reading an interface's permanent MAC needs a privileged
-driver query this package does not make, commissioning cannot be completed on a
-real host by this build alone (`HG-04`). The wizard says so rather than falling
-back to the current MAC. The claims that depend on a real host — that installation leaves the
+The privileged half is a **separate distribution**, `azazel-nexus-runtime`
+(`runtime/`): four daemons that speak Unix domain sockets, identify callers
+from the kernel's peer credentials, and take no arbitrary command, unit name,
+path or argument. The dependency runs one way — see
+[the runtime boundary](docs/runtime-boundary.md).
+
+**What is not.** Nothing here has been run on the target hardware. The
+integration harness (`tools/e2e.py`) establishes that the distribution does
+not contradict itself and records, as *not executed*, every stage it could not
+run — see [integration evidence](docs/integration-evidence.md). Reading an
+interface's permanent MAC now has a route (netlink `IFLA_PERM_ADDRESS`), and
+whether a given driver answers is `HG-04` and still open. Whether systemd
+enforces any of the hardening is `HG-01` and `HG-02`, and no CI run touches
+them. The claims that depend on a real host — that installation leaves the
 operational units masked, that only the activation controller can unmask one,
 that an observation interface transmits nothing — are open and registered in
 [hardware gates](docs/hardware-gates.md). A green pipeline is evidence about

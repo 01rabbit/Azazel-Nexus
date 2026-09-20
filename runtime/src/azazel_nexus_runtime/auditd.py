@@ -44,7 +44,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Mapping, Optional, Sequence
+from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 from azazel_nexus.audit import (
     GENESIS_HASH,
@@ -362,8 +362,30 @@ def _bind_event(event_type: str, payload: Mapping) -> dict:
     return event
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - needs a host
-    raise SystemExit(
-        "az-auditd's service loop is wired in #42; the chain it serves is "
-        "implemented and tested here"
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    stop: Callable[[], bool] = lambda: False,
+    ready: Optional[Callable[[], None]] = None,
+) -> int:
+    """Verify the chain, then serve. Refusing to serve a broken one."""
+
+    from .principal import PrincipalPolicy
+    from .runtime_paths import audit_sink, ledger_dir, socket_path
+    from .serve import serve_forever
+
+    service = AuditService(SegmentedLedger(ledger_dir()))
+    service.start()
+    return serve_forever(
+        path=socket_path("audit"),
+        registry=REGISTRY,
+        policy=PrincipalPolicy.resolve(),
+        audit=audit_sink(),
+        handler=service.handle,
+        stop=stop,
+        ready=ready,
     )
+
+
+if __name__ == "__main__":  # pragma: no cover - the entry point
+    raise SystemExit(main())

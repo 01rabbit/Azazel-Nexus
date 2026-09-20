@@ -40,6 +40,7 @@ from typing import Any, Callable, Optional
 
 from .principal import (
     Principal,
+    SocketMisconfigured,
     PrincipalPolicy,
     REQUIRED_SOCKET_MODE,
     peer_credentials,
@@ -49,6 +50,7 @@ from .protocol import Refusal, RequestRefused, Verb, VerbRegistry, fingerprint
 
 __all__ = [
     "MAX_FRAME_BYTES",
+    "MAX_SOCKET_PATH_BYTES",
     "READ_DEADLINE_SECONDS",
     "Request",
     "SocketServer",
@@ -66,6 +68,14 @@ MAX_FRAME_BYTES = 64 * 1024
 
 #: How long a peer may hold a connection without completing a frame.
 READ_DEADLINE_SECONDS = 5.0
+
+#: What `sockaddr_un.sun_path` holds, minus the terminator.
+#:
+#: Checked before `bind` because the kernel's own answer is
+#: `OSError: AF_UNIX path too long`, which at boot is a puzzle rather than a
+#: diagnosis. The declared socket paths are well inside it; a root prefix is
+#: what pushes one over.
+MAX_SOCKET_PATH_BYTES = 107
 
 _HEADER = struct.Struct("!I")
 
@@ -93,6 +103,13 @@ def bind_socket(path: Path, *, mode: int = REQUIRED_SOCKET_MODE, backlog: int = 
     socket leaves the path occupied for the next start.
     """
 
+    encoded = str(path).encode("utf-8")
+    if len(encoded) > MAX_SOCKET_PATH_BYTES:
+        raise SocketMisconfigured(
+            f"{path} is {len(encoded)} bytes and a unix socket address holds "
+            f"{MAX_SOCKET_PATH_BYTES}. The declared paths fit; a root prefix "
+            "is what does not"
+        )
     if path.exists():
         path.unlink()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
