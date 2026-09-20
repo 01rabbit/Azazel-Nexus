@@ -168,6 +168,31 @@ The following are normative and are specified in
   action, strong administrator authentication, maintenance state, and explicit
   handling of active leases (§10).
 
+**Implementation note (#28).** `azazel_nexus.activation` holds the controller,
+`azazel_nexus.layout` holds the §3 directory table, and `packaging/` holds the
+unit files, the preset and the installer. Two things about that implementation
+are worth stating here rather than leaving to the reader:
+
+*The privilege boundary CI proves is the design one.* No component other than
+the controller can reach the widening verb, because the token is unmintable
+outside `activation.py` and a static scan keeps every other module away from
+it. That is provable in one Python process. It is not the claim that a daemon
+running under `azobs` on a real host cannot `systemctl unmask` -- that
+boundary is the operating system's, and it is recorded open as `HG-02` in
+[hardware gates](hardware-gates.md).
+
+*This slice ships no daemon executables.* The package imports nothing that can
+spawn a process, so `SystemdUnitController` takes the runner from its caller
+and the unit files name binaries the repository does not yet build. The
+installer refuses rather than enabling a unit whose `ExecStart` is absent. The
+controller's decisions are implemented and tested; the daemons that would
+carry them out are not, and no green pipeline says otherwise.
+
+**Residual risk.** A verified generation establishes that the tree on disk is
+the tree that was promoted. It does not establish that what was promoted is
+safe: admission (§2.4) is what judges content, and it is not built yet. Until
+it is, "verified" here means unchanged since promotion and nothing more.
+
 ### 2.4 Product admission
 
 A signature is one input to admission, not admission itself. Assets pass

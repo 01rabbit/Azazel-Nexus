@@ -1,0 +1,25 @@
+[Unit]
+Description=Azazel-Nexus commissioning daemon
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/commissioning.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+# Read-only inventory and operator confirmation only. It proposes role
+# bindings and records what an operator confirmed; it never infers a role from
+# an interface name, a link state or a default route (commissioning.md 4), and
+# it has no path to unmask anything -- including itself.
+
+[Service]
+Type=notify
+User=root
+ExecStart=/usr/libexec/azazel/az-commissiond
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadWritePaths=/etc/azazel/commissioning /var/lib/azazel/run
+ReadOnlyPaths=/sys/class/net
+
+[Install]
+WantedBy=multi-user.target

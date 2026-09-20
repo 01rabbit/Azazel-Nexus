@@ -86,9 +86,22 @@ a license, a security policy, a contribution guide, a
 [support matrix](docs/support-matrix.md), an
 [update channel](docs/update-channel.md) description, and a
 [recovery procedure](docs/recovery.md) — each of which describes what a release
-will have to carry, and none of which is implemented, exercised, or evidenced.
-Nothing here is implemented or verified, and no statement in this repository
-may be cited as implementation evidence or as an operational claim.
+will have to carry, and none of which is exercised or evidenced.
+
+**What is implemented, in this repository's own vocabulary** (code and focused
+tests exist — not *verified*, which requires a declared evidence gate to have
+passed): the CORE path from inventory to activation. Hardware inventory,
+resource-profile selection, the commissioning record, generations with a
+re-derivable digest, the hash-chain audit ledger, the activation controller and
+its privilege boundary, and the filesystem layout the installer applies.
+
+**What is not.** No daemon executable is built, so nothing here runs as a
+service. The claims that depend on a real host — that installation leaves the
+operational units masked, that only the activation controller can unmask one,
+that an observation interface transmits nothing — are open and registered in
+[hardware gates](docs/hardware-gates.md). A green pipeline is evidence about
+Python. No statement in this repository may be cited as operational evidence,
+and a simulated result is never a measured one.
 
 The outstanding bootstrap work is listed in
 [contract ownership](docs/contract-ownership.md) §6 and sequenced as Phase 0 of

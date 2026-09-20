@@ -65,6 +65,13 @@ jobs:
           before = set(sys.modules)
           import azazel_nexus.capability  # noqa: F401
           import azazel_nexus.lite_cache  # noqa: F401
+          # The activation controller and the layout it installs. These are
+          # the CORE path at its most literal: the controller is what runs on
+          # a node that has just been installed and has nothing else. If it
+          # ever needed an extra to import, a node would be unable to decide
+          # what it may run at exactly the moment nothing is installed.
+          import azazel_nexus.activation  # noqa: F401
+          import azazel_nexus.layout  # noqa: F401
           # The boundary module too. It names azazel_fabric and must still
           # import here: its Fabric import is deferred to call time precisely
           # so that a missing optional extra is a bounded condition and not
