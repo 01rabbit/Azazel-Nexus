@@ -33,11 +33,11 @@ come only from the table below.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Iterable, Optional
 
-from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS, UnitState
+from azazel_nexus.activation import UnitState
 
 __all__ = [
     "UNIT_NAMES",

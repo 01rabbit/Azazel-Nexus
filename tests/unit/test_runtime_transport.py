@@ -567,12 +567,18 @@ def test_two_different_frames_fingerprint_differently():
 # -- arguments have no free-text kind ------------------------------------
 
 
-def test_no_argument_kind_carries_free_text():
-    """The whole type system, and nothing in it is a string a caller picks.
+def test_no_argument_kind_carries_unbounded_text():
+    """The whole type system, and every kind in it is bounded.
 
-    `DIGEST` is a string with a fixed grammar that is compared and never
-    dereferenced; `ENUM` is a choice from a set the verb declares. There is no
-    kind that would let a caller name a path, a unit or a command.
+    `ENUM` is a choice from a set the verb declares. `DIGEST` and `TIMESTAMP`
+    are fixed grammars, compared and never dereferenced. `IDENTIFIER` is the
+    one kind carrying text a caller chose, and it is bounded on both axes --
+    64 characters from an alphabet with no whitespace, no control characters
+    and no shell metacharacters.
+
+    None of them would let a caller name a path, a unit or a command. This
+    test is pinned to the exact set so that adding a kind is a decision
+    somebody makes here rather than one that arrives with a feature.
     """
 
     assert {kind.value for kind in ArgumentKind} == {
@@ -580,7 +586,47 @@ def test_no_argument_kind_carries_free_text():
         "flag",
         "enum",
         "digest",
+        "timestamp",
+        "identifier",
     }
+
+
+def test_an_identifier_is_bounded_in_length_and_alphabet():
+    argument = Argument("actor", ArgumentKind.IDENTIFIER)
+    assert argument.coerce("operator@console") == "operator@console"
+    for rejected in (
+        "a" * 65,
+        "has space",
+        "semi;colon",
+        "new\nline",
+        "",
+        "../../etc/passwd",
+        "$(whoami)",
+    ):
+        with pytest.raises(RequestRefused):
+            argument.coerce(rejected)
+
+
+def test_a_timestamp_must_be_an_rfc3339_instant_in_utc():
+    argument = Argument("occurred_at", ArgumentKind.TIMESTAMP)
+    assert argument.coerce("2026-09-20T12:00:00Z") == "2026-09-20T12:00:00Z"
+    for rejected in (
+        "2026-09-20 12:00:00Z",
+        "2026-09-20T12:00:00+09:00",
+        "2026-09-20",
+        "yesterday",
+    ):
+        with pytest.raises(RequestRefused):
+            argument.coerce(rejected)
+
+
+def test_a_payload_is_refused_by_a_verb_that_does_not_declare_one(server):
+    """An object nothing validates is an object that reaches the daemon unchecked."""
+
+    reply, _ = _exchange(
+        server, {"verb": "node.ping", "arguments": {}, "event": {"anything": 1}}
+    )
+    assert reply["refusal"] == "undeclared_argument"
 
 
 def test_an_ordinal_is_bounded_at_declaration():

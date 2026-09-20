@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import socket
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -77,6 +77,8 @@ class Request:
     verb: Verb
     arguments: dict
     principal: Principal
+    #: Only ever non-empty for a verb that declares `accepts_payload`.
+    payload: dict = field(default_factory=dict)
 
 
 def bind_socket(path: Path, *, mode: int = REQUIRED_SOCKET_MODE, backlog: int = 16):
@@ -206,7 +208,19 @@ class SocketServer:
         if not isinstance(arguments, dict):
             raise RequestRefused(Refusal.NOT_AN_OBJECT, "arguments")
         verb = self.registry.resolve(document.get("verb"), principal)
-        return Request(verb=verb, arguments=verb.bind(arguments), principal=principal)
+        payload = document.get("event", {})
+        if not isinstance(payload, dict):
+            raise RequestRefused(Refusal.NOT_AN_OBJECT, "event")
+        if payload and not verb.accepts_payload:
+            # An object nothing validates is an object that reaches the daemon
+            # unchecked, whatever the verb does with it afterwards.
+            raise RequestRefused(Refusal.UNDECLARED_ARGUMENT, "event")
+        return Request(
+            verb=verb,
+            arguments=verb.bind(arguments),
+            principal=principal,
+            payload=payload,
+        )
 
     def _record_refusal(
         self,
