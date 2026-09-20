@@ -1,7 +1,24 @@
 # M.I.O. Runtime Control Plane
 
-Status: **target contract**. This document specifies the Nexus-owned runtime
-control plane for M.I.O. No part of it is implemented in this repository.
+Status: **target contract, partially implemented**. This document specifies
+the Nexus-owned runtime control plane for M.I.O.
+
+| Section | State |
+| --- | --- |
+| §2 capacity envelopes | implemented (`resource_profile.py`, since #26) |
+| §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`), and the resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) |
+| §4 confinement | not implemented; needs a running provider, which §3 does not yet admit |
+| §5 route selection | local-first ladder published; remote is `disabled` with no egress path |
+| §6 deterministic sanitizer | not implemented |
+| §7 fallback | only the restart rule, which holds because the reading carries no state |
+| §8 publishing state and reasons | implemented (`CognitionReading`, four independent reasons) |
+| §9 audit visibility | events are produced; nothing writes them to the ledger yet |
+
+**Remote assistance is disabled by default and has no code path.** Not
+configured off — there is no client, no socket and no egress function, and
+`tests/unit/test_cognition.py` scans for their absence. Enabling it needs an
+enumerated privacy-class admission, a deterministic sanitizer, and explicit
+operator permission, plus Fabric `mio_contracts` for the wire shape (§10).
 
 Related: [M.I.O. dual cognition doctrine](mio-dual-cognition.md) (Edge-owned
 semantics) · [Capability model](capability-model.md) ·

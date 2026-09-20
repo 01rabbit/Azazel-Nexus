@@ -71,6 +71,7 @@ jobs:
           import sys
           before = set(sys.modules)
           import azazel_nexus.capability  # noqa: F401
+          import azazel_nexus.resource_profile  # noqa: F401
           import azazel_nexus.lite_cache  # noqa: F401
           # The Knowledge Lite trust chain (#6). Verification, content
           # addressing, generations and revocation are what decide whether a
@@ -99,6 +100,33 @@ jobs:
               )
           if empty.blocks_core():
               raise SystemExit("an absent Knowledge Lite cache blocks CORE")
+          # The cognition plane (#5). A node with nothing installed and no
+          # provider is the configuration M.I.O. has to be answerable in, and
+          # it is the one where `CORE ONLY` is the correct answer rather than
+          # a fault.
+          import azazel_nexus.compatibility as compatibility  # noqa: F401
+          import azazel_nexus.cognition as cognition  # noqa: F401
+          nothing = cognition.read_cognition(
+              [],
+              host=compatibility.HostFacts(
+                  os_abi="ci",
+                  architecture=compatibility.ADMITTED_ARCHITECTURE,
+                  cpu_features=frozenset(),
+                  fabric_version="ci",
+                  fabric_features=frozenset(),
+                  schema_features=frozenset(),
+                  profile=azazel_nexus.resource_profile.ResourceProfile.CORE,
+                  overlay_schema="ci",
+                  security_epoch=0,
+              ),
+              tested=compatibility.TestedTupleSet(),
+          )
+          if nothing.state is not cognition.CognitionState.CORE_ONLY:
+              raise SystemExit(f"a node with no provider must be CORE ONLY, got {nothing.state!r}")
+          if nothing.remote is not cognition.RemoteState.DISABLED:
+              raise SystemExit("remote assistance must read disabled, not unavailable")
+          if nothing.blocks_deterministic_path():
+              raise SystemExit("the cognition plane blocks the deterministic path")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.

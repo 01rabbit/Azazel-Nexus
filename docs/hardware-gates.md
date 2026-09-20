@@ -20,6 +20,7 @@ that is not the claim, and what would settle it.
 | `HG-02` | No component other than the activation controller can unmask a unit on a running host | `hardware-unverified` |
 | `HG-03` | An observation-role interface transmits zero frames across link flap, resume and driver reload | `hardware-unverified` |
 | `HG-04` | An operator can complete commissioning on a real host without hand-editing anything | `hardware-unverified` |
+| `HG-05` | A local cognition provider's memory need fits the envelope, after the Core reserve | `unmeasured` |
 
 ## `HG-01` — installation leaves nothing running
 
@@ -132,3 +133,46 @@ carry a role, followed by a commissioning run whose composite identities
 survive a reboot that renames the adapters. Record the kernel version with the
 result: `IFLA_PERM_ADDRESS` arrived in Linux 5.6, and a driver may omit it at
 any version.
+
+## `HG-05` — the Core reserve
+
+**Claimed.** Nothing, yet. That is the point of this entry.
+
+`docs/mio-runtime.md` §3 requires a local model provider to pass a *"resource
+envelope sufficient for the declared memory need, **after the Core reserve**"*
+gate. Deciding that needs a number. Nexus does not have one:
+
+> Whether that class can carry a given workload is decided separately and
+> remains subject to the measured Core reserve, which is not yet measured for
+> Nexus. An implementation MUST NOT treat the selected profile as evidence
+> that a capability fits.
+> — `docs/IMPLEMENTATION_SPEC.md` §2.1
+
+**What CI executed.** `tests/unit/test_cognition.py` runs the admission gates
+in order and asserts that the resource gate **refuses**, in every envelope
+including `standard`, with a reason naming this gate. That is evidence the
+refusal is deliberate and reached. It is not a measurement.
+
+**Why that is not the claim.** The Core reserve is what the node itself needs
+before any optional workload: the arbiter, audit, the lease journal, evidence
+capture, the operator plane, and the kernel's own working set under load. It
+is measured by running the node, not by reasoning about it. A number chosen
+here would be an invented measurement wearing a threshold's clothes — and
+because it gates whether a model is admitted, an optimistic one would admit a
+provider onto a host that then sheds the work the reserve exists to protect.
+
+**What follows while it is open.** Every local model provider is refused at
+the resource gate, so the node sits at `CORE ONLY` for a *resource* reason
+with the asset, topology and trust dimensions reporting independently. That is
+the required behaviour rather than a defect: the deterministic path continues
+unchanged, and M.I.O. says it is unavailable rather than implying scarcity it
+has not measured.
+
+**What would settle it.** The node running on the target hardware under load
+with audit, evidence capture and the lease journal active, and the resident
+set that configuration needs measured across the 8, 16 and 32 GB classes —
+since the reserve is not a single number if it scales with retention and
+concurrency, which `IMPLEMENTATION_SPEC.md` §2.1 says it does. Until then this
+row stays `unmeasured`, which is a different word from `hardware-unverified`
+on purpose: the others have a mechanism that has not been run on the target,
+and this one has no number to run.
