@@ -18,6 +18,12 @@ license = { file = "LICENSE" }
 # later addition has to justify itself against that sentence.
 dependencies = []
 
+# The operator's entry point. It needs nothing installed beyond the package
+# itself, which is the point: a status command that depends on an extra is
+# unavailable exactly when an operator needs it to explain what is missing.
+[project.scripts]
+azazel-nexus = "azazel_nexus.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
