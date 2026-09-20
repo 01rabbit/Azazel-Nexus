@@ -191,3 +191,176 @@ def propose(readouts: tuple[InterfaceReadout, ...]) -> Proposal:
         refused=tuple(refused),
         reasons=tuple(reasons),
     )
+
+
+# ---------------------------------------------------------------------------
+# The record an operator's confirmation produces (#27)
+# ---------------------------------------------------------------------------
+
+#: The three profiles §2.3 requires before anything may be enforced.
+#:
+#: Named rather than counted. "Three profiles" is a number; these are the
+#: three, and a reader deciding whether a node is ready needs to know which
+#: one is missing rather than that one is.
+REQUIRED_PROFILES = ("hardware", "resource", "topology")
+
+
+class CommissioningRefused(Exception):
+    """The record was not built, and nothing was assumed in its place."""
+
+
+@dataclass(frozen=True)
+class ConfirmedRole:
+    """One interface, one role, confirmed by one operator.
+
+    `composite` is the identity the role is bound to. The kernel name is
+    deliberately absent: it is how the operator's machine happened to enumerate
+    the adapter on one boot, and `docs/commissioning.md` §4 forbids binding a
+    role to it.
+    """
+
+    composite: tuple[tuple[str, str], ...]
+    role: str
+    confirmed_by: str
+    confirmed_at: str
+
+    def __post_init__(self) -> None:
+        if self.role not in OFFERABLE_ROLES:
+            raise CommissioningRefused(
+                f"{self.role!r} is not a role an operator may confirm; "
+                f"offerable roles are {OFFERABLE_ROLES}"
+            )
+        if not self.composite:
+            raise CommissioningRefused(
+                "a confirmed role must name the composite identity it binds to"
+            )
+        if not self.confirmed_by.strip():
+            raise CommissioningRefused(
+                "a confirmed role must record who confirmed it; a role with no "
+                "operator behind it is an inferred role wearing a record"
+            )
+
+
+@dataclass(frozen=True)
+class CommissioningRecord:
+    """What an operator settled. Read-only to every daemon (§3).
+
+    An empty `roles` tuple is a valid record and means the node is
+    commissioned as observe-only: every interface was seen, none was given a
+    role. That is different from having no record at all, which means nobody
+    has looked.
+    """
+
+    roles: tuple[ConfirmedRole, ...]
+    profiles_present: tuple[str, ...]
+    created_at: str
+
+    @property
+    def observe_only(self) -> bool:
+        """True while no interface carries a role.
+
+        `IMPLEMENTATION_SPEC.md` §2.3: until commissioning completes the node
+        transmits nothing outside the bounded asset-acquisition state. An
+        empty record is that state expressed as data.
+        """
+
+        return not self.roles
+
+    @property
+    def missing_profiles(self) -> tuple[str, ...]:
+        return tuple(p for p in REQUIRED_PROFILES if p not in self.profiles_present)
+
+    @property
+    def enforcement_ready(self) -> bool:
+        """All three profiles present **and** a role confirmed.
+
+        Two conditions, and neither is sufficient. A node with every profile
+        and no confirmed interface has nothing to enforce on; a node with a
+        confirmed interface and a missing profile has not established what it
+        is running on. §2.3 requires both before enforcement is claimed.
+        """
+
+        return not self.missing_profiles and bool(self.roles)
+
+    def digest(self) -> str:
+        """A digest over what was confirmed, for a generation to name.
+
+        Deterministic: sorted, canonical, no clock. Two nodes that confirmed
+        the same bindings produce the same digest, which is what lets a
+        generation say *which* commissioning it was rendered from.
+        """
+
+        import hashlib
+        import json
+
+        payload = {
+            "created_at": self.created_at,
+            "profiles_present": sorted(self.profiles_present),
+            "roles": sorted(
+                (
+                    {
+                        "composite": [list(pair) for pair in role.composite],
+                        "role": role.role,
+                        "confirmed_by": role.confirmed_by,
+                        "confirmed_at": role.confirmed_at,
+                    }
+                    for role in self.roles
+                ),
+                key=lambda item: (
+                    item["role"],
+                    json.dumps(item["composite"], sort_keys=True),
+                ),
+            ),
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def confirm_roles(
+    proposal: Proposal,
+    confirmations: tuple[tuple[InterfaceReadout, str], ...],
+    *,
+    operator: str,
+    at: str,
+    profiles_present: tuple[str, ...],
+) -> CommissioningRecord:
+    """Turn explicit operator confirmations into a record. Infer nothing.
+
+    Every binding must name an interface the proposal offered. An interface
+    the proposal refused cannot acquire a role by being passed in here --
+    that would route around the ambiguity check rather than resolving it, and
+    `docs/commissioning.md` §3 makes zero matches and several matches the same
+    answer for exactly that reason.
+    """
+
+    offered = {id(readout): readout for readout in proposal.commissionable}
+    roles = []
+    for readout, role in confirmations:
+        if id(readout) not in offered:
+            raise CommissioningRefused(
+                f"{readout.kernel_name} was not offered for commissioning; "
+                f"reasons: {readout.incomplete_reasons or ('not in proposal',)}"
+            )
+        roles.append(
+            ConfirmedRole(
+                composite=tuple(sorted(readout.fields.items())),
+                role=role,
+                confirmed_by=operator,
+                confirmed_at=at,
+            )
+        )
+
+    seen = [role.composite for role in roles]
+    if len(set(seen)) != len(seen):
+        raise CommissioningRefused(
+            "the same interface was confirmed twice; one interface carries one "
+            "role, and two confirmations for one adapter is an operator error "
+            "rather than a pair of bindings"
+        )
+    return CommissioningRecord(
+        roles=tuple(roles),
+        profiles_present=tuple(profiles_present),
+        created_at=at,
+    )
