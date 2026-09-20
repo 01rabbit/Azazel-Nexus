@@ -53,6 +53,7 @@ EVERYTHING = frozenset(CORE_CAPABILITIES) | {
     "deception_lite",
     "local_cognition",
     "remote_cognition",
+    "edge_baseline",
 }
 
 
@@ -60,7 +61,23 @@ EVERYTHING = frozenset(CORE_CAPABILITIES) | {
 
 
 def test_the_matrix_covers_every_condition_against_every_mode():
-    assert len(MATRIX) == len(CONDITIONS) * len(FailureMode) == 40
+    assert len(MATRIX) == len(CONDITIONS) * len(FailureMode) == 45
+
+
+def test_no_two_optional_components_are_the_same_member():
+    """An enum alias merges two components into one, silently.
+
+    `EDGE_CORE = "local_model"` would make `OptionalComponent.EDGE_CORE` and
+    `.LOCAL_MODEL` the same object: losing either would subtract both
+    capabilities, and every count-based check here would still balance
+    because the set got smaller on both sides at once.
+    """
+
+    assert len(OptionalComponent.__members__) == len(set(OptionalComponent)), (
+        "two names in OptionalComponent share a value, so they are one member"
+    )
+    values = [member.value for member in OptionalComponent.__members__.values()]
+    assert len(set(values)) == len(values)
 
 
 def test_the_matrix_covers_every_optional_component():
@@ -112,6 +129,10 @@ PROMISED_BEYOND_CORE = {
     "knowledge_lite_absent": (),
     "knowledge_lite_expired": (),
     "deception_lite_absent": (),
+    # Losing the local Edge Core costs the baseline this node may claim and
+    # nothing else. What continues beyond the core set is named so that the
+    # promise is checked rather than assumed (Nexus#44).
+    "edge_core_absent": (),
     "audit_pressure": (),
 }
 
@@ -288,6 +309,35 @@ def test_the_reason_order_does_not_depend_on_how_the_failures_were_collected():
 
 
 # -- expired is not absent ----------------------------------------------
+
+
+def test_losing_the_local_edge_core_costs_only_the_baseline(tmp_path):
+    """Nexus#44: without an Edge Core this node keeps everything it owns.
+
+    Inventory, commissioning, the audit chain and the operator plane are core
+    capabilities and are not sourced from Edge. What is lost is the
+    deterministic baseline this node may *claim* -- which it must then not
+    claim, in all five failure modes.
+    """
+
+    for mode in FailureMode:
+        outcome = assess(EVERYTHING, {"edge_core_absent": mode})
+        assert outcome.deterministic_path_intact
+        assert "edge_baseline" in outcome.lost
+        assert CORE_CAPABILITIES <= set(outcome.retained)
+
+
+def test_an_edge_core_that_answered_badly_is_not_an_edge_core_that_is_absent():
+    """`corrupt` and `absent` differ here as everywhere else.
+
+    A node whose Edge package is present and whose digest does not match is a
+    node with a security finding. A node with no Edge package has a
+    configuration gap. The operator does different things.
+    """
+
+    absent = assess(EVERYTHING, {"edge_core_absent": FailureMode.ABSENT})
+    corrupt = assess(EVERYTHING, {"edge_core_absent": FailureMode.CORRUPT})
+    assert absent.reasons[0].disposition is not corrupt.reasons[0].disposition
 
 
 def test_expired_is_reported_as_stale_and_absent_is_not():

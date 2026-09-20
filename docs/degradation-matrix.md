@@ -30,12 +30,18 @@ that no longer matches the code is a failing test, not a stale document.
 | `knowledge_lite_absent` | the tactical cache | — |
 | `knowledge_lite_expired` | the tactical cache, which is present and must be shown as stale | — |
 | `deception_lite_absent` | the embedded bounded-environment runtime | — |
+| `edge_core_absent` | the deterministic baseline this node may claim | — |
 | `audit_pressure` | records with the longest retention. The chain itself does not stop | — |
 
 `knowledge_lite` appears under two conditions on purpose: one says there is no
 tactical cache, the other says there is one and it has lapsed. A table that
 merged them would make a node serving stale intelligence look like a node
 serving none.
+
+`edge_core_absent` is a ninth row, added with Nexus#44. Losing the local
+Edge Core costs this node the baseline it may *claim* and nothing else:
+inventory, commissioning, the audit chain and the operator plane are core
+capabilities and are not sourced from it.
 
 `deception_lite_absent` is a row issue #30 does not list. Its fourth row
 covers the **external** AZ-06 node; the embedded Deception Lite runtime is a
@@ -104,6 +110,11 @@ suite that stops being run.
 | `deception_lite_absent` | `hanging` | `deadline_exceeded` | yes |
 | `deception_lite_absent` | `corrupt` | `quarantined` | yes |
 | `deception_lite_absent` | `expired` | `stale` | yes |
+| `edge_core_absent` | `absent` | `not_configured` | yes |
+| `edge_core_absent` | `refusing` | `refused` | yes |
+| `edge_core_absent` | `hanging` | `deadline_exceeded` | yes |
+| `edge_core_absent` | `corrupt` | `quarantined` | yes |
+| `edge_core_absent` | `expired` | `stale` | yes |
 | `audit_pressure` | `absent` | `not_configured` | yes |
 | `audit_pressure` | `refusing` | `refused` | yes |
 | `audit_pressure` | `hanging` | `deadline_exceeded` | yes |

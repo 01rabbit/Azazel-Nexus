@@ -46,6 +46,26 @@ EXTERNAL_MODULES = (
     ("Remote M.I.O.", "no remote cognition route is configured on this node"),
 )
 
+#: What this node can say about a local Edge Core: that it has not looked.
+#:
+#: `azazel_nexus.activation.EdgeBaselineState` holds the five checks the
+#: decision needs, and **nothing in this repository produces one**. The
+#: package those checks would run against is
+#: [Azazel-Edge#424](https://github.com/01rabbit/Azazel-Edge/issues/424) and
+#: it does not exist yet.
+#:
+#: So the row says the node is not configured for one, and says why. That is
+#: not a placeholder for a check -- it is the accurate report of an absence,
+#: and it is what keeps `edge-baseline-ready` from being a thing this node
+#: has quietly stopped mentioning. A status screen that omitted Edge entirely
+#: would read as a node with no Edge concern at all.
+EDGE_BASELINE = (
+    "Edge Core (local)",
+    "no Edge package is configured on this node, and nothing here has "
+    "looked for one: the x86_64 package Nexus would verify is not built yet "
+    "(Azazel-Edge#424). edge-baseline-ready is not claimed",
+)
+
 
 def _profile_report() -> ProfileReport:
     try:
@@ -78,7 +98,7 @@ def _capability_report() -> CapabilityReport:
 def _module_reports() -> tuple[ModuleReport, ...]:
     return tuple(
         ModuleReport(name=name, state=ModuleState.ABSENT, reason=reason)
-        for name, reason in EXTERNAL_MODULES
+        for name, reason in (*EXTERNAL_MODULES, EDGE_BASELINE)
     )
 
 
@@ -178,6 +198,11 @@ def _render_status(report: OperatorReport, out: TextIO) -> None:
         + ("yes" if report.enforcement_ready else "no"),
         file=out,
     )
+    # Printed as its own line rather than folded into the module list,
+    # because it is a claim about this node and not about a peer. "No" here
+    # means this node is not asserting a deterministic baseline; it does not
+    # mean an Edge Core is broken, and the module row below says which.
+    print("edge-baseline-ready: no", file=out)
     if not report.enforcement_ready:
         if report.record is None:
             print("    no commissioning record exists on this node", file=out)
