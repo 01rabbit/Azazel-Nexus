@@ -70,6 +70,12 @@ jobs:
           # so that a missing optional extra is a bounded condition and not
           # the crash the boundary exists to prevent (ADR-0001).
           import azazel_nexus.fabric_boundary as boundary  # noqa: F401
+          # The status module too. It exists to be answerable on a node
+          # with no connectivity (docs/support-matrix.md 4.1), so the job
+          # that proves CORE needs nothing installed is the job that has to
+          # import it. A guard that never runs on the configuration it was
+          # written for is not a guard.
+          import azazel_nexus.status as status  # noqa: F401
           projection = boundary.project_capability(
               azazel_nexus.capability.CapabilityState.CORE,
               azazel_nexus.capability.CORE_CAPABILITIES,
@@ -79,6 +85,17 @@ jobs:
                   "with no Fabric installed the projection must be unavailable "
                   f"and say why, got available={projection.available!r} "
                   f"reason={projection.reason!r}"
+              )
+          claims = status.collect_status()
+          if not claims:
+              raise SystemExit("collect_status returned nothing with no Fabric installed")
+          if not any(
+              c.verification_state is status.VerificationState.UNAVAILABLE
+              for c in claims
+          ):
+              raise SystemExit(
+                  "with no Fabric installed, no claim reported it unavailable; "
+                  f"got {[c.verification_state.value for c in claims]}"
               )
           third_party = sorted(
               name.split(".")[0]
@@ -115,11 +132,16 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/unit -q
 
-      - name: Refuse a run where the boundary tests skipped
+      # test_status_claims.py is listed alongside it for the same reason:
+      # its check that no document calls a pinned Fabric module unreleased
+      # skips without the extra, and a skipped guard reports success.
+      - name: Refuse a run where the Fabric-dependent tests skipped
         run: |
-          python -m pytest tests/unit/test_fabric_boundary.py -q --no-header -rs \
-            | tee /tmp/boundary.txt
+          python -m pytest \
+            tests/unit/test_fabric_boundary.py \
+            tests/unit/test_status_claims.py \
+            -q --no-header -rs | tee /tmp/boundary.txt
           if grep -qE '[0-9]+ skipped' /tmp/boundary.txt; then
-            echo "the boundary tests skipped on the job that installs Fabric" >&2
+            echo "a Fabric-dependent test skipped on the job that installs Fabric" >&2
             exit 1
           fi

@@ -186,11 +186,11 @@ The user interface and service implementations are replaceable behind stable con
 | Enforcement | **Fabric** `schema.action` intent and plans; Nexus owns the receipt and lease state | nftables, tc, route/bridge adapter |
 | Knowledge context | **Fabric** `cti_contracts` | Knowledge Lite cache, AZ-04 full node |
 | Deception | **Fabric** `deception_contracts` | Deception Lite runtime, AZ-06 full host |
-| Cognition | **Fabric** `mio_contracts` — *target contract, not released* | local model, remote provider, deterministic fallback |
+| Cognition | **Fabric** `mio_contracts` — *published in the pinned Fabric, not adopted here* | local model, remote provider, deterministic fallback |
 | Operator UI | **Fabric** `view.status`; Nexus owns sessions and approval handling | touchscreen, external console, API client |
 | Alerts | **Fabric** `notify.model`; Nexus owns the priority queue | local audio, visual UI, optional relay |
 | Audit | **Fabric** `schema.audit` envelope; Nexus owns chain enforcement and anchoring | append-only ledger, signed checkpoints |
-| Provisioning and commissioning | **Fabric** `provisioning_contracts` — *target contract, not released*; Nexus owns admission, rendering, and activation | inventory, commissioning record, generation |
+| Provisioning and commissioning | **Fabric** `provisioning_contracts` — *published in the pinned Fabric; `InterfaceIdentity` consumed, the rest not adopted*; Nexus owns admission, rendering, and activation | inventory, commissioning record, generation |
 
 No interface allows a renderer, model, or module to bypass the arbiter. Backend selection is made at deployment configuration time and recorded in the system inventory.
 

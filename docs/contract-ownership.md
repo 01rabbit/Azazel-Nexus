@@ -134,8 +134,15 @@ form as if it were the interoperable shape.
 ### 3.4 Provisioning path
 
 Every record below is assigned to Fabric `provisioning_contracts` by the
-program plan and is **not yet released**. Nexus MUST NOT adopt a provisioning
-pin until R1 publishes one.
+program plan. That module **is published** — it shipped in `v0.9.0rc1` and the
+tag this repository pins carries it, which `tests/unit/test_status_claims.py`
+checks against the installed distribution rather than against this sentence.
+This section said it was unreleased while the table below already described
+`InterfaceIdentity` as consumed from it (#23).
+
+What is still true is narrower: Nexus consumes two of these records and has
+adopted none of the rest, and it MUST NOT restate a record it does not
+consume.
 
 | Record | Owner | Status |
 | --- | --- | --- |

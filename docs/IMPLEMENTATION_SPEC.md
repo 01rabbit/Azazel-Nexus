@@ -263,7 +263,7 @@ summary for this section:
 | 6.1 observation and assessment envelopes | **Nexus-local** | product-local ingest records; only the citation and explanation projections cross a boundary |
 | 6.2 enforcement intent and action plan | Fabric (available) | `schema.action.ActionIntent` and its plan variants |
 | 6.2 receipt, lease timer, rollback state | **Nexus-local** | product-local durable state |
-| 6.3 `MioSituationFrame`, `MioRemoteFrame`, advisory result, merge output | Fabric (**target, R1**) | `mio_contracts` — not released |
+| 6.3 `MioSituationFrame`, `MioRemoteFrame`, advisory result, merge output | Fabric (**target, R1**) | `mio_contracts` — published in the pinned Fabric; **not adopted here** |
 | 6.3 sanitizer policy, alias keys, redaction records | **Nexus-local** | only the redaction record *reference* is carried in the Fabric frame |
 | 6.4 audit event envelope and canonical bytes | Fabric (available) | `schema.audit.AuditEvent`, `audit.jsonl` |
 | 6.4 hash chain, checkpoints, ledger genesis | **Nexus-local** | chain enforcement is a product-local trust decision |
@@ -330,7 +330,7 @@ An intent is immutable and has exactly one lifecycle. An action lease bounds any
 
 ### 6.3 M.I.O. and privacy classes
 
-Owner: **Fabric `mio_contracts` — target contract, not released.** The frames and result shape below describe what Nexus needs from that module. Nexus MUST NOT adopt a provisioning or M.I.O. contract pin before Fabric publishes one, and MUST NOT treat the shapes below as an interoperable canonical form. Privacy classes, sanitizer policy, and alias key material are Nexus-local.
+Owner: **Fabric `mio_contracts` — published in the pinned Fabric, not adopted here.** The frames and result shape below describe what Nexus needs from that module; they are a local sketch and nothing has been reconciled against Fabric's actual records. Nexus MUST NOT treat the shapes below as an interoperable canonical form, and adopting the module means reading it, not assuming these shapes were it. Privacy classes, sanitizer policy, and alias key material are Nexus-local.
 
 `MioSituationFrame` is local-only and may cite evidence IDs. `MioRemoteFrame` is separately built, carries `sanitizer_policy_version`, `redaction_record_id`, `remote_privacy_class`, and contains no raw artifacts or internal addressing.
 
