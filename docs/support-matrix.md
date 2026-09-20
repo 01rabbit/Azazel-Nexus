@@ -113,9 +113,9 @@ Nexus-local copy
 | Fact | State |
 | --- | --- |
 | Nexus's Fabric pin | **none.** The R0 baseline records Azazel-Nexus with "no release baseline yet" and no pin, and requires "an explicit, tested Fabric pin before an implementation release" |
-| Fabric reference candidate | `v0.8.0` — package `0.8.0` with a published release; the Edge, Deception, Knowledge, and Boot pins agree on it (R0 baseline, observed compatibility state) |
-| Program-wide locked baseline | **not reached.** Azazel-Gadget remains at `v0.4.0`, Nexus has no pin, and no cross-repository conformance run against `v0.8.0` is linked from the program plan |
-| `provisioning_contracts`, `mio_contracts` | **not released.** Nexus MUST NOT adopt a provisioning or M.I.O. contract pin before Fabric publishes one ([contract ownership](contract-ownership.md) §3.3, §3.4) |
+| Which tag the other products pin | **not restated here.** Azazel-Fabric's [release compatibility](https://github.com/01rabbit/Azazel-Fabric/blob/main/docs/release-compatibility.md) carries the consumer pin table, and a test in that repository keeps it agreeing with the repository's own README. A copy in this document would be a second statement of somebody else's record, free to drift — and it did: this row previously named a tag that four of the five consumers had moved off |
+| Program-wide locked baseline | **not reached.** No cross-repository conformance run is linked from the program plan, and Nexus has no pin of its own to enter such a run with |
+| `provisioning_contracts`, `mio_contracts` | **released, unadopted.** Both exist from `v0.9.0rc1`; see [contract ownership](contract-ownership.md) §2. Existing is not the same as mapped, so §3.3 and §3.4 still classify every record in them as a target, and Nexus MUST NOT adopt a pin for them without a conformance attestation |
 | Conformance attestation | **none.** Every record mapping in [contract ownership](contract-ownership.md) §3 is a design assertion awaiting attestation, not verified evidence |
 
 A release will additionally pin each integrated product — the Edge package, any
