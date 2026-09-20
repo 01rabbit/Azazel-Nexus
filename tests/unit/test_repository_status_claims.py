@@ -152,20 +152,35 @@ def test_no_document_denies_something_this_repository_has(relative, fact, patter
     )
 
 
-def test_the_repository_still_has_no_fabric_pin():
-    """The one original claim that is still true, pinned as a fact.
+def test_the_fabric_pin_is_an_optional_extra_and_not_a_required_dependency():
+    """The successor to a guard that has now fired.
 
-    Not decoration. It is what makes the skip above meaningful: without it, a
-    Fabric pin could be added and every claim check would simply start
-    skipping, reporting nothing. This turns that same event into a failure
-    that names the documents to revisit.
+    This file used to assert that Nexus had **no** Fabric pin. That assertion
+    did its job: adopting the pin turned seven tests red at once and named
+    every document carrying a sentence that had just stopped being true. A
+    guard whose event has happened is replaced by one for the invariant that
+    matters next, not deleted.
+
+    What matters next is the *shape* of the dependency. Nexus must be useful as
+    `CORE` with no external Knowledge, no Deception, no remote cognition and no
+    cloud connectivity (ADR-0001). Fabric moving from `[project.optional-
+    dependencies]` into `dependencies` would end that quietly -- an import
+    line, no document touched -- so it ends loudly here instead.
     """
 
-    assert not _has_fabric_pin(), (
-        "Nexus now declares an azazel-fabric dependency. Update the status "
-        f"sentence in each of {list(STATUS_DOCUMENTS)}, and revisit "
-        "docs/contract-ownership.md §3, whose mappings were written as design "
-        "assertions precisely because no pin bound them."
+    text = (ROOT / "pyproject.toml").read_text("utf-8")
+    required = text.split("[project.optional-dependencies]", 1)[0]
+
+    assert "azazel-fabric" not in required, (
+        "azazel-fabric appears in the required dependency list. Nexus declares "
+        "it as the optional `fabric` extra so that CORE works with nothing "
+        "installed; making it required is a change of product posture and "
+        "needs its own ADR (see docs/adr/0001-fabric-pin.md §Consequences) "
+        "plus a revision of docs/inheritance-ledger.md §4.1."
+    )
+    assert "azazel-fabric" in text, (
+        "the Fabric pin has disappeared from pyproject.toml; "
+        "src/azazel_nexus/fabric_boundary.py names a tag that nothing installs"
     )
 
 

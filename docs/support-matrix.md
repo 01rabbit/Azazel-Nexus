@@ -112,9 +112,9 @@ Nexus-local copy
 
 | Fact | State |
 | --- | --- |
-| Nexus's Fabric pin | **none.** The R0 baseline records Azazel-Nexus with "no release baseline yet" and no pin, and requires "an explicit, tested Fabric pin before an implementation release" |
+| Nexus's Fabric pin | **`v0.9.0rc2`, as the optional `fabric` extra** ([ADR-0001](adr/0001-fabric-pin.md)). An exact tag, never a branch or a development commit. It satisfies the R0 baseline's "explicit, tested Fabric pin before an implementation release" for the pin itself; the *tested* half is one mapping, not §3 as a whole |
 | Which tag the other products pin | **not restated here.** Azazel-Fabric's [release compatibility](https://github.com/01rabbit/Azazel-Fabric/blob/main/docs/release-compatibility.md) carries the consumer pin table, and a test in that repository keeps it agreeing with the repository's own README. A copy in this document would be a second statement of somebody else's record, free to drift — and it did: this row previously named a tag that four of the five consumers had moved off |
-| Program-wide locked baseline | **not reached.** No cross-repository conformance run is linked from the program plan, and Nexus has no pin of its own to enter such a run with |
+| Program-wide locked baseline | **not reached.** No cross-repository conformance run is linked from the program plan, and the products do not agree on one tag |
 | `provisioning_contracts`, `mio_contracts` | **released, unadopted.** Both exist from `v0.9.0rc1`; see [contract ownership](contract-ownership.md) §2. Existing is not the same as mapped, so §3.3 and §3.4 still classify every record in them as a target, and Nexus MUST NOT adopt a pin for them without a conformance attestation |
 | Conformance attestation | **none.** Every record mapping in [contract ownership](contract-ownership.md) §3 is a design assertion awaiting attestation, not verified evidence |
 

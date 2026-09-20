@@ -2,7 +2,12 @@
 
 Status: **target contract**. This document states where each record used by
 Azazel-Nexus is defined. It does not assert that Nexus implements any of them.
-It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a deliberately empty dependency list, and a unit suite; it still has **no Azazel-Fabric pin**, so every contract mapping below is a design assertion awaiting a conformance attestation, not verified evidence.
+It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a
+deliberately empty required-dependency list, a unit suite, and an exact
+**Azazel-Fabric pin as an optional extra** (`v0.9.0rc2`, ADR-0001), consumed
+through one boundary module. One mapping is attested by that boundary —
+capability/mode publication; every other contract mapping remains a design
+assertion awaiting a conformance attestation, not verified evidence.
 
 Related: [Azazel program plan](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md) ·
 [R0 baseline](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-r0-baseline.md) ·
@@ -234,8 +239,24 @@ subsequent bootstrap work rather than as satisfied requirements:
 
 | Missing | Consequence today |
 | --- | --- |
-| Fabric pin | no contract version is bound; §3 mappings are unenforced |
-| conformance attestation | no check enforces any §3 mapping |
+| conformance attestation for §3.1's remaining rows, §3.2, §3.3 and §3.4 | no check enforces those mappings |
+
+**Closed since this section was written.** The package layout, `pyproject.toml`
+and dependency manifest arrived with the Knowledge Lite consumer (#18), and the
+repository runs a unit suite rather than the documentation link check alone.
+The **Fabric pin** is now bound: `v0.9.0rc2` as the optional `fabric` extra,
+consumed through one boundary module ([ADR-0001](adr/0001-fabric-pin.md)).
+
+One §3.1 row is attested by that boundary — capability/mode publication through
+`ModeState` and `StatusView`, checked in `tests/unit/test_fabric_boundary.py`
+against the pinned models rather than asserted here. Every other row in §3 is
+unchanged: **a bound pin is what makes an attestation possible, not an
+attestation.**
+
+`tests/unit/test_repository_status_claims.py` exists because the two closed
+rows above stayed in seven documents after they were closed — and it is what
+named those documents when the pin landed, rather than leaving the sentences to
+be found by a reader planning work from them.
 
 Closed since this section was written: the package layout, `pyproject.toml` and
 dependency manifest arrived with the Knowledge Lite consumer (#18), and the
