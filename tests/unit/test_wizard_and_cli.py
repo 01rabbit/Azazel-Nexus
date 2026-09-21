@@ -584,6 +584,160 @@ def test_the_edge_axis_reason_names_the_security_finding(tmp_path):
     assert "This is a security finding" in text
 
 
+def _verified_package(tmp_path):
+    """A package whose three file-derived checks all pass."""
+
+    import hashlib
+    import json
+
+    from azazel_nexus.edge_package import PIN
+
+    root = tmp_path / "edge-verified"
+    root.mkdir()
+    payload = b"edge-core-payload"
+    (root / PIN.artifact_name).write_bytes(payload)
+    (root / PIN.manifest_name).write_text(
+        json.dumps(
+            {
+                "contract": PIN.manifest_contract,
+                "package": PIN.package,
+                "version": PIN.version,
+                "architecture": PIN.architecture,
+                "artifact": PIN.artifact_name,
+                "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                "signed": False,
+                "health": {"contract": PIN.health_contract},
+                "posture": {"observe_only": True, "enforcement": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return root, "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **overrides):
+    import json
+
+    from azazel_nexus.edge_package import PIN, PROBE_CONTRACT
+
+    document = {
+        "contract": PROBE_CONTRACT,
+        "observed_at": observed_at,
+        "ttl_seconds": 300,
+        "package_version": PIN.version,
+        "package_digest": digest,
+        "health": "passed",
+        "health_reason": "all four conditions held",
+        "health_security": False,
+        "running": "passed",
+        "running_reason": "azazel-edge-core.service is active/running",
+    }
+    document.update(overrides)
+    path = tmp_path / "edge-probe.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z"):
+    out = io.StringIO()
+    main(
+        [
+            "--sysfs",
+            str(_tree(tmp_path)),
+            "--edge-root",
+            str(root),
+            "--edge-probe",
+            str(state),
+            "--as-of",
+            as_of,
+            "status",
+        ],
+        out=out,
+    )
+    return out.getvalue()
+
+
+def test_status_reads_the_probe_result_rather_than_probing(tmp_path):
+    """The whole point of Nexus#72, asserted on the screen an operator reads.
+
+    This was missing while the wiring silently was not applied: every test
+    passed against a `status` that never looked at a probe result at all.
+    """
+
+    root, digest = _verified_package(tmp_path)
+    text = _status_with_edge(tmp_path, root, _probe_state(tmp_path, digest))
+    assert "edge core (local): verified-ready" in text
+    assert "edge-baseline-ready: yes" in text
+    assert "az-edge-probed at 2026-09-21T04:00:00Z" in text
+
+
+def test_status_withholds_when_the_probe_result_is_stale(tmp_path):
+    root, digest = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, digest)
+    text = _status_with_edge(tmp_path, root, state, as_of="2026-09-21T04:10:00Z")
+    assert "edge-baseline-ready: no" in text
+    assert "stale" in text
+    assert "health_endpoint_healthy: not-checked" in text
+
+
+def test_status_withholds_when_the_probe_reports_another_package(tmp_path):
+    root, _ = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, "sha256:" + "0" * 64)
+    text = _status_with_edge(tmp_path, root, state)
+    assert "edge-baseline-ready: no" in text
+    assert "A result about a different package" in text
+
+
+def test_status_says_so_when_the_probe_state_is_garbage_and_carries_on(tmp_path):
+    """Something wrote it. Swallowing that would hide the one case worth seeing."""
+
+    root, _ = _verified_package(tmp_path)
+    state = tmp_path / "edge-probe.json"
+    state.write_text("{ truncated", encoding="utf-8")
+    text = _status_with_edge(tmp_path, root, state)
+    assert "was refused" in text
+    assert "edge-baseline-ready: no" in text
+    assert "running: not-checked" in text
+
+
+def test_status_with_no_probe_state_leaves_both_checks_unchecked(tmp_path):
+    """A node where the probe has never run is not a node with a broken probe."""
+
+    root, _ = _verified_package(tmp_path)
+    text = _status_with_edge(tmp_path, root, tmp_path / "never-written.json")
+    assert "was refused" not in text
+    assert "health_endpoint_healthy: not-checked" in text
+    assert "edge-baseline-ready: no" in text
+
+
+def test_status_never_runs_anything_to_produce_the_edge_section():
+    """`status` is read-only, and that is checked against the source.
+
+    The library cannot import `subprocess` at all
+    (`test_boundary_static.py`); this is the narrower statement that the CLI
+    does not reach the probe module either. A status command that started the
+    component it reports on would be a status command with a side effect.
+    """
+
+    import ast
+
+    cli = Path(__file__).resolve().parents[2] / "src" / "azazel_nexus" / "cli.py"
+    tree = ast.parse(cli.read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert "azazel_nexus_runtime" not in imported
+    assert "subprocess" not in imported
+    assert "edge_package" in {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    } | {m.lstrip(".") for m in imported}, "a vacuous scan: the CLI imports nothing"
+
+
 def test_edge_package_is_the_only_producer_of_an_edge_baseline_state():
     """The rule that keeps the row from becoming a stub, narrowed rather than dropped.
 

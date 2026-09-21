@@ -476,9 +476,19 @@ def test_a_unit_that_fails_to_widen_is_masked_again_and_recorded(tmp_path):
         "a unit left half-widened by a failed activation must be narrowed "
         "again, not left in whatever state the failure stopped at"
     )
-    assert units.calls[-1] == ("mask", FAILING), (
+    # The last thing done *to this unit*, not the last thing done at all:
+    # the pass continues with the units after it, and a later unit's call
+    # being last says nothing about this one. Narrowing it to the unit keeps
+    # what the assertion was for -- that the mask follows the failed attempt
+    # rather than preceding it.
+    for_unit = [call for call in units.calls if call[1] == FAILING]
+    assert for_unit[-1] == ("mask", FAILING), (
         "the re-mask must be the last thing done to the unit; a mask recorded "
         "before the failed attempt would be the installer's, not this one's"
+    )
+    assert ("unmask_and_enable", FAILING) in for_unit, (
+        "a vacuous check: the unit was never attempted, so the mask below is "
+        "not a re-mask"
     )
     assert "activation.unit_failed" in _event_types(ledger)
 

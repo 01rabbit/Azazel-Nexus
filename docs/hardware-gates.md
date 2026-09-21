@@ -243,18 +243,16 @@ field by field against the constants this node reads.
 **Why that is not the claim.** Every package CI inspected was written by the
 test that inspected it. None of them was produced by the Azazel-Edge packager
 on a real build, installed by a real deployment, or answered by a real
-`azazel-edge-core --health`. Two of the five checks were never executed
-against a live component at all: no probe runner is shipped, so
-`health_endpoint_healthy` and `running` are `not-checked` on every node this
-repository can build (§7 of the verification note). A round trip through a
-real artifact could differ in file layout, permissions, the installed path, or
-in the health report a running binary actually prints.
+`azazel-edge-core --health`. `az-edge-probed` now exists and CI exercises it
+end to end, but with a **fake** health command and a **fake** unit reader: no
+real binary and no real systemd has answered it. A round trip through a real
+artifact could differ in file layout, permissions, the installed path, in
+what systemd reports for the unit, or in the health report a running binary
+actually prints.
 
 **What would settle it.** An Edge Core package built by
 `packaging/nexus-core/nexus_core_package.py` on Azazel-Edge, installed at the
-fixed location on the target host, inspected by `azazel-nexus status`, with
-the health contract run by whatever ends up running it
-([#72](https://github.com/01rabbit/Azazel-Nexus/issues/72)) and the running
-state established by the service manager. Until that has happened on hardware,
-the software side is `software-complete, hardware-unverified` and nothing
-more.
+fixed location on the target host, `az-edge-probed` run there against the real
+binary with a real D-Bus connection, and `azazel-nexus status` reading the
+result it wrote. Until that has happened on hardware, the software side is
+`software-complete, hardware-unverified` and nothing more.

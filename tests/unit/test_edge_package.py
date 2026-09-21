@@ -27,6 +27,10 @@ import pytest
 from azazel_nexus.activation import EdgeBaselineState
 from azazel_nexus.edge_package import (
     CHECKS,
+    PROBE_CONTRACT,
+    ProbeResult,
+    load_probe_result,
+    parse_probe_result,
     HEALTHY_STATUS,
     PIN,
     REQUIRED_HEALTH_KEYS,
@@ -760,3 +764,231 @@ def test_nothing_reads_the_startup_block_of_an_edge_manifest():
         "a vacuous scan: no manifest field is looked up at all, so the "
         "assertions above would pass over an empty module"
     )
+
+
+# -- the probe's result, read and never trusted further --------------------
+#
+# Nexus#72. `az-edge-probed` supplies `health_endpoint_healthy` and `running`
+# and nothing else: package, version and digest stay derived here, from the
+# files, on every read. These hold the three ways a result supplies nothing
+# and the one way it supplies something.
+
+
+def _result(**overrides) -> ProbeResult:
+    fields = {
+        "contract": PROBE_CONTRACT,
+        "observed_at": "2026-09-21T03:00:00Z",
+        "ttl_seconds": 300,
+        "package_version": PIN.version,
+        "package_digest": "sha256:" + "ab" * 32,
+        "health": Evidence.PASSED,
+        "health_reason": "all four conditions held",
+        "running": Evidence.PASSED,
+        "running_reason": "the unit is active/running",
+    }
+    fields.update(overrides)
+    return ProbeResult(**fields)
+
+
+def _digest_of(tmp_path, payload=b"edge-core-payload") -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def test_a_fresh_matching_result_supplies_both_findings(tmp_path):
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(package_digest=_digest_of(tmp_path)),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.ready is True
+    assert inspection.presence is EdgePresence.VERIFIED_READY
+    assert "az-edge-probed at 2026-09-21T03:00:00Z" in inspection.finding("running").reason
+
+
+def test_a_result_about_another_version_supplies_nothing(tmp_path):
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(package_version="9.9.9", package_digest=_digest_of(tmp_path)),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+    assert "A result about a different package" in inspection.finding("running").reason
+
+
+def test_a_result_about_another_digest_supplies_nothing(tmp_path):
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(package_digest="sha256:" + "0" * 64),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+
+
+def test_a_stale_result_supplies_nothing_and_is_not_a_failure(tmp_path):
+    """An operator sent to restart a healthy Edge is an operator doing harm."""
+
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(package_digest=_digest_of(tmp_path)),
+        now="2026-09-21T03:06:00Z",
+    )
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+    assert inspection.finding("running").evidence is not Evidence.FAILED
+    assert "stale" in inspection.finding("running").reason
+    assert inspection.ready is False
+
+
+def test_the_boundary_of_freshness_is_the_ttl(tmp_path):
+    root = _package(tmp_path)
+    probe = _result(package_digest=_digest_of(tmp_path))
+    assert probe.expires_at() == "2026-09-21T03:05:00Z"
+    assert inspect(root, probe=probe, now="2026-09-21T03:04:59Z").ready is True
+    assert inspect(root, probe=probe, now="2026-09-21T03:05:00Z").ready is False
+
+
+def test_a_result_agreeing_with_a_tampered_manifest_supplies_nothing(tmp_path):
+    """Agreement between two suspect things is not evidence about either."""
+
+    root = _package(tmp_path, digest="sha256:" + "0" * 64)
+    inspection = inspect(
+        root,
+        probe=_result(package_digest="sha256:" + "0" * 64),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.presence is EdgePresence.DIGEST_MISMATCH
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+
+
+def test_a_probe_result_can_only_withhold_never_invent_a_package(tmp_path):
+    """The reason the probe is trusted with only two of the five checks."""
+
+    empty = tmp_path / "edge"
+    empty.mkdir()
+    inspection = inspect(
+        empty,
+        probe=_result(package_digest="sha256:" + "0" * 64),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.presence is EdgePresence.ABSENT
+    assert inspection.ready is False
+
+
+def test_a_probe_result_and_a_callable_together_are_refused(tmp_path):
+    with pytest.raises(EdgePackageRefused, match="one source too many"):
+        inspect(
+            _package(tmp_path),
+            probe=_result(),
+            now="2026-09-21T03:01:00Z",
+            running=lambda: True,
+        )
+
+
+def test_a_probe_result_with_no_instant_is_refused(tmp_path):
+    """An answer with no age is an answer that never goes stale."""
+
+    with pytest.raises(EdgePackageRefused, match="never goes stale"):
+        inspect(_package(tmp_path), probe=_result())
+
+
+def test_a_failed_probe_verdict_is_carried_through_with_its_reason(tmp_path):
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(
+            package_digest=_digest_of(tmp_path),
+            running=Evidence.FAILED,
+            running_reason="the unit is inactive/dead, which is not running",
+        ),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.presence is EdgePresence.NOT_RUNNING
+    assert "inactive/dead" in inspection.finding("running").reason
+
+
+def test_a_probe_security_finding_survives_into_the_inspection(tmp_path):
+    root = _package(tmp_path)
+    inspection = inspect(
+        root,
+        probe=_result(
+            package_digest=_digest_of(tmp_path),
+            health=Evidence.FAILED,
+            health_reason="the health report is from version 9.9.9",
+            health_security=True,
+        ),
+        now="2026-09-21T03:01:00Z",
+    )
+    assert inspection.security_findings != ()
+    assert inspection.presence is EdgePresence.UNHEALTHY
+
+
+# -- parsing the state file ------------------------------------------------
+
+
+def test_a_result_in_another_contract_is_refused():
+    with pytest.raises(EdgePackageRefused, match="declares contract"):
+        _result(contract="something/else/v1")
+
+
+@pytest.mark.parametrize("ttl", [0, -1, 3601, True, "300"])
+def test_an_unbounded_or_absurd_ttl_is_refused(ttl):
+    with pytest.raises(EdgePackageRefused):
+        _result(ttl_seconds=ttl)
+
+
+def test_a_result_with_no_reason_is_refused():
+    with pytest.raises(EdgePackageRefused, match="reads as agreement"):
+        _result(running_reason="   ")
+
+
+def test_a_security_finding_on_a_check_nobody_ran_is_refused():
+    with pytest.raises(EdgePackageRefused, match="found nothing"):
+        _result(health=Evidence.NOT_CHECKED, health_security=True)
+
+
+def test_an_instant_with_no_time_zone_is_refused():
+    with pytest.raises(EdgePackageRefused, match="time zone"):
+        _result(observed_at="2026-09-21T03:00:00")
+
+
+def test_a_state_file_larger_than_the_ceiling_is_refused():
+    """A reader with no ceiling has its memory decided by whatever wrote it."""
+
+    with pytest.raises(EdgePackageRefused, match="larger than"):
+        parse_probe_result("x" * 20000)
+
+
+@pytest.mark.parametrize("text", ["not json", "[]", "{}"])
+def test_a_state_file_that_is_not_a_result_is_refused(text):
+    with pytest.raises(EdgePackageRefused):
+        parse_probe_result(text)
+
+
+def test_an_unknown_evidence_word_is_refused():
+    document = json.loads(json.dumps(_result(package_digest="d").as_event()))
+    document["running"] = "probably"
+    with pytest.raises(EdgePackageRefused, match="unknown evidence"):
+        parse_probe_result(json.dumps(document))
+
+
+def test_an_absent_state_file_is_none_rather_than_an_error(tmp_path):
+    """A node where the probe has never run is not a node with a broken probe."""
+
+    assert load_probe_result(tmp_path / "nothing.json") is None
+
+
+def test_a_state_file_that_exists_and_is_garbage_raises(tmp_path):
+    """Something wrote it; ignoring that would hide the one case worth seeing."""
+
+    path = tmp_path / "edge-probe.json"
+    path.write_text("{ truncated", encoding="utf-8")
+    with pytest.raises(EdgePackageRefused):
+        load_probe_result(path)
+
+
+def test_a_result_round_trips_through_its_own_event(tmp_path):
+    original = _result(package_digest=_digest_of(tmp_path))
+    assert parse_probe_result(json.dumps(original.as_event())) == original

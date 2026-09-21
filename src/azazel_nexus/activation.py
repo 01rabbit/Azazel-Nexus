@@ -151,6 +151,9 @@ ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
 #: units are absent because they belong to slices that are not built yet --
 #: **not** because they are optional to the product. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
+#:
+#: `EDGE_BASELINE` still has no members. The Edge probe is `SUPPORTING`, and
+#: the comment on its definition says why.
 CORE_UNITS = (
     UnitDefinition(
         "azazel-commissiond.service",
@@ -169,6 +172,23 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azwatch",
         "degradation coordinator; never restarts into a broader authority state",
+    ),
+    UnitDefinition(
+        "azazel-edge-probed.service",
+        # SUPPORTING, and deliberately **not** EDGE_BASELINE. An
+        # `EDGE_BASELINE` unit needs a verified Edge package before it may be
+        # granted, and this is the unit that establishes whether one is
+        # healthy and running. A probe that could only run once Edge was
+        # established could never establish it.
+        #
+        # It belongs with commissioning and the ledger for the same reason
+        # they do: it observes and records, and it grants nothing. Its result
+        # cannot promote anything on its own -- the library re-derives
+        # package, version and digest itself and takes only health and
+        # running from it (Nexus#72).
+        UnitTier.SUPPORTING,
+        "azprobe",
+        "one-shot Edge health and running probe; reads, never starts",
     ),
 )
 

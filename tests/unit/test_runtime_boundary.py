@@ -133,8 +133,15 @@ def test_the_runtime_uses_only_the_librarys_public_names():
     assert offenders == {}, f"{offenders} import private names from the library"
 
 
-#: The four daemons the unit files name.
-EXPECTED_SCRIPTS = ("az-activated", "az-auditd", "az-commissiond", "az-watchdog")
+#: The daemons the unit files name. `az-edge-probed` is the one-shot Edge
+#: probe (Nexus#72): it reads, writes one bounded file, and exits.
+EXPECTED_SCRIPTS = (
+    "az-activated",
+    "az-auditd",
+    "az-commissiond",
+    "az-edge-probed",
+    "az-watchdog",
+)
 
 
 def _declared_scripts() -> dict[str, str]:

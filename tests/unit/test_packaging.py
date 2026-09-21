@@ -210,7 +210,10 @@ def test_the_installer_refuses_while_the_daemons_it_names_are_absent():
 
 
 def test_every_unit_names_an_executable_the_installer_checks_for():
-    checked = set(re.findall(r"\baz-[a-z]+\b", _installer()))
+    # `az-[a-z]+` stopped at the first dash and read `az-edge-probed` as
+    # `az-edge`, so the unit that most needed checking was the one the
+    # assertion could not see.
+    checked = set(re.findall(r"\baz-[a-z]+(?:-[a-z]+)*\b", _installer()))
     for name in ALL_UNITS:
         text = (UNIT_DIR / name).read_text(encoding="utf-8")
         exec_start = re.search(r"^ExecStart=(\S+)", text, re.M)

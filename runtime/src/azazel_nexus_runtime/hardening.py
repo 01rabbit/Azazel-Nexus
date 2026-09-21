@@ -136,7 +136,7 @@ class ServiceProfile:
 
 
 #: The accounts the installer creates. `root` is not among them: it exists.
-SYSTEM_ACCOUNTS = ("azcommission", "azaudit", "azwatch")
+SYSTEM_ACCOUNTS = ("azcommission", "azaudit", "azwatch", "azprobe")
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -207,6 +207,29 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Can mask and cannot unmask. Masking a unit it does not own is "
             "brokered by the activation controller's socket, so it needs no "
             "privilege of its own."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-edge-probed.service",
+        executable="/usr/libexec/azazel/az-edge-probed",
+        account="azprobe",
+        description="Azazel-Nexus Edge health and running probe",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/edge-package-verification.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=("/var/lib/azazel/run",),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        unit_type="oneshot",
+        rationale=(
+            "Runs once and exits. It executes exactly two things -- the Edge "
+            "health contract at a fixed path, and a read-only D-Bus property "
+            "query -- and it writes one bounded file. It is not root, it "
+            "takes no argument that could redirect it, and `AF_UNIX` is all "
+            "it needs: "
+            "the D-Bus connection it reads unit state over is one. It writes "
+            "into the operator plane's own directory, which already answers "
+            "who may read what is there, and the result holds no secret: a "
+            "version, a digest, two verdicts and their reasons."
         ),
     ),
 )
