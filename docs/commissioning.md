@@ -5,6 +5,7 @@ repository.
 
 Related: [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
+[Inventory confidentiality](inventory-confidentiality.md) ·
 [Implementation specification](IMPLEMENTATION_SPEC.md)
 
 Commissioning is how an Azazel-Nexus learns what its network actually is.

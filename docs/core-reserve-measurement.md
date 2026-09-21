@@ -11,6 +11,7 @@ under time pressure.
 
 Related: [M.I.O. runtime control plane](mio-runtime.md) §3 ·
 [hardware gates](hardware-gates.md) · [capability model](capability-model.md) ·
+[inventory confidentiality](inventory-confidentiality.md) ·
 [Nexus #68](https://github.com/01rabbit/Azazel-Nexus/issues/68)
 
 ## 1. What the number is
@@ -100,6 +101,10 @@ the samples is a measurement of a shorter run that does not say so.
    cannot observe what load the node was under, so that fact travels in the
    campaign notes and not in the record — and a campaign whose load is not
    written down is one nobody can repeat.
+8. Keep the campaign's notes under
+   [inventory confidentiality](inventory-confidentiality.md). The notes
+   identify a machine — the record does not — so what they may hold, and what
+   a report drawn from them may say, is fixed there and not per campaign.
 
 ## 6. What makes a record admissible
 

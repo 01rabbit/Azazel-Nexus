@@ -426,3 +426,44 @@ def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
     assert detail.startswith("9 CORE + Lite configurations")
     assert "enforcement or baseline readiness" in detail
     assert "what continues" in detail
+
+
+# -- the harness may not be aimed at the repository -----------------------
+
+
+def test_a_root_inside_the_checkout_is_refused():
+    """The harness writes a Core reserve record whose provenance is
+    `measured`. Pointed at the checkout it writes an invented measurement
+    into the repository, and the next `git add -A` commits it.
+
+    `test_core_reserve.py::test_no_measurement_is_committed_anywhere` catches
+    that -- after the commit exists. This refusal is the earlier of the two,
+    and it is the one that leaves nothing to clean up.
+    """
+
+    from tools.e2e import refuse_root_inside_the_repository  # noqa: PLC0415
+
+    for inside in (REPO_ROOT, REPO_ROOT / "docs", REPO_ROOT / "does" / "not" / "exist"):
+        refusal = refuse_root_inside_the_repository(inside)
+        assert refusal is not None, f"{inside} was accepted"
+        assert str(REPO_ROOT) in refusal, "the refusal does not say which checkout"
+
+
+def test_a_root_outside_the_checkout_is_accepted(tmp_path):
+    """The refusal has to be about the repository and not about roots."""
+
+    from tools.e2e import refuse_root_inside_the_repository  # noqa: PLC0415
+
+    assert refuse_root_inside_the_repository(tmp_path) is None
+
+
+def test_the_refusal_happens_before_the_harness_writes_anything(tmp_path):
+    """A refusal after the first write is a refusal that leaves the files
+    behind."""
+
+    from tools.e2e import main  # noqa: PLC0415
+
+    target = REPO_ROOT / "e2e-root-that-should-never-be-created"
+    assert not target.exists(), "a previous run left this behind"
+    assert main(["--root", str(target)]) == 2
+    assert not target.exists(), "the harness wrote to a root it refused"
