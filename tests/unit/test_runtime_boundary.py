@@ -19,6 +19,7 @@ reason to.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,7 @@ EXPECTED_SCRIPTS = (
     "az-auditd",
     "az-commissiond",
     "az-edge-probed",
+    "az-model-fetchd",
     "az-watchdog",
 )
 
@@ -213,15 +215,83 @@ def _declared_scripts() -> dict[str, str]:
     return scripts
 
 
-def test_the_runtime_declares_exactly_the_daemons_the_units_name():
+def _governed_units() -> set:
     from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 
+    return {d.name for d in CORE_UNITS} | {ACTIVATION_CONTROLLER_UNIT}
+
+
+def _script_for(unit: str) -> str:
+    """`azazel-auditd.service` -> `az-auditd`. The one naming rule."""
+
+    return "az-" + unit[len("azazel-") : -len(".service")]
+
+
+def test_the_runtime_declares_exactly_the_daemons_the_units_name():
     assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS + OPERATOR_TOOLS)
-    units = {d.name for d in CORE_UNITS} | {ACTIVATION_CONTROLLER_UNIT}
+    units = _governed_units()
     for script in EXPECTED_SCRIPTS:
         assert f"azazel-{script[3:]}.service" in units, (
             f"{script} corresponds to no governed unit"
         )
+
+
+def test_every_governed_unit_has_an_executable_to_start():
+    """The other direction, which nothing checked.
+
+    The check above runs script -> unit, so a unit added without its console
+    script passed. `azazel-model-fetchd.service` was added that way: the unit,
+    the profile, the preset line and the installer's required-binary list all
+    named `az-model-fetchd`, and nothing produced it. `install.sh` refuses to
+    install when a unit's `ExecStart` is missing, so the product could not be
+    installed on any node -- with every check green.
+
+    A unit whose `ExecStart` does not exist is not a disabled unit. It is a
+    unit that fails the moment anything starts it, on somebody else's
+    hardware, long after the diff that introduced it.
+    """
+
+    declared = _declared_scripts()
+    missing = sorted(
+        unit for unit in _governed_units() if _script_for(unit) not in declared
+    )
+    assert missing == [], (
+        f"{missing} are governed units whose executable nothing declares. "
+        "Add the console script, or the unit starts nothing"
+    )
+
+
+def test_the_installer_requires_exactly_the_unit_backed_executables():
+    """`install.sh` holds a fourth copy of the list, and it is the one that
+    stops an install. Until now it was reconciled against nothing.
+
+    Not a subset check: a binary the installer does not require is one a node
+    can boot without, and a binary it requires that nothing builds is the
+    refusal above.
+    """
+
+    installer = (REPO_ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+    match = re.search(r"for binary in ([^;]+); do", installer)
+    assert match, "the installer no longer checks that the unit executables exist"
+    required = set(match.group(1).split())
+    assert required == {_script_for(unit) for unit in _governed_units()}, (
+        "the installer's required binaries and the governed units disagree"
+    )
+
+
+def test_the_preset_names_every_governed_unit():
+    """A unit absent from the preset is a unit `systemctl preset-all` may
+    enable, which is the failure the preset file exists to prevent."""
+
+    preset = (REPO_ROOT / "packaging" / "azazel-nexus.preset").read_text(
+        encoding="utf-8"
+    )
+    stated = {
+        line.split()[1]
+        for line in preset.splitlines()
+        if line.startswith(("enable ", "disable "))
+    }
+    assert stated == _governed_units()
 
 
 def test_the_operator_tools_really_have_no_unit():

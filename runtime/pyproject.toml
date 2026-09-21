@@ -31,6 +31,7 @@ az-activated = "azazel_nexus_runtime.activated:main"
 az-auditd = "azazel_nexus_runtime.auditd:main"
 az-watchdog = "azazel_nexus_runtime.watchdog:main"
 az-edge-probed = "azazel_nexus_runtime.edge_probed:main"
+az-model-fetchd = "azazel_nexus_runtime.model_fetchd:main"
 az-core-reserve-probe = "azazel_nexus_runtime.core_reserve_probe:main"
 
 [tool.setuptools.packages.find]
