@@ -128,7 +128,7 @@ def test_an_adapter_swapped_in_the_same_slot_changes_the_digest(tmp_path):
     net = _tree(tmp_path)
     before = build_snapshot(sysfs=net, links=_links(("enp4s0", PERMANENT_MAC), ("enp5s0", None)))
     after = build_snapshot(
-        sysfs=net, links=_links(("enp4s0", "11:22:33:44:55:66"), ("enp5s0", None))
+        sysfs=net, links=_links(("enp4s0", "12:22:33:44:55:66"), ("enp5s0", None))
     )
     assert before.digest != after.digest
 
@@ -206,7 +206,7 @@ def test_a_request_quoting_a_stale_snapshot_is_refused(tmp_path):
     listing = service.handle(_request("commission.inventory", {}))
 
     # The adapter in the first slot is replaced.
-    links[0] = _links(("enp4s0", "11:22:33:44:55:66"), ("enp5s0", None))
+    links[0] = _links(("enp4s0", "12:22:33:44:55:66"), ("enp5s0", None))
     answer = service.handle(
         _request(
             "commission.permanent_mac",
@@ -229,7 +229,7 @@ def test_a_stale_request_is_not_answered_from_the_new_enumeration(tmp_path):
         sysfs=_tree(tmp_path), read_links_fn=lambda: links[0]
     )
     listing = service.handle(_request("commission.inventory", {}))
-    replacement = "11:22:33:44:55:66"
+    replacement = "12:22:33:44:55:66"
     links[0] = _links(("enp4s0", replacement), ("enp5s0", None))
 
     answer = service.handle(

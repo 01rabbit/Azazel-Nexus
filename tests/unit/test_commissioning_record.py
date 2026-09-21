@@ -35,8 +35,8 @@ T0 = "2026-09-20T00:00:00+00:00"
 #: interfaces sharing a composite identity is a separate case with its own
 #: test in `test_commissioning.py`.
 _ADAPTERS = (
-    ("enp3s0", "0000:03:00.0", "a0:b1:c2:d3:e4:f5", "LAN1"),
-    ("enp4s0", "0000:04:00.0", "00:11:22:33:44:55", "LAN2"),
+    ("enp3s0", "0000:03:00.0", "a2:b1:c2:d3:e4:f5", "LAN1"),
+    ("enp4s0", "0000:04:00.0", "02:11:22:33:44:55", "LAN2"),
 )
 
 
@@ -123,7 +123,7 @@ def test_a_role_outside_the_offerable_list_is_refused(role, proposal):
 def test_a_confirmation_without_an_operator_is_refused():
     with pytest.raises(CommissioningRefused, match="who confirmed it"):
         ConfirmedRole(
-            composite=(("permanent_mac", "a0:b1:c2:d3:e4:f5"),),
+            composite=(("permanent_mac", "a2:b1:c2:d3:e4:f5"),),
             role="observation",
             confirmed_by="   ",
             confirmed_at=T0,

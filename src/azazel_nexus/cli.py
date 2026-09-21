@@ -32,8 +32,25 @@ from .edge_package import (
     inspect as inspect_edge,
     load_probe_result,
 )
+from .audit import AuditLedger
+from .hil_preflight import (
+    BLOCKED,
+    COMMISSIONING_DIR,
+    PROTECTION_KEY,
+    OperatorDecisions,
+    PreflightResult,
+    PreflightRefused,
+    Protection,
+    audit_event,
+    collect_readonly_inventory,
+    evaluate as evaluate_preflight,
+    luks_backed,
+    persist_commissioning_record,
+    read_protection_key,
+    tpm_present,
+)
 from .integration import IntegrationView, build_view
-from .inventory import no_permanent_mac, read_interfaces
+from .inventory import DEFAULT_SYSFS_NET, no_permanent_mac, read_interfaces
 from .functional_readiness import readiness_for
 from .lite_bundle import KnowledgeReading
 from .lite_import import CommissionedLite, LiteImport
@@ -48,7 +65,7 @@ from .operator import (
     build_report,
 )
 from .resource_profile import ResourceProfile, UsableMemoryUnavailable, take_reading
-from .wizard import WizardAbandoned, commission, render_rows
+from .wizard import Answer, WizardAbandoned, commission, render_rows
 
 __all__ = ["main"]
 
@@ -482,12 +499,133 @@ def _cmd_commission(
     return 0
 
 
+
+def _cmd_hil_preflight(
+    args: argparse.Namespace,
+    out: TextIO,
+    ask: Optional[Callable[[str, Sequence[str]], str]],
+    confirm: Optional[Callable[[str], bool]],
+    text: Optional[Callable[[str], str]],
+    permanent_mac_reader=no_permanent_mac,
+) -> int:
+    """One command, run on the target, answering one question.
+
+    It prints `HIL_PREFLIGHT_READY` or `HIL_PREFLIGHT_BLOCKED` and the fields
+    `hil_preflight` allows for each. No value from the inventory is printed on
+    either path -- which is why the rows the wizard shows an operator are the
+    only place identity appears, and they appear on their screen, not in the
+    result, the journal or the audit.
+    """
+
+    readouts = read_interfaces(args.sysfs, permanent_mac_reader=permanent_mac_reader)
+    proposal = propose(readouts)
+
+    if ask is None or confirm is None or text is None:
+        print(
+            "No operator prompt is available on this stream. A preflight "
+            "settles decisions only an operator may make and will not proceed "
+            "without one.",
+            file=out,
+        )
+        return 2
+
+    answers: list[Answer] = []
+
+    def recording_ask(handle: str, choices: Sequence[str]) -> str:
+        answer = ask(handle, choices)
+        answers.append(Answer(handle, None if answer == "skip" else answer))
+        return answer
+
+    for row in render_rows(proposal):
+        facts = ", ".join(f"{k}={v}" for k, v in sorted(row["description"].items()))
+        print(f"{row['handle']}  {facts}", file=out)
+
+    try:
+        record = commission(
+            proposal,
+            ask=recording_ask,
+            confirm=confirm,
+            operator=args.operator,
+            at=args.at,
+            profiles_present=args.profiles,
+        )
+    except (WizardAbandoned, CommissioningRefused) as exc:
+        print(BLOCKED, file=out)
+        print(f"missing: B-3 ({exc.__class__.__name__})", file=out)
+        return 2
+
+    decisions = OperatorDecisions(
+        record=record,
+        answers=tuple(answers),
+        external_communication_forbidden=confirm(
+            "forbid external communication for the duration of the campaign?"
+        ),
+        responsible=args.operator,
+        at=args.at,
+        host_label=text("asset ID or anonymised host ID"),
+        approval_id=text("approval ID"),
+        reboot_approved=confirm("approve measurements that require reboots?"),
+        administrative_rights=confirm(
+            "confirm administrative rights for units and read-only inventory?"
+        ),
+    )
+
+    key = read_protection_key(args.key)
+    protection = Protection(
+        luks_backed=luks_backed(
+            args.record_dir, sysfs_dev_block=args.sysfs_dev_block
+        ),
+        key_available=key is not None,
+    )
+    inventory = collect_readonly_inventory(
+        interfaces=readouts,
+        sysfs_net=args.sysfs or DEFAULT_SYSFS_NET,
+        meminfo=args.meminfo,
+        os_release=args.os_release,
+        record_directory=args.record_dir,
+        sysfs_dev_block=args.sysfs_dev_block,
+        sysfs_tpm=args.sysfs_tpm,
+    )
+    result = evaluate_preflight(
+        inventory,
+        decisions,
+        protection=protection,
+        generation=args.generation,
+        key=key or b"",
+        proposal=proposal,
+    )
+
+    if result.ready:
+        # Written only here, and only once the storage that may hold it has
+        # been established. A refusal writes nothing at all.
+        try:
+            persist_commissioning_record(
+                record, directory=args.record_dir, protection=protection
+            )
+        except PreflightRefused:
+            for line in PreflightResult(
+                outcome=BLOCKED, missing=("A-7", "A-8")
+            ).lines():
+                print(line, file=out)
+            return 1
+
+    if args.audit is not None:
+        AuditLedger(args.audit).append(
+            audit_event(result, approval_id=decisions.approval_id)
+        )
+
+    for line in result.lines():
+        print(line, file=out)
+    return 0 if result.ready else 1
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
     out: Optional[TextIO] = None,
     ask: Optional[Callable[[str, Sequence[str]], str]] = None,
     confirm: Optional[Callable[[str], bool]] = None,
+    text: Optional[Callable[[str], str]] = None,
     permanent_mac_reader=no_permanent_mac,
 ) -> int:
     import sys
@@ -522,11 +660,47 @@ def main(
     wizard.add_argument("--at", required=True, help="RFC3339 timestamp")
     wizard.add_argument("--profiles", nargs="*", default=())
 
+    preflight = sub.add_parser(
+        "hil-preflight",
+        help="may the 8 GiB HG-05 campaign start on this node? Takes no "
+        "sample, reboots nothing, activates nothing",
+    )
+    preflight.add_argument("--operator", required=True)
+    preflight.add_argument("--at", required=True, help="RFC3339 timestamp")
+    preflight.add_argument("--profiles", nargs="*", default=())
+    preflight.add_argument("--record-dir", type=Path, default=COMMISSIONING_DIR)
+    preflight.add_argument("--key", type=Path, default=PROTECTION_KEY)
+    preflight.add_argument("--audit", type=Path, default=None)
+    preflight.add_argument("--generation", type=int, default=1)
+    # Test seams, like `--sysfs` above: the paths a node reads itself from.
+    # Hidden because an operator who had to name them could name one that
+    # describes a different machine.
+    preflight.add_argument(
+        "--meminfo", type=Path, default=Path("/proc/meminfo"), help=argparse.SUPPRESS
+    )
+    preflight.add_argument(
+        "--os-release", type=Path, default=Path("/etc/os-release"), help=argparse.SUPPRESS
+    )
+    preflight.add_argument(
+        "--sysfs-dev-block",
+        type=Path,
+        default=Path("/sys/dev/block"),
+        help=argparse.SUPPRESS,
+    )
+    preflight.add_argument(
+        "--sysfs-tpm", type=Path, default=Path("/sys/class/tpm"), help=argparse.SUPPRESS
+    )
+
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.command == "commission":
         return _cmd_commission(
             args, stream, ask, confirm, permanent_mac_reader
+        )
+
+    if args.command == "hil-preflight":
+        return _cmd_hil_preflight(
+            args, stream, ask, confirm, text, permanent_mac_reader
         )
 
     report = _report(args.sysfs, args.ledger, permanent_mac_reader)

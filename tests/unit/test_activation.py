@@ -75,7 +75,7 @@ def _record(*, roles=(), profiles=("hardware", "resource", "topology")):
 
 def _confirmed_role():
     return ConfirmedRole(
-        composite=(("mac", "00:11:22:33:44:55"), ("path", "pci-0000:01:00.0")),
+        composite=(("mac", "02:11:22:33:44:55"), ("path", "pci-0000:01:00.0")),
         role="observation",
         confirmed_by=ACTOR,
         confirmed_at=NOW,

@@ -211,13 +211,13 @@ def test_unknown_attributes_are_parsed_past():
         _link(
             1,
             _attribute(9999, b"\xde\xad\xbe\xef"),
-            _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("112233445566")),
+            _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("122233445566")),
             _attribute(8888, b"x" * 33),
         )
         + _done()
     )
     (record,) = parse_links(data)
-    assert record.permanent_mac == "11:22:33:44:55:66"
+    assert record.permanent_mac == "12:22:33:44:55:66"
 
 
 # -- malformed buffers ---------------------------------------------------
@@ -339,7 +339,7 @@ def test_a_dump_that_exceeds_the_limit_is_refused():
 
 def test_a_dump_delivered_in_pieces_is_reassembled():
     pieces = [
-        _link(1, _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("112233445566"))),
+        _link(1, _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("122233445566"))),
         _done(),
     ]
 
@@ -357,4 +357,4 @@ def test_a_dump_delivered_in_pieces_is_reassembled():
             pass
 
     records = read_links(open_socket=Chunked)
-    assert [record.permanent_mac for record in records] == ["11:22:33:44:55:66"]
+    assert [record.permanent_mac for record in records] == ["12:22:33:44:55:66"]
