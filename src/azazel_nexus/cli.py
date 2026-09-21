@@ -34,7 +34,10 @@ from .edge_package import (
 )
 from .integration import IntegrationView, build_view
 from .inventory import no_permanent_mac, read_interfaces
-from .lite_service import KnowledgeLite
+from .functional_readiness import readiness_for
+from .lite_bundle import KnowledgeReading
+from .lite_import import CommissionedLite, LiteImport
+from .lite_service import LiteReading, LiteState
 from .operator import (
     CapabilityReport,
     HealthReport,
@@ -154,11 +157,41 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
     return tuple(checks)
 
 
+def _knowledge_reading(root: Path, *, as_of: str) -> KnowledgeReading:
+    """What Knowledge Lite currently is. **Reads; never imports.**
+
+    `status` does not admit, quarantine, retry or fetch. It reads what a
+    previous import left, and an audit ledger does not grow because somebody
+    looked at a screen.
+    """
+
+    return LiteImport(CommissionedLite(root=root)).read(query_as_of=as_of)
+
+
+def _as_lite_reading(reading: KnowledgeReading) -> LiteReading:
+    """The four-axis reading, as the one word the six-axis view takes.
+
+    The three axes are not lost: `_render_knowledge` prints them, and the
+    reason carried here names them too. This conversion exists because the
+    integration view has a fixed set of axes, not because one word is enough.
+    """
+
+    return LiteReading(
+        state=LiteState(reading.overall),
+        reason=(
+            f"{reading.reason} | bundle integrity: {reading.integrity.value}"
+            f" | time-bound intelligence: {reading.time_bound.value}"
+            f" | static reference: {reading.static_reference.value}"
+        ),
+    )
+
+
 def _integration_view(
     report: OperatorReport,
     *,
     as_of: str,
     knowledge_root: Path,
+    knowledge: KnowledgeReading,
     edge: EdgeInspection,
 ) -> IntegrationView:
     """The six axes, from what this node has actually established.
@@ -178,12 +211,7 @@ def _integration_view(
     profile = report.profile.profile or ResourceProfile.DIAGNOSTIC
     return build_view(
         capability=report.capabilities.state,
-        knowledge=KnowledgeLite(
-            root=knowledge_root,
-            commissioning_digest=(
-                report.record.digest if report.record is not None else ""
-            ),
-        ).read(as_of=as_of),
+        knowledge=_as_lite_reading(knowledge),
         cognition=read_cognition(
             [], profile=profile, tested=TestedTupleSet(), host=None
         ),
@@ -268,6 +296,7 @@ def _render_status(
     out: TextIO,
     view: Optional[IntegrationView] = None,
     edge: Optional[EdgeInspection] = None,
+    knowledge: Optional[KnowledgeReading] = None,
 ) -> None:
     _render_profile(report, out)
     print(file=out)
@@ -305,6 +334,9 @@ def _render_status(
     for module in report.modules:
         print(f"    {module.name}: {module.state.value} -- {module.reason}", file=out)
     print(file=out)
+    if knowledge is not None:
+        _render_knowledge(knowledge, out)
+        print(file=out)
     if edge is not None:
         _render_edge(edge, out)
         print(file=out)
@@ -338,6 +370,34 @@ def _probe_result(path: Path, out: TextIO):
         print(f"edge probe state at {path} was refused: {exc}", file=out)
         print(file=out)
         return None
+
+
+def _render_knowledge(reading: KnowledgeReading, out: TextIO) -> None:
+    """Knowledge Lite on four lines, plus what `functional` does not mean.
+
+    One word per axis. `functional` is a statement about **this feature**,
+    and the limits travel with it on the screen rather than in a document an
+    operator does not have open -- a capability word grows claims it was
+    never given the moment it is printed alone.
+    """
+
+    readiness = readiness_for("knowledge_lite")
+    print(
+        "Knowledge Lite: "
+        + ("functional" if readiness.functional else readiness.value),
+        file=out,
+    )
+    print(f"    bundle integrity: {reading.integrity.value}", file=out)
+    print(f"    time-bound intelligence: {reading.time_bound.value}", file=out)
+    print(f"    static reference: {reading.static_reference.value}", file=out)
+    print(
+        "    cryptographic implementation: not supported (Nexus#70 review pending)",
+        file=out,
+    )
+    print(f"    functional means: {readiness.means}", file=out)
+    for limit in readiness.does_not_mean:
+        print(f"    it does not mean: {limit}", file=out)
+    print(f"    {reading.reason}", file=out)
 
 
 def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
@@ -490,6 +550,7 @@ def main(
         edge = inspect_edge(
             args.edge_root, probe=_probe_result(args.edge_probe, stream), now=as_of
         )
+        knowledge = _knowledge_reading(args.knowledge_lite, as_of=as_of)
         _render_status(
             report,
             stream,
@@ -497,9 +558,11 @@ def main(
                 report,
                 as_of=as_of,
                 knowledge_root=args.knowledge_lite,
+                knowledge=knowledge,
                 edge=edge,
             ),
             edge,
+            knowledge,
         )
     return 0
 

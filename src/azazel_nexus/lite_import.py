@@ -68,7 +68,10 @@ from .lite_bundle import (
     BundleRefused,
     Claims,
     Gate,
+    Integrity,
     KnowledgeReading,
+    StaticReference,
+    TimeBound,
     TrustAnchors,
     absent_reading,
     iter_served,
@@ -336,6 +339,25 @@ class LiteImport:
 
         accepted = self._admitted_bundle()
         if accepted is None:
+            held = self._quarantined()
+            if held:
+                # "We do not have it" and "we had it and it is not
+                # trustworthy" are the two facts this vocabulary exists to
+                # keep apart. A node that quarantined an artifact and then
+                # reported `unavailable` has told its operator that nothing
+                # happened.
+                return KnowledgeReading(
+                    integrity=Integrity.QUARANTINED,
+                    time_bound=TimeBound.ABSENT,
+                    static_reference=StaticReference.ABSENT,
+                    reason=(
+                        f"{held} artifact(s) are held in "
+                        f"{self.commissioned.quarantine} and nothing is "
+                        "admitted. They are isolated: not executed, not "
+                        "extracted, not served and not retried. The "
+                        "deterministic path is untouched"
+                    ),
+                )
             return absent_reading(str(self.commissioned.admitted))
         return reading_for(
             read_claims(accepted, query_as_of=query_as_of), query_as_of=query_as_of
@@ -354,6 +376,14 @@ class LiteImport:
         return iter_served(accepted, query_as_of=query_as_of)
 
     # -- internals ---------------------------------------------------------
+
+    def _quarantined(self) -> int:
+        """How many artifacts are held. Counted, never opened."""
+
+        try:
+            return sum(1 for path in self.commissioned.quarantine.iterdir() if path.is_file())
+        except OSError:
+            return 0
 
     def _admitted_bundle(self) -> Optional[BundleAccepted]:
         path = self.commissioned.admitted / "current.tar.gz"

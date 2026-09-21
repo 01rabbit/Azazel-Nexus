@@ -854,24 +854,23 @@ def test_an_absent_data_tier_is_not_a_defect(tmp_path):
 
 
 def test_the_status_screen_says_which_kind_of_gap_each_embedded_feature_has(tmp_path):
-    """The fact the screen has to carry today, and it is not one fact.
+    """Three features, three different facts, three different words.
 
-    Neither embedded feature supplies its capability, and they do not fail to
-    for the same reason. Knowledge Lite and local M.I.O. have no functional
-    layer. Deception Lite has one that reaches only this host (#69) -- decoys
-    really start and really listen, and nothing outside can reach them.
+    Knowledge Lite is **functional** (#67): a correct bundle can be imported
+    offline and its claims served, so it reports its own state -- on a node
+    with no bundle, `unavailable`. Local M.I.O. has no functional layer.
+    Deception Lite has one that reaches only this host (#69).
 
-    Reporting `unavailable` for any of them would tell an operator to go and
-    find content. Reporting one word for all three would tell the operator
-    who fixed the supply route that the decoys were waiting on the same thing.
+    Reporting one word for all three would tell the operator who connected a
+    supply route that the decoys were waiting on the same thing.
     """
 
     text = _status(tmp_path)
-    assert "freshness [knowledge_lite]: control-plane-only" in text
+    assert "freshness [knowledge_lite]: unavailable" in text
     assert "freshness [deception_lite]: loopback-only" in text
     assert "local M.I.O. control-plane-only" in text
-    assert "freshness [deception_lite]: control-plane-only" not in text
-    for issue in ("Nexus#67", "Nexus#68", "Nexus#69"):
+    assert "freshness [knowledge_lite]: control-plane-only" not in text
+    for issue in ("Nexus#68", "Nexus#69"):
         assert issue in text, f"{issue} is not named on the screen"
 
 

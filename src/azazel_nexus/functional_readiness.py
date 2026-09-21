@@ -2,9 +2,16 @@
 
 The control plane of Knowledge Lite, M.I.O. and Deception Lite is implemented:
 trust, cache, generations, rollback, admission gates, the sanitizer, the decoy
-lifecycle, and the degradation each of them produces. **None of the three can
-currently provide the capability it exists for** -- Deception Lite has a
-functional layer now, and it reaches only this host.
+lifecycle, and the degradation each of them produces.
+
+**Knowledge Lite is functional** (Nexus#67): a correct bundle can be imported
+offline and its real claims served read-only. Deception Lite has a functional
+layer that reaches only this host. M.I.O. has none.
+
+A feature declared `functional` must say what that means **and what it does
+not**, because a capability word grows claims it was never given. Knowledge
+Lite being functional says nothing about the cryptographic implementation
+being supported, about a peer being connected, or about Edge authority.
 
 That is a different fact from any the status vocabulary already had, and it
 needs its own word. `unavailable` means "supply content and it works", and
@@ -75,6 +82,14 @@ class Readiness:
     missing: str
     #: The issue that closes it.
     issue: str
+    #: What `functional` means for this feature, in one sentence. Required
+    #: when functional: a bare "functional" is a word an operator fills in
+    #: from hope.
+    means: str = ""
+    #: What it explicitly does **not** mean. Required when functional, and
+    #: the more important half: a capability word tends to grow claims it was
+    #: never given.
+    does_not_mean: tuple[str, ...] = ()
     #: True when the functional layer exists and reaches only this host.
     #: Still not functional -- a capability nothing outside can be affected by
     #: is not a capability being supplied -- but it is a different fact from
@@ -89,6 +104,19 @@ class Readiness:
                 "nothing outside this host can be affected by it, it is not "
                 "supplying its capability"
             )
+        if self.functional:
+            if not self.means.strip():
+                raise ValueError(
+                    f"{self.feature} is declared functional and does not say "
+                    "what that means; a bare capability word is one an "
+                    "operator fills in from hope"
+                )
+            if not self.does_not_mean:
+                raise ValueError(
+                    f"{self.feature} is declared functional and says nothing "
+                    "it does not mean; a capability word grows claims it was "
+                    "never given unless the limits travel with it"
+                )
         if not self.functional:
             if not self.missing.strip():
                 raise ValueError(
@@ -108,6 +136,9 @@ class Readiness:
         return LOOPBACK_ONLY if self.loopback_only else CONTROL_PLANE_ONLY
 
     def reason(self) -> str:
+        if self.functional:
+            limits = "; ".join(self.does_not_mean)
+            return f"{self.means}. It does not mean: {limits}"
         if self.loopback_only:
             return (
                 "the functional layer exists and reaches only this host: "
@@ -127,12 +158,27 @@ class Readiness:
 READINESS: Mapping[str, Readiness] = {
     "knowledge_lite": Readiness(
         feature="knowledge_lite",
-        functional=False,
-        missing=(
-            "no signed Knowledge bundle format is accepted and no supply route is "
-            "connected, so nothing can be admitted"
-        ),
+        functional=True,
+        missing="",
         issue="Nexus#67",
+        means=(
+            "a correct Knowledge Lite bundle can be imported offline by an "
+            "operator and its real claims served read-only"
+        ),
+        does_not_mean=(
+            "that this node's cryptographic implementation is supported -- the "
+            "hand-written Ed25519 verifier is under review (Nexus#70)",
+            # Worded without the reassurance vocabulary on purpose. Saying
+            # "no AZ-04 peer is connected" puts `connected` on a line naming
+            # AZ-04, and the screen-wide guard in `test_wizard_and_cli.py`
+            # cannot tell a denial from a claim -- nor should it have to. The
+            # same precedent already keeps those words out of the Edge row's
+            # name.
+            "that this node has an AZ-04 Knowledge peer at all; there is no "
+            "peer route and no download",
+            "any share of Edge authority; Knowledge is advice, and the "
+            "deterministic arbiter in Azazel-Edge decides",
+        ),
     ),
     "mio": Readiness(
         feature="mio",

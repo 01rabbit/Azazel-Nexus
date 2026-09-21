@@ -109,7 +109,14 @@ def functional(monkeypatch):
         monkeypatch.setitem(
             READINESS,
             feature,
-            Readiness(feature=feature, functional=True, missing="", issue=""),
+            Readiness(
+                feature=feature,
+                functional=True,
+                missing="",
+                issue="",
+                means="a test fixture standing in for a working feature",
+                does_not_mean=("anything about the real node",),
+            ),
         )
 
 
@@ -474,7 +481,7 @@ def test_this_file_makes_no_claim_about_hardware() -> None:
 @pytest.mark.parametrize(
     "name, knowledge_reading, decoy_status, _k, _d", CONFIGURATIONS
 )
-def test_today_no_configuration_reports_a_capability_it_has(
+def test_today_each_configuration_reports_the_capability_it_actually_has(
     name, knowledge_reading, decoy_status, _k, _d
 ) -> None:
     """Run against the real declarations, not the fixture.
@@ -488,8 +495,14 @@ def test_today_no_configuration_reports_a_capability_it_has(
 
     built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
     if knowledge_reading is not None:
+        # Knowledge Lite is functional now (#67), so it reports its own word
+        # and supplies the capability when it holds something current.
         row = built.row("freshness", "knowledge_lite")
-        assert row.value == READINESS["knowledge_lite"].value == CONTROL_PLANE_ONLY, name
+        assert row.value == knowledge_reading.state.value, name
+        supplier = built.row("knowledge_supplier", "knowledge").value
+        assert supplier == (
+            "Knowledge Lite" if knowledge_reading.sources_capability else "none"
+        ), name
     if decoy_status is not None:
         row = built.row("freshness", "deception_lite")
         assert row.value == READINESS["deception_lite"].value == LOOPBACK_ONLY, name
@@ -497,7 +510,6 @@ def test_today_no_configuration_reports_a_capability_it_has(
         # decoy and an exposed one both report loopback-only here, and their
         # own state stays in the reason.
         assert row.value != decoy_status.state.value, name
-    assert built.row("knowledge_supplier", "knowledge").value == "none", name
     assert built.row("deception_supplier", "deception").value == "none", name
 
 
@@ -507,13 +519,22 @@ def test_today_no_configuration_reports_a_capability_it_has(
 def test_no_configuration_supplies_a_capability_it_cannot_provide(
     name, knowledge_reading, decoy_status, _k, _d
 ) -> None:
-    """The reason the override exists.
+    """The reason the override exists, on the features it still applies to.
 
-    A cache holding a verified artifact still cannot answer a query, because
-    nothing can read the artifact. Reporting it as a supplier would be a claim
-    about a capability the node does not have.
+    Deception Lite reaches only this host (#69), so an exposed decoy adds
+    *local-only* observation and never the externally reachable kind.
+
+    Knowledge Lite is no longer here. It became functional (#67): a cache
+    holding a current artifact really can answer a query, so listing its
+    advice as continuing is a true statement rather than a claim about a
+    capability the node does not have. The line below asserts the true
+    version instead of dropping the case.
     """
 
     built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
-    assert "Knowledge Lite advice" not in built.continues, name
     assert "decoy observation" not in built.continues, name
+
+    expected = (
+        knowledge_reading is not None and knowledge_reading.sources_capability
+    )
+    assert ("Knowledge Lite advice" in built.continues) is expected, name

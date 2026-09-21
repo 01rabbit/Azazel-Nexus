@@ -572,3 +572,49 @@ def test_a_failed_promotion_leaves_the_previous_artifact_serving(tmp_path, monke
     )
     assert list(service.serve(query_as_of=FRESH)), "the node stopped serving"
     assert [p for p in (root / "admitted").iterdir() if p.name.startswith(".")] == []
+
+
+def test_a_node_holding_only_quarantined_artifacts_says_quarantined(node) -> None:
+    """Found by a completion check, and it was a real defect.
+
+    `read` looked only at the admitted area, so a node that had just
+    quarantined an artifact reported `unavailable` -- "nothing happened" --
+    which is exactly the confusion the four words exist to prevent. "We do
+    not have it" and "we had it and it is not trustworthy" call for different
+    actions.
+    """
+
+    service, _, root = node("negative/corrupt-signature.tar.gz")
+    assert _import_only_entry(service).admitted is False
+
+    reading = service.read(query_as_of=FRESH)
+    assert reading.overall == "quarantined"
+    assert "held in" in reading.reason
+    assert "not executed" in reading.reason
+    assert "deterministic path is untouched" in reading.reason
+    assert list(service.serve(query_as_of=FRESH)) == []
+
+
+def test_an_admitted_bundle_outranks_a_quarantined_one_in_the_reading(node) -> None:
+    """Holding a refused artifact does not stop a good one being served."""
+
+    service, _, root = node("lite.tar.gz")
+    assert _import_only_entry(service).admitted is True
+    # Put something in quarantine beside it.
+    (root / "quarantine").mkdir(parents=True, exist_ok=True)
+    (root / "quarantine" / "old.tar.gz").write_bytes(b"refused earlier")
+
+    reading = service.read(query_as_of=FRESH)
+    assert reading.overall == "available"
+    assert list(service.serve(query_as_of=FRESH))
+
+
+def test_counting_quarantined_artifacts_never_opens_one(node) -> None:
+    """They are held, not read. Counting is all a reading needs."""
+
+    service, _, root = node("negative/corrupt-payload.tar.gz")
+    _import_only_entry(service)
+    (root / "quarantine" / "not-even-an-archive.tar.gz").write_bytes(b"\x00\x01\x02")
+    reading = service.read(query_as_of=FRESH)
+    assert reading.overall == "quarantined"
+    assert "2 artifact(s)" in reading.reason

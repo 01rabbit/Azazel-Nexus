@@ -1,9 +1,18 @@
 # The Knowledge Lite consumer: what happens when it cannot be read
 
-Status: **implemented** (`src/azazel_nexus/lite_cache.py`,
-`src/azazel_nexus/capability.py`), with unit tests against the artifacts
-Azazel-Knowledge actually emits. This is the first code in this repository; it
-is not a release, and nothing here is *verified* in the program's sense.
+Status: **functional** (`src/azazel_nexus/lite_bundle.py`,
+`src/azazel_nexus/lite_import.py`, `src/azazel_nexus/lite_cache.py`), with
+unit tests and an end-to-end stage against the artifacts Azazel-Knowledge
+actually emits ([#67](https://github.com/01rabbit/Azazel-Nexus/issues/67)).
+
+**`functional` here means one thing and no more:** a correct Knowledge Lite
+bundle can be imported offline by an operator and its real claims served
+read-only. It does **not** mean this node's cryptographic implementation is
+supported — the hand-written Ed25519 verifier is under review
+([#70](https://github.com/01rabbit/Azazel-Nexus/issues/70)) — nor that this
+node has an AZ-04 peer at all, nor any share of Edge authority.
+
+This is not a release, and nothing here is *verified* in the program's sense.
 
 Related: [the trust chain under the cache](knowledge-lite-trust.md) ·
 [capability model](capability-model.md) ·
@@ -116,3 +125,116 @@ be done here; pretending the copy tracks upstream would be worse.
 - That commissioning, activation, or a release exists. None does.
 - That the behaviour has been observed on hardware. It has not; these are unit
   tests on artifacts, not a node.
+
+## 7. Offline operator import
+
+The only supply route. There is no download, no peer connection and no
+scheduler: an operator puts an artifact in a directory and the node reads it.
+
+### The paths, their owners and their ceilings
+
+Everything is derived from one commissioned root, `/data/azazel/knowledge-lite`.
+A caller supplies none of it.
+
+| path | what it holds | who writes | ceiling |
+| --- | --- | --- | --- |
+| `/data/azazel/knowledge-lite/inbox` | artifacts an operator placed | the operator | 32 entries considered, 256 MiB each |
+| `/data/azazel/knowledge-lite/trust/anchors.toml` | the commissioned trust root | commissioning | — |
+| `/data/azazel/knowledge-lite/admitted` | the one artifact in use | the import service | one file, replaced atomically |
+| `/data/azazel/knowledge-lite/quarantine` | refused artifacts, held | the import service | one file per refusal |
+| `/data/azazel/knowledge-lite/state/watermark` | the anti-rollback counter | the import service | one integer |
+
+### The caller chooses an entry, and chooses nothing else
+
+`import_entry` takes an **inbox entry id** and an instant. Not a cache root,
+not a trust key, not a policy, not a generation number, not a quarantine
+path. An entry id is the artifact's own content digest, so a caller cannot
+spell a path with one, and an id that is not in a fresh enumeration is
+refused rather than looked for somewhere else.
+
+### A bundle's trust material is subject matter
+
+The anchor is read from the commissioned location only. Trust keys, permitted
+signer role, security epoch and accepted export policies come from
+commissioning and never from the artifact. A bundle carrying a member named
+like a trust or state file is **refused** — something that tried is worth
+reporting rather than ignoring.
+
+### Quarantine holds, and does nothing else
+
+A refused artifact is moved under its digest and is never executed,
+extracted, served or retried. The audit entry carries the digest, the instant
+and a structured reason. **Never the bundle's content, a claim's body, or key
+material.**
+
+### The audit records transitions, not reads
+
+`lite.import.started`, `lite.import.admitted`, `lite.import.quarantined`,
+`lite.import.rolled_back`, `lite.serving.stopped_by_revocation`. A status read
+writes nothing: a ledger that grew every time somebody looked at a screen
+would be a ledger nobody can read.
+
+## 8. What the operator sees
+
+Four axes, because one word would collapse four different next actions:
+
+```text
+Knowledge Lite: functional
+    bundle integrity: admitted
+    time-bound intelligence: stale
+    static reference: available
+    cryptographic implementation: not supported (Nexus#70 review pending)
+    functional means: a correct Knowledge Lite bundle can be imported offline
+        by an operator and its real claims served read-only
+    it does not mean: ...
+```
+
+| axis | values |
+| --- | --- |
+| bundle integrity | `admitted` / `quarantined` / `unavailable` |
+| time-bound intelligence | `current` / `stale` / `absent` |
+| static reference | `available` / `absent` |
+| overall | `available` / `stale` / `unavailable` / `quarantined` |
+
+The row above is the **expired** bundle: its indicators have all expired and
+its ATT&CK reference material has not. It reads `available (static
+reference)` overall while its time-bound line reads `stale`, because static
+reference is usable Knowledge and does not stop being usable when an
+indicator feed goes cold. Reporting it as serving nothing would send an
+operator to replace an artifact that is working.
+
+`stale` overall is the narrower case: admitted, and the only thing left is
+expired claims. Readable as history, never applied automatically.
+
+## 9. The fixture contract, and where it came from
+
+`contract/azazel-knowledge-lite/` holds Azazel-Knowledge's own fixtures,
+pinned. `contract/azazel-knowledge-lite/FIXTURE.json` is the source manifest:
+
+| field | value |
+| --- | --- |
+| `source_repository` | `01rabbit/Azazel-Knowledge` |
+| `source_revision` | `f29c29d1002881b416286e18aae65455c3623348` |
+| `fixture_generator_command` | `python tools/lite_fixture.py emit --out DIR` |
+| `artifact_digest` | SHA-256 of every file here |
+| `knowledge_contract` | format version, kind, signature scheme, what the anchor decides |
+| `purpose` | the canonical input #67 verifies against |
+
+Determinism was checked before pinning: two emissions at that revision
+produced byte-identical output for all eight files, and the digests match the
+values Knowledge itself declares in `negative.json` and `expected.json`.
+`PROVENANCE.md` beside it records the rest.
+
+Six cases run in CI against those bytes — valid, corrupt-signature,
+corrupt-payload, corrupt-truncated, expired, absent — and each refusal code
+is compared against the `expected_error_code` the producer declares.
+
+## 10. The interpreter floor
+
+CPython **3.11 or newer**, because `tomllib` is the canonical reader for
+`anchors.toml` and a hand-written partial TOML parser for the trust anchor of
+a signed artifact would trade a dependency for an attack surface. The
+installer refuses below it **before writing anything**; there is no fallback
+parser and no partial mode. See [support matrix](support-matrix.md) §3.3,
+where it is recorded as a software support baseline rather than a hardware
+gate.

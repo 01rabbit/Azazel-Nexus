@@ -99,7 +99,14 @@ def functional(monkeypatch):
             monkeypatch.setitem(
                 READINESS,
                 feature,
-                Readiness(feature=feature, functional=True, missing="", issue=""),
+                Readiness(
+                    feature=feature,
+                    functional=True,
+                    missing="",
+                    issue="",
+                    means="a test fixture standing in for a working feature",
+                    does_not_mean=("anything about the real node",),
+                ),
             )
 
     return declare
@@ -436,7 +443,7 @@ def test_the_event_marks_a_defect_row_as_one() -> None:
 # layer exists and reaches only this host.
 
 
-@pytest.mark.parametrize("subject", ["knowledge_lite", "deception_lite"])
+@pytest.mark.parametrize("subject", ["deception_lite"])
 def test_an_embedded_feature_without_its_capability_says_which_kind(subject: str) -> None:
     """Both are reported, and the two are not reported with one word.
 
@@ -492,39 +499,65 @@ def test_what_continues_locally_is_still_not_the_capability_being_supplied() -> 
 
 
 def test_the_two_unsupplied_words_are_not_the_same_word() -> None:
-    """A vacuous parametrisation above would pass with one value everywhere."""
+    """They describe different absences and must not collapse into one."""
 
     assert CONTROL_PLANE_ONLY != LOOPBACK_ONLY
-    values = {READINESS[s].value for s in ("knowledge_lite", "deception_lite")}
-    assert values == {CONTROL_PLANE_ONLY, LOOPBACK_ONLY}
+    assert READINESS["mio"].value == CONTROL_PLANE_ONLY
+    assert READINESS["deception_lite"].value == LOOPBACK_ONLY
 
 
-def test_control_plane_only_overrides_whatever_the_feature_holds() -> None:
-    """Reported over a cache that would otherwise say `available`.
+def test_a_functional_feature_reports_its_own_word_rather_than_a_readiness_word() -> None:
+    """Knowledge Lite crossed the line (#67), so the override stops applying.
 
-    `unavailable` means *supply content and it works*. Saying that of a
-    feature nothing could accept content for sends an operator looking for
-    something no path can deliver, so the readiness is reported instead --
-    and the feature's own word is kept in the reason rather than lost.
+    The whole point of the override was to stop a cache reporting
+    `unavailable` when nothing could ever fill it. Something can now, so the
+    cache's own word is the true one and the override would be the lie.
     """
 
+    assert READINESS["knowledge_lite"].functional is True
     row = a_view(knowledge=a_knowledge(LiteState.AVAILABLE)).row(
         "freshness", "knowledge_lite"
     )
-    assert row.value == CONTROL_PLANE_ONLY
-    assert "knowledge is available" in row.reason
+    assert row.value == LiteState.AVAILABLE.value
+    assert row.value not in (CONTROL_PLANE_ONLY, LOOPBACK_ONLY)
+
+
+def test_control_plane_only_overrides_whatever_the_feature_holds() -> None:
+    """Reported over a state that would otherwise look like a working feature.
+
+    Shown on M.I.O., which still has no functional layer. `unavailable`
+    means *supply content and it works*; saying that of a feature nothing
+    could accept content for sends an operator looking for something no path
+    can deliver.
+    """
+
+    built = a_view()
+    row = built.row("cognition_route", "mio")
+    assert CONTROL_PLANE_ONLY in row.value
+    assert READINESS["mio"].missing in row.reason
 
 
 def test_a_feature_with_no_functional_layer_supplies_nothing() -> None:
-    """Even holding an artifact, and even exposed."""
+    """Even exposed. Deception Lite reaches only this host (#69).
 
-    built = a_view(
-        knowledge=a_knowledge(LiteState.AVAILABLE), decoy=a_decoy(DecoyState.EXPOSED)
-    )
-    assert built.row("knowledge_supplier", "knowledge").value == Supplier.NONE.value
+    Knowledge Lite is no longer in this test: it became functional (#67), and
+    an available cache now really does supply the capability. Asserting
+    otherwise would be asserting the old world.
+    """
+
+    built = a_view(decoy=a_decoy(DecoyState.EXPOSED))
     assert built.row("deception_supplier", "deception").value == Supplier.NONE.value
-    assert "Knowledge Lite advice" not in built.continues
     assert "decoy observation" not in built.continues
+
+
+def test_a_functional_feature_holding_an_artifact_does_supply_it() -> None:
+    """The other side of the same rule, now that one feature has crossed."""
+
+    built = a_view(knowledge=a_knowledge(LiteState.AVAILABLE))
+    assert built.row("knowledge_supplier", "knowledge").value == (
+        Supplier.KNOWLEDGE_LITE.value
+    )
+    assert "Knowledge Lite advice" in built.continues
 
 
 def test_the_mio_row_says_the_local_side_is_control_plane_only() -> None:
@@ -548,20 +581,20 @@ def test_control_plane_only_is_not_any_of_the_other_words() -> None:
     assert len(words) == 7, words
 
 
-def test_control_plane_only_is_not_the_same_as_an_absent_peer() -> None:
+def test_an_unsupplied_embedded_feature_is_not_the_same_as_an_absent_peer() -> None:
     """The distinction this whole change exists for.
 
-    A node with no AZ-04 peer is the designed node. A node whose embedded
-    Knowledge Lite cannot supply anything is not, and reporting both as
+    A node with no AZ-06 peer is the designed node. A node whose embedded
+    Deception Lite cannot supply anything is not, and reporting both as
     "nothing here" would make a required feature read like an optional one.
     """
 
     built = a_view()
-    embedded = built.row("freshness", "knowledge_lite")
-    peer = built.row("knowledge_supplier", "knowledge")
+    embedded = built.row("freshness", "deception_lite")
+    peer = built.row("deception_supplier", "deception")
 
     assert embedded.value != peer.value
-    assert embedded.value == CONTROL_PLANE_ONLY
+    assert embedded.value == LOOPBACK_ONLY
     assert peer.value == Supplier.NONE.value
     assert "not a defect" in peer.reason
     assert "not the same fact as an external peer being absent" in embedded.reason
@@ -593,7 +626,7 @@ def test_a_feature_with_no_functional_layer_still_blocks_nothing() -> None:
         assert row.continues, row.axis
 
 
-@pytest.mark.parametrize("feature", sorted(READINESS))
+@pytest.mark.parametrize("feature", sorted(f for f in READINESS if not READINESS[f].functional))
 def test_every_tracked_feature_names_what_is_missing_and_its_issue(feature: str) -> None:
     readiness = READINESS[feature]
     assert readiness.functional is False, (
