@@ -28,6 +28,7 @@ from azazel_nexus.model_catalog import (
     CATALOG_SCHEMA,
     KNOWN_FORMATS,
     KNOWN_RUNTIME_ABIS,
+    MAX_CATALOG_BYTES,
     MAX_ENTRIES,
     CatalogRefused,
     CatalogState,
@@ -374,6 +375,53 @@ def test_an_entry_with_an_extra_field_is_refused(tmp_path) -> None:
         with pytest.raises(CatalogRefused) as caught:
             read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
         assert extra in str(caught.value)
+
+
+def test_a_catalog_larger_than_the_ceiling_is_refused_before_parsing(tmp_path) -> None:
+    """The ceiling is checked on the bytes, before any of them are trusted.
+
+    A reader that parses first and bounds afterwards has already spent the
+    work the bound exists to prevent.
+    """
+
+    path = tmp_path / CATALOG_FILENAME
+    path.write_bytes(b"\0" * 64 + b"{" + b" " * (MAX_CATALOG_BYTES + 1))
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert str(MAX_CATALOG_BYTES) in str(caught.value)
+    # And the ceiling is a ceiling, not a floor: an ordinary catalog of the
+    # same shape but under it is read.
+    good = write_catalog(tmp_path, [an_entry()])
+    assert read_catalog(
+        good, trusted_keys=trusted(), commissioning_digest=COMMISSIONING
+    ).state is CatalogState.DECLARED
+
+
+def test_an_artifact_symlinked_out_of_the_root_is_refused_as_traversal(tmp_path) -> None:
+    """The digest cannot escape the root, but a symlink at the destination can.
+
+    The filename is digest-derived, so nothing *in the catalog* can steer a
+    path. What can is a link an operator or an import step left in the
+    artifact root: `stat` and `open` both follow it, so without resolving
+    the path a file outside the root would verify as present on its
+    contents alone. This is the case the check exists for.
+    """
+
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    entry = an_entry()
+    body = b"weights, not a program"
+    target = outside / "real-weights.bin"
+    target.write_bytes(body)
+    (root / artifact_filename(entry)).symlink_to(target)
+    # The contents are exactly what the catalog declared -- size and digest
+    # both match -- so only the location is wrong.
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == entry.digest.split(":")[1]
+    reading = verify_artifact(entry, artifact_root=root)
+    assert reading.refused_by is Refusal.PATH_TRAVERSAL
+    assert reading.state is CatalogState.DECLARED
 
 
 def test_a_catalog_offering_too_many_entries_is_refused(tmp_path) -> None:
