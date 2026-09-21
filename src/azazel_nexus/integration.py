@@ -10,7 +10,7 @@ before it is lost on a screen.
 | axis | values |
 | --- | --- |
 | `capability` | `CORE` / `LITE` / `FULL` |
-| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` |
+| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` / `loopback-only` |
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, and remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
@@ -21,19 +21,25 @@ Independent means an input that moves one axis moves **only** that one, and
 not follow. A summary that collapses two axes hides which one failed, which is
 the whole reason §8 of `docs/mio-runtime.md` demands per-dimension reasons.
 
-## Six words that are not five
+## Seven words that are not four
 
 `disabled` is a decision -- somebody chose not to connect. `unavailable` is an
 attempt that did not arrive. `stale` is having something too old to serve.
 `quarantined` is having something that cannot be trusted. `missing` is an
 **embedded** feature that is not there at all. **`control-plane-only`** is an
 embedded feature whose code is here, whose control plane works, and whose
-functional layer does not exist yet.
+functional layer does not exist yet. **`loopback-only`** is an embedded
+feature whose functional layer exists and reaches only this host.
 
-The last one exists because `unavailable` means *supply content and it works*,
-and saying that of a feature nothing could accept content for sends an
-operator looking for something no path can deliver. `functional_readiness.py`
-holds which features are in that state and why.
+`control-plane-only` exists because `unavailable` means *supply content and
+it works*, and saying that of a feature nothing could accept content for sends
+an operator looking for something no path can deliver. `loopback-only` exists
+because Deception Lite's decoys now really start and really listen
+([#69](https://github.com/01rabbit/Azazel-Nexus/issues/69)) -- so
+`control-plane-only` is false -- while nothing outside this host can reach
+one, so `available` would describe a deception with nobody on the other end
+of it. `functional_readiness.py` holds which features are in which state and
+why.
 
 The operator's next action differs for every one of them, so a renderer that
 prints any two of them as one word has told its operator to do the wrong
@@ -81,7 +87,7 @@ from typing import Optional, Sequence
 from .capability import CapabilityState
 from .cognition import CognitionReading, CognitionState, RemoteState
 from .decoy import DecoyState, DecoyStatus
-from .functional_readiness import CONTROL_PLANE_ONLY, readiness_for
+from .functional_readiness import CONTROL_PLANE_ONLY, LOOPBACK_ONLY, readiness_for
 from .lite_service import LiteReading, LiteState
 
 __all__ = [
@@ -332,7 +338,7 @@ def _knowledge_freshness_row(knowledge: Optional[LiteReading]) -> Axis:
         return Axis(
             axis="freshness",
             subject="knowledge_lite",
-            value=CONTROL_PLANE_ONLY,
+            value=readiness.value,
             reason=f"{readiness.reason()}. The cache itself reports: {knowledge.reason}",
             continues=NEXUS_ALWAYS,
         )
@@ -365,9 +371,10 @@ def _deception_freshness_row(decoy: Optional[DecoyStatus]) -> Axis:
         return Axis(
             axis="freshness",
             subject="deception_lite",
-            value=CONTROL_PLANE_ONLY,
+            value=readiness.value,
             reason=f"{readiness.reason()}. The runtime itself reports: {decoy.reason}",
-            continues=NEXUS_ALWAYS,
+            continues=NEXUS_ALWAYS
+            + (("local-only decoy observation",) if readiness.loopback_only else ()),
         )
     return Axis(
         axis="freshness",
@@ -398,7 +405,7 @@ def _decoy_freshness(state: DecoyState) -> str:
 def _cognition_row(cognition: CognitionReading) -> Axis:
     local = cognition.state is not CognitionState.CORE_ONLY
     readiness = readiness_for("mio")
-    suffix = "" if readiness.functional else f"; local M.I.O. {CONTROL_PLANE_ONLY}"
+    suffix = "" if readiness.functional else f"; local M.I.O. {readiness.value}"
     return Axis(
         axis="cognition_route",
         subject="mio",

@@ -207,6 +207,9 @@ REQUIRED_STAGES = (
     # Nexus#44: the five Edge checks, each broken on its own against a
     # package written into the harness root. Also has no prerequisite.
     "Edge package verification",
+    # Nexus#69: decoys bound on real Unix sockets, reached, and crashed.
+    # Also has no prerequisite.
+    "loopback decoy runtime",
 )
 
 

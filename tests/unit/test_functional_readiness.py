@@ -44,6 +44,27 @@ def test_none_of_them_is_functional_yet(feature: str) -> None:
     assert READINESS[feature].functional is False
 
 
+def test_exactly_one_of_them_has_a_functional_layer_that_reaches_only_this_host() -> None:
+    """Deception Lite, and only it. The two states must not blur together."""
+
+    loopback = {f for f, r in READINESS.items() if r.loopback_only}
+    assert loopback == {"deception_lite"}
+    for feature in READINESS:
+        readiness = READINESS[feature]
+        assert readiness.value == (
+            "loopback-only" if readiness.loopback_only else CONTROL_PLANE_ONLY
+        )
+
+
+def test_a_feature_cannot_be_both_functional_and_loopback_only() -> None:
+    """A capability nothing outside can be affected by is not being supplied."""
+
+    with pytest.raises(ValueError, match="not supplying its capability"):
+        Readiness(
+            feature="x", functional=True, missing="", issue="", loopback_only=True
+        )
+
+
 # -- each declaration, tied to the code that makes it true -----------------
 
 
@@ -129,12 +150,17 @@ def test_mio_is_not_functional_because_the_resource_gate_always_refuses() -> Non
     )
 
 
-def test_deception_lite_is_not_functional_because_nothing_starts_a_decoy() -> None:
+def test_the_library_half_of_deception_lite_still_starts_nothing() -> None:
     """`decoy.py` defines no verb that could start, bind or spawn.
 
     This is the same scan `test_decoy.py` runs. It is repeated here because
-    here it carries a second meaning: as long as it passes, no decoy runs,
-    and the declaration below is correct.
+    here it carries a second meaning: the control plane stays a control plane.
+    A decoy runtime that had grown into the library would be a runtime inside
+    the half that `test_boundary_static.py` guarantees cannot act.
+
+    It no longer establishes that *nothing* starts a decoy -- Nexus#69 landed
+    the runtime half, in the runtime distribution. The tie for that half is
+    the test below.
     """
 
     tree = ast.parse(pathlib.Path(decoy_module.__file__).read_text(encoding="utf-8"))
@@ -150,10 +176,87 @@ def test_deception_lite_is_not_functional_because_nothing_starts_a_decoy() -> No
     }
     assert acting == set()
 
-    assert readiness_for("deception_lite").functional is False, (
-        "nothing in decoy.py can start a decoy; if a runtime has landed, "
+
+def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -> None:
+    """The mechanical reason the declaration says `loopback-only` (Nexus#69).
+
+    Decoys start and listen now, so `control-plane-only` would be false. What
+    keeps them from supplying the capability is that **no module in the
+    runtime distribution names an internet address family**: there is no path
+    by which one could bind an address or a port, so nothing outside this host
+    can reach a decoy.
+
+    If that stops being true, this fails, and whoever made it stop has to come
+    to `functional_readiness.py` and say what the feature now supplies.
+    """
+
+    runtime_root = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "runtime"
+        / "src"
+        / "azazel_nexus_runtime"
+    )
+    reaching = {}
+    scanned = 0
+    for path in sorted(runtime_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scanned += 1
+        found = sorted(
+            {
+                node.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute)
+                and node.attr in {"AF_INET", "AF_INET6", "AF_PACKET", "create_connection"}
+            }
+        )
+        if found:
+            reaching[path.name] = found
+    assert scanned > 1, "a vacuous scan: the runtime distribution was not found"
+    assert reaching == {}, f"{reaching} can reach past this host"
+
+    readiness = readiness_for("deception_lite")
+    assert readiness.loopback_only is True
+    assert readiness.functional is False, (
+        "nothing in the runtime distribution can bind an address, so no "
+        "hostile party can reach a decoy; if external exposure has landed, "
         "update the declaration"
     )
+
+
+def test_the_loopback_runtime_really_binds_so_the_word_is_not_control_plane_only() -> None:
+    """The other half of the tie: something must actually run.
+
+    `loopback-only` claims a functional layer exists. A declaration that said
+    so while the runtime bound nothing would be the overstatement this module
+    was written to prevent, in the opposite direction.
+    """
+
+    from azazel_nexus_runtime.decoy_loopback import (
+        LoopbackCatalogue,
+        LoopbackDecoy,
+        LoopbackRuntime,
+        ResponderState,
+    )
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = LoopbackRuntime(
+            pathlib.Path(tmp) / "decoys",
+            catalogue=LoopbackCatalogue.of(
+                [LoopbackDecoy(name="alpha", responder="ssh-banner")]
+            ),
+            generation_digest="sha256:" + "ef" * 32,
+            clock=lambda: "2026-09-21T00:00:00Z",
+        )
+        try:
+            assert runtime.start() == ("alpha",)
+            assert runtime.state("alpha") is ResponderState.LISTENING
+            assert runtime.path_for("alpha").is_socket()
+        finally:
+            runtime.stop()
+
+    assert readiness_for("deception_lite").value == "loopback-only"
 
 
 # -- what a declaration must carry -----------------------------------------

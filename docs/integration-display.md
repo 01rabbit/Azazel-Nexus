@@ -22,7 +22,7 @@ is what lets the rules below be tested as rules rather than as strings.
 | axis | values |
 | --- | --- |
 | `capability` | `CORE` / `LITE` / `FULL` |
-| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` |
+| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` / `loopback-only` |
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, with remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
@@ -142,8 +142,10 @@ integration:
         an embedded feature that cannot supply its capability, which is not
         the same fact as an external peer being absent. The cache itself
         reports: no Knowledge Lite artifact has been admitted ...
-    freshness [deception_lite]: control-plane-only
-        ... (Nexus#69) ... The runtime itself reports: no decoy catalogue ...
+    freshness [deception_lite]: loopback-only
+        the functional layer exists and reaches only this host: decoys start
+        and listen, and only on private Unix sockets ... (Nexus#69) ... The
+        runtime itself reports: no decoy catalogue ...
     cognition_route [mio]: CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only
         ... (Nexus#68) | resource: ... | topology: ... | trust: ...
     knowledge_supplier [knowledge]: none

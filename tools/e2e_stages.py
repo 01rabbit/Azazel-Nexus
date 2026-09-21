@@ -50,6 +50,7 @@ def run_all(harness: Harness) -> None:
                   requires=("verified generation",))
     harness.stage("CORE + Lite configurations", lambda: _lite_matrix(harness))
     harness.stage("Edge package verification", lambda: _edge_package(harness))
+    harness.stage("loopback decoy runtime", lambda: _loopback_decoys(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -544,4 +545,91 @@ def _edge_package(harness: Harness) -> str:
     return (
         f"{checked} packages inspected; each of the five checks failed on its "
         "own word, and the shipped node withheld readiness for want of a probe"
+    )
+
+
+def _loopback_decoys(harness: Harness) -> str:
+    """Decoys that really bind, are really reached, and reach nothing (#69).
+
+    Run against real sockets in the harness root. A stage that described the
+    runtime's intentions would pass on a runtime that bound nothing, which is
+    the state this issue exists to leave behind.
+    """
+
+    import socket
+
+    from azazel_nexus.functional_readiness import LOOPBACK_ONLY, readiness_for
+    from azazel_nexus_runtime.decoy_loopback import (
+        LoopbackCatalogue,
+        LoopbackDecoy,
+        LoopbackRuntime,
+        ResponderState,
+    )
+
+    generation = "sha256:" + "cd" * 32
+    instants = iter(f"2026-09-21T01:00:{second:02d}Z" for second in range(60))
+    catalogue = LoopbackCatalogue.of(
+        [
+            LoopbackDecoy(name="alpha", responder="ssh-banner"),
+            LoopbackDecoy(name="bravo", responder="http-banner"),
+        ]
+    )
+    runtime = LoopbackRuntime(
+        harness.root / "decoys",
+        catalogue=catalogue,
+        generation_digest=generation,
+        clock=lambda: next(instants),
+    )
+    try:
+        listening = runtime.start()
+        if listening != ("alpha", "bravo"):
+            raise RuntimeError(f"expected both decoys listening, got {listening}")
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(5)
+        try:
+            client.connect(str(runtime.path_for("alpha")))
+            client.sendall(b"password=hunter2")
+            client.shutdown(socket.SHUT_WR)
+            observation = runtime.serve_once("alpha")
+            banner = client.recv(1024)
+        finally:
+            client.close()
+        if observation is None:
+            raise RuntimeError("a decoy was reached and nothing was observed")
+        if banner != catalogue.entry("alpha").banner:
+            raise RuntimeError("the decoy did not answer with its own responder")
+        if observation.bytes_received != 16:
+            raise RuntimeError(
+                f"{observation.bytes_received} bytes observed, 16 were sent"
+            )
+        rendered = repr(observation) + repr(observation.as_event())
+        if "hunter2" in rendered or "password" in rendered:
+            raise RuntimeError("the observation kept what was sent to the decoy")
+
+        # A crash takes one decoy and leaves the other.
+        runtime.quarantine("alpha", "the responder fell over")
+        if runtime.state("alpha") is not ResponderState.QUARANTINED:
+            raise RuntimeError("a failed decoy was not quarantined")
+        if runtime.listening() != ("bravo",):
+            raise RuntimeError("a decoy failure took another decoy with it")
+        if runtime.path_for("alpha").exists():
+            raise RuntimeError("a quarantined decoy's socket was left in place")
+
+        event = runtime.as_event()
+        if event["externally_reachable"] or event["redirect_eligible"]:
+            raise RuntimeError("the runtime claimed reach or redirect")
+        readiness = readiness_for("deception_lite")
+        if readiness.value != LOOPBACK_ONLY or readiness.functional:
+            raise RuntimeError(
+                "the display word does not match a runtime that reaches only "
+                "this host"
+            )
+    finally:
+        runtime.stop()
+
+    return (
+        "2 decoys bound on private Unix sockets; one was reached and observed "
+        "without keeping what was sent, a crash quarantined it alone, and "
+        "nothing claimed external reach or redirect"
     )
