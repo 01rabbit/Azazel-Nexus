@@ -271,6 +271,49 @@ def test_a_broken_key_in_the_store_does_not_make_the_catalog_unverifiable(tmp_pa
     assert catalog.signer == "zzz-good"
 
 
+@pytest.mark.parametrize("order", [("aaa-good", "zzz-good"), ("zzz-good", "aaa-good")])
+def test_the_reported_signer_does_not_depend_on_store_ordering(tmp_path, order) -> None:
+    """Two keys, one catalog: which one is named must not be dict order.
+
+    The same key material under two ids verifies under both, so the only
+    thing deciding the answer is the iteration order of the trust store.
+    An audit record whose content depends on how a mapping was built is a
+    record two nodes can disagree about while both being right.
+    """
+
+    path = write_catalog(tmp_path, [an_entry()])
+    material = bytes(_key().verify_key)
+    keys = {key_id: material for key_id in order}
+    catalog = read_catalog(path, trusted_keys=keys, commissioning_digest=COMMISSIONING)
+    assert catalog.signer == "aaa-good"
+
+
+def test_a_catalog_naming_another_schema_is_refused(tmp_path) -> None:
+    """Refused, not best-effort parsed. A reader that guesses is a reader
+    that accepts a document nobody wrote for it."""
+
+    body = catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
+    document = json.loads(body)
+    document["schema"] = "azazel-nexus/model-catalog/2"
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(tmp_path, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "model-catalog/2" in str(caught.value)
+
+
+@pytest.mark.parametrize("version", [0, -1, "1", 1.0, True, None])
+def test_a_catalog_without_a_positive_whole_version_is_refused(tmp_path, version) -> None:
+    body = catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
+    document = json.loads(body)
+    document["version"] = version
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(tmp_path, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "positive whole number" in str(caught.value)
+
+
 # -- entry refusals, each named and each independent ---------------------
 
 
