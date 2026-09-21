@@ -724,3 +724,39 @@ def test_the_verifier_runs_no_process():
             imported.add(node.module.split(".")[0])
     assert "subprocess" not in imported
     assert "os" not in imported
+
+
+def test_nothing_reads_the_startup_block_of_an_edge_manifest():
+    """#44's last criterion, held mechanically rather than in prose.
+
+    Edge's manifest carries `startup.command` and `startup.observe_only_env`.
+    Nexus does not read either. A consumer that read a command would be one
+    step from running it, and the acceptance criterion this closes is that
+    **no network-configuration path exists** on this node.
+
+    The rest of that argument is import-level and lives in
+    `test_boundary_static.py`: with no `socket` and no `subprocess`, there is
+    nothing here that could carry out a startup instruction even if it read
+    one. This test covers the half that guard cannot see -- a field read now
+    and acted on later.
+    """
+
+    read_here = {key.split(".")[0] for key in REQUIRED_MANIFEST_KEYS}
+    assert "startup" not in read_here
+
+    module = ROOT / "src" / "azazel_nexus" / "edge_package.py"
+    source = module.read_text(encoding="utf-8")
+    body = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    # The docstring names the fields to explain why they are not read, so the
+    # search is for a *lookup*, not for the words.
+    for field in ("startup.command", "startup.observe_only_env", "observe_only_env"):
+        assert f'"{field}"' not in body, (
+            f"{field} is read from the Edge manifest; a startup instruction "
+            "this node reads is a startup instruction this node may one day act on"
+        )
+    assert '"posture.observe_only"' in body, (
+        "a vacuous scan: no manifest field is looked up at all, so the "
+        "assertions above would pass over an empty module"
+    )

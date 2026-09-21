@@ -128,6 +128,23 @@ establishes that the payload is up, crosses that boundary and is
 [#72](https://github.com/01rabbit/Azazel-Nexus/issues/72) rather than
 something this module decided on its own.
 
+## 7b. No network-configuration path exists on this node
+
+Edge's manifest carries `startup.command` and `startup.observe_only_env`.
+**Nexus reads neither.** A consumer that read a command would be one step
+from running it, and `tests/unit/test_edge_package.py` asserts no lookup of
+either field survives in the module.
+
+The rest of the argument is import-level: `test_boundary_static.py` refuses
+`socket`, `subprocess`, `ctypes` and their siblings across the whole package,
+so there is nothing here that could carry out a startup instruction even if it
+read one. The two guards cover different halves — a field read now and acted
+on later, and a mechanism to act at all.
+
+The Edge side matches it: the package configures no network, declares
+`network_configuration_change: false`, reads and writes nothing under
+`installer/`, and starts nothing.
+
 ## 8. On the screen
 
 ```text
