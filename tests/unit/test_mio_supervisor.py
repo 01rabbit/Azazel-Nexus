@@ -596,17 +596,69 @@ def test_an_unreadable_ledger_fences_rather_than_forgetting(tmp_path):
 
 
 @injected
-def test_an_unreadable_ledger_is_not_overwritten(tmp_path):
-    """Replacing it would destroy the record that made everything fenced."""
+def test_an_unreadable_ledger_is_left_exactly_as_it_was(tmp_path):
+    """Found by mutation, and it was an implementation defect rather than a
+    test gap.
+
+    The code said "do not overwrite a file that could not be read" and then
+    set `entries = {}` and wrote anyway -- replacing the damaged file with a
+    clean one asserting that one provider is fenced and nothing else ever
+    was. The evidence an operator needs to understand the corruption would
+    have been destroyed by the very step that noticed it.
+
+    Asserted on the **bytes**, so "it wrote something different" fails rather
+    than "it wrote nothing recognisable".
+    """
 
     ledger = _ledger(tmp_path)
     path = tmp_path / "budgets.json"
-    path.write_text("{not json", encoding="utf-8")
+    corrupt = "{not json -- and a record of what was here before\n"
+    path.write_text(corrupt, encoding="utf-8")
+
     budget = ledger.load(generation=1, runtime_id="stub")
+    assert budget.fenced is True
     ledger.save(budget, runtime_id="stub")
-    assert "1:stub" in path.read_text(encoding="utf-8"), (
-        "the save wrote something"
+
+    assert path.read_text(encoding="utf-8") == corrupt, (
+        "the save replaced a file it could not read"
     )
+
+    # And it still loads as fenced, so writing nothing cost nothing.
+    assert ledger.load(generation=1, runtime_id="stub").fenced is True
+
+
+@injected
+def test_a_malformed_entry_in_a_readable_ledger_fences_that_provider(tmp_path):
+    """Found by mutation. A file that parses but whose entry does not is
+    not "this provider has spent nothing".
+
+    Only that provider: the rest of the file is intact and says what it
+    says, so fencing everything would punish providers whose records are
+    fine.
+    """
+
+    import json
+
+    ledger = _ledger(tmp_path)
+    path = tmp_path / "budgets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "1:stub": {"limit": "three", "spent": None},
+                "1:other": {"limit": 3, "spent": 1, "fenced": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    broken = ledger.load(generation=1, runtime_id="stub")
+    assert broken.fenced is True
+    assert broken.spend().may_restart is False
+
+    intact = ledger.load(generation=1, runtime_id="other")
+    assert intact.fenced is False
+    assert intact.spent == 1
+    assert intact.spend().may_restart is True
 
 
 # -- the watchdog holds the consequence -----------------------------------

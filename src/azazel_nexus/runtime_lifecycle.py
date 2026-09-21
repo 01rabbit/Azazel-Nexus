@@ -269,10 +269,17 @@ class BudgetLedger:
     def save(self, budget: "RestartBudget", *, runtime_id: str) -> None:
         entries, readable = self._read()
         if not readable:
-            # Do not overwrite a file that could not be read: whatever is in
-            # it, replacing it would destroy the record that made everything
-            # fenced. The budget in memory is already the refusing one.
-            entries = {}
+            # **Write nothing.** An earlier version set `entries = {}` here
+            # and carried on, which is not "do not overwrite" -- it is
+            # overwriting, with the damaged file replaced by a clean one that
+            # says one provider is fenced and nothing else ever was.
+            #
+            # Found by mutation: removing the branch changed no behaviour,
+            # because the branch did not have any. Leaving the file alone
+            # keeps the evidence an operator needs and costs nothing: an
+            # unreadable ledger already loads as fenced for every provider,
+            # so there is no state worth recording into it.
+            return
         entries[f"{budget.generation}:{runtime_id}"] = {
             "limit": budget.limit,
             "spent": budget.spent,
