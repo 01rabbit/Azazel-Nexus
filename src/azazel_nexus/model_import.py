@@ -58,6 +58,14 @@ Nothing is moved out of the inbox and nothing is deleted from it. It is the
 operator's media, and an import that failed halfway through would otherwise
 have eaten the only copy.
 
+The inbox is the node's **supply directory**, not only the operator's. An
+operator places a file there; acquisition (#96) may place one there too. What
+matters is what follows, and nothing follows differently: bytes that arrived
+over a socket take the same enumeration, the same capacity precheck and the
+same `verify_artifact` as bytes from a USB stick. **There is no shortcut for
+downloaded bytes** -- if anything they deserve the stricter path, and they get
+the identical one.
+
 ## Atomic promotion is a property of the filesystem, not of intent
 
 Promotion is one `os.replace` from staging into the store, which is atomic

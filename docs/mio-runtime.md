@@ -25,6 +25,7 @@ semantics) · [the deterministic sanitizer](mio-sanitizer.md) ·
 [the model catalog contract](model-catalog.md) ·
 [offline model import](model-import.md) ·
 [the operator screen](operator-view.md) ·
+[online acquisition](model-acquisition.md) ·
 [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
 [Inheritance ledger](inheritance-ledger.md) ·

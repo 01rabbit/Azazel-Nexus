@@ -5,6 +5,7 @@ What an operator sees after installation, and what they may safely do next.
 
 Related: [the model catalog contract](model-catalog.md) ·
 [offline model import](model-import.md) ·
+[online acquisition](model-acquisition.md) ·
 [M.I.O. runtime control plane](mio-runtime.md) ·
 [the route policy](mio-route-policy.md) ·
 [Capability model](capability-model.md) ·

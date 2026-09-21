@@ -340,6 +340,20 @@ def test_an_absent_catalog_refuses_an_import_however_full_the_inbox() -> None:
     ).reason != operation.reason
 
 
+def test_acquisition_is_offered_as_absent_rather_than_hidden(node) -> None:
+    """A confirmation with no path behind it is still shown, so that nobody
+    goes looking for the setting that would enable it."""
+
+    view = build_view(facts())
+    operation = view.operation(Confirmation.MODEL_ACQUISITION)
+    assert operation.available is False
+    assert "absent rather than switched off" in operation.reason
+    assert "offline import route is unaffected" in operation.reason
+    assert operation.transition == "mio.model.acquisition.planned"
+    # And it is not the import confirmation wearing another name.
+    assert operation.transition != view.operation(Confirmation.MODEL_IMPORT).transition
+
+
 def test_an_unavailable_operation_is_present_rather_than_missing() -> None:
     """A screen where options vanish is a screen somebody searches for an hour."""
 
@@ -356,17 +370,23 @@ def test_an_operation_cannot_be_built_without_a_reason() -> None:
 # -- five confirmations stay five ------------------------------------------
 
 
-def test_five_confirmations_five_operations_five_transitions() -> None:
-    """Collapsed into one "yes", an operator consents to five things
-    believing they consented to one."""
+def test_every_confirmation_is_its_own_operation_and_its_own_transition() -> None:
+    """Collapsed into one "yes", an operator consents to six things
+    believing they consented to one.
 
-    assert len(Confirmation) == 5
+    The count is pinned alongside the identity so that adding a consent by
+    widening an existing member's wording -- rather than by adding a member --
+    shows up here as a count that did not move.
+    """
+
+    expected = len(Confirmation)
+    assert expected == 6
     view = build_view(facts())
-    assert len(view.operations) == 5
+    assert len(view.operations) == expected
     confirmations = [o.confirmation for o in view.operations]
-    assert len(set(confirmations)) == 5
+    assert len(set(confirmations)) == expected
     transitions = [o.transition for o in view.operations]
-    assert len(set(transitions)) == 5, "two confirmations write one event"
+    assert len(set(transitions)) == expected, "two confirmations write one event"
 
 
 def test_each_confirmation_names_exactly_one_thing() -> None:
@@ -381,6 +401,7 @@ def test_each_confirmation_names_exactly_one_thing() -> None:
         "remote opt-in",
         "license acknowledgement",
         "model import",
+        "model acquisition",
         "provider admission",
     }
     for confirmation in Confirmation:
