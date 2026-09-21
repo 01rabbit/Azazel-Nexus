@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+"""A **test-only** model runtime stub. It runs, and it misbehaves on demand.
+
+The shebang is an **absolute** interpreter path, not `/usr/bin/env python3`.
+The supervisor replaces the environment rather than inheriting it, so there
+is no `PATH` for `env` to search -- which is correct for a provider and fatal
+for a script that needs looking one up. A real runtime binary is an ELF and
+has the same property for free.
+
+This file exists so that `tests/unit/test_mio_supervisor.py` can start a
+**real process** and watch it start, answer, hang, crash, flood its output or
+leave a child behind -- rather than injecting a state and calling that
+evidence.
+
+It is under `tests/` and it stays there. It is not in the production package,
+not in `model_runtime.RUNTIMES`, not in the catalog, not in the installer and
+not in the systemd preset, and `tests/unit/test_runtime_stub_containment.py`
+scans for exactly that.
+
+Behaviour is chosen by `AZ_STUB_BEHAVIOUR`, which the supervisor does not
+set: the supervisor replaces the environment, so a test that wants a
+behaviour writes a **wrapper argv** for it. The default is the well-behaved
+one, which is what a stub found running with no instruction should be.
+"""
+
+import os
+import sys
+import time
+
+BEHAVIOUR = sys.argv[1] if len(sys.argv) > 1 else "ready"
+
+
+def main() -> int:
+    if BEHAVIOUR == "ready":
+        sys.stdout.write("READY\n")
+        sys.stdout.flush()
+        return 0
+
+    if BEHAVIOUR == "silent":
+        # Starts, exits cleanly, never says it is ready.
+        return 0
+
+    if BEHAVIOUR == "crash":
+        sys.stderr.write("dying\n")
+        sys.stderr.flush()
+        return 9
+
+    if BEHAVIOUR == "signal":
+        os.kill(os.getpid(), 9)
+        return 0  # pragma: no cover - not reached
+
+    if BEHAVIOUR == "hang":
+        while True:
+            time.sleep(3600)
+
+    if BEHAVIOUR == "flood":
+        sys.stdout.write("READY\n")
+        block = "x" * 4096
+        for _ in range(512):  # 2 MiB, far past the ceiling
+            sys.stdout.write(block)
+        sys.stdout.flush()
+        return 0
+
+    if BEHAVIOUR == "orphan":
+        # Fork a child that would outlive the parent if nothing killed the
+        # group. The child writes nothing and sleeps.
+        pid = os.fork()
+        if pid == 0:
+            # Deliberately stays in the parent's process group: the point is
+            # that killing the group takes it with the parent. A child that
+            # detached itself would be testing something else.
+            time.sleep(3600)
+            os._exit(0)
+        sys.stdout.write(f"READY child={pid}\n")
+        sys.stdout.flush()
+        return 0
+
+    sys.stderr.write(f"unknown behaviour {BEHAVIOUR!r}\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
