@@ -106,20 +106,13 @@ jobs:
           # a fault.
           import azazel_nexus.compatibility as compatibility  # noqa: F401
           import azazel_nexus.cognition as cognition  # noqa: F401
+          # `host=None` rather than invented host facts: a runner has not been
+          # commissioned, and that is the state the reading has to handle.
           nothing = cognition.read_cognition(
               [],
-              host=compatibility.HostFacts(
-                  os_abi="ci",
-                  architecture=compatibility.ADMITTED_ARCHITECTURE,
-                  cpu_features=frozenset(),
-                  fabric_version="ci",
-                  fabric_features=frozenset(),
-                  schema_features=frozenset(),
-                  profile=azazel_nexus.resource_profile.ResourceProfile.CORE,
-                  overlay_schema="ci",
-                  security_epoch=0,
-              ),
+              profile=azazel_nexus.resource_profile.ResourceProfile.CORE,
               tested=compatibility.TestedTupleSet(),
+              host=None,
           )
           if nothing.state is not cognition.CognitionState.CORE_ONLY:
               raise SystemExit(f"a node with no provider must be CORE ONLY, got {nothing.state!r}")

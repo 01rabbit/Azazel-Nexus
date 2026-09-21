@@ -163,7 +163,7 @@ class ProviderAdmission:
 def admit_local_model(
     provider: LocalModelProvider,
     *,
-    host: HostFacts,
+    host: Optional[HostFacts],
     tested: TestedTupleSet,
 ) -> ProviderAdmission:
     """Run §4's gates in order. The first rejection is the answer.
@@ -188,6 +188,13 @@ def admit_local_model(
     if not provider.signature_verified:
         return refuse(AdmissionGate.AUTHENTICITY, "the asset signature did not verify")
 
+    if host is None:
+        return refuse(
+            AdmissionGate.COMPATIBILITY,
+            "no host facts have been established, so no tested tuple can be "
+            "matched against this node; admission needs what the node is, and "
+            "inventing it would make the tuple match something nobody tested",
+        )
     matched, reason = tested.admits(provider.component_digest, host)
     if matched is None:
         return refuse(AdmissionGate.COMPATIBILITY, reason)
@@ -281,8 +288,9 @@ REMOTE_DISABLED_REASON = (
 def read_cognition(
     providers: Sequence[LocalModelProvider],
     *,
-    host: HostFacts,
+    profile: ResourceProfile,
     tested: TestedTupleSet,
+    host: Optional[HostFacts] = None,
 ) -> CognitionReading:
     """What the cognition plane is right now.
 
@@ -291,6 +299,15 @@ def read_cognition(
     is no way for a provider to be carried across one. `docs/mio-runtime.md`
     §7: restart of any cognition service resumes at `CORE ONLY` and re-admits
     before rising.
+
+    **`profile` and `host` are separate arguments on purpose.** The resource
+    reason needs only the measured envelope, which a node always has; matching
+    a tested tuple needs the full `HostFacts`, which a node that has not been
+    commissioned does not. Taking one argument would force a caller with the
+    first and not the second to invent the rest -- and an invented `os_abi`
+    makes a tuple match something nobody tested. So `host=None` is a fact
+    ("nothing has established what this node is") and it refuses admission at
+    the compatibility gate rather than being filled in.
     """
 
     admissions = tuple(
@@ -311,7 +328,7 @@ def read_cognition(
     return CognitionReading(
         state=state,
         remote=RemoteState.DISABLED,
-        resource_reason=_resource_reason(host.profile),
+        resource_reason=_resource_reason(profile),
         topology_reason=(
             "no commissioned egress path is required, because no remote provider "
             "is enabled; topology neither permits nor blocks anything here"

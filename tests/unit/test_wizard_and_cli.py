@@ -266,20 +266,61 @@ def test_status_shows_what_continues_and_not_only_what_was_lost(tmp_path):
     assert "audit" in text.split("continuing:")[1].split("\n")[0]
 
 
+#: Words that would make an absent module read as a working one.
+_REASSURANCE = ("connected", "reachable", "up to date", ": ok")
+
+
+def _module_section(text: str) -> list[str]:
+    """The `external modules:` block alone.
+
+    Scoped to the section rather than matched across the whole screen: the
+    integration view (#55) also names AZ-04 and AZ-06 -- as *suppliers*, to
+    say their absence is unavailable and not a defect -- and a count over the
+    whole screen would break on a correct addition. The reassurance check
+    below stays screen-wide, so nothing is given up by narrowing the count.
+    """
+
+    lines = text.splitlines()
+    start = lines.index("external modules:") + 1
+    section: list[str] = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        section.append(line)
+    return section
+
+
 def test_status_never_calls_an_absent_module_connected(tmp_path):
     _, text = _run(["status"], tmp_path)
-    module_lines = [
+    section = _module_section(text)
+    # Four rows: the three external modules and the local Edge Core, which is
+    # named rather than omitted (#44). Pinned so that a row disappearing is a
+    # failure rather than a smaller number nobody notices.
+    assert len(section) == 4
+    named = [
         line
-        for line in text.splitlines()
+        for line in section
         if any(name in line for name in ("AZ-04", "AZ-06", "Remote M.I.O."))
     ]
-    assert len(module_lines) == 3
-    for line in module_lines:
+    assert len(named) == 3
+    for line in section:
         assert "absent" in line
         assert "--" in line, "an absent module must carry the reason it is absent"
         lowered = line.lower()
-        for reassurance in ("connected", "reachable", "up to date", ": ok"):
+        for reassurance in _REASSURANCE:
             assert reassurance not in lowered
+
+
+def test_no_line_anywhere_calls_an_absent_module_connected(tmp_path):
+    """Screen-wide, so narrowing the count above gives nothing up."""
+
+    _, text = _run(["status"], tmp_path)
+    for line in text.splitlines():
+        if not any(name in line for name in ("AZ-04", "AZ-06", "Remote M.I.O.")):
+            continue
+        lowered = line.lower()
+        for reassurance in _REASSURANCE:
+            assert reassurance not in lowered, line
 
 
 def test_status_does_not_claim_enforcement_ready_on_an_uncommissioned_node(tmp_path):
@@ -452,3 +493,188 @@ def test_nothing_in_the_package_produces_an_edge_baseline_state():
         f"{offenders} construct an EdgeBaselineState. Nothing in the product "
         "may, until there is a package to derive one from (Azazel-Edge#424)"
     )
+
+
+# -- the six axes, on the node the operator actually has -------------------
+#
+# `integration.py` produces the rows and its own tests hold the rules. What is
+# checked here is the thing those tests cannot see: that `azazel-nexus status`
+# actually reaches them. A library nobody calls is how `lite_cache.py` came to
+# sit unused for a whole stage (#59), and the only guard against a repeat is a
+# test that runs the command.
+
+_LITE_ARGS = ("--knowledge-lite", "/nonexistent/knowledge-lite", "--as-of", "2026-09-21T00:00:00Z")
+
+
+def _status(tmp_path):
+    return _run([*_LITE_ARGS, "status"], tmp_path)[1]
+
+
+def test_status_prints_every_one_of_the_six_axes(tmp_path):
+    from azazel_nexus.integration import AXES
+
+    text = _status(tmp_path)
+    assert "integration:" in text
+    for axis in AXES:
+        assert axis in text, axis
+
+
+def test_status_prints_a_reason_under_every_axis(tmp_path):
+    """An unexplained state reads as agreement."""
+
+    from azazel_nexus.integration import AXES
+
+    lines = _status(tmp_path).splitlines()
+    for index, line in enumerate(lines):
+        if any(line.strip().startswith(f"{axis}") for axis in AXES) and ":" in line:
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            assert following.strip(), f"no reason under {line.strip()}"
+
+
+def test_status_does_not_claim_enforcement_or_baseline_readiness(tmp_path):
+    text = _status(tmp_path)
+    assert "enforcement capable: no" in text
+    assert "baseline ready: no" in text
+    assert "enforcement capable: yes" not in text
+    assert "baseline ready: yes" not in text
+
+
+def test_status_never_says_edge_decisions_continue_on_a_node_with_no_edge(tmp_path):
+    """The reassurance an operator most wants, and least may be given falsely."""
+
+    text = _status(tmp_path)
+    assert "edge [edge_core]: absent" in text
+    assert "Edge deterministic decisions" not in text
+
+
+def test_status_prints_what_continues_after_the_losses_not_before(tmp_path):
+    """Printed last and always, not as a footnote a long red list pushes off."""
+
+    text = _status(tmp_path)
+    continuing = text.index("continuing regardless:")
+    assert continuing > text.index("integration:")
+    assert continuing > text.index("edge [edge_core]")
+    tail = text[continuing:].splitlines()[0]
+    for expected in ("audit", "operator plane", "deterministic explanations"):
+        assert expected in tail
+
+
+def test_an_absent_data_tier_is_unavailable_and_not_a_defect(tmp_path):
+    """A node that has not been commissioned is not a broken one.
+
+    `missing` and its DEFECT marker are for an embedded feature that is not
+    there. A Knowledge Lite whose store has never been written reports
+    `unavailable` through its own reading, which is the routine state of a
+    fresh install.
+    """
+
+    text = _status(tmp_path)
+    assert "freshness [knowledge_lite]: unavailable" in text
+    assert "DEFECT" not in text
+
+
+def test_status_is_identical_for_the_same_instant(tmp_path):
+    """`--as-of` is an input, so two runs of one node do not differ.
+
+    The tree is built once and `main` is called twice against it: rebuilding
+    it would make this a test about two nodes agreeing, which is a different
+    and weaker claim.
+    """
+
+    sysfs = str(_tree(tmp_path))
+
+    def once() -> str:
+        out = io.StringIO()
+        main(["--sysfs", sysfs, *_LITE_ARGS, "status"], out=out)
+        return out.getvalue()
+
+    assert once() == once()
+
+
+def test_status_works_without_an_as_of_by_reading_the_clock_in_main(tmp_path):
+    """The one place a wall clock legitimately enters.
+
+    Checked by parsing: `_integration_view` must not read a clock, because a
+    status built from one cannot be replayed from its inputs.
+    """
+
+    import ast
+    import pathlib
+
+    from azazel_nexus import cli as cli_module
+
+    code, text = _run(["status"], tmp_path)
+    assert code == 0
+    assert "integration:" in text
+
+    tree = ast.parse(pathlib.Path(cli_module.__file__).read_text(encoding="utf-8"))
+    builder = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_integration_view"
+    )
+    called = {
+        node.func.attr
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "now" not in called and "utcnow" not in called
+    # And `main` really is where it comes from, so the assertion is not
+    # satisfied by nothing reading a clock at all.
+    assert "_now" in {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
+def test_the_status_screen_keeps_the_five_words_apart(tmp_path):
+    """`disabled` and `unavailable` appear, and they are not the same line."""
+
+    text = _status(tmp_path)
+    assert "remote M.I.O. disabled" in text
+    assert "freshness [knowledge_lite]: unavailable" in text
+    assert "remote M.I.O. unavailable" not in text
+
+
+def test_a_defect_row_is_marked_on_the_screen(tmp_path):
+    """The renderer's DEFECT marker, exercised.
+
+    The CLI never produces a defect today -- both embedded features are
+    present on any node this package installs -- so nothing else here reaches
+    that branch. A marker no test renders is a marker that can be deleted
+    without a failure, which is how the DEFECT case would quietly stop being
+    visible on the one screen it matters.
+    """
+
+    from azazel_nexus.capability import CapabilityState
+    from azazel_nexus.cli import _render_integration
+    from azazel_nexus.cognition import read_cognition
+    from azazel_nexus.compatibility import TestedTupleSet
+    from azazel_nexus.decoy import IsolationCheck, evaluate as evaluate_decoy
+    from azazel_nexus.integration import EdgePresence, build_view
+    from azazel_nexus.resource_profile import ResourceProfile
+
+    view = build_view(
+        capability=CapabilityState.CORE,
+        knowledge=None,  # the embedded feature is not there at all
+        cognition=read_cognition(
+            [], profile=ResourceProfile.CORE, tested=TestedTupleSet(), host=None
+        ),
+        decoy=evaluate_decoy(
+            "deception-lite",
+            catalogue=None,
+            commissioning=None,
+            isolation=IsolationCheck(passed=None),
+        ),
+        edge=EdgePresence.ABSENT,
+    )
+    out = io.StringIO()
+    _render_integration(view, out)
+    text = out.getvalue()
+
+    assert "missing" in text
+    assert "DEFECT" in text
+    assert text.count("DEFECT") == 1, "only the absent embedded feature is a defect"
+    # The peer rows are on the same screen and are not marked.
+    assert "AZ-04 peer is a capability extension" in text

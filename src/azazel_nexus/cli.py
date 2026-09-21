@@ -20,8 +20,13 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence, TextIO
 
 from .capability import CORE_CAPABILITIES
+from .cognition import read_cognition
 from .commissioning import CommissioningRefused, propose
+from .compatibility import TestedTupleSet
+from .decoy import IsolationCheck, evaluate as evaluate_decoy
+from .integration import EdgePresence, IntegrationView, build_view
 from .inventory import no_permanent_mac, read_interfaces
+from .lite_service import KnowledgeLite
 from .operator import (
     CapabilityReport,
     HealthReport,
@@ -31,7 +36,7 @@ from .operator import (
     ProfileReport,
     build_report,
 )
-from .resource_profile import UsableMemoryUnavailable, take_reading
+from .resource_profile import ResourceProfile, UsableMemoryUnavailable, take_reading
 from .wizard import WizardAbandoned, commission, render_rows
 
 __all__ = ["main"]
@@ -65,6 +70,17 @@ EDGE_BASELINE = (
     "looked for one: the x86_64 package Nexus would verify is not built yet "
     "(Azazel-Edge#424). edge-baseline-ready is not claimed",
 )
+
+#: Where the embedded stores live (`IMPLEMENTATION_SPEC.md` §3).
+#:
+#: Not in `layout.LAYOUT`: that declares `/etc/azazel` and `/var/lib/azazel`,
+#: and `/data/azazel` is a tier whose volume, ownership and encryption are a
+#: packaging decision this module does not make. Naming the paths here is safe
+#: because **both services read an absent root correctly** -- Knowledge Lite
+#: reports `unavailable` and the decoy runtime reports `disabled` -- so a node
+#: without the tier gets the truth rather than an error.
+KNOWLEDGE_LITE_ROOT = Path("/data/azazel/knowledge-lite")
+DECEPTION_LITE_ROOT = Path("/data/azazel/deception-lite")
 
 
 def _profile_report() -> ProfileReport:
@@ -138,6 +154,66 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
     return tuple(checks)
 
 
+def _integration_view(
+    report: OperatorReport,
+    *,
+    as_of: str,
+    knowledge_root: Path,
+) -> IntegrationView:
+    """The six axes, from what this node has actually established.
+
+    `as_of` is passed in rather than read here: a clock read inside a status
+    builder makes two runs of the same node differ, and `docs/mio-runtime.md`
+    §9 wants a decision replayable from its inputs. `main` reads the clock,
+    because a command line is where a wall clock legitimately enters.
+
+    Every argument below is a fact this node holds. Nothing is invented:
+    `host=None` says the node has not been commissioned into a tested tuple,
+    the decoy has no catalogue and no isolation result, and Edge is `absent`
+    for exactly the reason `EDGE_BASELINE` gives.
+    """
+
+    profile = report.profile.profile or ResourceProfile.DIAGNOSTIC
+    return build_view(
+        capability=report.capabilities.state,
+        knowledge=KnowledgeLite(
+            root=knowledge_root,
+            commissioning_digest=(
+                report.record.digest if report.record is not None else ""
+            ),
+        ).read(as_of=as_of),
+        cognition=read_cognition(
+            [], profile=profile, tested=TestedTupleSet(), host=None
+        ),
+        decoy=evaluate_decoy(
+            "deception-lite",
+            catalogue=None,
+            commissioning=None,
+            isolation=IsolationCheck(passed=None),
+        ),
+        edge=EdgePresence.ABSENT,
+    )
+
+
+def _render_integration(view: IntegrationView, out: TextIO) -> None:
+    """Print the six axes, and then what continues.
+
+    What continues is printed **last and always**, not as a footnote that a
+    long list of red pushes off the screen.
+    """
+
+    print("integration:", file=out)
+    for row in view.rows:
+        subject = f" [{row.subject}]" if row.subject else ""
+        marker = "  DEFECT" if row.defect else ""
+        print(f"    {row.axis}{subject}: {row.value}{marker}", file=out)
+        print(f"        {row.reason}", file=out)
+    print(file=out)
+    print(f"enforcement capable: {'yes' if view.enforcement_capable else 'no'}", file=out)
+    print(f"baseline ready: {'yes' if view.baseline_ready else 'no'}", file=out)
+    print("continuing regardless: " + ", ".join(view.continues), file=out)
+
+
 def _report(
     sysfs: Optional[Path],
     ledger: Optional[Path],
@@ -185,7 +261,9 @@ def _render_profile(report: OperatorReport, out: TextIO) -> None:
     )
 
 
-def _render_status(report: OperatorReport, out: TextIO) -> None:
+def _render_status(
+    report: OperatorReport, out: TextIO, view: Optional[IntegrationView] = None
+) -> None:
     _render_profile(report, out)
     print(file=out)
     print(f"capability state: {report.capabilities.state.value}", file=out)
@@ -220,6 +298,9 @@ def _render_status(report: OperatorReport, out: TextIO) -> None:
     for module in report.modules:
         print(f"    {module.name}: {module.state.value} -- {module.reason}", file=out)
     print(file=out)
+    if view is not None:
+        _render_integration(view, out)
+        print(file=out)
     _render_health(report, out)
     print(file=out)
     print("next:", file=out)
@@ -312,6 +393,10 @@ def main(
     )
     parser.add_argument("--sysfs", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--ledger", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--knowledge-lite", type=Path, default=KNOWLEDGE_LITE_ROOT, help=argparse.SUPPRESS
+    )
+    parser.add_argument("--as-of", default=None, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("inventory", help="read-only hardware and interface list")
@@ -339,5 +424,23 @@ def main(
     elif args.command == "health":
         _render_health(report, stream)
     else:
-        _render_status(report, stream)
+        # The one place a wall clock legitimately enters: a command line is
+        # where "now" comes from, and everything below it takes the instant as
+        # an argument so that a status is replayable from its inputs.
+        as_of = args.as_of or _now()
+        _render_status(
+            report,
+            stream,
+            _integration_view(
+                report, as_of=as_of, knowledge_root=args.knowledge_lite
+            ),
+        )
     return 0
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
