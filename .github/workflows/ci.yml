@@ -206,43 +206,128 @@ jobs:
               raise SystemExit("the integration view is missing an axis")
           if not view.defects:
               raise SystemExit("an absent embedded feature must be reported as a defect")
-          # And the embedded features that *are* present still cannot supply
-          # anything (Nexus#67/#68/#69). A node reporting otherwise would be
-          # claiming a capability nothing on it can provide.
+          # And what each embedded feature claims must match what this node
+          # can actually do (Nexus#67/#68/#69).
           import azazel_nexus.functional_readiness as readiness  # noqa: F401
-          if any(entry.functional for entry in readiness.READINESS.values()):
+          # The review tripwire, narrowed rather than removed. This check
+          # used to fail on *any* functional feature, and it did exactly that
+          # when Knowledge Lite crossed the line -- which is how the status
+          # rows and docs/integration-display.md came to be updated with it.
+          # Naming the feature that went through that review keeps the cost
+          # for the next one: M.I.O. or Deception Lite becoming functional
+          # fails here until the same review happens. Deleting the check
+          # instead would have spent the tripwire on its first use.
+          reviewed = {"knowledge_lite"}
+          declared = {n for n, e in readiness.READINESS.items() if e.functional}
+          if declared - reviewed:
               raise SystemExit(
-                  "a feature is declared functional; the status rows and "
-                  "docs/integration-display.md have to be updated with it"
+                  f"{sorted(declared - reviewed)} newly declared functional; the "
+                  "status rows and docs/integration-display.md have to be "
+                  "updated with it"
+              )
+          if reviewed - declared:
+              raise SystemExit(
+                  f"{sorted(reviewed - declared)} was reviewed as functional and "
+                  "no longer declares it; this list is describing the past"
               )
           # Two words, not one. Deception Lite's functional layer exists and
           # reaches only this host (Nexus#69), so it reports `loopback-only`;
-          # the others have no functional layer and report
-          # `control-plane-only`. Checked against each feature's own
-          # declaration rather than against a fixed word, so a third state
-          # added later fails here unless it is declared.
+          # M.I.O. has no functional layer and reports `control-plane-only`.
           if readiness.CONTROL_PLANE_ONLY == readiness.LOOPBACK_ONLY:
               raise SystemExit("the two unsupplied words collapsed into one")
           deception = readiness.readiness_for("deception_lite")
-          deception_row = view.row("freshness", "deception_lite")
-          if deception_row.value != deception.value:
-              raise SystemExit(
-                  f"the deception row reports {deception_row.value!r} and the "
-                  f"declaration says {deception.value!r}"
-              )
           if deception.value != readiness.LOOPBACK_ONLY or not deception.loopback_only:
               raise SystemExit(
                   "Deception Lite is no longer declared loopback-only; if its "
                   "reach changed, docs/deception-lite.md and the status rows "
                   "have to be updated with it"
               )
+          # Every feature checked against its own declaration, on the row that
+          # actually carries it. A feature with no row here is a feature whose
+          # display nothing checks, so an added one fails until it has one.
+          rows = {
+              "knowledge_lite": ("freshness", "knowledge_lite"),
+              "deception_lite": ("freshness", "deception_lite"),
+              "mio": ("cognition_route", "mio"),
+          }
+          if set(rows) != set(readiness.READINESS):
+              raise SystemExit(
+                  f"{sorted(set(rows) ^ set(readiness.READINESS))} has no row in "
+                  "this check; an embedded feature whose display is unchecked "
+                  "can claim anything"
+              )
+          # A second view, identical but for the Knowledge argument. The one
+          # above passes `knowledge=None` to check that an absent embedded
+          # feature is a defect, and `missing` is the right answer there. It
+          # is the wrong configuration for asking what a *present* feature
+          # reports, so the reading the Lite service actually returned on this
+          # node is fed back in and the feature rows are read from that.
+          present = integration.build_view(
+              capability=azazel_nexus.capability.CapabilityState.CORE,
+              knowledge=empty,
+              cognition=nothing,
+              decoy=resting,
+              edge=integration.EdgePresence.ABSENT,
+          )
           for name, entry in sorted(readiness.READINESS.items()):
-              if entry.value not in (readiness.CONTROL_PLANE_ONLY, readiness.LOOPBACK_ONLY):
-                  raise SystemExit(f"{name} reports an unknown word {entry.value!r}")
-              if entry.value == "available":
-                  raise SystemExit(f"{name} reports a capability it does not supply")
-          if view.row("deception_supplier", "deception").value != "none":
-              raise SystemExit("a feature that cannot supply was reported as a supplier")
+              row = present.row(*rows[name])
+              if entry.functional:
+                  # `functional` is the one word that can grow claims, so the
+                  # limits are required to exist and required to survive into
+                  # the sentence an operator reads. A limit declared and then
+                  # dropped from the reason is a limit nobody is ever told.
+                  if not entry.means.strip():
+                      raise SystemExit(f"{name} is functional and does not say what that means")
+                  if not entry.does_not_mean:
+                      raise SystemExit(f"{name} is functional and declares no limits")
+                  reason = entry.reason()
+                  for limit in entry.does_not_mean:
+                      if limit not in reason:
+                          raise SystemExit(
+                              f"{name} declares a limit its reason drops: {limit!r}"
+                          )
+                  # A functional feature reports what it holds, not one of the
+                  # two words that mean "cannot supply".
+                  if row.value in (readiness.CONTROL_PLANE_ONLY, readiness.LOOPBACK_ONLY):
+                      raise SystemExit(
+                          f"{name} is functional and its row still reports {row.value!r}"
+                      )
+                  # And functional is not supplying. This node has no bundle
+                  # and no cache, so `unavailable` is the whole of what it
+                  # can honestly say -- the same word the Lite reader returned
+                  # near the top of this job.
+                  if row.value != lite_service.LiteState.UNAVAILABLE.value:
+                      raise SystemExit(
+                          f"{name} is functional and reports {row.value!r} on a "
+                          "node that has no content at all"
+                      )
+              else:
+                  if entry.value not in (readiness.CONTROL_PLANE_ONLY, readiness.LOOPBACK_ONLY):
+                      raise SystemExit(f"{name} reports an unknown word {entry.value!r}")
+                  if entry.value not in row.value:
+                      raise SystemExit(
+                          f"the {name} row reports {row.value!r} and the "
+                          f"declaration says {entry.value!r}"
+                      )
+          # No row anywhere claims a capability is being supplied. A node with
+          # nothing installed and nothing imported is the one configuration
+          # where that has to hold for every axis at once.
+          supplied = sorted(
+              r.subject
+              for v in (view, present)
+              for r in v.rows
+              if r.value == "available"
+          )
+          if supplied:
+              raise SystemExit(f"{supplied} reported a capability nothing on this node supplies")
+          # Being functional is not being a supplier, and the supplier axis is
+          # where the two are most easily confused. Both embedded features
+          # report `none` here: one because it cannot supply at all, the other
+          # because it is functional and has nothing to serve.
+          for axis, subject in (("deception_supplier", "deception"), ("knowledge_supplier", "knowledge")):
+              for v in (view, present):
+                  if v.row(axis, subject).value != "none":
+                      raise SystemExit(f"{subject} was reported as a supplier on a node with nothing")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.

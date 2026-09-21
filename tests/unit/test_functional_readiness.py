@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -385,3 +386,45 @@ def test_the_word_is_not_one_the_other_vocabularies_use() -> None:
         | {MISSING}
     )
     assert CONTROL_PLANE_ONLY not in taken
+
+
+def _core_job_gate() -> str:
+    """The body of the CI step that guards this module's declarations."""
+
+    workflow = pathlib.Path(".github/workflows/ci.yml").read_text()
+    start = workflow.index("PYTHONPATH=src python - <<'PY'")
+    return workflow[start : workflow.index("\n          PY\n", start)]
+
+
+def test_the_ci_gate_names_exactly_the_features_reviewed_as_functional() -> None:
+    """The tripwire is a hand-written set in YAML, so tie it to the declarations.
+
+    `CORE imports with nothing installed` fails when a feature is declared
+    functional and is not in its `reviewed` set -- which is how Knowledge Lite
+    becoming functional (#67) forced the status rows and
+    `docs/integration-display.md` to be updated with it. The set is a literal
+    in the workflow, and a literal drifts. The job checks its own set against
+    the declarations, so the drift cannot reach `main`; this test is only so
+    that it is found before a push rather than after one.
+    """
+
+    match = re.search(r'^\s*reviewed = \{(.*?)\}\s*$', _core_job_gate(), re.MULTILINE)
+    assert match, "the CORE job declares no reviewed-functional set"
+    reviewed = set(ast.literal_eval("{" + match.group(1) + "}"))
+    declared = {name for name, entry in READINESS.items() if entry.functional}
+    assert reviewed == declared, (
+        f"the CI gate reviewed {sorted(reviewed)} and the declarations say "
+        f"{sorted(declared)}"
+    )
+
+
+def test_every_tracked_feature_has_a_row_in_the_ci_gate() -> None:
+    """A feature the gate has no row for is a feature whose display it checks nothing of."""
+
+    match = re.search(r"^\s*rows = \{\n(.*?)^\s*\}\s*$", _core_job_gate(), re.MULTILINE | re.DOTALL)
+    assert match, "the CORE job declares no feature-to-row map"
+    named = set(re.findall(r'"([a-z_]+)": \("', match.group(1)))
+    assert named == set(READINESS), (
+        f"the CI gate has rows for {sorted(named)} and this module tracks "
+        f"{sorted(READINESS)}"
+    )
