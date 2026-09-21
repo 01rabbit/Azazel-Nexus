@@ -1,4 +1,4 @@
-"""Where a source symbol resolves, under a trust policy of its own (#105).
+r"""Where a source symbol resolves, under a trust policy of its own (#105).
 
 `model_catalog` says **which models** are offered and names a source by
 symbol. This says **where that symbol points** and under what conditions. The
