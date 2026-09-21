@@ -1,0 +1,440 @@
+"""Offline operator import of a Knowledge Lite bundle (#67, E1-F).
+
+The only supply route. There is no download, no peer connection and no
+scheduler: an operator puts an artifact in a fixed directory and this reads
+it. `tests/unit/test_lite_import.py` scans this module for the absence of
+every verb that could fetch one.
+
+## The caller chooses an entry, and chooses nothing else
+
+An import takes **one inbox entry id** and nothing more. Not a cache root,
+not a trust key, not a policy, not a generation number, not a quarantine
+path. Every one of those comes from `CommissionedLite`, which is built once
+from the commissioned configuration and is the only thing that knows where
+anything lives.
+
+That is the difference between a service and a general file-moving
+primitive. A caller that could name the quarantine directory could name the
+admitted directory; a caller that could supply a trust key could supply its
+own.
+
+## The inbox is enumerated, never passed through
+
+`list_inbox()` returns the entries it found, each with an id derived from the
+file's own content. `import_entry(entry_id)` looks that id up in a fresh
+enumeration and refuses anything it does not find. **No path a caller
+supplies ever reaches the filesystem.** An id that is not in the listing is a
+refusal, not a path to try.
+
+## A bundle's own trust material is subject matter, not input
+
+A Lite bundle may contain whatever its author put in it. None of it updates
+this node's trust root. The anchor is read from the commissioned location,
+and a member named like a trust or state file is **refused** rather than
+ignored -- something that tried is worth reporting.
+
+Trust keys, permitted signer role, security epoch and accepted export
+policies are derived from commissioned configuration only.
+
+## Quarantine holds, and does nothing else
+
+A refused bundle is moved into the quarantine directory under its digest. It
+is never executed, never extracted, never served and never retried
+automatically. The audit entry records the digest, the instant and a
+structured reason -- **never the bundle's content, a claim's body, or key
+material.**
+
+## The audit records transitions, not reads
+
+`import started`, `admitted`, `quarantined`, `rolled back`, and
+`serving stopped by revocation`. A status read writes nothing: a ledger that
+grew every time somebody looked at a screen would be a ledger nobody can
+read, and looking is not a transition.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Callable, Iterator, Mapping, Optional, Sequence
+
+from .lite_bundle import (
+    BundleAccepted,
+    BundleRefused,
+    Claims,
+    Gate,
+    KnowledgeReading,
+    TrustAnchors,
+    absent_reading,
+    iter_served,
+    read_anchors,
+    read_claims,
+    reading_for,
+    refused_reading,
+    verify_bundle,
+)
+
+__all__ = [
+    "CommissionedLite",
+    "ImportOutcome",
+    "InboxEntry",
+    "LiteImport",
+    "MAX_INBOX_BYTES",
+    "MAX_INBOX_ENTRIES",
+    "Transition",
+]
+
+#: Members a bundle may not carry whatever its manifest says. A bundle does
+#: not get to ship this node's trust root or its watermark.
+REFUSED_MEMBERS = ("anchors.toml", "state.toml", "trust.toml", "revocations.json")
+
+#: The most entries an inbox listing will consider, and the largest artifact
+#: it will read. A directory somebody else fills is a directory whose size is
+#: not this node's choice.
+MAX_INBOX_ENTRIES = 32
+MAX_INBOX_BYTES = 256 * 1024 * 1024
+
+#: An entry id is a content digest, so it names the bytes rather than a
+#: location. A caller cannot spell a path with one.
+_ENTRY_ID = re.compile(r"^[0-9a-f]{64}$")
+
+
+class Transition(str, Enum):
+    """The only things written to the audit. A read is not among them."""
+
+    IMPORT_STARTED = "lite.import.started"
+    ADMITTED = "lite.import.admitted"
+    QUARANTINED = "lite.import.quarantined"
+    ROLLED_BACK = "lite.import.rolled_back"
+    REVOKED = "lite.serving.stopped_by_revocation"
+
+
+class ImportRefused(Exception):
+    """The import did not happen, and nothing was changed."""
+
+
+@dataclass(frozen=True)
+class InboxEntry:
+    """One artifact an operator placed in the inbox."""
+
+    entry_id: str
+    size: int
+    #: The name the operator gave it, for the operator's benefit only. It is
+    #: never used to locate anything: the id is.
+    display_name: str
+
+    def __post_init__(self) -> None:
+        if not _ENTRY_ID.fullmatch(self.entry_id):
+            raise ImportRefused(f"{self.entry_id!r} is not an entry id")
+
+    def as_event(self) -> dict:
+        return {
+            "entry_id": self.entry_id,
+            "size": self.size,
+            "display_name": self.display_name,
+        }
+
+
+@dataclass(frozen=True)
+class CommissionedLite:
+    """Where everything lives, and what this node trusts. Built once.
+
+    Every path is derived from `root`. Nothing here is a caller's argument at
+    import time, which is the whole point: an import chooses an entry and
+    chooses nothing else.
+    """
+
+    root: Path
+
+    @property
+    def inbox(self) -> Path:
+        """Where an operator puts an artifact. The only supply route."""
+
+        return self.root / "inbox"
+
+    @property
+    def anchors_path(self) -> Path:
+        """The commissioned trust root. Never taken from a bundle."""
+
+        return self.root / "trust" / "anchors.toml"
+
+    @property
+    def admitted(self) -> Path:
+        return self.root / "admitted"
+
+    @property
+    def quarantine(self) -> Path:
+        return self.root / "quarantine"
+
+    @property
+    def state_path(self) -> Path:
+        """The anti-rollback watermark this node holds."""
+
+        return self.root / "state" / "watermark"
+
+    def anchors(self) -> TrustAnchors:
+        return read_anchors(self.anchors_path)
+
+    def watermark(self) -> int:
+        try:
+            text = self.state_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return 0
+        try:
+            return int(text)
+        except ValueError:
+            return 0
+
+
+@dataclass(frozen=True)
+class ImportOutcome:
+    """What one import did. Never raises for the node."""
+
+    entry_id: str
+    admitted: bool
+    reading: KnowledgeReading
+    #: The refusal, when there was one. Carries the gate and the code.
+    refusal: Optional[BundleRefused] = None
+    bundle_digest: str = ""
+
+    def as_event(self) -> dict:
+        """Provenance and outcome. Never content."""
+
+        event = {
+            "entry_id": self.entry_id,
+            "admitted": self.admitted,
+            "bundle_digest": self.bundle_digest,
+            **self.reading.as_event(),
+        }
+        if self.refusal is not None:
+            event["gate"] = self.refusal.gate.value
+            event["code"] = self.refusal.code
+        return event
+
+
+class LiteImport:
+    """The import service. One entry id in, one outcome out."""
+
+    def __init__(
+        self,
+        commissioned: CommissionedLite,
+        *,
+        recorder: Optional[Callable[[Transition, Mapping], None]] = None,
+    ) -> None:
+        self.commissioned = commissioned
+        self._record = recorder or (lambda transition, event: None)
+
+    # -- enumeration -------------------------------------------------------
+
+    def list_inbox(self) -> tuple[InboxEntry, ...]:
+        """What is in the inbox, by content id. Reads nothing else.
+
+        Sorted by id so that two nodes given the same inbox enumerate it the
+        same way. A directory somebody else fills is bounded before it is
+        walked.
+        """
+
+        inbox = self.commissioned.inbox
+        entries: list[InboxEntry] = []
+        try:
+            names = sorted(path.name for path in inbox.iterdir() if path.is_file())
+        except OSError:
+            return ()
+        for name in names[:MAX_INBOX_ENTRIES]:
+            path = inbox / name
+            try:
+                size = path.stat().st_size
+                if size > MAX_INBOX_BYTES:
+                    continue
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                continue
+            entries.append(InboxEntry(entry_id=digest, size=size, display_name=name))
+        return tuple(sorted(entries, key=lambda entry: entry.entry_id))
+
+    # -- the one verb a caller has ----------------------------------------
+
+    def import_entry(self, entry_id: str, *, now: str) -> ImportOutcome:
+        """Import one enumerated entry. Never raises for the node.
+
+        `entry_id` is looked up in a fresh enumeration. A caller cannot name
+        a path, and an id that is not in the listing is refused rather than
+        tried.
+        """
+
+        if not _ENTRY_ID.fullmatch(str(entry_id)):
+            raise ImportRefused(
+                f"{entry_id!r} is not an entry id. An import selects an "
+                "enumerated entry; it does not take a path"
+            )
+        listing = {entry.entry_id: entry for entry in self.list_inbox()}
+        entry = listing.get(entry_id)
+        if entry is None:
+            raise ImportRefused(
+                f"{entry_id} is not in the inbox. It is refused rather than "
+                "looked for somewhere else"
+            )
+
+        self._record(Transition.IMPORT_STARTED, {"entry_id": entry_id, "at": now})
+        raw = (self.commissioned.inbox / entry.display_name).read_bytes()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+        try:
+            anchors = self.commissioned.anchors()
+            accepted = verify_bundle(
+                raw,
+                anchors=anchors,
+                last_imported_version=self.commissioned.watermark(),
+            )
+            _refuse_trust_shaped_members(accepted)
+        except BundleRefused as refusal:
+            self._quarantine(raw, digest, refusal, now=now, entry_id=entry_id)
+            return ImportOutcome(
+                entry_id=entry_id,
+                admitted=False,
+                reading=refused_reading(refusal),
+                refusal=refusal,
+                bundle_digest=digest,
+            )
+
+        self._promote(raw, accepted, now=now)
+        claims = read_claims(accepted, query_as_of=now)
+        reading = reading_for(claims, query_as_of=now)
+        self._record(
+            Transition.ADMITTED,
+            {
+                "entry_id": entry_id,
+                "at": now,
+                "bundle_digest": digest,
+                "bundle_version": accepted.bundle_version,
+                "signers": list(accepted.signers),
+                "served": claims.served_count,
+                "withheld": claims.withheld_count,
+                "static_reference": claims.timeless_count,
+            },
+        )
+        return ImportOutcome(
+            entry_id=entry_id,
+            admitted=True,
+            reading=reading,
+            bundle_digest=digest,
+        )
+
+    # -- serving -----------------------------------------------------------
+
+    def read(self, *, query_as_of: str) -> KnowledgeReading:
+        """What the admitted bundle currently is. **Writes nothing.**
+
+        A status read is not a transition, and a ledger that grew every time
+        somebody looked at a screen would be a ledger nobody can read.
+        """
+
+        accepted = self._admitted_bundle()
+        if accepted is None:
+            return absent_reading(str(self.commissioned.admitted))
+        return reading_for(
+            read_claims(accepted, query_as_of=query_as_of), query_as_of=query_as_of
+        )
+
+    def serve(self, *, query_as_of: str) -> Iterator[Mapping]:
+        """The claims this node may serve right now, one at a time.
+
+        Read-only, and a generator: nothing here builds a list of every claim
+        in the bundle.
+        """
+
+        accepted = self._admitted_bundle()
+        if accepted is None:
+            return iter(())
+        return iter_served(accepted, query_as_of=query_as_of)
+
+    # -- internals ---------------------------------------------------------
+
+    def _admitted_bundle(self) -> Optional[BundleAccepted]:
+        path = self.commissioned.admitted / "current.tar.gz"
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        try:
+            return verify_bundle(
+                raw,
+                anchors=self.commissioned.anchors(),
+                last_imported_version=0,
+            )
+        except BundleRefused:
+            # Re-verified on every read. A bundle that stopped verifying --
+            # a revoked key, a rotated anchor -- stops being served without
+            # waiting for the next import.
+            return None
+
+    def _promote(self, raw: bytes, accepted: BundleAccepted, *, now: str) -> None:
+        """Atomic. A reader never sees half an artifact."""
+
+        self.commissioned.admitted.mkdir(parents=True, exist_ok=True)
+        target = self.commissioned.admitted / "current.tar.gz"
+        _atomic_write(target, raw)
+        self.commissioned.state_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(
+            self.commissioned.state_path, f"{accepted.bundle_version}\n".encode("utf-8")
+        )
+
+    def _quarantine(
+        self, raw: bytes, digest: str, refusal: BundleRefused, *, now: str, entry_id: str
+    ) -> None:
+        """Hold it. Do not run it, extract it, serve it, or retry it."""
+
+        self.commissioned.quarantine.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.commissioned.quarantine / f"{entry_id}.tar.gz", raw)
+        self._record(
+            Transition.QUARANTINED,
+            {
+                # Digest, instant, structured reason. Nothing from inside.
+                "entry_id": entry_id,
+                "at": now,
+                "bundle_digest": digest,
+                "gate": refusal.gate.value,
+                "code": refusal.code,
+                "deterministic_path_affected": False,
+            },
+        )
+
+
+def _refuse_trust_shaped_members(accepted: BundleAccepted) -> None:
+    """A bundle does not get to ship this node's trust root."""
+
+    for member in sorted(accepted.members):
+        name = member.rsplit("/", 1)[-1]
+        if name in REFUSED_MEMBERS:
+            raise BundleRefused(
+                Gate.MANIFEST,
+                "BUNDLE_CARRIES_TRUST_MATERIAL",
+                f"{member!r} is named like this node's trust or state material. "
+                "A bundle is subject matter, not an input to the trust root, "
+                "and something that tried is worth reporting rather than "
+                "ignoring",
+            )
+
+
+def _atomic_write(path: Path, payload: bytes) -> None:
+    """Write through a temporary in the same directory, then move."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".lite.")
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise

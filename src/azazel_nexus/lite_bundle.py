@@ -79,6 +79,8 @@ from typing import Mapping, Optional, Sequence
 __all__ = [
     "BundleAccepted",
     "Claims",
+    "MAX_LINE_BYTES",
+    "iter_served",
     "Integrity",
     "KnowledgeReading",
     "StaticReference",
@@ -776,23 +778,29 @@ class Claims:
     here at all* are different problems.
     """
 
-    served: tuple[Mapping, ...]
-    withheld: tuple[Mapping, ...]
-    #: Rows carrying no expiry. Static reference material, reported on its own
-    #: axis rather than folded into the dated one.
-    timeless: tuple[Mapping, ...]
+    #: Counts, not rows. A summary that held every claim would be a summary
+    #: whose memory is decided by the artifact -- and a status read happens
+    #: far more often than an import does.
+    served_count: int
+    withheld_count: int
+    timeless_count: int
+    #: A bounded sample, for evidence rather than for serving. Serving goes
+    #: through `iter_served`, which reads one row at a time.
+    sample_served: tuple[Mapping, ...] = ()
 
     @property
     def time_bound(self) -> TimeBound:
-        if self.served:
+        if self.served_count:
             return TimeBound.CURRENT
-        if self.withheld:
+        if self.withheld_count:
             return TimeBound.STALE
         return TimeBound.ABSENT
 
     @property
     def static_reference(self) -> StaticReference:
-        return StaticReference.AVAILABLE if self.timeless else StaticReference.ABSENT
+        return (
+            StaticReference.AVAILABLE if self.timeless_count else StaticReference.ABSENT
+        )
 
     @property
     def serves_anything(self) -> bool:
@@ -803,42 +811,86 @@ class Claims:
         automatically.
         """
 
-        return bool(self.served) or bool(self.timeless)
+        return bool(self.served_count) or bool(self.timeless_count)
+
+
+#: The longest single JSONL line a member may carry. A row is a claim, and a
+#: claim is small; a line longer than this is not one, and parsing it would
+#: be work an artifact chose for us.
+MAX_LINE_BYTES = 64 * 1024
+
+#: The most rows kept for evidence. Counting is unbounded; keeping is not.
+SAMPLE_LIMIT = 8
 
 
 def read_claims(accepted: "BundleAccepted", *, query_as_of: str) -> Claims:
-    """Split an accepted bundle's rows by expiry against `query_as_of`.
+    """Count an accepted bundle's rows by expiry against `query_as_of`.
+
+    **Counts and a bounded sample, never every row.** A status read happens
+    far more often than an import does, and a summary that held every claim
+    would be a summary whose memory the artifact decides. Serving goes
+    through `iter_served`, one row at a time.
 
     A row with no `agg_next_expiry` is *timeless*, not fresh: Knowledge's own
     provenance says static reference material "does not expire on a clock",
-    and calling it fresh would let a bundle whose every dated claim has
-    expired still report as serving.
+    and it is reported on its own axis.
 
     A row whose expiry cannot be read is **withheld**, not served. An
     unparseable expiry is not a licence to serve.
     """
 
-    served: list[Mapping] = []
-    withheld: list[Mapping] = []
-    timeless: list[Mapping] = []
+    served = withheld = timeless = 0
+    sample: list[Mapping] = []
+    for row, verdict in _classify(accepted, query_as_of):
+        if verdict == "timeless":
+            timeless += 1
+        elif verdict == "served":
+            served += 1
+            if len(sample) < SAMPLE_LIMIT:
+                sample.append(row)
+        else:
+            withheld += 1
+    return Claims(
+        served_count=served,
+        withheld_count=withheld,
+        timeless_count=timeless,
+        sample_served=tuple(sample),
+    )
+
+
+def iter_served(accepted: "BundleAccepted", *, query_as_of: str):
+    """Yield the claims that may be served, one at a time.
+
+    The serving path. It is a generator so that a caller reads what it needs
+    and no more -- nothing here builds a list of every claim in the bundle.
+    Static reference rows are served too: they are usable Knowledge and they
+    do not expire.
+    """
+
+    for row, verdict in _classify(accepted, query_as_of):
+        if verdict in ("served", "timeless"):
+            yield row
+
+
+def _classify(accepted: "BundleAccepted", query_as_of: str):
     now = _instant(query_as_of, "query_as_of")
     for path in sorted(accepted.members):
         for row in _rows(accepted.members[path], path):
             expiry = row.get(EXPIRY_FIELD)
             if expiry is None:
-                timeless.append(row)
+                yield row, "timeless"
                 continue
             try:
                 moment = _instant(expiry, f"{path} {EXPIRY_FIELD}")
             except BundleRefused:
-                withheld.append(row)
+                yield row, "withheld"
                 continue
-            (served if now < moment else withheld).append(row)
-    return Claims(tuple(served), tuple(withheld), tuple(timeless))
+            yield row, ("served" if now < moment else "withheld")
 
 
-def _rows(raw: bytes, path: str) -> list[Mapping]:
-    rows: list[Mapping] = []
+def _rows(raw: bytes, path: str):
+    """Yield one row at a time, with every line bounded before it is parsed."""
+
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -848,6 +900,14 @@ def _rows(raw: bytes, path: str) -> list[Mapping]:
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
+        if len(line.encode("utf-8")) > MAX_LINE_BYTES:
+            raise BundleRefused(
+                Gate.CONTENT,
+                "BUNDLE_LINE_TOO_LONG",
+                f"{path!r} line {number} is longer than {MAX_LINE_BYTES} bytes; "
+                "a claim is small, and parsing this would be work the artifact "
+                "chose for us",
+            )
         try:
             row = json.loads(line)
         except ValueError as exc:
@@ -862,8 +922,7 @@ def _rows(raw: bytes, path: str) -> list[Mapping]:
                 "BUNDLE_MEMBER_NOT_JSONL",
                 f"{path!r} line {number} is not an object",
             )
-        rows.append(row)
-    return rows
+        yield row
 
 
 def _instant(text: object, what: str):
@@ -995,9 +1054,9 @@ def reading_for(
     elif time_bound is TimeBound.CURRENT:
         qualifier = "current indicators"
     parts = [
-        f"{len(claims.served)} current claim(s)",
-        f"{len(claims.withheld)} expired and withheld",
-        f"{len(claims.timeless)} static reference row(s)",
+        f"{claims.served_count} current claim(s)",
+        f"{claims.withheld_count} expired and withheld",
+        f"{claims.timeless_count} static reference row(s)",
     ]
     detail = reason or (
         f"admitted; at {query_as_of or 'the given instant'}: " + ", ".join(parts)

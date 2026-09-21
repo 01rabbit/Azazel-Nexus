@@ -162,9 +162,9 @@ def test_the_valid_bundle_is_accepted_and_yields_real_claims(anchors) -> None:
 
     claims = read_claims(accepted, query_as_of=FRESH)
     assert claims.time_bound is TimeBound.CURRENT
-    assert claims.served, "the bundle verified and produced no claim to serve"
+    assert claims.served_count, "the bundle verified and produced no claim to serve"
     # A real claim, read out of the artifact rather than counted.
-    assert any("agg_next_expiry" in row for row in claims.served)
+    assert any("agg_next_expiry" in row for row in claims.sample_served)
 
 
 def test_the_accepted_bundle_matches_the_per_file_digests_the_producer_declares(
@@ -233,9 +233,9 @@ def test_the_expired_fixture_withholds_indicators_and_still_serves_reference(
     accepted = verify_bundle((CONTRACT / entry["path"]).read_bytes(), anchors=anchors)
 
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.served == (), "an expired indicator was served"
-    assert claims.withheld, "nothing was withheld, so nothing was evaluated"
-    assert claims.timeless, (
+    assert claims.served_count == 0, "an expired indicator was served"
+    assert claims.withheld_count, "nothing was withheld, so nothing was evaluated"
+    assert claims.timeless_count, (
         "the reference material is gone; withholding the expired indicators "
         "could no longer be told apart from discarding the artifact"
     )
@@ -300,7 +300,7 @@ def test_reference_material_alone_is_still_knowledge_this_node_can_serve(
         (CONTRACT / _fixture("expired")["path"]).read_bytes(), anchors=anchors
     )
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.timeless and not claims.served
+    assert claims.timeless_count and not claims.served_count
     assert claims.serves_anything is True
     assert reading_for(claims, query_as_of=FRESH).serves_capability is True
 
@@ -317,7 +317,7 @@ def test_an_unreadable_expiry_is_withheld_rather_than_served() -> None:
         bundle_digest="sha256:" + "0" * 64,
     )
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.withheld and not claims.served
+    assert claims.withheld_count and not claims.served_count
 
 
 # -- what the reader will not accept ---------------------------------------
@@ -783,7 +783,7 @@ def test_a_bundle_with_no_reference_rows_reports_the_static_axis_absent() -> Non
         _signed(_manifest(), {"tables/ioc.jsonl": rows}), anchors=_local_anchors()
     )
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.timeless == ()
+    assert claims.timeless_count == 0
     assert claims.static_reference is StaticReference.ABSENT
     assert claims.time_bound is TimeBound.CURRENT
     assert reading_for(claims, query_as_of=FRESH).qualifier == "current indicators"

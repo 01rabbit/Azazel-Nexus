@@ -214,6 +214,9 @@ REQUIRED_STAGES = (
     # Nexus#72: the probe writes a result and the library reads it, with
     # the stale, mismatched and tampered cases all withholding.
     "Edge probe to status",
+    # Nexus#67: the producer's six fixtures through the inbox, with the
+    # Edge answer read before and after each one.
+    "Knowledge Lite offline import",
 )
 
 
