@@ -275,7 +275,11 @@ def test_a_redirect_is_never_followed(certificate, code) -> None:
     finally:
         server.close()
     assert "redirect is not followed" in str(caught.value)
-    assert "elsewhere.invalid" not in str(caught.value)
+    # Nothing about where it was going, and nothing about where it was: the
+    # refused `Location` is not echoed, and neither is the request target.
+    message = str(caught.value)
+    for leak in ("elsewhere.invalid", LOOPBACK, "/artifacts/", "a" * 64):
+        assert leak not in message, leak
 
 
 @requires_openssl
@@ -315,6 +319,34 @@ def test_a_response_larger_than_declared_is_stopped(certificate) -> None:
         stream.sendall(body)
 
     server = Server(key, cert, responder=too_much)
+    try:
+        with pytest.raises(EgressRefused) as caught:
+            run_fetch(server, cert)
+    finally:
+        server.close()
+    assert "A file that grew" in str(caught.value)
+
+
+@requires_openssl
+def test_an_overrun_that_arrives_with_the_headers_is_stopped(certificate) -> None:
+    """The first bytes, not just later ones.
+
+    A body that arrives in the same read as the header block takes a
+    different path through the reader -- it is already in hand when the
+    headers are split off. Testing only the later chunks leaves the very
+    first bytes, which are the ones a server controls most easily, unchecked.
+    """
+
+    key, cert = certificate
+    body = BODY + b"and more that nobody declared"
+
+    def one_write(stream, request):
+        stream.sendall(
+            f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n\r\n".encode("ascii")
+            + body
+        )
+
+    server = Server(key, cert, responder=one_write)
     try:
         with pytest.raises(EgressRefused) as caught:
             run_fetch(server, cert)
@@ -409,26 +441,72 @@ def test_a_peer_that_ignores_range_and_restarts_is_refused(certificate) -> None:
 def test_the_deadline_stops_a_transfer_that_does_not(certificate) -> None:
     key, cert = certificate
 
-    def dribble(stream, request):
-        stream.sendall(
-            f"HTTP/1.1 200 OK\r\nContent-Length: {len(BODY)}\r\n\r\n".encode("ascii")
-        )
-        stream.sendall(BODY[:64])
-        # And then stops, without closing.
-        import time
+    big = BODY * 40  # larger than one read, so there is a second iteration
+    server = Server(key, cert, responder=lambda stream, request: whole_body(
+        stream, request, body=big
+    ))
+    written = bytearray()
+    # Time spent writing and throttling counts against the deadline too --
+    # which is the whole reason there is a check *after* a chunk and not only
+    # before the next read. The throttle here is slow enough that one chunk's
+    # wait spends the budget, so the outer check is the one that fires.
+    elapsed = [0.0]
 
-        time.sleep(3)
+    def sleeper(seconds):
+        elapsed[0] += seconds
 
-    ticks = iter([0.0, 0.0, 0.0, 0.0, 0.0, 99.0, 99.0, 99.0, 99.0])
-    server = Server(key, cert, responder=dribble)
     try:
-        result, _written = run_fetch(
-            server, cert, deadline_seconds=5, clock=lambda: next(ticks, 99.0)
+        result = fetch_artifact(
+            host=LOOPBACK,
+            port=server.port,
+            path="/artifacts/" + "a" * 64,
+            expected_pin=openssl_spki_pin(cert),
+            expected_size=len(big),
+            allowed_addresses=[LOOPBACK],
+            deadline_seconds=5,
+            bandwidth_bytes_per_second=64,
+            sink=written.extend,
+            sleeper=sleeper,
+            clock=lambda: elapsed[0],
         )
     finally:
         server.close()
-    assert result.outcome in (Outcome.TIMED_OUT, Outcome.INTERRUPTED)
-    assert result.received < len(BODY)
+    assert result.outcome is Outcome.TIMED_OUT
+    assert 0 < result.received < len(big)
+    assert "deadline passed" in result.reason
+    assert "bytes outstanding" in result.reason
+    assert elapsed[0] > 0, "the deadline was declared spent without being spent"
+    # And it never slept past the budget it was given.
+    assert elapsed[0] <= 5 + 1e-9, (
+        f"it slept {elapsed[0]}s against a 5s deadline; sleeping through a "
+        "spent budget buys nothing and looks like a hung transfer"
+    )
+
+
+@requires_openssl
+def test_a_peer_that_stops_sending_is_interrupted_not_timed_out(certificate) -> None:
+    """The other exit, and it is a different word.
+
+    A peer that stops is resumable from where it stopped; a deadline that
+    passed says the budget is gone. Reporting one as the other would send an
+    operator looking in the wrong place.
+    """
+
+    key, cert = certificate
+
+    def half_then_close(stream, request):
+        stream.sendall(
+            f"HTTP/1.1 200 OK\r\nContent-Length: {len(BODY)}\r\n\r\n".encode("ascii")
+        )
+        stream.sendall(BODY[:128])
+
+    server = Server(key, cert, responder=half_then_close)
+    try:
+        result, _written = run_fetch(server, cert)
+    finally:
+        server.close()
+    assert result.outcome is Outcome.INTERRUPTED
+    assert result.received == 128
 
 
 @requires_openssl
@@ -478,6 +556,21 @@ def test_a_permissive_bound_is_refused(deadline, bandwidth) -> None:
 
 
 # -- what this module is not ----------------------------------------------
+
+
+def test_the_tls_floor_is_pinned() -> None:
+    """A context that would negotiate TLS 1.0 is a context that would
+    negotiate it silently: nothing in a successful fetch says which version
+    was used, so a floor that slipped would not show up anywhere else.
+    """
+
+    context = tls_context()
+    assert context.minimum_version is ssl.TLSVersion.TLSv1_2
+    assert context.protocol is ssl.PROTOCOL_TLS_CLIENT
+    # Hostname checking and CA verification are off **because the pin
+    # replaces them**, and the pin is checked on every connection.
+    assert context.check_hostname is False
+    assert context.verify_mode is ssl.CERT_NONE
 
 
 def test_this_is_not_the_inference_transport() -> None:

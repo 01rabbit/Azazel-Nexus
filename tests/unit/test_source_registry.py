@@ -251,6 +251,23 @@ def test_an_absent_registry_is_absent_not_empty(tmp_path) -> None:
     assert empty.records == ()
 
 
+def test_a_registry_naming_another_schema_is_refused(tmp_path) -> None:
+    """Refused, not best-effort parsed. A reader that guesses at a shape it
+    does not know accepts a document nobody wrote for it."""
+
+    body = registry_payload(
+        version=1, commissioning_digest=COMMISSIONING, records=[a_record()]
+    )
+    document = json.loads(body)
+    document["schema"] = "azazel-nexus/source-registry/99"
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_registry(tmp_path, [], payload=payload)
+    with pytest.raises(RegistryRefused) as caught:
+        read_registry(path, commissioned=commissioned())
+    assert "source-registry/99" in str(caught.value)
+    assert caught.value.cause is Refusal.REGISTRY_INVALID
+
+
 def test_a_registry_pinned_under_another_commissioning_is_refused(tmp_path) -> None:
     path = write_registry(tmp_path, [a_record()], commissioning="sha256:" + "d" * 64)
     with pytest.raises(RegistryRefused) as caught:

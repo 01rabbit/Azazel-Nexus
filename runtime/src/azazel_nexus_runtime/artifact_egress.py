@@ -260,16 +260,25 @@ def fetch_artifact(
         received = resume_from
         budget = expected_size - resume_from
         for chunk in _body(stream, spill, budget, remaining):
-            if remaining() <= 0:
+            sink(chunk)
+            received += len(chunk)
+            # Throttle, but never past the deadline: sleeping through a budget
+            # that is already spent buys nothing and is indistinguishable from
+            # a hung transfer.
+            rest(min(len(chunk) / bandwidth_bytes_per_second, max(remaining(), 0.0)))
+            # Checked **after** the write and the wait, because both spend the
+            # budget. Checking only before the next read let a single-chunk
+            # transfer sleep far past its deadline and still report success --
+            # the deadline bounded nothing in exactly the case where the
+            # throttle mattered most.
+            if remaining() <= 0 and received < expected_size:
                 return EgressResult(
                     Outcome.TIMED_OUT,
                     received,
                     status,
-                    f"the {deadline_seconds}s deadline passed",
+                    f"the {deadline_seconds}s deadline passed with "
+                    f"{expected_size - received} bytes outstanding",
                 )
-            sink(chunk)
-            received += len(chunk)
-            rest(len(chunk) / bandwidth_bytes_per_second)
         if received != expected_size:
             return EgressResult(
                 Outcome.INTERRUPTED,
