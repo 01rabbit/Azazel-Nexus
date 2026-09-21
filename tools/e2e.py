@@ -40,6 +40,33 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
 from tools.e2e_harness import Harness  # noqa: E402
 
+
+def refuse_root_inside_the_repository(root: Path) -> Optional[str]:
+    """Refuse a node root that lies inside this checkout.
+
+    The harness builds a synthetic node under `--root`, and among the files it
+    writes is a Core reserve record whose provenance is `measured`. Pointed at
+    the checkout, it writes an invented measurement into the repository -- and
+    the next `git add -A` commits it. `test_no_measurement_is_committed_anywhere`
+    catches that, but it catches it after the commit exists; a harness that
+    cannot be aimed at the repository has nothing to catch.
+
+    Refused before any stage runs, because a refusal after the first write is
+    a refusal that leaves the files behind.
+    """
+
+    resolved = root.resolve()
+    if resolved == ROOT or ROOT in resolved.parents:
+        return (
+            f"refusing --root {resolved}: it is inside this checkout "
+            f"({ROOT}). The harness writes a synthetic node, including a "
+            "Core reserve record that declares itself measured, and a "
+            "measurement must never exist in the repository. Use a "
+            "directory outside it."
+        )
+    return None
+
+
 #: Per-stage ceiling. A stage that overruns is a failure, not a slow pass.
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -51,6 +78,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--report", type=Path, default=None)
     arguments = parser.parse_args(argv)
+
+    refusal = refuse_root_inside_the_repository(arguments.root)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 2
 
     from tools.e2e_stages import run_all  # noqa: PLC0415 - kept beside this file
 
