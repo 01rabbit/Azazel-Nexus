@@ -14,7 +14,7 @@ before it is lost on a screen.
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, and remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
-| `edge` | `absent` / `unknown` / `verified-ready` |
+| `edge` | `absent` / `corrupt` / `version-mismatch` / `digest-mismatch` / `unhealthy` / `not-running` / `unknown` / `verified-ready` |
 
 Independent means an input that moves one axis moves **only** that one, and
 `tests/unit/test_integration.py` varies each input and asserts the others do
@@ -59,12 +59,17 @@ screen of red is telling its operator it is broken while it is doing its job
 ## Two things this view never claims
 
 `enforcement_capable` and `baseline_ready` are derived, and both are `False`
-unless Edge is `verified-ready`. Nothing in this product produces that state
-([#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)), so both are
-`False` on every node this repository can build -- and a test asserts it over
-every combination of the other five axes, because "we are ready" asserted
+unless Edge is `verified-ready`. `edge_package.py` is the **only** producer of
+that state, it reaches it only when all five of its checks passed on a package
+that is actually on disk, and a test asserts both claims stay `False` over
+every combination of the other five axes -- because "we are ready" asserted
 from a capability the node happens to have is exactly the claim that must be
 impossible.
+
+The seven words that are not `verified-ready` are not interchangeable. `#44`
+requires the five checks to fail separately on the display, and the edge row
+carries one word per distinct next action rather than one word for "not
+ready".
 """
 
 from __future__ import annotations
@@ -111,9 +116,28 @@ class IntegrationRefused(Exception):
 
 
 class EdgePresence(str, Enum):
-    """What is known about the local Edge Core. `unknown` never grants."""
+    """What is known about the local Edge Core. Only `verified-ready` grants.
+
+    Eight words rather than three, because [#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)
+    requires the five checks to fail **separately** on the display as well as
+    in the decision. "Edge is not installed" is a deployment step;
+    "Edge is installed and its digest does not match what we pinned" is a
+    security finding; "Edge is installed and nothing has run its health
+    contract" is nobody having looked. An operator's next action differs for
+    each, and a screen that printed one word for all of them would send
+    somebody to do the wrong thing.
+
+    `unknown` is what an unconfigured node and an unrun probe both produce:
+    not configured and not checked are absences of evidence, and neither
+    grants.
+    """
 
     ABSENT = "absent"
+    CORRUPT = "corrupt"
+    VERSION_MISMATCH = "version-mismatch"
+    DIGEST_MISMATCH = "digest-mismatch"
+    UNHEALTHY = "unhealthy"
+    NOT_RUNNING = "not-running"
     UNKNOWN = "unknown"
     VERIFIED_READY = "verified-ready"
 
@@ -457,12 +481,40 @@ def _supplier_reason(suppliers: Sequence[Supplier], peer_name: Supplier) -> str:
 def _edge_row(edge: EdgePresence) -> Axis:
     reasons = {
         EdgePresence.ABSENT: (
-            "no Edge package is configured on this node; enforcement-capable and "
+            "no Edge package is installed on this node. This is a deployment "
+            "step, not a security finding; enforcement-capable and "
             "baseline-ready are not claimed"
         ),
+        EdgePresence.CORRUPT: (
+            "an Edge package is on this node and cannot be read as the pinned "
+            "one -- a missing or unreadable manifest, a contract this node "
+            "does not verify, or a declared posture that is not observe-only. "
+            "Nothing about it was verified, so nothing is claimed"
+        ),
+        EdgePresence.VERSION_MISMATCH: (
+            "the installed Edge package is not the pinned version. It has not "
+            "been evaluated by anything this node was commissioned against, "
+            "so enforcement-capable and baseline-ready are not claimed"
+        ),
+        EdgePresence.DIGEST_MISMATCH: (
+            "the installed Edge artifact does not match the digest its own "
+            "manifest declares. **This is a security finding**: the artifact "
+            "on disk is not the one described. It is reported and not repaired"
+        ),
+        EdgePresence.UNHEALTHY: (
+            "the Edge health contract was run and did not answer healthy. The "
+            "package is present and matches; the component says it is not in "
+            "the posture it should be"
+        ),
+        EdgePresence.NOT_RUNNING: (
+            "the Edge package is present, matched and healthy, and the payload "
+            "is not running. A one-shot health answer says nothing about a "
+            "daemon, so this is its own finding"
+        ),
         EdgePresence.UNKNOWN: (
-            "nothing has established what the local Edge Core is; unknown never "
-            "grants, so enforcement-capable and baseline-ready are not claimed"
+            "nothing has established what the local Edge Core is -- no package "
+            "root is configured, or a check was not run. Unknown never grants, "
+            "so enforcement-capable and baseline-ready are not claimed"
         ),
         EdgePresence.VERIFIED_READY: (
             "the Edge package is present, version- and digest-matched, healthy "

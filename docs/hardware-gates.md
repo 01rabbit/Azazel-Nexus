@@ -22,6 +22,7 @@ that is not the claim, and what would settle it.
 | `HG-04` | An operator can complete commissioning on a real host without hand-editing anything | `hardware-unverified` |
 | `HG-05` | A local cognition provider's memory need fits the envelope, after the Core reserve | `unmeasured` |
 | `HG-06` | The decoy bridge actually refuses to forward to protected, management, control-plane and Internet zones | `hardware-unverified` |
+| `HG-07` | A real Edge Core package on a real host verifies, answers its health contract and runs | `hardware-unverified` |
 
 ## `HG-01` — installation leaves nothing running
 
@@ -222,3 +223,38 @@ container attached, and an attempted connection to a protected, management,
 control-plane and Internet destination from inside it — each one observed to
 fail, from inside the namespace, with the result recorded and the probe
 re-run before every exposure rather than once at install.
+
+## `HG-07` — a real Edge Core, verified on a real host
+
+**Claimed.** Azazel-Nexus can verify a locally installed Edge Core package —
+presence, version, digest, health and running state — and claims
+`edge-baseline-ready` only when all five hold
+([Edge package verification](edge-package-verification.md),
+[#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)).
+
+**What CI executed.** `tests/unit/test_edge_package.py` and the
+`Edge package verification` stage of `tools/e2e.py` write packages into a
+temporary directory — correct, truncated, mis-versioned, digest-mismatched,
+posture-enforcing, signature-claiming — and assert each of the five checks
+fails on its own word. The contract those packages are written against is the
+one Azazel-Edge commits, copied into `contract/azazel-edge-core/` and asserted
+field by field against the constants this node reads.
+
+**Why that is not the claim.** Every package CI inspected was written by the
+test that inspected it. None of them was produced by the Azazel-Edge packager
+on a real build, installed by a real deployment, or answered by a real
+`azazel-edge-core --health`. Two of the five checks were never executed
+against a live component at all: no probe runner is shipped, so
+`health_endpoint_healthy` and `running` are `not-checked` on every node this
+repository can build (§7 of the verification note). A round trip through a
+real artifact could differ in file layout, permissions, the installed path, or
+in the health report a running binary actually prints.
+
+**What would settle it.** An Edge Core package built by
+`packaging/nexus-core/nexus_core_package.py` on Azazel-Edge, installed at the
+fixed location on the target host, inspected by `azazel-nexus status`, with
+the health contract run by whatever ends up running it
+([#72](https://github.com/01rabbit/Azazel-Nexus/issues/72)) and the running
+state established by the service manager. Until that has happened on hardware,
+the software side is `software-complete, hardware-unverified` and nothing
+more.
