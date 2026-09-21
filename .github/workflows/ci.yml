@@ -215,12 +215,32 @@ jobs:
                   "a feature is declared functional; the status rows and "
                   "docs/integration-display.md have to be updated with it"
               )
+          # Two words, not one. Deception Lite's functional layer exists and
+          # reaches only this host (Nexus#69), so it reports `loopback-only`;
+          # the others have no functional layer and report
+          # `control-plane-only`. Checked against each feature's own
+          # declaration rather than against a fixed word, so a third state
+          # added later fails here unless it is declared.
+          if readiness.CONTROL_PLANE_ONLY == readiness.LOOPBACK_ONLY:
+              raise SystemExit("the two unsupplied words collapsed into one")
+          deception = readiness.readiness_for("deception_lite")
           deception_row = view.row("freshness", "deception_lite")
-          if deception_row.value != readiness.CONTROL_PLANE_ONLY:
+          if deception_row.value != deception.value:
               raise SystemExit(
-                  f"an embedded feature with no functional layer reported "
-                  f"{deception_row.value!r}"
+                  f"the deception row reports {deception_row.value!r} and the "
+                  f"declaration says {deception.value!r}"
               )
+          if deception.value != readiness.LOOPBACK_ONLY or not deception.loopback_only:
+              raise SystemExit(
+                  "Deception Lite is no longer declared loopback-only; if its "
+                  "reach changed, docs/deception-lite.md and the status rows "
+                  "have to be updated with it"
+              )
+          for name, entry in sorted(readiness.READINESS.items()):
+              if entry.value not in (readiness.CONTROL_PLANE_ONLY, readiness.LOOPBACK_ONLY):
+                  raise SystemExit(f"{name} reports an unknown word {entry.value!r}")
+              if entry.value == "available":
+                  raise SystemExit(f"{name} reports a capability it does not supply")
           if view.row("deception_supplier", "deception").value != "none":
               raise SystemExit("a feature that cannot supply was reported as a supplier")
           # And it must really verify here, not merely import. RFC 8032 §7.1
