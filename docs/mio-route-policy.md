@@ -30,37 +30,61 @@ gets moved by accident.
 - **Nexus alone runs safely in CORE/LITE** with no external API, no remote
   provider and no AZ-04 peer.
 
-## 1. The Edge-owned doctrine, and the reading this spec proceeds under
+## 1. The Edge-owned doctrine, quoted exactly
 
-`mio-dual-cognition.md` is **Edge-owned** and says:
+`mio-dual-cognition.md` marks its **Cognitive Router** section Edge-owned, and
+that section *is* about M.I.O. cognition routing rather than about Edge's
+decision path — line 92: *"It selects a cognition route from explicit mission
+conditions"*. So the text below is on point and is quoted rather than
+paraphrased.
 
-> Remote-only operation is not the preferred field posture. **The normal route
-> is local-first** so that a loss of connectivity cannot remove immediate
+**Line 109:**
+
+> Remote-only operation is not the preferred field posture. The normal route is
+> local-first so that a loss of connectivity cannot remove immediate
 > operational cognition.
 
-Its mode table also lists `Local + remote parallel` — speculative dual-send —
-as a legitimate mode "where policy permits".
+**Line 106, the mode table's "normal connected operation" row:**
 
-**This spec proceeds under the following reading, stated as an assumption
-because it has not been confirmed:**
+> | **Local → remote** | Normal connected operation. | Local gives the operator an immediate grounded answer; remote adds analysis when ready. |
 
-| layer | reading |
+### Does `fastest-permitted` require an Edge revision? **No.**
+
+Taking the two sentences of line 109 separately:
+
+| assertion | under `fastest-permitted` |
 | --- | --- |
-| the selection **algorithm** | policy-first: permit, then predict, then choose |
-| `fastest-permitted` | an **operator-selected profile**, not the default |
-| the default profile | `core` — no provider is admitted |
+| "Remote-only operation is not the preferred field posture" | `fastest-permitted` is **not remote-only**. Local is always among the candidates; remote is one more candidate that must first be permitted |
+| "The normal route is local-first **so that** a loss of connectivity cannot remove immediate operational cognition" | the stated purpose is **preserved**: comms state is a permit condition (§3), so losing connectivity removes remote from the candidate set and local answers |
 
-Under this reading local-first remains the **default posture**, which is what
-the Edge doctrine asserts, and `fastest-permitted` sits where that same
-doctrine already says "where policy permits". Speculative dual-send being
-forbidden by default is consistent for the same reason.
+And the same section's own list of routing inputs already sanctions
+latency-driven selection under operator policy — lines 96 and 99:
 
-**Making `fastest-permitted` the default would contradict the Edge-owned
-doctrine and needs an Edge-side revision first.** Nexus does not change a
-document it does not own, and does not ship an implementation that contradicts
-one it vendors. #81 tracks that decision.
+> - urgency and latency budget;
+> - operator-selected mission policy; and
 
-## 2. Profiles
+The mode table likewise already contemplates modes other than local-first
+"where policy permits" (lines 105, 107).
+
+### The one real gap, and it is a documentation gap
+
+`fastest-permitted` is **a fifth mode that the table does not name**. Line 106
+describes normal connected operation as local-answers-first-and-remote-adds;
+under `fastest-permitted` a permitted remote predicted to be sooner may answer
+**instead of** local rather than in addition to it.
+
+That is a completeness matter for the Edge-owned table, not a contradiction of
+the doctrine's normative content, and **it does not block this implementation**.
+Tracked in [#81](https://github.com/01rabbit/Azazel-Nexus/issues/81) as a
+suggested Edge-side amendment: add `fastest-permitted` to the mode table.
+
+### What is genuinely unchanged
+
+M.I.O. remains an **advisory plane**. The Azazel-Edge arbiter is the sole
+decider, and no route selection here touches a decision, an action lease,
+enforcement, or activation. Every stage below is tested for exactly that.
+
+## 2. Profiles and the operator's path through them
 
 Selected at install and recorded at commissioning ([#82](https://github.com/01rabbit/Azazel-Nexus/issues/82)).
 
@@ -68,21 +92,61 @@ Selected at install and recorded at commissioning ([#82](https://github.com/01ra
 | --- | --- |
 | `core` | no M.I.O. provider is admitted; explanation and status only |
 | `local-only` | approved on-premises models only |
-| `fastest-permitted` | the fastest of the permitted candidates, local or remote |
+| `fastest-permitted` | the earliest-answering of the permitted candidates, local or remote |
 | `remote-disabled` | the remote route is disabled in configuration **and** at runtime |
 
-**A profile is a ceiling, not a grant.** Selecting `fastest-permitted` admits
-nothing; every admission gate still runs. A node on `fastest-permitted` with
-no admitted provider answers deterministically, exactly as `core` does — and
-says so for a different reason.
+### The path
 
-`local-only` and `remote-disabled` are **not the same word**. The first is a
-configuration that prefers local; the second is the absence of a remote route.
-An operator's next action differs, which is the same discipline that keeps
-`disabled` and `unavailable` apart in the status vocabulary.
+1. **Immediately after install, uncommissioned: `core`.** Remote is disabled
+   and no provider is admitted. "It is written in the config" is not a grant.
+2. **At commissioning, when the operator explicitly configures remote use, the
+   privacy policy, the provider and the comms permission, the recommended
+   profile is `fastest-permitted`.** This is the standard path for a normal
+   commissioned deployment, not an advanced option buried behind a flag.
+3. **Otherwise — remote not opted into, or policy / health / sanitizer / trust
+   incomplete, or `HG-05` unmet — remote is excluded from the candidate set**
+   and the node degrades to `local-only` or `CORE`.
 
-An uncommissioned node behaves as `core`. "It is written in the config" is not
-a grant.
+### `fastest-permitted` is not "prefer online"
+
+It selects the candidate that, **on observed evidence**, is predicted to answer
+soonest **within the deadline**. When local is sooner, local is chosen. A
+profile that preferred remote would be a permanent setting, which §8 exists to
+prevent.
+
+What it does deliver is the thing an operator reasonably expects: **when a
+permitted online provider really is faster, that is used automatically**, and
+the record says why.
+
+### Speed never overrides policy
+
+Even when remote is predicted soonest it is **not selectable** if any of these
+holds:
+
+- the class is P2 or P3
+- the class is P1 and the frame is **not sanitised**
+- mTLS, provider identity, the endpoint allowlist, or health is not `passed`
+
+### Opt-in is revocable
+
+The operator can withdraw the remote opt-in at any time. On withdrawal:
+
+- the remote provider leaves the candidate set **immediately** — not at the
+  next commissioning, not at the next restart
+- an in-flight task either **falls back safely to local** or is **refused**; it
+  is never completed by the route the operator just withdrew
+- the withdrawal is an audit event carrying who, when and why
+
+### A profile is a ceiling, not a grant
+
+Selecting `fastest-permitted` admits nothing; every admission gate still runs.
+A node on `fastest-permitted` with no admitted provider answers
+deterministically, exactly as `core` does — and says so for a different reason.
+
+`local-only` and `remote-disabled` are **not the same word**. The first prefers
+local; the second is the absence of a remote route. An operator's next action
+differs, which is the discipline that keeps `disabled` and `unavailable` apart
+in the status vocabulary.
 
 ## 3. Stage one — permit
 
@@ -177,6 +241,11 @@ because the permitted set is computed from policy rather than from an ordering.
 
 All eight existing `FallbackTrigger` values keep their meanings.
 
+**A withdrawn remote opt-in is not a fallback trigger; it is a permit change.**
+It removes the candidate rather than failing it, so an in-flight task on that
+route falls back to local once, or is refused. A withdrawal must never be
+served by the route it withdrew.
+
 ## 7. Speculative dual-send — forbidden by default
 
 No request is sent to two routes concurrently.
@@ -249,6 +318,13 @@ nothing about when it opens.
 | audit | the event carries evidence, exclusions, class, reason and profile |
 | profile | `core` default; uncommissioned behaves as `core` |
 | profile | `remote-disabled` is unreachable at runtime, not merely unconfigured |
+| profile | commissioning with remote opted in, policy, provider and comms set recommends `fastest-permitted` |
+| profile | any one of those four missing does **not** recommend it, and degrades to `local-only` or `CORE` |
+| opt-in | withdrawal removes remote from candidates immediately, not at restart |
+| opt-in | an in-flight task on the withdrawn route falls back to local once, or is refused — never completed remotely |
+| opt-in | withdrawal is an audit event carrying who, when and why |
+| selection | local is chosen when local is predicted sooner (`fastest-permitted` is not "prefer remote") |
+| selection | remote predicted sooner is still unselectable for P2/P3, unsanitised P1, or any trust condition not `passed` |
 | boundary | no Knowledge/M.I.O. state changes Edge readiness, authority, lease or enforcement |
 | boundary | M.I.O. does not report `functional` |
 | CORE | every module here imports with nothing installed |
