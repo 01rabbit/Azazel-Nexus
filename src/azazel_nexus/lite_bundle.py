@@ -79,6 +79,13 @@ from typing import Mapping, Optional, Sequence
 __all__ = [
     "BundleAccepted",
     "Claims",
+    "Integrity",
+    "KnowledgeReading",
+    "StaticReference",
+    "TimeBound",
+    "absent_reading",
+    "reading_for",
+    "refused_reading",
     "EXPIRY_FIELD",
     "read_claims",
     "BundleRefused",
@@ -721,37 +728,82 @@ def _check_content(manifest: Mapping, members: Mapping[str, bytes]) -> dict[str,
 EXPIRY_FIELD = "agg_next_expiry"
 
 
+class Integrity(str, Enum):
+    """What happened to the artifact itself, before any claim was read."""
+
+    #: Verified at every gate. Says nothing about what it can serve.
+    ADMITTED = "admitted"
+    #: Present and refused -- integrity, trust or policy. Isolated, not used.
+    QUARANTINED = "quarantined"
+    #: There is no artifact.
+    UNAVAILABLE = "unavailable"
+
+
+class TimeBound(str, Enum):
+    """What the **time-bound** half of a bundle can do right now."""
+
+    #: At least one dated claim has not expired at `query_as_of`.
+    CURRENT = "current"
+    #: Dated claims are present and every one of them has expired. They are
+    #: history: readable by an operator asking about the past, never applied
+    #: automatically.
+    STALE = "stale"
+    #: The bundle carries no dated claim at all.
+    ABSENT = "absent"
+
+
+class StaticReference(str, Enum):
+    """What the **static reference** half can do. It does not expire."""
+
+    AVAILABLE = "available"
+    ABSENT = "absent"
+
+
 @dataclass(frozen=True)
 class Claims:
-    """What an accepted bundle offers, split by whether it may be served."""
+    """What an accepted bundle offers, on two axes that are not one axis.
+
+    **Static reference material is usable Knowledge.** ATT&CK techniques do
+    not expire on a clock, and a bundle whose dated indicators have all
+    expired still carries base knowledge this node can serve. An earlier
+    draft of this module collapsed the two and reported such a bundle as
+    serving nothing -- which mislabels working reference material as
+    unavailable and sends an operator to replace an artifact that is doing
+    its job.
+
+    The two are reported separately so that the operator's next action stays
+    distinguishable: *refresh the indicator feed* and *there is no knowledge
+    here at all* are different problems.
+    """
 
     served: tuple[Mapping, ...]
     withheld: tuple[Mapping, ...]
-    #: Rows carrying no expiry at all. Static reference material -- an ATT&CK
-    #: technique does not expire on a clock -- so it is neither
-    #: served-because-fresh nor withheld-because-expired. It is reported
-    #: separately, and it never makes a bundle `available`: see
-    #: `serves_a_dated_claim`.
+    #: Rows carrying no expiry. Static reference material, reported on its own
+    #: axis rather than folded into the dated one.
     timeless: tuple[Mapping, ...]
 
     @property
-    def serves_a_dated_claim(self) -> bool:
-        """Whether any claim with an expiry may be served right now.
+    def time_bound(self) -> TimeBound:
+        if self.served:
+            return TimeBound.CURRENT
+        if self.withheld:
+            return TimeBound.STALE
+        return TimeBound.ABSENT
 
-        **Timeless rows deliberately do not count.** The producer says of its
-        expired fixture that a conforming reader "serves NO indicator from
-        it", and that the static reference material is in that fixture *"so
-        that withholding the expired indicators can be told apart from
-        discarding the whole artifact"*.
+    @property
+    def static_reference(self) -> StaticReference:
+        return StaticReference.AVAILABLE if self.timeless else StaticReference.ABSENT
 
-        Counting reference material as something served would make a bundle
-        whose every dated claim has expired report as serving -- which is the
-        one thing that fixture exists to catch. It is the difference between
-        `available` and `stale`, and an earlier draft of this property got it
-        wrong by returning `served or timeless`.
+    @property
+    def serves_anything(self) -> bool:
+        """Whether this node can serve a claim of any kind right now.
+
+        Current dated claims **or** static reference. Expired dated claims
+        are not in it: they are history, and history is not applied
+        automatically.
         """
 
-        return bool(self.served)
+        return bool(self.served) or bool(self.timeless)
 
 
 def read_claims(accepted: "BundleAccepted", *, query_as_of: str) -> Claims:
@@ -835,3 +887,159 @@ def _instant(text: object, what: str):
             "means something different on every host",
         )
     return moment.astimezone(timezone.utc)
+
+
+# -- the overall word, derived from three axes that stay visible -----------
+
+
+@dataclass(frozen=True)
+class KnowledgeReading:
+    """The four statements an operator plane shows, not one word for all four.
+
+    | axis | values |
+    | --- | --- |
+    | `integrity` | `admitted` / `quarantined` / `unavailable` |
+    | `time_bound` | `current` / `stale` / `absent` |
+    | `static_reference` | `available` / `absent` |
+    | `overall` | `available` / `stale` / `unavailable` / `quarantined` |
+
+    The overall word exists because a status line needs one. It does **not**
+    replace the three: a bundle whose indicators have all expired while its
+    reference material is intact reads *available (static reference)* on the
+    overall line and *stale* on the time-bound line, and those two facts have
+    different next actions -- refresh the indicator feed, versus nothing.
+
+    Collapsing them was the mistake this type exists to prevent. Reporting
+    such a bundle as serving nothing sends an operator to replace an artifact
+    that is working.
+    """
+
+    integrity: Integrity
+    time_bound: TimeBound
+    static_reference: StaticReference
+    reason: str
+    #: Why the overall word is what it is, in the operator's terms.
+    qualifier: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.reason.strip():
+            raise BundleRefused(
+                Gate.MANIFEST, "READING_UNEXPLAINED", "a reading with no reason"
+            )
+        if self.integrity is not Integrity.ADMITTED and (
+            self.time_bound is not TimeBound.ABSENT
+            or self.static_reference is not StaticReference.ABSENT
+        ):
+            raise BundleRefused(
+                Gate.MANIFEST,
+                "READING_INCONSISTENT",
+                f"integrity is {self.integrity.value} and claims are still "
+                "reported; nothing is read out of an artifact that was not "
+                "admitted",
+            )
+
+    @property
+    def overall(self) -> str:
+        """One word, and the same four `LiteState` carries.
+
+        * `quarantined` -- present and refused. Trust, not freshness.
+        * `unavailable` -- no artifact, or an admitted one serving nothing.
+        * `available` -- current dated claims **or** static reference.
+        * `stale` -- admitted, and the only thing left is expired dated
+          claims. Readable as history; never applied automatically.
+        """
+
+        if self.integrity is Integrity.QUARANTINED:
+            return "quarantined"
+        if self.integrity is Integrity.UNAVAILABLE:
+            return "unavailable"
+        if (
+            self.time_bound is TimeBound.CURRENT
+            or self.static_reference is StaticReference.AVAILABLE
+        ):
+            return "available"
+        if self.time_bound is TimeBound.STALE:
+            return "stale"
+        return "unavailable"
+
+    @property
+    def serves_capability(self) -> bool:
+        """Whether `knowledge_lite` is a capability this node currently has."""
+
+        return self.overall == "available"
+
+    def as_event(self) -> dict:
+        return {
+            "event_type": "lite.knowledge.reading",
+            "integrity": self.integrity.value,
+            "time_bound": self.time_bound.value,
+            "static_reference": self.static_reference.value,
+            "overall": self.overall,
+            "qualifier": self.qualifier,
+            "reason": self.reason,
+        }
+
+
+def reading_for(
+    claims: "Claims", *, reason: str = "", query_as_of: str = ""
+) -> KnowledgeReading:
+    """The reading for an **admitted** bundle's claims."""
+
+    time_bound = claims.time_bound
+    static = claims.static_reference
+    qualifier = ""
+    if time_bound is not TimeBound.CURRENT and static is StaticReference.AVAILABLE:
+        qualifier = "static reference"
+    elif time_bound is TimeBound.CURRENT and static is StaticReference.AVAILABLE:
+        qualifier = "current indicators and static reference"
+    elif time_bound is TimeBound.CURRENT:
+        qualifier = "current indicators"
+    parts = [
+        f"{len(claims.served)} current claim(s)",
+        f"{len(claims.withheld)} expired and withheld",
+        f"{len(claims.timeless)} static reference row(s)",
+    ]
+    detail = reason or (
+        f"admitted; at {query_as_of or 'the given instant'}: " + ", ".join(parts)
+    )
+    return KnowledgeReading(
+        integrity=Integrity.ADMITTED,
+        time_bound=time_bound,
+        static_reference=static,
+        reason=detail,
+        qualifier=qualifier,
+    )
+
+
+def refused_reading(refusal: BundleRefused) -> KnowledgeReading:
+    """The reading for a bundle that was present and refused."""
+
+    return KnowledgeReading(
+        integrity=Integrity.QUARANTINED,
+        time_bound=TimeBound.ABSENT,
+        static_reference=StaticReference.ABSENT,
+        reason=(
+            f"refused at the {refusal.gate.value} gate ({refusal.code}): "
+            f"{refusal.detail}. Isolated rather than used; the deterministic "
+            "path is untouched"
+        ),
+    )
+
+
+def absent_reading(where: str) -> KnowledgeReading:
+    """The reading for a node with no artifact at all.
+
+    Not a fault. Absence of knowledge never blocks the deterministic path,
+    and a node that has never been given a bundle is a node in its designed
+    state.
+    """
+
+    return KnowledgeReading(
+        integrity=Integrity.UNAVAILABLE,
+        time_bound=TimeBound.ABSENT,
+        static_reference=StaticReference.ABSENT,
+        reason=(
+            f"no Knowledge Lite bundle is present at {where}; absence of "
+            "knowledge is not a fault and the deterministic path continues"
+        ),
+    )

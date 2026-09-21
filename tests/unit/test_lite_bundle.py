@@ -24,10 +24,16 @@ import pytest
 from azazel_nexus.lite_bundle import (
     BundleRefused,
     Gate,
+    Integrity,
     SUPPORTED_FORMATS,
+    StaticReference,
+    TimeBound,
     TrustAnchors,
+    absent_reading,
     read_anchors,
     read_claims,
+    reading_for,
+    refused_reading,
     verify_bundle,
 )
 
@@ -155,7 +161,7 @@ def test_the_valid_bundle_is_accepted_and_yields_real_claims(anchors) -> None:
     assert accepted.manifest["bundle_format_version"] == 1
 
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.serves_a_dated_claim
+    assert claims.time_bound is TimeBound.CURRENT
     assert claims.served, "the bundle verified and produced no claim to serve"
     # A real claim, read out of the artifact rather than counted.
     assert any("agg_next_expiry" in row for row in claims.served)
@@ -204,13 +210,22 @@ def test_the_truncated_fixture_is_refused_although_no_known_type_was_caught(
     assert "any exception" in caught.value.detail.lower() or "Caught as any" in caught.value.detail
 
 
-def test_the_expired_fixture_verifies_and_then_serves_no_dated_claim(anchors) -> None:
-    """Expiry is not a corruption and not a gate.
+def test_the_expired_fixture_withholds_indicators_and_still_serves_reference(
+    anchors,
+) -> None:
+    """Expiry is not a corruption and not a gate, and it is not total.
 
     The producer's own words: a conforming reader verifies this artifact and
-    then serves NO indicator from it. The static reference material in it is
-    there so that withholding the expired indicators can be told apart from
-    discarding the whole artifact -- so it must not make the bundle serve.
+    then serves no *indicator* from it, and the static reference material is
+    there *"so that withholding the expired indicators can be told apart from
+    discarding the whole artifact"*.
+
+    So the two are told apart. The time-bound axis reads `stale` and the
+    static reference axis reads `available`, and the overall word is
+    `available (static reference)` -- because ATT&CK techniques are usable
+    Knowledge and do not stop being usable when an indicator feed goes cold.
+    An earlier draft reported this bundle as serving nothing, which sends an
+    operator to replace an artifact that is doing its job.
     """
 
     entry = _fixture("expired")
@@ -218,13 +233,19 @@ def test_the_expired_fixture_verifies_and_then_serves_no_dated_claim(anchors) ->
     accepted = verify_bundle((CONTRACT / entry["path"]).read_bytes(), anchors=anchors)
 
     claims = read_claims(accepted, query_as_of=FRESH)
-    assert claims.served == ()
-    assert claims.serves_a_dated_claim is False
+    assert claims.served == (), "an expired indicator was served"
     assert claims.withheld, "nothing was withheld, so nothing was evaluated"
     assert claims.timeless, (
         "the reference material is gone; withholding the expired indicators "
         "could no longer be told apart from discarding the artifact"
     )
+    assert claims.time_bound is TimeBound.STALE
+    assert claims.static_reference is StaticReference.AVAILABLE
+    assert claims.serves_anything is True
+
+    reading = reading_for(claims, query_as_of=FRESH)
+    assert reading.overall == "available"
+    assert reading.qualifier == "static reference"
 
 
 def test_the_absent_fixture_has_no_artifact_and_that_is_not_an_error() -> None:
@@ -246,23 +267,42 @@ def test_every_fixture_the_producer_publishes_is_exercised_here() -> None:
 # -- the available / stale distinction -------------------------------------
 
 
-def test_a_valid_bundle_goes_stale_when_its_claims_expire(anchors) -> None:
-    """Same artifact, two instants, two answers -- and no clock was read."""
+def test_the_time_bound_axis_moves_with_the_instant_and_the_other_does_not(
+    anchors,
+) -> None:
+    """Same artifact, two instants. One axis moves; the other cannot."""
 
     accepted = verify_bundle((CONTRACT / "lite.tar.gz").read_bytes(), anchors=anchors)
-    assert read_claims(accepted, query_as_of=FRESH).serves_a_dated_claim is True
-    assert read_claims(accepted, query_as_of=LATER).serves_a_dated_claim is False
+    fresh = read_claims(accepted, query_as_of=FRESH)
+    later = read_claims(accepted, query_as_of=LATER)
+
+    assert fresh.time_bound is TimeBound.CURRENT
+    assert later.time_bound is TimeBound.STALE
+    assert fresh.static_reference is later.static_reference is StaticReference.AVAILABLE
+    # And the overall word stays `available`, because reference material does
+    # not stop being usable when the indicator feed goes cold.
+    assert reading_for(fresh, query_as_of=FRESH).overall == "available"
+    assert reading_for(later, query_as_of=LATER).overall == "available"
+    assert reading_for(later, query_as_of=LATER).qualifier == "static reference"
 
 
-def test_reference_material_alone_never_makes_a_bundle_serve(anchors) -> None:
-    """The mistake an earlier draft of this made, kept as a test."""
+def test_reference_material_alone_is_still_knowledge_this_node_can_serve(
+    anchors,
+) -> None:
+    """The correction. An earlier draft reported this as serving nothing.
+
+    Static reference is usable Knowledge. Treating a bundle that holds only
+    reference material as unavailable mislabels working base knowledge and
+    sends somebody to replace an artifact that is fine.
+    """
 
     accepted = verify_bundle(
         (CONTRACT / _fixture("expired")["path"]).read_bytes(), anchors=anchors
     )
     claims = read_claims(accepted, query_as_of=FRESH)
     assert claims.timeless and not claims.served
-    assert claims.serves_a_dated_claim is False
+    assert claims.serves_anything is True
+    assert reading_for(claims, query_as_of=FRESH).serves_capability is True
 
 
 def test_an_unreadable_expiry_is_withheld_rather_than_served() -> None:
@@ -331,8 +371,18 @@ import tarfile
 
 from signing_oracle import public_key_for, sign_detached
 
-SEED = bytes(range(32))
-KEY_ID = "testonly"
+#: A fixed test-only seed, distinct from every other seed in this suite.
+#:
+#: It is not a production key, not a commissioned trust key and not a release
+#: key: this repository holds none of those, and
+#: `tests/unit/test_signing_oracle_hygiene.py` asserts that the public key it
+#: derives appears nowhere in the product or in the vendored contract.
+#:
+#: `bytes(range(96, 128))` rather than `bytes(range(32))`, which
+#: `test_lite_revocation.py` already uses. Two suites sharing a seed is not a
+#: leak, but it makes a key in one place look like a key in another.
+SEED = bytes(range(96, 128))
+KEY_ID = "testonly-lite-bundle"
 
 
 def _tar(members: dict[str, bytes]) -> bytes:
@@ -605,3 +655,151 @@ def test_a_gzip_stream_that_fails_mid_decompression_is_refused() -> None:
         verify_bundle(intact[: len(intact) // 2], anchors=_local_anchors())
     assert caught.value.gate is Gate.ARCHIVE
     assert caught.value.code == "BUNDLE_ARCHIVE_UNREADABLE"
+
+
+# -- four axes, and the one word that must not replace them ----------------
+
+
+def test_the_four_axes_are_reported_separately(anchors) -> None:
+    """A status line needs one word. It does not get to be the only one."""
+
+    accepted = verify_bundle((CONTRACT / "lite.tar.gz").read_bytes(), anchors=anchors)
+    reading = reading_for(read_claims(accepted, query_as_of=FRESH), query_as_of=FRESH)
+    event = reading.as_event()
+    for axis in ("integrity", "time_bound", "static_reference", "overall"):
+        assert axis in event, f"{axis} is not reported"
+    assert event["integrity"] == "admitted"
+    assert event["time_bound"] == "current"
+    assert event["static_reference"] == "available"
+    assert event["overall"] == "available"
+
+
+def test_the_overall_word_is_one_of_the_four_the_service_already_uses() -> None:
+    """So the axis vocabulary and the service vocabulary cannot drift apart."""
+
+    from azazel_nexus.lite_service import LiteState
+
+    words = {state.value for state in LiteState}
+    for reading in (
+        absent_reading("/nowhere"),
+        refused_reading(BundleRefused(Gate.SIGNATURE, "X", "refused in a test")),
+    ):
+        assert reading.overall in words
+    assert words == {"available", "stale", "unavailable", "quarantined"}
+
+
+def test_an_absent_bundle_is_unavailable_and_not_a_fault() -> None:
+    reading = absent_reading("/data/azazel/knowledge-lite")
+    assert reading.integrity is Integrity.UNAVAILABLE
+    assert reading.overall == "unavailable"
+    assert "not a fault" in reading.reason
+    assert "deterministic path continues" in reading.reason
+
+
+def test_a_refused_bundle_is_quarantined_and_names_its_gate() -> None:
+    """Trust, not freshness. `unavailable` would say nothing happened."""
+
+    refusal = BundleRefused(Gate.CONTENT, "BUNDLE_FILE_HASH_MISMATCH", "a member changed")
+    reading = refused_reading(refusal)
+    assert reading.integrity is Integrity.QUARANTINED
+    assert reading.overall == "quarantined"
+    assert "content" in reading.reason
+    assert "BUNDLE_FILE_HASH_MISMATCH" in reading.reason
+    assert "deterministic path is untouched" in reading.reason
+
+
+def test_a_reading_that_was_not_admitted_may_not_report_claims() -> None:
+    """Nothing is read out of an artifact that was not admitted."""
+
+    from azazel_nexus.lite_bundle import KnowledgeReading
+
+    with pytest.raises(BundleRefused, match="not admitted"):
+        KnowledgeReading(
+            integrity=Integrity.QUARANTINED,
+            time_bound=TimeBound.CURRENT,
+            static_reference=StaticReference.ABSENT,
+            reason="a quarantined bundle claiming current claims",
+        )
+
+
+@pytest.mark.parametrize(
+    "time_bound, static, expected, why",
+    [
+        (TimeBound.CURRENT, StaticReference.AVAILABLE, "available", "both halves"),
+        (TimeBound.CURRENT, StaticReference.ABSENT, "available", "indicators only"),
+        (TimeBound.STALE, StaticReference.AVAILABLE, "available", "reference only"),
+        (TimeBound.STALE, StaticReference.ABSENT, "stale", "history only"),
+        (TimeBound.ABSENT, StaticReference.AVAILABLE, "available", "reference only"),
+        (TimeBound.ABSENT, StaticReference.ABSENT, "unavailable", "an empty bundle"),
+    ],
+)
+def test_the_overall_word_for_every_combination_of_the_two_claim_axes(
+    time_bound, static, expected, why
+) -> None:
+    """All six, so no combination is decided by whichever test happened to run.
+
+    The row that matters most is `stale` + `available`: an admitted bundle
+    whose indicators have expired and whose reference material is intact is
+    **available**, qualified by what it is serving. Reporting it as `stale`
+    would tell an operator the node has nothing usable.
+    """
+
+    from azazel_nexus.lite_bundle import KnowledgeReading
+
+    reading = KnowledgeReading(
+        integrity=Integrity.ADMITTED,
+        time_bound=time_bound,
+        static_reference=static,
+        reason=f"constructed for {why}",
+    )
+    assert reading.overall == expected, why
+
+
+def test_expired_history_is_never_the_reason_a_node_reports_available() -> None:
+    """History is readable. It is not applied automatically."""
+
+    from azazel_nexus.lite_bundle import KnowledgeReading
+
+    history_only = KnowledgeReading(
+        integrity=Integrity.ADMITTED,
+        time_bound=TimeBound.STALE,
+        static_reference=StaticReference.ABSENT,
+        reason="every dated claim expired and there is no reference material",
+    )
+    assert history_only.overall == "stale"
+    assert history_only.serves_capability is False
+
+
+def test_a_bundle_with_no_reference_rows_reports_the_static_axis_absent() -> None:
+    """Survived a mutation that pinned the static axis to `available`.
+
+    Every producer fixture carries reference material, so nothing here ever
+    saw the absent case through `read_claims` -- which is what a fixture gap
+    looks like from inside. Constructed for that reason, and said so.
+    """
+
+    rows = b'{"agg_next_expiry": "2027-01-01T00:00:00Z"}\n'
+    accepted = verify_bundle(
+        _signed(_manifest(), {"tables/ioc.jsonl": rows}), anchors=_local_anchors()
+    )
+    claims = read_claims(accepted, query_as_of=FRESH)
+    assert claims.timeless == ()
+    assert claims.static_reference is StaticReference.ABSENT
+    assert claims.time_bound is TimeBound.CURRENT
+    assert reading_for(claims, query_as_of=FRESH).qualifier == "current indicators"
+
+
+def test_a_bundle_whose_only_rows_expired_and_has_no_reference_is_stale() -> None:
+    """The one combination that is genuinely `stale`, built end to end."""
+
+    rows = b'{"agg_next_expiry": "2020-01-01T00:00:00Z"}\n'
+    accepted = verify_bundle(
+        _signed(_manifest(), {"tables/ioc.jsonl": rows}), anchors=_local_anchors()
+    )
+    claims = read_claims(accepted, query_as_of=FRESH)
+    assert claims.time_bound is TimeBound.STALE
+    assert claims.static_reference is StaticReference.ABSENT
+    assert claims.serves_anything is False
+    reading = reading_for(claims, query_as_of=FRESH)
+    assert reading.overall == "stale"
+    assert reading.serves_capability is False
