@@ -303,6 +303,85 @@ def test_the_schema_names_the_shape_it_actually_has() -> None:
     assert "source_id" in an_entry().as_document()
 
 
+def test_verification_checks_the_domain_the_schema_and_the_bytes(tmp_path) -> None:
+    """All three, and a catalog is accepted only when every one holds.
+
+    They answer different questions -- what kind of thing was signed, what
+    shape it is, and whether these are the bytes that were signed -- and
+    checking two of the three leaves the third free to be anything.
+    """
+
+    good = write_catalog(tmp_path, [an_entry()])
+    assert read_catalog(
+        good, trusted_keys=trusted(), commissioning_digest=COMMISSIONING
+    ).schema == CATALOG_SCHEMA
+
+    # 1. Wrong domain: the signature is over the right payload, under the
+    #    right key, with the wrong kind tag.
+    wrong_domain = tmp_path / "domain"
+    wrong_domain.mkdir()
+    path = write_catalog(wrong_domain, [an_entry()], domain=b"azazel-nexus/other/v1\x00")
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert Refusal.CATALOG_UNSIGNED.value in str(caught.value)
+
+    # 2. Wrong schema: correctly signed, correct domain, shape unknown.
+    wrong_schema = tmp_path / "schema"
+    wrong_schema.mkdir()
+    document = json.loads(
+        catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
+    )
+    document["schema"] = "azazel-nexus/model-catalog/77"
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(wrong_schema, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "model-catalog/77" in str(caught.value)
+
+    # 3. Wrong bytes: correct domain, correct schema, payload edited after
+    #    signing.
+    tampered = tmp_path / "bytes"
+    tampered.mkdir()
+    raw = bytearray(good.read_bytes())
+    raw[-2] ^= 0xFF
+    (tampered / CATALOG_FILENAME).write_bytes(bytes(raw))
+    with pytest.raises(CatalogRefused):
+        read_catalog(
+            tampered / CATALOG_FILENAME,
+            trusted_keys=trusted(),
+            commissioning_digest=COMMISSIONING,
+        )
+
+
+def test_the_domain_moves_for_a_kind_or_a_protocol_never_for_a_field() -> None:
+    """What the two version numbers mean, pinned so the rule survives.
+
+    The domain names the *kind* of signing target and the canonical signing
+    protocol. It moves when the kind changes, when canonicalisation changes,
+    or when cross-protocol separation has to mean something new. It does not
+    move because the payload grew a field -- `source_id` did exactly that
+    (#96), and the schema moved while the domain did not.
+
+    Bumping the domain for every shape change would make each one a new
+    signing role, and a key store full of one-version roles is a store where
+    nothing is reused and every rotation is a migration.
+    """
+
+    assert CATALOG_DOMAIN == b"azazel-nexus/model-catalog/v1\x00"
+    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/2"
+    # The kind is in the domain; the shape number is not.
+    assert b"model-catalog" in CATALOG_DOMAIN
+    assert b"/2" not in CATALOG_DOMAIN
+    # And the rule is written down where the constant is, not only here.
+    source = pathlib.Path(model_catalog.__file__).read_text(encoding="utf-8")
+    # Strip the comment markers before flattening: a sentence wrapped across
+    # two comment lines would otherwise read as "canonical #: signing".
+    flat = " ".join(source.replace("#:", " ").split())
+    assert "the *kind* of signing target" in flat
+    assert "the canonical signing protocol" in flat
+    assert "It does **not** move because the payload grew a field" in flat
+
+
 def test_a_catalog_declaring_the_previous_schema_is_refused(tmp_path) -> None:
     """The shape it names is not the shape this reader knows."""
 

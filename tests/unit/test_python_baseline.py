@@ -170,3 +170,32 @@ def test_the_reserve_classes_and_the_target_classes_do_not_read_as_a_contradicti
     assert "8, 16 and 32 GB classes" in gates
     assert "a 64 GB host selects `standard` exactly as a 32 GB host does" in gates
     assert "counting different measurements" in gates
+
+
+def test_the_two_version_numbers_are_explained_where_people_read() -> None:
+    """The domain/schema rule lives in the contract document, not only in a
+    docstring a reader has to go looking for.
+
+    It is the kind of rule that gets re-derived wrongly the first time
+    somebody adds a field under time pressure, and the cheapest place to
+    settle it is where they will already be reading.
+    """
+
+    contract = " ".join(_read("docs/model-catalog.md").split())
+    assert "The domain version and the schema version are different numbers" in contract
+    assert "canonical signing protocol" in contract
+    assert "the domain did not" in contract
+    # And the three things verification checks, named together.
+    assert "the domain, the schema version and the canonical bytes all hold" in contract
+
+
+def test_a_null_source_is_documented_as_terminal() -> None:
+    """Not a slot, not a search. Stated in both documents that touch it."""
+
+    for name in ("docs/model-catalog.md", "docs/model-acquisition.md"):
+        text = " ".join(_read(name).split())
+        assert "no source usable for online acquisition" in text, name
+        assert "not** a slot for an endpoint to be supplied later" in text or (
+            "no endpoint may be supplied later to fill it" in text
+        ), name
+        assert "importable offline" in text or "import of such an artifact is permitted" in text, name

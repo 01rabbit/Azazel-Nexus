@@ -49,6 +49,19 @@ what keeps them one fact. A symbol in one and not the other stops the runtime
 module loading, rather than failing at the moment an operator finally
 confirms a fetch.
 
+### A `null` source is an answer, not a gap
+
+An entry whose `source_id` is `null` has **no source usable for online
+acquisition**. Terminal: nothing falls back to another entry's source, to a
+default, or to anything an operator could type, and no endpoint may be
+supplied later to fill it — because there is nothing to fill.
+
+`plan_acquisition` refuses it as `SOURCE_UNAVAILABLE` before capacity,
+attempts or anything else a caller could influence, and the function has no
+parameter through which a location could arrive.
+
+The artifact is still perfectly importable offline.
+
 ### The catalog schema moved to `/2`
 
 `source_id` is required in the document and may be `null`. Required so that
@@ -57,12 +70,11 @@ forgot; nullable because most entries honestly have none, and absence of a
 source means the only route in is an operator's import.
 
 A required field changes what the document is, so `CATALOG_SCHEMA` moved to
-`azazel-nexus/model-catalog/2`. `CATALOG_DOMAIN` stayed at `v1`: the two
-version numbers are not the same number. The domain tag says **what kind of
-thing** was signed — a catalog rather than a manifest or a revocation list —
-and that did not change. The schema says **what shape** it is, and that did.
-Bumping the domain for every shape change would make each one a new signing
-role, and roles are what the tag exists to keep few and stable.
+`azazel-nexus/model-catalog/2`. `CATALOG_DOMAIN` stayed at `v1`. The full rule
+for which number moves when is in [the catalog contract](model-catalog.md)
+§2.1; in short, the domain names the **kind** of signing target and the
+canonical signing protocol, the schema names the **shape**, and `source_id`
+changed the shape alone.
 
 ## 2. Not configured off. Absent.
 

@@ -74,8 +74,13 @@ a signature over one from reading as a signature over another was that their
 schemas did not happen to overlap. A coincidence is not a boundary. The tag
 is fixed, versioned, canonical and fixed-length.
 
-**Versioned.** The payload carries `schema` and `version`. An unrecognised
-schema is refused rather than best-effort parsed.
+**Versioned, on two axes that are not the same axis.** See §2.1.
+
+**Verified on three counts.** A catalog is accepted only when the domain, the
+schema version and the canonical bytes all hold. They answer different
+questions — what kind of thing was signed, what shape it is, and whether these
+are the bytes that were signed — and checking two of the three leaves the
+third free to be anything.
 
 **Canonical.** `json.dumps(..., sort_keys=True, separators=(",", ":"))`,
 UTF-8, with entries ordered by `model_id`. Entry order is not caller-chosen
@@ -89,6 +94,26 @@ not this node's. A catalog is a statement made *to a particular commissioned
 node* by the trust policy that node accepted; it does not travel.
 
 **Bounded.** At most 1 MiB and at most 64 entries, checked before parsing.
+
+### 2.1 The domain version and the schema version are different numbers
+
+| | `CATALOG_DOMAIN` | `CATALOG_SCHEMA` |
+| --- | --- | --- |
+| currently | `azazel-nexus/model-catalog/v1\0` | `azazel-nexus/model-catalog/2` |
+| says | **what kind** of thing was signed, and the **canonical signing protocol** by which a payload becomes signed bytes | **what shape** the payload has |
+| moves when | the kind of signing target changes, the canonicalisation changes, or cross-protocol separation has to mean something new | a field is added, removed or changed |
+
+Adding `source_id` (#96) changed the shape, not the kind and not the
+protocol. So the schema moved to `/2` and **the domain did not.**
+
+That asymmetry is deliberate. Bumping the domain for every shape change would
+make each one a new signing role, and a key store full of one-version roles
+is a store where nothing is reused and every rotation is a migration. The
+domain tag exists to keep roles few and stable; the schema exists to move.
+
+A reader refuses an unrecognised schema rather than best-effort parsing it. A
+reader that guesses at a shape it does not know is a reader that accepts a
+document nobody wrote for it.
 
 **Not shipped.** No catalog is committed to this repository, and CI fails if
 one appears. A catalog signed under a commissioning policy that only exists
@@ -106,6 +131,7 @@ text that steers anything:
 | `digest` | `sha256:<64 hex>` over the artifact. |
 | `size_bytes` | Positive; checked before the digest is computed. |
 | `provenance` | Recorded, displayed, and never acted on. |
+| `source_id` | A **symbol** naming an acquisition source, or `null`. See §3.1. |
 | `license_acknowledgement_required` | Whether the operator must acknowledge before use. The licence *text* is not carried here. |
 | `runtime_abi` | From `KNOWN_RUNTIME_ABIS`. |
 | `purpose` | What advice this model is for. |
@@ -124,6 +150,29 @@ model fits, and nothing downstream may treat them as admission proof — the
 same rule `capability-model.md` §2 states for every declaration. The thing
 that decides fit is a measured Core reserve, which this module does not have
 and does not pretend to.
+
+### 3.1 A `null` source is an answer, not a gap
+
+`source_id` is required in the document and may be `null`. Required so that
+"no online source" is something a catalog author **stated** rather than
+forgot.
+
+**`null` means: this artifact has no source usable for online acquisition.**
+That is terminal:
+
+- it is **not** a slot for an endpoint to be supplied later — by an operator,
+  a configuration file, an argument or another document;
+- it is **not** an instruction to look for a fallback source, a default
+  source, or the source of some other entry.
+
+An offline import of such an artifact is permitted and ordinary. An online
+acquisition plan for it is refused as `SOURCE_UNAVAILABLE`, and **no other
+source is consulted.**
+
+The two facts are independent, and keeping them independent is the point: a
+`null` that quietly became "try the usual place" would be a way to acquire
+from a source the catalog never named — the exact power [the symbol
+design](model-acquisition.md) exists to withhold.
 
 ### No free-text selection
 
