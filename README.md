@@ -126,6 +126,7 @@ This division is intentional. It keeps the authority to change the field boundar
 **Evidence and gates**
 
 - [Hardware gates](docs/hardware-gates.md) — the claims that need a real host, and which of them are open.
+- [Deployment candidates](docs/deployment-candidates.md) — what a target machine has to be, and why no machine is named.
 - [Core reserve measurement](docs/core-reserve-measurement.md) — the procedure that would close `HG-05`, and the shape the result has to take.
 - [Integration evidence](docs/integration-evidence.md) · [Edge package verification](docs/edge-package-verification.md) · [degradation matrix](docs/degradation-matrix.md).
 
