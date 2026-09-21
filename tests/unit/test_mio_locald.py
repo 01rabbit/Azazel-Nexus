@@ -75,11 +75,46 @@ def test_it_shares_nothing_with_the_artifact_fetcher():
     assert "/var/lib/azazel/mio" not in fetch.read_write_paths
 
 
-def test_no_profile_may_both_reach_the_network_and_run_a_model():
+def test_no_shipped_profile_both_reaches_the_network_and_runs_a_model():
     for profile in PROFILES:
         assert not (profile.is_artifact_fetcher and profile.is_model_host)
     assert sum(p.is_model_host for p in PROFILES) == 1
     assert sum(p.is_artifact_fetcher for p in PROFILES) == 1
+
+
+def test_a_profile_that_did_both_cannot_be_built():
+    """The check above says no shipped profile *does*. This says none *can*.
+
+    Found by mutation: removing the constructor guard left the suite green,
+    because nothing tried to build the forbidden profile -- so the guarantee
+    was "nobody has written one yet" rather than "one cannot exist". The
+    first survives the next person who writes one.
+
+    Together they would be a path from a remote byte to a local execution,
+    which is the shape the two accounts exist to keep apart.
+    """
+
+    from azazel_nexus_runtime.hardening import ServiceProfile
+
+    with pytest.raises(ValueError) as caught:
+        ServiceProfile(
+            unit="azazel-both.service",
+            executable="/usr/libexec/azazel/az-both",
+            account="azmio",
+            description="d",
+            documentation="u",
+            address_families=("AF_UNIX", "AF_INET"),
+            read_write_paths=("/var/lib/azazel/mio",),
+            is_artifact_fetcher=True,
+            is_model_host=True,
+            extra=(
+                ("CPUQuota", "40%"),
+                ("TasksMax", "64"),
+                ("LimitFSIZE", "1024"),
+                ("PrivateNetwork", "yes"),
+            ),
+        )
+    assert "keep apart" in str(caught.value)
 
 
 def test_the_model_host_has_no_internet_address_family():
