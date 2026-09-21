@@ -9,7 +9,7 @@ the Nexus-owned runtime control plane for M.I.O.
 | §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`), and the resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) |
 | §4 confinement | not implemented; needs a running provider, which §3 does not yet admit |
 | §5 route selection | local-first ladder published; remote is `disabled` with no egress path |
-| §6 deterministic sanitizer | not implemented |
+| §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
 | §7 fallback | only the restart rule, which holds because the reading carries no state |
 | §8 publishing state and reasons | implemented (`CognitionReading`, four independent reasons) |
 | §9 audit visibility | events are produced; nothing writes them to the ledger yet |
@@ -21,7 +21,8 @@ enumerated privacy-class admission, a deterministic sanitizer, and explicit
 operator permission, plus Fabric `mio_contracts` for the wire shape (§10).
 
 Related: [M.I.O. dual cognition doctrine](mio-dual-cognition.md) (Edge-owned
-semantics) · [Capability model](capability-model.md) ·
+semantics) · [the deterministic sanitizer](mio-sanitizer.md) ·
+[Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
 [Inheritance ledger](inheritance-ledger.md) ·
 [Azazel-Nexus #5](https://github.com/01rabbit/Azazel-Nexus/issues/5)
