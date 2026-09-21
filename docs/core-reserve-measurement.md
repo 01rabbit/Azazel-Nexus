@@ -159,7 +159,41 @@ stops refusing, silently and without a line of code changing. Both paths are
 driven in `tests/unit/test_cognition.py` and end to end by the `Core reserve
 input path` stage of `tools/e2e.py`.
 
-## 10. What is still not settled by any of this
+## 10. A synthetic record that is not a measurement
+
+Recorded here because the next person to find one has to know what it is
+worth, and because a record of this kind is only useful where the admissible
+ones are described.
+
+During development the end-to-end harness was pointed at a working tree. It
+builds a synthetic node, and among the files it writes is a record whose
+provenance reads `measured` — it is **not** a measurement and never was one.
+The synthetic node was swept into a commit and pushed to a draft pull request
+before the repository's own scan refused it.
+
+What is true of it:
+
+- it is **not** in `main`, in any release, in any signed artifact, or in any
+  HIL evidence
+- the first draft head was replaced by a force-update; **no claim is made
+  that the external hosting has erased it** — a branch rewrite removes a
+  commit from a branch, not from a forge's stored refs, timelines or caches
+- the artifact is **invalid as HIL evidence** and **must not be cited** in
+  any admission, release or document, now or later
+- the harness can no longer be aimed at a Git checkout or worktree at all. It
+  writes only to a dedicated directory outside version control, defaulting to
+  one it creates per run
+- CI verifies that the guard refuses **before the first write**, so a refused
+  run leaves nothing behind
+
+No value, record body or identifier from that artifact is reproduced here.
+Repeating it to describe it would be the same mistake with a better excuse.
+
+This is an integrity matter, not a disclosure one: nothing about it involved
+real data, a credential or a secret. What it risked was a number that looks
+like the one §1 says nobody has taken.
+
+## 11. What is still not settled by any of this
 
 Closing `HG-05` produces a number. It does not produce:
 

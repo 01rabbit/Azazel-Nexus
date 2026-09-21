@@ -13,8 +13,10 @@ people stop running.
 
 from __future__ import annotations
 
+import inspect
 import re
 import pathlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -428,38 +430,105 @@ def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
     assert "what continues" in detail
 
 
-# -- the harness may not be aimed at the repository -----------------------
+# -- the harness may not be aimed at anything under version control -------
 
 
-def test_a_root_inside_the_checkout_is_refused():
-    """The harness writes a Core reserve record whose provenance is
-    `measured`. Pointed at the checkout it writes an invented measurement
-    into the repository, and the next `git add -A` commits it.
+def _git_working_tree(path, *, linked=False):
+    """A directory that looks like what Git leaves behind: `.git` as a
+    directory in an ordinary checkout, as a *file* in a linked worktree."""
 
-    `test_core_reserve.py::test_no_measurement_is_committed_anywhere` catches
-    that -- after the commit exists. This refusal is the earlier of the two,
-    and it is the one that leaves nothing to clean up.
-    """
+    path.mkdir(parents=True, exist_ok=True)
+    if linked:
+        (path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/w\n")
+    else:
+        (path / ".git").mkdir()
+    return path
 
-    from tools.e2e import refuse_root_inside_the_repository  # noqa: PLC0415
+
+def test_this_checkout_is_refused():
+    """Where the accident happened: the harness was pointed at the checkout
+    somebody was standing in, and the synthetic node it built -- a Core
+    reserve record declaring itself measured among it -- was swept into a
+    commit by the next `git add -A`."""
+
+    from tools.e2e import refuse_root_in_a_git_working_tree  # noqa: PLC0415
 
     for inside in (REPO_ROOT, REPO_ROOT / "docs", REPO_ROOT / "does" / "not" / "exist"):
-        refusal = refuse_root_inside_the_repository(inside)
+        refusal = refuse_root_in_a_git_working_tree(inside)
         assert refusal is not None, f"{inside} was accepted"
-        assert str(REPO_ROOT) in refusal, "the refusal does not say which checkout"
+        assert str(REPO_ROOT) in refusal, "the refusal does not say which tree"
 
 
-def test_a_root_outside_the_checkout_is_accepted(tmp_path):
-    """The refusal has to be about the repository and not about roots."""
+@pytest.mark.parametrize("linked", [False, True], ids=["checkout", "worktree"])
+@pytest.mark.parametrize("depth", [0, 1, 3], ids=["at", "under", "deep-under"])
+def test_any_git_working_tree_is_refused_not_only_this_one(tmp_path, linked, depth):
+    """A guard that knew only this checkout would move the accident to the
+    next worktree rather than prevent it -- and a linked worktree carries
+    `.git` as a file, which a check for a directory does not see."""
 
-    from tools.e2e import refuse_root_inside_the_repository  # noqa: PLC0415
+    from tools.e2e import refuse_root_in_a_git_working_tree  # noqa: PLC0415
 
-    assert refuse_root_inside_the_repository(tmp_path) is None
+    tree = _git_working_tree(tmp_path / "elsewhere", linked=linked)
+    target = tree.joinpath(*[f"level{n}" for n in range(depth)])
+    refusal = refuse_root_in_a_git_working_tree(target)
+    assert refusal is not None, f"{target} was accepted"
+    assert str(tree) in refusal, "the refusal does not name the enclosing tree"
 
 
-def test_the_refusal_happens_before_the_harness_writes_anything(tmp_path):
+def test_a_directory_outside_version_control_is_accepted(tmp_path):
+    """The refusal has to be about version control and not about roots."""
+
+    from tools.e2e import refuse_root_in_a_git_working_tree  # noqa: PLC0415
+
+    assert refuse_root_in_a_git_working_tree(tmp_path) is None
+
+
+def test_a_sibling_of_a_working_tree_is_not_refused(tmp_path):
+    """Narrow enough to be usable: next to a checkout is not inside one."""
+
+    from tools.e2e import refuse_root_in_a_git_working_tree  # noqa: PLC0415
+
+    _git_working_tree(tmp_path / "checkout")
+    sibling = tmp_path / "beside"
+    sibling.mkdir()
+    assert refuse_root_in_a_git_working_tree(sibling) is None
+
+
+def test_the_default_root_is_a_fresh_directory_outside_version_control():
+    """The ordinary way to run the harness must not be able to put a
+    synthetic node where a commit could pick it up."""
+
+    from tools.e2e import dedicated_root, refuse_root_in_a_git_working_tree  # noqa: PLC0415
+
+    first = dedicated_root()
+    second = dedicated_root()
+    try:
+        for root in (first, second):
+            assert root.is_dir()
+            assert not any(root.iterdir()), "the default root is not empty"
+            assert refuse_root_in_a_git_working_tree(root) is None
+        assert first != second, "two runs would share one root"
+    finally:
+        for root in (first, second):
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def test_root_is_optional_so_the_default_is_the_easy_path():
+    """A required `--root` makes every invocation name a directory, and the
+    one nearest to hand is the checkout."""
+
+    from tools.e2e import main  # noqa: PLC0415
+
+    signature = inspect.signature(main)
+    assert list(signature.parameters) == ["argv"]
+    source = (REPO_ROOT / "tools" / "e2e.py").read_text(encoding="utf-8")
+    assert "required=True" not in source, "--root is required again"
+
+
+def test_the_refusal_happens_before_the_harness_writes_anything():
     """A refusal after the first write is a refusal that leaves the files
-    behind."""
+    behind -- and in a working tree, files left behind are files a commit
+    picks up."""
 
     from tools.e2e import main  # noqa: PLC0415
 

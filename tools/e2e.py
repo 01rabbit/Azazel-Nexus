@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -41,36 +42,78 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 from tools.e2e_harness import Harness  # noqa: E402
 
 
-def refuse_root_inside_the_repository(root: Path) -> Optional[str]:
-    """Refuse a node root that lies inside this checkout.
+def enclosing_git_working_tree(root: Path) -> Optional[Path]:
+    """The Git working tree `root` lies in, or `None`.
 
-    The harness builds a synthetic node under `--root`, and among the files it
-    writes is a Core reserve record whose provenance is `measured`. Pointed at
-    the checkout, it writes an invented measurement into the repository -- and
-    the next `git add -A` commits it. `test_no_measurement_is_committed_anywhere`
-    catches that, but it catches it after the commit exists; a harness that
-    cannot be aimed at the repository has nothing to catch.
+    A working tree is a directory holding `.git` -- a directory in an ordinary
+    checkout, a *file* in a linked worktree. Both are looked for, at `root`
+    and at every ancestor, because a guard that knew only this checkout would
+    move the accident to the next worktree rather than prevent it.
 
-    Refused before any stage runs, because a refusal after the first write is
-    a refusal that leaves the files behind.
+    `.git` is read as a name on disk and nothing is executed: a guard that
+    shelled out to `git` would not run where `git` is absent, which is
+    exactly where nobody is watching.
     """
 
     resolved = root.resolve()
-    if resolved == ROOT or ROOT in resolved.parents:
-        return (
-            f"refusing --root {resolved}: it is inside this checkout "
-            f"({ROOT}). The harness writes a synthetic node, including a "
-            "Core reserve record that declares itself measured, and a "
-            "measurement must never exist in the repository. Use a "
-            "directory outside it."
-        )
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
     return None
+
+
+def refuse_root_in_a_git_working_tree(root: Path) -> Optional[str]:
+    """Refuse a node root inside any Git working tree.
+
+    The harness builds a synthetic node under the root, and among the files it
+    writes is a Core reserve record whose provenance is `measured` -- a record
+    that is **not** a measurement and is not admissible as one. Pointed at a
+    checkout it writes that record into a working tree, and the next
+    `git add -A` commits it. `test_no_measurement_is_committed_anywhere`
+    catches that, but it catches it after the commit exists, and a commit that
+    reached a remote is not taken back by rewriting a branch.
+
+    So the harness writes only to a dedicated directory outside version
+    control, and the refusal happens **before any stage runs**: a refusal
+    after the first write is a refusal that leaves the files behind.
+    """
+
+    enclosing = enclosing_git_working_tree(root)
+    if enclosing is None:
+        return None
+    return (
+        f"refusing to write to {root.resolve()}: it is inside the Git "
+        f"working tree at {enclosing}. The harness writes a synthetic node, "
+        "including a Core reserve record that declares itself measured, and "
+        "such a record must never enter version control -- it is not a "
+        "measurement and is not admissible as one. Omit --root, or give a "
+        "directory outside any working tree."
+    )
+
+
+def dedicated_root() -> Path:
+    """A fresh directory for one run, outside version control.
+
+    The default, so that the ordinary way to run the harness cannot put a
+    synthetic node anywhere a commit could pick it up.
+    """
+
+    return Path(tempfile.mkdtemp(prefix="az-e2e-"))
 
 
 #: Per-stage ceiling. A stage that overruns is a failure, not a slow pass.
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help=(
+            "where to build the synthetic node. Omitted: a fresh "
+            "directory outside version control. Given: it must be "
+            "outside every Git working tree"
+        ),
+    )
     parser.add_argument(
         "--require-all",
         action="store_true",
@@ -79,14 +122,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--report", type=Path, default=None)
     arguments = parser.parse_args(argv)
 
-    refusal = refuse_root_inside_the_repository(arguments.root)
+    # The default is a dedicated directory; an explicit one is checked the
+    # same way, because a root somebody typed is the one most likely to be a
+    # checkout they were standing in.
+    root = arguments.root if arguments.root is not None else dedicated_root()
+    refusal = refuse_root_in_a_git_working_tree(root)
     if refusal is not None:
         print(refusal, file=sys.stderr)
         return 2
 
     from tools.e2e_stages import run_all  # noqa: PLC0415 - kept beside this file
 
-    harness = Harness(arguments.root)
+    harness = Harness(root)
     run_all(harness)
     text = harness.report.render()
     print(text)
