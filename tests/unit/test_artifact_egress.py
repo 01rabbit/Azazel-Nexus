@@ -646,10 +646,64 @@ def test_this_is_not_the_inference_transport() -> None:
             imported.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             imported.add(node.module.split(".")[0])
-    assert "azazel_nexus" not in imported, (
-        "the egress module reached into the library; it takes arguments, and "
-        "a module that imported policy could apply its own"
+    assert imported & {"azazel_nexus"} <= {"azazel_nexus"}, "unreachable"
+    library = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("azazel_nexus")
+    }
+    assert library <= PURE_LIBRARY_IMPORTS, (
+        f"the egress module imports {sorted(library - PURE_LIBRARY_IMPORTS)} "
+        "from the library; it takes arguments, and a module that imported "
+        "policy could apply its own"
     )
+
+
+#: The library modules an egress module may import, and nothing else.
+#:
+#: This is the record of a boundary that moved. Until Nexus#98 the check
+#: above was "imports nothing from the library at all" -- broader than the
+#: guarantee it names, which is that an egress module cannot apply policy of
+#: its own. `azazel_nexus.spki` is a DER walk over a certificate: it decides
+#: nothing, holds nothing, and reaches nothing.
+#:
+#: The alternative was a second copy of the SubjectPublicKeyInfo extraction
+#: for the remote inference transport (#98), which pins a peer's key the same
+#: way. Two copies of that is one copy that gets a fix and one that does not,
+#: and the one that does not is still pinning -- just to whatever a subtly
+#: different walk produced.
+#:
+#: Adding a name here is a deliberate act with a reviewer attached, and
+#: `test_the_permitted_library_import_carries_no_policy` checks that what is
+#: permitted stays pure.
+PURE_LIBRARY_IMPORTS = {"azazel_nexus.spki"}
+
+
+def test_the_permitted_library_import_carries_no_policy() -> None:
+    """An allowlisted module that grew a policy would widen the exemption
+    without anybody editing the allowlist."""
+
+    import azazel_nexus.spki as spki
+
+    for name in sorted(PURE_LIBRARY_IMPORTS):
+        module = {"azazel_nexus.spki": spki}[name]
+        source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                imported.add(node.module.split(".")[0])
+        assert imported & {"ssl", "socket", "subprocess", "azazel_nexus"} == set(), (
+            f"{name} is permitted inside an egress module and reaches further "
+            "than a parser"
+        )
+        body = source.split('"""', 2)[2]
+        for forbidden in ("PrivacyClass", "policy", "allowlist", "sanitize"):
+            assert forbidden not in body, f"{name} carries {forbidden!r}"
 
 
 def test_it_emits_no_credential_no_url_and_no_pin() -> None:

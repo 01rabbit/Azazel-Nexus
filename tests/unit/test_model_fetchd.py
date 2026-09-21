@@ -224,13 +224,27 @@ def test_it_is_governed_and_therefore_masked_after_installation() -> None:
     assert f"disable {UNIT}" in preset
 
 
-def test_it_is_the_only_profile_with_an_internet_family() -> None:
+def test_it_is_the_only_profile_that_pulls_bytes_in() -> None:
+    """Two units may reach the network, and this is the one that fetches.
+
+    The other is the remote inference transport (#98), which pushes what this
+    node observed out. Both are listed here so that a third appearing is a
+    failure rather than a longer list nobody read.
+    """
+
     with_internet = sorted(
         profile.unit
         for profile in PROFILES
         if set(profile.address_families) & {"AF_INET", "AF_INET6"}
     )
-    assert with_internet == [UNIT]
+    assert with_internet == ["azazel-mio-remoted.service", UNIT]
+
+    fetchers = [p.unit for p in PROFILES if p.is_artifact_fetcher]
+    assert fetchers == [UNIT], "this is the only unit that pulls artifacts"
+    assert not next(p for p in PROFILES if p.unit == UNIT).is_inference_transport, (
+        "the fetcher must not also be the transport; pulling a file and "
+        "pushing a report are different credentials"
+    )
 
 
 def test_the_service_module_opens_nothing_itself() -> None:

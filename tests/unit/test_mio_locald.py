@@ -114,7 +114,9 @@ def test_a_profile_that_did_both_cannot_be_built():
                 ("PrivateNetwork", "yes"),
             ),
         )
-    assert "keep apart" in str(caught.value)
+    assert "one compromise is two" in str(caught.value)
+    assert "artifact fetcher" in str(caught.value)
+    assert "model host" in str(caught.value)
 
 
 def test_the_model_host_has_no_internet_address_family():

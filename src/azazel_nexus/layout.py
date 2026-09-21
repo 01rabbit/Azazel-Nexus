@@ -131,6 +131,16 @@ LAYOUT = (
         group="azmio",
     ),
     PathSpec(
+        "/var/lib/azazel/remote",
+        0o750,
+        "the remote inference transport's own directory: the commissioned "
+        "Provider Registry it reads and the only path it may write. Separate "
+        "from the fetcher's and the local runtime's because the account that "
+        "may push what this node observed is not the account that may pull a "
+        "file, nor the one that may run a program",
+        group="azremote",
+    ),
+    PathSpec(
         "/var/lib/azazel/secrets",
         0o700,
         "root-only credential material; never readable by a daemon account",

@@ -67,6 +67,7 @@ class UnitKey(str, Enum):
     EDGE_PROBE = "edge-probe"
     MODEL_FETCH = "model-fetch"
     MIO_LOCAL = "mio-local"
+    MIO_REMOTE = "mio-remote"
 
 
 #: The whole mapping, and it is not configurable.
@@ -81,6 +82,7 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.EDGE_PROBE: "azazel-edge-probed.service",
     UnitKey.MODEL_FETCH: "azazel-model-fetchd.service",
     UnitKey.MIO_LOCAL: "azazel-mio-locald.service",
+    UnitKey.MIO_REMOTE: "azazel-mio-remoted.service",
 }
 
 

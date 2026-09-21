@@ -139,6 +139,7 @@ VERBS = (
         ),
         admits=frozenset({PrincipalClass.ROOT, PrincipalClass.SERVICE}),
         accepts_payload=True,
+        payload_contract="EVENT_SCHEMAS[event_type]",
     ),
     Verb(
         "audit.verify",

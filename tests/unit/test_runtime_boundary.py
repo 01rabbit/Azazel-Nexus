@@ -96,7 +96,7 @@ def test_the_runtime_exists_as_its_own_distribution():
 #: afterwards, and "the test still passes" would have been true either way.
 #:
 #: Adding a second name here is a deliberate act with a reviewer attached.
-EGRESS_EXEMPT = {"artifact_egress.py"}
+EGRESS_EXEMPT = {"artifact_egress.py", "inference_egress.py"}
 
 
 def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
@@ -146,11 +146,11 @@ def test_the_exemption_names_a_module_that_exists_and_uses_it():
         )
 
 
-def test_only_one_module_is_exempt():
+def test_exactly_the_two_egress_modules_are_exempt():
     """The count is asserted, so widening is a diff a reviewer sees rather
     than a set that grew."""
 
-    assert EGRESS_EXEMPT == {"artifact_egress.py"}
+    assert EGRESS_EXEMPT == {"artifact_egress.py", "inference_egress.py"}
 
 
 def test_the_runtime_uses_only_the_librarys_public_names():
@@ -188,6 +188,7 @@ EXPECTED_SCRIPTS = (
     "az-commissiond",
     "az-edge-probed",
     "az-mio-locald",
+    "az-mio-remoted",
     "az-model-fetchd",
     "az-watchdog",
 )

@@ -198,11 +198,25 @@ class Verb:
     admits: frozenset[PrincipalClass] = frozenset()
     #: Whether this verb carries a second, separately validated object.
     #:
-    #: Exactly one verb does: `audit.append`, whose payload is an audit event
-    #: checked against a declared schema per event type. A payload sent to any
-    #: other verb is refused -- an object nothing validates is an object that
-    #: reaches the daemon unchecked.
+    #: A payload sent to a verb that does not declare one is refused: an
+    #: object nothing validates is an object that reaches the daemon
+    #: unchecked.
+    #:
+    #: Two verbs declare one, and the count is a fact a reviewer sees rather
+    #: than a sentence that went stale. Until Nexus#98 it was one; the second
+    #: is `remote.infer`, whose payload is a sealed sanitizer envelope and
+    #: the frame it authorises. Both are validated before the handler acts on
+    #: them, and `payload_contract` is what says by what.
     accepts_payload: bool = False
+    #: **What** validates this verb's payload, named. Required whenever
+    #: `accepts_payload` is set, and forbidden otherwise.
+    #:
+    #: A boolean alone would let a third payload verb appear with nothing
+    #: checking its object, and "the payload is validated" would still read
+    #: as true of the type. A name has to be filled in by whoever adds one,
+    #: and `tests/unit/test_runtime_protocol.py` checks that each named
+    #: contract exists.
+    payload_contract: str = ""
 
     def __post_init__(self) -> None:
         if not self.admits:
@@ -214,6 +228,19 @@ class Verb:
         names = [argument.name for argument in self.arguments]
         if len(set(names)) != len(names):
             raise ValueError(f"{self.name!r} declares an argument twice: {names}")
+        if self.accepts_payload and not self.payload_contract.strip():
+            raise ValueError(
+                f"{self.name!r} accepts a payload and names nothing that "
+                "validates it. An object nothing validates is an object that "
+                "reaches the daemon unchecked, and a verb that could declare "
+                "one without saying what checks it is how a third one appears"
+            )
+        if self.payload_contract.strip() and not self.accepts_payload:
+            raise ValueError(
+                f"{self.name!r} names a payload contract and accepts no "
+                "payload; the contract would describe something that never "
+                "arrives"
+            )
 
     def bind(self, raw: Mapping[str, Any]) -> dict:
         """Validate one request's arguments against this verb's declaration."""
