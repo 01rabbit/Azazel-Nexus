@@ -179,7 +179,11 @@ def test_a_root_too_long_for_a_unix_socket_is_refused_with_the_arithmetic():
 
 # -- the stages cover what the issue lists --------------------------------
 
-#: The sequence issue #43 gives, in its order.
+#: The sequence issue #43 gives, in its order, plus what later issues added.
+#:
+#: Pinned as a tuple rather than as a set: a stage disappearing and a stage
+#: moving are both failures, and a set would notice neither. A new stage is
+#: added here deliberately, with the issue that asked for it.
 REQUIRED_STAGES = (
     # Installation is three halves needing three privileges: write access to
     # the prefix, root, and a running systemd. One stage would have to claim
@@ -195,6 +199,11 @@ REQUIRED_STAGES = (
     "daemon failure",
     "remask and rollback",
     "audit chain",
+    # Nexus#56 (E5): the nine CORE + Lite configurations, composed. Last
+    # because it depends on nothing the earlier stages set up -- it drives
+    # the library, not the installed tree -- and a stage with no prerequisite
+    # placed early would hide that it has none.
+    "CORE + Lite configurations",
 )
 
 
@@ -369,3 +378,26 @@ def test_an_unknown_installer_option_is_refused():
     )
     assert result.returncode == 2
     assert "unknown option" in result.stderr
+
+
+def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
+    """The stage body, executed rather than read.
+
+    `test_every_stage_the_issue_lists_is_run_in_order` checks the stage
+    *list*; nothing else in the unit suite runs a stage's body. A stage that
+    had quietly stopped composing anything would still be listed, still
+    report `ok`, and still say something plausible.
+
+    The readiness assertions inside the stage are deliberately a second check
+    of what `test_core_lite_integration.py` already holds. Two checks of one
+    property at two layers is not the same mistake as two implementations of
+    one rule: this one fires if the other is deleted.
+    """
+
+    from tools.e2e_harness import Harness
+    from tools.e2e_stages import _lite_matrix
+
+    detail = _lite_matrix(Harness(tmp_path))
+    assert detail.startswith("9 CORE + Lite configurations")
+    assert "enforcement or baseline readiness" in detail
+    assert "what continues" in detail

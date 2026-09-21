@@ -355,10 +355,13 @@ jobs:
           # green job for it would be the worst kind of green.
           # A run where almost nothing executed is a run that proved almost
           # nothing, and a green job for it would be the worst kind of green.
-          # Eight is what this runner reaches: everything but the three that
-          # need root or a service manager.
-          if passed < 8:
-              sys.exit(f"only {passed} of {total} stages executed; expected 8")
+          # Nine is what this runner reaches: everything but the three that
+          # need root or a service manager. It was eight until Nexus#56 added
+          # the CORE + Lite matrix, which needs neither -- and a floor that
+          # does not rise when a universally-runnable stage is added is a
+          # floor that has stopped meaning anything.
+          if passed < 9:
+              sys.exit(f"only {passed} of {total} stages executed; expected 9")
           PY
 
   fabric-extra:
