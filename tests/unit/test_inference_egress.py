@@ -257,6 +257,64 @@ def test_a_verified_certificate_with_the_wrong_pin_is_refused():
         server.close()
 
 
+def test_the_context_trusts_only_the_commissioned_anchor():
+    """Found by mutation: nothing noticed `load_default_certs()` being added.
+
+    The system store is whatever the host happens to trust -- and anything an
+    administrator added to it -- which is not what this node was commissioned
+    to trust. Counted, because "our CA is in there" would still be true with
+    two hundred others beside it.
+    """
+
+    context = client_context()
+    anchors = context.get_ca_certs()
+    assert len(anchors) == 1, (
+        f"the context trusts {len(anchors)} anchors; a commissioned trust "
+        "anchor is not a floor to add the host's store on top of"
+    )
+
+    trusted = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    trusted.load_verify_locations(cafile=material("trusted-ca.crt"))
+    assert anchors == trusted.get_ca_certs(), "the one anchor is not the one asked for"
+
+
+def test_a_response_beyond_the_ceiling_stops_the_read_rather_than_refusing_after():
+    """Found by mutation: the in-loop ceiling could be removed and the suite
+    stayed green, because the check after the loop still refused.
+
+    The outcome was the same and the guarantee was not: without the in-loop
+    check the transport reads whatever a provider sends into memory and
+    refuses afterwards, which is a refusal that has already spent the
+    resource it exists to protect.
+    """
+
+    delivered = []
+
+    def dribble(stream, frame):
+        stream.sendall(
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+        )
+        for _ in range(64):
+            block = b"x" * 8192
+            try:
+                stream.sendall(block)
+            except OSError:
+                break
+            delivered.append(len(block))
+
+    server = Server(responder=dribble)
+    try:
+        report, body = run(server, max_response_bytes=4096, deadline_seconds=10)
+        assert report.outcome is TransportOutcome.INTERRUPTED
+        assert body == b""
+        assert report.received <= 4096 * 8, (
+            f"the transport read {report.received} bytes against a ceiling of "
+            "4096 before it stopped; the ceiling is enforced after the fact"
+        )
+    finally:
+        server.close()
+
+
 def test_the_pins_are_the_fixtures_own_keys():
     """So a fixture regenerated without its pin fails here rather than
     silently pinning to whatever was produced."""

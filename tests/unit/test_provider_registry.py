@@ -145,6 +145,37 @@ def test_one_key_may_not_hold_the_provider_role_and_another():
     )
 
 
+def test_a_shared_id_is_refused_even_when_the_material_differs():
+    """Found by mutation: the two checks were not separable.
+
+    Both cases above use the **same key material**, so the material check
+    caught them and the id check was never uniquely exercised -- removing it
+    left the suite green. An id holding two roles is its own fault: whoever
+    rotates the key under that id rotates it for both roles at once.
+    """
+
+    with pytest.raises(ProviderRefused) as caught:
+        ProviderTrust(
+            provider_keys={"shared-id": _public(_SEED)},
+            catalog_keys={"shared-id": _public(_OTHER)},
+            commissioning_digest=DIGEST,
+        )
+    assert caught.value.refusal is ProviderRefusal.SHARED_SIGNING_KEY
+    assert "shared-id" in caught.value.reason
+
+
+def test_distinct_ids_with_distinct_material_are_accepted():
+    """So the two refusals above are refusals, not a constructor that never
+    works."""
+
+    trust = ProviderTrust(
+        provider_keys={"provider-1": _public(_SEED)},
+        catalog_keys={"catalog-1": _public(_OTHER)},
+        commissioning_digest=DIGEST,
+    )
+    assert set(trust.provider_keys) == {"provider-1"}
+
+
 def test_a_registry_commissioned_elsewhere_is_not_commissioned_here(tmp_path):
     path = _signed(tmp_path, commissioning="sha256:" + "1" * 64)
     with pytest.raises(ProviderRefused) as caught:

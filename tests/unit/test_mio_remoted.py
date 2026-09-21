@@ -251,6 +251,40 @@ def test_a_caller_cannot_state_a_class_at_all():
         )
 
 
+def test_a_payload_whose_base64_is_lenient_is_refused():
+    """Found by mutation: `validate=True` was untested.
+
+    A lenient decoder silently drops characters it does not recognise, so the
+    bytes the envelope was checked against would not be the bytes that were
+    sent -- which is the whole binding gone, without a single check appearing
+    to fail.
+    """
+
+    with pytest.raises(mio_remoted.PayloadRefused) as caught:
+        mio_remoted.read_payload(
+            {"frame": "AAAA", "envelope": "AA=A!!\n@@AA"}
+        )
+    assert "base64" in str(caught.value)
+
+    # And a frame with a stray character is refused rather than silently
+    # decoded to something shorter.
+    good = base64.b64encode(FRAME).decode()
+    with pytest.raises(mio_remoted.PayloadRefused):
+        mio_remoted.read_payload({"frame": good[:-1] + "*", "envelope": "AAAA"})
+
+
+def test_a_payload_that_is_not_two_base64_strings_is_refused():
+    for payload in (
+        {"frame": "AAAA"},
+        {"envelope": "AAAA"},
+        {"frame": 1, "envelope": "AAAA"},
+        {"frame": "AAAA", "envelope": None},
+        "not an object",
+    ):
+        with pytest.raises(mio_remoted.PayloadRefused):
+            mio_remoted.read_payload(payload)
+
+
 def test_an_unsigned_frame_is_not_sent_however_well_formed():
     """Un-sanitised P1 has no envelope, and no envelope means no send. The
     transport accepts sanitisation proof, never a caller's word for it."""
@@ -531,6 +565,47 @@ def test_the_three_capabilities_are_separate(monkeypatch):
 def test_the_unit_is_withheld_while_nothing_is_commissioned():
     definition = next(d for d in CORE_UNITS if d.name == UNIT)
     assert definition.wiring == REMOTE_INFERENCE_TRANSPORT
+
+
+def test_a_payload_verb_that_names_no_contract_cannot_be_built():
+    """Found by mutation: the requirement was stated and never driven.
+
+    A boolean alone would let a third payload verb appear with nothing
+    checking its object, and "the payload is validated" would still read as
+    true of the type.
+    """
+
+    from azazel_nexus_runtime.protocol import Verb
+
+    with pytest.raises(ValueError) as caught:
+        Verb(
+            name="x.y",
+            admits=frozenset({PrincipalClass.ROOT}),
+            accepts_payload=True,
+        )
+    assert "validates it" in str(caught.value)
+
+    with pytest.raises(ValueError) as caught:
+        Verb(
+            name="x.y",
+            admits=frozenset({PrincipalClass.ROOT}),
+            payload_contract="something",
+        )
+    assert "accepts no" in str(caught.value)
+
+
+def test_every_payload_verb_in_the_product_names_its_contract():
+    """Two verbs accept one. A third appearing without a named validator is
+    a failure here rather than a sentence that went stale."""
+
+    from azazel_nexus_runtime.auditd import VERBS as AUDIT_VERBS
+
+    accepting = [
+        v for v in (*AUDIT_VERBS, mio_remoted.INFER_VERB) if v.accepts_payload
+    ]
+    assert sorted(v.name for v in accepting) == ["audit.append", "remote.infer"]
+    for verb in accepting:
+        assert verb.payload_contract.strip(), verb.name
 
 
 def test_the_verb_takes_two_identifiers_and_an_operator_may_not_call_it():
