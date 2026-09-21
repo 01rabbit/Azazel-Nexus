@@ -52,6 +52,7 @@ from typing import Callable, Optional, Sequence
 
 from azazel_nexus.model_runtime import RuntimeBinary, RuntimeRefused, resolve_runtime
 from azazel_nexus.runtime_lifecycle import (
+    BudgetLedger,
     LifecycleState,
     Readiness,
     RestartBudget,
@@ -379,6 +380,18 @@ class Supervision:
     budget: RestartBudget
     deadline_seconds: int = DEFAULT_DEADLINE_SECONDS
     reports: list = field(default_factory=list)
+    #: Where the budget is written after every change. Without it the budget
+    #: lives only in this process, and the failure most likely to end this
+    #: process is the one it is restarting -- so a provider that crashes hard
+    #: enough would get a fresh budget every time, for ever.
+    ledger: Optional[BudgetLedger] = None
+    #: Called once, when the budget runs out, with the unit key to fence.
+    #: Supplied rather than imported: the component that observes a failure is
+    #: not the component that narrows on it, and this one cannot widen.
+    on_budget_spent: Optional[Callable[[str], None]] = None
+    #: The unit key handed to `on_budget_spent`. A value from
+    #: `units.UnitKey`, never an arbitrary unit name.
+    unit_key: str = "mio-local"
 
     @property
     def state(self) -> LifecycleState:
@@ -402,6 +415,8 @@ def supervise(supervision: Supervision, *, attempts: int = 8) -> Supervision:
 
     for _ in range(attempts):
         if supervision.budget.fenced and not supervision.budget.remaining:
+            # Includes a budget **loaded from disk** as already spent, which
+            # is what stops a reboot from handing back three more restarts.
             break
         report = run_once(
             supervision.record,
@@ -412,6 +427,13 @@ def supervise(supervision: Supervision, *, attempts: int = 8) -> Supervision:
         if report.state is not LifecycleState.CRASHED:
             break
         verdict = supervision.budget.spend()
+        if supervision.ledger is not None:
+            # Persisted on **every** spend, not only on the last. A crash
+            # between the spend and the write would otherwise hand back the
+            # restart that was just used.
+            supervision.ledger.save(
+                supervision.budget, runtime_id=supervision.record.runtime_id
+            )
         if not verdict.may_restart:
             supervision.reports.append(
                 ProcessReport(
@@ -426,6 +448,12 @@ def supervise(supervision: Supervision, *, attempts: int = 8) -> Supervision:
                     reason=verdict.reason,
                 )
             )
+            if supervision.on_budget_spent is not None:
+                # The consequence, handed to whoever owns narrowing. It runs
+                # after the budget is persisted, so a failure here leaves a
+                # node that is fenced in the ledger rather than one that
+                # believes it has restarts left.
+                supervision.on_budget_spent(supervision.unit_key)
             break
     return supervision
 

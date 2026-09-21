@@ -76,6 +76,14 @@ class FenceReason(str, Enum):
     UNHEALTHY = "unhealthy"
     GENERATION_MISMATCH = "generation_mismatch"
     RESTART_INTERRUPTED = "restart_interrupted"
+    #: A supervised provider used every restart its generation allowed (#114).
+    #:
+    #: Not `RESTART_INTERRUPTED`. That one means a restart was cut short and
+    #: nobody knows what state it left; this means the restarts completed,
+    #: each one failed, and the count ran out. An operator sent to look for an
+    #: interrupted restart when the fact is "it died three times" has been
+    #: sent to the wrong place.
+    RESTART_BUDGET_SPENT = "restart_budget_spent"
 
 
 VERBS = (
@@ -217,6 +225,22 @@ class WatchdogService:
     def note_interrupted_restart(self, key: str, *, now: str, detail: str) -> None:
         unit = resolve(key)
         self._fence(unit, FenceReason.RESTART_INTERRUPTED, now=now, detail=detail)
+
+    def note_restart_budget_spent(self, key: str, *, now: str, detail: str) -> None:
+        """A supervised provider ran out of restarts. Fence its unit (#114).
+
+        The supervisor holds the count and this holds the consequence. Keeping
+        them apart is the same separation the rest of this daemon has: the
+        component that **observes** a failure is not the component that
+        **narrows** on it, and neither of them can widen.
+
+        `key` is a `UnitKey` value, resolved through the fixed table. There is
+        no path by which a caller names an arbitrary unit -- a supervisor that
+        could would be a supervisor that fences anything it liked by failing.
+        """
+
+        unit = resolve(key)
+        self._fence(unit, FenceReason.RESTART_BUDGET_SPENT, now=now, detail=detail)
 
     # -- narrowing --------------------------------------------------------
 
