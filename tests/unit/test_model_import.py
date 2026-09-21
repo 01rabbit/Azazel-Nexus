@@ -686,7 +686,12 @@ def test_a_generation_id_covers_what_is_installed(node) -> None:
 def test_distinct_entries_get_distinct_ids() -> None:
     """The size trails as a fixed width, so the name is whatever precedes it."""
 
-    pairs = [("a", 1), ("a", 2), ("ab", 1), ("b", 1), ("a\x00b", 1), ("", 1)]
+    pairs = [
+        ("a", 1), ("a", 2), ("ab", 1), ("b", 1), ("a\x00b", 1), ("", 1),
+        # The pair that collides the moment the size stops being fixed-width:
+        # "a" + "11" and "a1" + "1" are the same bytes.
+        ("a", 11), ("a1", 1),
+    ]
     assert len({entry_id_for(display_name=n, size=s) for n, s in pairs}) == len(pairs)
 
 

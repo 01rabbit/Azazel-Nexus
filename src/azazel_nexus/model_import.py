@@ -213,12 +213,15 @@ def entry_id_for(*, display_name: str, size: int) -> str:
 
     Over identity, not content -- see the module docstring.
 
-    The size trails as a fixed eight bytes, which is what makes the encoding
-    unambiguous: the name is whatever precedes it, so no two (name, size)
-    pairs share an encoding. The length prefix is redundant against that and
-    is kept anyway, so that appending a field later cannot quietly
-    reintroduce the ambiguity the fixed-width tail is currently carrying
-    alone.
+    The encoding is unambiguous twice over, and both are load-bearing. The
+    name's length is declared up front, and the size trails at a fixed eight
+    bytes -- so the name is recoverable either by reading its length or by
+    taking everything before the last eight bytes.
+
+    Either alone would do today, which is the point: remove the fixed width
+    and `("a", 11)` would otherwise encode as `("a1", 1)` does, and the
+    length prefix is what stops it. Both are kept so that changing one does
+    not silently spend the margin the other is holding.
     """
 
     name = display_name.encode("utf-8")
