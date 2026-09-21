@@ -48,6 +48,7 @@ def run_all(harness: Harness) -> None:
                   requires=("verified generation",))
     harness.stage("audit chain", lambda: _audit(harness),
                   requires=("verified generation",))
+    harness.stage("CORE + Lite configurations", lambda: _lite_matrix(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -348,3 +349,79 @@ def _audit(harness: Harness) -> str:
     ledger.verify()
     sequence, _ = ledger.head()
     return f"{sequence} entries, chain verified across {len(ledger.segments())} segment(s)"
+
+
+def _lite_matrix(harness: Harness) -> str:
+    """Run the nine CORE + Lite configurations through the integration view.
+
+    The assertions live in `tests/unit/test_core_lite_integration.py`; this
+    stage exists so the matrix appears in the harness report alongside the
+    install-to-status sequence, and so a run that could not execute it says
+    so rather than leaving a silence a reader fills in.
+
+    Deliberately not a subset of the unit test: it drives the *composed*
+    path -- three features into one view -- and checks the two claims that
+    must hold in all nine. If the composition raised, or a configuration
+    claimed readiness, this stage fails and the report says which one.
+    """
+
+    from azazel_nexus.capability import CapabilityState
+    from azazel_nexus.cognition import read_cognition
+    from azazel_nexus.compatibility import TestedTupleSet
+    from azazel_nexus.decoy import DecoyState, DecoyStatus, IsolationCheck, evaluate
+    from azazel_nexus.integration import EdgePresence, build_view
+    from azazel_nexus.lite_service import LiteReading, LiteState
+    from azazel_nexus.resource_profile import ResourceProfile
+
+    def reading(state):
+        return LiteReading(state=state, reason=f"knowledge is {state.value}", generation=1)
+
+    absent = evaluate(
+        "decoy-a", catalogue=None, commissioning=None, isolation=IsolationCheck(passed=None)
+    )
+    exposed = DecoyStatus(decoy="decoy-a", state=DecoyState.EXPOSED, reason="exposed")
+    held = DecoyStatus(decoy="decoy-a", state=DecoyState.QUARANTINED, reason="held")
+
+    configurations = (
+        ("knowledge only", reading(LiteState.AVAILABLE), absent),
+        ("mio only", None, absent),
+        ("deception only", None, exposed),
+        ("all three", reading(LiteState.AVAILABLE), exposed),
+        ("none present", reading(LiteState.UNAVAILABLE), absent),
+        ("knowledge stale", reading(LiteState.STALE), absent),
+        ("knowledge quarantined", reading(LiteState.QUARANTINED), absent),
+        ("decoy quarantined", reading(LiteState.AVAILABLE), held),
+        ("remote not permitted", reading(LiteState.AVAILABLE), absent),
+    )
+
+    cognition = read_cognition(
+        [], profile=ResourceProfile.LITE, tested=TestedTupleSet(), host=None
+    )
+    composed = 0
+    for name, knowledge, decoy in configurations:
+        view = build_view(
+            capability=CapabilityState.CORE,
+            knowledge=knowledge,
+            cognition=cognition,
+            decoy=decoy,
+            edge=EdgePresence.ABSENT,
+        )
+        if view.enforcement_capable or view.baseline_ready:
+            raise RuntimeError(f"{name} claimed readiness with no Edge")
+        if "Edge deterministic decisions" in view.continues:
+            raise RuntimeError(f"{name} claimed Edge decisions continue with no Edge")
+        if not view.continues:
+            raise RuntimeError(f"{name} listed nothing that continues")
+        composed += 1
+    # Counted inside the loop, not taken from the table's length. A detail
+    # line derived from what the stage *meant* to do rather than from what it
+    # did is a stage that reports nine having composed none -- and the
+    # mutation that made this a real check did exactly that.
+    if composed != len(configurations):
+        raise RuntimeError(
+            f"{composed} of {len(configurations)} configurations were composed"
+        )
+    return (
+        f"{composed} CORE + Lite configurations composed; none claimed "
+        "enforcement or baseline readiness, and every one named what continues"
+    )

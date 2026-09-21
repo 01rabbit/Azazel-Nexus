@@ -6,8 +6,12 @@ throwaway root:
 ```
 install → units masked → inventory → operator-confirmed commissioning
 → verified generation → activation → health/status → daemon failure
-→ remask/rollback → audit chain
+→ remask/rollback → audit chain → CORE + Lite configurations
 ```
+
+The last stage is Nexus#56's and is not part of #43's sequence. It depends on
+nothing the others set up — it drives the library rather than the installed
+tree — which is why it is last and why it runs on a runner that is not root.
 
 ## It establishes that the distribution does not contradict itself
 
@@ -19,6 +23,32 @@ injected daemon failure is detected, fenced, rolled back and recorded.
 
 That is a real and limited claim. Every part of it is about **this
 repository's own artifacts agreeing with each other.**
+
+## The nine CORE + Lite configurations
+
+`tests/unit/test_core_lite_integration.py` holds the assertions; the stage
+composes all nine and checks the two claims that must hold in every one:
+**nothing claims enforcement or baseline readiness, and every configuration
+names what continues.**
+
+The nine are the configurations of *what is there*, not of what works:
+knowledge alone, M.I.O. alone, deception alone, all three, none, a stale
+cache, a quarantined cache, a quarantined decoy, and remote not permitted.
+The one most likely to ship is **none of the three holding content**, and the
+test that matters most is that it reports no defect: an uncommissioned node is
+not a broken one.
+
+Three things it establishes that the per-feature tests cannot:
+
+- **The privilege boundary survives composition.** Each feature is advisory
+  alone; the question is whether chaining them produces a path to enforcement
+  that none of them has. Six modules are scanned together for a runtime
+  import, a socket, a process, and an acting verb — *a boundary that holds in
+  each module and not across them is not a boundary* — and the composed output
+  is asserted to be JSON, with nothing to invoke.
+- **A failure propagates no further than the feature that had it.** A
+  quarantined decoy leaves the Knowledge row and the cognition row byte-identical.
+- **Degradation only ever narrows**, over all 8 × 3 trigger/route pairings.
 
 ## It establishes nothing about hardware, and nothing about systemd
 
