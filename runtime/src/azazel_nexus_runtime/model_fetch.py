@@ -26,19 +26,24 @@ What is here is the shape such code would have to fit: a plan it did not
 choose, an address it did not spell, a deadline it cannot extend, a byte
 ceiling it cannot exceed, and an attempt budget it cannot refill.
 
-## The endpoints cannot resolve either
+## The endpoint table ships empty, and going to production does not loosen it
 
-`ENDPOINT_FOR` maps every known symbol to a host under `.invalid`, which RFC
-2606 reserves and guarantees will never resolve in the DNS. That is not a
-placeholder to be tidied up later; it is the second lock. Filling in a real
-host is a deliberate, reviewable change to this table, and until somebody
-makes it, a fetcher wired in by mistake would resolve nothing.
+An earlier version filled this table with `.invalid` hosts and had `Endpoint`
+refuse anything else. That stops a mistaken fetcher, and it is the wrong
+shape: **going to production would then mean relaxing the validator** -- and
+a design whose next step is to relax a check is a design that gets relaxed,
+probably in a hurry, probably by someone who did not write it.
 
-The table is checked against `KNOWN_SOURCES` at **import time**. A symbol in
-the library and not here -- or here and not in the library -- stops this
-module from loading, rather than failing at the moment an operator finally
-confirms a fetch. The two tables are one fact recorded twice, and the check
-is what keeps them one fact.
+So the validator now accepts any production-valid FQDN and refuses what is
+actually dangerous: address literals, and anything that smuggles a scheme, a
+port, a path, a query or userinfo into a host field. And the table is
+**empty**. A node that may fetch takes its endpoints from the signed,
+commissioned Source Registry -- reviewed, signed, audited data -- not from a
+code change. Test fixtures put loopback endpoints in a registry of their own;
+they do not put them here.
+
+A symbol with an endpoint here that the library does not know still stops
+this module loading: an address nothing can name is an address nobody chose.
 
 ## The library holds the symbols, this holds the addresses
 
@@ -50,6 +55,7 @@ the library.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Iterable, Mapping, Optional
@@ -82,11 +88,11 @@ class Endpoint:
     path_template: str
 
     def __post_init__(self) -> None:
-        if not self.host.endswith(".invalid"):
+        if not _HOSTNAME.match(self.host) or _ADDRESS_LITERAL.match(self.host):
             raise ValueError(
-                f"{self.host!r} is not under .invalid. Every endpoint in this "
-                "build is a host RFC 2606 guarantees cannot resolve; naming a "
-                "real one is a deliberate change to this table, not a typo"
+                f"{self.host!r} is not a hostname. A scheme, a port, a path, "
+                "a query, userinfo or an address literal are separate fields "
+                "or they do not exist"
             )
         holes = self.path_template.count("{")
         if holes != 1 or "{digest}" not in self.path_template:
@@ -96,28 +102,44 @@ class Endpoint:
             )
 
 
-#: Every symbol `KNOWN_SOURCES` names, and nothing else. Checked below.
-ENDPOINT_FOR: Mapping[str, Endpoint] = {
-    "vendor-primary": Endpoint(
-        host="models-primary.azazel.invalid",
-        port=443,
-        path_template="/artifacts/{digest}",
-    ),
-    "vendor-mirror": Endpoint(
-        host="models-mirror.azazel.invalid",
-        port=443,
-        path_template="/artifacts/{digest}",
-    ),
-}
+#: A hostname, and nothing that could carry a scheme, a port, a path, a
+#: query or userinfo. Those are separate fields or they do not exist.
+_HOSTNAME = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+#: An address literal would let this table both name a source and pick its
+#: address, skipping the commissioned address allowlist that exists because a
+#: right name is not a right address.
+_ADDRESS_LITERAL = re.compile(r"^[0-9.]+$")
 
-# One fact recorded twice; this is what keeps it one fact. A mismatch stops
-# the import rather than waiting for somebody to confirm a fetch.
-if set(ENDPOINT_FOR) != set(KNOWN_SOURCES):
+#: **Empty, and that is the shipped state.**
+#:
+#: An earlier version filled this with `.invalid` hosts and had `Endpoint`
+#: refuse anything else, on the theory that a build which could not name a
+#: real host could not reach one. That is true and it is the wrong shape:
+#: going to production would then require *loosening the validator*, and a
+#: design whose next step is to relax a check is a design that will be
+#: relaxed -- probably in a hurry, probably by someone who did not write it.
+#:
+#: So the validator accepts any production-valid FQDN and refuses what is
+#: actually dangerous (address literals, schemes, userinfo, ports or paths
+#: smuggled into a host), and **this table ships empty**. A node that may
+#: fetch gets its endpoints from the signed, commissioned Source Registry --
+#: reviewed, signed and audited data -- not from a code change.
+#:
+#: Test fixtures put loopback endpoints in a registry of their own. They do
+#: not put them here.
+ENDPOINT_FOR: Mapping[str, Endpoint] = {}
+
+# An endpoint here for a symbol the build does not know would be an address
+# nothing can name. The other direction is now ordinary: `KNOWN_SOURCES`
+# names the symbols a catalog may use, and this table is empty in a shipped
+# build, because endpoints are commissioned data rather than code.
+_unknown = sorted(set(ENDPOINT_FOR) - set(KNOWN_SOURCES))
+if _unknown:
     raise ImportError(
-        "the endpoint table and KNOWN_SOURCES disagree: "
-        f"{sorted(set(ENDPOINT_FOR) ^ set(KNOWN_SOURCES))}. A symbol that "
-        "resolves to nothing, or an address nothing can name, is a fetch that "
-        "fails at the worst possible moment"
+        f"{_unknown} have endpoints and are not symbols this build knows. An "
+        "address nothing can name is an address nobody chose"
     )
 
 

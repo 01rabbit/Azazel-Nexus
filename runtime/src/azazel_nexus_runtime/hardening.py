@@ -108,6 +108,20 @@ class ServiceProfile:
     runtime_directory_mode: str = "0750"
     extra: tuple[tuple[str, str], ...] = ()
     rationale: str = ""
+    #: Whether this unit is the artifact fetch service.
+    #:
+    #: Exactly one profile sets it, and setting it is the only way an
+    #: internet address family may appear below. It is a field rather than a
+    #: list of exempt unit names because a unit that wanted egress has to be
+    #: *declared* as the fetcher -- and `test_runtime_hardening.py` asserts
+    #: that at most one profile is, so a second would be a diff a reviewer
+    #: sees rather than a set that grew.
+    #:
+    #: It does **not** open the address range. `IPAddressDeny=any` still
+    #: applies; the addresses a fetcher may reach arrive as a commissioning
+    #: drop-in built from the Source Registry, so shipping this unit ships a
+    #: service that can reach nothing.
+    is_artifact_fetcher: bool = False
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -116,7 +130,9 @@ class ServiceProfile:
                 "is required to be reachable at all, and a unit whose families "
                 "are unstated inherits whatever systemd's default is"
             )
-        forbidden = {"AF_INET", "AF_INET6", "AF_PACKET"}
+        forbidden = {"AF_PACKET"} | (
+            set() if self.is_artifact_fetcher else {"AF_INET", "AF_INET6"}
+        )
         overlap = sorted(set(self.address_families) & forbidden)
         if overlap:
             raise ValueError(
@@ -124,6 +140,14 @@ class ServiceProfile:
                 "product listens on a network, and a daemon that could open "
                 "an internet socket makes `IPAddressDeny=any` the only thing "
                 "standing between it and one"
+            )
+        if self.is_artifact_fetcher and not (
+            set(self.address_families) & {"AF_INET", "AF_INET6"}
+        ):
+            raise ValueError(
+                f"{self.unit} is declared the artifact fetcher and is allowed "
+                "no internet address family. An exemption nothing uses is a "
+                "hole held open for nothing"
             )
         declared = {spec.path for spec in LAYOUT} | {"/etc/systemd/system"}
         outside = sorted(set(self.read_write_paths) - declared)
@@ -136,7 +160,7 @@ class ServiceProfile:
 
 
 #: The accounts the installer creates. `root` is not among them: it exists.
-SYSTEM_ACCOUNTS = ("azcommission", "azaudit", "azwatch", "azprobe")
+SYSTEM_ACCOUNTS = ("azcommission", "azaudit", "azwatch", "azprobe", "azfetch")
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -159,6 +183,42 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "The one daemon that runs as root, and the reason the other three "
             "do not: unmasking a unit means writing under /etc/systemd/system, "
             "and isolating that here is what leaves the rest unprivileged."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-model-fetchd.service",
+        executable="/usr/libexec/azazel/az-model-fetchd",
+        account="azfetch",
+        description="Azazel-Nexus artifact fetch service",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/source-registry.md",
+        address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
+        read_write_paths=("/var/lib/azazel/fetch", "/var/lib/azazel/run"),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        is_artifact_fetcher=True,
+        # Its own runtime directory, not the one shared with the operator
+        # plane: the socket this service answers on is reachable only by
+        # whatever is commissioned to ask for a fetch.
+        runtime_directory="azazel/fetch",
+        runtime_directory_mode="0750",
+        extra=(
+            # A transfer that fails repeatedly must not fill the journal with
+            # the same refusal, and a journal nobody can read is a journal
+            # nobody reads.
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+            ("LogExtraFields", "AZ_SERVICE=model-fetch"),
+        ),
+        rationale=(
+            "The only unit in this product allowed an internet address "
+            "family, and the only one that needs one: it fetches model "
+            "artifacts whose digest was declared before the connection was "
+            "made. It is not root, it writes one directory, and it still "
+            "carries IPAddressDeny=any -- the addresses it may reach arrive "
+            "as a commissioning drop-in built from the signed Source "
+            "Registry, so this unit as shipped can reach nothing. Adding a "
+            "real endpoint is a change to commissioned data that is reviewed "
+            "and signed, never a change to this file."
         ),
     ),
     ServiceProfile(

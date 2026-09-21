@@ -112,6 +112,15 @@ LAYOUT = (
         "private staging trees; promoted, never edited in place",
     ),
     PathSpec(
+        "/var/lib/azazel/fetch",
+        0o750,
+        "the artifact fetcher's staging area, and the only path that service "
+        "may write. Group-readable because what lands here is promoted by a "
+        "different account: a fetcher that could also promote would be a "
+        "fetcher whose output nothing else had to agree about",
+        group="azfetch",
+    ),
+    PathSpec(
         "/var/lib/azazel/secrets",
         0o700,
         "root-only credential material; never readable by a daemon account",

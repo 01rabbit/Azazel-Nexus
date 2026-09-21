@@ -1,9 +1,10 @@
 # Source Registry and the Artifact Fetch Service
 
 Status: **implemented** (`src/azazel_nexus/source_registry.py`,
+`runtime/src/azazel_nexus_runtime/model_fetchd.py`,
 `runtime/src/azazel_nexus_runtime/artifact_egress.py`, Nexus#105).
 Where a source symbol resolves, under what conditions, and which single
-module may open a connection.
+**service** may open a connection.
 
 Related: [the model catalog contract](model-catalog.md) ·
 [online acquisition](model-acquisition.md) ·
@@ -81,16 +82,64 @@ certificate keeps its key, and a pin over the whole certificate would turn
 every ordinary renewal into an outage indistinguishable from an attack —
 which is how pinning gets switched off.
 
-## 4. One module may open a connection, and it is named
+## 4. One **service** may open a connection, and it is named
 
-`artifact_egress.py`. Everything else in the runtime distribution speaks
-`AF_UNIX` or reads the kernel.
+`az-model-fetchd` — its own unit, its own system account (`azfetch`), its own
+socket, its own runtime directory, and one writable path. Everything else in
+the runtime distribution speaks `AF_UNIX` or reads the kernel.
 
-`tests/unit/test_runtime_boundary.py` used to assert that *nothing* in the
-package could reach an internet address family. It now asserts "nothing
-**except this module**", and **records the exemption by name**, asserts the
-module exists, asserts it actually uses its exemption, and asserts the set
-has exactly one member.
+A module with a socket in it is a *module* boundary. This is the service
+boundary, and it is fixed in three places that must agree:
+
+| where | what |
+| --- | --- |
+| `hardening.py` | the only `ServiceProfile` with `is_artifact_fetcher=True`, and the only one permitted `AF_INET` |
+| `packaging/` | its own account, its own directory at `0750`, masked on install, `disable` in the preset |
+| `model_fetchd.py` | one verb, symbolic arguments only, a `main` that takes no arguments at all |
+
+`IPAddressDeny=any` **stays on it.** The exemption opens an address *family*,
+not an address: what the service may reach arrives as a commissioning drop-in
+built from the signed Source Registry, so the unit as shipped reaches nothing.
+
+### A caller cannot say where the bytes come from
+
+`protocol.ArgumentKind` has no free-text member. A request carries
+`model_id`, `source_id`, `digest`, `size_bytes` and `resume_from` — and there
+is no way to *express* a URL, a proxy, a header, a shell command or a file
+path in one. That is not a check the service performs; it is a shape a
+request cannot take.
+
+The destination is derived from the digest in the **registry-resolved** plan,
+never from the request: a caller who could name a file could name any file.
+
+There is no command line to leak a credential through either — `main` refuses
+any argument vector, because an argument vector is readable by every user on
+the host.
+
+### The endpoint table ships empty
+
+An earlier version filled it with `.invalid` hosts and had the constructor
+refuse anything else. That stops a mistaken fetcher, and it is the wrong
+shape: **going to production would then mean loosening the validator**, and a
+design whose next step is to relax a check is a design that gets relaxed —
+probably in a hurry, probably by someone who did not write it.
+
+So the validator refuses what is actually dangerous (address literals, and
+anything smuggling a scheme, a port, a path, a query or userinfo into a host
+field) and accepts an ordinary hostname. The table is empty instead, and **a
+real endpoint is commissioned data**: it arrives in the signed Source
+Registry, reviewed, signed and audited. Test fixtures put loopback endpoints
+in a registry of their own.
+
+Two independent scans used to assert that *nothing* in the package could
+reach an internet address family — one in `test_runtime_boundary.py` over the
+source, one in `test_runtime_hardening.py` over the rendered units. Both now
+assert "nothing **except this one**", both **record the exemption by name**,
+and both assert the exempt set has exactly one member. The source scan also
+asserts the exempt module exists and uses its exemption; the unit scan
+asserts that a profile taking an internet family without declaring itself the
+fetcher cannot be built, and that one declaring itself the fetcher without
+using an internet family cannot either.
 
 A boundary that moved and left no trace is a boundary nobody can audit. "The
 test still passes" would have been true either way.
@@ -116,7 +165,10 @@ been to change the declaration instead.
 
 | refusal | why |
 | --- | --- |
-| a peer whose public key does not match the pin | CA trust alone is one compromised issuer away from any host. Checked as the **first act after the handshake** — nothing is requested from an unpinned peer |
+| a certificate that does not verify | issuer, dates and name, against the **commissioned** anchor — never the host's own store. The pin is layered on this, not a substitute: it answers "is this the key I expect" and nothing about expiry, name or issuer |
+| a peer whose public key does not match the pin | checked as the **first act after the handshake** — nothing is requested from an unpinned peer |
+| an empty pin | not "any key". A fetch with nothing to compare against does not happen |
+| a client certificate the server will not accept | mutual: the node shows who it is, or it is not served |
 | a redirect | a fetcher that follows one is a fetcher whose allowlist is bypassed in a single hop |
 | a resolved address outside the allowlist | DNS is an attack surface, and "the name was right" is not "the address was" |
 | an empty allowlist | a refusal, never "anything" |
@@ -172,10 +224,30 @@ further away still, behind a measured Core reserve
 ## 9. Testing
 
 The failure paths are driven against a **real local TLS server** on loopback,
-with a certificate generated for the run and discarded. No fixture carries a
-key that exists anywhere else, and nothing reaches a real network.
+using **fixed certificates committed under `tests/fixtures/tls`**. The tests
+use the standard library's `ssl` and nothing else, and **none of them skips**.
 
-The DER walk that extracts the public key for pinning is checked
-**differentially against OpenSSL's own extraction**, rather than against a
-fixture this suite wrote — the only comparison worth making for a minimal
-parser.
+An earlier version generated a certificate with the `openssl` CLI at test
+time and skipped when the CLI was absent. That made the binary's presence,
+version and command-line behaviour a precondition of exactly the tests that
+mattered most — so the ones most likely not to run were the TLS ones, and a
+green pipeline would not have said whether they did.
+
+The expected SPKI pins are **fixed constants**, recorded when the fixtures
+were made. A pin the test computed from the certificate it is checking would
+go on agreeing with itself after the extraction it is meant to verify had
+broken.
+
+What runs every time: untrusted issuer, expired certificate, hostname
+mismatch, client certificate absent, client certificate the server will not
+accept, unknown pin, empty pin, redirect, an address outside the allowlist,
+an oversized response (including an overrun arriving with the headers),
+unterminated headers, an unexpected status, interruption, resume, a peer that
+ignores `Range`, the deadline, and a digest mismatch after a resume.
+
+`tests/unit/test_tls_fixture_hygiene.py` scans the distribution by **content**
+and refuses to find this key material in production source, the privileged
+runtime, packaging, ops, tooling, CI or docs — and refuses to find *any*
+private key outside the fixture directory. A private key committed to a
+repository is a compromised key; these are committed because they are
+worthless, and that scan is what would say so if one ever stopped being.
