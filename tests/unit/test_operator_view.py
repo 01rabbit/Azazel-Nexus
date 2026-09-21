@@ -317,6 +317,29 @@ def test_the_next_safe_operation_names_what_is_missing(state, inbox, available) 
     assert operation.reason.strip()
 
 
+def test_an_absent_catalog_refuses_an_import_however_full_the_inbox() -> None:
+    """A stocked inbox is not permission to install something nobody named.
+
+    With only the empty-inbox case covered, "no catalog" and "nothing placed"
+    reach the same refusal and the distinction is never exercised.
+    """
+
+    view = build_view(
+        facts(catalog_state=CatalogState.ABSENT, inbox=("a.bin", "b.bin"))
+    )
+    operation = view.operation(Confirmation.MODEL_IMPORT)
+    assert operation.available is False
+    assert "no catalog has been presented" in operation.reason
+    # And the empty catalog says something else again.
+    stocked_empty = build_view(
+        facts(catalog_state=CatalogState.EMPTY, inbox=("a.bin",))
+    )
+    assert stocked_empty.operation(Confirmation.MODEL_IMPORT).available is False
+    assert stocked_empty.operation(
+        Confirmation.MODEL_IMPORT
+    ).reason != operation.reason
+
+
 def test_an_unavailable_operation_is_present_rather_than_missing() -> None:
     """A screen where options vanish is a screen somebody searches for an hour."""
 
@@ -344,6 +367,24 @@ def test_five_confirmations_five_operations_five_transitions() -> None:
     assert len(set(confirmations)) == 5
     transitions = [o.transition for o in view.operations]
     assert len(set(transitions)) == 5, "two confirmations write one event"
+
+
+def test_each_confirmation_names_exactly_one_thing() -> None:
+    """A sixth consent folded into a fifth is a sixth consent nobody sees.
+
+    The values are pinned rather than counted: five members whose wording
+    quietly grew to cover two things each would still be five members.
+    """
+
+    assert {c.value for c in Confirmation} == {
+        "profile",
+        "remote opt-in",
+        "license acknowledgement",
+        "model import",
+        "provider admission",
+    }
+    for confirmation in Confirmation:
+        assert " and " not in confirmation.value, confirmation
 
 
 def test_no_operation_reason_offers_to_do_another_ones_job() -> None:
@@ -522,6 +563,33 @@ def operator_view_entry_id(node):
     from azazel_nexus.model_import import entry_id_for
 
     return entry_id_for(display_name="model.bin", size=len(WEIGHTS))
+
+
+def test_a_first_generation_offers_no_rollback_target(node) -> None:
+    """Retention is what makes a rollback possible. Generation 1 has none,
+    and offering one would point at a generation that never existed."""
+
+    service = ModelImport(node)
+    (node.inbox / "model.bin").write_bytes(WEIGHTS)
+    service.import_entry(
+        operator_view_entry_id(node), "small-advisor", now=NOW, actor=ACTOR
+    )
+    gathered = gather_facts(
+        service,
+        profile=MioProfile.CORE,
+        opt_in=NO_OPT_IN,
+        reserve_measured=False,
+        resources=some_resources(),
+        model_ids=("small-advisor",),
+    )
+    assert service.current_generation().number == 1
+    assert gathered.rollback_target is None
+    row = [
+        r for r in build_view(gathered).section("import").rows
+        if r["axis"] == "rollback_target"
+    ][0]
+    assert row["value"] is None
+    assert "nothing to restore" in row["reason"]
 
 
 def test_gathering_reports_the_strongest_state_the_node_holds(node) -> None:
