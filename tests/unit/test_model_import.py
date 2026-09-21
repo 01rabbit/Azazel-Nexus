@@ -110,6 +110,14 @@ def _write_catalog(root, entries):
     return path
 
 
+def _second_entry() -> ModelEntry:
+    return an_entry(
+        model_id="second",
+        digest="sha256:" + hashlib.sha256(OTHER_WEIGHTS).hexdigest(),
+        size_bytes=len(OTHER_WEIGHTS),
+    )
+
+
 def place(node, name="model.bin", body=WEIGHTS) -> str:
     """Put an artifact in the inbox and return the id it answers to."""
 
@@ -573,8 +581,113 @@ def test_a_rollback_with_no_predecessor_is_refused_not_invented(node) -> None:
 
 
 def test_a_rollback_records_a_reason_or_does_not_happen(node) -> None:
-    with pytest.raises(ImportRefused):
-        an_import(node).rollback(reason="   ", actor=ACTOR, now=NOW)
+    """With a predecessor in place, so that only the blank reason can refuse
+    it. Without one, this passed on "there is nothing to go back to" -- a
+    test green for a reason it was not testing."""
+
+    second_body = OTHER_WEIGHTS
+    _write_catalog(node.root, [an_entry(), _second_entry()])
+    service = an_import(node)
+    service.import_entry(place(node), "small-advisor", now=NOW, actor=ACTOR)
+    service.import_entry(
+        place(node, name="second.bin", body=second_body), "second", now=NOW, actor=ACTOR
+    )
+    with pytest.raises(ImportRefused) as caught:
+        service.rollback(reason="   ", actor=ACTOR, now=NOW)
+    assert "records why" in str(caught.value)
+    # And with a reason it lands, so the refusal above was the reason's.
+    assert service.rollback(reason="a stated reason", actor=ACTOR, now=NOW).number == 1
+
+
+def test_a_rollback_onto_a_missing_artifact_is_refused(node) -> None:
+    """Restoring a generation the store can no longer satisfy would activate
+    a generation that is not complete."""
+
+    _write_catalog(node.root, [an_entry(), _second_entry()])
+    service = an_import(node)
+    service.import_entry(place(node), "small-advisor", now=NOW, actor=ACTOR)
+    service.import_entry(
+        place(node, name="second.bin", body=OTHER_WEIGHTS), "second", now=NOW, actor=ACTOR
+    )
+    (node.store / artifact_filename(an_entry())).unlink()
+    with pytest.raises(ImportRefused) as caught:
+        service.rollback(reason="the store lost it", actor=ACTOR, now=NOW)
+    assert "no longer holds" in str(caught.value)
+    # And the current generation is untouched by the refusal.
+    assert set(service.current_generation().installed) == {"small-advisor", "second"}
+
+
+def test_the_staged_copy_stops_at_the_declared_size(node) -> None:
+    """A file that grows while it is read is stopped, not copied to the end.
+
+    The post-loop length check would also catch it -- after the disk had
+    taken the whole thing. The bound is in the loop so that it does not.
+    """
+
+    service = an_import(node)
+    service._prepare_directories()
+    (node.inbox / "grown.bin").write_bytes(WEIGHTS + b"much more than declared")
+    entry = model_import.InboxEntry(
+        entry_id=entry_id_for(display_name="grown.bin", size=len(WEIGHTS)),
+        size=len(WEIGHTS),
+        display_name="grown.bin",
+    )
+    with pytest.raises(ImportRefused) as caught:
+        service._stage(entry, an_entry())
+    assert "yielded more than" in str(caught.value)
+    assert list(node.staging.iterdir()) == []
+
+
+def test_the_staged_copy_refuses_a_short_read(node) -> None:
+    """Fewer bytes than declared is refused where it is observed, not left
+    for the digest to notice later."""
+
+    service = an_import(node)
+    service._prepare_directories()
+    (node.inbox / "short.bin").write_bytes(WEIGHTS[:-16])
+    entry = model_import.InboxEntry(
+        entry_id=entry_id_for(display_name="short.bin", size=len(WEIGHTS)),
+        size=len(WEIGHTS),
+        display_name="short.bin",
+    )
+    with pytest.raises(ImportRefused) as caught:
+        service._stage(entry, an_entry())
+    assert "bytes read against" in str(caught.value)
+    assert list(node.staging.iterdir()) == []
+
+
+def test_bytes_in_the_store_are_not_an_installed_model(node) -> None:
+    """The store holding an artifact is not the node having installed it.
+
+    Verification alone would call this `present`; only a generation naming it
+    makes it so. Debris from an interrupted sweep must not read as installed.
+    """
+
+    service = an_import(node)
+    service._prepare_directories()
+    (node.store / artifact_filename(an_entry())).write_bytes(WEIGHTS)
+    reading = service.reading_for("small-advisor")
+    assert reading.state is CatalogState.DECLARED
+    assert reading.refused_by is Refusal.ARTIFACT_ABSENT
+    assert "no generation installs it" in reading.reason
+
+
+def test_a_generation_id_covers_what_is_installed(node) -> None:
+    """Two generations can share a number across nodes; they must not share
+    an id while installing different things."""
+
+    one = model_import._generation_id(2, {"a": "sha256:" + "1" * 64})
+    other = model_import._generation_id(2, {"a": "sha256:" + "2" * 64})
+    more = model_import._generation_id(2, {"a": "sha256:" + "1" * 64, "b": "sha256:" + "3" * 64})
+    assert len({one, other, more}) == 3
+    assert model_import._generation_id(3, {"a": "sha256:" + "1" * 64}) != one
+
+
+def test_distinct_entries_get_distinct_ids() -> None:
+    """The size trails as a fixed width, so the name is whatever precedes it."""
+
+    pairs = [("a", 1), ("a", 2), ("ab", 1), ("b", 1), ("a\x00b", 1), ("", 1)]
+    assert len({entry_id_for(display_name=n, size=s) for n, s in pairs}) == len(pairs)
 
 
 def test_the_predecessors_artifact_is_retained_so_rollback_can_land(node) -> None:

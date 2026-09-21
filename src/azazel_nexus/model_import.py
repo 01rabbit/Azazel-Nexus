@@ -211,9 +211,14 @@ class InboxEntry:
 def entry_id_for(*, display_name: str, size: int) -> str:
     """The id an inbox entry answers to.
 
-    Over identity, not content -- see the module docstring. Canonical and
-    length-prefixed so that a name containing the separator cannot be made to
-    collide with another name and size.
+    Over identity, not content -- see the module docstring.
+
+    The size trails as a fixed eight bytes, which is what makes the encoding
+    unambiguous: the name is whatever precedes it, so no two (name, size)
+    pairs share an encoding. The length prefix is redundant against that and
+    is kept anyway, so that appending a field later cannot quietly
+    reintroduce the ambiguity the fixed-width tail is currently carrying
+    alone.
     """
 
     name = display_name.encode("utf-8")
