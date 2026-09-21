@@ -111,6 +111,24 @@ def test_an_entry_declaring_no_source_permits_no_online_route() -> None:
     assert "imported offline" in str(caught.value)
 
 
+def test_the_refusal_is_named_for_what_it_says_not_for_what_was_missing() -> None:
+    """`source unavailable` is the answer an operator reads.
+
+    It was `no_source_declared`, which describes the catalog's omission
+    rather than the node's position. The node's position is that there is no
+    source it can use, and that is what the refusal says now -- pinned,
+    because a rename back would be silent otherwise.
+    """
+
+    assert Refusal.SOURCE_UNAVAILABLE.value == "source_unavailable"
+    assert "no_source_declared" not in {r.value for r in Refusal}
+    with pytest.raises(AcquisitionRefused) as caught:
+        plan_acquisition(
+            an_entry(source_id=None), consent=consent_for(), free_bytes=PLENTY
+        )
+    assert str(caught.value).startswith("source_unavailable:")
+
+
 def test_a_null_source_never_falls_back_to_another_entrys_source() -> None:
     """The failure this would be: a `null` that quietly became "try the
     usual place" is a way to acquire from a source the catalog never named --
