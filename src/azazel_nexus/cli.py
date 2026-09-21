@@ -21,7 +21,7 @@ from typing import Callable, Optional, Sequence, TextIO
 
 from .capability import CORE_CAPABILITIES
 from .cognition import read_cognition
-from .commissioning import CommissioningRefused, propose
+from .commissioning import REQUIRED_PROFILES, CommissioningRefused, propose
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
 from .edge_package import (
@@ -35,6 +35,7 @@ from .edge_package import (
 from .audit import AuditLedger
 from .hil_preflight import (
     BLOCKED,
+    BOOT_ID_PATH,
     COMMISSIONING_DIR,
     PROTECTION_KEY,
     OperatorDecisions,
@@ -43,7 +44,11 @@ from .hil_preflight import (
     Protection,
     audit_event,
     collect_readonly_inventory,
+    describe_for_screen,
     evaluate as evaluate_preflight,
+    local_principal,
+    next_generation,
+    node_clock,
     luks_backed,
     persist_commissioning_record,
     read_protection_key,
@@ -510,11 +515,17 @@ def _cmd_hil_preflight(
 ) -> int:
     """One command, run on the target, answering one question.
 
+    **It takes no operator, no timestamp and no identifier.** A command line
+    is read by everyone on the host -- `ps`, `/proc/<pid>/cmdline`, the
+    shell's history -- so a name passed as an argument is a name published to
+    all of them. The operator is the local principal the kernel reports, the
+    time is the node's own clock and boot, and the approval ID is asked for
+    in the wizard, where the answer reaches the encrypted record and nothing
+    else.
+
     It prints `HIL_PREFLIGHT_READY` or `HIL_PREFLIGHT_BLOCKED` and the fields
-    `hil_preflight` allows for each. No value from the inventory is printed on
-    either path -- which is why the rows the wizard shows an operator are the
-    only place identity appears, and they appear on their screen, not in the
-    result, the journal or the audit.
+    `hil_preflight` allows for each. No raw identity, no operator identity and
+    no raw instant is printed on either path.
     """
 
     readouts = read_interfaces(args.sysfs, permanent_mac_reader=permanent_mac_reader)
@@ -536,22 +547,36 @@ def _cmd_hil_preflight(
         answers.append(Answer(handle, None if answer == "skip" else answer))
         return answer
 
-    for row in render_rows(proposal):
-        facts = ", ".join(f"{k}={v}" for k, v in sorted(row["description"].items()))
-        print(f"{row['handle']}  {facts}", file=out)
+    # The narrower set: `describe_for_operator` carries the serial and the
+    # device ids, and a terminal is not one of the two places raw identity
+    # may go.
+    for index, readout in enumerate(proposal.commissionable, start=1):
+        facts = ", ".join(
+            f"{k}={v}" for k, v in sorted(describe_for_screen(readout).items())
+        )
+        print(f"if-{index}  {facts}", file=out)
+    for _, reasons in proposal.refused:
+        print("-  this adapter was seen and cannot be commissioned", file=out)
+        for reason in reasons:
+            print(f"    blocked: {reason}", file=out)
+
+    at, boot_id = node_clock(boot_id_path=args.boot_id)
+    principal = local_principal()
 
     try:
         record = commission(
             proposal,
             ask=recording_ask,
             confirm=confirm,
-            operator=args.operator,
-            at=args.at,
-            profiles_present=args.profiles,
+            operator=principal,
+            at=at,
+            profiles_present=REQUIRED_PROFILES,
         )
-    except (WizardAbandoned, CommissioningRefused) as exc:
+    except (WizardAbandoned, CommissioningRefused):
+        # The class name and nothing from the exception: a refusal's message
+        # may quote what it refused.
         print(BLOCKED, file=out)
-        print(f"missing: B-3 ({exc.__class__.__name__})", file=out)
+        print("missing: B-3", file=out)
         return 2
 
     decisions = OperatorDecisions(
@@ -560,9 +585,9 @@ def _cmd_hil_preflight(
         external_communication_forbidden=confirm(
             "forbid external communication for the duration of the campaign?"
         ),
-        responsible=args.operator,
-        at=args.at,
-        host_label=text("asset ID or anonymised host ID"),
+        responsible=principal,
+        at=at,
+        host_label=text("anonymised host ID or asset ID"),
         approval_id=text("approval ID"),
         reboot_approved=confirm("approve measurements that require reboots?"),
         administrative_rights=confirm(
@@ -586,12 +611,14 @@ def _cmd_hil_preflight(
         sysfs_dev_block=args.sysfs_dev_block,
         sysfs_tpm=args.sysfs_tpm,
     )
+    generation = next_generation(args.record_dir)
     result = evaluate_preflight(
         inventory,
         decisions,
         protection=protection,
-        generation=args.generation,
+        generation=generation,
         key=key or b"",
+        boot_id=boot_id,
         proposal=proposal,
     )
 
@@ -600,7 +627,11 @@ def _cmd_hil_preflight(
         # been established. A refusal writes nothing at all.
         try:
             persist_commissioning_record(
-                record, directory=args.record_dir, protection=protection
+                record,
+                directory=args.record_dir,
+                protection=protection,
+                generation=generation,
+                boot_id=boot_id,
             )
         except PreflightRefused:
             for line in PreflightResult(
@@ -663,18 +694,19 @@ def main(
     preflight = sub.add_parser(
         "hil-preflight",
         help="may the 8 GiB HG-05 campaign start on this node? Takes no "
-        "sample, reboots nothing, activates nothing",
+        "arguments, no sample, and reboots or activates nothing",
     )
-    preflight.add_argument("--operator", required=True)
-    preflight.add_argument("--at", required=True, help="RFC3339 timestamp")
-    preflight.add_argument("--profiles", nargs="*", default=())
-    preflight.add_argument("--record-dir", type=Path, default=COMMISSIONING_DIR)
-    preflight.add_argument("--key", type=Path, default=PROTECTION_KEY)
-    preflight.add_argument("--audit", type=Path, default=None)
-    preflight.add_argument("--generation", type=int, default=1)
-    # Test seams, like `--sysfs` above: the paths a node reads itself from.
-    # Hidden because an operator who had to name them could name one that
-    # describes a different machine.
+    # **No operator, no timestamp, no identifier.** Every option below is a
+    # path the node reads itself from, and every one is hidden: an operator
+    # who had to name them could name one that describes a different machine,
+    # and an option that took a name would put the name in `ps`.
+    preflight.add_argument(
+        "--record-dir", type=Path, default=COMMISSIONING_DIR, help=argparse.SUPPRESS
+    )
+    preflight.add_argument(
+        "--key", type=Path, default=PROTECTION_KEY, help=argparse.SUPPRESS
+    )
+    preflight.add_argument("--audit", type=Path, default=None, help=argparse.SUPPRESS)
     preflight.add_argument(
         "--meminfo", type=Path, default=Path("/proc/meminfo"), help=argparse.SUPPRESS
     )
@@ -689,6 +721,9 @@ def main(
     )
     preflight.add_argument(
         "--sysfs-tpm", type=Path, default=Path("/sys/class/tpm"), help=argparse.SUPPRESS
+    )
+    preflight.add_argument(
+        "--boot-id", type=Path, default=BOOT_ID_PATH, help=argparse.SUPPRESS
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)

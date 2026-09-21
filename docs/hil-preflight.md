@@ -19,7 +19,41 @@ somewhere it does not belong, and a mistyped one is a fact nobody can check.
 The node holds all twenty. It answers for itself, and the operator runs one
 command.
 
-## 2. Two answers
+## 2. What the command takes
+
+```
+azazel-nexus hil-preflight
+```
+
+**Nothing else.** No operator, no timestamp, no identifier.
+
+A command line is read by everyone on the host — `ps`,
+`/proc/<pid>/cmdline`, the shell's history file — so a name passed as an
+argument is a name published to all three, by the operator, in the act of
+asking whether they may begin. It is also the one place an identifier ends up
+without anybody deciding to put it there.
+
+| instead of | the node uses |
+| --- | --- |
+| `--operator <name>` | the **local principal** the kernel reports for the process: `uid:…/gid:…`, which is an account and not a person |
+| `--at <timestamp>` | the node's **own clock**, with its **boot ID**. An audit whose instants were chosen by the thing being audited records a story rather than a sequence |
+| an asset ID on the line | the wizard's prompt, whose answer reaches the encrypted record and nothing else |
+
+Both the principal and the instant are written to the encrypted commissioning
+record and printed nowhere. The boot ID reaches the audit only inside the
+HMAC: two runs on separate boots have to be distinguishable there, and the
+boot ID itself is raw identity that may not appear.
+
+The options that remain are paths the node reads itself from, and every one
+of them is hidden — an operator who had to name them could name one that
+describes a different machine.
+
+**What an operator is shown while choosing is narrower too.**
+`commissioning.describe_for_operator` carries the serial and the device ids;
+the preflight shows the physical label and the slot. A terminal is not one of
+the two places raw identity may go.
+
+## 3. Two answers
 
 `HIL_PREFLIGHT_READY` or `HIL_PREFLIGHT_BLOCKED`. There is no `PARTIAL`, no
 `READY_WITH_WARNINGS` and no `PROBABLY` — **a preflight with a middle value
@@ -27,7 +61,7 @@ is a preflight somebody proceeds from.** The absence is structural:
 `hil_preflight.OUTCOMES` has two entries and a result carrying anything else
 cannot be constructed.
 
-## 3. What it establishes, and who establishes it
+## 4. What it establishes, and who establishes it
 
 | | established by | items |
 | --- | --- | --- |
@@ -44,7 +78,7 @@ Connectivity (`A-11`) is read from the kernel's own view and is **never handed
 to the role path**. It is a fact about the node, not about which port does
 what.
 
-## 4. What a reader is shown
+## 5. What a reader is shown
 
 | blocked | ready |
 | --- | --- |
@@ -59,7 +93,7 @@ what.
 what is missing, because the name is what the operator needs; the value of the
 facts that are present is not.
 
-## 5. Where raw identity goes
+## 6. Where raw identity goes
 
 Exactly where [inventory confidentiality](inventory-confidentiality.md) §3
 says: the permanent MACs, the serials, the TPM identity, the asset ID and the
@@ -75,7 +109,7 @@ fingerprint, and the outcome with the classification of what blocked it.
 format the wizard already produces, stored as the document its own digest
 covers. A second format would be a second identity policy.
 
-## 6. A refusal writes nothing
+## 7. A refusal writes nothing
 
 If the encrypted-storage prerequisite does not hold — no LUKS-backed device
 under the record directory, or no protection key — the raw inventory has
@@ -86,7 +120,7 @@ A preflight that wrote the record and then complained about the storage would
 have already done the thing it was refusing. The refusal lives in the one
 function that writes raw identity, so the next caller cannot route around it.
 
-## 7. How the node reads itself
+## 8. How the node reads itself
 
 Every source is a file or a `stat`. Nothing is executed.
 
@@ -101,7 +135,7 @@ A LUKS check that shelled out to `cryptsetup` would report "not encrypted" on
 a host where the tool is merely absent — the wrong answer in the one direction
 that matters.
 
-## 8. What it still does not decide
+## 9. What it still does not decide
 
 A ready preflight says a campaign **may begin**. It is not a measurement, not
 a reserve, not an admission and not an approval. `HG-05` is closed by the run
