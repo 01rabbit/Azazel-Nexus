@@ -1282,3 +1282,36 @@ def test_an_abandoned_set_writes_nothing_and_says_so_in_classifications(tmp_path
     assert code == 2
     assert BLOCKED in text
     assert list(node["record_dir"].iterdir()) == []
+
+
+def test_the_preflight_command_never_binds_an_exception_it_reports():
+    """Structural, because the prose version depends on what today's
+    refusal happens to say.
+
+    `CommissioningRefused` currently quotes `proposal.reasons`, which carry
+    no kernel names -- the names are in `proposal.refused`, which it does not
+    include. That is a fact about the refusal as it stands, and the next edit
+    to `propose` can change it without anybody thinking about this command.
+    So the handler cannot reach the exception at all: an unbound handler has
+    nothing to print.
+    """
+
+    import ast
+
+    from azazel_nexus import cli
+
+    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    command = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_cmd_hil_preflight"
+    )
+    bound = [
+        handler.name
+        for handler in ast.walk(command)
+        if isinstance(handler, ast.ExceptHandler) and handler.name is not None
+    ]
+    assert bound == [], (
+        f"the preflight binds {bound}; a bound exception is one a later edit "
+        "prints, and a refusal's message quotes what it refused"
+    )
