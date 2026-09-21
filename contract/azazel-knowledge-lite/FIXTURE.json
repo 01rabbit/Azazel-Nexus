@@ -1,0 +1,42 @@
+{
+  "artifact_digest": {
+    "PROVENANCE.md": "15d0b32b44706a68745fc9281b99d8d32d031e1cd1caecd0899dc3500aee4bd4",
+    "anchors.toml": "ab9273b3194895dc159e05aed127a533cc5b0fda042ff3ed1e1c5afca6821bd3",
+    "expected.json": "fc98956c2830008964a0405b63351104cc886b3658b8a4767e8aa6bd47313da8",
+    "lite.tar.gz": "94a1f77030a7c9b3b962c45f425d17dd74cb8e61ca015a7658ae1110a22d2102",
+    "negative.json": "739780e1bd0b6d88b170dcbd997f705b2b38d940d495966f134b0181fe1b81fb",
+    "negative/corrupt-payload.tar.gz": "27ec584f28e7b3c882595e61b457f939dcb3c1553b7a7c2708b8b8c295de17b0",
+    "negative/corrupt-signature.tar.gz": "371a1dc07b582798fcb2b467da118e4cfedcc26bd6c78842d88dec1aae869911",
+    "negative/corrupt-truncated.tar.gz": "84a8d7a8ab51d44ef7c3b83f37e38ab51f2f9fabce6839184f600d3107f625cd",
+    "negative/expired.tar.gz": "a19a8ae4974ce12f958f963cbd98f3f01ac487b57846dd8e7d889bd9e8fb267a"
+  },
+  "contract": "azazel-knowledge/lite-fixture/v1",
+  "determinism_checked": "two emissions at this revision produced byte-identical output for all eight files; the digests below also match the sha256 values Knowledge declares in negative.json and the bundle_sha256 in expected.json",
+  "fixture_generator_command": "python tools/lite_fixture.py emit --out DIR",
+  "knowledge_contract": {
+    "anchor_decides": [
+      "threshold",
+      "keys",
+      "revoked",
+      "key_roles",
+      "required_signer_role",
+      "minimum_security_epoch",
+      "accepted_export_policy_digests"
+    ],
+    "bundle_format_version": 1,
+    "expiry": "per claim, evaluated by the consumer against its own query_as_of; there is no manifest field and no filename convention (ADR-0015 D4)",
+    "kind": "full",
+    "manifest_may_only_claim": [
+      "security_epoch",
+      "profile.selection_inputs.export_policy_digest"
+    ],
+    "manifest_member": "manifest.json",
+    "signature_line_format": "<key_id>:<hex signature>, one per line",
+    "signature_member": "manifest.sig",
+    "signature_scheme": "ed25519 detached over the raw manifest.json bytes",
+    "trust_anchor": "anchors.toml"
+  },
+  "purpose": "the canonical input Azazel-Nexus#67 verifies against. Nexus implements a read-only reader for what Knowledge publishes and invents no bundle format and no signature format of its own. These artifacts are what Nexus CI runs the six cases over -- valid, corrupt-signature, corrupt-payload, corrupt-truncated, expired, absent -- so that the reader is tested against what the producer actually emits rather than against a forgery written in the consumer's own tests",
+  "source_repository": "01rabbit/Azazel-Knowledge",
+  "source_revision": "f29c29d1002881b416286e18aae65455c3623348"
+}

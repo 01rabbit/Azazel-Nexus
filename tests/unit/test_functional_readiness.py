@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -39,9 +40,40 @@ def test_the_three_embedded_features_are_tracked() -> None:
     assert set(READINESS) == {"knowledge_lite", "mio", "deception_lite"}
 
 
+#: The features that can supply their capability, and the ones that cannot.
+#: Listed rather than derived, so that a feature crossing the line has to be
+#: moved here by somebody who then reads the rules below.
+FUNCTIONAL = {"knowledge_lite"}
+
+
 @pytest.mark.parametrize("feature", sorted(READINESS))
-def test_none_of_them_is_functional_yet(feature: str) -> None:
-    assert READINESS[feature].functional is False
+def test_each_feature_is_on_the_side_this_file_says_it_is(feature: str) -> None:
+    assert READINESS[feature].functional is (feature in FUNCTIONAL)
+
+
+@pytest.mark.parametrize("feature", sorted(FUNCTIONAL))
+def test_a_functional_feature_says_what_it_means_and_what_it_does_not(
+    feature: str,
+) -> None:
+    """A bare capability word is one an operator fills in from hope."""
+
+    readiness = READINESS[feature]
+    assert readiness.means.strip()
+    assert readiness.does_not_mean
+    reason = readiness.reason()
+    assert readiness.means in reason
+    for limit in readiness.does_not_mean:
+        assert limit in reason
+
+
+def test_knowledge_lite_functional_claims_nothing_about_crypto_peers_or_authority() -> None:
+    """The three claims the word would otherwise grow on its own."""
+
+    limits = " ".join(READINESS["knowledge_lite"].does_not_mean).lower()
+    assert "cryptographic implementation is supported" in limits
+    assert "nexus#70" in limits
+    assert "az-04" in limits
+    assert "edge authority" in limits
 
 
 def test_exactly_one_of_them_has_a_functional_layer_that_reaches_only_this_host() -> None:
@@ -61,32 +93,55 @@ def test_a_feature_cannot_be_both_functional_and_loopback_only() -> None:
 
     with pytest.raises(ValueError, match="not supplying its capability"):
         Readiness(
-            feature="x", functional=True, missing="", issue="", loopback_only=True
+            feature="x",
+            functional=True,
+            missing="",
+            issue="",
+            loopback_only=True,
+            means="a fixture",
+            does_not_mean=("anything",),
         )
 
 
 # -- each declaration, tied to the code that makes it true -----------------
 
 
-def test_knowledge_lite_is_not_functional_because_nothing_can_read_a_bundle() -> None:
-    """The default claim reader refuses, and there is no other.
+def test_knowledge_lite_is_functional_because_a_real_bundle_is_admitted_and_served() -> None:
+    """The mechanical tie for the one feature that crossed the line.
 
-    `KnowledgeLite` takes its reader by injection and defaults to one that
-    reads nothing. Until a real bundle format is accepted by default, no node
-    can turn an admitted artifact into a claim -- which is what
-    `knowledge_lite` being non-functional means.
+    Not a declaration checked against itself: the producer's own pinned
+    fixture is imported through the inbox and its claims are served. If that
+    stops working, this fails, and whoever made it stop has to come to
+    `functional_readiness.py` and say what the feature now provides.
     """
 
-    assert KnowledgeLite.__dataclass_fields__["claims_of"].default is no_claim_reader
-    with pytest.raises(Exception) as refused:
-        no_claim_reader(b"any bytes at all")
-    assert "does not parse Knowledge's" in str(refused.value)
+    import shutil
+    import tempfile
 
-    assert readiness_for("knowledge_lite").functional is False, (
-        "a default reader that refuses everything means no node can serve a "
-        "claim; if that has changed, update the declaration"
+    from azazel_nexus.lite_import import CommissionedLite, LiteImport
+
+    contract = (
+        pathlib.Path(__file__).resolve().parents[2] / "contract" / "azazel-knowledge-lite"
     )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp) / "knowledge-lite"
+        (root / "inbox").mkdir(parents=True)
+        (root / "trust").mkdir(parents=True)
+        shutil.copy(contract / "anchors.toml", root / "trust" / "anchors.toml")
+        shutil.copy(contract / "lite.tar.gz", root / "inbox" / "lite.tar.gz")
 
+        service = LiteImport(CommissionedLite(root=root))
+        entries = service.list_inbox()
+        assert len(entries) == 1
+        outcome = service.import_entry(entries[0].entry_id, now="2026-09-21T00:00:00Z")
+        assert outcome.admitted is True
+        rows = list(service.serve(query_as_of="2026-09-21T00:00:00Z"))
+        assert rows, "admitted and served nothing"
+
+    assert readiness_for("knowledge_lite").functional is True, (
+        "a real bundle was imported and served; if the declaration says "
+        "otherwise, one of the two is wrong"
+    )
 
 def test_mio_is_not_functional_because_the_resource_gate_always_refuses() -> None:
     """A fully evidenced provider, in the largest envelope, is still refused.
@@ -262,7 +317,9 @@ def test_the_loopback_runtime_really_binds_so_the_word_is_not_control_plane_only
 # -- what a declaration must carry -----------------------------------------
 
 
-@pytest.mark.parametrize("feature", sorted(READINESS))
+@pytest.mark.parametrize(
+    "feature", sorted(f for f in READINESS if f not in FUNCTIONAL)
+)
 def test_a_gap_names_what_is_missing_and_where_it_is_tracked(feature: str) -> None:
     readiness = READINESS[feature]
     assert readiness.missing.strip()
@@ -270,9 +327,18 @@ def test_a_gap_names_what_is_missing_and_where_it_is_tracked(feature: str) -> No
     assert readiness.feature == feature
 
 
-@pytest.mark.parametrize("feature", sorted(READINESS))
-def test_the_reason_distinguishes_itself_from_an_absent_peer(feature: str) -> None:
-    """The sentence this whole change exists to make sure gets said."""
+@pytest.mark.parametrize(
+    "feature", sorted(f for f in READINESS if f not in FUNCTIONAL)
+)
+def test_an_unsupplied_feature_distinguishes_itself_from_an_absent_peer(
+    feature: str,
+) -> None:
+    """The sentence this whole change exists to make sure gets said.
+
+    Only for the features that cannot supply. A functional feature's reason
+    says what it means and what it does not, which is a different sentence
+    for a different fact.
+    """
 
     reason = READINESS[feature].reason()
     assert "not the same fact as an external peer being absent" in reason
@@ -282,7 +348,14 @@ def test_the_reason_distinguishes_itself_from_an_absent_peer(feature: str) -> No
 def test_a_functional_declaration_needs_no_reason() -> None:
     """So the refusals below are about incomplete gaps, not about all gaps."""
 
-    assert Readiness(feature="x", functional=True, missing="", issue="").functional
+    assert Readiness(
+        feature="x",
+        functional=True,
+        missing="",
+        issue="",
+        means="a fixture",
+        does_not_mean=("anything",),
+    ).functional
 
 
 @pytest.mark.parametrize(
@@ -313,3 +386,45 @@ def test_the_word_is_not_one_the_other_vocabularies_use() -> None:
         | {MISSING}
     )
     assert CONTROL_PLANE_ONLY not in taken
+
+
+def _core_job_gate() -> str:
+    """The body of the CI step that guards this module's declarations."""
+
+    workflow = pathlib.Path(".github/workflows/ci.yml").read_text()
+    start = workflow.index("PYTHONPATH=src python - <<'PY'")
+    return workflow[start : workflow.index("\n          PY\n", start)]
+
+
+def test_the_ci_gate_names_exactly_the_features_reviewed_as_functional() -> None:
+    """The tripwire is a hand-written set in YAML, so tie it to the declarations.
+
+    `CORE imports with nothing installed` fails when a feature is declared
+    functional and is not in its `reviewed` set -- which is how Knowledge Lite
+    becoming functional (#67) forced the status rows and
+    `docs/integration-display.md` to be updated with it. The set is a literal
+    in the workflow, and a literal drifts. The job checks its own set against
+    the declarations, so the drift cannot reach `main`; this test is only so
+    that it is found before a push rather than after one.
+    """
+
+    match = re.search(r'^\s*reviewed = \{(.*?)\}\s*$', _core_job_gate(), re.MULTILINE)
+    assert match, "the CORE job declares no reviewed-functional set"
+    reviewed = set(ast.literal_eval("{" + match.group(1) + "}"))
+    declared = {name for name, entry in READINESS.items() if entry.functional}
+    assert reviewed == declared, (
+        f"the CI gate reviewed {sorted(reviewed)} and the declarations say "
+        f"{sorted(declared)}"
+    )
+
+
+def test_every_tracked_feature_has_a_row_in_the_ci_gate() -> None:
+    """A feature the gate has no row for is a feature whose display it checks nothing of."""
+
+    match = re.search(r"^\s*rows = \{\n(.*?)^\s*\}\s*$", _core_job_gate(), re.MULTILINE | re.DOTALL)
+    assert match, "the CORE job declares no feature-to-row map"
+    named = set(re.findall(r'"([a-z_]+)": \("', match.group(1)))
+    assert named == set(READINESS), (
+        f"the CI gate has rows for {sorted(named)} and this module tracks "
+        f"{sorted(READINESS)}"
+    )

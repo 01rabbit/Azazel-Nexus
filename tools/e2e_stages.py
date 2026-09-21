@@ -52,6 +52,7 @@ def run_all(harness: Harness) -> None:
     harness.stage("Edge package verification", lambda: _edge_package(harness))
     harness.stage("loopback decoy runtime", lambda: _loopback_decoys(harness))
     harness.stage("Edge probe to status", lambda: _edge_probe(harness))
+    harness.stage("Knowledge Lite offline import", lambda: _lite_import(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -770,4 +771,114 @@ def _edge_probe(harness: Harness) -> str:
         "the probe ran the command fixed in code, wrote a bounded result, and "
         "the library read it back to verified-ready; stale, mismatched and "
         "tampered cases each withheld without reporting a failure"
+    )
+
+
+def _lite_import(harness: Harness) -> str:
+    """Knowledge in through the inbox, and Edge unaffected by every outcome (#67).
+
+    The producer's own pinned fixtures, driven end to end: enumerate the
+    inbox, select by content id, verify, admit or quarantine, then serve. All
+    six cases, in finite time, against real files.
+
+    Edge readiness and action authority are read before and after each one
+    and must be identical. Knowledge is advice; it does not move authority.
+    """
+
+    import shutil
+    from pathlib import Path as _Path
+
+    from azazel_nexus.edge_package import inspect as inspect_edge
+    from azazel_nexus.lite_import import CommissionedLite, LiteImport
+
+    contract = _Path(__file__).resolve().parents[1] / "contract" / "azazel-knowledge-lite"
+    as_of = "2026-09-21T00:00:00Z"
+    no_edge = harness.root / "no-edge-core"
+
+    def edge_answer():
+        answer = inspect_edge(no_edge)
+        return (answer.ready, answer.presence.value, answer.state().ready)
+
+    baseline = edge_answer()
+    if baseline != (False, "absent", False):
+        raise RuntimeError(f"the Edge baseline is {baseline}, not an absent Edge")
+
+    cases = (
+        ("valid", "lite.tar.gz", True, "available", "current", "available"),
+        ("corrupt-signature", "negative/corrupt-signature.tar.gz", False, "quarantined", "absent", "absent"),
+        ("corrupt-payload", "negative/corrupt-payload.tar.gz", False, "quarantined", "absent", "absent"),
+        ("corrupt-truncated", "negative/corrupt-truncated.tar.gz", False, "quarantined", "absent", "absent"),
+        ("expired", "negative/expired.tar.gz", True, "available", "stale", "available"),
+        ("absent", None, False, "unavailable", "absent", "absent"),
+    )
+
+    checked = 0
+    for name, bundle, admitted, overall, time_bound, static in cases:
+        root = harness.root / f"knowledge-lite-{name}"
+        (root / "inbox").mkdir(parents=True, exist_ok=True)
+        (root / "trust").mkdir(parents=True, exist_ok=True)
+        shutil.copy(contract / "anchors.toml", root / "trust" / "anchors.toml")
+        if bundle is not None:
+            shutil.copy(contract / bundle, root / "inbox" / _Path(bundle).name)
+
+        transitions = []
+        service = LiteImport(
+            CommissionedLite(root=root),
+            recorder=lambda transition, event: transitions.append(transition.value),
+        )
+        entries = service.list_inbox()
+        if bundle is None:
+            if entries:
+                raise RuntimeError("the absent case found something in the inbox")
+            reading = service.read(query_as_of=as_of)
+            if transitions:
+                raise RuntimeError("a node with no artifact wrote to the ledger")
+        else:
+            if len(entries) != 1:
+                raise RuntimeError(f"{name}: {len(entries)} inbox entries, expected 1")
+            outcome = service.import_entry(entries[0].entry_id, now=as_of)
+            reading = outcome.reading
+            if outcome.admitted is not admitted:
+                raise RuntimeError(f"{name}: admitted={outcome.admitted}, expected {admitted}")
+
+        if reading.overall != overall:
+            raise RuntimeError(f"{name}: overall {reading.overall}, expected {overall}")
+        if reading.time_bound.value != time_bound:
+            raise RuntimeError(
+                f"{name}: time-bound {reading.time_bound.value}, expected {time_bound}"
+            )
+        if reading.static_reference.value != static:
+            raise RuntimeError(
+                f"{name}: static reference {reading.static_reference.value}, expected {static}"
+            )
+
+        rows = list(service.serve(query_as_of=as_of))
+        dated = [row for row in rows if "agg_next_expiry" in row]
+        reference = [row for row in rows if "agg_next_expiry" not in row]
+        if name == "valid" and not (dated and reference):
+            raise RuntimeError("the valid bundle did not serve both kinds of claim")
+        if name == "expired":
+            if dated:
+                raise RuntimeError("an expired indicator was served")
+            if not reference:
+                raise RuntimeError("the static reference was not served")
+        if not admitted and rows:
+            raise RuntimeError(f"{name}: a bundle that was not admitted served {len(rows)} rows")
+
+        after = edge_answer()
+        if after != baseline:
+            raise RuntimeError(
+                f"{name}: the Edge answer changed from {baseline} to {after}; "
+                "Knowledge is advice and does not move authority"
+            )
+        checked += 1
+
+    if checked != len(cases):
+        raise RuntimeError(f"{checked} of {len(cases)} cases were exercised")
+    return (
+        f"{checked} Knowledge Lite cases driven through the inbox; the valid "
+        "bundle served both kinds of claim, the expired one withheld its "
+        "indicators and still served reference material, three broken ones "
+        "were quarantined and served nothing, and the Edge answer was "
+        "identical throughout"
     )
