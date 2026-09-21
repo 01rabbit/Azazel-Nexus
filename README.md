@@ -106,7 +106,7 @@ from the kernel's peer credentials, and take no arbitrary command, unit name,
 path or argument. The dependency runs one way — see
 [the runtime boundary](docs/runtime-boundary.md).
 
-**What is not.** Nothing here has been run on the target hardware. The
+**What is not.** Nothing here has been run on the target hardware — a generic rugged x86_64 Linux PC at the resource class deployed, which is what every hardware gate means by the phrase. The
 integration harness (`tools/e2e.py`) establishes that the distribution does
 not contradict itself and records, as *not executed*, every stage it could not
 run — see [integration evidence](docs/integration-evidence.md). Reading an

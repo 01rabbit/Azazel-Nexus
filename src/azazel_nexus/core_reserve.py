@@ -33,7 +33,8 @@ not been taken -- and the first person to grep for a reserve would find one.
 ## What makes a record admissible
 
 A measurement is not a number someone wrote down. `HG-05` says what would
-settle it: the node running on the target hardware **under load, with audit,
+settle it: the node running on the target hardware -- a generic rugged
+x86_64 Linux PC at the class being measured -- **under load, with audit,
 evidence capture and the lease journal active**, sampled across the memory
 classes, because the reserve scales with retention and concurrency
 (`IMPLEMENTATION_SPEC.md` §2.1). Each of those is a refusal here when absent:

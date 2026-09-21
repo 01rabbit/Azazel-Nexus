@@ -14,6 +14,25 @@ zero frames, or that the node booted inside a time budget.
 Every gate names four things: what is claimed, what CI actually executed, why
 that is not the claim, and what would settle it.
 
+## What "the target hardware" means here
+
+Every gate below says a claim would be settled on *the target hardware*. For
+Nexus that is **a generic rugged x86_64 Linux PC, at the resource class
+actually deployed** — not a named model, and not any particular vendor's box.
+The gates are per class, not per machine: what settles a class is a run on a
+host of that class, and a run on one class says nothing about another
+([`inheritance-ledger.md`](inheritance-ledger.md) §1 holds the product
+boundary).
+
+**Constrained and Raspberry-Pi-class devices are Azazel-Edge's proving
+ground, not Nexus's target.** A result from one of them, or from a developer's
+laptop or workstation, may be useful while building the harness. It is **not**
+evidence for any gate here, and in particular it is never evidence for a
+provider admission: the reserve it would measure is a different machine's.
+Recording such a run as a gate result would be the exact substitution this
+register exists to prevent — a simulated result read as a measured one, with
+the extra hazard that it looks like hardware.
+
 | Gate | Claim | State |
 | --- | --- | --- |
 | `HG-01` | Operational units are masked after installation and stay masked until activation | `hardware-unverified` |
@@ -180,11 +199,21 @@ the required behaviour rather than a defect: the deterministic path continues
 unchanged, and M.I.O. says it is unavailable rather than implying scarcity it
 has not measured.
 
-**What would settle it.** The node running on the target hardware under load
-with audit, evidence capture and the lease journal active, and the resident
-set that configuration needs measured across the 8, 16 and 32 GB classes --
-since the reserve is not a single number if it scales with retention and
+**What would settle it.** The node running on a generic rugged x86_64 Linux
+PC -- see *What "the target hardware" means here* above -- under load with
+audit, evidence capture and the lease journal active, and the resident set
+that configuration needs measured across the 8, 16 and 32 GB classes -- since
+the reserve is not a single number if it scales with retention and
 concurrency, which `IMPLEMENTATION_SPEC.md` §2.1 says it does.
+
+Three classes here, against the *four* — 8, 16, 32 and 64 GB — that
+[capability model](capability-model.md) §2 and [support matrix](support-matrix.md)
+name. That is not a restatement with different numbers, which those documents
+forbid: they are counting different measurements. Performance and retention
+targets are recorded per memory class, and 64 GB is one. The Core reserve is
+keyed by the **selected profile**, and the selector has three floors -- a
+64 GB host selects `standard` exactly as a 32 GB host does, so a fourth
+reserve would be a second record for one profile.
 [The measurement procedure](core-reserve-measurement.md) §5 is that run, step
 by step: which subsystems must be active, under what load, how many runs per
 class, and what makes the result admissible.
