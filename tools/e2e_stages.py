@@ -53,6 +53,7 @@ def run_all(harness: Harness) -> None:
     harness.stage("loopback decoy runtime", lambda: _loopback_decoys(harness))
     harness.stage("Edge probe to status", lambda: _edge_probe(harness))
     harness.stage("Knowledge Lite offline import", lambda: _lite_import(harness))
+    harness.stage("Core reserve input path", lambda: _core_reserve_path(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -881,4 +882,182 @@ def _lite_import(harness: Harness) -> str:
         "indicators and still served reference material, three broken ones "
         "were quarantined and served nothing, and the Edge answer was "
         "identical throughout"
+    )
+
+
+def _core_reserve_path(harness: Harness) -> str:
+    """The Core reserve input path, with no measurement on it (#68).
+
+    `HG-05` is open: nobody has measured the Core reserve on target hardware,
+    and this stage takes no measurement either. What it drives is the path a
+    measurement would travel -- record, validation, reserve, admission gate --
+    in the three states that matter, on the machine running this harness.
+
+    The record it writes is **synthetic and says so**: its `harness_version`
+    is not the real harness's, and this stage asserts that. A record that
+    could be mistaken for a measurement is the one thing this must not leave
+    behind.
+    """
+
+    import json
+    from pathlib import Path as _Path
+
+    from azazel_nexus.cognition import AdmissionGate, ResourceEvidence, admit_local_model
+    from azazel_nexus.compatibility import (
+        ADMITTED_ARCHITECTURE,
+        HostFacts,
+        TestedTuple,
+        TestedTupleSet,
+    )
+    from azazel_nexus.core_reserve import (
+        MIN_SAMPLES,
+        REQUIRED_SUBSYSTEMS,
+        Provenance,
+        Sample,
+        build_record,
+        load_reserve,
+        record_as_document,
+        reserve_from,
+    )
+    from azazel_nexus.resource_profile import ResourceProfile
+    from azazel_nexus_runtime.core_reserve_probe import HARNESS_VERSION
+
+    SYNTHETIC = "e2e-synthetic/0"
+    if SYNTHETIC == HARNESS_VERSION:
+        raise RuntimeError("the synthetic marker collided with the real harness's version")
+
+    component = "sha256:" + "1" * 64
+    digest = "sha256:" + "2" * 64
+    host = HostFacts(
+        os_abi="debian-13/linux-6.12",
+        architecture=ADMITTED_ARCHITECTURE,
+        cpu_features=frozenset({"avx2"}),
+        fabric_version="v0.9.0rc2",
+        fabric_features=frozenset(),
+        schema_features=frozenset(),
+        profile=ResourceProfile.LITE,
+        overlay_schema="3",
+        security_epoch=4,
+    )
+    tested = TestedTupleSet.of(
+        [
+            TestedTuple(
+                component_digest=component,
+                adapter_digest=digest,
+                renderer_digest=digest,
+                toolchain_digest=digest,
+                os_abi="debian-13/linux-6.12",
+                architecture=ADMITTED_ARCHITECTURE,
+                fabric_version="v0.9.0rc2",
+                profile=ResourceProfile.LITE,
+                overlay_schema="3",
+                security_epoch=4,
+                max_rollback_version="0.9.0",
+            )
+        ]
+    )
+    provider = _reserve_provider(component)
+
+    room = harness.root / "core-reserve"
+    room.mkdir(parents=True, exist_ok=True)
+
+    # 1. No record: every node in this build. The gate refuses for want of a
+    #    measurement, and says so.
+    absent = load_reserve(room / "core-reserve.json")
+    if absent is not None:
+        raise RuntimeError("a node with no record produced a reserve")
+    unmeasured = admit_local_model(provider, host=host, tested=tested, resources=None)
+    if unmeasured.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
+        raise RuntimeError(f"with no reserve the gate was {unmeasured.failed_gate}")
+    if "unmeasured" not in unmeasured.reason:
+        raise RuntimeError("the refusal does not name the missing measurement")
+
+    samples = tuple(
+        Sample(offset_seconds=i * 10, resident_mib=2000) for i in range(MIN_SAMPLES + 1)
+    )
+    common = {
+        "profile": ResourceProfile.LITE,
+        "host_digest": "sha256:" + "e" * 64,
+        "harness_version": SYNTHETIC,
+        "subsystems_active": REQUIRED_SUBSYSTEMS,
+        "samples": samples,
+    }
+
+    # 2. A fixture record: refused for being one, and it reaches the disk
+    #    first, so this is the reader and the validator and not a constructor.
+    fixture_path = room / "fixture.json"
+    fixture_path.write_text(
+        json.dumps(record_as_document(build_record(provenance=Provenance.FIXTURE, **common))),
+        encoding="utf-8",
+    )
+    if load_reserve(fixture_path) is not None:
+        raise RuntimeError("a fixture record produced a reserve")
+
+    # 3. A record shaped like a measurement: the reserve is derived, the
+    #    resource gate decides, and the next gate refuses for having no
+    #    implementation. One gate further, and no further.
+    measured_path = room / "measured.json"
+    record = build_record(provenance=Provenance.MEASURED, **common)
+    measured_path.write_text(
+        json.dumps(record_as_document(record)), encoding="utf-8"
+    )
+    reserve = load_reserve(measured_path)
+    if reserve is None:
+        raise RuntimeError("a record shaped like a measurement produced no reserve")
+    if reserve.harness_version == HARNESS_VERSION:
+        raise RuntimeError(
+            "this stage's record claims the real harness produced it; it is "
+            "synthetic and must never be mistakeable for a measurement"
+        )
+    if reserve.reserve_mib != 2000:
+        raise RuntimeError(f"the reserve is {reserve.reserve_mib}, not the maximum observed")
+    if reserve_from(record) != reserve:
+        raise RuntimeError("the reserve differs between the file and the record")
+
+    fits = admit_local_model(
+        provider,
+        host=host,
+        tested=tested,
+        resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
+    )
+    if fits.admitted or fits.failed_gate is not AdmissionGate.APPROVAL:
+        raise RuntimeError(f"with a reserve the answer was {fits.failed_gate}, admitted={fits.admitted}")
+
+    too_large = admit_local_model(
+        _reserve_provider(component, memory_need_mib=14000),
+        host=host,
+        tested=tested,
+        resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
+    )
+    if too_large.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
+        raise RuntimeError("a provider larger than the headroom was not refused for resources")
+
+    # And the node's own record path on this machine is still empty.
+    from azazel_nexus.core_reserve import RESERVE_RECORD_PATH
+
+    if RESERVE_RECORD_PATH.exists():
+        raise RuntimeError(f"{RESERVE_RECORD_PATH} exists on this machine")
+
+    return (
+        "no measurement was taken: with no record the resource gate refused for "
+        "want of one, a fixture record was refused for being a fixture, and a "
+        "synthetic record reached the approval gate and stopped there because "
+        "approval is not implemented. No provider was admitted in any of the three"
+    )
+
+
+def _reserve_provider(component: str, memory_need_mib: int = 1000):
+    from azazel_nexus.cognition import LocalModelProvider
+
+    return LocalModelProvider(
+        name="local-model",
+        component_digest=component,
+        declared_format="gguf",
+        tokenizer_format="sentencepiece",
+        runtime_version="1.4.0",
+        quantization="q4_k_m",
+        context_size=4096,
+        memory_need_mib=memory_need_mib,
+        signature_verified=True,
+        content_policy_passed=True,
     )

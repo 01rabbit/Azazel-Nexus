@@ -48,6 +48,7 @@ from enum import Enum
 from typing import Optional, Sequence
 
 from .compatibility import HostFacts, TestedTupleSet
+from .core_reserve import CoreReserve
 from .resource_profile import ResourceProfile
 
 __all__ = [
@@ -57,6 +58,7 @@ __all__ = [
     "LocalModelProvider",
     "ProviderAdmission",
     "RemoteState",
+    "ResourceEvidence",
     "admit_local_model",
     "read_cognition",
 ]
@@ -98,10 +100,18 @@ class AdmissionGate(str, Enum):
 #: which is the one an operator acts on.
 #:
 #: `APPROVAL` and `STAGED_ACTIVATION` are in the vocabulary and are **not
-#: reachable in this build**: the resource gate before them always rejects
-#: while the Core reserve is unmeasured. They are named here because the
-#: contract names them, and `tests/unit/test_cognition.py` asserts they are
-#: unreachable rather than leaving that to be discovered.
+#: reached on any node this build runs on**: the resource gate before them
+#: refuses without a measured Core reserve, and no node has one
+#: (`core_reserve.py`, `docs/hardware-gates.md` HG-05).
+#:
+#: They are not *unreachable*, and the difference matters. Supply a measured
+#: reserve that a provider fits under and `APPROVAL` is reached -- where it
+#: refuses for having no implementation, not for being past the end of the
+#: road. A gate that refuses only by being unreachable is a gate that starts
+#: passing the day something upstream stops refusing, silently and without a
+#: line of code changing. `tests/unit/test_cognition.py` drives both: no node
+#: today gets past the resource gate, and a node with a reserve gets exactly
+#: one gate further and stops.
 GATE_ORDER = (
     AdmissionGate.AUTHENTICITY,
     AdmissionGate.COMPATIBILITY,
@@ -110,6 +120,38 @@ GATE_ORDER = (
     AdmissionGate.APPROVAL,
     AdmissionGate.STAGED_ACTIVATION,
 )
+
+
+@dataclass(frozen=True)
+class ResourceEvidence:
+    """What the resource gate needs to decide, both halves or neither (#68).
+
+    The gate compares a declared memory need against the node's envelope
+    **after the Core reserve**, so it needs two measured quantities: the
+    reserve (`core_reserve.py`) and the envelope the node actually has. They
+    are one argument because either alone is worse than neither -- an envelope
+    without a reserve is the invented-threshold case `HG-05` exists to
+    prevent, and a reserve without an envelope has nothing to subtract from.
+
+    `envelope_mib` is what the node measured, not a class floor.
+    `resource_profile.PROFILE_ORDER` names hardware classes, and
+    `docs/capability-model.md` §2 is explicit that a class is never evidence
+    that a capability fits.
+
+    **No node this build runs on supplies one.** `core_reserve.load_reserve()`
+    returns `None` everywhere, because no measurement has been taken and none
+    ships -- see `docs/core-reserve-measurement.md`.
+    """
+
+    reserve: CoreReserve
+    envelope_mib: int
+
+    def __post_init__(self) -> None:
+        if self.envelope_mib < 1:
+            raise ValueError(
+                "the envelope is not a positive quantity; a node that cannot "
+                "say how much memory it has has not measured one"
+            )
 
 
 @dataclass(frozen=True)
@@ -165,6 +207,7 @@ def admit_local_model(
     *,
     host: Optional[HostFacts],
     tested: TestedTupleSet,
+    resources: Optional[ResourceEvidence] = None,
 ) -> ProviderAdmission:
     """Run §4's gates in order. The first rejection is the answer.
 
@@ -224,15 +267,51 @@ def admit_local_model(
     if not provider.content_policy_passed:
         return refuse(AdmissionGate.CONTENT_POLICY, "the content policy rejected the asset")
 
-    # The gate that cannot pass on this product's own evidence.
+    # The resource gate. With no measured reserve it refuses, which is the
+    # answer on every node this build runs on.
+    if resources is None:
+        return refuse(
+            AdmissionGate.RESOURCE_TOPOLOGY,
+            "the Core reserve is unmeasured for Nexus, so whether "
+            f"{provider.memory_need_mib} MiB fits in the {host.profile.value!r} "
+            "envelope cannot be decided here. docs/capability-model.md §2: an "
+            "implementation must not treat the selected profile as evidence that a "
+            "capability fits. Choosing a reserve would be inventing a measurement; "
+            "docs/hardware-gates.md HG-05 tracks taking it",
+        )
+    # A reserve is per memory class. `HG-05` is explicit that it does not
+    # scale as one number, so one class's reserve is not another's -- and a
+    # reserve carried across classes is an invented measurement again, this
+    # time wearing a real one's clothes.
+    if resources.reserve.profile is not host.profile:
+        return refuse(
+            AdmissionGate.RESOURCE_TOPOLOGY,
+            f"the reserve was measured on the {resources.reserve.profile.value!r} "
+            f"class and this node is {host.profile.value!r}; the Core reserve "
+            "scales with retention and concurrency (IMPLEMENTATION_SPEC.md "
+            "§2.1), so it is not one number across classes",
+        )
+    if not resources.reserve.fits(
+        memory_need_mib=provider.memory_need_mib, envelope_mib=resources.envelope_mib
+    ):
+        return refuse(
+            AdmissionGate.RESOURCE_TOPOLOGY,
+            f"{provider.memory_need_mib} MiB does not fit the measured envelope "
+            f"of {resources.envelope_mib} MiB after a Core reserve of "
+            f"{resources.reserve.reserve_mib} MiB",
+        )
+
+    # Past the resource gate, and into the two that are named by the contract
+    # and not implemented. This is reachable only with a measured reserve, so
+    # no node this build runs on reaches it -- but it refuses by having no
+    # implementation rather than by being unreachable, because an unreachable
+    # gate that becomes reachable is a gate that silently starts passing.
     return refuse(
-        AdmissionGate.RESOURCE_TOPOLOGY,
-        "the Core reserve is unmeasured for Nexus, so whether "
-        f"{provider.memory_need_mib} MiB fits in the {host.profile.value!r} "
-        "envelope cannot be decided here. docs/capability-model.md §2: an "
-        "implementation must not treat the selected profile as evidence that a "
-        "capability fits. Choosing a reserve would be inventing a measurement; "
-        "docs/hardware-gates.md HG-05 tracks taking it",
+        AdmissionGate.APPROVAL,
+        "operator or policy-authority approval is not implemented; the gate "
+        "became reachable with a measured Core reserve and has no evidence to "
+        "consider, and absence of a check is not a pass "
+        "(docs/mio-runtime.md §3, Nexus#68)",
     )
 
 
@@ -291,6 +370,7 @@ def read_cognition(
     profile: ResourceProfile,
     tested: TestedTupleSet,
     host: Optional[HostFacts] = None,
+    resources: Optional[ResourceEvidence] = None,
 ) -> CognitionReading:
     """What the cognition plane is right now.
 
@@ -311,7 +391,8 @@ def read_cognition(
     """
 
     admissions = tuple(
-        admit_local_model(provider, host=host, tested=tested) for provider in providers
+        admit_local_model(provider, host=host, tested=tested, resources=resources)
+        for provider in providers
     )
     admitted = [outcome for outcome in admissions if outcome.admitted]
 
@@ -328,7 +409,7 @@ def read_cognition(
     return CognitionReading(
         state=state,
         remote=RemoteState.DISABLED,
-        resource_reason=_resource_reason(profile),
+        resource_reason=_resource_reason(profile, resources),
         topology_reason=(
             "no commissioned egress path is required, because no remote provider "
             "is enabled; topology neither permits nor blocks anything here"
@@ -357,9 +438,18 @@ def _no_provider_reason(admissions: Sequence[ProviderAdmission]) -> str:
     )
 
 
-def _resource_reason(profile: ResourceProfile) -> str:
+def _resource_reason(profile: ResourceProfile, resources: Optional[ResourceEvidence]) -> str:
+    if resources is None:
+        return (
+            f"envelope {profile.value!r}; headroom undecidable because the Core "
+            "reserve is unmeasured for Nexus (docs/hardware-gates.md HG-05). The "
+            "envelope is a hardware class and never evidence that a capability fits"
+        )
     return (
-        f"envelope {profile.value!r}; headroom undecidable because the Core "
-        "reserve is unmeasured for Nexus (docs/hardware-gates.md HG-05). The "
-        "envelope is a hardware class and never evidence that a capability fits"
+        f"envelope {profile.value!r}, measured at {resources.envelope_mib} MiB; "
+        f"Core reserve {resources.reserve.reserve_mib} MiB from "
+        f"{resources.reserve.sample_count} samples over "
+        f"{resources.reserve.duration_seconds}s by "
+        f"{resources.reserve.harness_version}. Headroom is decidable and the "
+        "envelope is still a hardware class, never evidence that a capability fits"
     )

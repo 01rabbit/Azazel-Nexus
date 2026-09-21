@@ -217,6 +217,11 @@ REQUIRED_STAGES = (
     # Nexus#67: the producer's six fixtures through the inbox, with the
     # Edge answer read before and after each one.
     "Knowledge Lite offline import",
+    # Nexus#68: the Core reserve input path -- record, validation, reserve,
+    # admission gate -- in the three states that matter. It takes no
+    # measurement and needs no hardware, which is why it can be here at all:
+    # what it drives is the machinery around a number that does not exist.
+    "Core reserve input path",
 )
 
 
