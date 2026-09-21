@@ -224,6 +224,49 @@ jobs:
                   "an observation records something about the request; a timing "
                   "record that grew a request field is a request log"
               )
+          # Route selection (#81). On a node with nothing installed nothing is
+          # permitted but the deterministic handoff, nothing is predictable,
+          # and no candidate is called fastest. Every candidate still appears
+          # with a reason, because an operator who cannot see why a route was
+          # not used cannot act on it.
+          import azazel_nexus.route_selection as route_selection  # noqa: F401
+          from azazel_nexus.routing import Route as _Route
+          _decision = route_selection.select(
+              profile=mio_profile.MioProfile.CORE,
+              privacy_class=_PC.P0_PUBLIC,
+              remote=remote_trust.remote_admission(
+                  profile=mio_profile.MioProfile.CORE,
+                  opt_in=mio_profile.NO_OPT_IN,
+                  trust=remote_trust.unchecked_reading(),
+                  privacy_class=_PC.P0_PUBLIC,
+                  sanitised=False,
+              ),
+              local_admitted=False,
+              local_refusal="the Core reserve is unmeasured (HG-05)",
+              predictions={},
+              deadline_ms=1000,
+          )
+          if _decision.route is not _Route.DETERMINISTIC_HANDOFF:
+              raise SystemExit(f"a node with nothing chose {_decision.route.value!r}")
+          if tuple(_decision.permitted) != (_Route.DETERMINISTIC_HANDOFF,):
+              raise SystemExit(
+                  f"a node with nothing permitted {[r.value for r in _decision.permitted]}"
+              )
+          if not all(str(r.reason).strip() for r in _decision.candidates):
+              raise SystemExit("a candidate was excluded with no reason")
+          if "COMPLETED" in {o.name for o in route_selection.RequestOutcome}:
+              raise SystemExit(
+                  "a cancelled, failed, timed-out or withdrawn route can be "
+                  "reported as completed"
+              )
+          for _event in route_selection.NEVER_ANSWERED:
+              for _available in (True, False):
+                  if route_selection.outcome_for(
+                      _event, fallback_available=_available
+                  ) is route_selection.RequestOutcome.ANSWERED:
+                      raise SystemExit(f"{_event.value} reported the route as answering")
+          if route_selection.MAX_FALLBACKS != 1:
+              raise SystemExit("more than one fallback is permitted per request")
           # The cognition plane (#5). A node with nothing installed and no
           # provider is the configuration M.I.O. has to be answerable in, and
           # it is the one where `CORE ONLY` is the correct answer rather than

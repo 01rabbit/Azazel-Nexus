@@ -22,8 +22,11 @@ import pathlib
 import pytest
 
 from azazel_nexus import mio_profile
+REPOSITORY = pathlib.Path(__file__).resolve().parents[2]
+
 from azazel_nexus.mio_profile import (
     NO_OPT_IN,
+    OFFERED,
     PREREQUISITES,
     InFlightDisposition,
     MioProfile,
@@ -333,3 +336,139 @@ def test_the_module_defines_no_verb_that_could_execute_or_egress() -> None:
         name.startswith(("run", "exec", "apply", "enforce", "launch", "start"))
         for name in names
     ), sorted(names)
+
+
+# -- commissioning is where a profile is first offered --------------------
+
+
+def a_commissioning(answer="core", confirmed=True, opt_in=None, reserve_measured=False):
+    from azazel_nexus.mio_profile import commission_profile
+
+    seen = {}
+
+    def ask(prompt, choices):
+        seen["prompt"] = prompt
+        seen["choices"] = choices
+        return answer
+
+    record = commission_profile(
+        ask=ask,
+        confirm=lambda _summary: confirmed,
+        opt_in=opt_in if opt_in is not None else NO_OPT_IN,
+        reserve_measured=reserve_measured,
+        operator="operator-1",
+        at="2026-09-21T00:00:00Z",
+    )
+    return record, seen
+
+
+def test_installation_offers_nothing_and_leaves_core() -> None:
+    """A profile is first presented at commissioning, never by the installer.
+
+    Checked against the installer itself rather than asserted: a script that
+    wrote a profile would make the node something other than `CORE` before
+    anybody was asked.
+    """
+
+    installer = (REPOSITORY / "packaging" / "install.sh").read_text(encoding="utf-8")
+    for profile in MioProfile:
+        if profile is MioProfile.CORE:
+            continue
+        assert profile.value not in installer, (
+            f"the installer mentions {profile.value}; installation leaves CORE "
+            "in force and asks nothing"
+        )
+
+
+def test_all_four_profiles_are_offered() -> None:
+    """Offering only the recommended one would make the recommendation a decision."""
+
+    _record, seen = a_commissioning()
+    assert seen["choices"] == tuple(p.value for p in OFFERED)
+    assert set(seen["choices"]) == {p.value for p in MioProfile}
+
+
+def test_the_narrowest_is_offered_first() -> None:
+    """A list that opens with the widest option recommends it by placement."""
+
+    _record, seen = a_commissioning()
+    assert seen["choices"][0] == MioProfile.CORE.value
+    assert seen["choices"][-1] == MioProfile.FASTEST_PERMITTED.value
+
+
+def test_the_recommendation_and_its_reason_travel_with_the_question() -> None:
+    _record, seen = a_commissioning()
+    assert "Recommended: core" in seen["prompt"]
+    assert "HG-05" in seen["prompt"]
+
+
+def test_fastest_permitted_is_recommended_once_everything_is_set() -> None:
+    """The standard path, and it needs the reserve as well as the consent."""
+
+    record, seen = a_commissioning(
+        answer="fastest-permitted", opt_in=an_opt_in(), reserve_measured=True
+    )
+    assert record.recommended is MioProfile.FASTEST_PERMITTED
+    assert record.chosen is MioProfile.FASTEST_PERMITTED
+    assert record.overrode_recommendation is False
+    assert "Recommended: fastest-permitted" in seen["prompt"]
+
+
+def test_an_override_that_widens_is_recorded_as_such() -> None:
+    """Narrowing is unremarkable; widening is what an audit reader looks for."""
+
+    record, _seen = a_commissioning(answer="fastest-permitted", reserve_measured=False)
+    assert record.recommended is MioProfile.CORE
+    assert record.overrode_recommendation is True
+    assert record.widened is True
+    assert record.as_event()["widened"] is True
+
+
+def test_an_override_that_narrows_is_not_reported_as_widening() -> None:
+    record, _seen = a_commissioning(
+        answer="core", opt_in=an_opt_in(), reserve_measured=True
+    )
+    assert record.recommended is MioProfile.FASTEST_PERMITTED
+    assert record.overrode_recommendation is True
+    assert record.widened is False
+
+
+def test_the_record_keeps_both_the_choice_and_the_recommendation() -> None:
+    """An operator who took the advice and one who overrode it differ."""
+
+    record, _seen = a_commissioning(answer="fastest-permitted")
+    event = record.as_event()
+    assert event["chosen"] == "fastest-permitted"
+    assert event["recommended"] == "core"
+    assert event["recommendation_reason"]
+    assert event["operator"] == "operator-1"
+
+
+def test_an_unconfirmed_commissioning_writes_nothing() -> None:
+    with pytest.raises(ProfileRefused) as caught:
+        a_commissioning(confirmed=False)
+    assert "remains CORE" in str(caught.value)
+
+
+def test_an_answer_outside_the_offer_is_refused_rather_than_taken() -> None:
+    """A profile commissioned by a typo is a ceiling nobody decided on."""
+
+    with pytest.raises(ProfileRefused) as caught:
+        a_commissioning(answer="fastest")  # a plausible mistyping
+    assert "not a choice" in str(caught.value)
+
+
+def test_a_commissioning_still_admits_nothing() -> None:
+    """Even the widest choice. Every admission gate runs afterwards."""
+
+    record, _seen = a_commissioning(
+        answer="fastest-permitted", opt_in=an_opt_in(), reserve_measured=False
+    )
+    rows = {
+        row["axis"]: row["value"]
+        for row in profile_rows(
+            profile=record.chosen, opt_in=an_opt_in(), reserve_measured=False
+        )
+    }
+    assert rows["mio_profile"] == "fastest-permitted"
+    assert rows["mio_provider_admission"] == "refused"
