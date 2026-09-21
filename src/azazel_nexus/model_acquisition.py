@@ -271,6 +271,9 @@ def plan_acquisition(
             "it again would spend the disk and the time for nothing",
         )
     attempts_remaining = MAX_ATTEMPTS - attempts_used
+    # `AcquisitionPlan` refuses an exhausted budget too. Both are wanted: this
+    # one refuses before the disk is consulted and can say how many attempts
+    # were made, and the dataclass invariant holds for a plan built directly.
     if attempts_remaining < 1:
         raise AcquisitionRefused(
             Refusal.ATTEMPTS_EXHAUSTED,

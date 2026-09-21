@@ -526,7 +526,11 @@ def _source_id_from(item: Mapping, index: int) -> Optional[str]:
     """`null` or a symbol. Never absent, never anything else.
 
     A missing field would let "no online source" and "nobody thought about
-    it" produce the same catalog, and only one of those is a decision.
+    it" produce the same catalog, and only one of those is a decision. That
+    refusal is `_entry_from`'s `missing` check, which runs first and covers
+    every field; the subscript below cannot raise, and is written as a
+    subscript rather than a `.get` so that a future reader sees the field is
+    required rather than inferring a default that does not exist.
     """
 
     raw = item["source_id"]

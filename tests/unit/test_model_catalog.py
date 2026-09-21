@@ -289,6 +289,33 @@ def test_the_reported_signer_does_not_depend_on_store_ordering(tmp_path, order) 
     assert catalog.signer == "aaa-good"
 
 
+def test_the_schema_names_the_shape_it_actually_has() -> None:
+    """The schema moved to `/2` when `source_id` was added.
+
+    A required field changes what the document is, so a reader that accepted
+    a `/1` document under `/2` rules would be inferring a field nobody wrote.
+    And the domain tag did *not* move: it says what kind of thing was signed,
+    which is unchanged, while the schema says what shape it is.
+    """
+
+    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/2"
+    assert CATALOG_DOMAIN == b"azazel-nexus/model-catalog/v1\x00"
+    assert "source_id" in an_entry().as_document()
+
+
+def test_a_catalog_declaring_the_previous_schema_is_refused(tmp_path) -> None:
+    """The shape it names is not the shape this reader knows."""
+
+    body = catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
+    document = json.loads(body)
+    document["schema"] = "azazel-nexus/model-catalog/1"
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(tmp_path, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "model-catalog/1" in str(caught.value)
+
+
 def test_a_catalog_naming_another_schema_is_refused(tmp_path) -> None:
     """Refused, not best-effort parsed. A reader that guesses is a reader
     that accepts a document nobody wrote for it."""

@@ -256,6 +256,57 @@ def test_what_is_already_installed_is_not_fetched_again() -> None:
     )
 
 
+def test_a_plan_built_directly_still_refuses_an_unknown_symbol() -> None:
+    """`plan_acquisition` refuses one first, so this invariant is only ever
+    exercised by a caller who bypassed it -- which is exactly the caller it
+    exists for. An invariant nothing reaches on its own is one that quietly
+    stops holding."""
+
+    with pytest.raises(AcquisitionRefused) as caught:
+        AcquisitionPlan(
+            model_id="m",
+            source_id="somebody-elses-mirror",
+            expected_digest="sha256:" + "0" * 64,
+            expected_size_bytes=10,
+            resume_from=0,
+        )
+    assert caught.value.cause is Refusal.UNKNOWN_SOURCE
+
+
+@pytest.mark.parametrize("offset", [-1, 11])
+def test_a_plan_built_directly_still_refuses_an_offset_outside_the_artifact(offset) -> None:
+    with pytest.raises(AcquisitionRefused):
+        AcquisitionPlan(
+            model_id="m",
+            source_id="vendor-mirror",
+            expected_digest="sha256:" + "0" * 64,
+            expected_size_bytes=10,
+            resume_from=offset,
+        )
+    # The ends are inside: resuming from 0 or from the last byte are both real.
+    for inside in (0, 10):
+        assert AcquisitionPlan(
+            model_id="m",
+            source_id="vendor-mirror",
+            expected_digest="sha256:" + "0" * 64,
+            expected_size_bytes=10,
+            resume_from=inside,
+        ).resume_from == inside
+
+
+def test_a_plan_built_directly_still_refuses_an_exhausted_budget() -> None:
+    with pytest.raises(AcquisitionRefused) as caught:
+        AcquisitionPlan(
+            model_id="m",
+            source_id="vendor-mirror",
+            expected_digest="sha256:" + "0" * 64,
+            expected_size_bytes=10,
+            resume_from=0,
+            attempts_remaining=0,
+        )
+    assert caught.value.cause is Refusal.ATTEMPTS_EXHAUSTED
+
+
 def test_a_plan_carries_a_deadline_and_a_bounded_chunk() -> None:
     plan = a_plan()
     assert plan.timeout_seconds == TIMEOUT_SECONDS > 0
@@ -360,6 +411,51 @@ def test_the_symbol_table_and_the_endpoint_table_are_one_fact() -> None:
     """A mismatch stops the import, not the fetch somebody finally confirmed."""
 
     assert set(ENDPOINT_FOR) == set(KNOWN_SOURCES)
+
+
+def test_a_symbol_the_endpoint_table_does_not_cover_stops_the_import() -> None:
+    """The two tables are one fact recorded twice, and this is what keeps
+    them one fact.
+
+    Without exercising the disagreement the check never fires, and a check
+    that never fires is indistinguishable from one that was deleted. So the
+    module is reloaded against a symbol set it does not cover: the failure
+    has to arrive at import, not at the moment an operator finally confirms
+    a fetch.
+
+    The module is executed into a throwaway namespace rather than reloaded:
+    a reload rebinds the real module's classes, and every later assertion of
+    the form `outcome is FetchOutcome.COMPLETE` would then compare a new
+    class against the one this file imported. The check under test is at
+    module level, so a fresh exec reaches it without disturbing anything.
+    """
+
+    import types
+
+    source = pathlib.Path(model_fetch.__file__).read_text(encoding="utf-8")
+    code = compile(source, model_fetch.__file__, "exec")
+
+    def run_isolated(name):
+        # A real module object registered under a throwaway name: `@dataclass`
+        # resolves `sys.modules[cls.__module__]`, so a bare dict is not enough.
+        module = types.ModuleType(name)
+        sys.modules[name] = module
+        try:
+            exec(code, module.__dict__)
+        finally:
+            sys.modules.pop(name, None)
+
+    original = model_acquisition.KNOWN_SOURCES
+    try:
+        model_acquisition.KNOWN_SOURCES = original + ("a-symbol-with-no-address",)
+        with pytest.raises(ImportError) as caught:
+            run_isolated("_isolated_model_fetch_mismatch")
+        assert "a-symbol-with-no-address" in str(caught.value)
+    finally:
+        model_acquisition.KNOWN_SOURCES = original
+    # And with the tables agreeing again, the same exec completes.
+    run_isolated("_isolated_model_fetch_agreeing")
+    assert set(model_fetch.ENDPOINT_FOR) == set(model_acquisition.KNOWN_SOURCES)
 
 
 def test_an_unresolvable_symbol_refuses_rather_than_inventing_an_endpoint() -> None:
