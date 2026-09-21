@@ -8,11 +8,11 @@ the Nexus-owned runtime control plane for M.I.O.
 | §2 capacity envelopes | implemented (`resource_profile.py`, since #26) |
 | §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`), and the resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) |
 | §4 confinement | not implemented; needs a running provider, which §3 does not yet admit |
-| §5 route selection | local-first ladder published; remote is `disabled` with no egress path |
+| §5 route selection | implemented (`routing.py`): the ladder, the envelope, and budgets declared rather than discovered. Remote is `disabled` with no egress path |
 | §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
-| §7 fallback | only the restart rule, which holds because the reading carries no state |
+| §7 fallback | implemented (`routing.py`): all eight triggers, each with what it must never do. The invariant that a fallback never widens is checked over all 8 × 3 pairings |
 | §8 publishing state and reasons | implemented (`CognitionReading`, four independent reasons) |
-| §9 audit visibility | events are produced; nothing writes them to the ledger yet |
+| §9 audit visibility | events are produced, including the route decision **and the inputs that produced it**; nothing writes them to the ledger yet — that is E4 ([#55](https://github.com/01rabbit/Azazel-Nexus/issues/55)) |
 
 **Remote assistance is disabled by default and has no code path.** Not
 configured off — there is no client, no socket and no egress function, and

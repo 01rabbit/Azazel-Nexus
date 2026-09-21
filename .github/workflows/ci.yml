@@ -149,6 +149,35 @@ jobs:
           )
           if denied.allowed or denied.frame is not None:
               raise SystemExit("a restricted frame must produce zero remote egress")
+          # Route selection (#5). On a node with nothing installed and no
+          # provider, the deterministic handoff is the answer -- and a
+          # fallback from it cannot widen, which is the invariant that has to
+          # hold in the configuration with the least to fall back to.
+          import azazel_nexus.routing as routing  # noqa: F401
+          decision = routing.select_route(
+              envelope=routing.RequestEnvelope(
+                  correlation_id="ci",
+                  privacy_class=sanitizer.PrivacyClass.P1_SANITIZED,
+                  deadline="2099-01-01T00:00:00Z",
+                  expiry="2099-01-01T00:00:00Z",
+              ),
+              admissions=[],
+              remote_enabled=False,
+              now="2026-01-01T00:00:00Z",
+              budgets=routing.Budgets(
+                  max_request_bytes=1,
+                  max_response_bytes=1,
+                  requests_per_hour=1,
+                  deadline_seconds=1,
+                  max_concurrency=1,
+              ),
+          )
+          if decision.route is not routing.Route.DETERMINISTIC_HANDOFF:
+              raise SystemExit(f"a node with no provider must answer deterministically, got {decision.route!r}")
+          for trigger in routing.FallbackTrigger:
+              landed = routing.fallback_for(trigger, from_route=routing.Route.DETERMINISTIC_HANDOFF)
+              if landed.ceiling is not routing.Route.DETERMINISTIC_HANDOFF:
+                  raise SystemExit(f"{trigger.value} widened the route on a node with nothing")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.

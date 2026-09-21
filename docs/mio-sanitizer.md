@@ -120,9 +120,12 @@ remote party counting, and a fine bucket does not.
   in this module or in `cognition.py`. Both are scanned for their absence.
 - **No response handling.** §6's *"a remote response cannot request or trigger
   follow-up disclosure"* is a rule about a path that does not exist.
-- **No rate or privacy budget.** §5's per-mission request rate and cumulative
-  privacy budget need state across requests; `sanitize` is a pure function and
-  holds none.
+- **No rate or privacy budget is counted here.** §5's per-mission request rate
+  and cumulative privacy budget need state across requests; `sanitize` is a
+  pure function and holds none. `routing.Budgets` declares the limits and
+  takes the counters as an argument — whoever holds the request state passes
+  them in, because a check that owned its counter could be satisfied by
+  forgetting to increment it.
 - **No wire shape.** The bytes here are canonical for *this* implementation.
   They are not an interoperable form and must not be treated as one until
   Fabric `mio_contracts` is read.
