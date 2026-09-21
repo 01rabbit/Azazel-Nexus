@@ -777,6 +777,55 @@ jobs:
                   )
           else:
               raise SystemExit("an entry declaring no source produced a plan")
+          # The source registry (#105). The half that resolves a symbol, on
+          # the node with nothing installed -- and the two trust policies
+          # that must stay two.
+          import azazel_nexus.source_registry as source_registry
+          if source_registry.REGISTRY_DOMAIN == model_catalog.CATALOG_DOMAIN:
+              raise SystemExit(
+                  "the registry and the catalog share a signing domain; one "
+                  "signature could be read as either"
+              )
+          shared = b"\x01" * 32
+          try:
+              source_registry.CommissionedSources(
+                  catalog_keys={"one-role": shared},
+                  registry_keys={"one-role": shared},
+                  commissioning_digest="sha256:" + "0" * 64,
+              )
+          except source_registry.RegistryRefused:
+              pass
+          else:
+              raise SystemExit(
+                  "one key held both the catalog and the registry role; the "
+                  "separation those two documents rest on is gone"
+              )
+          try:
+              source_registry.CommissionedSources(
+                  catalog_keys={"catalog-role": shared},
+                  registry_keys={"registry-role": shared},
+                  commissioning_digest="sha256:" + "0" * 64,
+              )
+          except source_registry.RegistryRefused:
+              pass
+          else:
+              raise SystemExit("two ids for one key were accepted as two keys")
+          # A registry record names a source; it names no model.
+          record_fields = set(source_registry.SourceRecord.__dataclass_fields__)
+          for forbidden in ("model_id", "digest", "size_bytes"):
+              if forbidden in record_fields:
+                  raise SystemExit(
+                      f"a registry record carries {forbidden!r}; its "
+                      "administrator could introduce a model"
+                  )
+          # And a catalog entry names a symbol; it names no location.
+          entry_fields = set(model_catalog.ModelEntry.__dataclass_fields__)
+          for forbidden in ("host", "port", "url", "endpoint", "path"):
+              if forbidden in entry_fields:
+                  raise SystemExit(
+                      f"a catalog entry carries {forbidden!r}; its signer "
+                      "could point this node anywhere"
+                  )
           # And no catalog is shipped with the source. A catalog is signed
           # under a commissioning trust policy that only exists on the node;
           # one committed here would be one nobody chose to trust.

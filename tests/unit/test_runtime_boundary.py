@@ -84,16 +84,36 @@ def test_the_runtime_exists_as_its_own_distribution():
     )
 
 
-def test_the_runtime_opens_no_internet_socket():
-    """`AF_UNIX` only. Checked against the source, not against intent.
+#: The one module in the runtime distribution permitted to reach the network,
+#: and the issue that permitted it.
+#:
+#: This list is the record of a boundary that moved. Until Nexus#105 the scan
+#: below asserted that **nothing** here could reach an internet address
+#: family; the artifact fetch service needed to, so the assertion is now
+#: "nothing except this". Naming the exemption in the suite is the point: a
+#: guarantee that quietly weakened and left no trace is one nobody can audit
+#: afterwards, and "the test still passes" would have been true either way.
+#:
+#: Adding a second name here is a deliberate act with a reviewer attached.
+EGRESS_EXEMPT = {"artifact_egress.py"}
+
+
+def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
+    """`AF_UNIX` only, everywhere but one module. Checked against the source.
 
     A daemon that could construct an `AF_INET` socket is a daemon whose
     `IPAddressDeny=any` is the only thing standing between it and the network
     -- and that setting is enforced by systemd, which CI does not run.
+
+    The exemption is by **file name**, not by a marker a file can grant
+    itself. A module that wanted egress by writing a comment would be a
+    module that granted itself egress.
     """
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(RUNTIME.rglob("*.py")):
+        if path.name in EGRESS_EXEMPT:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         found = [
             node.attr
@@ -104,6 +124,32 @@ def test_the_runtime_opens_no_internet_socket():
         if found:
             offenders[path.name] = sorted(set(found))
     assert offenders == {}, f"{offenders} reach an internet address family"
+
+
+def test_the_exemption_names_a_module_that_exists_and_uses_it():
+    """An exemption for a file that is gone, or that never needed one, is an
+    exemption nobody would notice had stopped meaning anything.
+
+    Both directions: every exempt name is a real module, and every exempt
+    module actually reaches the network. A stale entry is a hole held open
+    for nothing.
+    """
+
+    for name in sorted(EGRESS_EXEMPT):
+        path = RUNTIME / name
+        assert path.exists(), f"{name} is exempt and does not exist"
+        source = path.read_text(encoding="utf-8")
+        assert "socket" in source and "ssl" in source, (
+            f"{name} is exempt from the egress scan and does not reach the "
+            "network. An exemption nothing uses is a hole held open for nothing"
+        )
+
+
+def test_only_one_module_is_exempt():
+    """The count is asserted, so widening is a diff a reviewer sees rather
+    than a set that grew."""
+
+    assert EGRESS_EXEMPT == {"artifact_egress.py"}
 
 
 def test_the_runtime_uses_only_the_librarys_public_names():

@@ -18,6 +18,11 @@ import re
 
 import pytest
 
+# One source of truth for which module may reach the network. Imported
+# rather than restated: two copies of an exemption list is one copy that
+# stops matching, and the one that stops matching is the one nobody reads.
+from tests.unit.test_runtime_boundary import EGRESS_EXEMPT
+
 from azazel_nexus import decoy as decoy_module
 from azazel_nexus.cognition import AdmissionGate, LocalModelProvider, admit_local_model
 from azazel_nexus.compatibility import (
@@ -256,6 +261,8 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
     for path in sorted(runtime_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         scanned += 1
+        if path.name in EGRESS_EXEMPT:
+            continue
         found = sorted(
             {
                 node.attr
@@ -268,6 +275,63 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
             reaching[path.name] = found
     assert scanned > 1, "a vacuous scan: the runtime distribution was not found"
     assert reaching == {}, f"{reaching} can reach past this host"
+
+
+def test_the_one_module_that_reaches_the_network_cannot_be_reached_through() -> None:
+    """The scan above grew an exemption (Nexus#105), so the claim needs the
+    narrower reason the declaration always gave.
+
+    `functional_readiness.py` says the reason is "the absence of any internet
+    address family in the distribution **that binds**". The scan was broader
+    than that -- it refused any mention at all -- and the artifact fetch
+    service needs outbound TCP. Outbound TCP does not make a decoy reachable:
+    reaching one from outside needs a `bind` to a non-loopback address and a
+    `listen`, and the exempt module does neither.
+
+    So the exemption is allowed to connect, and this is what keeps it from
+    doing anything else. Had the declaration claimed the broader reason, the
+    honest move would have been to change the declaration instead.
+    """
+
+    runtime_root = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "runtime"
+        / "src"
+        / "azazel_nexus_runtime"
+    )
+    for name in sorted(EGRESS_EXEMPT):
+        path = runtime_root / name
+        assert path.exists(), f"{name} is exempt and does not exist"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        serving = sorted(
+            {
+                node.func.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"bind", "listen", "accept", "wrap_socket"}
+                # `wrap_socket` is here for its server side; a client one is
+                # the ordinary way to speak TLS and is not a listener.
+                and not _is_client_wrap(node)
+            }
+        )
+        assert serving == [], (
+            f"{name} may connect outward. It may not {serving}: a module that "
+            "bound or listened would be a path by which something outside "
+            "this host could arrive, which is exactly what `loopback-only` "
+            "says cannot happen"
+        )
+
+
+def _is_client_wrap(node) -> bool:
+    """`wrap_socket(..., server_side=True)` is a listener's; a client's is not."""
+
+    if node.func.attr != "wrap_socket":
+        return False
+    for keyword in node.keywords:
+        if keyword.arg == "server_side":
+            return False
+    return True
 
     readiness = readiness_for("deception_lite")
     assert readiness.loopback_only is True
