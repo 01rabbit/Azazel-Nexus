@@ -91,6 +91,7 @@ jobs:
       - name: Import the CORE modules with no dependencies installed
         run: |
           PYTHONPATH=src python - <<'PY'
+          import hashlib
           import pathlib
           import sys
           before = set(sys.modules)
@@ -579,6 +580,69 @@ jobs:
                   "with no Fabric installed, no claim reported it unavailable; "
                   f"got {[c.verification_state.value for c in claims]}"
               )
+          # The model catalog (#94). It has to answer on a node with nothing
+          # installed, because the distinction it carries -- "nothing is
+          # offered" against "we were told nothing" -- is what an operator
+          # reads before any provider exists. Its Ed25519 verification is the
+          # standard-library one in `signature.py`, so a PyNaCl import
+          # creeping into it would be caught by the scan below.
+          import tempfile
+          import azazel_nexus.model_catalog as model_catalog
+          states = {s.value for s in model_catalog.CatalogState}
+          if states != {"absent", "empty", "declared", "present"}:
+              raise SystemExit(f"the four catalog states are not four: {sorted(states)}")
+          if "AVAILABLE" in {s.name for s in model_catalog.CatalogState}:
+              raise SystemExit(
+                  "CatalogState gained an AVAILABLE member; the four states "
+                  "exist so that no single word stands for all of them"
+              )
+          if model_catalog.absent_reading().state is not model_catalog.CatalogState.ABSENT:
+              raise SystemExit("a node with no catalog does not report absent")
+          # Declared and present are two states, not one, on a bare node.
+          with tempfile.TemporaryDirectory() as room:
+              root = pathlib.Path(room)
+              body = b"weights, not a program"
+              entry = model_catalog.ModelEntry(
+                  model_id="ci-probe",
+                  format="gguf",
+                  digest="sha256:" + hashlib.sha256(body).hexdigest(),
+                  size_bytes=len(body),
+                  provenance="ci probe",
+                  license_acknowledgement_required=False,
+                  runtime_abi="llama.cpp/1",
+                  purpose="prove declared and present stay apart",
+                  context_limit=4096,
+                  declared_min_ram_mib=4096,
+                  declared_min_disk_mib=2048,
+                  declared_profile=azazel_nexus.resource_profile.ResourceProfile.LITE,
+                  rollback_lineage=(),
+              )
+              declared = model_catalog.verify_artifact(entry, artifact_root=root)
+              if declared.state is not model_catalog.CatalogState.DECLARED:
+                  raise SystemExit(
+                      f"a declared entry with no artifact reports {declared.state.value!r}"
+                  )
+              if declared.refused_by is not model_catalog.Refusal.ARTIFACT_ABSENT:
+                  raise SystemExit("a missing artifact was not refused as absent")
+              (root / model_catalog.artifact_filename(entry)).write_bytes(body)
+              present = model_catalog.verify_artifact(entry, artifact_root=root)
+              if present.state is not model_catalog.CatalogState.PRESENT:
+                  raise SystemExit(
+                      f"a verified artifact reports {present.state.value!r}, not present"
+                  )
+              if present.admitted:
+                  raise SystemExit(
+                      "a verified artifact reported itself admitted; admission is "
+                      "decided against a measured Core reserve (HG-05), not here"
+                  )
+          # And no catalog is shipped with the source. A catalog is signed
+          # under a commissioning trust policy that only exists on the node;
+          # one committed here would be one nobody chose to trust.
+          committed = sorted(
+              str(p) for p in pathlib.Path(".").rglob(model_catalog.CATALOG_FILENAME)
+          )
+          if committed:
+              raise SystemExit(f"a signed catalog is committed to the repository: {committed}")
           third_party = sorted(
               name.split(".")[0]
               for name in set(sys.modules) - before
