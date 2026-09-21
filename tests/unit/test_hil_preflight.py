@@ -332,7 +332,13 @@ def test_a_protected_write_stores_the_existing_record_format(tmp_path):
     )
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["digest"] == record().digest()
-    assert sorted(stored) == ["created_at", "digest", "profiles_present", "roles"]
+    assert sorted(stored) == [
+        "created_at",
+        "digest",
+        "generation",
+        "profiles_present",
+        "roles",
+    ]
 
 
 # -- nothing raw and nothing secret reaches a reader ----------------------
@@ -801,7 +807,11 @@ def _protected_node(tmp_path: Path) -> dict:
     key = tmp_path / "key"
     key.write_bytes(KEY)
 
+    boot_id = tmp_path / "boot-id"
+    boot_id.write_text("00000000-0000-4000-8000-000000000001\n")
+
     return {
+        "boot_id": boot_id,
         "meminfo": meminfo,
         "os_release": os_release,
         "record_dir": record_dir,
@@ -824,14 +834,6 @@ def _cli(tmp_path, node, *, answers, texts, confirms, audit=None):
         "--sysfs",
         str(_sysfs_tree(tmp_path)),
         "hil-preflight",
-        "--operator",
-        "operator@console",
-        "--at",
-        "2026-09-21T00:00:00Z",
-        "--profiles",
-        "hardware",
-        "resource",
-        "topology",
         "--record-dir",
         str(node["record_dir"]),
         "--key",
@@ -844,8 +846,8 @@ def _cli(tmp_path, node, *, answers, texts, confirms, audit=None):
         str(node["dev_block"]),
         "--sysfs-tpm",
         str(node["tpm"]),
-        "--generation",
-        "3",
+        "--boot-id",
+        str(node["boot_id"]),
     ]
     if audit is not None:
         argv += ["--audit", str(audit)]
@@ -942,8 +944,7 @@ def test_without_a_prompt_the_command_settles_nothing(tmp_path):
 
     out = io.StringIO()
     code = main(
-        ["--sysfs", str(_sysfs_tree(tmp_path)), "hil-preflight",
-         "--operator", "operator@console", "--at", "2026-09-21T00:00:00Z"],
+        ["--sysfs", str(_sysfs_tree(tmp_path)), "hil-preflight"],
         out=out,
     )
     assert code == 2
@@ -964,6 +965,9 @@ def _doc() -> str:
     "statement",
     [
         "It takes no sample, reboots nothing, activates no unit, admits no provider, runs no model and reaches no network.",
+        "**Nothing else.** No operator, no timestamp, no identifier.",
+        "An audit whose instants were chosen by the thing being audited records a story rather than a sequence",
+        "A terminal is not one of the two places raw identity may go.",
         "**a preflight with a middle value is a preflight somebody proceeds from.**",
         "**No role is inferred.**",
         "**No value from the inventory appears on either path.**",
@@ -988,3 +992,326 @@ def test_the_document_carries_no_identity():
     text = DOC.read_text(encoding="utf-8")
     assert not MAC_SHAPED.search(text)
     assert re.findall(r"\b[0-9a-fA-F]{16,}\b", text) == []
+
+
+# -- the command line carries nothing about anybody -----------------------
+#
+# A command line is read by everyone on the host: `ps`, `/proc/<pid>/cmdline`
+# and the shell's history file. An identifier passed as an argument is an
+# identifier published to all three, by the operator, in the act of asking
+# whether they may begin.
+
+
+def _preflight_parser_options() -> set[str]:
+    import argparse
+    import io
+    import contextlib
+
+    from azazel_nexus.cli import main
+
+    # The parser is built inside `main`; the usage line is what it will
+    # accept, so it is read rather than reconstructed.
+    out = io.StringIO()
+    with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out):
+        main(["hil-preflight", "--help"])
+    return set(re.findall(r"--[a-z0-9-]+", out.getvalue()))
+
+
+@pytest.mark.parametrize(
+    "rejected",
+    ["--operator", "--at", "--asset-id", "--serial", "--mac", "--tpm-identity",
+     "--host", "--approval-id", "--generation"],
+)
+def test_no_identity_or_instant_can_be_passed_on_the_command_line(rejected, tmp_path):
+    import io
+
+    from azazel_nexus.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["hil-preflight", rejected, "anything"], out=io.StringIO())
+
+
+def test_the_published_command_is_the_bare_one():
+    """Everything the command still accepts is a path the node reads itself
+    from, and every one of them is hidden. What an operator types is
+    `azazel-nexus hil-preflight`."""
+
+    assert _preflight_parser_options() <= {"--help"}
+
+
+def test_the_operator_is_the_local_principal_and_not_a_name():
+    """Credentials the kernel already knows, so nobody types a name."""
+
+    principal = preflight.local_principal(getuid=lambda: 1000, getgid=lambda: 1000)
+    assert principal == "uid:1000/gid:1000"
+    assert "@" not in principal
+
+
+def test_the_instant_comes_from_the_node_and_not_from_a_caller():
+    """An audit whose instants were chosen by the thing being audited records
+    a story rather than a sequence."""
+
+    stamp, boot = preflight.node_clock(
+        clock=lambda: 1_600_000_000.0, boot_id_path=Path("/nonexistent")
+    )
+    assert stamp == "2020-09-13T12:26:40Z"
+    assert boot is None
+
+
+def test_the_boot_is_inside_the_fingerprint_and_never_beside_it(tmp_path):
+    """Two runs on separate boots must be distinguishable in the audit, and
+    the boot ID itself is raw identity that may not appear there."""
+
+    first = evaluate(
+        inventory(),
+        decisions(),
+        protection=Protection(luks_backed=True, key_available=True),
+        generation=1,
+        key=KEY,
+        boot_id="00000000-0000-4000-8000-000000000001",
+    )
+    second = evaluate(
+        inventory(),
+        decisions(),
+        protection=Protection(luks_backed=True, key_available=True),
+        generation=1,
+        key=KEY,
+        boot_id="00000000-0000-4000-8000-000000000002",
+    )
+    assert first.fingerprint != second.fingerprint
+    for surface in _rendered_surfaces(first):
+        assert "00000000-0000-4000-8000-000000000001" not in surface
+
+
+def test_the_generation_is_read_from_the_node_rather_than_supplied(tmp_path):
+    """A counter a caller could reset is a record that can claim to be the
+    first one."""
+
+    directory = tmp_path / "commissioning"
+    assert preflight.next_generation(directory) == 1
+    persist_commissioning_record(
+        record(),
+        directory=directory,
+        protection=Protection(luks_backed=True, key_available=True),
+        generation=1,
+    )
+    assert preflight.next_generation(directory) == 2
+
+
+def test_an_unreadable_record_does_not_restart_the_count_silently(tmp_path):
+    directory = tmp_path / "commissioning"
+    directory.mkdir()
+    (directory / "commissioning.json").write_text("{ this is not json")
+    assert preflight.next_generation(directory) == 1
+
+
+def test_the_screen_shows_no_raw_identity():
+    """`describe_for_operator` is the wider set and carries the serial and
+    the device ids. A terminal is not one of the two places raw identity may
+    go."""
+
+    from azazel_nexus.commissioning import describe_for_operator
+
+    shown = preflight.describe_for_screen(readout(SYNTHETIC_MAC))
+    wider = describe_for_operator(readout(SYNTHETIC_MAC))
+    assert set(shown) == {"physical_label", "bus_path"}
+    assert "serial" in wider and "serial" not in shown
+    assert SYNTHETIC_SERIAL not in json.dumps(shown)
+    assert SYNTHETIC_MAC not in json.dumps(shown)
+
+
+def test_the_whole_session_prints_nothing_about_the_operator(tmp_path):
+    """Every line the command writes, from the interface rows to the answer:
+    no principal, no serial, no MAC, no timestamp, no boot ID."""
+
+    node = _protected_node(tmp_path)
+    _, text = _cli(
+        tmp_path,
+        node,
+        answers=["management", "observation"],
+        texts=[SYNTHETIC_ASSET, "approval-synthetic-1"],
+        confirms=[True, True, True, True],
+    )
+    assert not MAC_SHAPED.search(text)
+    for forbidden in (
+        SYNTHETIC_ASSET,
+        SYNTHETIC_SERIAL,
+        KEY.decode(),
+        "uid:",
+        "gid:",
+        node["boot_id"].read_text().strip(),
+    ):
+        assert forbidden not in text, f"{forbidden!r} reached the terminal"
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", text), (
+        "a raw instant reached the terminal"
+    )
+
+
+def test_the_audit_carries_no_principal_and_no_instant(tmp_path):
+    """The closed list has no room for either, and a run that added one
+    would be adding it to the append-only store."""
+
+    node = _protected_node(tmp_path)
+    audit = tmp_path / "audit.jsonl"
+    _cli(
+        tmp_path,
+        node,
+        answers=["management", "observation"],
+        texts=[SYNTHETIC_ASSET, "approval-synthetic-1"],
+        confirms=[True, True, True, True],
+        audit=audit,
+    )
+    text = audit.read_text(encoding="utf-8")
+    for forbidden in ("uid:", "gid:", SYNTHETIC_ASSET, node["boot_id"].read_text().strip()):
+        assert forbidden not in text
+    assert not MAC_SHAPED.search(text)
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", text)
+
+
+def test_the_principal_and_the_instant_reach_the_encrypted_record(tmp_path):
+    """They are not discarded -- they are *placed*. The record is the one
+    place they may be, and an audit that could not be tied back to a
+    principal at all would be an audit nobody could act on."""
+
+    node = _protected_node(tmp_path)
+    _cli(
+        tmp_path,
+        node,
+        answers=["management", "observation"],
+        texts=[SYNTHETIC_ASSET, "approval-synthetic-1"],
+        confirms=[True, True, True, True],
+    )
+    stored = json.loads(
+        (node["record_dir"] / "commissioning.json").read_text(encoding="utf-8")
+    )
+    assert stored["roles"][0]["confirmed_by"].startswith("uid:")
+    assert stored["boot_id"] == node["boot_id"].read_text().strip()
+    assert stored["generation"] == 1
+
+
+def test_the_document_publishes_only_the_bare_command():
+    """The line an operator is given. A document that showed a richer one
+    would be the instruction that puts a name in `ps`."""
+
+    text = DOC.read_text(encoding="utf-8")
+    assert "```\nazazel-nexus hil-preflight\n```" in text
+    # The removed options may be *named* -- the document explains what the
+    # node uses instead -- but never shown as something to type.
+    assert re.search(r"hil-preflight\s+--", text) is None
+
+
+def test_no_document_or_test_instructs_the_removed_options():
+    """The options are gone from the parser; an instruction that still names
+    one is an instruction that fails in front of an operator."""
+
+    offenders = {}
+    for tree in ("docs", "packaging", "README.md"):
+        target = REPO / tree
+        paths = [target] if target.is_file() else sorted(target.rglob("*.md"))
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            if "hil-preflight" not in text:
+                continue
+            found = [
+                option
+                for option in ("--operator", "--at", "--generation", "--profiles")
+                if f"hil-preflight {option}" in text
+            ]
+            if found:
+                offenders[str(path.relative_to(REPO))] = found
+    assert offenders == {}
+
+
+def _bare_sysfs(tmp_path: Path) -> Path:
+    """Interfaces the inventory cannot identify: no bus path, no permanent
+    MAC. Their refusal reasons name the kernel names, which is why what the
+    refusal prints matters."""
+
+    net = tmp_path / "bare" / "class" / "net"
+    for name in KERNEL_NAMES:
+        (net / name).mkdir(parents=True)
+    return net
+
+
+def test_a_refusal_prints_a_classification_and_not_what_it_refused(tmp_path):
+    """The refusal's own message quotes the interfaces it could not
+    identify, by kernel name. An operator needs to know the preflight
+    stopped; they do not need it spelled in the terminal."""
+
+    import io
+
+    from azazel_nexus.cli import main
+
+    node = _protected_node(tmp_path)
+    out = io.StringIO()
+    code = main(
+        [
+            "--sysfs", str(_bare_sysfs(tmp_path)), "hil-preflight",
+            "--record-dir", str(node["record_dir"]),
+            "--key", str(node["key"]),
+            "--meminfo", str(node["meminfo"]),
+            "--os-release", str(node["os_release"]),
+            "--sysfs-dev-block", str(node["dev_block"]),
+            "--sysfs-tpm", str(node["tpm"]),
+            "--boot-id", str(node["boot_id"]),
+        ],
+        out=out,
+        ask=lambda prompt, choices: "skip",
+        confirm=lambda prompt: True,
+        text=lambda prompt: "unused",
+        permanent_mac_reader=lambda name: None,
+    )
+    text = out.getvalue()
+    assert code == 2
+    assert BLOCKED in text
+    assert "missing: B-3" in text
+    for name in KERNEL_NAMES:
+        assert name not in text, f"the refusal named {name}"
+    assert list(node["record_dir"].iterdir()) == []
+
+
+def test_an_abandoned_set_writes_nothing_and_says_so_in_classifications(tmp_path):
+    node = _protected_node(tmp_path)
+    code, text = _cli(
+        tmp_path,
+        node,
+        answers=["management", "observation"],
+        texts=[],
+        confirms=[False],
+    )
+    assert code == 2
+    assert BLOCKED in text
+    assert list(node["record_dir"].iterdir()) == []
+
+
+def test_the_preflight_command_never_binds_an_exception_it_reports():
+    """Structural, because the prose version depends on what today's
+    refusal happens to say.
+
+    `CommissioningRefused` currently quotes `proposal.reasons`, which carry
+    no kernel names -- the names are in `proposal.refused`, which it does not
+    include. That is a fact about the refusal as it stands, and the next edit
+    to `propose` can change it without anybody thinking about this command.
+    So the handler cannot reach the exception at all: an unbound handler has
+    nothing to print.
+    """
+
+    import ast
+
+    from azazel_nexus import cli
+
+    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    command = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_cmd_hil_preflight"
+    )
+    bound = [
+        handler.name
+        for handler in ast.walk(command)
+        if isinstance(handler, ast.ExceptHandler) and handler.name is not None
+    ]
+    assert bound == [], (
+        f"the preflight binds {bound}; a bound exception is one a later edit "
+        "prints, and a refusal's message quotes what it refused"
+    )

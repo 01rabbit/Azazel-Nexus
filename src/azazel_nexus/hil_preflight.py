@@ -20,6 +20,18 @@ only an operator can decide, and says whether a campaign may begin.
 `docs/core-reserve-measurement.md` §5 is the campaign; this is the gate in
 front of it.
 
+## What the command takes
+
+**Nothing.** `azazel-nexus hil-preflight` declares no operator, no timestamp
+and no identifier, because a command line is read by everyone on the host
+(`/proc/<pid>/cmdline`, `ps`, the shell's history file) and is the one place
+an identifier ends up without anybody deciding to put it there.
+
+So the operator is the **local principal** the kernel reports for the process
+-- its own credentials, not a name somebody typed -- and the time is the
+node's clock together with its boot ID. Both go into the encrypted record and
+neither is printed.
+
 ## What may be seen
 
 Raw identity -- permanent MACs, serials, TPM identity, an asset ID, the
@@ -71,10 +83,16 @@ __all__ = [
     "PreflightResult",
     "Protection",
     "ReadonlyInventory",
+    "OPERATOR_SCREEN_FIELDS",
     "anonymous_host_id",
     "audit_event",
     "collect_readonly_inventory",
+    "describe_for_screen",
     "evaluate",
+    "local_principal",
+    "next_generation",
+    "node_clock",
+    "read_boot_id",
     "fingerprint",
     "luks_backed",
     "persist_commissioning_record",
@@ -124,7 +142,20 @@ OPERATOR_ITEMS: Mapping[str, str] = {
     "B-9": "administrative rights for units and read-only inventory",
 }
 
+#: What an operator may be shown about an interface while choosing.
+#:
+#: A **subset** of `commissioning.OPERATOR_VISIBLE_FIELDS`: the serial, the
+#: PCI id and the USB vendor/product id are raw identity
+#: (`docs/inventory-confidentiality.md` §2) and a terminal is not one of the
+#: two places raw identity may go. What is left is what an operator can check
+#: by looking at the machine -- the label on the port and the slot it is in.
+OPERATOR_SCREEN_FIELDS = ("physical_label", "bus_path")
+
 _LUKS_UUID_PREFIX = "CRYPT-LUKS"
+
+#: The kernel's own identifier for this boot. Raw identity: it goes into the
+#: encrypted record, and into the audit only through the HMAC.
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 #: Where the record lives, from `layout.LAYOUT`. Named here so that the CLI
 #: and this module cannot disagree about which directory has to be encrypted.
@@ -364,6 +395,79 @@ def collect_readonly_inventory(
     )
 
 
+# -- who is running this, and when, without anybody typing it -------------
+
+
+def local_principal(
+    *,
+    getuid: Callable[[], int] = os.getuid,
+    getgid: Callable[[], int] = os.getgid,
+) -> str:
+    """Who the kernel says is running this, as credentials rather than a name.
+
+    `uid:1000/gid:1000`. Not a username, not an email, not a person: the
+    account the process is running as, which the operating system already
+    knows and nobody has to type. A name typed on a command line reaches
+    `ps`, `/proc/<pid>/cmdline` and the shell's history; credentials the
+    kernel reports reach none of them.
+
+    It is bound into the encrypted commissioning record and printed nowhere.
+    """
+
+    return f"uid:{getuid()}/gid:{getgid()}"
+
+
+def read_boot_id(path: Path = BOOT_ID_PATH) -> Optional[str]:
+    """This boot's identifier, or `None`.
+
+    Two runs of the campaign have to be distinguishable, and
+    `docs/core-reserve-measurement.md` §5 requires separate boots -- so which
+    boot a record belongs to is part of the record. The value is raw identity
+    and appears outside the encrypted record only inside the HMAC.
+    """
+
+    return _read_first_line(path)
+
+
+def node_clock(
+    *, clock: Callable[[], float] = None, boot_id_path: Path = BOOT_ID_PATH
+) -> tuple[str, Optional[str]]:
+    """`(timestamp, boot id)` from the node itself.
+
+    The time is the node's, never an argument: a timestamp a caller supplies
+    is a timestamp a caller can choose, and an audit whose instants were
+    chosen by the thing being audited records a story rather than a sequence.
+    """
+
+    import time
+    from datetime import datetime, timezone
+
+    now = (clock or time.time)()
+    stamp = (
+        datetime.fromtimestamp(now, tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    return stamp, read_boot_id(boot_id_path)
+
+
+def describe_for_screen(readout: InterfaceReadout) -> dict[str, str]:
+    """What an operator may be shown while choosing. No raw identity.
+
+    `commissioning.describe_for_operator` is the wider set, and it carries
+    the serial and the device ids -- which an operator can indeed check
+    against the machine, and which are exactly what must not reach a
+    terminal. What remains is the physical label and the slot.
+    """
+
+    return {
+        name: value
+        for name in OPERATOR_SCREEN_FIELDS
+        if (value := readout.fields.get(name))
+    }
+
+
 # -- what only an operator may decide -------------------------------------
 
 
@@ -469,14 +573,24 @@ def anonymous_host_id(host_label: str, *, key: bytes) -> str:
     return "node-" + fingerprint(host_label, key=key).split(":", 1)[1][:16]
 
 
-def record_as_document(record: CommissioningRecord) -> Mapping[str, object]:
+def record_as_document(
+    record: CommissioningRecord,
+    *,
+    generation: int = 1,
+    boot_id: Optional[str] = None,
+) -> Mapping[str, object]:
     """The commissioning record as stored. One format, the existing one.
 
     Built from the same fields `CommissioningRecord.digest` covers, so a
-    stored record and its digest cannot disagree.
+    stored record and its digest cannot disagree. `generation` and `boot_id`
+    sit beside it rather than inside it: the digest is over what an operator
+    confirmed, and which boot recorded it is not part of what they confirmed.
+
+    `roles[].confirmed_by` is the local principal -- `uid:…/gid:…` -- and not
+    a person's name. This file is the **only** place it is written.
     """
 
-    return {
+    document: dict[str, object] = {
         "created_at": record.created_at,
         "profiles_present": sorted(record.profiles_present),
         "roles": [
@@ -489,7 +603,29 @@ def record_as_document(record: CommissioningRecord) -> Mapping[str, object]:
             for role in record.roles
         ],
         "digest": record.digest(),
+        "generation": generation,
     }
+    if boot_id is not None:
+        document["boot_id"] = boot_id
+    return document
+
+
+def next_generation(directory: Path) -> int:
+    """The generation this run would write. Read from the node, never given.
+
+    A generation a caller supplied would be a counter the caller could reset,
+    and a record that claims to be the first is a record that hides the ones
+    before it.
+    """
+
+    try:
+        stored = json.loads(
+            (directory / "commissioning.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return 1
+    previous = stored.get("generation")
+    return previous + 1 if isinstance(previous, int) and previous >= 1 else 1
 
 
 class PreflightRefused(Exception):
@@ -501,6 +637,8 @@ def persist_commissioning_record(
     *,
     directory: Path,
     protection: Protection,
+    generation: int = 1,
+    boot_id: Optional[str] = None,
 ) -> Path:
     """Write the record, or refuse and write nothing.
 
@@ -518,7 +656,12 @@ def persist_commissioning_record(
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "commissioning.json"
     path.write_text(
-        json.dumps(record_as_document(record), sort_keys=True, indent=2) + "\n",
+        json.dumps(
+            record_as_document(record, generation=generation, boot_id=boot_id),
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return path
@@ -585,6 +728,7 @@ def evaluate(
     protection: Protection,
     generation: int,
     key: bytes,
+    boot_id: Optional[str] = None,
     proposal: Optional[Proposal] = None,
 ) -> PreflightResult:
     """Decide. Two answers, and a blocked one names classifications only.
@@ -614,7 +758,10 @@ def evaluate(
 
     digest = decisions.record.digest()
     host = anonymous_host_id(decisions.host_label, key=key)
-    print_safe = fingerprint(digest, key=key)
+    # The boot is inside the fingerprint rather than beside it: two runs on
+    # separate boots have to be distinguishable in the audit, and the boot ID
+    # itself is raw identity that may not appear there.
+    print_safe = fingerprint(f"{digest}:{boot_id or ''}", key=key)
     roles: dict[str, int] = {}
     for confirmed in decisions.record.roles:
         roles[confirmed.role] = roles.get(confirmed.role, 0) + 1
