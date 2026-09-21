@@ -6,7 +6,7 @@ the Nexus-owned runtime control plane for M.I.O.
 | Section | State |
 | --- | --- |
 | §2 capacity envelopes | implemented (`resource_profile.py`, since #26) |
-| §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`). The resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) — and since Nexus#68 the path a measurement would travel is built and driven: [the measurement procedure](core-reserve-measurement.md). Approval and staged activation are reached only with a reserve, where they refuse for having no implementation |
+| §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`). What may be *offered* as a model, and what offering one does not mean, is fixed by [the model catalog contract](model-catalog.md) (Nexus#94) — it reaches `present` and stops there. The resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) — and since Nexus#68 the path a measurement would travel is built and driven: [the measurement procedure](core-reserve-measurement.md). Approval and staged activation are reached only with a reserve, where they refuse for having no implementation |
 | §4 confinement | not implemented; needs a running provider, which §3 does not yet admit — and will not until approval and staged activation are implemented, one gate past the reserve |
 | §5 route selection | implemented (`routing.py`) as the local-first ladder, with the envelope and budgets declared rather than discovered. Remote is `disabled` with no egress path. **Being replaced by policy-first / fastest-permitted** — [the route policy](mio-route-policy.md), Nexus#81 |
 | §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
@@ -22,6 +22,7 @@ operator permission, plus Fabric `mio_contracts` for the wire shape (§10).
 
 Related: [M.I.O. dual cognition doctrine](mio-dual-cognition.md) (Edge-owned
 semantics) · [the deterministic sanitizer](mio-sanitizer.md) ·
+[the model catalog contract](model-catalog.md) ·
 [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
 [Inheritance ledger](inheritance-ledger.md) ·
