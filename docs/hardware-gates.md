@@ -21,6 +21,7 @@ that is not the claim, and what would settle it.
 | `HG-03` | An observation-role interface transmits zero frames across link flap, resume and driver reload | `hardware-unverified` |
 | `HG-04` | An operator can complete commissioning on a real host without hand-editing anything | `hardware-unverified` |
 | `HG-05` | A local cognition provider's memory need fits the envelope, after the Core reserve | `unmeasured` |
+| `HG-06` | The decoy bridge actually refuses to forward to protected, management, control-plane and Internet zones | `hardware-unverified` |
 
 ## `HG-01` — installation leaves nothing running
 
@@ -176,3 +177,48 @@ concurrency, which `IMPLEMENTATION_SPEC.md` §2.1 says it does. Until then this
 row stays `unmeasured`, which is a different word from `hardware-unverified`
 on purpose: the others have a mechanism that has not been run on the target,
 and this one has no number to run.
+
+## `HG-06` — the decoy bridge refuses to forward
+
+**Claimed.** Nothing, yet.
+
+`docs/IMPLEMENTATION_SPEC.md` §9 is unusually specific about what has to
+happen before a Lite decoy may be reached:
+
+> Lite containers live only on `az-decoy0`; a host firewall and namespace
+> rules deny forwarding to protected, management, control-plane, and Internet
+> zones. **The isolation check MUST actively test denied paths on boot and
+> before a redirect is eligible.** A failed check immediately removes all
+> redirect eligibility.
+
+*Actively test* is the load-bearing phrase. A rule that is present in a
+ruleset is not a packet that failed to cross.
+
+**What CI executed.** `tests/unit/test_decoy.py` runs the lifecycle:
+`DISABLED` until an operator commissioning, a verified generation and a
+**passing** isolation check are all present; `ELIGIBLE` then, and `EXPOSED`
+only when an operator exposes it. It asserts that an absent check, a failing
+check, a check that tested no path, and a check with no timestamp each keep
+the decoy disabled — and that `redirect_eligible` is `False` in every state
+the module can produce.
+
+That is evidence the *result* of an isolation check is consumed correctly.
+`IsolationCheck.passed` is supplied to it.
+
+**Why that is not the claim.** Nothing in this repository sends a packet. The
+claim is about a kernel, a bridge, a namespace and a firewall on a real host
+refusing to forward — four things a unit test cannot stand in for, and the
+one thing that matters if a decoy is reachable by someone hostile. A test
+that constructed an nftables rule would be evidence the rule is well-formed,
+which is not evidence that anything was dropped.
+
+**What follows while it is open.** `IsolationCheck(passed=None)` is the state
+of every node this repository can produce, and it keeps every decoy
+`DISABLED`. **Nobody looked is not a pass**, and it reads differently from a
+failure: the first needs the probe run, the second needs the bridge fixed.
+
+**What would settle it.** `az-decoy0` on the target hardware, with a decoy
+container attached, and an attempted connection to a protected, management,
+control-plane and Internet destination from inside it — each one observed to
+fail, from inside the namespace, with the result recorded and the probe
+re-run before every exposure rather than once at install.
