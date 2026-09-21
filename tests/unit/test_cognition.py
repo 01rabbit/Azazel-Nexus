@@ -263,18 +263,87 @@ def test_the_last_two_gates_are_not_reachable_in_this_build() -> None:
     assert AdmissionGate.STAGED_ACTIVATION in GATE_ORDER
 
 
+# -- profile and host are separate facts -----------------------------------
+
+
+def test_a_node_with_no_host_facts_still_reports_its_envelope() -> None:
+    """The measured envelope is a fact a node always has.
+
+    Commissioning is what establishes the rest. A reading that needed all of
+    it would leave an uncommissioned node unable to say what it measured.
+    """
+
+    reading = read([], host=None)
+    assert reading.state is CognitionState.CORE_ONLY
+    assert "lite" in reading.resource_reason
+
+
+def test_a_provider_declared_without_host_facts_is_refused_at_compatibility() -> None:
+    """Not filled in. Inventing an os_abi matches a tuple nobody tested."""
+
+    outcome = admit_local_model(a_provider(), host=None, tested=a_catalogue())
+    assert outcome.failed_gate is AdmissionGate.COMPATIBILITY
+    assert "no host facts have been established" in outcome.reason
+    assert "inventing it" in outcome.reason
+
+
+def test_the_missing_host_refusal_is_reached_only_after_authenticity() -> None:
+    """Order is preserved: an unverified asset still fails first."""
+
+    outcome = admit_local_model(
+        a_provider(signature_verified=False), host=None, tested=a_catalogue()
+    )
+    assert outcome.failed_gate is AdmissionGate.AUTHENTICITY
+
+
+def test_the_resource_reason_comes_from_the_profile_and_not_from_the_host() -> None:
+    """The two are given different values, so only one can be the source.
+
+    Without this, `_resource_reason(profile)` and `_resource_reason(
+    host.profile)` are indistinguishable -- every other test supplies a host
+    whose profile matches.
+    """
+
+    reading = read(
+        [], profile=ResourceProfile.CORE, host=a_host(profile=ResourceProfile.STANDARD)
+    )
+    assert "core" in reading.resource_reason
+    assert "standard" not in reading.resource_reason
+
+
+def test_a_reading_without_host_facts_still_reports_every_dimension() -> None:
+    reading = read([a_provider()], host=None)
+    assert set(reading.as_event()) == {
+        "event_type",
+        "state",
+        "remote",
+        "resource_reason",
+        "topology_reason",
+        "asset_reason",
+        "trust_health_reason",
+        "providers",
+    }
+    assert "tested compatibility tuple" in reading.asset_reason
+
+
 # -- the published state ---------------------------------------------------
 
 
+def read(providers, **overrides):
+    call = {"profile": ResourceProfile.LITE, "tested": a_catalogue(), "host": a_host()}
+    call.update(overrides)
+    return read_cognition(providers, **call)
+
+
 def test_a_node_with_no_declared_provider_is_core_only() -> None:
-    reading = read_cognition([], host=a_host(), tested=a_catalogue())
+    reading = read([])
     assert reading.state is CognitionState.CORE_ONLY
     assert "deterministic explanations continue unchanged" in reading.asset_reason
     assert reading.admissions == ()
 
 
 def test_a_declared_but_unadmitted_provider_is_still_core_only() -> None:
-    reading = read_cognition([a_provider()], host=a_host(), tested=a_catalogue())
+    reading = read([a_provider()])
     assert reading.state is CognitionState.CORE_ONLY
     assert "none admitted" in reading.asset_reason
     assert "resource/topology admission" in reading.asset_reason
@@ -283,21 +352,21 @@ def test_a_declared_but_unadmitted_provider_is_still_core_only() -> None:
 def test_remote_is_disabled_and_that_is_not_unavailable() -> None:
     """A decision and a failure are different facts with different words."""
 
-    reading = read_cognition([], host=a_host(), tested=a_catalogue())
+    reading = read([])
     assert reading.remote is RemoteState.DISABLED
     assert reading.remote is not RemoteState.UNAVAILABLE
     assert RemoteState.DISABLED.value != RemoteState.UNAVAILABLE.value
 
 
 def test_hybrid_is_unreachable_while_remote_is_disabled() -> None:
-    reading = read_cognition([a_provider()], host=a_host(), tested=a_catalogue())
+    reading = read([a_provider()])
     assert reading.state is not CognitionState.HYBRID
 
 
 def test_the_four_reasons_are_independent_and_none_is_empty() -> None:
     """§8: a summary state without reasons hides which dimension failed."""
 
-    reading = read_cognition([a_provider()], host=a_host(), tested=a_catalogue())
+    reading = read([a_provider()])
     reasons = [
         reading.resource_reason,
         reading.topology_reason,
@@ -310,21 +379,21 @@ def test_the_four_reasons_are_independent_and_none_is_empty() -> None:
 
 def test_the_resource_reason_never_claims_the_envelope_is_evidence() -> None:
     for profile in ResourceProfile:
-        reading = read_cognition([], host=a_host(profile=profile), tested=a_catalogue())
+        reading = read([], profile=profile, host=a_host(profile=profile))
         assert profile.value in reading.resource_reason
         assert "never evidence that a capability fits" in reading.resource_reason
 
 
 def test_an_absent_provider_is_not_an_unhealthy_one() -> None:
-    reading = read_cognition([], host=a_host(), tested=a_catalogue())
+    reading = read([])
     assert "not an unhealthy one" in reading.trust_health_reason
 
 
 def test_a_restart_resumes_at_core_only() -> None:
     """Held by the function holding no state, which is checked directly."""
 
-    first = read_cognition([a_provider()], host=a_host(), tested=a_catalogue())
-    second = read_cognition([], host=a_host(), tested=a_catalogue())
+    first = read([a_provider()])
+    second = read([])
     assert first.state is CognitionState.CORE_ONLY
     assert second.state is CognitionState.CORE_ONLY
 
@@ -350,7 +419,7 @@ def test_a_restart_resumes_at_core_only() -> None:
 
 def test_no_state_blocks_the_deterministic_path() -> None:
     for providers in ([], [a_provider()], [a_provider(signature_verified=False)]):
-        reading = read_cognition(providers, host=a_host(), tested=a_catalogue())
+        reading = read(providers)
         assert reading.blocks_deterministic_path() is False
 
 
@@ -411,7 +480,7 @@ def test_the_admission_event_names_the_gate_and_carries_no_asset_content() -> No
 
 
 def test_the_state_event_carries_every_dimension() -> None:
-    event = read_cognition([a_provider()], host=a_host(), tested=a_catalogue()).as_event()
+    event = read([a_provider()]).as_event()
     assert set(event) == {
         "event_type",
         "state",

@@ -1,8 +1,7 @@
 # The six axes, and the words that must stay apart
 
-Status: **implemented** (`src/azazel_nexus/integration.py`), unit tested and
-mutation checked. **Not yet reachable from `azazel-nexus status`** — that
-wiring is E4's second half and is named in §6 rather than left implicit.
+Status: **implemented and wired** (`src/azazel_nexus/integration.py`,
+rendered by `azazel-nexus status`), unit tested and mutation checked.
 This is E4 of [#53](https://github.com/01rabbit/Azazel-Nexus/issues/53) /
 [#55](https://github.com/01rabbit/Azazel-Nexus/issues/55).
 
@@ -91,27 +90,62 @@ that prints only what it lost is telling its operator it is broken while it is
 doing its job (`operator.CapabilityReport.retained`, issue #29, restated per
 axis).
 
-## 6. What is not done yet
+## 6. On the screen
 
-**The view is not wired into `azazel-nexus status`.** It is named here because
-an unnamed gap is how `lite_cache.py` came to be a library nothing used — the
-defect this series found in E1 and fixed in
-[#59](https://github.com/01rabbit/Azazel-Nexus/pull/59).
+`azazel-nexus status` prints the six axes with a reason under each, then the
+two claims, then what continues:
 
-Two things that wiring needs, and neither is a display decision:
+```text
+integration:
+    capability: CORE
+        the node is CORE; a capability state is what the node can do ...
+    freshness [knowledge_lite]: unavailable
+        no Knowledge Lite artifact has been admitted; absence of knowledge ...
+    freshness [deception_lite]: unavailable
+        no decoy catalogue is present; nothing is approved
+    cognition_route [mio]: CORE ONLY; remote M.I.O. disabled
+        ... | resource: ... | topology: ... | trust: ...
+    knowledge_supplier [knowledge]: none
+        ... AZ-04 peer is a capability extension and its absence is
+        unavailable, not a defect
+    deception_supplier [deception]: none
+        ...
+    edge [edge_core]: absent
+        no Edge package is configured on this node; enforcement-capable and
+        baseline-ready are not claimed
 
-1. **The embedded stores have no declared paths.** `IMPLEMENTATION_SPEC.md`
-   §3 puts `knowledge-lite/` and `deception-lite/` under `/data/azazel/`, a
-   tier `layout.LAYOUT` does not declare at all. Adding it decides the data
-   volume, its ownership, and the encrypted-volume question, which is
-   packaging rather than display. The services themselves read an absent root
-   correctly — `unavailable` and `DISABLED` — so this blocks the wiring, not
-   the honesty of it.
-2. **`read_cognition` takes `HostFacts` it cannot supply.** On a node with no
-   declared provider it uses only the resource profile; the rest of
-   `HostFacts` would have to be invented to call it. The fix is to take the
-   profile directly and make host facts optional, refusing admission with
-   *"no host facts have been established"* when a provider is declared
-   without them. That is a small API change and it is E4's second half.
+enforcement capable: no
+baseline ready: no
+continuing regardless: audit, deterministic explanations, inventory and
+                       commissioning, operator plane
+```
 
-Also not here: nothing writes these events to the audit ledger yet.
+What continues is printed **last and always** — not as a footnote a long list
+of losses pushes off the screen. A test asserts its position.
+
+Two things the wiring needed, and how each was resolved without inventing
+anything:
+
+1. **The embedded stores are under `/data/azazel/`, a tier
+   `layout.LAYOUT` does not declare.** The paths are named in `cli.py` rather
+   than added to the layout, because that tier's volume, ownership and
+   encryption are a packaging decision. Naming them is safe because **both
+   services read an absent root correctly** — Knowledge Lite reports
+   `unavailable`, the decoy runtime `disabled`. A node without the tier gets
+   the truth, not an error, and **not a defect**: an uncommissioned node is
+   not a broken one.
+2. **`read_cognition` required `HostFacts` a node may not have.** It now takes
+   the measured `profile` directly and `host` optionally. `host=None` is a
+   fact — *nothing has established what this node is* — and it refuses
+   admission at the compatibility gate rather than being filled in, because an
+   invented `os_abi` makes a tuple match something nobody tested.
+
+**The clock is read in `main` and passed down.** `--as-of` makes a status
+reproducible, and a test parses `_integration_view` to assert it reads no
+clock of its own: a status built from a hidden wall clock cannot be replayed
+from its inputs.
+
+## 7. What is still not done
+
+Nothing writes these events to the audit ledger. The rows carry `as_event()`
+and nothing calls it on the operator path.
