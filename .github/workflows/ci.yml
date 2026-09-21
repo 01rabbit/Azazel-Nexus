@@ -127,6 +127,28 @@ jobs:
               raise SystemExit("remote assistance must read disabled, not unavailable")
           if nothing.blocks_deterministic_path():
               raise SystemExit("the cognition plane blocks the deterministic path")
+          # The sanitizer (#5). It is the egress boundary, so the one thing to
+          # check here is that with nothing installed it still denies -- and
+          # that a denial carries no frame at all, rather than an empty one a
+          # caller could send.
+          import azazel_nexus.sanitizer as sanitizer  # noqa: F401
+          policy = sanitizer.SanitizerPolicy.from_mapping(
+              {
+                  "version": "ci",
+                  "remote_default": "deny",
+                  "classes": {"P1-sanitized": {"remote": "allow", "fields": ["event_class"]}},
+                  "limits": {"max_bytes": 1024},
+              }
+          )
+          denied = sanitizer.sanitize(
+              {"event_class": "scan"},
+              privacy_class=sanitizer.PrivacyClass.P3_RESTRICTED,
+              policy=policy,
+              mission="ci",
+              alias_key=b"0" * 32,
+          )
+          if denied.allowed or denied.frame is not None:
+              raise SystemExit("a restricted frame must produce zero remote egress")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.
