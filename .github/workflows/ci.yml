@@ -195,6 +195,24 @@ jobs:
               raise SystemExit("a disabled decoy must be neither exposed nor redirect-eligible")
           if resting.blocks_deterministic_path():
               raise SystemExit("a disabled decoy blocks the deterministic path")
+          # The integration view (#55). The claim that has to hold on a node
+          # with nothing installed is the one about what it does *not* claim.
+          import azazel_nexus.integration as integration  # noqa: F401
+          view = integration.build_view(
+              capability=azazel_nexus.capability.CapabilityState.CORE,
+              knowledge=None,
+              cognition=nothing,
+              decoy=resting,
+              edge=integration.EdgePresence.ABSENT,
+          )
+          if view.enforcement_capable or view.baseline_ready:
+              raise SystemExit("a node with no Edge claimed enforcement or baseline readiness")
+          if "Edge deterministic decisions" in view.continues:
+              raise SystemExit("a node with no Edge claimed Edge decisions continue")
+          if {row.axis for row in view.rows} != set(integration.AXES):
+              raise SystemExit("the integration view is missing an axis")
+          if not view.defects:
+              raise SystemExit("an absent embedded feature must be reported as a defect")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.
