@@ -252,25 +252,33 @@ def test_a_caller_cannot_state_a_class_at_all():
 
 
 def test_a_payload_whose_base64_is_lenient_is_refused():
-    """Found by mutation: `validate=True` was untested.
+    """Found by mutation: `validate=True` was untested, and my first attempt
+    at testing it did not discriminate either -- both inputs raised in both
+    modes, so removing the flag still left the suite green.
 
-    A lenient decoder silently drops characters it does not recognise, so the
-    bytes the envelope was checked against would not be the bytes that were
-    sent -- which is the whole binding gone, without a single check appearing
-    to fail.
+    The discriminating case is base64 that a lenient decoder accepts by
+    **silently discarding** a character it does not recognise. It then
+    decodes to something, and that something is not what the sender wrote --
+    so the bytes the envelope was checked against are not the bytes that go
+    out, and no check appears to have failed.
     """
 
+    # It really is the discriminating case: lenient decoding succeeds.
+    assert base64.b64decode("QUJD\nRA==") == b"ABCD"
+
     with pytest.raises(mio_remoted.PayloadRefused) as caught:
-        mio_remoted.read_payload(
-            {"frame": "AAAA", "envelope": "AA=A!!\n@@AA"}
-        )
+        mio_remoted.read_payload({"frame": "QUJD\nRA==", "envelope": "AAAA"})
     assert "base64" in str(caught.value)
 
-    # And a frame with a stray character is refused rather than silently
-    # decoded to something shorter.
-    good = base64.b64encode(FRAME).decode()
     with pytest.raises(mio_remoted.PayloadRefused):
-        mio_remoted.read_payload({"frame": good[:-1] + "*", "envelope": "AAAA"})
+        mio_remoted.read_payload({"frame": "AAAA", "envelope": "QU JDRA=="})
+
+    # And well-formed base64 still decodes, so the refusals above are
+    # refusals rather than a reader that never works.
+    frame, envelope = mio_remoted.read_payload(
+        {"frame": "QUJDRA==", "envelope": "QUJDRA=="}
+    )
+    assert frame == envelope == b"ABCD"
 
 
 def test_a_payload_that_is_not_two_base64_strings_is_refused():
