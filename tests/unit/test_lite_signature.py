@@ -249,3 +249,109 @@ def test_the_signature_module_never_hashes_a_secret_into_a_scalar() -> None:
     assert source.count("hashlib.sha512") == 1
     for clamp in ("& 248", "& 0xF8", "& 63", "| 64", "& 127"):
         assert clamp not in source, f"scalar clamping is a signer's operation: {clamp}"
+
+
+# -- small-order public keys (#70) ----------------------------------------
+
+#: The eight points of order dividing 8, at their canonical encodings. Listed
+#: rather than generated, so a bug in the generator cannot quietly shorten the
+#: list the tests below iterate.
+SMALL_ORDER_KEYS = (
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "0000000000000000000000000000000000000000000000000000000000000080",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+)
+
+
+def _encode_point(point: tuple) -> bytes:
+    inverse = signature._modp_inv(point[2])
+    x = point[0] * inverse % signature._P
+    y = point[1] * inverse % signature._P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def test_a_small_order_key_would_verify_anything_and_is_refused() -> None:
+    """The defect #70's review found, driven as the forgery it permits.
+
+    With `A` of order 1 the challenge term `[k]A` is the neutral element for
+    every challenge, so the verification equation collapses to `[s]B == R`.
+    Anyone can pick `s`, compute `R = [s]B`, and hold one signature that
+    verifies over **every** message under that key -- and it verifies, which
+    means nothing downstream sees a failure to report.
+
+    Before the fix this returned `True` for all three messages below.
+    """
+
+    identity = bytes.fromhex(SMALL_ORDER_KEYS[0])
+    scalar = 12345
+    forged = _encode_point(
+        signature._point_mul(scalar, signature._G)
+    ) + int.to_bytes(scalar, 32, "little")
+
+    # The forgery really is one: against a key that is not small-order the
+    # same construction fails, so the refusal below is about the key.
+    for message in (b"admit this bundle", b"revoke everything", b""):
+        with pytest.raises(SignatureRefused) as caught:
+            verify_detached(public_key=identity, message=message, signature=forged)
+        assert "small-order" in str(caught.value)
+
+
+@pytest.mark.parametrize("hex_key", SMALL_ORDER_KEYS)
+def test_every_small_order_point_is_refused_as_a_key(hex_key: str) -> None:
+    """All eight, at both entry points: a caller may hold bytes the parser never saw."""
+
+    key = bytes.fromhex(hex_key)
+    with pytest.raises(SignatureRefused) as parsed:
+        parse_public_key(hex_key)
+    assert "small-order" in str(parsed.value)
+    with pytest.raises(SignatureRefused) as verified:
+        verify_detached(public_key=key, message=b"x", signature=b"\0" * 64)
+    assert "small-order" in str(verified.value)
+
+
+def test_the_small_order_test_admits_a_real_key() -> None:
+    """Otherwise the refusals above could be refusing every key there is."""
+
+    from azazel_nexus.signature import _is_small_order, _point_decompress
+
+    # RFC 8032 §7.1 vector 2's public key: a real key, and the one this
+    # module already verifies a signature under.
+    real = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+    assert _is_small_order(_point_decompress(bytes.fromhex(real))) is False
+    assert parse_public_key(real) == bytes.fromhex(real)
+    assert verify_detached(
+        public_key=bytes.fromhex(real),
+        message=bytes.fromhex("72"),
+        signature=bytes.fromhex(
+            "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+            "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+        ),
+    )
+
+
+def test_a_small_order_r_is_answered_no_rather_than_raised() -> None:
+    """`R` is attacker-supplied; the key is the node's own trust material.
+
+    The equation already rejects a small-order `R` -- an attacker would have
+    to solve for `s` -- so there is no explicit check for one. A guard that
+    never changes an outcome is not a guard, and its absence is recorded here
+    rather than left to be rediscovered.
+    """
+
+    real = bytes.fromhex(
+        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+    )
+    for hex_point in SMALL_ORDER_KEYS:
+        assert (
+            verify_detached(
+                public_key=real,
+                message=bytes.fromhex("72"),
+                signature=bytes.fromhex(hex_point) + b"\x01" + b"\0" * 31,
+            )
+            is False
+        )

@@ -47,6 +47,25 @@ PUBLIC_KEY_BYTES = 32
 SIGNATURE_BYTES = 64
 
 
+#: Why a small-order public key is trust material and not a key.
+#:
+#: Under one, every candidate signature can be made to verify. With `A` of
+#: order 1 the challenge term `[k]A` is the neutral element for every `k`, so
+#: the equation collapses to `[s]B == R` -- and anyone can pick `s`, compute
+#: `R = [s]B`, and hold one signature that verifies over **every message**.
+#: The other seven small-order points admit the same construction.
+#:
+#: Nothing downstream could notice: the forgery is a successful verification,
+#: not a failed one. So this is refused where the key is read, which is the
+#: last place a node can still tell an operator that its trust store is wrong.
+_SMALL_ORDER_REASON = (
+    "the public key is a small-order point. It is on the curve, and it is not "
+    "usable as trust material: under such a key a single signature can be "
+    "constructed that verifies over any message, and the verification would "
+    "succeed rather than fail. Re-pin the anchor from its source"
+)
+
+
 class SignatureRefused(Exception):
     """The trust material itself is unusable.
 
@@ -94,6 +113,25 @@ def _point_mul(scalar: int, point: tuple) -> tuple:
         point = _point_add(point, point)
         scalar >>= 1
     return result
+
+
+#: The neutral element, in the extended coordinates the arithmetic here uses.
+_NEUTRAL = (0, 1, 1, 0)
+
+
+def _is_small_order(point: tuple) -> bool:
+    """Whether `point` lies in the order-8 subgroup.
+
+    The curve has cofactor 8, so `[8]P` is the neutral element exactly when
+    `P` has order 1, 2, 4 or 8. Three doublings, and it catches all eight such
+    points at any canonical encoding -- which a table of encodings would not.
+
+    A legitimately generated public key is never one of them: a signing scalar
+    is clamped to a multiple of 8 below the group order, so the key lies in
+    the prime-order subgroup.
+    """
+
+    return _point_equal(_point_mul(8, point), _NEUTRAL)
 
 
 def _point_equal(point: tuple, other: tuple) -> bool:
@@ -163,11 +201,14 @@ def parse_public_key(text: str) -> bytes:
         key = bytes.fromhex(text)
     except ValueError as exc:
         raise SignatureRefused(f"a public key is hex: {exc}") from exc
-    if _point_decompress(key) is None:
+    point = _point_decompress(key)
+    if point is None:
         raise SignatureRefused(
             "the public key is well-formed hex but is not a point on the curve; "
             "no signature could ever verify under it"
         )
+    if _is_small_order(point):
+        raise SignatureRefused(_SMALL_ORDER_REASON)
     return key
 
 
@@ -186,6 +227,10 @@ def verify_detached(*, public_key: bytes, message: bytes, signature: bytes) -> b
     point_a = _point_decompress(public_key)
     if point_a is None:
         raise SignatureRefused("the public key is not a point on the curve")
+    if _is_small_order(point_a):
+        # Checked here and not only in `parse_public_key`, because a caller
+        # may hold key bytes that never went through the parser.
+        raise SignatureRefused(_SMALL_ORDER_REASON)
 
     if len(signature) != SIGNATURE_BYTES:
         return False

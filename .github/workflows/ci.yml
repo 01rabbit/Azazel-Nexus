@@ -47,6 +47,30 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/unit -q
 
+      # The differential test against libsodium is the one thing that can say
+      # the hand-written Ed25519 verifier agrees with an established
+      # implementation (Nexus#70). It skips when PyNaCl is absent, so that a
+      # contributor without the dev extra is not blocked -- and a skip here
+      # would be the whole check quietly not running. The run above would
+      # still be green.
+      - name: Refuse a silent skip of the differential crypto test
+        run: |
+          python -m pytest tests/unit/test_signature_differential.py -q \
+            | tee /tmp/differential.txt
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("/tmp/differential.txt").read_text()
+          if "skipped" in text:
+              sys.exit("the differential crypto test skipped; PyNaCl is not installed")
+          match = re.search(r"(\d+) passed", text)
+          if not match:
+              sys.exit("the differential crypto test reported no passes")
+          # A floor, so that deleting the file's contents is not a green run.
+          if int(match.group(1)) < 50:
+              sys.exit(f"only {match.group(1)} differential cases ran")
+          print(f"{match.group(1)} differential cases agreed with libsodium")
+          PY
+
   core-has-no-optional-dependency:
     name: CORE imports with nothing installed
     runs-on: ubuntu-latest
