@@ -6,8 +6,8 @@ the Nexus-owned runtime control plane for M.I.O.
 | Section | State |
 | --- | --- |
 | §2 capacity envelopes | implemented (`resource_profile.py`, since #26) |
-| §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`), and the resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) |
-| §4 confinement | not implemented; needs a running provider, which §3 does not yet admit |
+| §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`). The resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) — and since Nexus#68 the path a measurement would travel is built and driven: [the measurement procedure](core-reserve-measurement.md). Approval and staged activation are reached only with a reserve, where they refuse for having no implementation |
+| §4 confinement | not implemented; needs a running provider, which §3 does not yet admit — and will not until approval and staged activation are implemented, one gate past the reserve |
 | §5 route selection | implemented (`routing.py`): the ladder, the envelope, and budgets declared rather than discovered. Remote is `disabled` with no egress path |
 | §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
 | §7 fallback | implemented (`routing.py`): all eight triggers, each with what it must never do. The invariant that a fallback never widens is checked over all 8 × 3 pairings |

@@ -100,6 +100,17 @@ jobs:
               )
           if empty.blocks_core():
               raise SystemExit("an absent Knowledge Lite cache blocks CORE")
+          # The Core reserve (#68). It gates whether a local model provider is
+          # admitted, so the node that has nothing is the node that has to be
+          # able to read -- and to not find -- its own reserve. `None` here is
+          # the answer on every node this build runs on, and the resource gate
+          # refuses because of it.
+          import azazel_nexus.core_reserve as core_reserve  # noqa: F401
+          if core_reserve.load_reserve() is not None:
+              raise SystemExit(
+                  "a node with nothing installed produced a Core reserve; no "
+                  "measurement has been taken (docs/hardware-gates.md HG-05)"
+              )
           # The cognition plane (#5). A node with nothing installed and no
           # provider is the configuration M.I.O. has to be answerable in, and
           # it is the one where `CORE ONLY` is the correct answer rather than
@@ -477,13 +488,14 @@ jobs:
           # green job for it would be the worst kind of green.
           # A run where almost nothing executed is a run that proved almost
           # nothing, and a green job for it would be the worst kind of green.
-          # Nine is what this runner reaches: everything but the three that
-          # need root or a service manager. It was eight until Nexus#56 added
-          # the CORE + Lite matrix, which needs neither -- and a floor that
-          # does not rise when a universally-runnable stage is added is a
-          # floor that has stopped meaning anything.
-          if passed < 9:
-              sys.exit(f"only {passed} of {total} stages executed; expected 9")
+          # The floor rises with every stage that needs neither root nor a
+          # service manager, because a floor that does not is a floor that has
+          # stopped meaning anything. It was eight until Nexus#56 added the
+          # CORE + Lite matrix, nine until Nexus#68 added the Core reserve
+          # input path -- which needs no hardware, takes no measurement, and
+          # so runs everywhere this job does.
+          if passed < 10:
+              sys.exit(f"only {passed} of {total} stages executed; expected 10")
           PY
 
   fabric-extra:

@@ -143,6 +143,19 @@ EXPECTED_SCRIPTS = (
     "az-watchdog",
 )
 
+#: Console scripts an **operator** runs on a host, which correspond to no
+#: unit because no node runs them by itself. Contained the way
+#: `EXECUTING_MODULE` contains the one module allowed to start a process: the
+#: exemption is by name, so a new daemon cannot acquire it by accident, and
+#: `test_the_operator_tools_really_have_no_unit` checks that each one has
+#: stayed unit-less rather than quietly gaining one.
+#:
+#: `az-core-reserve-probe` measures the Core reserve during a campaign that
+#: happens once per hardware class (Nexus#68,
+#: `docs/core-reserve-measurement.md`). A masked unit for it would sit on
+#: every node describing work no node performs.
+OPERATOR_TOOLS = ("az-core-reserve-probe",)
+
 
 def _declared_scripts() -> dict[str, str]:
     manifest = (REPO_ROOT / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
@@ -157,12 +170,34 @@ def _declared_scripts() -> dict[str, str]:
 def test_the_runtime_declares_exactly_the_daemons_the_units_name():
     from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 
-    assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS)
+    assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS + OPERATOR_TOOLS)
     units = {d.name for d in CORE_UNITS} | {ACTIVATION_CONTROLLER_UNIT}
     for script in EXPECTED_SCRIPTS:
         assert f"azazel-{script[3:]}.service" in units, (
             f"{script} corresponds to no governed unit"
         )
+
+
+def test_the_operator_tools_really_have_no_unit():
+    """A named exemption for a tool that gained a unit is a hole in the list above.
+
+    The daemon check passes for every script in `EXPECTED_SCRIPTS`, so a tool
+    that quietly acquired a unit would simply be in the wrong list -- and
+    nothing would say so. This is what says so.
+    """
+
+    from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
+
+    units = {d.name for d in CORE_UNITS} | {ACTIVATION_CONTROLLER_UNIT}
+    assert OPERATOR_TOOLS, "the exemption list is empty and should be deleted"
+    for script in OPERATOR_TOOLS:
+        assert f"azazel-{script[3:]}.service" not in units, (
+            f"{script} has a unit now; it belongs in EXPECTED_SCRIPTS"
+        )
+        assert script not in EXPECTED_SCRIPTS, f"{script} is in both lists"
+    # And the tools really are declared, so the assertions above are not
+    # satisfied by a name nothing ships.
+    assert set(OPERATOR_TOOLS) <= set(_declared_scripts())
 
 
 def test_an_entry_point_with_no_module_yet_is_matched_by_an_installer_that_refuses():

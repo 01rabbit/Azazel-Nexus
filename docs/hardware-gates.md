@@ -155,6 +155,16 @@ in order and asserts that the resource gate **refuses**, in every envelope
 including `standard`, with a reason naming this gate. That is evidence the
 refusal is deliberate and reached. It is not a measurement.
 
+Since Nexus#68 the path a measurement would travel is built and driven:
+`core_reserve.py` holds the record schema, the validation and the derivation;
+`az-core-reserve-probe` is the harness; `tools/e2e.py` drives the three states
+(no record, a fixture record, a record shaped like a measurement) end to end.
+**None of that is a measurement either** -- it is the machinery around a
+number that does not exist, and `test_no_measurement_is_committed_anywhere`
+offers every JSON file in the distribution to the reader and fails if one is
+accepted as a measured record. [The measurement
+procedure](core-reserve-measurement.md) is the run that would close this row.
+
 **Why that is not the claim.** The Core reserve is what the node itself needs
 before any optional workload: the arbiter, audit, the lease journal, evidence
 capture, the operator plane, and the kernel's own working set under load. It
@@ -172,12 +182,19 @@ has not measured.
 
 **What would settle it.** The node running on the target hardware under load
 with audit, evidence capture and the lease journal active, and the resident
-set that configuration needs measured across the 8, 16 and 32 GB classes —
+set that configuration needs measured across the 8, 16 and 32 GB classes --
 since the reserve is not a single number if it scales with retention and
-concurrency, which `IMPLEMENTATION_SPEC.md` §2.1 says it does. Until then this
-row stays `unmeasured`, which is a different word from `hardware-unverified`
-on purpose: the others have a mechanism that has not been run on the target,
-and this one has no number to run.
+concurrency, which `IMPLEMENTATION_SPEC.md` §2.1 says it does.
+[The measurement procedure](core-reserve-measurement.md) §5 is that run, step
+by step: which subsystems must be active, under what load, how many runs per
+class, and what makes the result admissible.
+
+Until then this row stays `unmeasured`. That is a different word from
+`hardware-unverified` on purpose -- the others have a mechanism that has not
+been run on the target. **This one now has a mechanism too**, and still no
+number: the harness has never been run on target hardware, and running it
+here would measure a CI runner. The word stays `unmeasured` because what is
+missing is the measurement, not the means of taking it.
 
 ## `HG-06` — the decoy bridge refuses to forward
 

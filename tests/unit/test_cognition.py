@@ -30,10 +30,12 @@ from azazel_nexus.cognition import (
     AdmissionGate,
     CognitionState,
     LocalModelProvider,
+    ResourceEvidence,
     RemoteState,
     admit_local_model,
     read_cognition,
 )
+from azazel_nexus.core_reserve import CoreReserve
 from azazel_nexus.compatibility import ADMITTED_ARCHITECTURE, HostFacts, TestedTuple, TestedTupleSet
 from azazel_nexus.resource_profile import ResourceProfile
 
@@ -232,12 +234,72 @@ def test_no_envelope_makes_the_resource_gate_pass(profile: ResourceProfile) -> N
     assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
 
 
-def test_the_last_two_gates_are_not_reachable_in_this_build() -> None:
-    """Stated rather than left to be discovered.
+def a_reserve(**overrides) -> CoreReserve:
+    """A validated reserve, as `core_reserve.reserve_from` would return one.
 
-    No input to `admit_local_model` reaches approval or staged activation,
-    because the resource gate before them always rejects. They are in the
-    vocabulary because the contract names them; they arrive with HG-05.
+    Constructed directly rather than parsed from a record, because what these
+    tests drive is the **comparison** the gate makes, not the validation that
+    produces a reserve -- `test_core_reserve.py` owns that. The numbers here
+    are a test's numbers and are not a measurement of anything; no node in
+    this build has one (`test_no_measurement_is_committed_anywhere`).
+    """
+
+    fields = {
+        "profile": ResourceProfile.LITE,
+        "reserve_mib": 2000,
+        "host_digest": "sha256:" + "1" * 64,
+        "harness_version": "core-reserve-probe/1",
+        "sample_count": 60,
+        "duration_seconds": 600,
+    }
+    fields.update(overrides)
+    return CoreReserve(**fields)
+
+
+def test_no_node_in_this_build_gets_past_the_resource_gate() -> None:
+    """The reserve is unmeasured, so the gate refuses -- whatever is declared."""
+
+    outcome = admit_local_model(
+        a_provider(memory_need_mib=1),
+        host=a_host(),
+        tested=a_catalogue(),
+    )
+    assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
+    assert "unmeasured" in outcome.reason
+
+
+def test_a_measured_reserve_reaches_approval_and_stops_there() -> None:
+    """The gates past the resource gate refuse by having no implementation.
+
+    This is the distinction the old version of this test could not make. It
+    scanned `admit_local_model` for the gate names and asserted the last two
+    were absent -- which was true, and which would have stayed true right up
+    until the resource gate stopped refusing, at which point the two gates
+    would have been skipped rather than reached. A gate that refuses only by
+    being unreachable starts passing the day something upstream changes.
+
+    So: supply a reserve a provider fits under, and exactly one more gate is
+    reached. It refuses for having nothing to consider, and absence of a check
+    is not a pass.
+    """
+
+    outcome = admit_local_model(
+        a_provider(memory_need_mib=1000),
+        host=a_host(profile=ResourceProfile.LITE),
+        tested=a_catalogue(profile=ResourceProfile.LITE),
+        resources=ResourceEvidence(reserve=a_reserve(reserve_mib=2000), envelope_mib=15000),
+    )
+    assert outcome.admitted is False
+    assert outcome.failed_gate is AdmissionGate.APPROVAL
+    assert "not implemented" in outcome.reason
+
+
+def test_staged_activation_is_still_reached_by_nothing() -> None:
+    """One gate further than approval, and nothing gets there.
+
+    Kept as a static scan because there is no input that reaches it: approval
+    refuses before it under every configuration, so a behavioural test would
+    be asserting that something never happens by never making it happen.
     """
 
     tree = ast.parse(pathlib.Path(cognition.__file__).read_text(encoding="utf-8"))
@@ -253,14 +315,65 @@ def test_the_last_two_gates_are_not_reachable_in_this_build() -> None:
         and isinstance(node.value, ast.Name)
         and node.value.id == "AdmissionGate"
     }
-    # The scan is not vacuous: the gates that *are* reached show up.
-    assert {"AUTHENTICITY", "COMPATIBILITY", "CONTENT_POLICY", "RESOURCE_TOPOLOGY"} <= reached
-    assert "APPROVAL" not in reached
+    # The scan is not vacuous: the gates that *are* reached show up, approval
+    # among them now.
+    assert {
+        "AUTHENTICITY",
+        "COMPATIBILITY",
+        "CONTENT_POLICY",
+        "RESOURCE_TOPOLOGY",
+        "APPROVAL",
+    } <= reached
     assert "STAGED_ACTIVATION" not in reached
-    # And they really are in the vocabulary, so the assertion above is not
-    # satisfied by their absence from the enum.
+    # And it really is in the vocabulary, so the assertion above is not
+    # satisfied by its absence from the enum.
     assert AdmissionGate.APPROVAL in GATE_ORDER
     assert AdmissionGate.STAGED_ACTIVATION in GATE_ORDER
+
+
+def test_a_reserve_from_another_memory_class_is_refused() -> None:
+    """`HG-05`: the reserve is not one number across classes."""
+
+    outcome = admit_local_model(
+        a_provider(memory_need_mib=1),
+        host=a_host(profile=ResourceProfile.LITE),
+        tested=a_catalogue(profile=ResourceProfile.LITE),
+        resources=ResourceEvidence(
+            reserve=a_reserve(profile=ResourceProfile.STANDARD), envelope_mib=15000
+        ),
+    )
+    assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
+    assert "standard" in outcome.reason and "lite" in outcome.reason
+
+
+def test_a_provider_that_does_not_fit_after_the_reserve_is_refused_for_that() -> None:
+    """The subtraction is the whole point: it is the envelope *after* the reserve."""
+
+    resources = ResourceEvidence(reserve=a_reserve(reserve_mib=2000), envelope_mib=15000)
+    # 13000 fits exactly; 13001 does not. The boundary is checked on both
+    # sides so that an off-by-one in either direction fails here.
+    fits = admit_local_model(
+        a_provider(memory_need_mib=13000), host=a_host(), tested=a_catalogue(), resources=resources
+    )
+    assert fits.failed_gate is AdmissionGate.APPROVAL
+    does_not = admit_local_model(
+        a_provider(memory_need_mib=13001), host=a_host(), tested=a_catalogue(), resources=resources
+    )
+    assert does_not.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
+    assert "13001" in does_not.reason and "2000" in does_not.reason
+
+
+def test_an_envelope_with_no_reserve_cannot_be_supplied_at_all() -> None:
+    """Both halves of the resource evidence or neither.
+
+    An envelope without a reserve is the invented-threshold case `HG-05`
+    exists to prevent, so there is no argument shape that expresses it.
+    """
+
+    with pytest.raises(TypeError):
+        ResourceEvidence(envelope_mib=15000)  # type: ignore[call-arg]
+    with pytest.raises(ValueError):
+        ResourceEvidence(reserve=a_reserve(), envelope_mib=0)
 
 
 # -- profile and host are separate facts -----------------------------------
