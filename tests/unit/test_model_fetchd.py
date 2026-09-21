@@ -84,6 +84,22 @@ def test_an_operator_does_not_reach_past_the_decision_to_the_socket() -> None:
     )
 
 
+def test_an_unbounded_ordinal_cannot_be_declared_at_all() -> None:
+    """Found by trying to mutate the ceiling away: the module stopped
+    importing.
+
+    `Argument` refuses an `ORDINAL` with no `maximum`, so "a size argument
+    with no ceiling" is not a thing this service could be built with, even by
+    somebody editing it on purpose. Recorded here because a property nothing
+    names is a property the next refactor removes without noticing.
+    """
+
+    from azazel_nexus_runtime.protocol import Argument
+
+    with pytest.raises(ValueError):
+        Argument("size_bytes", ArgumentKind.ORDINAL)
+
+
 def test_a_request_argument_is_bounded() -> None:
     sizes = [a for a in FETCH_VERB.arguments if a.kind is ArgumentKind.ORDINAL]
     assert sizes, "a vacuous check: no ordinal argument was found"
