@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
+    ARTIFACT_TRANSPORT,
     ActivationController,
     ActivationLease,
     ActivationOutcome,
@@ -48,9 +49,37 @@ from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.generation import GenerationStore
 
+from .model_fetch import ENDPOINT_FOR
 from .units import UnitManager
 
-__all__ = ["ActivationDaemon", "ManagedUnitController", "RollbackFailed"]
+__all__ = [
+    "ActivationDaemon",
+    "ManagedUnitController",
+    "RollbackFailed",
+    "wired_capabilities",
+]
+
+
+def wired_capabilities() -> frozenset:
+    """What this **installed distribution** can actually serve.
+
+    The library decides whether a unit may be granted and cannot answer this:
+    what is wired is a fact about the runtime distribution, which the library
+    is forbidden to import. So it is read here, from the thing itself, and
+    passed in as evidence.
+
+    Read from `ENDPOINT_FOR` rather than from a flag, a setting or a version
+    string. A flag is a second place the truth is written down, and the one
+    that is wrong is always the one nobody looked at. An empty table is not a
+    disabled feature: it is a build in which no source symbol resolves to an
+    endpoint, so `az-model-fetchd` would start and exit.
+
+    A commissioned Source Registry fills the table. That is signed deployment
+    data, and this function then reports the transport as wired without a line
+    of code changing -- which is the point of deriving it.
+    """
+
+    return frozenset({ARTIFACT_TRANSPORT} if ENDPOINT_FOR else set())
 
 
 class RollbackFailed(Exception):
@@ -102,6 +131,7 @@ class ActivationDaemon:
         record: Optional[CommissioningRecord] = None,
         edge: Optional[EdgeBaselineState] = None,
         healthy: bool = True,
+        wired: Optional[Sequence[str]] = None,
     ) -> ActivationOutcome:
         units = ManagedUnitController(self.manager)
         controller = ActivationController(
@@ -118,6 +148,11 @@ class ActivationDaemon:
                 record=record,
                 edge=edge,
                 healthy=healthy,
+                # `None` means "ask the distribution", which is what a node
+                # does. A caller may pass a set to exercise a build other than
+                # this one; it may not pass one to widen this one, because the
+                # unit still starts nothing.
+                wired=wired_capabilities() if wired is None else wired,
             )
         except AuditUnavailable:
             # The library has already masked everything. Nothing to take back,

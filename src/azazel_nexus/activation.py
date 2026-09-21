@@ -51,6 +51,7 @@ from .generation import GenerationRefused, GenerationStore
 
 __all__ = [
     "ACTIVATION_CONTROLLER_UNIT",
+    "ARTIFACT_TRANSPORT",
     "ActivationLease",
     "EdgeBaselineState",
     "CORE_UNITS",
@@ -121,10 +122,31 @@ class UnitDefinition:
     tier: UnitTier
     account: str
     purpose: str
+    #: The capability this unit needs **wired into the build** before it may
+    #: run, or `None` when it needs none.
+    #:
+    #: A tier says what a *node* must have established. This says what the
+    #: *distribution* must contain. The two are different questions, and
+    #: collapsing them is how `azazel-model-fetchd.service` came to be granted
+    #: on every healthy node while its service exits immediately for having no
+    #: transport: its tier was satisfied, and nothing asked whether the thing
+    #: it would serve exists here at all.
+    #:
+    #: A unit named here is still shipped, still declared, still masked
+    #: explicitly and still carries its account, socket and hardening -- the
+    #: service boundary is part of the product whether or not anything is
+    #: behind it yet. What it does not do is start.
+    wiring: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.name.endswith(".service"):
             raise ActivationRefused(f"{self.name!r} is not a service unit name")
+        if self.wiring is not None and not self.wiring.strip():
+            raise ActivationRefused(
+                f"{self.name} names an empty wiring capability; a requirement "
+                "with no name is one nothing can ever satisfy and nobody can "
+                "read"
+            )
         if not self.account.strip():
             raise ActivationRefused(
                 f"{self.name} names no account; a unit whose identity is "
@@ -139,6 +161,15 @@ class UnitDefinition:
 #: It is deliberately **not** in `CORE_UNITS`: the component that decides what
 #: may be unmasked does not decide that about itself.
 ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
+
+
+#: The capability `azazel-model-fetchd.service` needs wired: a Source Registry
+#: that resolves at least one source symbol to an endpoint.
+#:
+#: A name rather than a boolean so that a withholding reason says *what* is
+#: missing, and so that a second unit needing something else cannot satisfy
+#: its requirement by satisfying this one.
+ARTIFACT_TRANSPORT = "artifact_transport"
 
 
 #: The governed set for the CORE slice.
@@ -203,6 +234,16 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azfetch",
         "artifact fetch service; the only unit with egress, and it admits nothing",
+        # The Source Registry ships empty, so this build resolves no source
+        # symbol to an endpoint and the service exits rather than listen for
+        # work it cannot do. Granting it would enable a unit that fails at the
+        # next boot -- and a node whose systemd reports `degraded` for a thing
+        # that is working as designed is a node where the next real failure
+        # looks like this one.
+        #
+        # A commissioned Source Registry is what wires it. That is deployment
+        # data, signed and reviewed, never a change to this file.
+        wiring=ARTIFACT_TRANSPORT,
     ),
 )
 
@@ -559,6 +600,10 @@ class ActivationController:
         self._lease: Optional[ActivationLease] = None
         self._edge: Optional[EdgeBaselineState] = None
         self._healthy = False
+        #: What this build has wired. Empty is the refusing value and the
+        #: shipped one: a controller asked to decide without being told what
+        #: exists withholds every unit that needs something.
+        self._wired: frozenset = frozenset()
 
     def activate(
         self,
@@ -569,6 +614,7 @@ class ActivationController:
         lease: Optional[ActivationLease] = None,
         edge: Optional[EdgeBaselineState] = None,
         healthy: bool = True,
+        wired: Iterable[str] = (),
     ) -> ActivationOutcome:
         """Run one activation pass. Called on every boot.
 
@@ -590,6 +636,12 @@ class ActivationController:
         self._lease = lease
         self._edge = edge
         self._healthy = healthy
+        # Default empty, and the library cannot discover this for itself: what
+        # is wired is a fact about the installed distribution, which is the
+        # half the library is forbidden to import. It arrives as evidence, and
+        # absent evidence withholds -- the same rule every other gate here
+        # follows.
+        self._wired = frozenset(wired)
         current = self.generations.current()
         if current is None:
             return self._withhold_everything(
@@ -695,7 +747,22 @@ class ActivationController:
     def _withholding_reason(
         self, definition: UnitDefinition, record: Optional[CommissioningRecord]
     ) -> Optional[str]:
-        """Per tier, in order of what each one adds to the one before it."""
+        """Per tier, in order of what each one adds to the one before it.
+
+        Wiring comes first, ahead of even health. Every other reason here is
+        something an operator can go and fix on this node; an unwired
+        capability is a property of the build they installed, and no amount of
+        fixing the node changes it. Reporting a fixable reason while an
+        unfixable one also holds sends them to do work that will not help, and
+        then tells them the real answer afterwards.
+        """
+
+        if definition.wiring is not None and definition.wiring not in self._wired:
+            return (
+                f"wiring_absent: this build has no {definition.wiring}, so "
+                f"{definition.name} would start and exit. The unit, its "
+                "account and its hardening ship; what it would serve does not"
+            )
 
         # Required by every tier. A node that cannot answer for its own
         # health does not get to widen on the strength of not having noticed.

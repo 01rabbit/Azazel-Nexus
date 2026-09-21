@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from azazel_nexus.activation import (
+    ARTIFACT_TRANSPORT,
     CORE_UNITS,
     ActivationLease,
     ActivationOutcome,
@@ -36,7 +37,11 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
 from azazel_nexus.generation import GenerationStore
-from azazel_nexus_runtime.activated import ActivationDaemon, RollbackFailed
+from azazel_nexus_runtime.activated import (
+    ActivationDaemon,
+    RollbackFailed,
+    wired_capabilities,
+)
 from azazel_nexus_runtime.units import (
     UNIT_NAMES,
     DbusUnitManager,
@@ -119,7 +124,9 @@ def _events(tmp_path):
 def test_supporting_units_run_before_anything_else_is_established(tmp_path):
     daemon, manager = _daemon(tmp_path)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
-    assert set(outcome.granted) == {d.name for d in CORE_UNITS}
+    assert set(outcome.granted) == {
+        d.name for d in CORE_UNITS if d.wiring is None
+    }
 
 
 def test_supporting_units_running_does_not_make_edge_baseline_ready(tmp_path):
@@ -239,12 +246,31 @@ def test_an_outcome_built_by_hand_is_not_enforcement_ready():
 # -- the lease -----------------------------------------------------------
 
 
+def _reason_for(outcome, reason: str) -> list:
+    """Verdicts that should carry `reason`: every unit needing no wiring.
+
+    A unit whose capability this build does not wire is withheld for that,
+    ahead of anything about the node -- so it never reports the node-level
+    reason these tests are about. Asserting over *every* verdict would either
+    fail or have to be loosened to "some", and "some" would pass on a pass
+    that granted the rest.
+    """
+
+    return [
+        v
+        for v in outcome.verdicts
+        if any(d.name == v.unit and d.wiring is None for d in CORE_UNITS)
+    ]
+
+
 def test_nothing_is_widened_without_a_lease(tmp_path):
     daemon, manager = _daemon(tmp_path)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=None)
     assert outcome.granted == ()
     assert all(call[0] == "mask" for call in manager.calls)
-    assert all(v.reason.startswith("lease_absent") for v in outcome.verdicts)
+    node_level = _reason_for(outcome, "lease_absent")
+    assert node_level, "no unit reached the lease check"
+    assert all(v.reason.startswith("lease_absent") for v in node_level)
 
 
 def test_an_expired_lease_widens_nothing(tmp_path):
@@ -254,7 +280,9 @@ def test_an_expired_lease_widens_nothing(tmp_path):
     )
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=expired)
     assert outcome.granted == ()
-    assert all(v.reason.startswith("lease_expired") for v in outcome.verdicts)
+    node_level = _reason_for(outcome, "lease_expired")
+    assert node_level, "no unit reached the lease check"
+    assert all(v.reason.startswith("lease_expired") for v in node_level)
 
 
 def test_a_lease_that_has_not_begun_widens_nothing(tmp_path):
@@ -291,7 +319,9 @@ def test_health_that_was_not_established_widens_nothing(tmp_path):
     daemon, _ = _daemon(tmp_path)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(), healthy=False)
     assert outcome.granted == ()
-    assert all(v.reason.startswith("health_not_established") for v in outcome.verdicts)
+    node_level = _reason_for(outcome, "health_not_established")
+    assert node_level, "no unit reached the health check"
+    assert all(v.reason.startswith("health_not_established") for v in node_level)
 
 
 # -- activation is a transaction -----------------------------------------
@@ -549,4 +579,51 @@ def test_the_exempt_module_exists_and_still_executes():
     assert "subprocess" in imported, (
         f"{EXECUTING_MODULE} no longer executes anything; remove its exemption "
         "rather than leaving it for the next module with that name"
+    )
+
+
+# -- what this distribution can serve, read from the distribution ---------
+
+
+def test_this_build_wires_no_artifact_transport():
+    """The shipped answer, and the reason `az-model-fetchd` stays masked.
+
+    Asserted against the endpoint table itself rather than against a constant,
+    so that a build which *did* wire a transport would fail this test rather
+    than silently keep the claim.
+    """
+
+    from azazel_nexus_runtime.model_fetch import ENDPOINT_FOR
+
+    assert ENDPOINT_FOR == {}
+    assert wired_capabilities() == frozenset()
+
+
+def test_the_capability_is_derived_from_the_table_not_declared(monkeypatch):
+    """Fill the table and the transport reports as wired, with no code change.
+
+    A flag would be a second place the truth is written down, and the one that
+    is wrong is always the one nobody looked at.
+    """
+
+    import azazel_nexus_runtime.activated as activated
+
+    monkeypatch.setattr(activated, "ENDPOINT_FOR", {"vendor-primary": object()})
+    assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT})
+
+
+def test_a_pass_asks_the_distribution_rather_than_assuming(tmp_path, monkeypatch):
+    """The daemon's default is the real answer, not an optimistic one."""
+
+    import azazel_nexus_runtime.activated as activated
+
+    daemon, _ = _daemon(tmp_path)
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert "azazel-model-fetchd.service" in outcome.withheld
+
+    monkeypatch.setattr(activated, "ENDPOINT_FOR", {"vendor-primary": object()})
+    daemon, _ = _daemon(tmp_path)
+    granted = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert "azazel-model-fetchd.service" in granted.granted, (
+        "the pass ignored the distribution and used a fixed set"
     )
