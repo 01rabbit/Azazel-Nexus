@@ -62,7 +62,7 @@ qualification, and a machine satisfying all of them is still untested.
 | Reference OS | "a supported long-term-support Linux distribution with systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools, LUKS2, and a current kernel" — **no distribution, release, or kernel series is named anywhere** | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2; see §7 |
 | Console | a headless console MUST be supported; a touchscreen is an optional presentation device | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2 |
 | Platform security assumption | UEFI Secure Boot where supported, TPM 2.0 measured boot, LUKS2-encrypted system and data volumes; with no TPM, a boot-time operator secret and measured-boot evidence labeled unavailable | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §12 |
-| Language and runtime matrix | **undeclared** — see §7 | — |
+| Language and runtime | CPython **≥ 3.11**, both distributions. A **software support baseline**, not a hardware qualification — see §3.3 | owner decision, 2026-09-21 ([#67](https://github.com/01rabbit/Azazel-Nexus/issues/67)) |
 | Capability rule | `resource profile ∩ topology profile ∩ verified asset set ∩ current trust/health state`; RAM alone enables nothing | [capability model](capability-model.md) §1 |
 
 Nothing in this table says any particular machine, distribution, or kernel
@@ -101,6 +101,43 @@ topology precondition that commissioning establishes per deployment
 ([capability model](capability-model.md) §3). A qualified machine with an
 uncommissionable interface layout is observe-only, and that is the correct
 outcome rather than a compatibility defect.
+
+### 3.3 Software support baseline, which is not a hardware qualification
+
+**CPython 3.11 or newer**, for `azazel-nexus` and `azazel-nexus-runtime`
+alike. Declared 2026-09-21 by owner decision; before that this row read
+*undeclared* in §7, and it was moved here rather than guessed.
+
+This is a **software support baseline** and deliberately not one of the
+`hardware-unverified` gates in [hardware gates](hardware-gates.md). The two
+say different kinds of thing:
+
+| | what it means | how it stops being open |
+| --- | --- | --- |
+| software support baseline | a capability the interpreter must have for this code to be correct at all | stated, then enforced by the installer and CI |
+| `hardware-unverified` gate | a claim about behaviour on a machine that nothing has run on | by running it on that machine |
+
+A baseline is **checkable here and now** — the installer refuses below it and
+CI runs it — while a gate is not. Recording the interpreter floor among the
+hardware gates would have put something already settled into a register of
+things that are not, which is the confusion the register exists to prevent.
+
+**Why 3.11 and not 3.10.** `tomllib` enters the standard library at 3.11, and
+`tomllib` is the canonical reader for the `anchors.toml` a Knowledge Lite
+bundle is verified against ([#67](https://github.com/01rabbit/Azazel-Nexus/issues/67)).
+Shipping a hand-written partial TOML parser to read the **trust anchor of a
+signed artifact** would trade a dependency for an attack surface, which is not
+a trade this product makes. This is not an external runtime dependency: it is
+a standard-library capability Nexus requires, stated plainly.
+
+**3.10 is a refusal, not a degraded mode.** `packaging/install.sh` checks the
+interpreter before it writes anything and exits non-zero with the reason.
+There is no fallback parser, no partial install, and no path by which a node
+comes up on 3.10 and discovers the problem later, at the moment it is asked to
+verify something.
+
+Nothing here says any interpreter, distribution or machine has been tested.
+§1 still holds: Nexus supports nothing.
 
 ## 4. Azazel-Fabric pin discipline
 
@@ -255,7 +292,6 @@ measurement, not by a contributor choosing a plausible value.
 
 | Undeclared | What is actually written | How it gets declared |
 | --- | --- | --- |
-| Language and runtime matrix | Nothing. Neither program plan §5 R2/R3 nor any Nexus document names a Python version, interpreter, or runtime for Nexus. R3 states only "x86_64 systemd deployment" | with the package layout and dependency manifest of Phase 0 ([contract ownership](contract-ownership.md) §6) |
 | OS distribution and release | "a supported long-term-support Linux distribution" — no distribution or version ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2) | as the `os_abi` of the first tested compatibility tuple |
 | Kernel series | "a current kernel" — no series or minimum ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2) | as above |
 | Minimum versions of systemd, nftables, `tc`, cgroup v2 tooling, TPM 2.0 tooling, LUKS2 | The components are named; no version floor is stated anywhere | with the first tested tuple |

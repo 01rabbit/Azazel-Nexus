@@ -63,6 +63,23 @@ if [ "$WITH_SERVICE_MANAGER" = yes ] && [ ! -d /run/systemd/system ]; then
     exit 3
 fi
 
+# The runtime floor, checked before anything is written. 3.11 is where
+# `tomllib` enters the standard library, and `tomllib` is the canonical reader
+# for the trust anchor a Knowledge Lite bundle is verified against (Nexus#67).
+#
+# An explicit refusal, not a fallback. A node that installed on 3.10 and then
+# could not read a trust anchor would be a node that fails at the moment it is
+# asked to verify something -- later, and with less of an explanation.
+PYTHON="${PYTHON:-python3}"
+if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "refusing to install: Azazel-Nexus requires Python 3.11 or newer." >&2
+    echo "Found: $("$PYTHON" --version 2>&1)" >&2
+    echo "3.11 is where tomllib enters the standard library, and tomllib is" >&2
+    echo "what reads the trust anchor a Knowledge Lite bundle verifies" >&2
+    echo "against. There is no fallback parser and no partial mode." >&2
+    exit 1
+fi
+
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.

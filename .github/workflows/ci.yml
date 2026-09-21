@@ -25,7 +25,7 @@ jobs:
         # The floor and the ceiling of what pyproject.toml declares. This is
         # the CI runner's matrix, not a product support claim -- Nexus declares
         # no supported runtime of its own (docs/support-matrix.md §7).
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.11", "3.12"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -7,7 +7,13 @@ name = "azazel-nexus-runtime"
 version = "0.0.1.dev0"
 description = "AZ-07 Nexus: the OS service layer, separated from the library it serves"
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 is the floor, and it is a capability rather than a preference:
+# `tomllib` enters the standard library there, and it is the canonical
+# reader for the `anchors.toml` a Knowledge Lite bundle is verified
+# against (Nexus#67). Shipping a hand-written partial TOML parser to
+# read the trust anchor of a signed artifact would trade a dependency
+# for an attack surface.
+requires-python = ">=3.11"
 
 # `azazel-nexus` is the library this layer serves, and the dependency runs
 # one way only. The library holds the state, contract, decision and audit

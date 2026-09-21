@@ -7,7 +7,13 @@ name = "azazel-nexus"
 version = "0.0.1.dev0"
 description = "AZ-07 Nexus Gateway: integrated node runtime"
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 is the floor, and it is a capability rather than a preference:
+# `tomllib` enters the standard library there, and it is the canonical
+# reader for the `anchors.toml` a Knowledge Lite bundle is verified
+# against (Nexus#67). Shipping a hand-written partial TOML parser to
+# read the trust anchor of a signed artifact would trade a dependency
+# for an attack surface.
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 
 # Deliberately empty.
