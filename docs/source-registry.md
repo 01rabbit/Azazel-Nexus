@@ -101,6 +101,40 @@ boundary, and it is fixed in three places that must agree:
 not an address: what the service may reach arrives as a commissioning drop-in
 built from the signed Source Registry, so the unit as shipped reaches nothing.
 
+### The unit ships, and is not granted
+
+Being governed is not the same as being granted. Activation's tiers ask what
+the *node* has established — a verified generation, health, a lease, a
+commissioning record — and every one of those is satisfied on an ordinary
+healthy node. None of them asks whether this **build** contains a transport
+for the unit to use.
+
+So `UnitDefinition` carries a fourth requirement alongside the tier:
+
+```
+UnitDefinition("azazel-model-fetchd.service", SUPPORTING, "azfetch", …,
+               wiring=ARTIFACT_TRANSPORT)
+```
+
+A unit naming a capability this build does not wire is withheld —
+`wiring_absent: this build has no artifact_transport, so
+azazel-model-fetchd.service would start and exit` — ahead of every other
+reason, because every other reason here is something an operator can go and
+fix on the node, and this one is a property of what they installed. Telling
+them to establish health first, and about the missing transport afterwards,
+sends them round twice for an answer the build had already decided.
+
+What is wired is **read from the distribution, never declared**:
+`activated.wired_capabilities()` reports the transport as wired exactly when
+`ENDPOINT_FOR` is non-empty. A flag would be a second place the truth is
+written down, and the one that is wrong is always the one nobody looked at.
+Commission a Source Registry and the unit is granted with no line of code
+changing.
+
+The unit, its account, its directory, its socket and its hardening ship
+either way. The service boundary is part of the product whether or not
+anything is behind it yet; what it does not do is start.
+
 ### A caller cannot say where the bytes come from
 
 `protocol.ArgumentKind` has no free-text member. A request carries

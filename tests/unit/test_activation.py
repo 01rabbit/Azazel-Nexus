@@ -22,6 +22,7 @@ import pytest
 
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
+    ARTIFACT_TRANSPORT,
     ActivationLease,
     EdgeBaselineState,
     CORE_UNITS,
@@ -261,6 +262,14 @@ def test_a_repeated_unit_in_the_governed_set_is_refused():
         )
 
 
+#: The governed units this build actually wires. `azazel-model-fetchd.service`
+#: is governed, shipped and masked, and is withheld for having no transport
+#: rather than for anything about the node -- so a pass on a default node
+#: grants these and not that one.
+def _wired_units() -> set:
+    return {d.name for d in CORE_UNITS if d.wiring is None}
+
+
 def test_with_no_generation_nothing_is_unmasked(tmp_path):
     units = RecordingUnitController(d.name for d in CORE_UNITS)
     ledger = AuditLedger(tmp_path / "ledger.jsonl")
@@ -299,7 +308,7 @@ def test_the_digest_is_re_derived_on_every_activation(tmp_path):
 
     controller, units, _, store = _controller(tmp_path)
     first = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
-    assert set(first.granted) == {d.name for d in CORE_UNITS}
+    assert set(first.granted) == _wired_units()
 
     (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"tampered\n")
     second = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
@@ -315,7 +324,7 @@ def test_an_operational_unit_is_withheld_with_no_commissioning_record(tmp_path):
     outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
 
     assert ENFORCING.name in outcome.withheld
-    assert set(outcome.granted) == {d.name for d in CORE_UNITS}
+    assert set(outcome.granted) == _wired_units()
     verdict = next(v for v in outcome.verdicts if v.unit == ENFORCING.name)
     assert verdict.reason.startswith("commissioning_absent")
 
@@ -411,11 +420,21 @@ def test_a_grant_is_recorded_before_the_unit_is_widened(tmp_path):
 
     expected = []
     for definition in CORE_UNITS:
+        if definition.wiring is not None:
+            # Withheld for having nothing to serve, and a withholding is
+            # recorded too -- but it is recorded *instead of* a widening, so
+            # it contributes one entry rather than a pair.
+            expected.append("audit:activation.unit_withheld")
+            continue
         expected.append("audit:activation.unit_granted")
         expected.append("unmask:" + definition.name)
     assert order == expected, (
         "each unit's ledger entry must precede its own widening, not merely "
         "precede the last of them"
+    )
+    assert "audit:activation.unit_withheld" in order, (
+        "no unit was withheld, so the interleaving above was not checked "
+        "against a pass that mixes the two outcomes"
     )
 
 
@@ -696,3 +715,122 @@ def test_every_unit_is_still_decided_when_one_will_not_mask(tmp_path):
     outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert len(outcome.verdicts) == len(CORE_UNITS)
     assert controller.unmaskable == {"azazel-commissiond.service"}
+
+
+# -- a unit is not granted before the thing it would serve exists ---------
+#
+# `azazel-model-fetchd.service` was granted on every healthy, leased node:
+# its tier was satisfied, and nothing asked whether this build contains a
+# transport for it to use. Granting is unmask-and-enable, so the unit would
+# start at the next boot and exit immediately for having no endpoint to
+# resolve a symbol to -- leaving a failed unit, and a `systemd` that reports
+# `degraded` for something working exactly as designed. A node that reports
+# degraded for a non-problem is a node where the next real failure looks
+# like this one.
+
+
+UNWIRED = UnitDefinition(
+    "azazel-unwired.service",
+    UnitTier.SUPPORTING,
+    "azunwired",
+    "a unit whose capability this build does not contain",
+    wiring="a_capability_nothing_provides",
+)
+
+
+def test_a_unit_whose_capability_is_unwired_is_withheld(tmp_path):
+    controller, units, _, _ = _controller(tmp_path, CORE_UNITS + (UNWIRED,))
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    assert UNWIRED.name in outcome.withheld
+    assert units.state(UNWIRED.name) is UnitState.MASKED
+    verdict = next(v for v in outcome.verdicts if v.unit == UNWIRED.name)
+    assert verdict.reason.startswith("wiring_absent")
+    assert "a_capability_nothing_provides" in verdict.reason, (
+        "the reason must name what is missing; an operator cannot act on "
+        "'something is not wired'"
+    )
+
+
+def test_the_same_unit_is_granted_once_its_capability_is_wired(tmp_path):
+    """Withheld for a reason that can be satisfied, not withheld for ever.
+
+    A gate that refuses unconditionally is indistinguishable from a unit that
+    was never governed, and would keep refusing on the day the capability
+    arrives -- silently, with nothing to notice.
+    """
+
+    controller, units, _, _ = _controller(tmp_path, CORE_UNITS + (UNWIRED,))
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(), wired=[UNWIRED.wiring]
+    )
+
+    assert UNWIRED.name in outcome.granted
+    assert units.state(UNWIRED.name) is UnitState.ENABLED
+
+
+def test_wiring_another_capability_does_not_satisfy_this_one(tmp_path):
+    """The requirement is a name, so it cannot be met by the wrong thing."""
+
+    controller, _, _, _ = _controller(tmp_path, CORE_UNITS + (UNWIRED,))
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(), wired=[ARTIFACT_TRANSPORT]
+    )
+
+    assert UNWIRED.name in outcome.withheld
+
+
+def test_wiring_is_reported_ahead_of_anything_about_the_node(tmp_path):
+    """Both hold; only one of them is something an operator can fix.
+
+    Sending them to establish the node's health first, and telling them about
+    the missing transport afterwards, is sending them round twice for a
+    reason that was already decided by the build they installed.
+    """
+
+    controller, _, _, _ = _controller(tmp_path, CORE_UNITS + (UNWIRED,))
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(), healthy=False
+    )
+
+    verdict = next(v for v in outcome.verdicts if v.unit == UNWIRED.name)
+    assert verdict.reason.startswith("wiring_absent")
+    others = [v for v in outcome.verdicts if v.unit in _wired_units()]
+    assert others and all(
+        v.reason.startswith("health_not_established") for v in others
+    ), "the node-level reason must still be what every other unit reports"
+
+
+def test_the_withholding_is_recorded_like_any_other(tmp_path):
+    """A unit withheld with no ledger entry is a unit nobody can account for."""
+
+    controller, _, ledger, _ = _controller(tmp_path, CORE_UNITS + (UNWIRED,))
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    withheld = [
+        entry.event
+        for entry in ledger
+        if entry.event["event_type"] == "activation.unit_withheld"
+        and entry.event.get("unit") == UNWIRED.name
+    ]
+    assert len(withheld) == 1
+    assert "wiring_absent" in withheld[0]["reason"]
+
+
+def test_the_fetch_service_is_the_unit_this_build_does_not_wire(tmp_path):
+    """Not a generic mechanism with no user. The one unit it applies to."""
+
+    needing = {d.name: d.wiring for d in CORE_UNITS if d.wiring is not None}
+    assert needing == {"azazel-model-fetchd.service": ARTIFACT_TRANSPORT}
+
+    controller, units, _, _ = _controller(tmp_path)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert "azazel-model-fetchd.service" in outcome.withheld
+    assert units.state("azazel-model-fetchd.service") is UnitState.MASKED
+
+
+def test_a_wiring_requirement_must_be_a_name(tmp_path):
+    with pytest.raises(ActivationRefused):
+        UnitDefinition(
+            "azazel-blank.service", UnitTier.SUPPORTING, "az", "p", wiring="   "
+        )
