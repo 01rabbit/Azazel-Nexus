@@ -362,3 +362,42 @@ def test_a_record_round_trips() -> None:
 def test_a_negative_elapsed_is_refused() -> None:
     with pytest.raises(EvidenceRefused):
         an_observation(elapsed_ms=-1)
+
+
+def test_p95_is_distinguishable_from_the_max_the_median_and_the_mean() -> None:
+    """A set where all four differ, because a set where two coincide proves nothing.
+
+    The first version of this file checked p95 against the mean using 100
+    samples at 10ms and 20 at 5000ms -- where p95 and the **max** are both
+    5000. A mutation replacing the rank with `len(ordered)` survived the whole
+    suite: the test could not tell the tail from the last value.
+
+    With 1..100 the four statistics are 95, 100, 51 and 50.
+    """
+
+    samples = [an_observation(elapsed_ms=ms) for ms in range(1, 101)]
+    prediction = predict(samples, candidate="local", as_of=NOW)
+    elapsed = sorted(o.elapsed_ms for o in samples)
+    assert prediction.p95_ms == 95
+    assert prediction.p95_ms != max(elapsed)
+    assert prediction.p95_ms != elapsed[len(elapsed) // 2]
+    assert prediction.p95_ms != sum(elapsed) // len(elapsed)
+
+
+def test_an_unpredictable_candidate_with_some_samples_still_meets_nothing() -> None:
+    """The guard in `meets`, made reachable.
+
+    With zero samples `success_percent` is `None` and the later check refuses
+    anyway, so removing the predictability guard changed nothing and a mutation
+    removing it survived. Below the floor but **not empty** is the case that
+    reaches it: a candidate with a few fast, all-successful samples must still
+    not be offered, because a handful of samples is not evidence of a tail.
+    """
+
+    few = enough(elapsed=1, outcome=Outcome.ANSWERED, count=MIN_SAMPLES - 1)
+    prediction = predict(few, candidate="local", as_of=NOW)
+    assert prediction.predictable is False
+    assert prediction.sample_count == MIN_SAMPLES - 1
+    assert prediction.success_percent == 100  # every one of them answered
+    assert prediction.p95_ms is None
+    assert prediction.meets(deadline_ms=10**9) is False
