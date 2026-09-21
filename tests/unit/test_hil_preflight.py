@@ -1220,3 +1220,65 @@ def test_no_document_or_test_instructs_the_removed_options():
             if found:
                 offenders[str(path.relative_to(REPO))] = found
     assert offenders == {}
+
+
+def _bare_sysfs(tmp_path: Path) -> Path:
+    """Interfaces the inventory cannot identify: no bus path, no permanent
+    MAC. Their refusal reasons name the kernel names, which is why what the
+    refusal prints matters."""
+
+    net = tmp_path / "bare" / "class" / "net"
+    for name in KERNEL_NAMES:
+        (net / name).mkdir(parents=True)
+    return net
+
+
+def test_a_refusal_prints_a_classification_and_not_what_it_refused(tmp_path):
+    """The refusal's own message quotes the interfaces it could not
+    identify, by kernel name. An operator needs to know the preflight
+    stopped; they do not need it spelled in the terminal."""
+
+    import io
+
+    from azazel_nexus.cli import main
+
+    node = _protected_node(tmp_path)
+    out = io.StringIO()
+    code = main(
+        [
+            "--sysfs", str(_bare_sysfs(tmp_path)), "hil-preflight",
+            "--record-dir", str(node["record_dir"]),
+            "--key", str(node["key"]),
+            "--meminfo", str(node["meminfo"]),
+            "--os-release", str(node["os_release"]),
+            "--sysfs-dev-block", str(node["dev_block"]),
+            "--sysfs-tpm", str(node["tpm"]),
+            "--boot-id", str(node["boot_id"]),
+        ],
+        out=out,
+        ask=lambda prompt, choices: "skip",
+        confirm=lambda prompt: True,
+        text=lambda prompt: "unused",
+        permanent_mac_reader=lambda name: None,
+    )
+    text = out.getvalue()
+    assert code == 2
+    assert BLOCKED in text
+    assert "missing: B-3" in text
+    for name in KERNEL_NAMES:
+        assert name not in text, f"the refusal named {name}"
+    assert list(node["record_dir"].iterdir()) == []
+
+
+def test_an_abandoned_set_writes_nothing_and_says_so_in_classifications(tmp_path):
+    node = _protected_node(tmp_path)
+    code, text = _cli(
+        tmp_path,
+        node,
+        answers=["management", "observation"],
+        texts=[],
+        confirms=[False],
+    )
+    assert code == 2
+    assert BLOCKED in text
+    assert list(node["record_dir"].iterdir()) == []
