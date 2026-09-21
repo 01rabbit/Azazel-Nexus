@@ -39,6 +39,11 @@ from azazel_nexus.capability import CapabilityState
 from azazel_nexus.cognition import CognitionState, RemoteState, read_cognition
 from azazel_nexus.compatibility import TestedTupleSet
 from azazel_nexus.decoy import DecoyState, DecoyStatus, IsolationCheck, evaluate
+from azazel_nexus.functional_readiness import (
+    CONTROL_PLANE_ONLY,
+    READINESS,
+    Readiness,
+)
 from azazel_nexus.integration import MISSING, EdgePresence, build_view
 from azazel_nexus.lite_service import LiteReading, LiteState
 from azazel_nexus.resource_profile import ResourceProfile
@@ -86,6 +91,25 @@ def cognition(**overrides):
     call = {"profile": ResourceProfile.LITE, "tested": TestedTupleSet(), "host": None}
     call.update(overrides)
     return read_cognition([], **call)
+
+
+@pytest.fixture()
+def functional(monkeypatch):
+    """Declare the embedded features functional for one test.
+
+    The nine configurations describe what each feature reports **when it can
+    report anything**. Today all three are `control-plane-only`, which would
+    collapse the table to one value and stop it testing the composition at
+    all. The `control-plane-only` behaviour itself is asserted separately,
+    against the real declarations.
+    """
+
+    for feature in READINESS:
+        monkeypatch.setitem(
+            READINESS,
+            feature,
+            Readiness(feature=feature, functional=True, missing="", issue=""),
+        )
 
 
 def view(*, knowledge_reading, decoy_status, capability=CapabilityState.CORE, **kwargs):
@@ -147,7 +171,7 @@ CONFIGURATIONS = [
     CONFIGURATIONS,
 )
 def test_each_configuration_reports_the_state_it_is_in(
-    name, knowledge_reading, decoy_status, knowledge_word, deception_word
+    name, knowledge_reading, decoy_status, knowledge_word, deception_word, functional
 ) -> None:
     built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
     assert built.row("freshness", "knowledge_lite").value == knowledge_word, name
@@ -182,7 +206,7 @@ def test_no_configuration_claims_enforcement_or_baseline_readiness(
 # -- what each configuration specifically must not do ----------------------
 
 
-def test_a_node_with_none_of_the_three_is_the_designed_node_not_a_defect() -> None:
+def test_a_node_with_none_of_the_three_is_the_designed_node_not_a_defect(functional) -> None:
     """The configuration this product is most likely to ship in.
 
     Both embedded features are present as code and hold nothing. That is
@@ -199,7 +223,7 @@ def test_a_node_with_none_of_the_three_is_the_designed_node_not_a_defect() -> No
     assert built.row("capability").value == "CORE"
 
 
-def test_a_stale_cache_is_visible_as_stale_and_not_served_as_current() -> None:
+def test_a_stale_cache_is_visible_as_stale_and_not_served_as_current(functional) -> None:
     built = view(knowledge_reading=knowledge(LiteState.STALE), decoy_status=absent_decoy())
     assert built.row("freshness", "knowledge_lite").value == "stale"
     # `stale` sources no capability, so nothing downstream can treat it as
@@ -207,7 +231,7 @@ def test_a_stale_cache_is_visible_as_stale_and_not_served_as_current() -> None:
     assert built.row("knowledge_supplier", "knowledge").value == "none"
 
 
-def test_a_quarantined_cache_supplies_nothing() -> None:
+def test_a_quarantined_cache_supplies_nothing(functional) -> None:
     built = view(
         knowledge_reading=knowledge(LiteState.QUARANTINED), decoy_status=absent_decoy()
     )
@@ -215,7 +239,7 @@ def test_a_quarantined_cache_supplies_nothing() -> None:
     assert built.row("knowledge_supplier", "knowledge").value == "none"
 
 
-def test_a_quarantined_decoy_leaves_the_rest_of_the_node_working() -> None:
+def test_a_quarantined_decoy_leaves_the_rest_of_the_node_working(functional) -> None:
     """The failure is the decoy's. It stays the decoy's."""
 
     built = view(
@@ -441,3 +465,47 @@ def test_this_file_makes_no_claim_about_hardware() -> None:
         assert gate in text, f"{gate} is not registered"
     assert "hardware-unverified" in text
     assert "unmeasured" in text
+
+
+# -- what every configuration reports today --------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, knowledge_reading, decoy_status, _k, _d", CONFIGURATIONS
+)
+def test_today_every_configuration_reports_control_plane_only(
+    name, knowledge_reading, decoy_status, _k, _d
+) -> None:
+    """Run against the real declarations, not the fixture.
+
+    Nine configurations of *what is there*, and on every node this repository
+    can build the answer is the same: the control plane is implemented and the
+    functional layer is not. The table above describes what each one will
+    report once that changes; this is what they report now.
+    """
+
+    built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
+    if knowledge_reading is not None:
+        assert built.row("freshness", "knowledge_lite").value == CONTROL_PLANE_ONLY, name
+    if decoy_status is not None:
+        assert built.row("freshness", "deception_lite").value == CONTROL_PLANE_ONLY, name
+    assert built.row("knowledge_supplier", "knowledge").value == "none", name
+    assert built.row("deception_supplier", "deception").value == "none", name
+
+
+@pytest.mark.parametrize(
+    "name, knowledge_reading, decoy_status, _k, _d", CONFIGURATIONS
+)
+def test_no_configuration_supplies_a_capability_it_cannot_provide(
+    name, knowledge_reading, decoy_status, _k, _d
+) -> None:
+    """The reason the override exists.
+
+    A cache holding a verified artifact still cannot answer a query, because
+    nothing can read the artifact. Reporting it as a supplier would be a claim
+    about a capability the node does not have.
+    """
+
+    built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
+    assert "Knowledge Lite advice" not in built.continues, name
+    assert "decoy observation" not in built.continues, name

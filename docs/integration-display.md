@@ -21,7 +21,7 @@ is what lets the rules below be tested as rules rather than as strings.
 | axis | values |
 | --- | --- |
 | `capability` | `CORE` / `LITE` / `FULL` |
-| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` |
+| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` |
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, with remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
@@ -36,7 +36,7 @@ Two inputs move two axes, and the tests say so explicitly rather than
 treating it as an exception to discover: a Knowledge Lite that becomes
 `available` is also a *supplier*, and a decoy that becomes `exposed` is too.
 
-## 3. Five words that are not four
+## 3. Six words that are not five
 
 | word | means | what the operator does |
 | --- | --- | --- |
@@ -45,26 +45,58 @@ treating it as an exception to discover: a Knowledge Lite that becomes
 | `stale` | having something too old to serve | refresh it |
 | `quarantined` | having something that cannot be trusted | investigate, then roll back or re-admit |
 | `missing` | an **embedded** feature that is not there | this is a defect; fix the installation |
+| **`control-plane-only`** | the feature's code is here, its control plane works, and **its functional layer does not exist yet** | nothing on this node; the work is tracked |
 
-Five different next actions. A renderer that prints any two of them as one
-word has told its operator to do the wrong thing, so the vocabulary is kept
-apart here and a test asserts no two share a value.
+Six different next actions. A renderer that prints any two of them as one word
+has told its operator to do the wrong thing, so the vocabulary is kept apart
+here and a test asserts no two share a value.
+
+**`control-plane-only` exists because `unavailable` means *supply content and
+it works*.** Saying that of a feature nothing could accept content for sends
+an operator looking for something no path can deliver.
+
+It is what every embedded feature reports today, and
+`src/azazel_nexus/functional_readiness.py` holds which and why:
+
+| feature | implemented | the functional layer still needs |
+| --- | --- | --- |
+| Knowledge Lite | trust / cache / generation / rollback | an accepted signed bundle format and a supply route ([#67](https://github.com/01rabbit/Azazel-Nexus/issues/67)) |
+| M.I.O. | admission / profile / sanitizer / local-first degradation | `HG-05` measured, so a provider can be admitted ([#68](https://github.com/01rabbit/Azazel-Nexus/issues/68)) |
+| Deception Lite | lifecycle / isolation requirement / disable / quarantine | a runtime that starts a decoy, loopback-only ([#69](https://github.com/01rabbit/Azazel-Nexus/issues/69)) |
+
+**A feature reporting `control-plane-only` supplies nothing**, whatever it
+holds — a cache with a verified artifact still cannot answer a query, because
+nothing can read the artifact.
+
+### The declarations cannot go stale quietly
+
+A hand-maintained "not done yet" list goes stale the day someone finishes the
+work and forgets the list. Each entry is paired with a test in
+`tests/unit/test_functional_readiness.py` that asserts the **mechanical
+reason** it is true: the default claim reader that refuses, the resource gate
+that always rejects, the decoy module that defines no verb able to start
+anything. When one of those stops being true, its test fails, and whoever made
+it stop being true has to come and update the declaration.
 
 A decoy that is `DISABLED` and one that is `ELIGIBLE` both report
 `unavailable` — in both, nothing is listening — and the decoy's own reason
 says which. That is a deliberate merge of two *lifecycle* states onto one
 *freshness* word, not a collapse of two freshness words.
 
-## 4. An absent peer and an absent embedded feature are not the same fact
+## 4. An absent peer and an embedded feature that cannot supply are not the same fact
 
 An external AZ-04 or AZ-06 peer that is not connected is `unavailable`, and
 the row says so in as many words: *"a capability extension and its absence is
 unavailable, not a defect"*. **A node with no peers is the designed node.**
 
 An embedded feature that is not there is `missing` and the row carries
-`defect=True`. Describing both with one word makes a required feature read
-like an optional one — and it is the required one whose absence somebody has
-to act on.
+`defect=True`. An embedded feature that is there and cannot supply its
+capability is `control-plane-only`. Describing any of these with one word
+makes a required feature read like an optional one — and it is the required
+one whose absence somebody has to act on.
+
+Both embedded rows say so in as many words: *"which is not the same fact as an
+external peer being absent"*.
 
 ## 5. Two things the view never claims, and one it never says continues
 
@@ -99,12 +131,16 @@ two claims, then what continues:
 integration:
     capability: CORE
         the node is CORE; a capability state is what the node can do ...
-    freshness [knowledge_lite]: unavailable
-        no Knowledge Lite artifact has been admitted; absence of knowledge ...
-    freshness [deception_lite]: unavailable
-        no decoy catalogue is present; nothing is approved
-    cognition_route [mio]: CORE ONLY; remote M.I.O. disabled
-        ... | resource: ... | topology: ... | trust: ...
+    freshness [knowledge_lite]: control-plane-only
+        the control plane is implemented and the functional layer is not:
+        no signed Knowledge bundle format is accepted ... (Nexus#67). This is
+        an embedded feature that cannot supply its capability, which is not
+        the same fact as an external peer being absent. The cache itself
+        reports: no Knowledge Lite artifact has been admitted ...
+    freshness [deception_lite]: control-plane-only
+        ... (Nexus#69) ... The runtime itself reports: no decoy catalogue ...
+    cognition_route [mio]: CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only
+        ... (Nexus#68) | resource: ... | topology: ... | trust: ...
     knowledge_supplier [knowledge]: none
         ... AZ-04 peer is a capability extension and its absence is
         unavailable, not a defect

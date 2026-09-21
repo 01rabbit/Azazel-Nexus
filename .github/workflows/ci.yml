@@ -206,6 +206,23 @@ jobs:
               raise SystemExit("the integration view is missing an axis")
           if not view.defects:
               raise SystemExit("an absent embedded feature must be reported as a defect")
+          # And the embedded features that *are* present still cannot supply
+          # anything (Nexus#67/#68/#69). A node reporting otherwise would be
+          # claiming a capability nothing on it can provide.
+          import azazel_nexus.functional_readiness as readiness  # noqa: F401
+          if any(entry.functional for entry in readiness.READINESS.values()):
+              raise SystemExit(
+                  "a feature is declared functional; the status rows and "
+                  "docs/integration-display.md have to be updated with it"
+              )
+          deception_row = view.row("freshness", "deception_lite")
+          if deception_row.value != readiness.CONTROL_PLANE_ONLY:
+              raise SystemExit(
+                  f"an embedded feature with no functional layer reported "
+                  f"{deception_row.value!r}"
+              )
+          if view.row("deception_supplier", "deception").value != "none":
+              raise SystemExit("a feature that cannot supply was reported as a supplier")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.
