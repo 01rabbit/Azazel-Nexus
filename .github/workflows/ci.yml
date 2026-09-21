@@ -178,6 +178,23 @@ jobs:
               landed = routing.fallback_for(trigger, from_route=routing.Route.DETERMINISTIC_HANDOFF)
               if landed.ceiling is not routing.Route.DETERMINISTIC_HANDOFF:
                   raise SystemExit(f"{trigger.value} widened the route on a node with nothing")
+          # Deception Lite (#54). The decoy is the only internal feature that
+          # can be reached from outside, so the check here is that on a node
+          # with nothing it is disabled -- and that redirect is not eligible,
+          # which must hold in every state and not only the configured ones.
+          import azazel_nexus.decoy as decoy  # noqa: F401
+          resting = decoy.evaluate(
+              "any",
+              catalogue=None,
+              commissioning=None,
+              isolation=decoy.IsolationCheck(passed=None),
+          )
+          if resting.state is not decoy.DecoyState.DISABLED:
+              raise SystemExit(f"a node with no catalogue must be disabled, got {resting.state!r}")
+          if resting.exposed or resting.redirect_eligible:
+              raise SystemExit("a disabled decoy must be neither exposed nor redirect-eligible")
+          if resting.blocks_deterministic_path():
+              raise SystemExit("a disabled decoy blocks the deterministic path")
           # And it must really verify here, not merely import. RFC 8032 §7.1
           # vector 2, inline: an import that succeeded while the arithmetic
           # silently needed something unavailable would pass this job.
