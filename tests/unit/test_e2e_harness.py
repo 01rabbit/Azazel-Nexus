@@ -14,6 +14,7 @@ people stop running.
 from __future__ import annotations
 
 import re
+import pathlib
 import subprocess
 import sys
 from pathlib import Path
@@ -210,6 +211,9 @@ REQUIRED_STAGES = (
     # Nexus#69: decoys bound on real Unix sockets, reached, and crashed.
     # Also has no prerequisite.
     "loopback decoy runtime",
+    # Nexus#72: the probe writes a result and the library reads it, with
+    # the stale, mismatched and tampered cases all withholding.
+    "Edge probe to status",
 )
 
 
@@ -346,9 +350,16 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
 
     from azazel_nexus.layout import LAYOUT
 
+    from azazel_nexus_runtime.hardening import PROFILES
+
     libexec = tmp_path / "usr/libexec/azazel"
     libexec.mkdir(parents=True)
-    for name in ("az-activated", "az-commissiond", "az-auditd", "az-watchdog"):
+    # Derived from the profiles, so a new unit cannot be added without its
+    # shim -- which is what made this fail when `az-edge-probed` arrived, and
+    # is the failure worth keeping rather than the list worth extending.
+    shims = sorted({pathlib.Path(profile.executable).name for profile in PROFILES})
+    assert shims, "a vacuous loop: no profile declares an executable"
+    for name in shims:
         shim = libexec / name
         shim.write_text("#!/bin/sh\nexit 0\n")
         shim.chmod(0o755)

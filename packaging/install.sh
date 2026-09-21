@@ -66,7 +66,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install the azazel-nexus-runtime distribution first and place" >&2
@@ -78,7 +78,7 @@ done
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch; do
+    for account in azcommission azaudit azwatch azprobe; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
         fi
@@ -116,6 +116,7 @@ install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-commissiond.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-auditd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-watchdog.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-edge-probed.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then
@@ -133,6 +134,7 @@ systemctl daemon-reload
 systemctl mask azazel-commissiond.service
 systemctl mask azazel-auditd.service
 systemctl mask azazel-watchdog.service
+systemctl mask azazel-edge-probed.service
 
 # Enabled, not started: the controller runs at the next boot, which is where
 # revalidation belongs. Starting it here would activate against a generation

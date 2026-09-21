@@ -24,7 +24,14 @@ from .cognition import read_cognition
 from .commissioning import CommissioningRefused, propose
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
-from .edge_package import EdgeInspection, inspect as inspect_edge
+from .edge_package import (
+    EDGE_PACKAGE_ROOT,
+    PROBE_STATE_PATH,
+    EdgeInspection,
+    EdgePackageRefused,
+    inspect as inspect_edge,
+    load_probe_result,
+)
 from .integration import IntegrationView, build_view
 from .inventory import no_permanent_mac, read_interfaces
 from .lite_service import KnowledgeLite
@@ -51,19 +58,6 @@ EXTERNAL_MODULES = (
     ("AZ-06 Deception", "no module endpoint is configured on this node"),
     ("Remote M.I.O.", "no remote cognition route is configured on this node"),
 )
-
-#: Where the Edge Core package is looked for (#44, Azazel-Edge#424).
-#:
-#: A fixed location, so that "nothing is there" is a **result** rather than
-#: the absence of a question. A node that only reported Edge when somebody
-#: pointed it at a directory would be silent on exactly the node where Edge
-#: was never deployed.
-#:
-#: `/opt` rather than `/data`: this is a shipped artifact, not a data tier.
-#: `edge_package.inspect` reads an absent root correctly -- it reports
-#: `absent` with the reason -- so a node without the directory gets the truth
-#: rather than an error.
-EDGE_PACKAGE_ROOT = Path("/opt/azazel/edge-core")
 
 #: Where the embedded stores live (`IMPLEMENTATION_SPEC.md` §3).
 #:
@@ -328,6 +322,24 @@ def _render_status(
             print(f"        {action.command}", file=out)
 
 
+def _probe_result(path: Path, out: TextIO):
+    """`az-edge-probed`'s last result, or `None` when there is not a usable one.
+
+    A state file that cannot be read as a result is **reported and then
+    treated as absent**: something wrote it, and swallowing that would hide
+    the one case where the probe is producing garbage. Reporting it costs
+    nothing -- an unreadable result leaves health and running `not-checked`,
+    which is where they start.
+    """
+
+    try:
+        return load_probe_result(path)
+    except EdgePackageRefused as exc:
+        print(f"edge probe state at {path} was refused: {exc}", file=out)
+        print(file=out)
+        return None
+
+
 def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
     """The local Edge Core: one word, then all five checks, then the limits.
 
@@ -435,6 +447,9 @@ def main(
     parser.add_argument(
         "--edge-root", type=Path, default=EDGE_PACKAGE_ROOT, help=argparse.SUPPRESS
     )
+    parser.add_argument(
+        "--edge-probe", type=Path, default=PROBE_STATE_PATH, help=argparse.SUPPRESS
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("inventory", help="read-only hardware and interface list")
@@ -468,7 +483,13 @@ def main(
         as_of = args.as_of or _now()
         # Inspected once and passed to both the section and the axis, so the
         # two cannot describe different nodes on one screen.
-        edge = inspect_edge(args.edge_root)
+        #
+        # `status` never probes. It reads what `az-edge-probed` last
+        # wrote (Nexus#72) and passes it in; package, version and digest
+        # are still derived here, from the files, every time.
+        edge = inspect_edge(
+            args.edge_root, probe=_probe_result(args.edge_probe, stream), now=as_of
+        )
         _render_status(
             report,
             stream,

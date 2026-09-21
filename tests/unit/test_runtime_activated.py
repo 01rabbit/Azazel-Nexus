@@ -479,16 +479,31 @@ def test_the_adapter_cannot_start_a_unit():
     assert not hasattr(DbusUnitManager, "start")
 
 
-def test_the_runtime_builds_no_command_line_anywhere():
+#: The one module allowed to start a process, contained the way
+#: `fabric_boundary.py` contains the Fabric import.
+#:
+#: `az-edge-probed` has to run the Edge health contract; there is no D-Bus
+#: method for "execute this binary", and Nexus#72 fixed that the health answer
+#: is obtained by running the contract. Containing it in one module keeps the
+#: property this scan exists for -- that you can name the places that execute
+#: -- instead of trading it away. `tests/unit/test_edge_probed.py` holds the
+#: narrower rules that apply inside it.
+EXECUTING_MODULE = "edge_probed.py"
+
+
+def test_the_runtime_builds_no_command_line_anywhere_but_the_probe():
     """No `subprocess`, no shell, no argument list assembled from input.
 
     The D-Bus route takes a unit name as a typed parameter to a typed method,
     so there is no `PATH` lookup, no argument splitting and no environment to
-    inherit.
+    inherit. That holds for every module here except `edge_probed.py`, and
+    the exemption is by name: a new module cannot acquire it by accident.
     """
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(RUNTIME.rglob("*.py")):
+        if path.name == EXECUTING_MODULE:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         found = set()
         for node in ast.walk(tree):
@@ -513,3 +528,25 @@ def test_the_runtime_builds_no_command_line_anywhere():
         if found:
             offenders[path.name] = sorted(found)
     assert offenders == {}, f"{offenders} can execute something"
+
+
+def test_the_exempt_module_exists_and_still_executes():
+    """A named exemption for a module that stopped executing is dead weight.
+
+    Worse, it is dead weight that silently re-arms: the next module given
+    that name inherits an exemption nobody meant it to have.
+    """
+
+    exempt = RUNTIME / EXECUTING_MODULE
+    assert exempt.is_file(), f"{EXECUTING_MODULE} is exempted and does not exist"
+    tree = ast.parse(exempt.read_text(encoding="utf-8"))
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "subprocess" in imported, (
+        f"{EXECUTING_MODULE} no longer executes anything; remove its exemption "
+        "rather than leaving it for the next module with that name"
+    )

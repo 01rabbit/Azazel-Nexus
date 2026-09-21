@@ -45,26 +45,33 @@ than an absent one, because it invites the reliance the absent one denies.
 
 ## What this module never does
 
-It does not install, extract, configure a network, or start anything. Health
-and running state arrive through **injected probes**, and the defaults refuse:
-`no_health_probe` and `no_running_probe` report `not-checked` with the reason.
+It does not install, extract, configure a network, or start anything.
+`tests/unit/test_boundary_static.py` forbids this package from importing
+`subprocess`: Nexus's library half has not commissioned an operational
+surface, and a status command that spawned the component it reports on would
+be a status command with a side effect.
 
-No runner is shipped with them, and that is a boundary rather than an
-oversight. `tests/unit/test_boundary_static.py` forbids this package from
-importing `subprocess` -- Nexus has not commissioned an operational surface,
-and a status command that spawned the component it reports on would be a
-status command with a side effect. Nothing here quietly acquires the authority
-to run the Edge binary.
+## Where health and running come from ([#72](https://github.com/01rabbit/Azazel-Nexus/issues/72))
 
-The consequence is stated rather than hidden: **on a node built from this
-repository, `health_endpoint_healthy` and `running` are always `not-checked`**,
-so `edge-baseline-ready` cannot be reached here even with a present, matched
-package. Who runs the Edge health contract, and what establishes that the
-payload is running, is a deployment decision that crosses that boundary, and
-it is [Nexus#72](https://github.com/01rabbit/Azazel-Nexus/issues/72) rather
-than something this module decided on its own. What this module does deliver
-is the **parser** for both answers: all four health conditions, checked
-independently and tested against the contract Edge ships.
+From `az-edge-probed`, a **separate one-shot runtime service** in the runtime
+distribution, which writes a bounded state file this module *reads*. `status`
+stays read-only: it starts nothing, retries nothing and probes nothing.
+
+The trust that places on the probe is deliberately small. **This module keeps
+deriving `package_present`, `version_matches` and `digest_matches` itself**,
+from the files on disk, on every read. Only `health_endpoint_healthy` and
+`running` come from the probe, and a result is used only when it names the
+same version and the same artifact digest this module just derived. A probe
+that reports on a different package reports on nothing.
+
+A result older than its own TTL is `not-checked` with a reason that says it
+went stale. **Staleness never promotes**: there is no path by which an old
+result, a mismatched result, or an unparseable one produces anything but
+`not-checked`, and `edge-baseline-ready` needs all five checks `passed`.
+
+The injected callables remain for tests and for a deployment that supplies
+these another way. Passing both a probe result and a non-default callable is
+refused: two sources for one finding is one source too many.
 """
 
 from __future__ import annotations
@@ -81,6 +88,16 @@ from .integration import EdgePresence
 
 __all__ = [
     "CHECKS",
+    "DEFAULT_TTL_SECONDS",
+    "EDGE_PACKAGE_ROOT",
+    "EDGE_UNIT",
+    "HEALTH_ARGV",
+    "PROBE_CONTRACT",
+    "PROBE_MAX_BYTES",
+    "PROBE_STATE_PATH",
+    "ProbeResult",
+    "load_probe_result",
+    "parse_probe_result",
     "EdgeInspection",
     "EdgePin",
     "Evidence",
@@ -96,6 +113,48 @@ __all__ = [
 
 #: Where the vendored Edge contract lives, relative to the repository root.
 CONTRACT_DIR = Path(__file__).resolve().parents[2] / "contract" / "azazel-edge-core"
+
+#: Where the Edge Core package is looked for. A **fixed** location, so that
+#: "nothing is there" is a result rather than the absence of a question, and
+#: so that neither this module nor the probe ever takes a path as input.
+EDGE_PACKAGE_ROOT = Path("/opt/azazel/edge-core")
+
+#: The systemd unit whose running state the probe reads. Fixed for the same
+#: reason: a probe that accepted a unit name would be a probe that could be
+#: pointed at any unit on the host.
+EDGE_UNIT = "azazel-edge-core.service"
+
+#: The health command, **fixed in code**. Edge's manifest declares the same
+#: argv, and the probe checks that they agree -- but it runs this one. Running
+#: the manifest's copy would be executing a command supplied as data, and a
+#: manifest is exactly the file an adversary who can reach the package can
+#: rewrite.
+HEALTH_ARGV = ("bin/azazel-edge-core", "--health")
+
+#: The state file the probe writes and this module reads.
+#:
+#: `/var/lib/azazel/run` rather than a tmpfs of its own: it is the directory
+#: `layout.py` already declares for the operator plane -- mode 0750, group
+#: `azazel-operator` -- so the operator who runs `azazel-nexus status` can
+#: read the result without anybody inventing a second answer to "who may see
+#: this". Durability across a reboot is not a problem the location has to
+#: solve; the TTL solves it, and a result from before a reboot is stale by
+#: exactly the rule that makes any other old result stale.
+PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe.json")
+PROBE_CONTRACT = "azazel-nexus/edge-probe/v1"
+
+#: A ceiling on what is read from the state file. A reader with no ceiling is
+#: a reader whose memory is decided by whatever wrote the file.
+PROBE_MAX_BYTES = 16384
+
+#: How long a result may be used for, when it does not say. Short, because an
+#: old answer about a running process is not a weak answer -- it is an answer
+#: about a different moment.
+DEFAULT_TTL_SECONDS = 300
+
+#: The longest TTL a result may declare. A probe that could name its own
+#: expiry without bound could name one that never arrives.
+MAX_TTL_SECONDS = 3600
 
 #: The five checks, in the order an operator reads them. A tuple rather than a
 #: set: both a disappearance and a reordering should fail a test, because the
@@ -309,6 +368,191 @@ class EdgeInspection:
         }
 
 
+# -- the probe's result, which is read and never trusted further ----------
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """What `az-edge-probed` observed, as this module is willing to read it.
+
+    It carries the version and artifact digest the probe saw. This module
+    compares both against what it derived itself, and a result that names a
+    different package supplies nothing -- which is what keeps the probe from
+    being able to answer for a package that is not the one on disk.
+    """
+
+    contract: str
+    observed_at: str
+    ttl_seconds: int
+    package_version: str
+    package_digest: str
+    health: Evidence
+    health_reason: str
+    running: Evidence
+    running_reason: str
+    #: True only when the probe found a healthy report from the wrong version.
+    health_security: bool = False
+
+    def __post_init__(self) -> None:
+        if self.contract != PROBE_CONTRACT:
+            raise EdgePackageRefused(
+                f"the probe result declares contract {self.contract!r} and this "
+                f"node reads {PROBE_CONTRACT!r}"
+            )
+        if not isinstance(self.ttl_seconds, int) or isinstance(self.ttl_seconds, bool):
+            raise EdgePackageRefused("a TTL is a whole number of seconds")
+        if not 0 < self.ttl_seconds <= MAX_TTL_SECONDS:
+            raise EdgePackageRefused(
+                f"a TTL of {self.ttl_seconds}s is outside 1-{MAX_TTL_SECONDS}s; "
+                "an unbounded expiry is an expiry that never arrives"
+            )
+        for name in ("observed_at", "package_version", "package_digest"):
+            if not str(getattr(self, name)).strip():
+                raise EdgePackageRefused(f"a probe result states its {name}")
+        for name in ("health_reason", "running_reason"):
+            if not str(getattr(self, name)).strip():
+                raise EdgePackageRefused(
+                    f"a probe result with no {name} reads as agreement"
+                )
+        if self.health_security and self.health is not Evidence.FAILED:
+            raise EdgePackageRefused(
+                "a probe result marks a security finding on a health check that "
+                f"is {self.health.value}; a check nobody ran has found nothing"
+            )
+        _instant(self.observed_at)
+
+    def expires_at(self) -> str:
+        from datetime import timedelta
+
+        moment = _instant(self.observed_at) + timedelta(seconds=self.ttl_seconds)
+        return _zulu(moment.isoformat())
+
+    def fresh_at(self, now: str) -> bool:
+        return _instant(now) < _instant(self.expires_at())
+
+    def as_event(self) -> dict:
+        return {
+            "contract": self.contract,
+            "observed_at": self.observed_at,
+            "ttl_seconds": self.ttl_seconds,
+            "package_version": self.package_version,
+            "package_digest": self.package_digest,
+            "health": self.health.value,
+            "health_reason": self.health_reason,
+            "health_security": self.health_security,
+            "running": self.running.value,
+            "running_reason": self.running_reason,
+        }
+
+
+def _zulu(isoformat: str) -> str:
+    """`...+00:00` written as `...Z`.
+
+    Written with a slice rather than `str.replace`, and `_offset` below for
+    the same reason. The static scan in `tests/unit/test_edge_package.py`
+    refuses the *name* `replace` anywhere in this module, because
+    `Path.replace` and `os.replace` rename files and an AST scan cannot tell a
+    `str` from a `Path`. This module must not be able to move a file it is
+    verifying, so it gives up the string method rather than the guard -- the
+    same exact-match precedent that keeps `capture_spool` while refusing
+    `capture`.
+    """
+
+    tail = "+00:00"
+    return isoformat[: -len(tail)] + "Z" if isoformat.endswith(tail) else isoformat
+
+
+def _offset(text: str) -> str:
+    """`...Z` written as `...+00:00`, which `fromisoformat` accepts on 3.10."""
+
+    return text[:-1] + "+00:00" if text.endswith("Z") else text
+
+
+def _instant(text: str):
+    """One RFC3339 UTC instant. Nothing here reads a clock."""
+
+    from datetime import datetime, timezone
+
+    try:
+        moment = datetime.fromisoformat(_offset(str(text)))
+    except ValueError as exc:
+        raise EdgePackageRefused(f"{text!r} is not an RFC3339 instant: {exc}") from exc
+    if moment.tzinfo is None:
+        raise EdgePackageRefused(
+            f"{text!r} carries no time zone; an instant without one is an "
+            "instant that means something different on every host"
+        )
+    return moment.astimezone(timezone.utc)
+
+
+def parse_probe_result(text: str) -> ProbeResult:
+    """Read one state file's contents. Refuses rather than repairing."""
+
+    if len(text.encode("utf-8")) > PROBE_MAX_BYTES:
+        raise EdgePackageRefused(
+            f"the probe state is larger than {PROBE_MAX_BYTES} bytes; a reader "
+            "with no ceiling has its memory decided by whatever wrote the file"
+        )
+    try:
+        document = json.loads(text)
+    except ValueError as exc:
+        raise EdgePackageRefused(f"the probe state is not JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise EdgePackageRefused("the probe state is JSON that is not an object")
+    missing = [
+        key
+        for key in (
+            "contract",
+            "observed_at",
+            "ttl_seconds",
+            "package_version",
+            "package_digest",
+            "health",
+            "health_reason",
+            "running",
+            "running_reason",
+        )
+        if key not in document
+    ]
+    if missing:
+        raise EdgePackageRefused(f"the probe state is missing {missing}")
+    try:
+        health = Evidence(document["health"])
+        running = Evidence(document["running"])
+    except ValueError as exc:
+        raise EdgePackageRefused(f"the probe state names an unknown evidence: {exc}") from exc
+    return ProbeResult(
+        contract=document["contract"],
+        observed_at=document["observed_at"],
+        ttl_seconds=document["ttl_seconds"],
+        package_version=document["package_version"],
+        package_digest=document["package_digest"],
+        health=health,
+        health_reason=document["health_reason"],
+        running=running,
+        running_reason=document["running_reason"],
+        health_security=bool(document.get("health_security", False)),
+    )
+
+
+def load_probe_result(path: Path = PROBE_STATE_PATH) -> Optional[ProbeResult]:
+    """Read the state file, or `None` when there is nothing readable there.
+
+    `None` for an absent file, because a node where the probe has never run is
+    not a node with a broken probe. A file that exists and cannot be read as a
+    result raises: something wrote it, and silently ignoring that would hide
+    the one case where the probe is producing garbage.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise EdgePackageRefused(f"the probe state could not be read: {exc}") from exc
+    return parse_probe_result(text)
+
+
 # -- probes, whose defaults refuse ----------------------------------------
 
 
@@ -336,11 +580,34 @@ def inspect(
     root: Optional[Path],
     *,
     pin: EdgePin = PIN,
+    probe: Optional[ProbeResult] = None,
+    now: str = "",
     health: Callable[[], Optional[HealthAnswer]] = no_health_probe,
     running: Callable[[], Optional[bool]] = no_running_probe,
 ) -> EdgeInspection:
-    """Look at what is on disk and say what was established. Nothing more."""
+    """Look at what is on disk and say what was established. Nothing more.
 
+    `probe` is `az-edge-probed`'s last result. When it is given, it supplies
+    `health_endpoint_healthy` and `running` -- and only when it names the same
+    version and artifact digest derived here, and only while it is fresh at
+    `now`. Package, version and digest are always derived here regardless.
+
+    `now` is passed in rather than read: a verifier that read a clock would
+    give two different answers about one unchanged node.
+    """
+
+    if probe is not None:
+        if health is not no_health_probe or running is not no_running_probe:
+            raise EdgePackageRefused(
+                "a probe result and a probe callable were both supplied; two "
+                "sources for one finding is one source too many"
+            )
+        if not now.strip():
+            raise EdgePackageRefused(
+                "a probe result was supplied with no instant to judge its "
+                "freshness against; an answer with no age is an answer that "
+                "never goes stale"
+            )
     caveats = (UNSIGNED_CAVEAT,)
     if root is None:
         return EdgeInspection(
@@ -383,10 +650,23 @@ def inspect(
         )
 
     assert manifest is not None  # _read_package holds this when the check passed
-    findings.append(_version_finding(manifest, pin))
-    findings.append(_digest_finding(artifact_path, manifest))
-    findings.append(_health_finding(health(), pin))
-    findings.append(_running_finding(running()))
+    version_finding = _version_finding(manifest, pin)
+    digest_finding = _digest_finding(artifact_path, manifest)
+    findings.append(version_finding)
+    findings.append(digest_finding)
+    if probe is None:
+        findings.append(_health_finding(health(), pin))
+        findings.append(_running_finding(running()))
+    else:
+        findings.extend(
+            _probe_findings(
+                probe,
+                now=now,
+                manifest_version=manifest["version"],
+                artifact_digest=manifest["digest"],
+                digest_held=digest_finding.held,
+            )
+        )
     ordered = tuple(findings)
     return EdgeInspection(
         findings=ordered,
@@ -394,6 +674,70 @@ def inspect(
         caveats=caveats,
         root=str(root),
     )
+
+
+def _probe_findings(
+    probe: ProbeResult,
+    *,
+    now: str,
+    manifest_version: str,
+    artifact_digest: str,
+    digest_held: bool,
+) -> list[Finding]:
+    """Health and running from the probe, or `not-checked` with the reason why.
+
+    Three ways a result supplies nothing, and each says which:
+
+    * it names a different package -- so it reports on something else;
+    * the artifact on disk does not match its own manifest -- so "the same
+      version and digest" is agreement between two things that are both
+      suspect;
+    * it is older than its own TTL -- an old answer about a running process is
+      not a weak answer, it is an answer about a different moment.
+
+    None of the three is a failure of the Edge Core, and none of them may
+    become one: an operator sent to restart a healthy Edge because a probe
+    went stale is an operator doing harm on our word.
+    """
+
+    def unusable(reason: str) -> list[Finding]:
+        return [
+            Finding(check=check, evidence=Evidence.NOT_CHECKED, reason=reason)
+            for check in ("health_endpoint_healthy", "running")
+        ]
+
+    if not digest_held:
+        return unusable(
+            "the artifact on disk does not match its own manifest, so a probe "
+            "result agreeing with that manifest agrees with nothing this node "
+            "can rely on"
+        )
+    if probe.package_version != manifest_version or probe.package_digest != artifact_digest:
+        return unusable(
+            f"the probe last observed {probe.package_version}/"
+            f"{probe.package_digest}, and the package here is "
+            f"{manifest_version}/{artifact_digest}. A result about a different "
+            "package is a result about something else"
+        )
+    if not probe.fresh_at(now):
+        return unusable(
+            f"the probe result was observed at {probe.observed_at} and expired "
+            f"at {probe.expires_at()}; it is stale at {now}. A stale result is "
+            "not promoted, and it is not a failure of the Edge Core either"
+        )
+    return [
+        Finding(
+            check="health_endpoint_healthy",
+            evidence=probe.health,
+            reason=f"az-edge-probed at {probe.observed_at}: {probe.health_reason}",
+            security=probe.health_security,
+        ),
+        Finding(
+            check="running",
+            evidence=probe.running,
+            reason=f"az-edge-probed at {probe.observed_at}: {probe.running_reason}",
+        ),
+    ]
 
 
 def presence_of(findings: Sequence[Finding]) -> EdgePresence:

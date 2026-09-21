@@ -51,6 +51,7 @@ def run_all(harness: Harness) -> None:
     harness.stage("CORE + Lite configurations", lambda: _lite_matrix(harness))
     harness.stage("Edge package verification", lambda: _edge_package(harness))
     harness.stage("loopback decoy runtime", lambda: _loopback_decoys(harness))
+    harness.stage("Edge probe to status", lambda: _edge_probe(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -60,11 +61,15 @@ def _install_files(harness: Harness) -> str:
     ownership is not, and the installer says so.
     """
 
+    from azazel_nexus_runtime.hardening import PROFILES
+
     libexec = harness.root / "usr/libexec/azazel"
     libexec.mkdir(parents=True, exist_ok=True)
-    for name in ("az-activated", "az-commissiond", "az-auditd", "az-watchdog"):
+    # Derived from the profiles rather than listed. A hand-written list stops
+    # covering the newest unit exactly when that unit is the one to check.
+    for name in sorted({Path(profile.executable).name for profile in PROFILES}):
         shim = libexec / name
-        module = name.replace("az-", "")
+        module = name[len("az-") :].replace("-", "_")
         shim.write_text(
             "#!/bin/sh\n"
             f'exec "{sys.executable}" -m azazel_nexus_runtime.{module} "$@"\n',
@@ -632,4 +637,137 @@ def _loopback_decoys(harness: Harness) -> str:
         "2 decoys bound on private Unix sockets; one was reached and observed "
         "without keeping what was sent, a crash quarantined it alone, and "
         "nothing claimed external reach or redirect"
+    )
+
+
+def _edge_probe(harness: Harness) -> str:
+    """The probe writes, the library reads, and neither trusts the other (#72).
+
+    Driven end to end against files: a package on disk, a probe run with a
+    fake health command and a fake unit reader, the result written to a state
+    file, and the library reading it back. The three ways a result supplies
+    nothing are exercised here too, because each of them is a place a stale
+    or mismatched answer could have been promoted.
+    """
+
+    import hashlib
+    import json
+
+    from azazel_nexus.edge_package import (
+        PIN,
+        Evidence,
+        inspect,
+        load_probe_result,
+    )
+    from azazel_nexus.integration import EdgePresence
+    from azazel_nexus_runtime import edge_probed
+
+    root = harness.root / "edge-core"
+    (root / "bin").mkdir(parents=True, exist_ok=True)
+    payload = b"edge-core-payload"
+    binary = b"#!/bin/sh\nexit 0\n"
+    (root / PIN.artifact_name).write_bytes(payload)
+    (root / "bin/azazel-edge-core").write_bytes(binary)
+    manifest = {
+        "contract": PIN.manifest_contract,
+        "package": PIN.package,
+        "version": PIN.version,
+        "architecture": PIN.architecture,
+        "artifact": PIN.artifact_name,
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "signed": False,
+        "health": {
+            "contract": PIN.health_contract,
+            "command": ["bin/azazel-edge-core", "--health"],
+        },
+        "posture": {"observe_only": True, "enforcement": False},
+        "components": [
+            {
+                "path": "bin/azazel-edge-core",
+                "digest": "sha256:" + hashlib.sha256(binary).hexdigest(),
+                "size": len(binary),
+            }
+        ],
+    }
+    (root / PIN.manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps(
+            {"contract": PIN.health_contract, "status": "healthy", "version": PIN.version}
+        )
+
+    ran = []
+
+    def runner(argv, cwd):
+        ran.append(list(argv))
+        return _Completed()
+
+    def units(method, unit):
+        return {"ActiveState": "active", "SubState": "running", "LoadState": "loaded"}
+
+    outcome = edge_probed.probe(
+        root,
+        clock=lambda: "2026-09-21T04:00:00Z",
+        runner=runner,
+        unit_reader=units,
+    )
+    if ran != [[str(root / "bin/azazel-edge-core"), "--health"]]:
+        raise RuntimeError(f"the probe ran {ran}, not the command fixed in code")
+
+    state = harness.root / "run" / "edge-probe.json"
+    edge_probed.write_result(outcome, state)
+    result = load_probe_result(state)
+    if result is None:
+        raise RuntimeError("the state file the probe just wrote read back as absent")
+
+    ready = inspect(root, probe=result, now="2026-09-21T04:01:00Z")
+    if not ready.ready or ready.presence is not EdgePresence.VERIFIED_READY:
+        raise RuntimeError(
+            f"a verified package with a fresh probe read {ready.presence.value}"
+        )
+
+    # The three ways a result supplies nothing. Each must withhold, and none
+    # may report a failure of the Edge Core.
+    withheld = 0
+
+    stale = inspect(root, probe=result, now="2026-09-21T04:10:00Z")
+    if stale.ready:
+        raise RuntimeError("a stale probe result was promoted to ready")
+    if stale.finding("running").evidence is not Evidence.NOT_CHECKED:
+        raise RuntimeError("a stale result was reported as a failure of Edge")
+    withheld += 1
+
+    # A result about another package: the same file with the version changed,
+    # written through the same writer so the shape is the one a probe emits.
+    other = json.loads(state.read_text(encoding="utf-8"))
+    other["package_version"] = "9.9.9"
+    other_state = harness.root / "run" / "edge-probe-other.json"
+    other_state.write_text(json.dumps(other), encoding="utf-8")
+    mismatched_version = inspect(
+        root, probe=load_probe_result(other_state), now="2026-09-21T04:01:00Z"
+    )
+    if mismatched_version.ready:
+        raise RuntimeError("a result about another version was promoted to ready")
+    if mismatched_version.finding("health_endpoint_healthy").evidence is not Evidence.NOT_CHECKED:
+        raise RuntimeError("a result about another version was read as a verdict")
+    withheld += 1
+
+    tampered = harness.root / "edge-tampered"
+    (tampered / "bin").mkdir(parents=True, exist_ok=True)
+    (tampered / PIN.artifact_name).write_bytes(b"swapped")
+    (tampered / PIN.manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
+    mismatched = inspect(tampered, probe=result, now="2026-09-21T04:01:00Z")
+    if mismatched.presence is not EdgePresence.DIGEST_MISMATCH:
+        raise RuntimeError("a tampered artifact with a passing probe was not a mismatch")
+    if mismatched.ready:
+        raise RuntimeError("a probe result made a tampered package ready")
+    withheld += 1
+
+    if withheld != 3:
+        raise RuntimeError(f"{withheld} of 3 withholding cases were exercised")
+    return (
+        "the probe ran the command fixed in code, wrote a bounded result, and "
+        "the library read it back to verified-ready; stale, mismatched and "
+        "tampered cases each withheld without reporting a failure"
     )

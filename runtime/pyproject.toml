@@ -24,6 +24,7 @@ az-commissiond = "azazel_nexus_runtime.commissiond:main"
 az-activated = "azazel_nexus_runtime.activated:main"
 az-auditd = "azazel_nexus_runtime.auditd:main"
 az-watchdog = "azazel_nexus_runtime.watchdog:main"
+az-edge-probed = "azazel_nexus_runtime.edge_probed:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

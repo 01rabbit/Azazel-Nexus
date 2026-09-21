@@ -107,26 +107,85 @@ the contract itself changed. Both sides hold the tie mechanically:
 `contract/azazel-edge-core/PROVENANCE.md` records which Edge commit the copy
 came from and that it is copied, never edited here.
 
-## 7. What this node cannot reach on its own
+## 7. Where health and running come from: `az-edge-probed`
 
-`tests/unit/test_boundary_static.py` forbids this package from importing
-`subprocess`: Nexus has not commissioned an operational surface, and a status
-command that spawned the component it reports on would be a status command
-with a side effect.
+`tests/unit/test_boundary_static.py` forbids the library from importing
+`subprocess`: Nexus's library half has not commissioned an operational
+surface, and a status command that spawned the component it reports on would
+be a status command with a side effect.
 
-So no runner is shipped for either probe, and the consequence is stated rather
-than hidden:
+So the two checks that need something run are answered by a **separate
+one-shot runtime service**, `az-edge-probed`
+([#72](https://github.com/01rabbit/Azazel-Nexus/issues/72)), which writes a
+bounded state file the library reads. **`status` stays read-only**: it starts
+nothing, stops nothing, retries nothing and probes nothing.
 
-> **On a node built from this repository, `health_endpoint_healthy` and
-> `running` are always `not-checked`, and `edge-baseline-ready` is therefore
-> unreachable even with a present, matched package.**
+### The trust this places on the probe is small, on purpose
 
-What this repository does deliver is the **parser** for both answers — all
-four health conditions, each tested against the contract Edge ships — and the
-injection points for the probes. Who runs the Edge health contract, and what
-establishes that the payload is up, crosses that boundary and is
-[#72](https://github.com/01rabbit/Azazel-Nexus/issues/72) rather than
-something this module decided on its own.
+| check | who establishes it |
+| --- | --- |
+| `package_present` | the library, from the files, every read |
+| `version_matches` | the library, from the files, every read |
+| `digest_matches` | the library, from the files, every read |
+| `health_endpoint_healthy` | the probe |
+| `running` | the probe |
+
+A probe result can therefore **withhold** readiness but never invent a package
+that is not there. It is used only when it names the same version and the same
+artifact digest the library just derived; a result about a different package
+is a result about something else.
+
+### Three ways a result supplies nothing
+
+* **Stale** — older than its own TTL. An old answer about a running process is
+  not a weak answer, it is an answer about a different moment.
+* **Mismatched** — it names another version or another digest.
+* **Unverifiable** — the artifact on disk does not match its own manifest, so
+  a result agreeing with that manifest agrees with nothing to rely on.
+
+All three produce `not-checked`, never `failed`. **Staleness never promotes,
+and it never accuses either**: an operator sent to restart a healthy Edge
+because a probe went stale is an operator doing harm on our word.
+
+### Everything the probe touches is fixed in code
+
+The package directory, the pinned version, the health argv, the unit whose
+state is read, and the state file's path. `main` takes no path, no unit, no
+command — only `--print` — and a static scan asserts it.
+
+**The health command it runs is the one fixed in code, not the one the
+manifest declares.** The manifest declares the same argv and the probe checks
+that they agree, but agreement is a *verification*, not a source: a manifest
+is exactly the file an adversary who can reach the package can rewrite.
+
+Before running anything the probe requires the package present, the version
+pinned, the archive digest re-derived, **and the unpacked binary about to run
+to match the digest the manifest records for it** — because an intact archive
+says nothing about the file next to it that actually executes.
+
+### It starts nothing
+
+Running state is read over D-Bus through an injected `call(method, unit)`, the
+same shape `units.DbusUnitManager` uses: a typed parameter, no `systemctl`, no
+`PATH` lookup, no argument splitting. The methods are an allowlist of two,
+both read-only. With no D-Bus connection — a container, a host without
+systemd, a permission refusal — `running` is `not-checked` with that reason.
+
+`az-edge-probed` is the **one** module in the runtime distribution permitted
+to start a process, contained the way `fabric_boundary.py` contains the Fabric
+import. `tests/unit/test_runtime_activated.py` exempts it by name and asserts
+it still needs the exemption; `tests/unit/test_edge_probed.py` holds the
+narrower rules inside it — one `subprocess.run`, no shell, a fixed
+environment, a deadline, and an argv built only from module constants.
+
+### The unit
+
+`azazel-edge-probed.service`, `Type=oneshot`, account `azprobe`, masked at
+install like every other governed unit. It is `SUPPORTING` rather than
+`EDGE_BASELINE`: an `EDGE_BASELINE` unit needs a verified Edge package before
+it may be granted, and this is the unit that establishes whether one is
+healthy and running. A probe that could only run once Edge was established
+could never establish it.
 
 ## 7b. No network-configuration path exists on this node
 
@@ -176,10 +235,13 @@ screen cannot describe two nodes.
 ## 9. What this does not establish
 
 - **That any of this works against a real Edge deployment.** Nothing here has
-  been run against an installed Edge Core on real hardware; HG-01 through
-  HG-06 stay open ([hardware gates](hardware-gates.md)).
+  been run against an installed Edge Core on real hardware. Every probe run
+  CI exercises uses a fake health command and a fake unit reader; no real
+  `azazel-edge-core --health` and no real systemd has answered. HG-01 through
+  HG-07 stay open ([hardware gates](hardware-gates.md)).
 - **Authenticity of the package.** §3.
-- **`edge-baseline-ready` on a node built from this repository.** §7.
+- **That the probe has run.** Until it does, health and running are
+  `not-checked` and `edge-baseline-ready` is withheld. §7.
 - **Anything about enforcement.** Nexus verifies a package that declares
   itself observe-only and refuses one that does not. It grants no enforcement
   authority, and the deterministic arbiter in Azazel-Edge remains the only
