@@ -24,6 +24,7 @@ Related: [M.I.O. dual cognition doctrine](mio-dual-cognition.md) (Edge-owned
 semantics) · [the deterministic sanitizer](mio-sanitizer.md) ·
 [the model catalog contract](model-catalog.md) ·
 [offline model import](model-import.md) ·
+[the operator screen](operator-view.md) ·
 [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
 [Inheritance ledger](inheritance-ledger.md) ·
