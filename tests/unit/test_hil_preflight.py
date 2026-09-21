@@ -378,20 +378,24 @@ def test_a_blocked_answer_shows_classifications_and_no_values():
 
 
 def test_a_ready_answer_shows_exactly_the_permitted_fields():
-    """The list is closed. A field added here is a field somebody has to
-    argue for."""
+    """Compared whole, not by prefix. A check that read only the label of
+    each line would pass on a line that carried a second value after it, and
+    a second value is how the one that must not be shown gets shown.
+    """
 
-    lines = run().lines()
-    assert lines[0] == READY
-    assert [line.split(":")[0] for line in lines[1:]] == [
-        "host",
-        "record generation",
-        "fingerprint",
-        "roles approved",
-        "unassigned interfaces",
-        "memory class",
-        "runbook",
-    ]
+    result = run()
+    assert result.lines() == (
+        READY,
+        f"host: {result.anonymous_host_id}",
+        "record generation: 7",
+        f"fingerprint: {result.fingerprint}",
+        "roles approved: management=1, observation=1",
+        "unassigned interfaces: 0",
+        "memory class: core (8 GiB class)",
+        f"runbook: {result.runbook_id}",
+    )
+    assert result.anonymous_host_id not in result.fingerprint
+    assert result.runbook_id not in result.fingerprint
 
 
 def test_the_audit_event_holds_only_the_closed_list():
