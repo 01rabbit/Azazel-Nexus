@@ -226,7 +226,7 @@ def _generation(harness: Harness) -> str:
 
 
 def _activation(harness: Harness) -> str:
-    from azazel_nexus.activation import ActivationLease
+    from azazel_nexus.activation import CORE_UNITS, ActivationLease
     from azazel_nexus.audit import AuditLedger
     from azazel_nexus_runtime.activated import ActivationDaemon
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
@@ -248,8 +248,28 @@ def _activation(harness: Harness) -> str:
         ),
         record=harness.record,  # type: ignore[attr-defined]
     )
-    if len(outcome.granted) != len(UNIT_NAMES):
-        raise RuntimeError(f"only {outcome.granted} were granted")
+    # Not "everything governed". A unit naming a capability this build does
+    # not wire is withheld for that -- `azazel-model-fetchd.service` has no
+    # transport here, and granting it would enable a unit that starts and
+    # exits at the next boot. Checked as two statements rather than one count,
+    # so that a pass which granted the wrong set cannot satisfy it.
+    expected = {d.name for d in CORE_UNITS if d.wiring is None}
+    if set(outcome.granted) != expected:
+        raise RuntimeError(
+            f"granted {sorted(outcome.granted)}, expected {sorted(expected)}"
+        )
+    unwired = {d.name for d in CORE_UNITS if d.wiring is not None}
+    if not unwired:
+        raise RuntimeError(
+            "no governed unit needs wiring, so the withholding below was not "
+            "checked against anything"
+        )
+    for verdict in outcome.verdicts:
+        if verdict.unit in unwired and not verdict.reason.startswith("wiring_absent"):
+            raise RuntimeError(
+                f"{verdict.unit} was withheld for {verdict.reason!r}, not for "
+                "having nothing to serve"
+            )
     if outcome.edge_baseline_ready:
         raise RuntimeError(
             "edge-baseline-ready was claimed with no Edge Core established"
@@ -257,7 +277,8 @@ def _activation(harness: Harness) -> str:
     harness.manager = manager  # type: ignore[attr-defined]
     return (
         f"{len(outcome.granted)} supporting units granted; "
-        "edge-baseline-ready correctly withheld"
+        f"{len(unwired)} withheld for having no transport wired in this "
+        "build; edge-baseline-ready correctly withheld"
     )
 
 
