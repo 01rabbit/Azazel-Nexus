@@ -110,6 +110,27 @@ __all__ = [
 #: fixed-length, so the boundary between tag and payload cannot be argued
 #: about -- and so a signature over a manifest, a revocation list or a runtime
 #: binary can never be read as a signature over a catalog.
+#:
+#: **What this version number means.** The domain names two things and only
+#: two: the *kind* of signing target -- a model catalog, as distinct from a
+#: manifest, a revocation list or a runtime binary -- and the canonical
+#: signing protocol by which a payload becomes signed bytes.
+#:
+#: It moves when, and only when, one of three things changes:
+#:
+#: 1. the kind of thing being signed,
+#: 2. the canonicalisation (how a document becomes the bytes under the
+#:    signature),
+#: 3. what cross-protocol separation has to mean -- a new sibling protocol a
+#:    catalog signature must not be confused with.
+#:
+#: It does **not** move because the payload grew a field. Adding `source_id`
+#: (#96) changed the shape, not the kind and not the protocol, so
+#: `CATALOG_SCHEMA` moved and this did not. Bumping the domain for every
+#: shape change would make each one a new signing role, and roles are what
+#: this tag exists to keep few and stable -- a store full of one-version
+#: roles is a store where nothing is reused and every rotation is a
+#: migration.
 CATALOG_DOMAIN = b"azazel-nexus/model-catalog/v1\x00"
 
 #: The signed file: 64 bytes of detached signature, then the payload exactly
@@ -117,16 +138,26 @@ CATALOG_DOMAIN = b"azazel-nexus/model-catalog/v1\x00"
 #: step the signer and the verifier could disagree about.
 CATALOG_FILENAME = "catalog.signed"
 
-#: The document shape. Moved to `/2` when `source_id` was added (#96): a
-#: required field changes what the document *is*, and a reader that accepted
-#: a `/1` document under `/2` rules would be inferring a field nobody wrote.
+#: The document shape, and nothing else. Moved to `/2` when `source_id` was
+#: added (#96): a required field changes what the document *is*, and a reader
+#: that accepted a `/1` document under `/2` rules would be inferring a field
+#: nobody wrote.
 #:
-#: `CATALOG_DOMAIN` stays at `v1` on purpose. The two version numbers are not
-#: the same number. The domain tag says **what kind of thing** was signed --
-#: a catalog rather than a manifest or a revocation list -- and that did not
-#: change. The schema says **what shape** it is, and that did. Bumping the
-#: domain alongside the shape would make every shape change a new signing
-#: role, and roles are what the tag exists to keep few and stable.
+#: The two version numbers are not the same number. See `CATALOG_DOMAIN` for
+#: what that one means and when it moves.
+#:
+#: **Verification checks all three**, and a catalog is accepted only when
+#: every one of them holds:
+#:
+#: | what | checked against | failing it means |
+#: | --- | --- | --- |
+#: | domain | `CATALOG_DOMAIN`, prefixed before verifying | a signature for another kind of thing, or another protocol |
+#: | schema version | this constant, exactly | a shape this reader does not know |
+#: | canonical bytes | the signature, over domain + payload as received | the bytes are not what was signed |
+#:
+#: An unknown schema is **refused**, never best-effort parsed. A reader that
+#: guesses at a shape it does not know is a reader that accepts a document
+#: nobody wrote for it.
 CATALOG_SCHEMA = "azazel-nexus/model-catalog/2"
 
 #: A ceiling before parsing. A catalog is a list of declarations, not content.
@@ -243,6 +274,20 @@ class ModelEntry:
     #: The field is required in the document and may be `null`. Required so
     #: that "no online source" is something a catalog author stated rather
     #: than forgot; nullable because most entries will honestly have none.
+    #:
+    #: **`null` means: this artifact has no source usable for online
+    #: acquisition.** It is a terminal answer, not a gap to be filled:
+    #:
+    #: - it is **not** a slot for an endpoint to be supplied later, by an
+    #:   operator, a configuration file, an argument or another document;
+    #: - it is **not** an instruction to look for a fallback source, a
+    #:   default source, or the source of some other entry.
+    #:
+    #: An offline import of such an artifact is permitted and ordinary. An
+    #: online acquisition plan for it is refused as
+    #: `model_acquisition.Refusal.SOURCE_UNAVAILABLE`, and no other source is
+    #: consulted -- because a `null` that fell back to something would be a
+    #: way to acquire from a source this entry never named.
     source_id: Optional[str] = None
 
     def __post_init__(self) -> None:

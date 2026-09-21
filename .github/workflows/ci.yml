@@ -771,7 +771,7 @@ jobs:
                   free_bytes=1 << 62,
               )
           except model_acquisition.AcquisitionRefused as refused:
-              if refused.cause is not model_acquisition.Refusal.NO_SOURCE_DECLARED:
+              if refused.cause is not model_acquisition.Refusal.SOURCE_UNAVAILABLE:
                   raise SystemExit(
                       f"an entry with no source was refused as {refused.cause!r}"
                   )

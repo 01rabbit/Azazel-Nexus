@@ -51,6 +51,19 @@ routing, and acknowledged a licence has consented to **none** of this:
 routing a sanitised question to a remote advisor and downloading several
 gibibytes onto this disk are different acts with different consequences.
 
+## A `null` source is an answer, not a gap
+
+An entry whose `source_id` is `null` has **no source usable for online
+acquisition**. That is terminal. Nothing falls back to another entry's
+source, to a default, or to anything an operator could type; no endpoint may
+be supplied later to fill it, because there is nothing to fill.
+
+The artifact is still perfectly importable offline. The two facts are
+independent, and keeping them independent is the point: a `null` that quietly
+became "try the usual place" would be a way to acquire from a source the
+catalog never named, which is the exact power the symbol design exists to
+withhold.
+
 ## Fetching is not admitting, and failing is not fatal
 
 A fetched artifact lands where an imported one lands and goes through the
@@ -117,7 +130,10 @@ class Refusal(str, Enum):
     """Why no plan was produced. Each reached on its own."""
 
     NOT_CONFIRMED = "not_confirmed"
-    NO_SOURCE_DECLARED = "no_source_declared"
+    #: The entry names no source. A terminal answer: nothing else is
+    #: consulted, and no endpoint may be supplied to fill the gap, because
+    #: there is no gap.
+    SOURCE_UNAVAILABLE = "source_unavailable"
     UNKNOWN_SOURCE = "unknown_source"
     INSUFFICIENT_DISK = "insufficient_disk"
     ALREADY_INSTALLED = "already_installed"
@@ -247,9 +263,11 @@ def plan_acquisition(
 
     if entry.source_id is None:
         raise AcquisitionRefused(
-            Refusal.NO_SOURCE_DECLARED,
-            f"{entry.model_id} declares no source. The catalog permits no "
-            "online route for it, so the only way in is an operator's import",
+            Refusal.SOURCE_UNAVAILABLE,
+            f"{entry.model_id} has no source usable for online acquisition. "
+            "This is the answer, not a gap: no fallback source is consulted, "
+            "no default is assumed, and no endpoint may be supplied later to "
+            "fill it. The artifact may still be imported offline",
         )
     if entry.source_id not in KNOWN_SOURCES:
         raise AcquisitionRefused(

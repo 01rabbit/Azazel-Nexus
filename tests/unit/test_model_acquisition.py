@@ -100,14 +100,57 @@ def test_a_symbol_outside_this_builds_table_is_refused() -> None:
 
 
 def test_an_entry_declaring_no_source_permits_no_online_route() -> None:
-    """Absence is a decision the catalog author made, not a gap."""
+    """`null` is the answer, not a gap the node goes looking to fill."""
 
     with pytest.raises(AcquisitionRefused) as caught:
         plan_acquisition(
             an_entry(source_id=None), consent=consent_for(), free_bytes=PLENTY
         )
-    assert caught.value.cause is Refusal.NO_SOURCE_DECLARED
-    assert "only way in is an operator's import" in str(caught.value)
+    assert caught.value.cause is Refusal.SOURCE_UNAVAILABLE
+    assert "no fallback source is consulted" in str(caught.value)
+    assert "imported offline" in str(caught.value)
+
+
+def test_a_null_source_never_falls_back_to_another_entrys_source() -> None:
+    """The failure this would be: a `null` that quietly became "try the
+    usual place" is a way to acquire from a source the catalog never named --
+    the exact power the symbol design exists to withhold.
+
+    Every source this build knows is confirmed, and another entry in the same
+    catalog names one. The entry with `null` must still be refused.
+    """
+
+    consent = consent_for(*KNOWN_SOURCES)
+    assert an_entry(source_id="vendor-mirror").source_id in KNOWN_SOURCES
+    for known in KNOWN_SOURCES:
+        # Each is genuinely usable, so nothing below fails for lack of a
+        # confirmed, resolvable source.
+        assert plan_acquisition(
+            an_entry(source_id=known), consent=consent, free_bytes=PLENTY
+        ).source_id == known
+    with pytest.raises(AcquisitionRefused) as caught:
+        plan_acquisition(
+            an_entry(source_id=None), consent=consent, free_bytes=PLENTY
+        )
+    assert caught.value.cause is Refusal.SOURCE_UNAVAILABLE
+
+
+def test_no_endpoint_can_be_supplied_to_fill_a_null_source() -> None:
+    """There is no argument, keyword or default that takes one.
+
+    A `null` source is refused before capacity, before attempts and before
+    anything else that a caller could influence, and `plan_acquisition` has
+    no parameter through which a location could arrive.
+    """
+
+    import inspect
+
+    parameters = set(inspect.signature(plan_acquisition).parameters)
+    assert parameters == {
+        "entry", "consent", "free_bytes", "resume_from", "attempts_used", "installed",
+    }
+    for forbidden in ("source", "endpoint", "url", "host", "fallback", "default"):
+        assert not any(forbidden in name for name in parameters), forbidden
 
 
 def test_no_source_declared_and_unknown_source_are_different_refusals() -> None:
@@ -116,13 +159,13 @@ def test_no_source_declared_and_unknown_source_are_different_refusals() -> None:
     differently."""
 
     causes = set()
-    for source_id in (None, "somebody-elses-mirror"):
+    for source_id in (None, "somebody-elses-mirror"):  # noqa: E501
         with pytest.raises(AcquisitionRefused) as caught:
             plan_acquisition(
                 an_entry(source_id=source_id), consent=consent_for(), free_bytes=PLENTY
             )
         causes.add(caught.value.cause)
-    assert causes == {Refusal.NO_SOURCE_DECLARED, Refusal.UNKNOWN_SOURCE}
+    assert causes == {Refusal.SOURCE_UNAVAILABLE, Refusal.UNKNOWN_SOURCE}
 
 
 @pytest.mark.parametrize(
