@@ -76,6 +76,12 @@ the samples is a measurement of a shorter run that does not say so.
 ## 5. The procedure
 
 1. Install both distributions on the target host and complete commissioning.
+   The target host is **a generic rugged x86_64 Linux PC at the resource class
+   being measured** ([hardware gates](hardware-gates.md), *What "the target
+   hardware" means here*). A Raspberry-Pi-class device, a laptop or a
+   workstation may exercise the harness; a record from one is a development
+   reference and is not admissible as this class's reserve, because the
+   resident set it measures is another machine's.
 2. Bring up the node's own subsystems and confirm all five are `active
    (running)`: `azazel-arbiter`, `azazel-auditd`, `azazel-evidence`,
    `azazel-leasejournal`, `azazel-operator`.

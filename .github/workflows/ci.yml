@@ -673,6 +673,59 @@ jobs:
                   pass
               else:
                   raise SystemExit("a rollback invented a predecessor")
+          # The operator screen (#99). It is the screen consulted on a node
+          # with nothing installed and no connectivity, so the job that
+          # installs nothing is the job that has to build it -- and the scan
+          # below is what proves it brought in no way to read or write.
+          import azazel_nexus.operator_view as operator_view
+          if len(operator_view.Confirmation) != 5:
+              raise SystemExit(
+                  "the five confirmations are no longer five; something was "
+                  "folded into another"
+              )
+          transitions = {
+              operator_view.TRANSITION_FOR[c] for c in operator_view.Confirmation
+          }
+          if len(transitions) != 5:
+              raise SystemExit("two confirmations write one audit event")
+          catalog_words = {s.value for s in model_catalog.CatalogState}
+          provider_words = {s.value for s in operator_view.ProviderState}
+          if catalog_words & provider_words:
+              raise SystemExit(
+                  f"catalog and provider vocabularies share {catalog_words & provider_words}"
+              )
+          bare_facts = operator_view.ViewFacts(
+              profile=mio_profile.MioProfile.FASTEST_PERMITTED,
+              opt_in=mio_profile.NO_OPT_IN,
+              reserve_measured=False,
+              resources=operator_view.NodeResources(16384, 512000, 400000),
+              catalog_state=model_catalog.CatalogState.PRESENT,
+              readings=(),
+              inbox=(),
+              quarantined=0,
+              installed={},
+              rollback_target=None,
+          )
+          screen = operator_view.build_view(bare_facts)
+          admission = screen.operation(operator_view.Confirmation.PROVIDER_ADMISSION)
+          if admission.available:
+              raise SystemExit(
+                  "fastest-permitted offered a provider admission with no "
+                  "measured Core reserve"
+              )
+          if "HG-05" not in admission.reason:
+              raise SystemExit("the admission refusal does not name HG-05")
+          if screen.status_sentence != operator_view.STATUS_SENTENCE:
+              raise SystemExit("the M.I.O. sentence moved")
+          if "functional" in screen.status_sentence:
+              raise SystemExit("the M.I.O. sentence reads functional")
+          if len(screen.operations) != 5:
+              raise SystemExit("an operation was dropped rather than shown unavailable")
+          for operation in screen.operations:
+              if not operation.reason.strip():
+                  raise SystemExit(
+                      f"{operation.confirmation.value} is shown without a reason"
+                  )
           # And no catalog is shipped with the source. A catalog is signed
           # under a commissioning trust policy that only exists on the node;
           # one committed here would be one nobody chose to trust.

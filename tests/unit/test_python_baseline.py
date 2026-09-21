@@ -122,3 +122,51 @@ def test_no_hand_written_toml_parser_was_shipped_instead():
         f"{offenders} look like a hand-written TOML reader; tomllib is the "
         "canonical one and the floor exists so that it is available"
     )
+
+
+def test_the_target_hardware_is_named_rather_than_left_to_the_reader() -> None:
+    """A gate that says "the target hardware" and never says what it is.
+
+    That phrase appears in every gate, in the measurement procedure and in the
+    README, and until it was written down a reader could supply their own
+    answer -- a Pi, a laptop, whatever was to hand. A reserve measured on the
+    wrong machine is not a weaker measurement; it is a measurement of a
+    different machine, offered for an admission decision on this one.
+
+    `inheritance-ledger.md` §1 already drew the line: constrained,
+    Raspberry-Pi-class hardware is Azazel-Edge's proving ground and Nexus is
+    the rugged x86_64 integration product. This pins the gates to it.
+    """
+
+    # Whitespace-normalised: these sentences are wrapped in the source, and a
+    # test that broke on a reflow would be a test about line lengths.
+    def flat(name):
+        return " ".join(_read(name).split())
+
+    gates = flat("docs/hardware-gates.md")
+    assert "generic rugged x86_64 Linux PC, at the resource class actually deployed" in gates
+    assert "Raspberry-Pi-class devices are Azazel-Edge's proving ground" in gates
+    assert "never evidence for a provider admission" in gates
+
+    procedure = flat("docs/core-reserve-measurement.md")
+    assert "generic rugged x86_64 Linux PC at the resource class being measured" in procedure
+    assert "is not admissible as this class's reserve" in procedure
+
+    readme = flat("README.md")
+    assert "generic rugged x86_64 Linux PC at the resource class deployed" in readme
+
+
+def test_the_reserve_classes_and_the_target_classes_do_not_read_as_a_contradiction() -> None:
+    """Three classes in one document and four in another, a few files apart.
+
+    Both are right -- the reserve is keyed by the selected profile and the
+    selector has three floors, while performance and retention targets are
+    recorded per memory class and 64 GB is one -- but `support-matrix.md`
+    forbids restating these numbers differently anywhere, so the difference
+    has to be explained where it is visible rather than left to be discovered.
+    """
+
+    gates = " ".join(_read("docs/hardware-gates.md").split())
+    assert "8, 16 and 32 GB classes" in gates
+    assert "a 64 GB host selects `standard` exactly as a 32 GB host does" in gates
+    assert "counting different measurements" in gates
