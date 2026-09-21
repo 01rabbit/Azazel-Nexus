@@ -24,7 +24,8 @@ from .cognition import read_cognition
 from .commissioning import CommissioningRefused, propose
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
-from .integration import EdgePresence, IntegrationView, build_view
+from .edge_package import EdgeInspection, inspect as inspect_edge
+from .integration import IntegrationView, build_view
 from .inventory import no_permanent_mac, read_interfaces
 from .lite_service import KnowledgeLite
 from .operator import (
@@ -51,25 +52,18 @@ EXTERNAL_MODULES = (
     ("Remote M.I.O.", "no remote cognition route is configured on this node"),
 )
 
-#: What this node can say about a local Edge Core: that it has not looked.
+#: Where the Edge Core package is looked for (#44, Azazel-Edge#424).
 #:
-#: `azazel_nexus.activation.EdgeBaselineState` holds the five checks the
-#: decision needs, and **nothing in this repository produces one**. The
-#: package those checks would run against is
-#: [Azazel-Edge#424](https://github.com/01rabbit/Azazel-Edge/issues/424) and
-#: it does not exist yet.
+#: A fixed location, so that "nothing is there" is a **result** rather than
+#: the absence of a question. A node that only reported Edge when somebody
+#: pointed it at a directory would be silent on exactly the node where Edge
+#: was never deployed.
 #:
-#: So the row says the node is not configured for one, and says why. That is
-#: not a placeholder for a check -- it is the accurate report of an absence,
-#: and it is what keeps `edge-baseline-ready` from being a thing this node
-#: has quietly stopped mentioning. A status screen that omitted Edge entirely
-#: would read as a node with no Edge concern at all.
-EDGE_BASELINE = (
-    "Edge Core (local)",
-    "no Edge package is configured on this node, and nothing here has "
-    "looked for one: the x86_64 package Nexus would verify is not built yet "
-    "(Azazel-Edge#424). edge-baseline-ready is not claimed",
-)
+#: `/opt` rather than `/data`: this is a shipped artifact, not a data tier.
+#: `edge_package.inspect` reads an absent root correctly -- it reports
+#: `absent` with the reason -- so a node without the directory gets the truth
+#: rather than an error.
+EDGE_PACKAGE_ROOT = Path("/opt/azazel/edge-core")
 
 #: Where the embedded stores live (`IMPLEMENTATION_SPEC.md` §3).
 #:
@@ -112,9 +106,21 @@ def _capability_report() -> CapabilityReport:
 
 
 def _module_reports() -> tuple[ModuleReport, ...]:
+    """The **external** modules. The local Edge Core is not one of them.
+
+    It used to be listed here, when all this node could say about it was that
+    it had not looked. It has its own section now (`_render_edge`) because
+    `ModuleState` has four words for a peer -- attested, unverified,
+    unreachable, absent -- and #44 requires the local Edge Core to be
+    distinguishable across eight: a missing package, a corrupt one, a version
+    mismatch, a digest mismatch, an unhealthy answer, a payload that is not
+    running, an unasked question, and verified-ready. Rendering that through a
+    peer's vocabulary would lose the distinctions the issue exists to keep.
+    """
+
     return tuple(
         ModuleReport(name=name, state=ModuleState.ABSENT, reason=reason)
-        for name, reason in (*EXTERNAL_MODULES, EDGE_BASELINE)
+        for name, reason in EXTERNAL_MODULES
     )
 
 
@@ -159,6 +165,7 @@ def _integration_view(
     *,
     as_of: str,
     knowledge_root: Path,
+    edge: EdgeInspection,
 ) -> IntegrationView:
     """The six axes, from what this node has actually established.
 
@@ -169,8 +176,9 @@ def _integration_view(
 
     Every argument below is a fact this node holds. Nothing is invented:
     `host=None` says the node has not been commissioned into a tested tuple,
-    the decoy has no catalogue and no isolation result, and Edge is `absent`
-    for exactly the reason `EDGE_BASELINE` gives.
+    the decoy has no catalogue and no isolation result, and the edge axis
+    carries whatever `edge_package.inspect` established at the fixed package
+    location -- one of eight words, not a placeholder.
     """
 
     profile = report.profile.profile or ResourceProfile.DIAGNOSTIC
@@ -191,7 +199,7 @@ def _integration_view(
             commissioning=None,
             isolation=IsolationCheck(passed=None),
         ),
-        edge=EdgePresence.ABSENT,
+        edge=edge.presence,
     )
 
 
@@ -262,7 +270,10 @@ def _render_profile(report: OperatorReport, out: TextIO) -> None:
 
 
 def _render_status(
-    report: OperatorReport, out: TextIO, view: Optional[IntegrationView] = None
+    report: OperatorReport,
+    out: TextIO,
+    view: Optional[IntegrationView] = None,
+    edge: Optional[EdgeInspection] = None,
 ) -> None:
     _render_profile(report, out)
     print(file=out)
@@ -276,11 +287,13 @@ def _render_status(
         + ("yes" if report.enforcement_ready else "no"),
         file=out,
     )
-    # Printed as its own line rather than folded into the module list,
-    # because it is a claim about this node and not about a peer. "No" here
-    # means this node is not asserting a deterministic baseline; it does not
-    # mean an Edge Core is broken, and the module row below says which.
-    print("edge-baseline-ready: no", file=out)
+    # Printed as its own line rather than folded into a module list, because
+    # it is a claim about this node and not about a peer. "No" here means this
+    # node is not asserting a deterministic baseline; it does not mean an Edge
+    # Core is broken, and the edge section below says which of the five checks
+    # did not hold.
+    ready = edge is not None and edge.ready
+    print("edge-baseline-ready: " + ("yes" if ready else "no"), file=out)
     if not report.enforcement_ready:
         if report.record is None:
             print("    no commissioning record exists on this node", file=out)
@@ -298,6 +311,9 @@ def _render_status(
     for module in report.modules:
         print(f"    {module.name}: {module.state.value} -- {module.reason}", file=out)
     print(file=out)
+    if edge is not None:
+        _render_edge(edge, out)
+        print(file=out)
     if view is not None:
         _render_integration(view, out)
         print(file=out)
@@ -310,6 +326,25 @@ def _render_status(
         print(f"    {action.summary}", file=out)
         if action.command:
             print(f"        {action.command}", file=out)
+
+
+def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
+    """The local Edge Core: one word, then all five checks, then the limits.
+
+    All five are printed whatever the leading word says. A screen that stopped
+    at the first failure would leave an operator who fixed it guessing at what
+    comes next, and -- worse -- would hide a digest mismatch behind a version
+    mismatch found first.
+    """
+
+    where = inspection.root or "no package root configured"
+    print(f"edge core (local): {inspection.presence.value}  [{where}]", file=out)
+    for finding in inspection.findings:
+        mark = "  SECURITY FINDING" if finding.security else ""
+        print(f"    {finding.check}: {finding.evidence.value}{mark}", file=out)
+        print(f"        {finding.reason}", file=out)
+    for caveat in inspection.caveats:
+        print(f"    caveat: {caveat}", file=out)
 
 
 def _render_health(report: OperatorReport, out: TextIO) -> None:
@@ -397,6 +432,9 @@ def main(
         "--knowledge-lite", type=Path, default=KNOWLEDGE_LITE_ROOT, help=argparse.SUPPRESS
     )
     parser.add_argument("--as-of", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--edge-root", type=Path, default=EDGE_PACKAGE_ROOT, help=argparse.SUPPRESS
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("inventory", help="read-only hardware and interface list")
@@ -428,12 +466,19 @@ def main(
         # where "now" comes from, and everything below it takes the instant as
         # an argument so that a status is replayable from its inputs.
         as_of = args.as_of or _now()
+        # Inspected once and passed to both the section and the axis, so the
+        # two cannot describe different nodes on one screen.
+        edge = inspect_edge(args.edge_root)
         _render_status(
             report,
             stream,
             _integration_view(
-                report, as_of=as_of, knowledge_root=args.knowledge_lite
+                report,
+                as_of=as_of,
+                knowledge_root=args.knowledge_lite,
+                edge=edge,
             ),
+            edge,
         )
     return 0
 

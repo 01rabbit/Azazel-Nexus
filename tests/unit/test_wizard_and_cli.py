@@ -19,6 +19,7 @@ import pytest
 
 from azazel_nexus.cli import main
 from azazel_nexus.commissioning import CommissioningRefused, propose
+from azazel_nexus.edge_package import CHECKS
 from azazel_nexus.inventory import read_interfaces
 from azazel_nexus.wizard import WizardAbandoned, commission, render_rows
 
@@ -239,9 +240,22 @@ def test_a_host_with_nothing_commissionable_refuses_rather_than_proceeding(tmp_p
 # -- the CLI ------------------------------------------------------------
 
 
-def _run(argv, tmp_path, **kwargs):
+def _run(argv, tmp_path, edge_root=None, **kwargs):
+    """Run a command against an isolated tree.
+
+    `--edge-root` is pointed at a directory under `tmp_path` rather than
+    left at its default. The default is a real path on the host, and a test
+    machine that happened to have an Edge package installed would otherwise
+    read a different node than the one the test built.
+    """
+
     out = io.StringIO()
-    code = main(["--sysfs", str(_tree(tmp_path)), *argv], out=out, **kwargs)
+    root = tmp_path / "edge-root" if edge_root is None else edge_root
+    code = main(
+        ["--sysfs", str(_tree(tmp_path)), "--edge-root", str(root), *argv],
+        out=out,
+        **kwargs,
+    )
     return code, out.getvalue()
 
 
@@ -293,10 +307,12 @@ def _module_section(text: str) -> list[str]:
 def test_status_never_calls_an_absent_module_connected(tmp_path):
     _, text = _run(["status"], tmp_path)
     section = _module_section(text)
-    # Four rows: the three external modules and the local Edge Core, which is
-    # named rather than omitted (#44). Pinned so that a row disappearing is a
-    # failure rather than a smaller number nobody notices.
-    assert len(section) == 4
+    # Three rows, and no longer four. The local Edge Core used to be listed
+    # here, when all this node could say about it was that it had not looked;
+    # #44 gives it its own section, because `ModuleState` has four words for a
+    # peer and the Edge Core needs eight. Pinned so that a row disappearing is
+    # a failure rather than a smaller number nobody notices.
+    assert len(section) == 3
     named = [
         line
         for line in section
@@ -416,16 +432,29 @@ def test_the_console_script_points_at_the_entry_point():
 def test_status_names_the_edge_core_rather_than_omitting_it(tmp_path):
     """A screen with no Edge row reads as a node with no Edge concern.
 
-    Nexus#44: what is reported is the absence, with the reason. There is no
-    producer of `EdgeBaselineState` in this repository and the row does not
-    pretend otherwise.
+    Nexus#44: the local Edge Core has its own section now, and it reports
+    what was established at the fixed package location rather than that
+    nobody asked.
     """
 
     _, text = _run(["status"], tmp_path)
-    line = next(l for l in text.splitlines() if "Edge Core (local)" in l)
+    line = next(l for l in text.splitlines() if l.startswith("edge core (local):"))
     assert "absent" in line
-    assert "not built yet" in line
-    assert "Azazel-Edge#424" in line
+    assert str(tmp_path / "edge-root") in line
+
+
+def test_status_prints_all_five_checks_whatever_the_leading_word_says(tmp_path):
+    """Stopping at the first failure hides what comes after it."""
+
+    _, text = _run(["status"], tmp_path)
+    for check in CHECKS:
+        assert f"    {check}: " in text
+
+
+def test_status_prints_the_unsigned_caveat_beside_the_edge_section(tmp_path):
+    _, text = _run(["status"], tmp_path)
+    assert "caveat: " in text
+    assert "not authenticity" in text
 
 
 def test_status_says_edge_baseline_ready_is_no(tmp_path):
@@ -433,38 +462,137 @@ def test_status_says_edge_baseline_ready_is_no(tmp_path):
     assert "edge-baseline-ready: no" in text
 
 
-def test_status_never_claims_edge_baseline_ready(tmp_path):
-    """The one string that would be a claim, refused wherever it appears.
-
-    `EdgeBaselineState` is what the decision needs and nothing here builds
-    one, so any rendering of "yes" would be a claim with nothing behind it.
-    """
-
-    from azazel_nexus.cli import EDGE_BASELINE
+def test_status_never_claims_edge_baseline_ready_on_a_node_with_no_package(tmp_path):
+    """The one string that would be a claim, refused wherever it appears."""
 
     _, text = _run(["status"], tmp_path)
     assert "edge-baseline-ready: yes" not in text
+    assert "verified-ready" not in text
 
-    # The *name* and the *reason* are checked separately. An earlier version
-    # allowed any reassuring word on a line that also said "not claimed" --
-    # which let the name itself become "Edge Core (local) running and
-    # healthy", because the reason on the same line carried the exemption.
-    name, reason = EDGE_BASELINE
-    lowered = name.lower()
+
+def test_the_edge_line_carries_no_reassuring_word(tmp_path):
+    """A leading word is not a place to put a finding.
+
+    An earlier version allowed any reassuring word on a line that also said
+    "not claimed" -- which let the name itself become "Edge Core (local)
+    running and healthy", because the reason on the same line carried the
+    exemption. The section's first line is now checked on its own.
+    """
+
+    _, text = _run(["status"], tmp_path)
+    line = next(l for l in text.splitlines() if l.startswith("edge core (local):"))
+    lowered = line.lower()
     for reassurance in ("ready", "healthy", "verified", "running", "connected"):
-        assert reassurance not in lowered, (
-            f"the module's name says {reassurance!r}; a name is not a place "
-            "to put a finding"
-        )
-    assert "not claimed" in reason.lower()
+        assert reassurance not in lowered, line
 
 
-def test_nothing_in_the_package_produces_an_edge_baseline_state():
-    """The rule that keeps the row from becoming a stub.
+def test_the_edge_baseline_line_follows_the_inspection(tmp_path):
+    """Not a constant. A hard-coded "no" is right until the day it is wrong.
 
-    A producer written before the package exists would report on nothing
-    while looking exactly like a check. Construction in tests is how the
-    decision is exercised; construction in the product is what is forbidden.
+    A node whose five checks all pass must print `yes`, or the line is
+    decoration rather than a report -- and then nothing would catch a node
+    that reached ready and kept saying no.
+    """
+
+    from azazel_nexus.cli import _render_edge, _render_status
+    from azazel_nexus.edge_package import Evidence, Finding, UNSIGNED_CAVEAT
+    from azazel_nexus.edge_package import EdgeInspection
+    from azazel_nexus.integration import EdgePresence
+
+    ready = EdgeInspection(
+        findings=tuple(
+            Finding(check, Evidence.PASSED, "established in this test")
+            for check in CHECKS
+        ),
+        presence=EdgePresence.VERIFIED_READY,
+        caveats=(UNSIGNED_CAVEAT,),
+        root="/somewhere",
+    )
+    out = io.StringIO()
+    _render_status(_report_for(tmp_path), out, None, ready)
+    assert "edge-baseline-ready: yes" in out.getvalue()
+
+
+def _report_for(tmp_path):
+    from azazel_nexus.cli import _report
+
+    return _report(_tree(tmp_path), None)
+
+
+def _tampered_package(tmp_path):
+    """A package whose artifact is not the one its manifest describes."""
+
+    import hashlib
+    import json
+
+    from azazel_nexus.edge_package import PIN
+
+    root = tmp_path / "edge-tampered"
+    root.mkdir()
+    (root / PIN.artifact_name).write_bytes(b"swapped")
+    (root / PIN.manifest_name).write_text(
+        json.dumps(
+            {
+                "contract": PIN.manifest_contract,
+                "package": PIN.package,
+                "version": PIN.version,
+                "architecture": PIN.architecture,
+                "artifact": PIN.artifact_name,
+                "digest": "sha256:" + hashlib.sha256(b"original").hexdigest(),
+                "signed": False,
+                "health": {"contract": PIN.health_contract},
+                "posture": {"observe_only": True, "enforcement": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_status_marks_a_digest_mismatch_as_a_security_finding(tmp_path):
+    """Survived a mutation that dropped the marker, so it is asserted here.
+
+    "Edge is not installed" and "Edge is installed and its artifact is not the
+    one its manifest describes" are different operator actions, and only the
+    second is a finding. A screen that printed the second as an ordinary
+    failed check would have nobody treat it as one.
+    """
+
+    _, text = _run(["status"], tmp_path, edge_root=_tampered_package(tmp_path))
+    line = next(l for l in text.splitlines() if l.strip().startswith("digest_matches:"))
+    assert "SECURITY FINDING" in line
+    assert "failed" in line
+
+
+def test_the_integration_edge_axis_follows_the_same_inspection(tmp_path):
+    """Survived a mutation that pinned the axis to `absent`.
+
+    The section and the axis are rendered from one inspection. If the axis
+    were a constant, one screen would describe two nodes -- the section
+    reporting a tampered package and the axis reporting an empty one.
+    """
+
+    _, text = _run(["status"], tmp_path, edge_root=_tampered_package(tmp_path))
+    assert "edge core (local): digest-mismatch" in text
+    axis = next(l for l in text.splitlines() if l.strip().startswith("edge [edge_core]:"))
+    assert "digest-mismatch" in axis
+    assert "absent" not in axis
+
+
+def test_the_edge_axis_reason_names_the_security_finding(tmp_path):
+    _, text = _run(["status"], tmp_path, edge_root=_tampered_package(tmp_path))
+    assert "This is a security finding" in text
+
+
+def test_edge_package_is_the_only_producer_of_an_edge_baseline_state():
+    """The rule that keeps the row from becoming a stub, narrowed rather than dropped.
+
+    Before Nexus#44 nothing in the product could build one: a producer
+    written ahead of the package would have reported on nothing while looking
+    exactly like a check. The package exists now, so exactly **one** module
+    derives the state, from a package actually on disk. Any second producer
+    is what this still forbids -- a state assembled somewhere else is a state
+    assembled from something other than the five checks.
     """
 
     import ast
@@ -477,7 +605,7 @@ def test_nothing_in_the_package_produces_an_edge_baseline_state():
         / "src"
         / "azazel_nexus_runtime"
     )
-    offenders = []
+    producers = []
     for root in (package, runtime):
         for path in sorted(root.rglob("*.py")):
             if path.name == "activation.py":
@@ -488,10 +616,10 @@ def test_nothing_in_the_package_produces_an_edge_baseline_state():
                     isinstance(node, ast.Call)
                     and getattr(node.func, "id", "") == "EdgeBaselineState"
                 ):
-                    offenders.append(f"{path.name}:{node.lineno}")
-    assert offenders == [], (
-        f"{offenders} construct an EdgeBaselineState. Nothing in the product "
-        "may, until there is a package to derive one from (Azazel-Edge#424)"
+                    producers.append(path.name)
+    assert producers == ["edge_package.py"], (
+        f"{producers} construct an EdgeBaselineState. Only edge_package.py may, "
+        "and it only from a package it verified on disk (Nexus#44)"
     )
 
 

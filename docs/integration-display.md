@@ -8,7 +8,8 @@ This is E4 of [#53](https://github.com/01rabbit/Azazel-Nexus/issues/53) /
 Related: [capability model](capability-model.md) ·
 [degradation matrix](degradation-matrix.md) ·
 [the Knowledge Lite trust chain](knowledge-lite-trust.md) ·
-[M.I.O. runtime](mio-runtime.md) · [Deception Lite](deception-lite.md)
+[M.I.O. runtime](mio-runtime.md) · [Deception Lite](deception-lite.md) ·
+[Edge package verification](edge-package-verification.md)
 
 ## 1. Why this is data and not a renderer
 
@@ -25,7 +26,7 @@ is what lets the rules below be tested as rules rather than as strings.
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, with remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
-| `edge` | `absent` / `unknown` / `verified-ready` |
+| `edge` | `absent` / `corrupt` / `version-mismatch` / `digest-mismatch` / `unhealthy` / `not-running` / `unknown` / `verified-ready` ([Edge package verification](edge-package-verification.md)) |
 
 **Independent** means an input that moves one axis moves only that one.
 `tests/unit/test_integration.py` varies each input on its own and asserts the
@@ -101,10 +102,14 @@ external peer being absent"*.
 ## 5. Two things the view never claims, and one it never says continues
 
 `enforcement_capable` and `baseline_ready` are **derived properties**, both
-`False` unless Edge is `verified-ready`. Nothing in this product produces
-that state ([#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)), so
-both are `False` on every node this repository can build. The test asserts it
-over **every combination** of the other five axes — 108 of them — because "we
+`False` unless Edge is `verified-ready`. `edge_package.py`
+([#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)) is the only
+module in the product that produces that state, and it reaches it only from a
+package it verified on disk with all five checks passing — which a node built
+from this repository cannot do, because no probe runner is shipped
+([Edge package verification](edge-package-verification.md) §7). The test
+asserts it over **every combination** of the other five axes — 108 of them —
+because "we
 are ready" inferred from a capability the node happens to have is exactly the
 claim that must be impossible.
 
@@ -147,8 +152,9 @@ integration:
     deception_supplier [deception]: none
         ...
     edge [edge_core]: absent
-        no Edge package is configured on this node; enforcement-capable and
-        baseline-ready are not claimed
+        no Edge package is installed on this node. This is a deployment step,
+        not a security finding; enforcement-capable and baseline-ready are
+        not claimed
 
 enforcement capable: no
 baseline ready: no
@@ -185,3 +191,26 @@ from its inputs.
 
 Nothing writes these events to the audit ledger. The rows carry `as_event()`
 and nothing calls it on the operator path.
+
+## 7. The edge axis carries eight words, not two
+
+[#44](https://github.com/01rabbit/Azazel-Nexus/issues/44) requires the five
+Edge checks to fail **separately** on the display as well as in the decision,
+so the edge row leads with one word per distinct next action:
+
+| word | what it means | what an operator does |
+| --- | --- | --- |
+| `absent` | no package at the fixed location | install it; this is a deployment step |
+| `corrupt` | a package is there and cannot be read as the pinned one | replace it; nothing about it was verified |
+| `version-mismatch` | the manifest declares another version | install the pinned one; this one was not evaluated |
+| `digest-mismatch` | the artifact is not the one its manifest describes | **a security finding**; report it, do not repair it |
+| `unhealthy` | the health contract answered and did not say healthy | read the posture checks in the answer |
+| `not-running` | present, matched, healthy, and the payload is not up | start it |
+| `unknown` | no package root is configured, or a check was not run | nobody looked; this grants nothing either |
+| `verified-ready` | all five checks passed | nothing |
+
+Folding these into "Edge: not ready" would send somebody to install a package
+that is already installed and has been tampered with. The leading word names
+the **earliest** failure in check order, so a digest mismatch is never buried
+under a consequence discovered later, and all five checks are printed
+underneath whatever the leading word says.

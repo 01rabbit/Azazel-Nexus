@@ -204,6 +204,9 @@ REQUIRED_STAGES = (
     # the library, not the installed tree -- and a stage with no prerequisite
     # placed early would hide that it has none.
     "CORE + Lite configurations",
+    # Nexus#44: the five Edge checks, each broken on its own against a
+    # package written into the harness root. Also has no prerequisite.
+    "Edge package verification",
 )
 
 

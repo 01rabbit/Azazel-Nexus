@@ -49,6 +49,7 @@ def run_all(harness: Harness) -> None:
     harness.stage("audit chain", lambda: _audit(harness),
                   requires=("verified generation",))
     harness.stage("CORE + Lite configurations", lambda: _lite_matrix(harness))
+    harness.stage("Edge package verification", lambda: _edge_package(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -424,4 +425,123 @@ def _lite_matrix(harness: Harness) -> str:
     return (
         f"{composed} CORE + Lite configurations composed; none claimed "
         "enforcement or baseline readiness, and every one named what continues"
+    )
+
+
+def _edge_package(harness: Harness) -> str:
+    """The five checks, each failed on its own, on packages written here (#44).
+
+    Written and inspected rather than described: a stage that asserted the
+    verifier's intentions would pass on a verifier that inspected nothing. Each
+    row below breaks exactly one thing and expects exactly one word.
+    """
+
+    import hashlib
+    import json
+
+    from azazel_nexus.edge_package import PIN, Evidence, inspect
+    from azazel_nexus.integration import EdgePresence
+
+    root = harness.root / "edge-packages"
+    payload = b"edge-core-payload"
+    good_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def manifest(**overrides):
+        document = {
+            "contract": PIN.manifest_contract,
+            "package": PIN.package,
+            "version": PIN.version,
+            "architecture": PIN.architecture,
+            "artifact": PIN.artifact_name,
+            "digest": good_digest,
+            "signed": False,
+            "health": {"contract": PIN.health_contract},
+            "posture": {"observe_only": True, "enforcement": False},
+        }
+        document.update(overrides)
+        return document
+
+    def write(name, *, document=manifest(), artifact=payload):
+        where = root / name
+        where.mkdir(parents=True, exist_ok=True)
+        if artifact is not None:
+            (where / PIN.artifact_name).write_bytes(artifact)
+        if document is not None:
+            (where / PIN.manifest_name).write_text(json.dumps(document), encoding="utf-8")
+        return where
+
+    def health(status=None, version=None):
+        report = {
+            "contract": PIN.health_contract,
+            "status": status or "healthy",
+            "version": version or PIN.version,
+        }
+        from azazel_nexus.edge_package import HealthAnswer
+
+        return lambda: HealthAnswer(exit_code=0, stdout=json.dumps(report))
+
+    running = lambda: True  # noqa: E731
+
+    cases = (
+        ("absent", write("absent", document=None, artifact=None), EdgePresence.ABSENT, {}),
+        ("corrupt", write("corrupt", artifact=None), EdgePresence.CORRUPT, {}),
+        (
+            "version mismatch",
+            write("version", document=manifest(version="0.0.1")),
+            EdgePresence.VERSION_MISMATCH,
+            {"health": health(), "running": running},
+        ),
+        (
+            "digest mismatch",
+            write("digest", document=manifest(digest="sha256:" + "0" * 64)),
+            EdgePresence.DIGEST_MISMATCH,
+            {"health": health(), "running": running},
+        ),
+        (
+            "unhealthy",
+            write("unhealthy"),
+            EdgePresence.UNHEALTHY,
+            {"health": health(status="unhealthy"), "running": running},
+        ),
+        (
+            "not running",
+            write("stopped"),
+            EdgePresence.NOT_RUNNING,
+            {"health": health(), "running": lambda: False},
+        ),
+        (
+            "verified ready",
+            write("ready"),
+            EdgePresence.VERIFIED_READY,
+            {"health": health(), "running": running},
+        ),
+    )
+
+    checked = 0
+    for name, where, expected, probes in cases:
+        inspection = inspect(where, **probes)
+        if inspection.presence is not expected:
+            raise RuntimeError(
+                f"{name}: expected {expected.value}, read {inspection.presence.value}"
+            )
+        if inspection.ready is not (expected is EdgePresence.VERIFIED_READY):
+            raise RuntimeError(f"{name}: ready disagreed with the displayed word")
+        if not inspection.caveats:
+            raise RuntimeError(f"{name}: a result carried no caveat")
+        checked += 1
+
+    # The default probes, which is the node this repository actually ships.
+    shipped = inspect(root / "ready")
+    if shipped.ready:
+        raise RuntimeError(
+            "a node with no health or running probe reached edge-baseline-ready"
+        )
+    if shipped.finding("health_endpoint_healthy").evidence is not Evidence.NOT_CHECKED:
+        raise RuntimeError("an unrun health probe was reported as something other than not-checked")
+
+    if checked != len(cases):
+        raise RuntimeError(f"{checked} of {len(cases)} packages were inspected")
+    return (
+        f"{checked} packages inspected; each of the five checks failed on its "
+        "own word, and the shipped node withheld readiness for want of a probe"
     )

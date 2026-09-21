@@ -455,13 +455,13 @@ def test_this_file_makes_no_claim_about_hardware() -> None:
 
     Every assertion above runs in this process against in-memory state. None
     of it establishes that a unit was masked, that a bridge refused to
-    forward, or that a model fits in the memory a host actually has --
-    `HG-01` through `HG-06`.
+    forward, that a model fits in the memory a host actually has, or that a
+    real Edge Core package verifies on a real host -- `HG-01` through `HG-07`.
     """
 
     gates = pathlib.Path(integration_module.__file__).parents[2] / "docs" / "hardware-gates.md"
     text = gates.read_text(encoding="utf-8")
-    for gate in ("HG-01", "HG-02", "HG-03", "HG-04", "HG-05", "HG-06"):
+    for gate in ("HG-01", "HG-02", "HG-03", "HG-04", "HG-05", "HG-06", "HG-07"):
         assert gate in text, f"{gate} is not registered"
     assert "hardware-unverified" in text
     assert "unmeasured" in text
