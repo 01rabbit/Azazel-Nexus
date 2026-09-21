@@ -52,6 +52,7 @@ from .generation import GenerationRefused, GenerationStore
 __all__ = [
     "ACTIVATION_CONTROLLER_UNIT",
     "ARTIFACT_TRANSPORT",
+    "LOCAL_MODEL_PROVIDER",
     "ActivationLease",
     "EdgeBaselineState",
     "CORE_UNITS",
@@ -171,6 +172,14 @@ ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
 #: its requirement by satisfying this one.
 ARTIFACT_TRANSPORT = "artifact_transport"
 
+#: The capability `azazel-mio-locald.service` needs wired: a runtime allowlist
+#: with at least one entry, so that a `runtime_id` resolves to a binary.
+#:
+#: Separate from `ARTIFACT_TRANSPORT` and not implied by it. Fetching weights
+#: and running them are different capabilities held by different accounts, and
+#: a node that gained one must not be read as having gained the other.
+LOCAL_MODEL_PROVIDER = "local_model_provider"
+
 
 #: The governed set for the CORE slice.
 #:
@@ -244,6 +253,23 @@ CORE_UNITS = (
         # A commissioned Source Registry is what wires it. That is deployment
         # data, signed and reviewed, never a change to this file.
         wiring=ARTIFACT_TRANSPORT,
+    ),
+    UnitDefinition(
+        "azazel-mio-locald.service",
+        # SUPPORTING for the same reason the others are: it decides nothing
+        # the arbiter decides. A started, crashed or rolled-back model runtime
+        # moves no authority -- `FULL -> LITE -> CORE` is a capability state,
+        # never an authority state.
+        UnitTier.SUPPORTING,
+        "azmio",
+        "local model runtime host; the only unit that could start a model, "
+        "and it starts none",
+        # `model_runtime.RUNTIMES` is empty, so no runtime_id resolves to a
+        # binary and the service exits rather than listen for work it cannot
+        # do. A runtime arrives by a reviewed change to that table -- it is
+        # code, not commissioned data, because a binary is not a fact about a
+        # deployment.
+        wiring=LOCAL_MODEL_PROVIDER,
     ),
 )
 

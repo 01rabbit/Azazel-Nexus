@@ -23,6 +23,7 @@ import pytest
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
     ARTIFACT_TRANSPORT,
+    LOCAL_MODEL_PROVIDER,
     ActivationLease,
     EdgeBaselineState,
     CORE_UNITS,
@@ -821,12 +822,16 @@ def test_the_fetch_service_is_the_unit_this_build_does_not_wire(tmp_path):
     """Not a generic mechanism with no user. The one unit it applies to."""
 
     needing = {d.name: d.wiring for d in CORE_UNITS if d.wiring is not None}
-    assert needing == {"azazel-model-fetchd.service": ARTIFACT_TRANSPORT}
+    assert needing == {
+        "azazel-model-fetchd.service": ARTIFACT_TRANSPORT,
+        "azazel-mio-locald.service": LOCAL_MODEL_PROVIDER,
+    }, "the two capabilities are separate; neither implies the other"
 
     controller, units, _, _ = _controller(tmp_path)
     outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
-    assert "azazel-model-fetchd.service" in outcome.withheld
-    assert units.state("azazel-model-fetchd.service") is UnitState.MASKED
+    for unit in needing:
+        assert unit in outcome.withheld
+        assert units.state(unit) is UnitState.MASKED
 
 
 def test_a_wiring_requirement_must_be_a_name(tmp_path):

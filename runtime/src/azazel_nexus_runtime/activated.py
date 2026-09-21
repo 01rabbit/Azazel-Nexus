@@ -36,6 +36,7 @@ from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
     ARTIFACT_TRANSPORT,
+    LOCAL_MODEL_PROVIDER,
     ActivationController,
     ActivationLease,
     ActivationOutcome,
@@ -48,6 +49,8 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.generation import GenerationStore
+
+from azazel_nexus.model_runtime import RUNTIMES
 
 from .model_fetch import ENDPOINT_FOR
 from .units import UnitManager
@@ -68,8 +71,8 @@ def wired_capabilities() -> frozenset:
     is forbidden to import. So it is read here, from the thing itself, and
     passed in as evidence.
 
-    Read from `ENDPOINT_FOR` rather than from a flag, a setting or a version
-    string. A flag is a second place the truth is written down, and the one
+    Read from `ENDPOINT_FOR` and `RUNTIMES` rather than from a flag, a
+    setting or a version string. A flag is a second place the truth is written down, and the one
     that is wrong is always the one nobody looked at. An empty table is not a
     disabled feature: it is a build in which no source symbol resolves to an
     endpoint, so `az-model-fetchd` would start and exit.
@@ -79,7 +82,12 @@ def wired_capabilities() -> frozenset:
     of code changing -- which is the point of deriving it.
     """
 
-    return frozenset({ARTIFACT_TRANSPORT} if ENDPOINT_FOR else set())
+    wired = set()
+    if ENDPOINT_FOR:
+        wired.add(ARTIFACT_TRANSPORT)
+    if RUNTIMES:
+        wired.add(LOCAL_MODEL_PROVIDER)
+    return frozenset(wired)
 
 
 class RollbackFailed(Exception):
