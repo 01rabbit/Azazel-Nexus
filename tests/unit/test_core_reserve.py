@@ -357,3 +357,56 @@ def test_the_module_imports_nothing_outside_the_standard_library() -> None:
     assert imported <= set(sys.stdlib_module_names), sorted(
         imported - set(sys.stdlib_module_names)
     )
+
+
+# -- the recorded synthetic artifact (#115) --------------------------------
+
+
+PROCEDURE = pathlib.Path(__file__).resolve().parents[2] / "docs" / "core-reserve-measurement.md"
+
+
+def _procedure() -> str:
+    """Whitespace-normalised: these sentences are wrapped in the source."""
+
+    return " ".join(PROCEDURE.read_text(encoding="utf-8").split())
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "it is **not** in `main`, in any release, in any signed artifact, or in any HIL evidence",
+        "**no claim is made that the external hosting has erased it**",
+        "**invalid as HIL evidence** and **must not be cited**",
+        "It writes only to a dedicated directory outside version control",
+        "CI verifies that the guard refuses **before the first write**",
+    ],
+)
+def test_the_record_keeps_every_statement_it_was_written_to_make(statement):
+    """Five statements, each of which a later edit could soften into
+    something easier to read and less true. The second is the one most
+    likely to go: a rewritten branch reads as a deletion, and claiming the
+    forge forgot is a claim nobody here can check."""
+
+    assert statement in _procedure(), f"the record lost: {statement}"
+
+
+def test_the_record_reproduces_nothing_from_the_artifact():
+    """Describing it by quoting it would be the same mistake with a better
+    excuse. Any long run of hex is a digest; a `provenance` field would be
+    the record body itself."""
+
+    text = PROCEDURE.read_text(encoding="utf-8")
+    import re  # noqa: PLC0415 - one use, in one test
+
+    assert re.findall(r"\b[0-9a-f]{16,}\b", text) == [], "a digest-shaped value"
+    assert '"provenance"' not in text, "the record body is reproduced"
+    assert "sha256:" not in text, "a digest is reproduced"
+
+
+def test_the_record_does_not_call_it_a_disclosure():
+    """It was not one, and a record that overstates what happened is one
+    nobody trusts the next time."""
+
+    text = _procedure()
+    assert "not a disclosure one" in text
+    assert "nothing about it involved real data, a credential or a secret" in text
