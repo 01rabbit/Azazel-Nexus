@@ -52,3 +52,17 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Two kinds of evidence, declared rather than incidental (Nexus#114).
+#
+# `real_process` starts an actual process and observes what it does.
+# `injected` sets a state and checks what follows from it.
+#
+# They are not interchangeable, and #112 conflated them: its `crashed` state
+# was injected, and calling that process evidence is the confusion #114
+# exists to remove. Registering the marks means the two sets can be selected
+# and counted separately -- `pytest -m real_process` is the process evidence,
+# and nothing else is.
+markers = [
+    "real_process: starts a real process and observes it",
+    "injected: sets a state; claims nothing about a real process",
+]

@@ -509,8 +509,16 @@ def test_the_adapter_cannot_start_a_unit():
     assert not hasattr(DbusUnitManager, "start")
 
 
-#: The one module allowed to start a process, contained the way
+#: The modules allowed to start a process, contained the way
 #: `fabric_boundary.py` contains the Fabric import.
+#:
+#: **Two, and the count is asserted.** Until Nexus#114 it was one. The second
+#: is `mio_supervisor.py`, which starts a *long-lived* process and watches it
+#: -- readiness, a crash, a restart against a finite budget, bounded output --
+#: where the probe runs a fixed contract once and exits.
+#:
+#: Naming each one is the point: you can say where this product executes, and
+#: a third module cannot acquire the ability by accident.
 #:
 #: `az-edge-probed` has to run the Edge health contract; there is no D-Bus
 #: method for "execute this binary", and Nexus#72 fixed that the health answer
@@ -518,7 +526,24 @@ def test_the_adapter_cannot_start_a_unit():
 #: property this scan exists for -- that you can name the places that execute
 #: -- instead of trading it away. `tests/unit/test_edge_probed.py` holds the
 #: narrower rules that apply inside it.
+EXECUTING_MODULES = {"edge_probed.py", "mio_supervisor.py"}
+
+#: Kept as the old name so that a reader of the history sees the boundary
+#: move rather than a rename.
 EXECUTING_MODULE = "edge_probed.py"
+
+
+def test_exactly_the_two_named_modules_may_execute():
+    """A third would be a diff a reviewer sees, not a set that grew."""
+
+    assert EXECUTING_MODULES == {"edge_probed.py", "mio_supervisor.py"}
+    for name in sorted(EXECUTING_MODULES):
+        path = RUNTIME / name
+        assert path.exists(), f"{name} is exempt and does not exist"
+        assert "subprocess" in path.read_text(encoding="utf-8"), (
+            f"{name} is exempt from the execution scan and starts nothing. "
+            "An exemption nothing uses is a hole held open for nothing"
+        )
 
 
 def test_the_runtime_builds_no_command_line_anywhere_but_the_probe():
@@ -532,7 +557,7 @@ def test_the_runtime_builds_no_command_line_anywhere_but_the_probe():
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(RUNTIME.rglob("*.py")):
-        if path.name == EXECUTING_MODULE:
+        if path.name in EXECUTING_MODULES:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         found = set()
