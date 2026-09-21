@@ -41,6 +41,7 @@ from azazel_nexus.compatibility import TestedTupleSet
 from azazel_nexus.decoy import DecoyState, DecoyStatus, IsolationCheck, evaluate
 from azazel_nexus.functional_readiness import (
     CONTROL_PLANE_ONLY,
+    LOOPBACK_ONLY,
     READINESS,
     Readiness,
 )
@@ -473,22 +474,29 @@ def test_this_file_makes_no_claim_about_hardware() -> None:
 @pytest.mark.parametrize(
     "name, knowledge_reading, decoy_status, _k, _d", CONFIGURATIONS
 )
-def test_today_every_configuration_reports_control_plane_only(
+def test_today_no_configuration_reports_a_capability_it_has(
     name, knowledge_reading, decoy_status, _k, _d
 ) -> None:
     """Run against the real declarations, not the fixture.
 
     Nine configurations of *what is there*, and on every node this repository
-    can build the answer is the same: the control plane is implemented and the
-    functional layer is not. The table above describes what each one will
-    report once that changes; this is what they report now.
+    can build none of them reaches the feature's own word. Two answers, not
+    one: Knowledge Lite has no functional layer, and Deception Lite has one
+    that reaches only this host (#69). The table above describes what each
+    configuration will report once that changes; this is what they report now.
     """
 
     built = view(knowledge_reading=knowledge_reading, decoy_status=decoy_status)
     if knowledge_reading is not None:
-        assert built.row("freshness", "knowledge_lite").value == CONTROL_PLANE_ONLY, name
+        row = built.row("freshness", "knowledge_lite")
+        assert row.value == READINESS["knowledge_lite"].value == CONTROL_PLANE_ONLY, name
     if decoy_status is not None:
-        assert built.row("freshness", "deception_lite").value == CONTROL_PLANE_ONLY, name
+        row = built.row("freshness", "deception_lite")
+        assert row.value == READINESS["deception_lite"].value == LOOPBACK_ONLY, name
+        # Not the decoy's own word, whatever the decoy holds. A quarantined
+        # decoy and an exposed one both report loopback-only here, and their
+        # own state stays in the reason.
+        assert row.value != decoy_status.state.value, name
     assert built.row("knowledge_supplier", "knowledge").value == "none", name
     assert built.row("deception_supplier", "deception").value == "none", name
 

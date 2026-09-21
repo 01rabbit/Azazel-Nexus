@@ -45,6 +45,7 @@ from azazel_nexus.integration import (
 )
 from azazel_nexus.functional_readiness import (
     CONTROL_PLANE_ONLY,
+    LOOPBACK_ONLY,
     READINESS,
     Readiness,
 )
@@ -430,16 +431,72 @@ def test_the_event_marks_a_defect_row_as_one() -> None:
 # -- the functional layer, or its absence ----------------------------------
 #
 # Everything above tests the mapping a *working* feature produces. These test
-# what every node this repository can build actually reports today: the
-# control plane is implemented and the functional layer is not.
+# what every node this repository can build actually reports today: two
+# features whose functional layer does not exist, and one whose functional
+# layer exists and reaches only this host.
 
 
 @pytest.mark.parametrize("subject", ["knowledge_lite", "deception_lite"])
-def test_an_embedded_feature_with_no_functional_layer_says_so(subject: str) -> None:
+def test_an_embedded_feature_without_its_capability_says_which_kind(subject: str) -> None:
+    """Both are reported, and the two are not reported with one word.
+
+    `knowledge_lite` has no functional layer. `deception_lite` has one that
+    reaches only this host (#69). An operator's next action differs -- connect
+    a supply route, versus expose a decoy beyond this host -- so a screen that
+    printed one word for both would send somebody to do the wrong thing.
+    """
+
+    readiness = READINESS[subject]
     row = a_view().row("freshness", subject)
-    assert row.value == CONTROL_PLANE_ONLY
-    assert "functional layer is not" in row.reason
-    assert READINESS[subject].issue in row.reason
+    assert row.value == readiness.value
+    assert row.value in (CONTROL_PLANE_ONLY, LOOPBACK_ONLY)
+    assert readiness.issue in row.reason
+    if readiness.loopback_only:
+        assert "reaches only this host" in row.reason
+        assert "functional layer is not" not in row.reason
+    else:
+        assert "functional layer is not" in row.reason
+
+
+def test_a_loopback_only_feature_says_what_continues_under_it() -> None:
+    """It really runs, so something really does continue -- labelled as local.
+
+    Survived a mutation that dropped the entry. A row whose `continues` said
+    nothing about the decoys that are actually listening would be telling an
+    operator the feature does nothing, which is a different untruth from the
+    one `loopback-only` was added to prevent.
+    """
+
+    row = a_view().row("freshness", "deception_lite")
+    assert "local-only decoy observation" in row.continues
+    assert READINESS["deception_lite"].loopback_only is True
+
+    # And the feature with no functional layer at all gains nothing.
+    knowledge = a_view().row("freshness", "knowledge_lite")
+    assert "local-only decoy observation" not in knowledge.continues
+    assert set(knowledge.continues) == set(NEXUS_ALWAYS)
+
+
+def test_what_continues_locally_is_still_not_the_capability_being_supplied() -> None:
+    """The line an operator reads last must not undo the word they read first."""
+
+    built = a_view(decoy=a_decoy(DecoyState.EXPOSED))
+    assert "local-only decoy observation" in built.continues
+    # The exposed feature's own entry -- which would mean observation of
+    # someone who is not on this host -- is a different string and is not
+    # claimed. Written as an exact-membership check on purpose: the two
+    # entries differ by a prefix, and a substring search would read one as
+    # the other.
+    assert "decoy observation" not in built.continues
+    assert built.row("deception_supplier", "deception").value == Supplier.NONE.value
+
+
+def test_the_two_unsupplied_words_are_not_the_same_word() -> None:
+    """A vacuous parametrisation above would pass with one value everywhere."""
+
+    assert CONTROL_PLANE_ONLY != LOOPBACK_ONLY
+    values = {READINESS[s].value for s in ("knowledge_lite", "deception_lite")}
+    assert values == {CONTROL_PLANE_ONLY, LOOPBACK_ONLY}
 
 
 def test_control_plane_only_overrides_whatever_the_feature_holds() -> None:

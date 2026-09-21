@@ -3,7 +3,8 @@
 The control plane of Knowledge Lite, M.I.O. and Deception Lite is implemented:
 trust, cache, generations, rollback, admission gates, the sanitizer, the decoy
 lifecycle, and the degradation each of them produces. **None of the three can
-currently provide the capability it exists for.**
+currently provide the capability it exists for** -- Deception Lite has a
+functional layer now, and it reaches only this host.
 
 That is a different fact from any the status vocabulary already had, and it
 needs its own word. `unavailable` means "supply content and it works", and
@@ -15,6 +16,14 @@ operator to go looking for content that nothing could accept.
 | `available` / `stale` / `unavailable` / `quarantined` | the feature works; this is what it currently holds |
 | `missing` | the feature's code is not on this node -- a defect |
 | **`control-plane-only`** | the code is here, the control plane works, **and the functional layer does not exist yet** |
+| **`loopback-only`** | the functional layer exists and reaches **only this host**; nothing outside can be affected by it |
+
+`loopback-only` was added for Deception Lite
+([#69](https://github.com/01rabbit/Azazel-Nexus/issues/69)). Decoys now
+really start and really listen, so `control-plane-only` became false -- and
+`available` would be worse than either, because a decoy nobody outside this
+host can reach deceives nobody. A word that said the capability was being
+supplied would be describing a deception with no one on the other end of it.
 
 **An absent external peer is none of these.** A node with no AZ-04 or AZ-06
 peer is the designed node. A node whose embedded feature cannot supply
@@ -26,9 +35,10 @@ A hand-maintained "not done yet" list goes stale the day someone finishes the
 work and forgets the list. Each entry here is paired with a test in
 `tests/unit/test_functional_readiness.py` that asserts the *mechanical reason*
 the feature is not functional -- the default claim reader that refuses, the
-resource gate that always rejects, the decoy module that defines no verb able
-to start anything. When one of those stops being true, its test fails, and
-whoever made it stop being true has to come here.
+resource gate that always rejects, and, for the loopback decoy runtime, the
+absence of any internet address family in the distribution that binds. When
+one of those stops being true, its test fails, and whoever made it stop being
+true has to come here.
 """
 
 from __future__ import annotations
@@ -38,6 +48,7 @@ from typing import Mapping
 
 __all__ = [
     "CONTROL_PLANE_ONLY",
+    "LOOPBACK_ONLY",
     "READINESS",
     "Readiness",
     "readiness_for",
@@ -45,6 +56,12 @@ __all__ = [
 
 #: The value a not-yet-functional embedded feature reports.
 CONTROL_PLANE_ONLY = "control-plane-only"
+
+#: The value a feature reports when its functional layer exists and reaches
+#: only this host. Distinct from both neighbours on purpose: it is not
+#: `control-plane-only`, because something really runs; and it is not
+#: `available`, because nothing outside this host can be affected by it.
+LOOPBACK_ONLY = "loopback-only"
 
 
 @dataclass(frozen=True)
@@ -58,8 +75,20 @@ class Readiness:
     missing: str
     #: The issue that closes it.
     issue: str
+    #: True when the functional layer exists and reaches only this host.
+    #: Still not functional -- a capability nothing outside can be affected by
+    #: is not a capability being supplied -- but it is a different fact from
+    #: having no functional layer at all, and the operator's next action
+    #: differs.
+    loopback_only: bool = False
 
     def __post_init__(self) -> None:
+        if self.functional and self.loopback_only:
+            raise ValueError(
+                f"{self.feature} is declared functional and loopback-only; if "
+                "nothing outside this host can be affected by it, it is not "
+                "supplying its capability"
+            )
         if not self.functional:
             if not self.missing.strip():
                 raise ValueError(
@@ -72,7 +101,21 @@ class Readiness:
                     "issue; an untracked gap is a gap nobody closes"
                 )
 
+    @property
+    def value(self) -> str:
+        """The word a display leads with for this feature."""
+
+        return LOOPBACK_ONLY if self.loopback_only else CONTROL_PLANE_ONLY
+
     def reason(self) -> str:
+        if self.loopback_only:
+            return (
+                "the functional layer exists and reaches only this host: "
+                f"{self.missing} ({self.issue}). This is an embedded feature "
+                "that really runs and that nothing outside this host can be "
+                "affected by, which is not the capability being supplied, and "
+                "is not the same fact as an external peer being absent"
+            )
         return (
             f"the control plane is implemented and the functional layer is not: "
             f"{self.missing} ({self.issue}). This is an embedded feature that "
@@ -103,9 +146,12 @@ READINESS: Mapping[str, Readiness] = {
     "deception_lite": Readiness(
         feature="deception_lite",
         functional=False,
+        loopback_only=True,
         missing=(
-            "no decoy process or container is started by anything; the runtime "
-            "binds nothing, so no decoy can be reached even on loopback"
+            "decoys start and listen, and only on private Unix sockets in the "
+            "runtime's own directory. Nothing outside this host can reach one, "
+            "and no path here can bind an address or a port at all, so no "
+            "hostile party can be observed by it yet"
         ),
         issue="Nexus#69",
     ),

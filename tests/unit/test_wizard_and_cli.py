@@ -699,20 +699,34 @@ def test_an_absent_data_tier_is_not_a_defect(tmp_path):
     assert "missing" not in text
 
 
-def test_the_status_screen_says_the_embedded_features_are_control_plane_only(tmp_path):
-    """The fact the screen has to carry today.
+def test_the_status_screen_says_which_kind_of_gap_each_embedded_feature_has(tmp_path):
+    """The fact the screen has to carry today, and it is not one fact.
 
-    The control plane of both embedded features is implemented and neither
-    can supply its capability. Reporting `unavailable` would tell an operator
-    to go and find content, and there is nothing that could accept any.
+    Neither embedded feature supplies its capability, and they do not fail to
+    for the same reason. Knowledge Lite and local M.I.O. have no functional
+    layer. Deception Lite has one that reaches only this host (#69) -- decoys
+    really start and really listen, and nothing outside can reach them.
+
+    Reporting `unavailable` for any of them would tell an operator to go and
+    find content. Reporting one word for all three would tell the operator
+    who fixed the supply route that the decoys were waiting on the same thing.
     """
 
     text = _status(tmp_path)
     assert "freshness [knowledge_lite]: control-plane-only" in text
-    assert "freshness [deception_lite]: control-plane-only" in text
+    assert "freshness [deception_lite]: loopback-only" in text
     assert "local M.I.O. control-plane-only" in text
+    assert "freshness [deception_lite]: control-plane-only" not in text
     for issue in ("Nexus#67", "Nexus#68", "Nexus#69"):
         assert issue in text, f"{issue} is not named on the screen"
+
+
+def test_the_screen_says_a_loopback_decoy_reaches_only_this_host(tmp_path):
+    """Otherwise `loopback-only` is a word an operator has to go and look up."""
+
+    text = _status(tmp_path)
+    assert "reaches only this host" in text
+    assert "not the capability being supplied" in text
 
 
 def test_the_screen_does_not_describe_an_embedded_gap_as_an_absent_peer(tmp_path):
