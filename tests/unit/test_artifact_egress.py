@@ -338,7 +338,12 @@ def test_an_overrun_that_arrives_with_the_headers_is_stopped(certificate) -> Non
     """
 
     key, cert = certificate
-    body = BODY + b"and more that nobody declared"
+    # Small declaration, large first read: the excess is in hand *before* the
+    # loop begins. Declaring something nearly as large as the body would let
+    # the spill fit and push the overrun into a later chunk, which the test
+    # below already covers -- and this one would then prove nothing.
+    declared = 16
+    body = b"x" * 4000
 
     def one_write(stream, request):
         stream.sendall(
@@ -349,7 +354,7 @@ def test_an_overrun_that_arrives_with_the_headers_is_stopped(certificate) -> Non
     server = Server(key, cert, responder=one_write)
     try:
         with pytest.raises(EgressRefused) as caught:
-            run_fetch(server, cert)
+            run_fetch(server, cert, expected_size=declared)
     finally:
         server.close()
     assert "A file that grew" in str(caught.value)
