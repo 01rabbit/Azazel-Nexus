@@ -362,6 +362,24 @@ def send_inference(
                     ),
                     b"",
                 )
+            except ssl.SSLError as exc:
+                # Not INTERRUPTED, and the branch has to be above `OSError`
+                # because `ssl.SSLError` derives from it. The read path below
+                # gives the reason; it applies here unchanged. Under TLS 1.3
+                # the server's verdict on our client certificate arrives after
+                # we consider the handshake finished, and whether it reaches us
+                # while we are still writing or on the first read is a matter
+                # of timing. One fact -- this node's identity was not accepted
+                # -- must not be reported as two different outcomes.
+                return (
+                    EgressReport(
+                        TransportOutcome.TLS_FAILED,
+                        0,
+                        0,
+                        f"mutual TLS did not hold: {exc.reason or 'alert'}",
+                    ),
+                    b"",
+                )
             except OSError as exc:
                 return (
                     EgressReport(

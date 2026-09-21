@@ -593,3 +593,151 @@ def test_it_parses_no_response_content():
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
     assert used & {"AdvisoryText", "AdvisoryData", "Advisory"} == set()
+
+
+# -- one fact, one outcome, wherever the alert lands (#121) ----------------
+#
+# The real-server tests above drive the read path, because that is where a
+# TLS 1.3 server's verdict on our client certificate usually lands. It does
+# not always: the alert can reach us while we are still writing, and which
+# of the two happens is a matter of the peer's timing, not of what went
+# wrong. The tests below inject the alert at each point and require the same
+# outcome from both, because a fact that is reported two ways is a fact an
+# operator cannot act on.
+
+
+SERVER_DER = ssl.PEM_cert_to_DER_cert(
+    pathlib.Path(material("server.crt")).read_text(encoding="ascii")
+)
+
+
+class _Listener:
+    """A plain TCP listener. `send_inference` connects before it wraps, so
+    the connection has to be real even when the TLS socket is not."""
+
+    def __init__(self):
+        self.socket = socket.socket()
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((LOOPBACK, 0))
+        self.socket.listen(1)
+        self.port = self.socket.getsockname()[1]
+
+    def close(self):
+        try:
+            self.socket.close()
+        except OSError:
+            pass
+
+
+class _AlertingSocket:
+    """A wrapped socket whose handshake succeeded and whose peer then sends
+    an alert -- at `sendall`, or at the first `recv`."""
+
+    def __init__(self, *, raw, at):
+        self._raw = raw
+        self._at = at
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+        return False
+
+    def getpeercert(self, binary_form=False):
+        return SERVER_DER if binary_form else {}
+
+    def settimeout(self, _):
+        pass
+
+    def _alert(self):
+        # Shaped like the one OpenSSL raises: `ssl` sets `reason` on every
+        # error it raises, and a fixture without it would be a fixture the
+        # implementation is never handed.
+        alert = ssl.SSLEOFError(
+            8, "EOF occurred in violation of protocol (_ssl.c:2437)"
+        )
+        alert.reason = "UNEXPECTED_EOF_WHILE_READING"
+        raise alert
+
+    def sendall(self, _):
+        if self._at == "send":
+            self._alert()
+
+    def recv(self, _):
+        if self._at == "read":
+            self._alert()
+        return b""
+
+    def close(self):
+        try:
+            self._raw.close()
+        except OSError:
+            pass
+
+
+class _BrokenSocket(_AlertingSocket):
+    """The same shape, failing for a reason that is not TLS."""
+
+    def sendall(self, _):
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+
+class _Context:
+    def __init__(self, factory):
+        self._factory = factory
+
+    def wrap_socket(self, raw, server_hostname=None):
+        return self._factory(raw)
+
+
+def _attempt(factory):
+    listener = _Listener()
+    try:
+        return send_inference(
+            host=LOOPBACK,
+            port=listener.port,
+            path="/v1/advisor/advise",
+            frame=FRAME,
+            expected_pin=spki_pin(SERVER_DER),
+            allowed_addresses=[LOOPBACK],
+            max_request_bytes=65536,
+            max_response_bytes=65536,
+            deadline_seconds=5,
+            context=_Context(factory),
+        )
+    finally:
+        listener.close()
+
+
+@pytest.mark.injected
+def test_an_alert_while_sending_is_a_tls_failure_and_not_an_interruption():
+    """`ssl.SSLError` derives from `OSError`, so without its own branch --
+    above the `OSError` one -- a rejected identity is reported as a network
+    interruption, and an operator is sent to look at the network."""
+
+    report, _ = _attempt(lambda raw: _AlertingSocket(raw=raw, at="send"))
+    assert report.outcome is TransportOutcome.TLS_FAILED
+    assert "mutual TLS did not hold" in report.reason
+
+
+@pytest.mark.injected
+def test_the_two_paths_give_the_same_outcome_for_the_same_alert():
+    """The point of the branch. Whether the peer's verdict reaches us during
+    the write or the first read is timing; the fact is the same."""
+
+    sending, _ = _attempt(lambda raw: _AlertingSocket(raw=raw, at="send"))
+    reading, _ = _attempt(lambda raw: _AlertingSocket(raw=raw, at="read"))
+    assert sending.outcome is reading.outcome is TransportOutcome.TLS_FAILED
+    assert sending.reason == reading.reason
+
+
+@pytest.mark.injected
+def test_a_send_that_fails_for_another_reason_is_still_an_interruption():
+    """The branch must narrow to TLS. A reset mid-request is an
+    interruption, and calling it a TLS failure would send the operator to
+    look at certificates."""
+
+    report, _ = _attempt(lambda raw: _BrokenSocket(raw=raw, at="send"))
+    assert report.outcome is TransportOutcome.INTERRUPTED
+    assert "the send failed" in report.reason
