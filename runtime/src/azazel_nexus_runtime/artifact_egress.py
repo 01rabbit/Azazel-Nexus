@@ -1,0 +1,443 @@
+"""The one module in this distribution that may open a connection (#105).
+
+Everything else in `azazel_nexus_runtime` speaks `AF_UNIX` or reads the
+kernel. This speaks TCP and TLS, to exactly one kind of peer, for exactly one
+kind of payload: a **model artifact** whose digest was declared before the
+connection was made.
+
+`tests/unit/test_runtime_boundary.py` used to assert that *nothing* in this
+package could reach an internet address family. That assertion is now scoped
+to "nothing **except this module**", and the test records the exemption by
+name so that the loosening is visible in the suite rather than implied by its
+absence. A boundary that moved and left no trace is a boundary nobody can
+audit.
+
+## What this is not
+
+**It is not the M.I.O. request transport.** That carries situation frames
+this node observed -- data with a privacy class, needing a sanitiser, where
+`P2-mission` and `P3-restricted` never leave at all. This carries public
+weights whose content owes nothing to anything this node saw, whose digest is
+known in advance, and which are verified after arrival by the same path an
+offline import takes.
+
+Reusing one for the other would turn *the route that fetches weights* into
+*the route that sends observations*. Different service, different identity,
+different policy, and `tests/unit/test_artifact_egress.py` asserts that no
+privacy-class vocabulary appears here at all -- if this module cannot name a
+privacy class, it cannot carry one.
+
+## What it refuses
+
+| refusal | why |
+| --- | --- |
+| a peer whose public key does not match the pin | CA trust alone is one compromised issuer away from any host |
+| a redirect | a fetcher that follows one is a fetcher whose allowlist is bypassed in a single hop |
+| a resolved address outside the allowlist | DNS is an attack surface, and "the name was right" is not "the address was" |
+| a response larger than declared | a file that grew is not the file that was planned for |
+| a response that does not begin where resume asked | a server that ignores `Range` and restarts would silently corrupt a resumed file |
+| a deadline passed | a fetch with no deadline is one nobody learns has stopped |
+| a status other than the one expected | 200 for a whole fetch, 206 for a resumed one, and nothing else |
+
+## What it never emits
+
+No credential, no private key material, no token, no request body, and no
+assembled URL reach a return value, an exception message or an event. The
+pin and the identity name are inputs; neither is echoed. There is no
+command line here at all -- this is a function, not a process -- which is
+deliberate: an argument vector is readable by every user on the host.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import socket
+import ssl
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Iterator, Optional, Sequence
+
+__all__ = [
+    "EgressRefused",
+    "EgressResult",
+    "MAX_HEADER_BYTES",
+    "MAX_STATUS_LINE_BYTES",
+    "Outcome",
+    "fetch_artifact",
+    "spki_pin",
+    "tls_context",
+]
+
+#: A response header block larger than this is refused before it is parsed.
+#: A ceiling enforced after reading everything is a ceiling on nothing.
+MAX_HEADER_BYTES = 16 * 1024
+MAX_STATUS_LINE_BYTES = 1024
+
+#: Read granularity. Also the unit the bandwidth ceiling is applied over.
+_READ_CHUNK = 64 * 1024
+
+
+class Outcome(str, Enum):
+    """How a fetch ended. None of these is `VERIFIED` or `PROMOTED`."""
+
+    COMPLETE = "complete"
+    REFUSED = "refused"
+    TIMED_OUT = "timed_out"
+    INTERRUPTED = "interrupted"
+
+
+class EgressRefused(Exception):
+    """Refused. Nothing was written, or what was written is the caller's to
+    discard -- this never promotes and never verifies."""
+
+
+@dataclass(frozen=True)
+class EgressResult:
+    """Bytes moved and how it ended. Never a verdict about the bytes."""
+
+    outcome: Outcome
+    received: int
+    status: int
+    reason: str
+
+    @property
+    def complete(self) -> bool:
+        return self.outcome is Outcome.COMPLETE
+
+    def as_event(self) -> dict:
+        """No host, no path, no pin, no identity, no URL."""
+
+        return {
+            "event_type": "mio.model.artifact.transferred",
+            "outcome": self.outcome.value,
+            "received": self.received,
+            "status": self.status,
+            "reason": self.reason,
+        }
+
+
+def spki_pin(certificate_der: bytes) -> str:
+    """`sha256:` over the certificate's SubjectPublicKeyInfo.
+
+    Over the key, not the certificate. A server that renews its certificate
+    keeps its key, and a pin over the whole certificate would turn every
+    ordinary renewal into an outage indistinguishable from an attack -- which
+    is how pinning gets switched off.
+
+    The walk is a minimal DER traversal rather than a parser: a
+    `Certificate` is a SEQUENCE whose first element is the `TBSCertificate`,
+    and within that the `SubjectPublicKeyInfo` is the element after
+    `subject`. `tests/unit/test_artifact_egress.py` checks this against
+    OpenSSL's own extraction rather than against a fixture this file wrote.
+    """
+
+    tbs = _der_first_child(_der_value(certificate_der, expect=0x30), expect=0x30)
+    elements = list(_der_children(tbs))
+    # [0] EXPLICIT version is optional; when present it is context tag 0xA0.
+    offset = 1 if elements and elements[0][0] == 0xA0 else 0
+    # serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo
+    index = offset + 5
+    if index >= len(elements):
+        raise EgressRefused(
+            "the peer's certificate has no SubjectPublicKeyInfo where one must be"
+        )
+    tag, body = elements[index]
+    if tag != 0x30:
+        raise EgressRefused("the peer's SubjectPublicKeyInfo is not a SEQUENCE")
+    return "sha256:" + hashlib.sha256(_der_reencode(tag, body)).hexdigest()
+
+
+def tls_context(
+    *,
+    client_certificate: Optional[str] = None,
+    client_key: Optional[str] = None,
+) -> ssl.SSLContext:
+    """A client context that trusts the pin, and mutual auth when configured.
+
+    `check_hostname` and CA verification are off **because the pin replaces
+    them**, not because verification is inconvenient: a name that matched a
+    certificate any accepted CA issued is weaker than a key that matched the
+    one this node was commissioned to expect. The pin is checked by
+    `fetch_artifact` on every connection, and a connection whose pin is not
+    checked never carries a byte -- see its first act after the handshake.
+    """
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if client_certificate:
+        # mTLS: the node shows who it is. The key never appears in a return
+        # value, an exception or an event -- only here, where ssl reads it.
+        context.load_cert_chain(certfile=client_certificate, keyfile=client_key)
+    return context
+
+
+def fetch_artifact(
+    *,
+    host: str,
+    port: int,
+    path: str,
+    expected_pin: str,
+    expected_size: int,
+    resume_from: int = 0,
+    allowed_addresses: Sequence[str],
+    deadline_seconds: int,
+    bandwidth_bytes_per_second: int,
+    sink: Callable[[bytes], None],
+    context: Optional[ssl.SSLContext] = None,
+    clock: Optional[Callable[[], float]] = None,
+    sleeper: Optional[Callable[[float], None]] = None,
+) -> EgressResult:
+    """One attempt. Every bound is an argument; none has a permissive default.
+
+    `allowed_addresses` is what the resolved peer address must be one of. It
+    is passed in rather than resolved-and-trusted here because "the name was
+    right" is not "the address was", and a fetcher that accepted whatever DNS
+    returned would treat the resolver as an authority nobody commissioned.
+    """
+
+    if resume_from < 0 or resume_from > expected_size:
+        raise EgressRefused("a resume offset outside the artifact")
+    if not allowed_addresses:
+        raise EgressRefused(
+            "no address is allowed, so none is contacted. An empty allowlist "
+            "is a refusal, never 'anything'"
+        )
+    if deadline_seconds < 1 or bandwidth_bytes_per_second < 1:
+        raise EgressRefused("a deadline and a bandwidth ceiling are positive")
+
+    now = clock or __import__("time").monotonic
+    rest = sleeper or __import__("time").sleep
+    started = now()
+
+    def remaining() -> float:
+        return deadline_seconds - (now() - started)
+
+    address = _resolve_one(host, port, allowed_addresses)
+    raw = socket.create_connection(address, timeout=max(remaining(), 0.001))
+    try:
+        stream = (context or tls_context()).wrap_socket(raw, server_hostname=host)
+    except BaseException:
+        raw.close()
+        raise
+    try:
+        # The first act after the handshake, before a single request byte is
+        # sent: an unpinned connection never carries anything, in either
+        # direction.
+        observed = spki_pin(stream.getpeercert(binary_form=True) or b"")
+        if observed != expected_pin:
+            raise EgressRefused(
+                "the peer's public key does not match the commissioned pin. "
+                "Nothing was requested"
+            )
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Connection: close\r\n"
+            "Accept: application/octet-stream\r\n"
+        )
+        if resume_from:
+            request += f"Range: bytes={resume_from}-\r\n"
+        stream.sendall((request + "\r\n").encode("ascii"))
+
+        status, headers, spill = _read_head(stream, remaining)
+        expected_status = 206 if resume_from else 200
+        if status in (301, 302, 303, 307, 308):
+            raise EgressRefused(
+                f"the peer answered {status}. A redirect is not followed: a "
+                "fetcher that follows one is a fetcher whose allowlist is "
+                "bypassed in a single hop"
+            )
+        if status != expected_status:
+            raise EgressRefused(
+                f"the peer answered {status}; {expected_status} was the only "
+                "acceptable answer for this request"
+            )
+        if resume_from:
+            _check_resume_start(headers, resume_from)
+
+        received = resume_from
+        budget = expected_size - resume_from
+        for chunk in _body(stream, spill, budget, remaining):
+            if remaining() <= 0:
+                return EgressResult(
+                    Outcome.TIMED_OUT,
+                    received,
+                    status,
+                    f"the {deadline_seconds}s deadline passed",
+                )
+            sink(chunk)
+            received += len(chunk)
+            rest(len(chunk) / bandwidth_bytes_per_second)
+        if received != expected_size:
+            return EgressResult(
+                Outcome.INTERRUPTED,
+                received,
+                status,
+                f"{received} of {expected_size} bytes arrived; resumable, and "
+                "the digest is still checked afterwards",
+            )
+        return EgressResult(
+            Outcome.COMPLETE,
+            received,
+            status,
+            "every declared byte arrived. Whether they are the right bytes is "
+            "decided by the same verification an offline import goes through",
+        )
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+# -- internals -------------------------------------------------------------
+
+
+def _resolve_one(host: str, port: int, allowed: Sequence[str]) -> tuple:
+    """Resolve, then refuse anything the allowlist does not carry."""
+
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise EgressRefused(f"the name did not resolve: {exc}") from None
+    for *_ignored, sockaddr in infos:
+        if sockaddr[0] in allowed:
+            return (sockaddr[0], port)
+    raise EgressRefused(
+        "the name resolved only to addresses the allowlist does not carry. "
+        "DNS is an attack surface, and a right name is not a right address"
+    )
+
+
+def _read_head(stream, remaining) -> tuple:
+    """Status line and headers, bounded, before any body is considered."""
+
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        if remaining() <= 0:
+            raise EgressRefused("the deadline passed before the headers arrived")
+        if len(buffer) > MAX_HEADER_BYTES:
+            raise EgressRefused(
+                f"the header block exceeded {MAX_HEADER_BYTES} bytes and was "
+                "refused without being parsed"
+            )
+        stream.settimeout(max(remaining(), 0.001))
+        piece = stream.recv(4096)
+        if not piece:
+            raise EgressRefused("the peer closed before sending headers")
+        buffer += piece
+    head, spill = buffer.split(b"\r\n\r\n", 1)
+    line, _, rest = head.partition(b"\r\n")
+    if len(line) > MAX_STATUS_LINE_BYTES:
+        raise EgressRefused("the status line is longer than any status line is")
+    parts = line.split(b" ", 2)
+    if len(parts) < 2 or not parts[0].startswith(b"HTTP/1."):
+        raise EgressRefused("the peer did not answer HTTP/1.x")
+    try:
+        status = int(parts[1])
+    except ValueError:
+        raise EgressRefused("the peer's status code is not a number") from None
+    headers = {}
+    for raw_line in rest.split(b"\r\n"):
+        name, _, value = raw_line.partition(b":")
+        if name:
+            headers[name.strip().lower().decode("latin-1")] = value.strip().decode("latin-1")
+    return status, headers, spill
+
+
+def _check_resume_start(headers: dict, resume_from: int) -> None:
+    """A server that ignored `Range` and restarted would corrupt the file.
+
+    The bytes would append to what is already staged, the length would come
+    out right often enough to look fine, and only the digest would notice --
+    after the whole transfer. Refuse at the header instead.
+    """
+
+    content_range = headers.get("content-range", "")
+    marker = f"bytes {resume_from}-"
+    if not content_range.startswith(marker):
+        raise EgressRefused(
+            f"the peer answered 206 with Content-Range {content_range!r}, "
+            f"which does not start at the requested byte {resume_from}"
+        )
+
+
+def _body(stream, spill: bytes, budget: int, remaining) -> Iterator[bytes]:
+    """Yield at most `budget` bytes, refusing the one that exceeds it."""
+
+    if spill:
+        if len(spill) > budget:
+            raise EgressRefused(
+                "more than the declared size arrived. A file that grew is not "
+                "the file that was planned for"
+            )
+        budget -= len(spill)
+        yield spill
+    while budget > 0:
+        if remaining() <= 0:
+            return
+        stream.settimeout(max(remaining(), 0.001))
+        try:
+            chunk = stream.recv(min(_READ_CHUNK, budget + 1))
+        except (socket.timeout, TimeoutError):
+            return
+        if not chunk:
+            return
+        if len(chunk) > budget:
+            raise EgressRefused(
+                "more than the declared size arrived. A file that grew is not "
+                "the file that was planned for"
+            )
+        budget -= len(chunk)
+        yield chunk
+
+
+def _der_value(data: bytes, *, expect: int) -> bytes:
+    tag, body, _end = _der_read(data, 0)
+    if tag != expect:
+        raise EgressRefused("the peer's certificate is not DER as expected")
+    return body
+
+
+def _der_first_child(body: bytes, *, expect: int) -> bytes:
+    tag, child, _end = _der_read(body, 0)
+    if tag != expect:
+        raise EgressRefused("the peer's certificate has no TBSCertificate")
+    return child
+
+
+def _der_children(body: bytes) -> Iterator[tuple]:
+    offset = 0
+    while offset < len(body):
+        tag, value, offset = _der_read(body, offset)
+        yield tag, value
+
+
+def _der_read(data: bytes, offset: int) -> tuple:
+    if offset + 2 > len(data):
+        raise EgressRefused("the peer's certificate is truncated")
+    tag = data[offset]
+    length = data[offset + 1]
+    offset += 2
+    if length & 0x80:
+        count = length & 0x7F
+        if count == 0 or count > 4 or offset + count > len(data):
+            raise EgressRefused("the peer's certificate has an unusable length")
+        length = int.from_bytes(data[offset : offset + count], "big")
+        offset += count
+    end = offset + length
+    if end > len(data):
+        raise EgressRefused("the peer's certificate is truncated")
+    return tag, data[offset:end], end
+
+
+def _der_reencode(tag: int, body: bytes) -> bytes:
+    length = len(body)
+    if length < 0x80:
+        header = bytes((tag, length))
+    else:
+        encoded = length.to_bytes((length.bit_length() + 7) // 8, "big")
+        header = bytes((tag, 0x80 | len(encoded))) + encoded
+    return header + body

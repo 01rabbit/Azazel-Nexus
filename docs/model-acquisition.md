@@ -17,6 +17,7 @@ catalog names a SYMBOL → this build resolves it, or refuses
 
 Related: [the model catalog contract](model-catalog.md) ·
 [offline model import](model-import.md) ·
+[the source registry](source-registry.md) ·
 [the operator screen](operator-view.md) ·
 [the route policy](mio-route-policy.md) ·
 [runtime boundary](runtime-boundary.md)

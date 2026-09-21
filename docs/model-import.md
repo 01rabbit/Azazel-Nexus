@@ -13,6 +13,7 @@ inbox --> capacity precheck --> staging --> atomic promotion
 Related: [the model catalog contract](model-catalog.md) (what may be offered
 at all) · [M.I.O. runtime control plane](mio-runtime.md) ·
 [the operator screen](operator-view.md) ·
+[the source registry](source-registry.md) ·
 [Hardware gates](hardware-gates.md) ·
 [Core reserve measurement](core-reserve-measurement.md) ·
 [the Knowledge Lite consumer](knowledge-lite-consumer.md) ·
