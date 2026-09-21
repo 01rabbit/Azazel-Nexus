@@ -164,6 +164,42 @@ jobs:
                   "a withdrawn remote route can still complete a request; that is "
                   "the one outcome withdrawal exists to prevent"
               )
+          # The remote trust plane (#84). The node with nothing installed is
+          # the one that must answer "no, and here is which condition is
+          # missing" without being able to talk to anything. All four signals
+          # are not-checked here, which is not a failure and not a pass.
+          import azazel_nexus.remote_trust as remote_trust  # noqa: F401
+          from azazel_nexus.edge_package import Evidence
+          from azazel_nexus.sanitizer import NEVER_REMOTE, PrivacyClass as _PC
+          unchecked = remote_trust.unchecked_reading()
+          if unchecked.established:
+              raise SystemExit("a node that checked nothing reports remote trust established")
+          if remote_trust.ENDPOINT_ALLOWLIST != ():
+              raise SystemExit(
+                  f"the endpoint allowlist is {remote_trust.ENDPOINT_ALLOWLIST!r}; "
+                  "this build admits no provider to name one"
+              )
+          # And the class refusal survives every other condition being met --
+          # the third independent refusal, checked here where nothing else is.
+          from azazel_nexus.mio_profile import PREREQUISITES as _PRE, RemoteOptIn as _OptIn
+          _consent = _OptIn(granted=frozenset(_PRE), operator="ci", at="ci")
+          _all_passed = remote_trust.RemoteTrustReading(
+              signals={s: Evidence.PASSED for s in remote_trust.TrustSignal},
+              reasons={s: "ci" for s in remote_trust.TrustSignal},
+          )
+          for _class in NEVER_REMOTE:
+              _outcome = remote_trust.remote_admission(
+                  profile=mio_profile.MioProfile.FASTEST_PERMITTED,
+                  opt_in=_consent,
+                  trust=_all_passed,
+                  privacy_class=_class,
+                  sanitised=True,
+              )
+              if _outcome.permitted or _outcome.excluded_by is not remote_trust.Exclusion.PRIVACY_CLASS:
+                  raise SystemExit(
+                      f"{_class.value} reached a remote route with every other "
+                      f"condition met; excluded_by={_outcome.excluded_by}"
+                  )
           # The cognition plane (#5). A node with nothing installed and no
           # provider is the configuration M.I.O. has to be answerable in, and
           # it is the one where `CORE ONLY` is the correct answer rather than
