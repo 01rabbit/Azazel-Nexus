@@ -635,6 +635,44 @@ jobs:
                       "a verified artifact reported itself admitted; admission is "
                       "decided against a measured Core reserve (HG-05), not here"
                   )
+          # The import path (#95). It runs on a node with no network by
+          # definition, so the job that installs nothing is the job that has
+          # to import it -- and the scan below is what proves the module
+          # brought in no unpacker on the way.
+          import azazel_nexus.model_import as model_import
+          if model_import.MAX_ARTIFACT_BYTES <= 0 or model_import.MIN_FREE_HEADROOM_BYTES <= 0:
+              raise SystemExit("the import ceilings are not ceilings")
+          with tempfile.TemporaryDirectory() as room:
+              node_root = pathlib.Path(room) / "node"
+              (node_root / "inbox").mkdir(parents=True)
+              commissioned = model_import.CommissionedModels(
+                  root=node_root, trusted_keys={}, commissioning_digest="sha256:" + "0" * 64
+              )
+              service = model_import.ModelImport(commissioned)
+              # No catalog at all: absent, and distinct from every other answer.
+              if service.reading_for("anything").state is not model_catalog.CatalogState.ABSENT:
+                  raise SystemExit("a node with no catalog does not read as absent")
+              if service.current_generation() is not None:
+                  raise SystemExit("a node that has imported nothing reports a generation")
+              if service.list_inbox() != ():
+                  raise SystemExit("an empty inbox listed something")
+              # An id no listing produced is a refusal, not a path to try.
+              refused = service.import_entry(
+                  "f" * 64, "anything", now="1970-01-01T00:00:00Z", actor="ci"
+              )
+              if refused.refused_by is not model_import.ImportRefusal.NOT_IN_INBOX:
+                  raise SystemExit(
+                      f"an unlisted id was refused as {refused.refused_by!r}"
+                  )
+              if refused.transition is not None or refused.reading.admitted:
+                  raise SystemExit("a refused import reported a transition or an admission")
+              # A rollback with no predecessor is refused, never invented.
+              try:
+                  service.rollback(reason="ci", actor="ci", now="1970-01-01T00:00:00Z")
+              except model_import.ImportRefused:
+                  pass
+              else:
+                  raise SystemExit("a rollback invented a predecessor")
           # And no catalog is shipped with the source. A catalog is signed
           # under a commissioning trust policy that only exists on the node;
           # one committed here would be one nobody chose to trust.

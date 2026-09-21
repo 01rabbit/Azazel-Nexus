@@ -10,6 +10,7 @@ Those steps inherit their safety boundary from here; if this moves later,
 they all move with it.
 
 Related: [M.I.O. runtime control plane](mio-runtime.md) ·
+[offline model import](model-import.md) ·
 [the route policy](mio-route-policy.md) ·
 [Hardware gates](hardware-gates.md) ·
 [Core reserve measurement](core-reserve-measurement.md) ·

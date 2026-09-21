@@ -23,6 +23,7 @@ operator permission, plus Fabric `mio_contracts` for the wire shape (§10).
 Related: [M.I.O. dual cognition doctrine](mio-dual-cognition.md) (Edge-owned
 semantics) · [the deterministic sanitizer](mio-sanitizer.md) ·
 [the model catalog contract](model-catalog.md) ·
+[offline model import](model-import.md) ·
 [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
 [Inheritance ledger](inheritance-ledger.md) ·
