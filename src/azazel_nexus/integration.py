@@ -10,7 +10,7 @@ before it is lost on a screen.
 | axis | values |
 | --- | --- |
 | `capability` | `CORE` / `LITE` / `FULL` |
-| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` |
+| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` |
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, and remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
@@ -21,12 +21,19 @@ Independent means an input that moves one axis moves **only** that one, and
 not follow. A summary that collapses two axes hides which one failed, which is
 the whole reason §8 of `docs/mio-runtime.md` demands per-dimension reasons.
 
-## Five words that are not four
+## Six words that are not five
 
 `disabled` is a decision -- somebody chose not to connect. `unavailable` is an
 attempt that did not arrive. `stale` is having something too old to serve.
 `quarantined` is having something that cannot be trusted. `missing` is an
-**embedded** feature that is not there at all.
+**embedded** feature that is not there at all. **`control-plane-only`** is an
+embedded feature whose code is here, whose control plane works, and whose
+functional layer does not exist yet.
+
+The last one exists because `unavailable` means *supply content and it works*,
+and saying that of a feature nothing could accept content for sends an
+operator looking for something no path can deliver. `functional_readiness.py`
+holds which features are in that state and why.
 
 The operator's next action differs for every one of them, so a renderer that
 prints any two of them as one word has told its operator to do the wrong
@@ -69,6 +76,7 @@ from typing import Optional, Sequence
 from .capability import CapabilityState
 from .cognition import CognitionReading, CognitionState, RemoteState
 from .decoy import DecoyState, DecoyStatus
+from .functional_readiness import CONTROL_PLANE_ONLY, readiness_for
 from .lite_service import LiteReading, LiteState
 
 __all__ = [
@@ -291,6 +299,19 @@ def _knowledge_freshness_row(knowledge: Optional[LiteReading]) -> Axis:
             continues=NEXUS_ALWAYS,
             defect=True,
         )
+    readiness = readiness_for("knowledge_lite")
+    if not readiness.functional:
+        # Reported over whatever the cache currently holds. A cache that
+        # correctly reports `unavailable` while nothing could ever fill it is
+        # telling an operator to go and find content, and there is no content
+        # to find until Nexus#67 lands.
+        return Axis(
+            axis="freshness",
+            subject="knowledge_lite",
+            value=CONTROL_PLANE_ONLY,
+            reason=f"{readiness.reason()}. The cache itself reports: {knowledge.reason}",
+            continues=NEXUS_ALWAYS,
+        )
     return Axis(
         axis="freshness",
         subject="knowledge_lite",
@@ -314,6 +335,15 @@ def _deception_freshness_row(decoy: Optional[DecoyStatus]) -> Axis:
             ),
             continues=NEXUS_ALWAYS,
             defect=True,
+        )
+    readiness = readiness_for("deception_lite")
+    if not readiness.functional:
+        return Axis(
+            axis="freshness",
+            subject="deception_lite",
+            value=CONTROL_PLANE_ONLY,
+            reason=f"{readiness.reason()}. The runtime itself reports: {decoy.reason}",
+            continues=NEXUS_ALWAYS,
         )
     return Axis(
         axis="freshness",
@@ -343,14 +373,17 @@ def _decoy_freshness(state: DecoyState) -> str:
 
 def _cognition_row(cognition: CognitionReading) -> Axis:
     local = cognition.state is not CognitionState.CORE_ONLY
+    readiness = readiness_for("mio")
+    suffix = "" if readiness.functional else f"; local M.I.O. {CONTROL_PLANE_ONLY}"
     return Axis(
         axis="cognition_route",
         subject="mio",
         value=(
-            f"{cognition.state.value}; remote M.I.O. {cognition.remote.value}"
+            f"{cognition.state.value}; remote M.I.O. {cognition.remote.value}{suffix}"
         ),
         reason=(
-            f"{cognition.asset_reason} | resource: {cognition.resource_reason} | "
+            ("" if readiness.functional else f"{readiness.reason()} | ")
+            + f"{cognition.asset_reason} | resource: {cognition.resource_reason} | "
             f"topology: {cognition.topology_reason} | trust: "
             f"{cognition.trust_health_reason}"
         ),
@@ -360,7 +393,11 @@ def _cognition_row(cognition: CognitionReading) -> Axis:
 
 def _knowledge_supplier_row(knowledge: Optional[LiteReading], peer: bool) -> Axis:
     suppliers = _suppliers(
-        embedded=knowledge is not None and knowledge.sources_capability,
+        embedded=(
+            knowledge is not None
+            and knowledge.sources_capability
+            and readiness_for("knowledge_lite").functional
+        ),
         embedded_name=Supplier.KNOWLEDGE_LITE,
         peer=peer,
         peer_name=Supplier.KNOWLEDGE_PEER,
@@ -376,7 +413,9 @@ def _knowledge_supplier_row(knowledge: Optional[LiteReading], peer: bool) -> Axi
 
 def _deception_supplier_row(decoy: Optional[DecoyStatus], peer: bool) -> Axis:
     suppliers = _suppliers(
-        embedded=decoy is not None and decoy.exposed,
+        embedded=(
+            decoy is not None and decoy.exposed and readiness_for("deception_lite").functional
+        ),
         embedded_name=Supplier.DECEPTION_LITE,
         peer=peer,
         peer_name=Supplier.DECEPTION_PEER,

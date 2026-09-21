@@ -43,6 +43,11 @@ from azazel_nexus.integration import (
     Supplier,
     build_view,
 )
+from azazel_nexus.functional_readiness import (
+    CONTROL_PLANE_ONLY,
+    READINESS,
+    Readiness,
+)
 from azazel_nexus.lite_service import LiteReading, LiteState
 
 REFUSED = ProviderAdmission(
@@ -73,6 +78,30 @@ def a_knowledge(state: LiteState = LiteState.UNAVAILABLE) -> LiteReading:
 
 def a_decoy(state: DecoyState = DecoyState.DISABLED) -> DecoyStatus:
     return DecoyStatus(decoy="decoy-a", state=state, reason=f"decoy is {state.value}")
+
+
+@pytest.fixture()
+def functional(monkeypatch):
+    """Declare embedded features functional for the duration of one test.
+
+    The state-to-word mapping below is real logic and stays tested: a feature
+    whose functional layer exists must render `available` / `stale` /
+    `unavailable` / `quarantined` exactly as it always did. Today every
+    feature is `control-plane-only`, which would otherwise mask that mapping
+    and let it rot until the day it is needed.
+
+    The override itself is tested separately, against the real declarations.
+    """
+
+    def declare(*features: str) -> None:
+        for feature in features:
+            monkeypatch.setitem(
+                READINESS,
+                feature,
+                Readiness(feature=feature, functional=True, missing="", issue=""),
+            )
+
+    return declare
 
 
 def a_view(**overrides):
@@ -136,7 +165,8 @@ def test_both_embedded_features_get_their_own_freshness_row() -> None:
         ),
     ],
 )
-def test_one_input_moves_one_axis(override: dict, moved: set) -> None:
+def test_one_input_moves_one_axis(override: dict, moved: set, functional) -> None:
+    functional(*("knowledge_lite", "deception_lite", "mio"))
     """Independence, as a difference rather than as a description."""
 
     before = _values(a_view())
@@ -145,7 +175,8 @@ def test_one_input_moves_one_axis(override: dict, moved: set) -> None:
     assert changed == moved, f"expected {moved} to move, got {changed}"
 
 
-def test_an_available_knowledge_cache_moves_both_its_freshness_and_its_supplier() -> None:
+def test_an_available_knowledge_cache_moves_both_its_freshness_and_its_supplier(functional) -> None:
+    functional(*("knowledge_lite",))
     """Two axes move because two facts changed, and the test says which.
 
     Deliberately not folded into the table above: `available` is the one
@@ -159,7 +190,8 @@ def test_an_available_knowledge_cache_moves_both_its_freshness_and_its_supplier(
     assert changed == {("freshness", "knowledge_lite"), ("knowledge_supplier", "knowledge")}
 
 
-def test_an_exposed_decoy_moves_both_its_freshness_and_its_supplier() -> None:
+def test_an_exposed_decoy_moves_both_its_freshness_and_its_supplier(functional) -> None:
+    functional(*("deception_lite",))
     before = _values(a_view())
     after = _values(a_view(decoy=a_decoy(DecoyState.EXPOSED)))
     changed = {key for key in before if before[key] != after[key]}
@@ -189,12 +221,14 @@ def test_the_five_state_words_are_five_distinct_words() -> None:
         (LiteState.QUARANTINED, "quarantined"),
     ],
 )
-def test_each_knowledge_state_renders_as_its_own_word(state, expected: str) -> None:
+def test_each_knowledge_state_renders_as_its_own_word(state, expected: str, functional) -> None:
+    functional(*("knowledge_lite",))
     view = a_view(knowledge=a_knowledge(state))
     assert view.row("freshness", "knowledge_lite").value == expected
 
 
-def test_a_quarantined_decoy_keeps_its_own_word() -> None:
+def test_a_quarantined_decoy_keeps_its_own_word(functional) -> None:
+    functional(*("deception_lite",))
     """"We had it and it is not trustworthy" is what the vocabulary is for."""
 
     view = a_view(decoy=a_decoy(DecoyState.QUARANTINED))
@@ -203,7 +237,8 @@ def test_a_quarantined_decoy_keeps_its_own_word() -> None:
 
 
 @pytest.mark.parametrize("state", [DecoyState.DISABLED, DecoyState.ELIGIBLE])
-def test_a_decoy_that_is_not_listening_is_unavailable_and_says_which(state) -> None:
+def test_a_decoy_that_is_not_listening_is_unavailable_and_says_which(state, functional) -> None:
+    functional(*("deception_lite",))
     """Both mean nothing is listening; the decoy's own reason distinguishes."""
 
     row = a_view(decoy=a_decoy(state)).row("freshness", "deception_lite")
@@ -286,17 +321,20 @@ def test_the_view_gathers_what_continues_across_every_axis() -> None:
     assert set(NEXUS_ALWAYS) <= set(a_view().continues)
 
 
-def test_an_available_cache_adds_its_own_continuation() -> None:
+def test_an_available_cache_adds_its_own_continuation(functional) -> None:
+    functional(*("knowledge_lite",))
     assert "Knowledge Lite advice" in a_view(knowledge=a_knowledge(LiteState.AVAILABLE)).continues
     assert "Knowledge Lite advice" not in a_view().continues
 
 
-def test_an_exposed_decoy_adds_its_own_continuation() -> None:
+def test_an_exposed_decoy_adds_its_own_continuation(functional) -> None:
+    functional(*("deception_lite",))
     assert "decoy observation" in a_view(decoy=a_decoy(DecoyState.EXPOSED)).continues
     assert "decoy observation" not in a_view().continues
 
 
-def test_a_local_provider_adds_its_own_continuation() -> None:
+def test_a_local_provider_adds_its_own_continuation(functional) -> None:
+    functional(*("mio",))
     local = a_view(cognition=a_cognition(state=CognitionState.LOCAL))
     assert "local M.I.O. explanations" in local.continues
     assert "local M.I.O. explanations" not in a_view().continues
@@ -387,3 +425,135 @@ def test_the_event_marks_a_defect_row_as_one() -> None:
     defects = [row for row in event["rows"] if row["defect"]]
     assert len(defects) == 1
     assert defects[0]["value"] == MISSING
+
+
+# -- the functional layer, or its absence ----------------------------------
+#
+# Everything above tests the mapping a *working* feature produces. These test
+# what every node this repository can build actually reports today: the
+# control plane is implemented and the functional layer is not.
+
+
+@pytest.mark.parametrize("subject", ["knowledge_lite", "deception_lite"])
+def test_an_embedded_feature_with_no_functional_layer_says_so(subject: str) -> None:
+    row = a_view().row("freshness", subject)
+    assert row.value == CONTROL_PLANE_ONLY
+    assert "functional layer is not" in row.reason
+    assert READINESS[subject].issue in row.reason
+
+
+def test_control_plane_only_overrides_whatever_the_feature_holds() -> None:
+    """Reported over a cache that would otherwise say `available`.
+
+    `unavailable` means *supply content and it works*. Saying that of a
+    feature nothing could accept content for sends an operator looking for
+    something no path can deliver, so the readiness is reported instead --
+    and the feature's own word is kept in the reason rather than lost.
+    """
+
+    row = a_view(knowledge=a_knowledge(LiteState.AVAILABLE)).row(
+        "freshness", "knowledge_lite"
+    )
+    assert row.value == CONTROL_PLANE_ONLY
+    assert "knowledge is available" in row.reason
+
+
+def test_a_feature_with_no_functional_layer_supplies_nothing() -> None:
+    """Even holding an artifact, and even exposed."""
+
+    built = a_view(
+        knowledge=a_knowledge(LiteState.AVAILABLE), decoy=a_decoy(DecoyState.EXPOSED)
+    )
+    assert built.row("knowledge_supplier", "knowledge").value == Supplier.NONE.value
+    assert built.row("deception_supplier", "deception").value == Supplier.NONE.value
+    assert "Knowledge Lite advice" not in built.continues
+    assert "decoy observation" not in built.continues
+
+
+def test_the_mio_row_says_the_local_side_is_control_plane_only() -> None:
+    row = a_view().row("cognition_route", "mio")
+    assert f"local M.I.O. {CONTROL_PLANE_ONLY}" in row.value
+    assert "HG-05" in row.reason
+
+
+def test_control_plane_only_is_not_any_of_the_other_words() -> None:
+    """Six words, six operator actions."""
+
+    words = {
+        RemoteState.DISABLED.value,
+        LiteState.AVAILABLE.value,
+        LiteState.UNAVAILABLE.value,
+        LiteState.STALE.value,
+        LiteState.QUARANTINED.value,
+        MISSING,
+        CONTROL_PLANE_ONLY,
+    }
+    assert len(words) == 7, words
+
+
+def test_control_plane_only_is_not_the_same_as_an_absent_peer() -> None:
+    """The distinction this whole change exists for.
+
+    A node with no AZ-04 peer is the designed node. A node whose embedded
+    Knowledge Lite cannot supply anything is not, and reporting both as
+    "nothing here" would make a required feature read like an optional one.
+    """
+
+    built = a_view()
+    embedded = built.row("freshness", "knowledge_lite")
+    peer = built.row("knowledge_supplier", "knowledge")
+
+    assert embedded.value != peer.value
+    assert embedded.value == CONTROL_PLANE_ONLY
+    assert peer.value == Supplier.NONE.value
+    assert "not a defect" in peer.reason
+    assert "not the same fact as an external peer being absent" in embedded.reason
+
+
+def test_control_plane_only_is_not_missing_and_is_not_a_defect() -> None:
+    """The code is here. What is not here is the layer that uses it."""
+
+    built = a_view()
+    assert built.row("freshness", "knowledge_lite").value != MISSING
+    assert built.defects == ()
+
+    absent_code = a_view(knowledge=None)
+    assert absent_code.row("freshness", "knowledge_lite").value == MISSING
+    assert len(absent_code.defects) == 1
+
+
+def test_a_feature_with_no_functional_layer_still_blocks_nothing() -> None:
+    """Written plainly after a first attempt that asserted nothing.
+
+    The first version guarded on `hasattr(view, "blocks_deterministic_path")`,
+    which `IntegrationView` does not have -- so the assertion collapsed to
+    `assert True` and would have passed for any view at all.
+    """
+
+    built = a_view()
+    assert set(NEXUS_ALWAYS) <= set(built.continues)
+    for row in built.rows:
+        assert row.continues, row.axis
+
+
+@pytest.mark.parametrize("feature", sorted(READINESS))
+def test_every_tracked_feature_names_what_is_missing_and_its_issue(feature: str) -> None:
+    readiness = READINESS[feature]
+    assert readiness.functional is False, (
+        f"{feature} is declared functional; if that is now true, the rows above "
+        "and docs/integration-display.md need updating with it"
+    )
+    assert readiness.missing.strip()
+    assert readiness.issue.startswith("Nexus#")
+
+
+def test_a_not_functional_declaration_without_a_reason_is_refused() -> None:
+    with pytest.raises(ValueError) as caught:
+        Readiness(feature="x", functional=False, missing="  ", issue="Nexus#1")
+    assert "cannot act on that" in str(caught.value)
+
+
+def test_a_not_functional_declaration_without_an_issue_is_refused() -> None:
+    with pytest.raises(ValueError) as caught:
+        Readiness(feature="x", functional=False, missing="something", issue="")
+    assert "nobody closes" in str(caught.value)

@@ -559,18 +559,45 @@ def test_status_prints_what_continues_after_the_losses_not_before(tmp_path):
         assert expected in tail
 
 
-def test_an_absent_data_tier_is_unavailable_and_not_a_defect(tmp_path):
+def test_an_absent_data_tier_is_not_a_defect(tmp_path):
     """A node that has not been commissioned is not a broken one.
 
     `missing` and its DEFECT marker are for an embedded feature that is not
-    there. A Knowledge Lite whose store has never been written reports
-    `unavailable` through its own reading, which is the routine state of a
-    fresh install.
+    there at all. Neither is the case here, so no DEFECT is printed.
     """
 
     text = _status(tmp_path)
-    assert "freshness [knowledge_lite]: unavailable" in text
     assert "DEFECT" not in text
+    assert "missing" not in text
+
+
+def test_the_status_screen_says_the_embedded_features_are_control_plane_only(tmp_path):
+    """The fact the screen has to carry today.
+
+    The control plane of both embedded features is implemented and neither
+    can supply its capability. Reporting `unavailable` would tell an operator
+    to go and find content, and there is nothing that could accept any.
+    """
+
+    text = _status(tmp_path)
+    assert "freshness [knowledge_lite]: control-plane-only" in text
+    assert "freshness [deception_lite]: control-plane-only" in text
+    assert "local M.I.O. control-plane-only" in text
+    for issue in ("Nexus#67", "Nexus#68", "Nexus#69"):
+        assert issue in text, f"{issue} is not named on the screen"
+
+
+def test_the_screen_does_not_describe_an_embedded_gap_as_an_absent_peer(tmp_path):
+    """The distinction, on the screen rather than only in the data.
+
+    The peer rows say their absence is *not a defect* and is the designed
+    state. The embedded rows say the functional layer does not exist. A reader
+    who saw one word for both would treat a required feature as optional.
+    """
+
+    text = _status(tmp_path)
+    assert "AZ-04 peer is a capability extension and its absence is unavailable, not a defect" in text
+    assert "not the same fact as an external peer being absent" in text
 
 
 def test_status_is_identical_for_the_same_instant(tmp_path):
@@ -628,13 +655,18 @@ def test_status_works_without_an_as_of_by_reading_the_clock_in_main(tmp_path):
     }
 
 
-def test_the_status_screen_keeps_the_five_words_apart(tmp_path):
-    """`disabled` and `unavailable` appear, and they are not the same line."""
+def test_the_status_screen_keeps_the_words_apart(tmp_path):
+    """`disabled` and `control-plane-only` appear, and are not one word.
+
+    Both are on the M.I.O. row and they are different facts: remote is off by
+    decision, and the local side has no functional layer.
+    """
 
     text = _status(tmp_path)
     assert "remote M.I.O. disabled" in text
-    assert "freshness [knowledge_lite]: unavailable" in text
+    assert "local M.I.O. control-plane-only" in text
     assert "remote M.I.O. unavailable" not in text
+    assert "remote M.I.O. control-plane-only" not in text
 
 
 def test_a_defect_row_is_marked_on_the_screen(tmp_path):
