@@ -135,6 +135,35 @@ jobs:
                   "a node with nothing installed produced a Core reserve; no "
                   "measurement has been taken (docs/hardware-gates.md HG-05)"
               )
+          # The cognition ceiling (#82). An uncommissioned node with nothing
+          # installed is exactly the node an operator asks "what may this
+          # consult", and the answer has to be available there. `CORE` with no
+          # consent is that answer, and no profile written anywhere changes it.
+          import azazel_nexus.mio_profile as mio_profile  # noqa: F401
+          if mio_profile.profile_in_force(
+              commissioned=False, selected=mio_profile.MioProfile.FASTEST_PERMITTED
+          ) is not mio_profile.MioProfile.CORE:
+              raise SystemExit(
+                  "an uncommissioned node adopted a profile it was never "
+                  "commissioned for; being written down is not a grant"
+              )
+          if mio_profile.remote_reachable(mio_profile.MioProfile.CORE):
+              raise SystemExit("a CORE node can reach a remote cognition route")
+          if mio_profile.NO_OPT_IN.active():
+              raise SystemExit("remote is permitted with no opt-in; absence is not consent")
+          unmeasured = mio_profile.recommend_profile(
+              opt_in=mio_profile.NO_OPT_IN, reserve_measured=False
+          )
+          if unmeasured.profile is not mio_profile.MioProfile.CORE:
+              raise SystemExit(
+                  "with the Core reserve unmeasured the recommendation was "
+                  f"{unmeasured.profile.value!r}, not core"
+              )
+          if "COMPLETED" in {d.name for d in mio_profile.InFlightDisposition}:
+              raise SystemExit(
+                  "a withdrawn remote route can still complete a request; that is "
+                  "the one outcome withdrawal exists to prevent"
+              )
           # The cognition plane (#5). A node with nothing installed and no
           # provider is the configuration M.I.O. has to be answerable in, and
           # it is the one where `CORE ONLY` is the correct answer rather than
