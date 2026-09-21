@@ -214,19 +214,34 @@ def test_a_forked_child_does_not_outlive_the_run():
     """An orphan that keeps a port or a file open is a failure that outlives
     the thing that caused it."""
 
+    before = _stub_processes()
     report = run("orphan", deadline_seconds=5)
     assert report.readiness is Readiness.PASSED
 
-    # The report deliberately carries no output, so the child is looked for
-    # in the process tree rather than read out of it.
-    deadline = time.monotonic() + 5
-    survivors = []
+    assert _no_new_survivors(before), "a forked child survived the run"
+
+
+def _no_new_survivors(before: list, *, seconds: float = 5.0) -> bool:
+    """No stub process this run started is still alive.
+
+    Compared against a snapshot rather than against zero. A run that demanded
+    an empty machine would fail whenever anything else left a stub behind --
+    another suite, an interrupted session, a mutation run that deliberately
+    leaked -- and a test that fails for somebody else's mess is a test that
+    gets deleted.
+
+    What it still catches is the only thing it is about: a process **this**
+    call started and did not clean up.
+    """
+
+    known = set(before)
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        survivors = _stub_processes()
-        if not survivors:
-            break
+        new = [pid for pid in _stub_processes() if pid not in known]
+        if not new:
+            return True
         time.sleep(0.1)
-    assert survivors == [], f"{survivors} survived the run"
+    return [pid for pid in _stub_processes() if pid not in known] == []
 
 
 def _stub_processes() -> list:
@@ -254,14 +269,10 @@ def _stub_processes() -> list:
 def test_the_process_tree_is_clean_after_every_behaviour():
     """Swept once at the end rather than trusted per case."""
 
-    for behaviour in ("ready", "silent", "crash", "signal", "hang", "flood"):
+    before = _stub_processes()
+    for behaviour in ("ready", "silent", "crash", "signal", "hang", "flood", "env"):
         run(behaviour, deadline_seconds=2)
-    deadline = time.monotonic() + 5
-    survivors = _stub_processes()
-    while survivors and time.monotonic() < deadline:
-        time.sleep(0.1)
-        survivors = _stub_processes()
-    assert survivors == [], f"{survivors} survived"
+    assert _no_new_survivors(before), "a behaviour left a process behind"
 
 
 # == real process: restart budget and fencing =============================
@@ -362,10 +373,51 @@ def test_the_supervisor_takes_no_command_path_or_environment():
             )
 
 
+@real_process
+def test_the_environment_is_replaced_and_never_inherited(monkeypatch):
+    """Found by mutation: the old test checked that `env=` was **present**,
+    which `env=dict(os.environ)` satisfies.
+
+    The property is not the keyword, it is what the child actually receives.
+    The parent sets a marker and the stub exits 3 if it sees it -- through
+    the exit code, because the report deliberately carries no output.
+
+    What inheritance would hand a provider is not abstract: this process
+    holds `GH_TOKEN`, `AWS_SECRET_ACCESS_KEY` and a messaging token, and a
+    model runtime is the last thing that should be able to read them.
+    """
+
+    monkeypatch.setenv("AZ_PARENT_MARKER", "inherited")
+    report = run("env", deadline_seconds=5)
+
+    assert report.exit_code == 0, (
+        "the provider inherited this daemon's environment"
+    )
+    assert report.readiness is Readiness.PASSED
+
+
+@real_process
+def test_the_marker_would_be_seen_if_it_were_inherited(monkeypatch):
+    """The control. Run the same stub **without** the supervisor's
+    replacement and it exits 3, so the test above is not passing because the
+    stub never looks."""
+
+    import subprocess
+
+    monkeypatch.setenv("AZ_PARENT_MARKER", "inherited")
+    binary = STUB_ROOT / STUB.lstrip("/")
+    completed = subprocess.run(  # noqa: S603 - fixed argv, test-only
+        [str(binary), "env"], capture_output=True, env=dict(os.environ)
+    )
+    assert completed.returncode == 3, (
+        "the stub does not notice the marker, so the test above proves nothing"
+    )
+
+
 @injected
-def test_the_environment_is_replaced_and_never_inherited():
-    """A provider that inherited this daemon's environment would inherit
-    whatever the service manager happened to set."""
+def test_the_supervisor_passes_an_explicit_environment():
+    """And the shape, still: a `Popen` without `env=` inherits by default, so
+    the keyword's absence is its own failure."""
 
     import ast
 
@@ -382,7 +434,7 @@ def test_the_environment_is_replaced_and_never_inherited():
     assert popen_calls, "the supervisor no longer starts anything"
     for call in popen_calls:
         keywords = {kw.arg for kw in call.keywords}
-        assert "env" in keywords, "the environment is inherited"
+        assert "env" in keywords, "the environment is inherited by default"
         assert "shell" not in keywords, "a shell was introduced"
         assert "start_new_session" in keywords, "children would be orphaned"
 

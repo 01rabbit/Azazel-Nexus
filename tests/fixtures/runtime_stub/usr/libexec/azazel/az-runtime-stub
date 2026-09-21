@@ -40,6 +40,21 @@ def main() -> int:
         # Starts, exits cleanly, never says it is ready.
         return 0
 
+    if BEHAVIOUR == "env":
+        # Answers "did the supervisor replace my environment" through the
+        # **exit code**, not through stdout: the report deliberately carries
+        # no output, and a test that needed the output would be a test asking
+        # for the thing the report refuses to hold.
+        #
+        # The marker is a name the parent sets. Inheriting would bring it
+        # through -- along with every token and credential the parent holds,
+        # which is what makes this worth a test rather than a comment.
+        if "AZ_PARENT_MARKER" in os.environ:
+            return 3
+        sys.stdout.write("READY\n")
+        sys.stdout.flush()
+        return 0
+
     if BEHAVIOUR == "crash":
         sys.stderr.write("dying\n")
         sys.stderr.flush()

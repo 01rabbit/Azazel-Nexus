@@ -26,6 +26,7 @@ could point anywhere.
 | --- | --- |
 | `ready` (default) | writes `READY` and exits 0 |
 | `silent` | exits 0 having said nothing |
+| `env` | exits 3 if it inherited `AZ_PARENT_MARKER`, else `READY` and 0 |
 | `crash` | exits 9 |
 | `signal` | kills itself with SIGKILL |
 | `hang` | sleeps for ever |
