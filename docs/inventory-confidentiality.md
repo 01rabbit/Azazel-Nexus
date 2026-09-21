@@ -11,6 +11,7 @@ product runs, not to one target. A runbook written for a specific machine
 inherits these rules; it does not restate them differently.
 
 Related: [Commissioning and Activation](commissioning.md) ·
+[HIL preflight](hil-preflight.md) ·
 [Core reserve measurement](core-reserve-measurement.md) ·
 [hardware gates](hardware-gates.md) ·
 [Nexus #115](https://github.com/01rabbit/Azazel-Nexus/issues/115)

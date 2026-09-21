@@ -12,6 +12,7 @@ under time pressure.
 Related: [M.I.O. runtime control plane](mio-runtime.md) §3 ·
 [hardware gates](hardware-gates.md) · [capability model](capability-model.md) ·
 [inventory confidentiality](inventory-confidentiality.md) ·
+[HIL preflight](hil-preflight.md) ·
 [Nexus #68](https://github.com/01rabbit/Azazel-Nexus/issues/68)
 
 ## 1. What the number is
