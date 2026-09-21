@@ -76,7 +76,9 @@ __all__ = [
     "RemoteOptIn",
     "RemotePrerequisite",
     "Withdrawal",
+    "ProfileCommissioning",
     "admits_any_provider",
+    "commission_profile",
     "disposition_on_withdrawal",
     "profile_in_force",
     "recommend_profile",
@@ -393,4 +395,152 @@ def profile_rows(
                 "is refused at the resource gate whatever the profile permits"
             ),
         },
+    )
+
+
+# -- commissioning ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProfileCommissioning:
+    """The profile an operator settled on, and what they were told.
+
+    The **recommendation** is recorded alongside the **choice**. An operator
+    who took the recommendation and one who overrode it have done different
+    things, and a record that kept only the outcome could not tell them
+    apart -- which is exactly what an audit of a widened route needs.
+    """
+
+    chosen: MioProfile
+    recommended: MioProfile
+    operator: str
+    at: str
+    #: Why the recommendation was what it was, carried so the record explains
+    #: itself without the reader re-deriving it from state that has moved on.
+    recommendation_reason: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("operator", "at"):
+            if not str(getattr(self, field_name)).strip():
+                raise ProfileRefused(f"a profile commissioning records {field_name}")
+
+    @property
+    def overrode_recommendation(self) -> bool:
+        return self.chosen is not self.recommended
+
+    @property
+    def widened(self) -> bool:
+        """Whether the operator chose something wider than was recommended.
+
+        Narrowing is unremarkable; widening is the direction an audit reader
+        is looking for.
+        """
+
+        return _WIDTH[self.chosen] > _WIDTH[self.recommended]
+
+    def as_event(self) -> dict:
+        return {
+            "event_type": "mio.profile.commissioned",
+            "chosen": self.chosen.value,
+            "recommended": self.recommended.value,
+            "overrode_recommendation": self.overrode_recommendation,
+            "widened": self.widened,
+            "operator": self.operator,
+            "at": self.at,
+            "recommendation_reason": self.recommendation_reason,
+        }
+
+
+#: How much each profile lets route selection consider. Narrowest first, so
+#: "wider than recommended" is a comparison rather than a set of cases.
+_WIDTH = {
+    MioProfile.CORE: 0,
+    MioProfile.REMOTE_DISABLED: 1,
+    MioProfile.LOCAL_ONLY: 1,
+    MioProfile.FASTEST_PERMITTED: 2,
+}
+
+#: The order the four are offered in. Narrowest first: a list that opens with
+#: the widest option is a list that recommends it by placement.
+OFFERED = (
+    MioProfile.CORE,
+    MioProfile.LOCAL_ONLY,
+    MioProfile.REMOTE_DISABLED,
+    MioProfile.FASTEST_PERMITTED,
+)
+
+#: How many times an unparsed answer is re-asked before the step refuses.
+#: Matching `wizard._MAX_REASKS`: an answer nobody understood is not a
+#: choice, and treating it as one commissions a profile by typo.
+MAX_REASKS = 3
+
+
+def commission_profile(
+    *,
+    ask,
+    confirm,
+    opt_in: RemoteOptIn,
+    reserve_measured: bool,
+    operator: str,
+    at: str,
+) -> ProfileCommissioning:
+    """Offer the four profiles, record which one an operator settled on.
+
+    **This is the first time a profile is presented.** Installation leaves
+    `CORE` in force and asks nothing; a node that has not been commissioned
+    is `CORE` whatever a file says (`profile_in_force`).
+
+    All four are always offered. Offering only the recommended one would make
+    the recommendation a decision, and the operator is the one deciding --
+    but the recommendation, and the reason for it, travel with the question
+    and into the record.
+    """
+
+    recommendation = recommend_profile(
+        opt_in=opt_in, reserve_measured=reserve_measured
+    )
+    choices = tuple(profile.value for profile in OFFERED)
+    prompt = (
+        "Which cognition profile should this node operate under? "
+        f"Recommended: {recommendation.profile.value} "
+        f"({recommendation.reason})"
+    )
+    if recommendation.blocked_by:
+        prompt += (
+            " -- a wider profile would need: "
+            + "; ".join(recommendation.blocked_by)
+        )
+    for _ in range(MAX_REASKS):
+        answer = str(ask(prompt, choices)).strip()
+        if answer in choices:
+            chosen = MioProfile(answer)
+            break
+    else:
+        raise ProfileRefused(
+            f"no answer from {choices} after {MAX_REASKS} attempts. An "
+            "unparsed answer is not a choice, and a profile commissioned by "
+            "a typo is a ceiling nobody decided on"
+        )
+
+    summary = (
+        f"Commission this node as {chosen.value}"
+        + (
+            f" (wider than the recommended {recommendation.profile.value})"
+            if _WIDTH[chosen] > _WIDTH[recommendation.profile]
+            else ""
+        )
+        + ". This sets what route selection may consider; it admits no "
+        "provider by itself."
+    )
+    if not confirm(summary):
+        raise ProfileRefused(
+            "the operator did not confirm the profile; nothing was recorded, "
+            "so this node remains CORE"
+        )
+    return ProfileCommissioning(
+        chosen=chosen,
+        recommended=recommendation.profile,
+        operator=operator,
+        at=at,
+        recommendation_reason=recommendation.reason,
     )
