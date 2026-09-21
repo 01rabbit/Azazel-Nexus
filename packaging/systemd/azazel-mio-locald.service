@@ -1,0 +1,52 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The only unit that could ever start a model process, and it starts none: the runtime allowlist in model_runtime.py is empty, so no runtime_id resolves.
+# It is not root, it writes one directory, it has no network namespace at all, and it runs under its own account -- never the fetcher's.
+# azfetch may reach the network and may not run a program; azmio may run one program from a fixed list and may reach nothing.
+# Adding a runtime is a reviewed change to this package, never commissioned data: an endpoint is a fact about a deployment, and a binary is a thing that executes.
+
+[Unit]
+Description=Azazel-Nexus local model runtime host
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-local-runtime.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azmio
+ExecStart=/usr/libexec/azazel/az-mio-locald
+RuntimeDirectory=azazel/mio
+RuntimeDirectoryMode=0750
+CPUQuota=40%
+TasksMax=64
+LimitFSIZE=16777216
+PrivateNetwork=yes
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=50
+LogExtraFields=AZ_SERVICE=mio-local
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/mio
+ReadWritePaths=/var/lib/azazel/run
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

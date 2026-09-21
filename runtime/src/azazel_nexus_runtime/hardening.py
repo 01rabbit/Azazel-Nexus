@@ -122,6 +122,18 @@ class ServiceProfile:
     #: drop-in built from the Source Registry, so shipping this unit ships a
     #: service that can reach nothing.
     is_artifact_fetcher: bool = False
+    #: Whether this unit is the local model runtime host.
+    #:
+    #: Same containment discipline as `is_artifact_fetcher`, for the opposite
+    #: hazard. The fetcher may reach the network and may not run a program;
+    #: this one may run a program -- from `model_runtime.RUNTIMES`, which is
+    #: empty -- and may reach nothing.
+    #:
+    #: Setting it **requires** the resource ceilings below, because a process
+    #: this node did not write is a process whose appetite this node did not
+    #: choose. A host declared without them cannot be built, so the ceilings
+    #: cannot be dropped in a refactor that keeps the flag.
+    is_model_host: bool = False
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -149,6 +161,62 @@ class ServiceProfile:
                 "no internet address family. An exemption nothing uses is a "
                 "hole held open for nothing"
             )
+        if self.is_artifact_fetcher and self.is_model_host:
+            raise ValueError(
+                f"{self.unit} would both reach the network and run a program. "
+                "Either one alone is contained; together they are a path from "
+                "a remote byte to a local execution, which is the shape the "
+                "two accounts exist to keep apart"
+            )
+        if self.is_model_host:
+            settings = dict(self.extra)
+            # What a unit file can state without a measurement: a share of
+            # the CPU, a process ceiling, a file-size ceiling, and no network
+            # stack at all.
+            missing = [
+                key
+                for key in ("CPUQuota", "TasksMax", "LimitFSIZE", "PrivateNetwork")
+                if key not in settings
+            ]
+            if missing:
+                raise ValueError(
+                    f"{self.unit} hosts a model runtime and declares no "
+                    f"{missing}. An unbounded provider decides how much of "
+                    "this node the deterministic path gets"
+                )
+            if settings["PrivateNetwork"] != "yes":
+                raise ValueError(
+                    f"{self.unit} hosts a model runtime and is not on a "
+                    "private network namespace. A model that can open a "
+                    "connection is a model that can carry what it was shown"
+                )
+            # And what it cannot. Both of these are per-provider or
+            # per-request quantities, and a static value in a shipped unit
+            # would be a number somebody liked wearing a measurement's
+            # clothes.
+            #
+            # `MemoryMax` is derived from the measured Core reserve and the
+            # provider's declared need (`model_runtime.containment_for`), and
+            # no node this build runs on has a reserve. A figure here would be
+            # an invented envelope in the one file an operator trusts.
+            #
+            # `RuntimeMaxSec` bounds how long the **unit** runs. The deadline
+            # this product needs bounds one inference. Putting the inference
+            # deadline on the host would terminate a healthy long-running
+            # service on a timer and call it a failure -- a restart loop
+            # indistinguishable, from the journal, from a provider that keeps
+            # dying.
+            forbidden = [
+                key for key in ("MemoryMax", "RuntimeMaxSec") if key in settings
+            ]
+            if forbidden:
+                raise ValueError(
+                    f"{self.unit} states {forbidden} in its unit file. Those "
+                    "are per-provider bounds derived from a measurement this "
+                    "node does not have, and a static value for either is an "
+                    "invented one. They belong to the scope one provider runs "
+                    "in, not to the host"
+                )
         declared = {spec.path for spec in LAYOUT} | {"/etc/systemd/system"}
         outside = sorted(set(self.read_write_paths) - declared)
         if outside:
@@ -160,7 +228,14 @@ class ServiceProfile:
 
 
 #: The accounts the installer creates. `root` is not among them: it exists.
-SYSTEM_ACCOUNTS = ("azcommission", "azaudit", "azwatch", "azprobe", "azfetch")
+SYSTEM_ACCOUNTS = (
+    "azcommission",
+    "azaudit",
+    "azwatch",
+    "azprobe",
+    "azfetch",
+    "azmio",
+)
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -219,6 +294,54 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Registry, so this unit as shipped can reach nothing. Adding a "
             "real endpoint is a change to commissioned data that is reviewed "
             "and signed, never a change to this file."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-mio-locald.service",
+        executable="/usr/libexec/azazel/az-mio-locald",
+        account="azmio",
+        description="Azazel-Nexus local model runtime host",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-local-runtime.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=("/var/lib/azazel/mio", "/var/lib/azazel/run"),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        is_model_host=True,
+        # Its own runtime directory. The socket that could start a process is
+        # not the socket everything else answers on.
+        runtime_directory="azazel/mio",
+        runtime_directory_mode="0750",
+        extra=(
+            # The ceilings a unit file can state without a measurement,
+            # mirroring `model_runtime.CPU_QUOTA_PERCENT`, `TASKS_MAX` and
+            # `FILE_SIZE_MAX_BYTES`. `MemoryMax` and `RuntimeMaxSec` are
+            # deliberately absent and refused above: both are derived from
+            # the measured Core reserve and the provider's declared need, and
+            # no node this build runs on has a reserve to derive them from.
+            ("CPUQuota", "40%"),
+            ("TasksMax", "64"),
+            ("LimitFSIZE", "16777216"),
+            # On top of IPAddressDeny=any, which every unit here carries.
+            # `IPAddressDeny` is a filter; this is no network stack at all.
+            ("PrivateNetwork", "yes"),
+            # A provider that fails in a loop must not fill the journal with
+            # the same refusal, and a journal nobody can read is a journal
+            # nobody reads.
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+            ("LogExtraFields", "AZ_SERVICE=mio-local"),
+        ),
+        rationale=(
+            "The only unit that could ever start a model process, and it "
+            "starts none: the runtime allowlist in model_runtime.py is empty, "
+            "so no runtime_id resolves. It is not root, it writes one "
+            "directory, it has no network namespace at all, and it runs under "
+            "its own account -- never the fetcher's. azfetch may reach the "
+            "network and may not run a program; azmio may run one program "
+            "from a fixed list and may reach nothing. Adding a runtime is a "
+            "reviewed change to this package, never commissioned data: an "
+            "endpoint is a fact about a deployment, and a binary is a thing "
+            "that executes."
         ),
     ),
     ServiceProfile(

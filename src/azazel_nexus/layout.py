@@ -121,6 +121,16 @@ LAYOUT = (
         group="azfetch",
     ),
     PathSpec(
+        "/var/lib/azazel/mio",
+        0o750,
+        "the local model runtime host's own directory: the models it may read "
+        "and the only path it may write. Separate from the fetcher's staging "
+        "because the account that may reach the network and the account that "
+        "may run a program are not the same account, and a directory both "
+        "could write is a path from a fetched byte to an executed one",
+        group="azmio",
+    ),
+    PathSpec(
         "/var/lib/azazel/secrets",
         0o700,
         "root-only credential material; never readable by a daemon account",

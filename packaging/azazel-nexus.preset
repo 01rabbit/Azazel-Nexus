@@ -15,4 +15,5 @@ disable azazel-auditd.service
 disable azazel-watchdog.service
 disable azazel-edge-probed.service
 disable azazel-model-fetchd.service
+disable azazel-mio-locald.service
 enable azazel-activated.service
