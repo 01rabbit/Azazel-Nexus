@@ -34,6 +34,7 @@ would be a supervisor that grants privilege by failing.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -41,14 +42,18 @@ from typing import Mapping, Optional
 
 __all__ = [
     "BinaryVerdict",
+    "BudgetLedger",
     "LifecycleRefused",
     "LifecycleState",
     "MAX_RESTARTS",
     "Provenance",
+    "RollbackOutcome",
+    "RollbackRefusal",
     "Readiness",
     "RestartBudget",
     "RestartVerdict",
     "STDIO_BYTE_CEILING",
+    "plan_rollback",
     "verify_runtime_binary",
 ]
 
@@ -202,6 +207,83 @@ def verify_runtime_binary(
     return BinaryVerdict(admissible=True, refusals=())
 
 
+class BudgetLedger:
+    """Restart budgets on disk, so a restart does not refill one.
+
+    A budget held only in memory is a budget the failure being budgeted
+    clears, by taking the supervisor down with it -- and the failure most
+    likely to take a supervisor down is the one it is restarting. Without
+    this, a provider that crashes hard enough to kill its supervisor gets a
+    fresh three restarts every time, for ever, and the node calls that
+    "occasionally slow".
+
+    Keyed by generation **and** runtime id. Two providers fail independently;
+    one exhausting its budget says nothing about the other.
+
+    An unreadable ledger is **not** "no budgets spent". Everything it governs
+    is treated as fenced until somebody looks, because the alternative is a
+    corrupt file silently returning a provider to service -- the same rule
+    `watchdog.FenceStore` holds to, and for the same reason.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _read(self) -> tuple:
+        """`(entries, readable)`. Unreadable is a fact the caller must see."""
+
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}, True
+        except (OSError, json.JSONDecodeError):
+            return {}, False
+        if not isinstance(raw, dict):
+            return {}, False
+        return raw, True
+
+    def load(
+        self, *, generation: int, runtime_id: str, limit: int = MAX_RESTARTS
+    ) -> "RestartBudget":
+        entries, readable = self._read()
+        if not readable:
+            spent = RestartBudget(generation=generation, limit=limit, spent=limit)
+            spent.fenced = True
+            return spent
+        record = entries.get(f"{generation}:{runtime_id}")
+        if not isinstance(record, dict):
+            return RestartBudget(generation=generation, limit=limit)
+        try:
+            return RestartBudget(
+                generation=generation,
+                limit=int(record.get("limit", limit)),
+                spent=int(record.get("spent", 0)),
+                fenced=bool(record.get("fenced", False)),
+            )
+        except (TypeError, ValueError, LifecycleRefused):
+            # A malformed entry is not a fresh budget. Same rule as above.
+            broken = RestartBudget(generation=generation, limit=limit, spent=limit)
+            broken.fenced = True
+            return broken
+
+    def save(self, budget: "RestartBudget", *, runtime_id: str) -> None:
+        entries, readable = self._read()
+        if not readable:
+            # Do not overwrite a file that could not be read: whatever is in
+            # it, replacing it would destroy the record that made everything
+            # fenced. The budget in memory is already the refusing one.
+            entries = {}
+        entries[f"{budget.generation}:{runtime_id}"] = {
+            "limit": budget.limit,
+            "spent": budget.spent,
+            "fenced": budget.fenced,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(entries, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
+
+
 @dataclass(frozen=True)
 class RestartVerdict:
     """Whether a restart may happen, and what the node does instead."""
@@ -308,3 +390,142 @@ class RestartBudget:
             "remaining": self.remaining,
             "fenced": self.fenced,
         }
+
+
+class RollbackRefusal(str, Enum):
+    """Why a provider was not rolled back. One value per condition."""
+
+    NO_REASON = "no_reason"
+    NO_ACTOR = "no_actor"
+    SAME_GENERATION = "same_generation"
+    NO_PREDECESSOR = "no_predecessor"
+    TARGET_UNVERIFIABLE = "target_unverifiable"
+
+
+@dataclass(frozen=True)
+class RollbackOutcome:
+    """Whether the provider moved, and what the node is running either way.
+
+    `running_generation` is the answer to the only question that matters
+    after a failed rollback: **what is this node on now.** A rollback that
+    failed and left the field ambiguous would be a rollback an operator has
+    to go and find out about.
+    """
+
+    rolled_back: bool
+    running_generation: int
+    from_generation: Optional[int]
+    to_generation: Optional[int]
+    reason: str
+    refusal: Optional[RollbackRefusal]
+    state: LifecycleState
+
+    def __post_init__(self) -> None:
+        if self.rolled_back and self.refusal is not None:
+            raise LifecycleRefused(
+                "a rollback cannot have happened and been refused; one of the "
+                "two is describing a different rollback"
+            )
+        if not self.rolled_back and self.refusal is None:
+            raise LifecycleRefused(
+                "a rollback that did not happen names why, or nobody can act "
+                "on it"
+            )
+        if not self.reason.strip():
+            raise LifecycleRefused(
+                "a rollback records why -- an unexplained reversal is one "
+                "nobody can audit afterwards"
+            )
+
+    def as_event(self) -> dict:
+        return {
+            "event_type": "mio.runtime.rollback",
+            "rolled_back": self.rolled_back,
+            "running_generation": self.running_generation,
+            "from_generation": self.from_generation,
+            "to_generation": self.to_generation,
+            "refusal": self.refusal.value if self.refusal else None,
+            "reason": self.reason,
+            "state": self.state.value,
+        }
+
+
+def plan_rollback(
+    *,
+    current_generation: int,
+    target_generation: Optional[int],
+    reason: str,
+    actor: str,
+    target_verdict: Optional[BinaryVerdict],
+) -> RollbackOutcome:
+    """Decide whether a provider may return to an earlier generation.
+
+    **The target is verified before anything moves.** A rollback to something
+    that does not verify is not a return to a safe world; it is a second
+    failure entered deliberately, and the node would have given up a working
+    generation to reach it. So the order is: check the destination, then
+    move -- never move and then discover.
+
+    On every refusal the node stays on `current_generation`. That is the
+    atomicity: there is no state in which this has half-happened, because the
+    only mutation is the caller's, and it is told not to make it.
+
+    Nothing here unmasks, grants, extends a lease or enforces. A provider
+    that came back came back under the containment it had; a rollback that
+    could widen would be a way to gain privilege by failing twice.
+    """
+
+    def refuse(refusal: RollbackRefusal, why: str) -> RollbackOutcome:
+        return RollbackOutcome(
+            rolled_back=False,
+            running_generation=current_generation,
+            from_generation=current_generation,
+            to_generation=target_generation,
+            reason=why,
+            refusal=refusal,
+            state=LifecycleState.ABSENT,
+        )
+
+    if not reason.strip():
+        return refuse(
+            RollbackRefusal.NO_REASON,
+            "a rollback records why; an unexplained reversal is one nobody "
+            "can audit afterwards",
+        )
+    if not actor.strip():
+        return refuse(
+            RollbackRefusal.NO_ACTOR,
+            "a rollback records who performed it",
+        )
+    if target_generation is None:
+        return refuse(
+            RollbackRefusal.NO_PREDECESSOR,
+            "there is no earlier generation to return to, so this node stays "
+            "where it is rather than having nowhere to be",
+        )
+    if target_generation == current_generation:
+        return refuse(
+            RollbackRefusal.SAME_GENERATION,
+            f"generation {target_generation} is already current; a rollback to "
+            "it would record a reversal that did not happen",
+        )
+    if target_verdict is None or not target_verdict.admissible:
+        refusals = target_verdict.refusals if target_verdict else (
+            "the target was not verified at all",
+        )
+        return refuse(
+            RollbackRefusal.TARGET_UNVERIFIABLE,
+            "the generation this would return to does not verify "
+            f"({'; '.join(refusals)}), so the node keeps the one it has. "
+            "Rolling back into a second failure is not a recovery",
+        )
+
+    return RollbackOutcome(
+        rolled_back=True,
+        running_generation=target_generation,
+        from_generation=current_generation,
+        to_generation=target_generation,
+        reason=reason,
+        refusal=None,
+        state=LifecycleState.STARTED,
+    )

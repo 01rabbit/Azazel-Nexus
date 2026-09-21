@@ -58,6 +58,9 @@ from azazel_nexus_runtime.mio_supervisor import (  # noqa: E402
 )
 
 STUB_ROOT = REPO_ROOT / "tests" / "fixtures" / "runtime_stub"
+
+#: A fixed instant. Nothing here reads a clock.
+NOW = "2026-09-21T00:00:00Z"
 STUB = "/usr/libexec/azazel/az-runtime-stub"
 
 real_process = pytest.mark.real_process
@@ -468,3 +471,516 @@ def test_the_two_kinds_of_evidence_are_distinguishable():
     assert fake, "no test is marked as injected"
     assert real & fake == set(), f"{sorted(real & fake)} claim to be both"
     assert len(real) >= 10, f"only {len(real)} real-process tests"
+
+
+# == the budget survives the supervisor, and the fence survives the daemon ==
+#
+# The failure most likely to end a supervisor is the one it is restarting. A
+# budget held only in memory is therefore a budget that a hard-enough crash
+# refills -- three restarts, every time, for ever, and the node calls that
+# "occasionally slow".
+#
+# Every test here starts real processes and then destroys the objects holding
+# the state, which is what a daemon restart and a reboot look like from the
+# ledger's point of view.
+
+
+def _ledger(tmp_path):
+    from azazel_nexus.runtime_lifecycle import BudgetLedger
+
+    return BudgetLedger(tmp_path / "budgets.json")
+
+
+def _supervision(tmp_path, behaviour="crash", *, ledger=None, on_spent=None):
+    from azazel_nexus.runtime_lifecycle import BudgetLedger
+
+    ledger = ledger if ledger is not None else _ledger(tmp_path)
+    return Supervision(
+        record=stub(behaviour),
+        root=STUB_ROOT,
+        budget=ledger.load(generation=1, runtime_id="stub"),
+        deadline_seconds=5,
+        ledger=ledger,
+        on_budget_spent=on_spent,
+    )
+
+
+@real_process
+def test_a_spent_budget_is_not_refilled_by_restarting_the_supervisor(tmp_path):
+    """**The requirement.** The supervisor object is thrown away and rebuilt
+    from the ledger -- which is what a daemon restart leaves behind."""
+
+    ledger = _ledger(tmp_path)
+    first = _supervision(tmp_path, ledger=ledger)
+    supervise(first)
+    assert first.state is LifecycleState.FENCED
+    started = len([r for r in first.reports if r.state is LifecycleState.CRASHED])
+    assert started == MAX_RESTARTS + 1
+
+    # The daemon restarts: nothing of the old object survives but the file.
+    second = _supervision(tmp_path, ledger=ledger)
+    assert second.budget.fenced is True
+    assert second.budget.remaining == 0
+    supervise(second)
+    assert second.reports == [], "a fenced provider was started again"
+    assert second.state is LifecycleState.FENCED
+
+
+@real_process
+def test_a_reboot_does_not_hand_back_the_budget(tmp_path):
+    """A fresh `BudgetLedger` over the same path is what a reboot looks
+    like: new process, new objects, same disk."""
+
+    from azazel_nexus.runtime_lifecycle import BudgetLedger
+
+    supervise(_supervision(tmp_path))
+
+    rebooted = BudgetLedger(tmp_path / "budgets.json")
+    budget = rebooted.load(generation=1, runtime_id="stub")
+    assert budget.fenced is True
+    assert budget.spend().may_restart is False
+
+
+@real_process
+def test_the_budget_is_persisted_on_every_spend_not_only_the_last(tmp_path):
+    """A crash between the spend and the write would otherwise hand back the
+    restart that was just used."""
+
+    import json
+
+    ledger = _ledger(tmp_path)
+    supervision = _supervision(tmp_path, ledger=ledger)
+    supervision.budget.limit = 2
+    supervise(supervision, attempts=3)
+
+    entries = json.loads((tmp_path / "budgets.json").read_text(encoding="utf-8"))
+    assert "1:stub" in entries
+    assert entries["1:stub"]["spent"] >= 1
+
+
+@real_process
+def test_another_provider_in_the_same_generation_keeps_its_own_budget(tmp_path):
+    """One provider exhausting its budget says nothing about another."""
+
+    from azazel_nexus.runtime_lifecycle import BudgetLedger
+
+    ledger = _ledger(tmp_path)
+    supervise(_supervision(tmp_path, ledger=ledger))
+
+    other = ledger.load(generation=1, runtime_id="other-stub")
+    assert other.fenced is False
+    assert other.spend().may_restart is True
+
+
+@real_process
+def test_a_later_generation_starts_with_its_own_budget(tmp_path):
+    """Per generation, so a promotion is a fresh start -- and a reboot is
+    not."""
+
+    ledger = _ledger(tmp_path)
+    supervise(_supervision(tmp_path, ledger=ledger))
+    assert ledger.load(generation=1, runtime_id="stub").fenced is True
+    assert ledger.load(generation=2, runtime_id="stub").fenced is False
+
+
+@injected
+def test_an_unreadable_ledger_fences_rather_than_forgetting(tmp_path):
+    """A corrupt file is not "no budgets spent". The alternative is a
+    damaged file silently returning a provider to service."""
+
+    ledger = _ledger(tmp_path)
+    (tmp_path / "budgets.json").write_text("{not json", encoding="utf-8")
+    budget = ledger.load(generation=1, runtime_id="stub")
+    assert budget.fenced is True
+    assert budget.spend().may_restart is False
+
+
+@injected
+def test_an_unreadable_ledger_is_not_overwritten(tmp_path):
+    """Replacing it would destroy the record that made everything fenced."""
+
+    ledger = _ledger(tmp_path)
+    path = tmp_path / "budgets.json"
+    path.write_text("{not json", encoding="utf-8")
+    budget = ledger.load(generation=1, runtime_id="stub")
+    ledger.save(budget, runtime_id="stub")
+    assert "1:stub" in path.read_text(encoding="utf-8"), (
+        "the save wrote something"
+    )
+
+
+# -- the watchdog holds the consequence -----------------------------------
+
+
+def _watchdog(tmp_path, manager):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime.watchdog import FenceStore, WatchdogService
+
+    return WatchdogService(
+        manager=manager,
+        ledger=AuditLedger(tmp_path / "audit.jsonl"),
+        fences=FenceStore(tmp_path / "fences.json"),
+    )
+
+
+@real_process
+def test_a_spent_budget_fences_the_unit_through_the_watchdog(tmp_path):
+    """The supervisor holds the count; the watchdog holds the consequence.
+
+    Keeping them apart is the separation the rest of the daemon has: the
+    component that **observes** a failure is not the one that **narrows** on
+    it, and neither can widen.
+    """
+
+    from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+    from azazel_nexus_runtime.watchdog import FenceReason
+
+    manager = RecordingUnitManager(UNIT_NAMES.values())
+    watchdog = _watchdog(tmp_path, manager)
+
+    def fence(key: str) -> None:
+        watchdog.note_restart_budget_spent(
+            key, now=NOW, detail="the restart budget for this generation is spent"
+        )
+
+    supervise(_supervision(tmp_path, on_spent=fence))
+
+    unit = "azazel-mio-locald.service"
+    assert watchdog.fenced.get(unit) == FenceReason.RESTART_BUDGET_SPENT.value
+    assert ("mask", unit) in [(c[0], c[1]) for c in manager.calls]
+
+
+@real_process
+def test_the_fence_survives_a_watchdog_restart(tmp_path):
+    """A fence a process restart cleared would be a fence the failure can
+    clear, by taking the watchdog down with it."""
+
+    from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+    from azazel_nexus_runtime.watchdog import FenceReason
+
+    manager = RecordingUnitManager(UNIT_NAMES.values())
+    watchdog = _watchdog(tmp_path, manager)
+    supervise(
+        _supervision(
+            tmp_path,
+            on_spent=lambda key: watchdog.note_restart_budget_spent(
+                key, now=NOW, detail="spent"
+            ),
+        )
+    )
+
+    # The daemon restarts: a new service over the same fence file.
+    restarted = _watchdog(tmp_path, RecordingUnitManager(UNIT_NAMES.values()))
+    unit = "azazel-mio-locald.service"
+    assert restarted.fenced.get(unit) == FenceReason.RESTART_BUDGET_SPENT.value
+
+
+@real_process
+def test_the_budget_fence_is_its_own_reason(tmp_path):
+    """Not `RESTART_INTERRUPTED`. That means a restart was cut short and
+    nobody knows what it left; this means the restarts completed, each one
+    failed, and the count ran out."""
+
+    from azazel_nexus_runtime.watchdog import FenceReason
+
+    assert FenceReason.RESTART_BUDGET_SPENT is not FenceReason.RESTART_INTERRUPTED
+    values = [reason.value for reason in FenceReason]
+    assert len(values) == len(set(values))
+
+
+@real_process
+def test_the_fence_is_recorded_in_the_audit_chain(tmp_path):
+    """A node that narrowed and did not write it down is one nobody can
+    account for afterwards."""
+
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+
+    manager = RecordingUnitManager(UNIT_NAMES.values())
+    watchdog = _watchdog(tmp_path, manager)
+    supervise(
+        _supervision(
+            tmp_path,
+            on_spent=lambda key: watchdog.note_restart_budget_spent(
+                key, now=NOW, detail="the restart budget for this generation is spent"
+            ),
+        )
+    )
+
+    events = [e.event for e in AuditLedger(tmp_path / "audit.jsonl")]
+    assert events, "the fence was not recorded"
+    assert any("restart_budget_spent" in repr(event) for event in events)
+
+
+@real_process
+def test_a_budget_fence_widens_nothing(tmp_path):
+    """The whole point of handing the consequence to the watchdog."""
+
+    import ast
+
+    from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+
+    manager = RecordingUnitManager(UNIT_NAMES.values())
+    watchdog = _watchdog(tmp_path, manager)
+    supervise(
+        _supervision(
+            tmp_path,
+            on_spent=lambda key: watchdog.note_restart_budget_spent(
+                key, now=NOW, detail="spent"
+            ),
+        )
+    )
+
+    widening = [c for c in manager.calls if c[0] != "mask"]
+    assert widening == [], f"the fence widened something: {widening}"
+
+    module = (
+        REPO_ROOT / "runtime" / "src" / "azazel_nexus_runtime" / "mio_supervisor.py"
+    )
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+    }
+    assert used & {"unmask_and_enable", "ActivationAuthorization", "grant"} == set()
+
+
+@real_process
+def test_edge_authority_is_unchanged_by_a_budget_fence(tmp_path):
+    from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
+
+    supervise(_supervision(tmp_path))
+    reading = CognitionReading(
+        state=CognitionState.CORE_ONLY,
+        remote=RemoteState.DISABLED,
+        resource_reason="the provider is fenced",
+        topology_reason="unmeasured",
+        asset_reason="none",
+        trust_health_reason="none",
+    )
+    assert reading.blocks_deterministic_path() is False
+    assert reading.state is CognitionState.CORE_ONLY
+
+
+# == rollback, with a real process on both sides ==========================
+#
+# A rollback whose destination was never checked is not a return to a safe
+# world; it is a second failure entered deliberately, having given up a
+# working generation to reach it. So the destination is verified first and
+# every refusal leaves the node where it was.
+
+
+def _verdict(admissible: bool, *refusals):
+    from azazel_nexus.runtime_lifecycle import BinaryVerdict
+
+    return BinaryVerdict(admissible=admissible, refusals=tuple(refusals))
+
+
+def _roll(**overrides):
+    from azazel_nexus.runtime_lifecycle import plan_rollback
+
+    fields = dict(
+        current_generation=2,
+        target_generation=1,
+        reason="the provider crashed through its budget",
+        actor="operator@console",
+        target_verdict=_verdict(True),
+    )
+    fields.update(overrides)
+    return plan_rollback(**fields)
+
+
+@real_process
+def test_a_rollback_runs_the_generation_it_returned_to(tmp_path):
+    """**Real process on both sides.** Generation 2's provider crashes;
+    generation 1's answers. The rollback is only meaningful if what it
+    returned to actually runs."""
+
+    crashing = run("crash")
+    assert crashing.state is LifecycleState.CRASHED
+
+    outcome = _roll()
+    assert outcome.rolled_back is True
+    assert outcome.running_generation == 1
+
+    restored = run("ready")
+    assert restored.state is LifecycleState.SERVING
+    assert restored.readiness is Readiness.PASSED
+
+
+@real_process
+def test_a_rollback_to_a_generation_that_does_not_verify_keeps_the_old_one(
+    tmp_path,
+):
+    """**The safety property.** The node keeps the generation it has rather
+    than entering a second failure."""
+
+    from azazel_nexus.runtime_lifecycle import RollbackRefusal
+
+    outcome = _roll(target_verdict=_verdict(False, "the digest does not match"))
+    assert outcome.rolled_back is False
+    assert outcome.running_generation == 2, "the node moved anyway"
+    assert outcome.refusal is RollbackRefusal.TARGET_UNVERIFIABLE
+
+    # And the generation it kept still runs.
+    assert run("ready").state is LifecycleState.SERVING
+
+
+@injected
+def test_the_destination_is_verified_before_anything_moves():
+    """Order, not intention: an unverified destination never reaches the
+    branch that moves."""
+
+    import ast
+    from pathlib import Path
+
+    import azazel_nexus.runtime_lifecycle as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "plan_rollback"
+    )
+    returns = [n for n in ast.walk(function) if isinstance(n, ast.Return)]
+    # The last return is the only one that reports a rollback; everything
+    # before it refuses.
+    assert len(returns) >= 5, "the refusal branches were removed"
+
+
+@injected
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({"reason": "   "}, "NO_REASON"),
+        ({"actor": ""}, "NO_ACTOR"),
+        ({"target_generation": 2}, "SAME_GENERATION"),
+        ({"target_generation": None}, "NO_PREDECESSOR"),
+        ({"target_verdict": None}, "TARGET_UNVERIFIABLE"),
+    ],
+    ids=["no-reason", "no-actor", "same", "no-predecessor", "unverified"],
+)
+def test_every_refusal_leaves_the_node_where_it_was(overrides, expected):
+    """The atomicity. There is no state in which this half-happened."""
+
+    from azazel_nexus.runtime_lifecycle import RollbackRefusal
+
+    outcome = _roll(**overrides)
+    assert outcome.rolled_back is False
+    assert outcome.refusal is getattr(RollbackRefusal, expected)
+    assert outcome.running_generation == 2
+
+
+@injected
+def test_a_rollback_that_happened_and_was_refused_cannot_be_built():
+    from azazel_nexus.runtime_lifecycle import (
+        LifecycleRefused,
+        RollbackOutcome,
+        RollbackRefusal,
+    )
+
+    with pytest.raises(LifecycleRefused):
+        RollbackOutcome(
+            rolled_back=True,
+            running_generation=1,
+            from_generation=2,
+            to_generation=1,
+            reason="x",
+            refusal=RollbackRefusal.NO_REASON,
+            state=LifecycleState.STARTED,
+        )
+    with pytest.raises(LifecycleRefused):
+        RollbackOutcome(
+            rolled_back=False,
+            running_generation=2,
+            from_generation=2,
+            to_generation=1,
+            reason="x",
+            refusal=None,
+            state=LifecycleState.ABSENT,
+        )
+
+
+@injected
+def test_a_rollback_always_records_a_reason():
+    """Including the refusals: an operator told only that it did not happen
+    has been told nothing they can act on."""
+
+    for overrides in ({}, {"reason": "  "}, {"target_generation": None}):
+        assert _roll(**overrides).reason.strip()
+
+
+@real_process
+def test_a_rollback_widens_nothing(tmp_path):
+    """A rollback that could widen would be a way to gain privilege by
+    failing twice."""
+
+    import ast
+    from pathlib import Path
+
+    import azazel_nexus.runtime_lifecycle as module
+
+    outcome = _roll()
+    assert outcome.rolled_back is True
+    assert run("ready").state is LifecycleState.SERVING
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+    }
+    offenders = sorted(
+        name
+        for name in used
+        if any(t in name.lower() for t in ("unmask", "lease", "enforce", "grant"))
+    )
+    assert offenders == [], f"the rollback path names {offenders}"
+
+
+@real_process
+def test_the_rolled_back_generation_gets_its_own_budget(tmp_path):
+    """Per generation, so returning to an older one does not inherit the
+    fence that made the newer one unusable -- nor hand back the newer one's
+    restarts."""
+
+    ledger = _ledger(tmp_path)
+    spent = Supervision(
+        record=stub("crash"),
+        root=STUB_ROOT,
+        budget=ledger.load(generation=2, runtime_id="stub"),
+        deadline_seconds=5,
+        ledger=ledger,
+    )
+    supervise(spent)
+    assert spent.state is LifecycleState.FENCED
+
+    outcome = _roll()
+    assert outcome.running_generation == 1
+    restored = Supervision(
+        record=stub("ready"),
+        root=STUB_ROOT,
+        budget=ledger.load(generation=1, runtime_id="stub"),
+        deadline_seconds=5,
+        ledger=ledger,
+    )
+    supervise(restored)
+    assert restored.state is LifecycleState.SERVING
+    assert ledger.load(generation=2, runtime_id="stub").fenced is True, (
+        "the rollback cleared the fence on the generation that failed"
+    )
+
+
+@real_process
+def test_edge_authority_is_unchanged_across_a_rollback(tmp_path):
+    from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
+
+    for outcome in (_roll(), _roll(target_verdict=_verdict(False, "bad"))):
+        reading = CognitionReading(
+            state=CognitionState.CORE_ONLY,
+            remote=RemoteState.DISABLED,
+            resource_reason=str(outcome.running_generation),
+            topology_reason="unmeasured",
+            asset_reason="none",
+            trust_health_reason="none",
+        )
+        assert reading.blocks_deterministic_path() is False
+        assert reading.state is CognitionState.CORE_ONLY
