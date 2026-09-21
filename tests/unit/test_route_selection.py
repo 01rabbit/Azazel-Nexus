@@ -460,6 +460,43 @@ def test_every_terminal_event_is_accounted_for() -> None:
     assert set(NEVER_ANSWERED) == set(TerminalEvent) - {TerminalEvent.ANSWERED}
 
 
+def test_a_sanitisation_that_did_not_hold_does_not_fall_back_to_another_remote() -> None:
+    """Found by mutation: the branch was written and never driven (#98).
+
+    Every other non-answering ending falls back when a fallback is left,
+    because the *route* failed and another might work. This one did not: this
+    node decided the thing must not leave. Trying a different remote with it
+    is the same disclosure to a different party.
+    """
+
+    assert outcome_for(
+        TerminalEvent.SANITIZER_FAILED, fallback_available=True
+    ) is RequestOutcome.REFUSED
+    assert outcome_for(
+        TerminalEvent.SANITIZER_FAILED, fallback_available=False
+    ) is RequestOutcome.REFUSED
+
+    # And it really is the exception: a transport failure with a fallback
+    # available does fall back, so the assertion above is not true of
+    # everything.
+    assert outcome_for(
+        TerminalEvent.TLS_FAILED, fallback_available=True
+    ) is RequestOutcome.FELL_BACK
+
+
+def test_a_tls_failure_and_a_refusal_to_send_are_different_endings() -> None:
+    """A provider up and answering with the wrong key is not a provider that
+    is down, and neither is this node declining to send. Folding them into
+    `FAILED` sends an operator to check whether a service is running -- which
+    it is."""
+
+    assert TerminalEvent.TLS_FAILED is not TerminalEvent.FAILED
+    assert TerminalEvent.SANITIZER_FAILED is not TerminalEvent.FAILED
+    assert TerminalEvent.NOT_ADVICE is not TerminalEvent.FAILED
+    values = [event.value for event in TerminalEvent]
+    assert len(values) == len(set(values)), "two endings share a word"
+
+
 # -- the record ------------------------------------------------------------
 
 

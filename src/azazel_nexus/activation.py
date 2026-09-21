@@ -53,6 +53,7 @@ __all__ = [
     "ACTIVATION_CONTROLLER_UNIT",
     "ARTIFACT_TRANSPORT",
     "LOCAL_MODEL_PROVIDER",
+    "REMOTE_INFERENCE_TRANSPORT",
     "ActivationLease",
     "EdgeBaselineState",
     "CORE_UNITS",
@@ -180,6 +181,16 @@ ARTIFACT_TRANSPORT = "artifact_transport"
 #: a node that gained one must not be read as having gained the other.
 LOCAL_MODEL_PROVIDER = "local_model_provider"
 
+#: The capability `azazel-mio-remoted.service` needs wired: a commissioned
+#: Provider Registry **and** a key holding the sanitizer role, so that a
+#: provider symbol resolves and an envelope verifies.
+#:
+#: Separate from both others and implied by neither. Fetching weights,
+#: running them, and sending what this node observed are three capabilities
+#: held by three accounts; a node that gained one must not be read as having
+#: gained another.
+REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
+
 
 #: The governed set for the CORE slice.
 #:
@@ -270,6 +281,19 @@ CORE_UNITS = (
         # code, not commissioned data, because a binary is not a fact about a
         # deployment.
         wiring=LOCAL_MODEL_PROVIDER,
+    ),
+    UnitDefinition(
+        "azazel-mio-remoted.service",
+        # SUPPORTING like the rest: it decides nothing the arbiter decides.
+        # What comes back is advice, and advice is never authority.
+        UnitTier.SUPPORTING,
+        "azremote",
+        "remote inference transport; the only unit that could send what this "
+        "node observed, and it sends nothing",
+        # No Provider Registry is commissioned and no key holds the sanitizer
+        # role, so no provider symbol resolves and no envelope verifies. Both
+        # arrive as signed commissioning data, never as a change to this file.
+        wiring=REMOTE_INFERENCE_TRANSPORT,
     ),
 )
 

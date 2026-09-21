@@ -167,13 +167,25 @@ def test_a_directory_grouped_to_an_account_must_grant_that_group_something():
 
 
 def test_no_unit_but_the_artifact_fetcher_is_allowed_an_internet_family():
-    """One exemption, declared on the profile, and `AF_PACKET` for nobody.
+    """Two exemptions, each declared on its own profile, `AF_PACKET` for nobody.
 
-    This assertion used to be "no unit at all" (Nexus#105). The artifact
-    fetch service needs outbound TCP, so the exemption is now a field a
-    profile must set -- and the test below asserts that at most one profile
-    sets it. Naming the loosening here is the point: a hardening guarantee
-    that quietly weakened and left no trace is one nobody can audit.
+    The history of this assertion is the history of the boundary:
+
+    | when | what it said |
+    | --- | --- |
+    | before Nexus#105 | no unit at all may take an internet family |
+    | Nexus#105 | one may: the artifact fetcher, by a field it must set |
+    | Nexus#98 | two may, and the second is a **different field** |
+
+    The second is the remote inference transport. It is `is_inference_transport`
+    rather than a second unit setting `is_artifact_fetcher`, because the two
+    are not the same permission: one pulls public bytes in against a digest
+    declared beforehand, the other pushes what this node observed out. Sharing
+    the flag would have shared the account, and a node where one credential
+    did both is a node where one compromise is two.
+
+    Naming each loosening here is the point: a hardening guarantee that
+    quietly weakened and left no trace is one nobody can audit.
     """
 
     for profile in PROFILES:
@@ -181,15 +193,26 @@ def test_no_unit_but_the_artifact_fetcher_is_allowed_an_internet_family():
         assert len(families) == 1
         allowed = set(families[0].split())
         assert "AF_PACKET" not in allowed
-        if not profile.is_artifact_fetcher:
+        if not (profile.is_artifact_fetcher or profile.is_inference_transport):
             assert allowed & {"AF_INET", "AF_INET6"} == set(), profile.unit
 
 
-def test_exactly_one_profile_is_the_artifact_fetcher():
-    """A second would be a diff a reviewer sees, not a set that grew."""
+def test_exactly_one_profile_holds_each_network_role():
+    """A third would be a diff a reviewer sees, not a set that grew.
 
-    fetchers = [profile.unit for profile in PROFILES if profile.is_artifact_fetcher]
+    Each role is counted separately, so a second fetcher cannot hide behind
+    the transport's exemption and the reverse.
+    """
+
+    fetchers = [p.unit for p in PROFILES if p.is_artifact_fetcher]
+    transports = [p.unit for p in PROFILES if p.is_inference_transport]
+    hosts = [p.unit for p in PROFILES if p.is_model_host]
     assert fetchers == ["azazel-model-fetchd.service"]
+    assert transports == ["azazel-mio-remoted.service"]
+    assert hosts == ["azazel-mio-locald.service"]
+    assert len(set(fetchers + transports + hosts)) == 3, (
+        "one unit holds two roles; the three acts are kept in three units"
+    )
 
 
 def test_the_artifact_fetcher_still_denies_every_address():

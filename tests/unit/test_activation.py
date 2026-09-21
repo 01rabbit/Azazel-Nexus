@@ -24,6 +24,7 @@ from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
     ARTIFACT_TRANSPORT,
     LOCAL_MODEL_PROVIDER,
+    REMOTE_INFERENCE_TRANSPORT,
     ActivationLease,
     EdgeBaselineState,
     CORE_UNITS,
@@ -825,7 +826,11 @@ def test_the_fetch_service_is_the_unit_this_build_does_not_wire(tmp_path):
     assert needing == {
         "azazel-model-fetchd.service": ARTIFACT_TRANSPORT,
         "azazel-mio-locald.service": LOCAL_MODEL_PROVIDER,
-    }, "the two capabilities are separate; neither implies the other"
+        "azazel-mio-remoted.service": REMOTE_INFERENCE_TRANSPORT,
+    }, "the three capabilities are separate; none implies another"
+    assert len(set(needing.values())) == len(needing), (
+        "two units share a capability, so wiring one would grant the other"
+    )
 
     controller, units, _, _ = _controller(tmp_path)
     outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())

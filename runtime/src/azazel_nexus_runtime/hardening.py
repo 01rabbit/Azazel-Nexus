@@ -134,6 +134,19 @@ class ServiceProfile:
     #: choose. A host declared without them cannot be built, so the ceilings
     #: cannot be dropped in a refactor that keeps the flag.
     is_model_host: bool = False
+    #: Whether this unit is the remote inference transport.
+    #:
+    #: The third and last exemption kind, and the one that carries the most:
+    #: the fetcher pulls public bytes **in**, this pushes what the node
+    #: **saw** out. It is a separate flag rather than reuse of
+    #: `is_artifact_fetcher` precisely so that the fetcher's account,
+    #: allowlist and egress exception are not the ones this runs under.
+    #:
+    #: Like the fetcher it may take an internet address family, and like the
+    #: fetcher it still carries `IPAddressDeny=any`: the addresses it may
+    #: reach arrive as a commissioning drop-in built from the signed Provider
+    #: Registry, so shipping this unit ships a service that can reach nothing.
+    is_inference_transport: bool = False
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -142,8 +155,9 @@ class ServiceProfile:
                 "is required to be reachable at all, and a unit whose families "
                 "are unstated inherits whatever systemd's default is"
             )
+        reaches_network = self.is_artifact_fetcher or self.is_inference_transport
         forbidden = {"AF_PACKET"} | (
-            set() if self.is_artifact_fetcher else {"AF_INET", "AF_INET6"}
+            set() if reaches_network else {"AF_INET", "AF_INET6"}
         )
         overlap = sorted(set(self.address_families) & forbidden)
         if overlap:
@@ -153,20 +167,29 @@ class ServiceProfile:
                 "an internet socket makes `IPAddressDeny=any` the only thing "
                 "standing between it and one"
             )
-        if self.is_artifact_fetcher and not (
+        if reaches_network and not (
             set(self.address_families) & {"AF_INET", "AF_INET6"}
         ):
             raise ValueError(
-                f"{self.unit} is declared the artifact fetcher and is allowed "
-                "no internet address family. An exemption nothing uses is a "
-                "hole held open for nothing"
+                f"{self.unit} is declared a network-reaching service and is "
+                "allowed no internet address family. An exemption nothing uses "
+                "is a hole held open for nothing"
             )
-        if self.is_artifact_fetcher and self.is_model_host:
+        roles = [
+            name
+            for name, held in (
+                ("artifact fetcher", self.is_artifact_fetcher),
+                ("model host", self.is_model_host),
+                ("inference transport", self.is_inference_transport),
+            )
+            if held
+        ]
+        if len(roles) > 1:
             raise ValueError(
-                f"{self.unit} would both reach the network and run a program. "
-                "Either one alone is contained; together they are a path from "
-                "a remote byte to a local execution, which is the shape the "
-                "two accounts exist to keep apart"
+                f"{self.unit} would hold {roles} at once. Pulling public bytes "
+                "in, running a program, and pushing what this node observed "
+                "out are three acts with three blast radii; a unit holding two "
+                "of them is a node where one compromise is two"
             )
         if self.is_model_host:
             settings = dict(self.extra)
@@ -235,6 +258,7 @@ SYSTEM_ACCOUNTS = (
     "azprobe",
     "azfetch",
     "azmio",
+    "azremote",
 )
 
 
@@ -294,6 +318,44 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Registry, so this unit as shipped can reach nothing. Adding a "
             "real endpoint is a change to commissioned data that is reviewed "
             "and signed, never a change to this file."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-mio-remoted.service",
+        executable="/usr/libexec/azazel/az-mio-remoted",
+        account="azremote",
+        description="Azazel-Nexus remote inference transport",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/remote-inference.md",
+        address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
+        read_write_paths=("/var/lib/azazel/remote", "/var/lib/azazel/run"),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        is_inference_transport=True,
+        # Its own runtime directory. The socket that could send what this
+        # node observed is not the socket everything else answers on, and it
+        # is not the fetcher's.
+        runtime_directory="azazel/remote",
+        runtime_directory_mode="0750",
+        extra=(
+            # A provider that fails repeatedly must not fill the journal with
+            # the same refusal, and a journal nobody can read is a journal
+            # nobody reads.
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+            ("LogExtraFields", "AZ_SERVICE=mio-remote"),
+        ),
+        rationale=(
+            "The only unit that could send what this node observed, and it "
+            "sends nothing: no Provider Registry is commissioned and no key "
+            "holds the sanitizer role, so no provider symbol resolves and no "
+            "envelope verifies. It is not root, it writes one directory, and "
+            "it runs under its own account -- never the fetcher's and never "
+            "the local runtime's. azfetch pulls public bytes in; azremote "
+            "pushes what this node saw out; a node where one credential did "
+            "both is a node where one compromise is two. IPAddressDeny=any "
+            "stays on it: the addresses it may reach arrive as a "
+            "commissioning drop-in built from the signed Provider Registry, "
+            "so this unit as shipped can reach nothing."
         ),
     ),
     ServiceProfile(

@@ -1,0 +1,48 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The only unit that could send what this node observed, and it sends nothing: no Provider Registry is commissioned and no key holds the sanitizer role, so no provider symbol resolves and no envelope verifies.
+# It is not root, it writes one directory, and it runs under its own account -- never the fetcher's and never the local runtime's.
+# azfetch pulls public bytes in; azremote pushes what this node saw out; a node where one credential did both is a node where one compromise is two.
+# IPAddressDeny=any stays on it: the addresses it may reach arrive as a commissioning drop-in built from the signed Provider Registry, so this unit as shipped can reach nothing.
+
+[Unit]
+Description=Azazel-Nexus remote inference transport
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/remote-inference.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azremote
+ExecStart=/usr/libexec/azazel/az-mio-remoted
+RuntimeDirectory=azazel/remote
+RuntimeDirectoryMode=0750
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=50
+LogExtraFields=AZ_SERVICE=mio-remote
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/azazel/remote
+ReadWritePaths=/var/lib/azazel/run
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

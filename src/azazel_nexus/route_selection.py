@@ -442,6 +442,26 @@ class TerminalEvent(str, Enum):
     CANCELLED = "cancelled"
     OPT_IN_WITHDRAWN = "remote opt-in withdrawn"
     POLICY_CHANGED = "policy changed"
+    #: The handshake, the chain, the name or the pin did not hold (#98).
+    #:
+    #: Not folded into `FAILED`. A provider that is up and answering with the
+    #: wrong key is a different fact from one that is down, and an operator
+    #: who sees "failed" for both will go and check whether the service is
+    #: running -- which it is.
+    TLS_FAILED = "mutual TLS did not hold"
+    #: The sanitizer boundary produced nothing to send, or what it produced
+    #: was not believed at the transport (#98).
+    #:
+    #: Also not `FAILED`. Nothing went wrong with the provider or the link;
+    #: this node declined to send, and reporting that as a failure of the
+    #: route is how a refusal comes to look like an outage somebody should
+    #: fix by loosening something.
+    SANITIZER_FAILED = "sanitisation did not hold"
+    #: The response came back and was not advice (#98).
+    #:
+    #: A provider that answers with a command has answered. It has not
+    #: advised, and `ANSWERED` is the word for having advised.
+    NOT_ADVICE = "the response was not advice"
 
 
 class RequestOutcome(str, Enum):
@@ -468,6 +488,9 @@ NEVER_ANSWERED = (
     TerminalEvent.CANCELLED,
     TerminalEvent.OPT_IN_WITHDRAWN,
     TerminalEvent.POLICY_CHANGED,
+    TerminalEvent.TLS_FAILED,
+    TerminalEvent.SANITIZER_FAILED,
+    TerminalEvent.NOT_ADVICE,
 )
 
 
@@ -483,6 +506,12 @@ def outcome_for(
 
     if event is TerminalEvent.ANSWERED:
         return RequestOutcome.ANSWERED
+    if event is TerminalEvent.SANITIZER_FAILED:
+        # This node declined to send. Falling back to a *different remote*
+        # would be this node trying again elsewhere with something it just
+        # decided must not leave -- so a sanitisation that did not hold ends
+        # the remote attempt outright, whatever else is available.
+        return RequestOutcome.REFUSED
     if event in (TerminalEvent.OPT_IN_WITHDRAWN, TerminalEvent.POLICY_CHANGED):
         # A permit change, not a failure. The route is removed rather than
         # retried, and the request is answered elsewhere or not at all.

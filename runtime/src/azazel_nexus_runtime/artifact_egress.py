@@ -57,7 +57,10 @@ import socket
 import ssl
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Iterator, Optional, Sequence
+from typing import Callable, Optional, Sequence
+
+from azazel_nexus.spki import CertificateRefused
+from azazel_nexus.spki import spki_pin as _spki_pin
 
 __all__ = [
     "EgressRefused",
@@ -121,32 +124,23 @@ class EgressResult:
 def spki_pin(certificate_der: bytes) -> str:
     """`sha256:` over the certificate's SubjectPublicKeyInfo.
 
-    Over the key, not the certificate. A server that renews its certificate
-    keeps its key, and a pin over the whole certificate would turn every
-    ordinary renewal into an outage indistinguishable from an attack -- which
-    is how pinning gets switched off.
+    The walk lives in `azazel_nexus.spki`, which imports neither `ssl` nor
+    `socket`. Two egress boundaries pin a peer's key -- this one and the
+    remote inference transport (#98) -- and two copies of a certificate-key
+    extraction is one copy that gets a fix and one that does not. Sharing a
+    parser is not sharing an egress exception.
 
-    The walk is a minimal DER traversal rather than a parser: a
-    `Certificate` is a SEQUENCE whose first element is the `TBSCertificate`,
-    and within that the `SubjectPublicKeyInfo` is the element after
-    `subject`. `tests/unit/test_artifact_egress.py` checks this against
-    OpenSSL's own extraction rather than against a fixture this file wrote.
+    Re-raised as `EgressRefused` so that a caller of this module handles one
+    failure type. The distinction "the certificate was unreadable" versus
+    "the pin did not match" is kept by the message, not by the class: both
+    end the connection, and a caller that treated them differently would be
+    a caller deciding to continue on one of them.
     """
 
-    tbs = _der_first_child(_der_value(certificate_der, expect=0x30), expect=0x30)
-    elements = list(_der_children(tbs))
-    # [0] EXPLICIT version is optional; when present it is context tag 0xA0.
-    offset = 1 if elements and elements[0][0] == 0xA0 else 0
-    # serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo
-    index = offset + 5
-    if index >= len(elements):
-        raise EgressRefused(
-            "the peer's certificate has no SubjectPublicKeyInfo where one must be"
-        )
-    tag, body = elements[index]
-    if tag != 0x30:
-        raise EgressRefused("the peer's SubjectPublicKeyInfo is not a SEQUENCE")
-    return "sha256:" + hashlib.sha256(_der_reencode(tag, body)).hexdigest()
+    try:
+        return _spki_pin(certificate_der)
+    except CertificateRefused as exc:
+        raise EgressRefused(str(exc)) from exc
 
 
 def tls_context(
@@ -423,50 +417,7 @@ def _body(stream, spill: bytes, budget: int, remaining) -> Iterator[bytes]:
         yield chunk
 
 
-def _der_value(data: bytes, *, expect: int) -> bytes:
-    tag, body, _end = _der_read(data, 0)
-    if tag != expect:
-        raise EgressRefused("the peer's certificate is not DER as expected")
-    return body
 
 
-def _der_first_child(body: bytes, *, expect: int) -> bytes:
-    tag, child, _end = _der_read(body, 0)
-    if tag != expect:
-        raise EgressRefused("the peer's certificate has no TBSCertificate")
-    return child
 
 
-def _der_children(body: bytes) -> Iterator[tuple]:
-    offset = 0
-    while offset < len(body):
-        tag, value, offset = _der_read(body, offset)
-        yield tag, value
-
-
-def _der_read(data: bytes, offset: int) -> tuple:
-    if offset + 2 > len(data):
-        raise EgressRefused("the peer's certificate is truncated")
-    tag = data[offset]
-    length = data[offset + 1]
-    offset += 2
-    if length & 0x80:
-        count = length & 0x7F
-        if count == 0 or count > 4 or offset + count > len(data):
-            raise EgressRefused("the peer's certificate has an unusable length")
-        length = int.from_bytes(data[offset : offset + count], "big")
-        offset += count
-    end = offset + length
-    if end > len(data):
-        raise EgressRefused("the peer's certificate is truncated")
-    return tag, data[offset:end], end
-
-
-def _der_reencode(tag: int, body: bytes) -> bytes:
-    length = len(body)
-    if length < 0x80:
-        header = bytes((tag, length))
-    else:
-        encoded = length.to_bytes((length.bit_length() + 7) // 8, "big")
-        header = bytes((tag, 0x80 | len(encoded))) + encoded
-    return header + body
