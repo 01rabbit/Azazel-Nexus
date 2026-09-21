@@ -200,6 +200,30 @@ jobs:
                       f"{_class.value} reached a remote route with every other "
                       f"condition met; excluded_by={_outcome.excluded_by}"
                   )
+          # Route evidence (#83). The node with nothing installed has observed
+          # nothing, so nothing is predictable and no candidate can be called
+          # fastest. That is the state this job exists to check, and it is the
+          # state every node in this build is in.
+          import azazel_nexus.route_evidence as route_evidence  # noqa: F401
+          _nothing = route_evidence.predict([], candidate="local", as_of="1970-01-01T00:00:00Z")
+          if _nothing.predictable:
+              raise SystemExit("a candidate with no observations was called predictable")
+          if _nothing.meets(deadline_ms=10 ** 9):
+              raise SystemExit(
+                  "a candidate nobody measured met a deadline; an unmeasured "
+                  "route must not be offered as fast"
+              )
+          if _nothing.p95_ms is not None:
+              raise SystemExit(f"an unmeasured candidate reported a p95 of {_nothing.p95_ms}")
+          # And the record carries no request. A field added here later has to
+          # be argued for rather than appearing.
+          if set(route_evidence.OBSERVATION_FIELDS) & {
+              "correlation_id", "body", "prompt", "evidence", "source", "identifier"
+          }:
+              raise SystemExit(
+                  "an observation records something about the request; a timing "
+                  "record that grew a request field is a request log"
+              )
           # The cognition plane (#5). A node with nothing installed and no
           # provider is the configuration M.I.O. has to be answerable in, and
           # it is the one where `CORE ONLY` is the correct answer rather than
