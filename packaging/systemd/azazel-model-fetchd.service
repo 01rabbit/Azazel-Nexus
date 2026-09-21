@@ -1,0 +1,47 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The only unit in this product allowed an internet address family, and the only one that needs one: it fetches model artifacts whose digest was declared before the connection was made.
+# It is not root, it writes one directory, and it still carries IPAddressDeny=any -- the addresses it may reach arrive as a commissioning drop-in built from the signed Source Registry, so this unit as shipped can reach nothing.
+# Adding a real endpoint is a change to commissioned data that is reviewed and signed, never a change to this file.
+
+[Unit]
+Description=Azazel-Nexus artifact fetch service
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/source-registry.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azfetch
+ExecStart=/usr/libexec/azazel/az-model-fetchd
+RuntimeDirectory=azazel/fetch
+RuntimeDirectoryMode=0750
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=50
+LogExtraFields=AZ_SERVICE=model-fetch
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/azazel/fetch
+ReadWritePaths=/var/lib/azazel/run
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

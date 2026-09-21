@@ -65,6 +65,7 @@ class UnitKey(str, Enum):
     AUDITD = "auditd"
     WATCHDOG = "watchdog"
     EDGE_PROBE = "edge-probe"
+    MODEL_FETCH = "model-fetch"
 
 
 #: The whole mapping, and it is not configurable.
@@ -77,6 +78,7 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.AUDITD: "azazel-auditd.service",
     UnitKey.WATCHDOG: "azazel-watchdog.service",
     UnitKey.EDGE_PROBE: "azazel-edge-probed.service",
+    UnitKey.MODEL_FETCH: "azazel-model-fetchd.service",
 }
 
 

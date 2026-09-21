@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 import pathlib
 import sys
 
@@ -45,6 +46,30 @@ from azazel_nexus_runtime.model_fetch import (  # noqa: E402
 )
 
 WEIGHTS = b"weights, not a program -- " + b"w" * 2048
+
+#: Endpoints for the tests, installed by the fixture below. The shipped table
+#: is **empty** (#105): endpoints are commissioned Source Registry data, not
+#: code, so a test that relied on the shipped table would be a test asserting
+#: the opposite of the design.
+TEST_ENDPOINTS = {
+    "vendor-primary": model_fetch.Endpoint(
+        host="models-primary.test.example",
+        port=443,
+        path_template="/artifacts/{digest}",
+    ),
+    "vendor-mirror": model_fetch.Endpoint(
+        host="models-mirror.test.example",
+        port=443,
+        path_template="/artifacts/{digest}",
+    ),
+}
+
+
+@pytest.fixture(autouse=True)
+def endpoints(monkeypatch):
+    """Every test here runs against a registry of its own."""
+
+    monkeypatch.setattr(model_fetch, "ENDPOINT_FOR", dict(TEST_ENDPOINTS))
 PLENTY = MIN_FREE_HEADROOM_BYTES + 10 * 1024 * 1024
 NOW = "2026-01-01T00:00:00Z"
 
@@ -448,14 +473,22 @@ def test_a_drive_with_no_fetcher_does_nothing_and_says_so() -> None:
     assert "absent rather than disabled" in result.reason
 
 
-def test_every_endpoint_is_a_host_that_cannot_resolve() -> None:
-    """The second lock. Filling in a real host is a deliberate change to
-    this table, not a typo somebody makes."""
+def test_a_drive_for_a_symbol_with_no_endpoint_refuses() -> None:
+    """Which is every symbol, in a shipped build: the table is empty, so a
+    plan resolves to nothing until a commissioned registry says otherwise."""
 
-    for symbol, endpoint in ENDPOINT_FOR.items():
-        assert endpoint.host.endswith(".invalid"), symbol
-    with pytest.raises(ValueError):
-        Endpoint(host="models.example.com", port=443, path_template="/a/{digest}")
+    import types
+
+    source = pathlib.Path(model_fetch.__file__).read_text(encoding="utf-8")
+    module = types.ModuleType("_isolated_model_fetch_empty")
+    sys.modules[module.__name__] = module
+    try:
+        exec(compile(source, model_fetch.__file__, "exec"), module.__dict__)
+        assert module.ENDPOINT_FOR == {}
+        with pytest.raises(module.FetchRefused):
+            module.endpoint_for(a_plan())
+    finally:
+        sys.modules.pop(module.__name__, None)
 
 
 def test_a_path_template_has_exactly_one_hole() -> None:
@@ -468,55 +501,78 @@ def test_a_path_template_has_exactly_one_hole() -> None:
         Endpoint(host="a.invalid", port=443, path_template="/{name}/{digest}")
 
 
-def test_the_symbol_table_and_the_endpoint_table_are_one_fact() -> None:
-    """A mismatch stops the import, not the fetch somebody finally confirmed."""
+def test_the_shipped_endpoint_table_is_empty() -> None:
+    """Endpoints are commissioned data, not code.
 
-    assert set(ENDPOINT_FOR) == set(KNOWN_SOURCES)
+    An earlier version shipped `.invalid` hosts and had `Endpoint` refuse
+    anything else, so going to production would have meant **loosening the
+    validator**. A design whose next step is to relax a check is a design
+    that gets relaxed. The validator now accepts a production-valid FQDN and
+    refuses what is actually dangerous; the table ships empty instead.
 
-
-def test_a_symbol_the_endpoint_table_does_not_cover_stops_the_import() -> None:
-    """The two tables are one fact recorded twice, and this is what keeps
-    them one fact.
-
-    Without exercising the disagreement the check never fires, and a check
-    that never fires is indistinguishable from one that was deleted. So the
-    module is reloaded against a symbol set it does not cover: the failure
-    has to arrive at import, not at the moment an operator finally confirms
-    a fetch.
-
-    The module is executed into a throwaway namespace rather than reloaded:
-    a reload rebinds the real module's classes, and every later assertion of
-    the form `outcome is FetchOutcome.COMPLETE` would then compare a new
-    class against the one this file imported. The check under test is at
-    module level, so a fresh exec reaches it without disturbing anything.
+    Read from the source, because the fixture above populates the imported
+    one -- and a test that checked the patched table would check the fixture.
     """
+
+    source = pathlib.Path(model_fetch.__file__).read_text(encoding="utf-8")
+    assert "ENDPOINT_FOR: Mapping[str, Endpoint] = {}" in source
+    # `.invalid` is discussed in the comment above the table -- that is the
+    # explanation, not an endpoint. What must not survive is a host literal.
+    assert not re.search(r'host\s*=\s*"[^"]+"', source), (
+        "an endpoint host literal survives in the module"
+    )
+
+
+def test_an_endpoint_for_a_symbol_the_build_does_not_know_stops_the_import() -> None:
+    """An address nothing can name is an address nobody chose."""
 
     import types
 
     source = pathlib.Path(model_fetch.__file__).read_text(encoding="utf-8")
-    code = compile(source, model_fetch.__file__, "exec")
-
-    def run_isolated(name):
-        # A real module object registered under a throwaway name: `@dataclass`
-        # resolves `sys.modules[cls.__module__]`, so a bare dict is not enough.
-        module = types.ModuleType(name)
-        sys.modules[name] = module
-        try:
-            exec(code, module.__dict__)
-        finally:
-            sys.modules.pop(name, None)
-
-    original = model_acquisition.KNOWN_SOURCES
+    broken = source.replace(
+        "ENDPOINT_FOR: Mapping[str, Endpoint] = {}",
+        'ENDPOINT_FOR: Mapping[str, Endpoint] = {"nobody-knows-this": Endpoint('
+        'host="a.test.example", port=443, path_template="/{digest}")}',
+    )
+    module = types.ModuleType("_isolated_model_fetch_stray_endpoint")
+    sys.modules[module.__name__] = module
     try:
-        model_acquisition.KNOWN_SOURCES = original + ("a-symbol-with-no-address",)
         with pytest.raises(ImportError) as caught:
-            run_isolated("_isolated_model_fetch_mismatch")
-        assert "a-symbol-with-no-address" in str(caught.value)
+            exec(compile(broken, model_fetch.__file__, "exec"), module.__dict__)
+        assert "nobody-knows-this" in str(caught.value)
     finally:
-        model_acquisition.KNOWN_SOURCES = original
-    # And with the tables agreeing again, the same exec completes.
-    run_isolated("_isolated_model_fetch_agreeing")
-    assert set(model_fetch.ENDPOINT_FOR) == set(model_acquisition.KNOWN_SOURCES)
+        sys.modules.pop(module.__name__, None)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://models.example",
+        "models.example:443",
+        "models.example/artifacts",
+        "user:pass@models.example",
+        "models.example?a=b",
+        "203.0.113.7",
+        "",
+    ],
+)
+def test_an_endpoint_host_that_carries_more_than_a_host_is_refused(host) -> None:
+    """Production-valid FQDNs are accepted; the dangerous shapes are not."""
+
+    with pytest.raises(ValueError):
+        model_fetch.Endpoint(host=host, port=443, path_template="/{digest}")
+
+
+@pytest.mark.parametrize(
+    "host", ["models.example.com", "cdn-1.eu.models.example.com", "a.bc"]
+)
+def test_a_production_valid_hostname_is_accepted(host) -> None:
+    """Going to production must not require loosening this."""
+
+    assert model_fetch.Endpoint(
+        host=host, port=443, path_template="/artifacts/{digest}"
+    ).host == host
+
 
 
 def test_an_unresolvable_symbol_refuses_rather_than_inventing_an_endpoint() -> None:
@@ -595,7 +651,7 @@ def test_the_fetcher_is_handed_the_resolved_address_and_never_chooses_one() -> N
 
     plan = a_plan()
     drive_fetch(plan, fetcher=fetcher, sink=lambda chunk: None)
-    endpoint = ENDPOINT_FOR[plan.source_id]
+    endpoint = model_fetch.ENDPOINT_FOR[plan.source_id]
     assert seen["host"] == endpoint.host
     assert seen["port"] == endpoint.port
     assert seen["path"] == endpoint.path_template.format(digest=plan.expected_digest)

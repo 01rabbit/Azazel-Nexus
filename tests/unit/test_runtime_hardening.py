@@ -166,12 +166,90 @@ def test_a_directory_grouped_to_an_account_must_grant_that_group_something():
             assert spec.mode & 0o070
 
 
-def test_no_unit_is_allowed_an_internet_address_family():
+def test_no_unit_but_the_artifact_fetcher_is_allowed_an_internet_family():
+    """One exemption, declared on the profile, and `AF_PACKET` for nobody.
+
+    This assertion used to be "no unit at all" (Nexus#105). The artifact
+    fetch service needs outbound TCP, so the exemption is now a field a
+    profile must set -- and the test below asserts that at most one profile
+    sets it. Naming the loosening here is the point: a hardening guarantee
+    that quietly weakened and left no trace is one nobody can audit.
+    """
+
     for profile in PROFILES:
         families = _settings(profile.unit)["RestrictAddressFamilies"]
         assert len(families) == 1
         allowed = set(families[0].split())
-        assert allowed & {"AF_INET", "AF_INET6", "AF_PACKET"} == set()
+        assert "AF_PACKET" not in allowed
+        if not profile.is_artifact_fetcher:
+            assert allowed & {"AF_INET", "AF_INET6"} == set(), profile.unit
+
+
+def test_exactly_one_profile_is_the_artifact_fetcher():
+    """A second would be a diff a reviewer sees, not a set that grew."""
+
+    fetchers = [profile.unit for profile in PROFILES if profile.is_artifact_fetcher]
+    assert fetchers == ["azazel-model-fetchd.service"]
+
+
+def test_the_artifact_fetcher_still_denies_every_address():
+    """The exemption opens an address *family*, not an address.
+
+    `IPAddressDeny=any` stays, so the unit as shipped reaches nothing. What
+    it may reach arrives as a commissioning drop-in built from the signed
+    Source Registry -- which means adding a real endpoint is reviewed,
+    signed, commissioned data rather than an edit to this file.
+    """
+
+    fetcher = next(profile for profile in PROFILES if profile.is_artifact_fetcher)
+    settings = _settings(fetcher.unit)
+    assert settings["IPAddressDeny"] == ["any"]
+    assert "IPAddressAllow" not in settings
+    assert fetcher.account != "root"
+    # It writes its staging area and its socket directory. Nothing else.
+    assert set(fetcher.read_write_paths) == {
+        "/var/lib/azazel/fetch",
+        "/var/lib/azazel/run",
+    }
+    assert "/etc/systemd/system" not in fetcher.read_write_paths
+
+
+def test_the_artifact_fetcher_bounds_its_journal():
+    """A transfer that fails repeatedly must not fill the journal with one
+    refusal. A journal nobody can read is a journal nobody reads."""
+
+    settings = _settings("azazel-model-fetchd.service")
+    assert settings["LogRateLimitIntervalSec"] == ["30"]
+    assert int(settings["LogRateLimitBurst"][0]) > 0
+
+
+def test_a_profile_that_is_not_the_fetcher_cannot_take_an_internet_family():
+    with pytest.raises(ValueError):
+        ServiceProfile(
+            unit="azazel-sneaky.service",
+            executable="/usr/libexec/azazel/az-sneaky",
+            account="azsneaky",
+            description="d",
+            documentation="u",
+            address_families=("AF_UNIX", "AF_INET"),
+            read_write_paths=(),
+        )
+
+
+def test_a_fetcher_that_would_use_no_internet_family_cannot_be_built():
+    """An exemption nothing uses is a hole held open for nothing."""
+
+    with pytest.raises(ValueError):
+        ServiceProfile(
+            unit="azazel-idle-fetcher.service",
+            executable="/usr/libexec/azazel/az-idle",
+            account="azfetch",
+            description="d",
+            documentation="u",
+            address_families=("AF_UNIX",),
+            read_write_paths=(),
+            is_artifact_fetcher=True,
+        )
 
 
 def test_only_the_commissioning_daemon_is_allowed_netlink():

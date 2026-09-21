@@ -31,7 +31,9 @@ privacy class, it cannot carry one.
 
 | refusal | why |
 | --- | --- |
-| a peer whose public key does not match the pin | CA trust alone is one compromised issuer away from any host |
+| a peer whose certificate does not verify | issuer, dates and name, against the **commissioned** anchor -- never the host's own store |
+| a peer whose public key does not match the pin | and this on top: CA trust alone is one compromised issuer away from any host |
+| an empty pin | not "any key". A fetch with nothing to compare against does not happen |
 | a redirect | a fetcher that follows one is a fetcher whose allowlist is bypassed in a single hop |
 | a resolved address outside the allowlist | DNS is an attack surface, and "the name was right" is not "the address was" |
 | a response larger than declared | a file that grew is not the file that was planned for |
@@ -149,23 +151,36 @@ def spki_pin(certificate_der: bytes) -> str:
 
 def tls_context(
     *,
+    ca_certificate: str,
     client_certificate: Optional[str] = None,
     client_key: Optional[str] = None,
 ) -> ssl.SSLContext:
-    """A client context that trusts the pin, and mutual auth when configured.
+    """A client context that checks the issuer, the dates, the name -- and
+    then `fetch_artifact` checks the pin on top.
 
-    `check_hostname` and CA verification are off **because the pin replaces
-    them**, not because verification is inconvenient: a name that matched a
-    certificate any accepted CA issued is weaker than a key that matched the
-    one this node was commissioned to expect. The pin is checked by
-    `fetch_artifact` on every connection, and a connection whose pin is not
-    checked never carries a byte -- see its first act after the handshake.
+    **The pin does not replace verification; it is layered on it.** An earlier
+    version turned CA verification and hostname checking off on the grounds
+    that a pin is stronger, which is true and beside the point: the pin
+    answers "is this the key I was told to expect", and it answers nothing
+    about whether the certificate has expired, whether it was issued for the
+    name being contacted, or whether the issuer is one this node was
+    commissioned to accept. Four questions, four checks, and dropping three
+    of them because the fourth is good is how a chain ends up one check long.
+
+    `ca_certificate` is required and has no default. A context with no trust
+    anchor would fall back to the system store, and the system store is
+    whatever the host happens to trust -- which is not what this node was
+    commissioned to trust.
     """
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    # Only the commissioned anchor. `load_default_certs` is never called, so
+    # the host's own store -- and anything an administrator added to it -- has
+    # no bearing on what this service will talk to.
+    context.load_verify_locations(cafile=ca_certificate)
     if client_certificate:
         # mTLS: the node shows who it is. The key never appears in a return
         # value, an exception or an event -- only here, where ssl reads it.
@@ -185,7 +200,7 @@ def fetch_artifact(
     deadline_seconds: int,
     bandwidth_bytes_per_second: int,
     sink: Callable[[bytes], None],
-    context: Optional[ssl.SSLContext] = None,
+    context: ssl.SSLContext,
     clock: Optional[Callable[[], float]] = None,
     sleeper: Optional[Callable[[float], None]] = None,
 ) -> EgressResult:
@@ -206,6 +221,11 @@ def fetch_artifact(
         )
     if deadline_seconds < 1 or bandwidth_bytes_per_second < 1:
         raise EgressRefused("a deadline and a bandwidth ceiling are positive")
+    if not expected_pin:
+        raise EgressRefused(
+            "an empty pin is not 'any key'. A fetch with nothing to compare "
+            "the peer against does not happen"
+        )
 
     now = clock or __import__("time").monotonic
     rest = sleeper or __import__("time").sleep
@@ -217,7 +237,7 @@ def fetch_artifact(
     address = _resolve_one(host, port, allowed_addresses)
     raw = socket.create_connection(address, timeout=max(remaining(), 0.001))
     try:
-        stream = (context or tls_context()).wrap_socket(raw, server_hostname=host)
+        stream = context.wrap_socket(raw, server_hostname=host)
     except BaseException:
         raw.close()
         raise

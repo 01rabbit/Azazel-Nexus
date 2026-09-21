@@ -190,6 +190,20 @@ CORE_UNITS = (
         "azprobe",
         "one-shot Edge health and running probe; reads, never starts",
     ),
+    UnitDefinition(
+        "azazel-model-fetchd.service",
+        # SUPPORTING for the same reason the probe is: it observes and moves
+        # bytes, and it grants nothing. A fetched artifact is not admitted,
+        # not activated, and reaches the store only through the same
+        # verification an offline import goes through.
+        #
+        # Governed like every other operational unit, which is what keeps it
+        # masked after installation. The one unit permitted an internet
+        # address family is the last one that should start unbidden.
+        UnitTier.SUPPORTING,
+        "azfetch",
+        "artifact fetch service; the only unit with egress, and it admits nothing",
+    ),
 )
 
 
