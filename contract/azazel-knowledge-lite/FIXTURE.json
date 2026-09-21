@@ -1,0 +1,18 @@
+{
+  "bundle_format_version": 1,
+  "contract": "azazel-knowledge/lite-fixture/v1",
+  "emitted_by": "python tools/lite_fixture.py emit --out DIR",
+  "files": {
+    "anchors.toml": "ab9273b3194895dc159e05aed127a533cc5b0fda042ff3ed1e1c5afca6821bd3",
+    "expected.json": "fc98956c2830008964a0405b63351104cc886b3658b8a4767e8aa6bd47313da8",
+    "lite.tar.gz": "94a1f77030a7c9b3b962c45f425d17dd74cb8e61ca015a7658ae1110a22d2102",
+    "negative.json": "739780e1bd0b6d88b170dcbd997f705b2b38d940d495966f134b0181fe1b81fb",
+    "negative/corrupt-payload.tar.gz": "27ec584f28e7b3c882595e61b457f939dcb3c1553b7a7c2708b8b8c295de17b0",
+    "negative/corrupt-signature.tar.gz": "371a1dc07b582798fcb2b467da118e4cfedcc26bd6c78842d88dec1aae869911",
+    "negative/corrupt-truncated.tar.gz": "84a8d7a8ab51d44ef7c3b83f37e38ab51f2f9fabce6839184f600d3107f625cd",
+    "negative/expired.tar.gz": "a19a8ae4974ce12f958f963cbd98f3f01ac487b57846dd8e7d889bd9e8fb267a"
+  },
+  "kind": "full",
+  "source_repository": "01rabbit/Azazel-Knowledge",
+  "source_revision": "f29c29d1002881b416286e18aae65455c3623348"
+}
