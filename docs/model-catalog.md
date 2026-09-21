@@ -11,6 +11,7 @@ they all move with it.
 
 Related: [M.I.O. runtime control plane](mio-runtime.md) ·
 [offline model import](model-import.md) ·
+[online acquisition](model-acquisition.md) ·
 [the operator screen](operator-view.md) ·
 [the route policy](mio-route-policy.md) ·
 [Hardware gates](hardware-gates.md) ·

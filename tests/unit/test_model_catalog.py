@@ -289,18 +289,45 @@ def test_the_reported_signer_does_not_depend_on_store_ordering(tmp_path, order) 
     assert catalog.signer == "aaa-good"
 
 
+def test_the_schema_names_the_shape_it_actually_has() -> None:
+    """The schema moved to `/2` when `source_id` was added.
+
+    A required field changes what the document is, so a reader that accepted
+    a `/1` document under `/2` rules would be inferring a field nobody wrote.
+    And the domain tag did *not* move: it says what kind of thing was signed,
+    which is unchanged, while the schema says what shape it is.
+    """
+
+    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/2"
+    assert CATALOG_DOMAIN == b"azazel-nexus/model-catalog/v1\x00"
+    assert "source_id" in an_entry().as_document()
+
+
+def test_a_catalog_declaring_the_previous_schema_is_refused(tmp_path) -> None:
+    """The shape it names is not the shape this reader knows."""
+
+    body = catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
+    document = json.loads(body)
+    document["schema"] = "azazel-nexus/model-catalog/1"
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(tmp_path, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "model-catalog/1" in str(caught.value)
+
+
 def test_a_catalog_naming_another_schema_is_refused(tmp_path) -> None:
     """Refused, not best-effort parsed. A reader that guesses is a reader
     that accepts a document nobody wrote for it."""
 
     body = catalog_payload(version=1, commissioning_digest=COMMISSIONING, entries=[])
     document = json.loads(body)
-    document["schema"] = "azazel-nexus/model-catalog/2"
+    document["schema"] = "azazel-nexus/model-catalog/99"
     payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
     path = write_catalog(tmp_path, [], payload=payload)
     with pytest.raises(CatalogRefused) as caught:
         read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
-    assert "model-catalog/2" in str(caught.value)
+    assert "model-catalog/99" in str(caught.value)
 
 
 @pytest.mark.parametrize("version", [0, -1, "1", 1.0, True, None])
@@ -587,10 +614,67 @@ def test_an_entry_declares_no_licence_text_and_no_location() -> None:
         "model_id", "format", "digest", "size_bytes", "provenance",
         "license_acknowledgement_required", "runtime_abi", "purpose",
         "context_limit", "declared_min_ram_mib", "declared_min_disk_mib",
-        "declared_profile", "rollback_lineage",
+        "declared_profile", "rollback_lineage", "source_id",
     }
     assert "url" not in " ".join(document).lower()
     assert isinstance(document["license_acknowledgement_required"], bool)
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    [
+        "https://example.invalid/model.gguf",
+        "example.invalid",
+        "mirror/eu",
+        "mirror:443",
+        "../mirror",
+        "MIRROR",
+        "",
+    ],
+)
+def test_a_source_that_is_spelled_like_a_location_is_refused(source_id) -> None:
+    """A source is named, never located.
+
+    If a catalog could carry an endpoint, a catalog signature would become a
+    way to point a node at any host on the internet, and the signer would
+    hold that power over every node their catalog reaches. The symbol
+    resolves against a table fixed in the build, so the most a catalog can do
+    is choose among sources this build already knows.
+    """
+
+    with pytest.raises(CatalogRefused) as caught:
+        an_entry(source_id=source_id)
+    assert "not a source symbol" in str(caught.value)
+
+
+def test_a_symbolic_source_is_carried_and_a_null_one_means_offline_only(tmp_path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    named = write_catalog(tmp_path / "a", [an_entry(source_id="vendor-mirror")])
+    catalog = read_catalog(
+        named, trusted_keys=trusted(), commissioning_digest=COMMISSIONING
+    )
+    assert catalog.entry("small-advisor").source_id == "vendor-mirror"
+    silent = write_catalog(tmp_path / "b", [an_entry()])
+    quiet = read_catalog(
+        silent, trusted_keys=trusted(), commissioning_digest=COMMISSIONING
+    )
+    assert quiet.entry("small-advisor").source_id is None
+
+
+def test_an_entry_missing_source_id_is_refused_rather_than_defaulted(tmp_path) -> None:
+    """"No online source" is something a catalog author states, not forgets."""
+
+    body = catalog_payload(
+        version=1, commissioning_digest=COMMISSIONING, entries=[an_entry()]
+    )
+    document = json.loads(body)
+    del document["entries"][0]["source_id"]
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = write_catalog(tmp_path, [], payload=payload)
+    with pytest.raises(CatalogRefused) as caught:
+        read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
+    assert "source_id" in str(caught.value)
 
 
 def test_no_catalog_or_artifact_is_committed_anywhere() -> None:

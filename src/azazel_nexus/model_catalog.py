@@ -117,7 +117,17 @@ CATALOG_DOMAIN = b"azazel-nexus/model-catalog/v1\x00"
 #: step the signer and the verifier could disagree about.
 CATALOG_FILENAME = "catalog.signed"
 
-CATALOG_SCHEMA = "azazel-nexus/model-catalog/1"
+#: The document shape. Moved to `/2` when `source_id` was added (#96): a
+#: required field changes what the document *is*, and a reader that accepted
+#: a `/1` document under `/2` rules would be inferring a field nobody wrote.
+#:
+#: `CATALOG_DOMAIN` stays at `v1` on purpose. The two version numbers are not
+#: the same number. The domain tag says **what kind of thing** was signed --
+#: a catalog rather than a manifest or a revocation list -- and that did not
+#: change. The schema says **what shape** it is, and that did. Bumping the
+#: domain alongside the shape would make every shape change a new signing
+#: role, and roles are what the tag exists to keep few and stable.
+CATALOG_SCHEMA = "azazel-nexus/model-catalog/2"
 
 #: A ceiling before parsing. A catalog is a list of declarations, not content.
 MAX_CATALOG_BYTES = 1024 * 1024
@@ -152,6 +162,9 @@ _EXECUTABLE_OR_ARCHIVE_MAGIC = (
 _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: A source symbol. No dot, no slash, no colon -- nothing a URL or a
+#: path could be built from, so a symbol cannot be mistaken for a location.
+_SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class CatalogRefused(Exception):
@@ -215,6 +228,22 @@ class ModelEntry:
     #: Generations this one may replace. An entry that cannot name its
     #: predecessors cannot be rolled back to safely.
     rollback_lineage: tuple[str, ...]
+    #: Which acquisition source, **by symbol**, the catalog permits for this
+    #: model -- or `None`, meaning no online source is permitted and the only
+    #: route in is an operator's offline import.
+    #:
+    #: A symbol, never a location. If a catalog could carry the endpoint, a
+    #: catalog signature would become a way to point a node at any host on
+    #: the internet, and the signer would hold that power over every node
+    #: their catalog reaches. The symbol resolves against a table fixed in
+    #: the build, so the most a catalog can do is **choose among sources this
+    #: build already knows** -- the discipline `remote_trust` holds for
+    #: endpoints, applied one layer up.
+    #:
+    #: The field is required in the document and may be `null`. Required so
+    #: that "no online source" is something a catalog author stated rather
+    #: than forgot; nullable because most entries will honestly have none.
+    source_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not _MODEL_ID.match(self.model_id):
@@ -240,6 +269,12 @@ class ModelEntry:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise CatalogRefused(f"{self.model_id}: {name} is a positive whole number")
+        if self.source_id is not None and not _SOURCE_ID.match(self.source_id):
+            raise CatalogRefused(
+                f"{self.model_id}: {self.source_id!r} is not a source symbol. "
+                "A source is named, never located: a catalog that could spell "
+                "a host could point this node anywhere"
+            )
         for name in ("provenance", "purpose"):
             if not str(getattr(self, name)).strip():
                 raise CatalogRefused(
@@ -262,6 +297,7 @@ class ModelEntry:
             "declared_min_ram_mib": self.declared_min_ram_mib,
             "declared_min_disk_mib": self.declared_min_disk_mib,
             "declared_profile": self.declared_profile.value,
+            "source_id": self.source_id,
             "rollback_lineage": list(self.rollback_lineage),
         }
 
@@ -438,6 +474,7 @@ _ENTRY_FIELDS = (
     "declared_min_disk_mib",
     "declared_profile",
     "rollback_lineage",
+    "source_id",
 )
 
 
@@ -481,7 +518,29 @@ def _entry_from(item: object, index: int) -> ModelEntry:
         declared_min_disk_mib=item["declared_min_disk_mib"],
         declared_profile=profile,
         rollback_lineage=tuple(lineage),
+        source_id=_source_id_from(item, index),
     )
+
+
+def _source_id_from(item: Mapping, index: int) -> Optional[str]:
+    """`null` or a symbol. Never absent, never anything else.
+
+    A missing field would let "no online source" and "nobody thought about
+    it" produce the same catalog, and only one of those is a decision. That
+    refusal is `_entry_from`'s `missing` check, which runs first and covers
+    every field; the subscript below cannot raise, and is written as a
+    subscript rather than a `.get` so that a future reader sees the field is
+    required rather than inferring a default that does not exist.
+    """
+
+    raw = item["source_id"]
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise CatalogRefused(
+            f"entry {index}: source_id is a symbol or null, not {type(raw).__name__}"
+        )
+    return raw
 
 
 def verify_artifact(

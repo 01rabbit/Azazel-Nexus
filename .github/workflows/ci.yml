@@ -678,15 +678,10 @@ jobs:
           # installs nothing is the job that has to build it -- and the scan
           # below is what proves it brought in no way to read or write.
           import azazel_nexus.operator_view as operator_view
-          if len(operator_view.Confirmation) != 5:
-              raise SystemExit(
-                  "the five confirmations are no longer five; something was "
-                  "folded into another"
-              )
           transitions = {
               operator_view.TRANSITION_FOR[c] for c in operator_view.Confirmation
           }
-          if len(transitions) != 5:
+          if len(transitions) != len(operator_view.Confirmation):
               raise SystemExit("two confirmations write one audit event")
           catalog_words = {s.value for s in model_catalog.CatalogState}
           provider_words = {s.value for s in operator_view.ProviderState}
@@ -719,13 +714,69 @@ jobs:
               raise SystemExit("the M.I.O. sentence moved")
           if "functional" in screen.status_sentence:
               raise SystemExit("the M.I.O. sentence reads functional")
-          if len(screen.operations) != 5:
+          if len(screen.operations) != len(operator_view.Confirmation):
               raise SystemExit("an operation was dropped rather than shown unavailable")
           for operation in screen.operations:
               if not operation.reason.strip():
                   raise SystemExit(
                       f"{operation.confirmation.value} is shown without a reason"
                   )
+          # Online acquisition (#96). The path a node without connectivity
+          # must not have, checked on the job that has no connectivity.
+          import azazel_nexus.model_acquisition as model_acquisition
+          if len(operator_view.Confirmation) != 6:
+              raise SystemExit(
+                  "the confirmations changed count; a consent was added or "
+                  "folded rather than given its own member"
+              )
+          if operator_view.Confirmation.MODEL_ACQUISITION is (
+              operator_view.Confirmation.MODEL_IMPORT
+          ):
+              raise SystemExit("acquisition is the import confirmation renamed")
+          for symbol in model_acquisition.KNOWN_SOURCES:
+              for character in "./:@?#":
+                  if character in symbol:
+                      raise SystemExit(
+                          f"{symbol!r} is spelled like a location, not a symbol"
+                      )
+          # A catalog cannot introduce a source this build does not know.
+          try:
+              model_catalog.ModelEntry(
+                  model_id="ci-probe", format="gguf",
+                  digest="sha256:" + "0" * 64, size_bytes=1,
+                  provenance="ci", license_acknowledgement_required=False,
+                  runtime_abi="llama.cpp/1", purpose="probe", context_limit=1,
+                  declared_min_ram_mib=1, declared_min_disk_mib=1,
+                  declared_profile=azazel_nexus.resource_profile.ResourceProfile.LITE,
+                  rollback_lineage=(), source_id="https://elsewhere.invalid/x",
+              )
+          except model_catalog.CatalogRefused:
+              pass
+          else:
+              raise SystemExit("a catalog spelled a location into a source")
+          # And an unconfirmed node gets no plan at all.
+          offline_only = model_catalog.ModelEntry(
+              model_id="ci-probe", format="gguf",
+              digest="sha256:" + "0" * 64, size_bytes=1,
+              provenance="ci", license_acknowledgement_required=False,
+              runtime_abi="llama.cpp/1", purpose="probe", context_limit=1,
+              declared_min_ram_mib=1, declared_min_disk_mib=1,
+              declared_profile=azazel_nexus.resource_profile.ResourceProfile.LITE,
+              rollback_lineage=(), source_id=None,
+          )
+          try:
+              model_acquisition.plan_acquisition(
+                  offline_only,
+                  consent=model_acquisition.NO_CONSENT,
+                  free_bytes=1 << 62,
+              )
+          except model_acquisition.AcquisitionRefused as refused:
+              if refused.cause is not model_acquisition.Refusal.NO_SOURCE_DECLARED:
+                  raise SystemExit(
+                      f"an entry with no source was refused as {refused.cause!r}"
+                  )
+          else:
+              raise SystemExit("an entry declaring no source produced a plan")
           # And no catalog is shipped with the source. A catalog is signed
           # under a commissioning trust policy that only exists on the node;
           # one committed here would be one nobody chose to trust.

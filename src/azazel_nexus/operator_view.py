@@ -19,13 +19,14 @@ operator spends an hour looking for one. Every operation here carries
 or not -- "why yes" is as useful as "why no" when the next step is a
 confirmation somebody has to stand behind.
 
-## Five confirmations, five operations, five audit transitions
+## Every confirmation is its own operation and its own audit transition
 
-Profile, remote opt-in, licence acknowledgement, model import and provider
-admission are **separate**. Collapsed into one "yes", an operator consents to
-five things believing they consented to one. Each is its own row here, with
-its own transition, and `Confirmation` has exactly five members so that a
-sixth thing cannot be quietly folded into an existing one.
+Profile, remote opt-in, licence acknowledgement, model import, model
+acquisition and provider admission are **separate**. Collapsed into one
+"yes", an operator consents to six things believing they consented to one.
+Each is its own row here with its own transition, and a new one is added as
+a new member rather than folded into an existing one's wording -- which is
+how `model acquisition` arrived (#96).
 
 ## Three vocabularies that must not merge
 
@@ -128,14 +129,20 @@ class ProviderState(str, Enum):
 class Confirmation(str, Enum):
     """The five things an operator may be asked to stand behind.
 
-    Five members, and no sixth. A new thing to consent to has to be added
-    here, where it is visible, rather than folded into one of these.
+    A new thing to consent to is added **here**, where it is visible and
+    where it gets its own row, its own reason and its own audit transition --
+    never folded into an existing member's wording. `model acquisition`
+    arrived that way (#96): downloading gibibytes onto this disk is not
+    covered by having consented to route a sanitised question off-node, and a
+    member whose text had grown to cover both would have been one consent
+    wearing two names.
     """
 
     PROFILE = "profile"
     REMOTE_OPT_IN = "remote opt-in"
     LICENSE_ACKNOWLEDGEMENT = "license acknowledgement"
     MODEL_IMPORT = "model import"
+    MODEL_ACQUISITION = "model acquisition"
     PROVIDER_ADMISSION = "provider admission"
 
 
@@ -148,6 +155,7 @@ TRANSITION_FOR = {
     Confirmation.REMOTE_OPT_IN: "mio.remote.opt_in",
     Confirmation.LICENSE_ACKNOWLEDGEMENT: "mio.model.license_acknowledged",
     Confirmation.MODEL_IMPORT: "mio.model.import.promoted",
+    Confirmation.MODEL_ACQUISITION: "mio.model.acquisition.planned",
     Confirmation.PROVIDER_ADMISSION: "mio.provider.admitted",
 }
 
@@ -514,6 +522,7 @@ def _operations(facts: ViewFacts) -> tuple:
         _remote_operation(facts),
         _license_operation(facts),
         _import_operation(facts),
+        _acquisition_operation(facts),
         _admission_operation(facts),
     )
 
@@ -590,6 +599,26 @@ def _import_operation(facts: ViewFacts) -> Operation:
         confirmation=Confirmation.MODEL_IMPORT,
         available=True,
         reason=f"{len(facts.inbox)} artifact(s) placed and a catalog that declares a model",
+    )
+
+
+def _acquisition_operation(facts: ViewFacts) -> Operation:
+    """Never available in this build: there is no fetcher to confirm.
+
+    Absent rather than disabled. A node with no acquisition path has nothing
+    for an operator to turn on, and showing the confirmation anyway -- with
+    that as its reason -- is what stops somebody looking for the setting.
+    """
+
+    return Operation(
+        confirmation=Confirmation.MODEL_ACQUISITION,
+        available=False,
+        reason=(
+            "this build contains no fetcher, so there is no acquisition path "
+            "to confirm. It is absent rather than switched off, and the "
+            "offline import route is unaffected: a node that cannot download "
+            "installs from an operator's media"
+        ),
     )
 
 
