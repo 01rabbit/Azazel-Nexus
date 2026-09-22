@@ -157,6 +157,19 @@ _LUKS_UUID_PREFIX = "CRYPT-LUKS"
 #: encrypted record, and into the audit only through the HMAC.
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
+#: The platform baseline, from `docs/platform-baseline.md` (ADR-0002).
+#:
+#: One distribution and one architecture, because a campaign that ran on two
+#: produces evidence for neither: the reserve is measured under a kernel, an
+#: allocator and a service manager, and those are the distribution's.
+#: `os-release` `ID` and `VERSION_ID` are matched -- never `PRETTY_NAME`,
+#: which is a sentence a vendor may rewrite between point releases.
+BASELINE_OS_ID = "debian"
+BASELINE_OS_VERSION_ID = "13"
+#: `uname -m` for what Debian calls `amd64`. The two names are the same
+#: machine; this is the one the kernel reports.
+BASELINE_ARCHITECTURE = "x86_64"
+
 #: Where the record lives, from `layout.LAYOUT`. Named here so that the CLI
 #: and this module cannot disagree about which directory has to be encrypted.
 COMMISSIONING_DIR = Path("/etc/azazel/commissioning")
@@ -177,6 +190,31 @@ def _read_first_line(path: Path) -> Optional[str]:
         return None
 
 
+def _os_release_values(path: Path) -> dict[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip().strip('"')
+    return values
+
+
+def read_os_identity(path: Path) -> tuple[Optional[str], Optional[str]]:
+    """`(ID, VERSION_ID)` from `os-release`, or `(None, None)`.
+
+    The baseline is matched on these two fields and not on the human-readable
+    name: `PRETTY_NAME` is prose, and a host whose prose was edited would
+    pass or fail for a reason that has nothing to do with what is installed.
+    """
+
+    values = _os_release_values(path)
+    return values.get("ID") or None, values.get("VERSION_ID") or None
+
+
 def read_os_release(path: Path) -> Optional[str]:
     """`PRETTY_NAME`, or `ID` and `VERSION_ID`, or nothing.
 
@@ -185,15 +223,7 @@ def read_os_release(path: Path) -> Optional[str]:
     a fact nobody could check against the machine.
     """
 
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            values[key.strip()] = value.strip().strip('"')
+    values = _os_release_values(path)
     if values.get("PRETTY_NAME"):
         return values["PRETTY_NAME"]
     if values.get("ID") and values.get("VERSION_ID"):
@@ -275,6 +305,9 @@ class ReadonlyInventory:
     usable_mib: Optional[int] = None
     architecture: Optional[str] = None
     distribution: Optional[str] = None
+    #: `ID` and `VERSION_ID` from `os-release`, matched against the baseline.
+    os_id: Optional[str] = None
+    os_version_id: Optional[str] = None
     kernel_release: Optional[str] = None
     storage_total_gib: Optional[int] = None
     storage_free_gib: Optional[int] = None
@@ -286,6 +319,22 @@ class ReadonlyInventory:
     #: and the two must not collapse into the same `False`.
     wireless_enumerated: bool = False
     link_observed: Optional[bool] = None
+
+    @property
+    def on_the_baseline_platform(self) -> bool:
+        """Debian 13 on x86_64, and nothing else.
+
+        Not a preference: `HG-05` measures a reserve under one kernel, one
+        allocator and one service manager. A record from another distribution
+        is a record of another platform, and this build has no way to say by
+        how much.
+        """
+
+        return (
+            self.os_id == BASELINE_OS_ID
+            and self.os_version_id == BASELINE_OS_VERSION_ID
+            and self.architecture == BASELINE_ARCHITECTURE
+        )
 
     @property
     def eight_gib_class(self) -> bool:
@@ -306,9 +355,17 @@ class ReadonlyInventory:
         missing: list[str] = []
         if not self.eight_gib_class:
             missing.append("A-1")
+        # One code per fact: an architecture that is not the baseline's is
+        # `A-2`, a distribution that is not the baseline's is `A-3`. A single
+        # "not the baseline" code would tell an operator to look at both.
+        if self.architecture != BASELINE_ARCHITECTURE:
+            missing.append("A-2")
+        if self.distribution is None or (self.os_id, self.os_version_id) != (
+            BASELINE_OS_ID,
+            BASELINE_OS_VERSION_ID,
+        ):
+            missing.append("A-3")
         for code, value in (
-            ("A-2", self.architecture),
-            ("A-3", self.distribution),
             ("A-4", self.kernel_release),
             ("A-5", self.storage_total_gib),
             ("A-6", self.storage_free_gib),
@@ -325,7 +382,7 @@ class ReadonlyInventory:
             missing.append("A-10")
         if self.link_observed is None:
             missing.append("A-11")
-        return tuple(missing)
+        return tuple(dict.fromkeys(missing))
 
 
 def collect_readonly_inventory(
@@ -378,10 +435,13 @@ def collect_readonly_inventory(
     except OSError:
         wireless_enumerated = False
 
+    os_id, os_version_id = read_os_identity(os_release)
     return ReadonlyInventory(
         usable_mib=usable_mib,
         architecture=machine,
         distribution=read_os_release(os_release),
+        os_id=os_id,
+        os_version_id=os_version_id,
         kernel_release=release,
         storage_total_gib=total_gib,
         storage_free_gib=free_gib,

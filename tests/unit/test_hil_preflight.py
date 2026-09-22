@@ -92,7 +92,9 @@ def inventory(**overrides) -> ReadonlyInventory:
     base = ReadonlyInventory(
         usable_mib=EIGHT_GIB_MIB,
         architecture="x86_64",
-        distribution="Synthetic Linux 1",
+        distribution="Debian GNU/Linux 13 (trixie)",
+        os_id="debian",
+        os_version_id="13",
         kernel_release="6.1.0-synthetic",
         storage_total_gib=256,
         storage_free_gib=200,
@@ -634,7 +636,9 @@ def _collect(tmp_path, **overrides):
     meminfo = tmp_path / "meminfo"
     meminfo.write_text(f"MemTotal:       {EIGHT_GIB_MIB * 1024} kB\n")
     os_release = tmp_path / "os-release"
-    os_release.write_text('PRETTY_NAME="Synthetic Linux 1"\n')
+    os_release.write_text(
+        'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n'
+    )
     arguments = {
         "interfaces": (readout(SYNTHETIC_MAC),),
         "sysfs_net": node_net,
@@ -785,7 +789,9 @@ def _protected_node(tmp_path: Path) -> dict:
     meminfo = tmp_path / "meminfo"
     meminfo.write_text(f"MemTotal:       {EIGHT_GIB_MIB * 1024} kB\n")
     os_release = tmp_path / "os-release"
-    os_release.write_text('PRETTY_NAME="Synthetic Linux 1"\n')
+    os_release.write_text(
+        'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n'
+    )
 
     record_dir = tmp_path / "commissioning"
     record_dir.mkdir()
@@ -1315,3 +1321,78 @@ def test_the_preflight_command_never_binds_an_exception_it_reports():
         f"the preflight binds {bound}; a bound exception is one a later edit "
         "prints, and a refusal's message quotes what it refused"
     )
+
+
+# -- one platform, and the campaign is for that platform ------------------
+#
+# `HG-05` measures a reserve under one kernel, one allocator and one service
+# manager, and those belong to the distribution. A record taken on another is
+# a record of another platform, and this build has no way to say by how much.
+
+
+@pytest.mark.parametrize(
+    "code,override",
+    [
+        ("A-3", {"os_id": "ubuntu", "os_version_id": "24.04"}),
+        ("A-3", {"os_id": "debian", "os_version_id": "12"}),
+        ("A-3", {"os_id": "fedora", "os_version_id": "43"}),
+        ("A-3", {"os_id": None, "os_version_id": None}),
+        ("A-2", {"architecture": "aarch64"}),
+        ("A-2", {"architecture": None}),
+    ],
+)
+def test_a_host_off_the_baseline_platform_is_blocked(code, override):
+    result = run(inventory(**override))
+    assert result.outcome == BLOCKED
+    assert code in result.missing
+
+
+def test_the_baseline_is_matched_on_the_identifier_and_not_on_the_prose():
+    """`PRETTY_NAME` is a sentence a vendor may rewrite between point
+    releases; a host whose prose was edited would pass or fail for a reason
+    that has nothing to do with what is installed."""
+
+    lying = inventory(distribution="Debian GNU/Linux 13 (trixie)", os_id="ubuntu")
+    assert "A-3" in lying.missing
+    honest = inventory(distribution="a name nobody recognises")
+    assert "A-3" not in honest.missing
+
+
+def test_the_baseline_names_one_distribution_and_one_architecture():
+    """Two would be a campaign whose result names neither."""
+
+    assert preflight.BASELINE_OS_ID == "debian"
+    assert preflight.BASELINE_OS_VERSION_ID == "13"
+    assert preflight.BASELINE_ARCHITECTURE == "x86_64"
+    assert inventory().on_the_baseline_platform is True
+
+
+def test_the_identity_is_read_from_os_release(tmp_path):
+    path = tmp_path / "os-release"
+    path.write_text('PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n')
+    assert preflight.read_os_identity(path) == ("debian", "13")
+    assert preflight.read_os_identity(tmp_path / "absent") == (None, None)
+
+    partial = tmp_path / "partial"
+    partial.write_text("ID=debian\n")
+    assert preflight.read_os_identity(partial) == ("debian", None)
+
+
+def test_a_host_that_cannot_protect_raw_identity_is_refused_and_writes_nothing(tmp_path):
+    """The LUKS2 rule, stated as the disposition it produces: such a host is
+    refused for HIL and for operational deployment, and the preflight leaves
+    no raw identity behind on it. What it may still be used for is
+    diagnostics, which need no record."""
+
+    result = run(inventory(luks_available=False))
+    assert result.outcome == BLOCKED
+    assert "A-7" in result.missing
+
+    directory = tmp_path / "commissioning"
+    with pytest.raises(PreflightRefused):
+        persist_commissioning_record(
+            record(),
+            directory=directory,
+            protection=Protection(luks_backed=False, key_available=True),
+        )
+    assert not directory.exists()
