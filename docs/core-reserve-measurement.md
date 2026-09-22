@@ -78,6 +78,10 @@ the samples is a measurement of a shorter run that does not say so.
 ## 5. The procedure
 
 1. Install both distributions on the target host and complete commissioning.
+   The host runs **Debian 13 / amd64**, the program's initial platform
+   baseline — a reserve measured on another distribution is a reserve of
+   another platform ([program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md), adopted in
+   [ADR-0002](adr/0002-debian-13-baseline.md)).
    The target host is **a generic rugged x86_64 Linux PC at the resource class
    being measured** ([hardware gates](hardware-gates.md), *What "the target
    hardware" means here*). A Raspberry-Pi-class device, a laptop or a

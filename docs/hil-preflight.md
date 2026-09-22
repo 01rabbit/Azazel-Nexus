@@ -61,7 +61,25 @@ is a preflight somebody proceeds from.** The absence is structural:
 `hil_preflight.OUTCOMES` has two entries and a result carrying anything else
 cannot be constructed.
 
-## 4. What it establishes, and who establishes it
+## 4. One platform
+
+The campaign is for **Debian 13 / amd64** — the program's initial platform
+baseline ([program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md), adopted in
+[ADR-0002](adr/0002-debian-13-baseline.md)).
+
+A host that is not on it is blocked: `A-2` when the architecture is not
+`x86_64`, `A-3` when `os-release` does not report `ID=debian` and
+`VERSION_ID=13`. The match is on those two identifiers and **never on
+`PRETTY_NAME`**, which is a sentence a vendor may rewrite between point
+releases — a host whose prose was edited would pass or fail for a reason that
+has nothing to do with what is installed.
+
+This is not a preference. `HG-05` measures a reserve under one kernel, one
+allocator and one service manager, and those belong to the distribution: a
+record taken on another is a record of another platform, and nothing here can
+say by how much they differ.
+
+## 5. What it establishes, and who establishes it
 
 | | established by | items |
 | --- | --- | --- |
@@ -78,7 +96,7 @@ Connectivity (`A-11`) is read from the kernel's own view and is **never handed
 to the role path**. It is a fact about the node, not about which port does
 what.
 
-## 5. What a reader is shown
+## 6. What a reader is shown
 
 | blocked | ready |
 | --- | --- |
@@ -93,7 +111,7 @@ what.
 what is missing, because the name is what the operator needs; the value of the
 facts that are present is not.
 
-## 6. Where raw identity goes
+## 7. Where raw identity goes
 
 Exactly where [inventory confidentiality](inventory-confidentiality.md) §3
 says: the permanent MACs, the serials, the TPM identity, the asset ID and the
@@ -109,18 +127,20 @@ fingerprint, and the outcome with the classification of what blocked it.
 format the wizard already produces, stored as the document its own digest
 covers. A second format would be a second identity policy.
 
-## 7. A refusal writes nothing
+## 8. A refusal writes nothing
 
 If the encrypted-storage prerequisite does not hold — no LUKS-backed device
 under the record directory, or no protection key — the raw inventory has
 nowhere it may go, **so it goes nowhere**: the record is not written at all,
 and the answer is `HIL_PREFLIGHT_BLOCKED` against `A-7` and `A-8`.
 
-A preflight that wrote the record and then complained about the storage would
-have already done the thing it was refusing. The refusal lives in the one
+Such a host is refused for hardware-in-the-loop measurement and for
+operational deployment, and may be used for diagnostics only. A preflight that
+wrote the record and then complained about the storage would have already done
+the thing it was refusing. The refusal lives in the one
 function that writes raw identity, so the next caller cannot route around it.
 
-## 8. How the node reads itself
+## 9. How the node reads itself
 
 Every source is a file or a `stat`. Nothing is executed.
 
@@ -135,7 +155,7 @@ A LUKS check that shelled out to `cryptsetup` would report "not encrypted" on
 a host where the tool is merely absent — the wrong answer in the one direction
 that matters.
 
-## 9. What it still does not decide
+## 10. What it still does not decide
 
 A ready preflight says a campaign **may begin**. It is not a measurement, not
 a reserve, not an admission and not an approval. `HG-05` is closed by the run
