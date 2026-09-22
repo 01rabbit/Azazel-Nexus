@@ -47,9 +47,9 @@ Every row is quoted from where it already stands; none of it is new here.
 | --- | --- |
 | a **generic rugged x86_64 Linux PC, at the resource class actually deployed** — not a named model and not any particular vendor's box | [hardware gates](hardware-gates.md) |
 | architecture `x86_64`; other values are rejected by product admission | [support matrix](support-matrix.md) §3 |
-| systemd, with nftables, `tc`, cgroup v2, TPM 2.0 tools and LUKS2 available. **No distribution, release or kernel series is named anywhere** | [support matrix](support-matrix.md) §3, §7 |
+| **Debian 13 / amd64** — the program's initial platform baseline. systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools and LUKS2 come from it; the kernel series is whatever it ships and is recorded per entry, not declared | [program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md); [ADR-0002](adr/0002-debian-13-baseline.md); [support matrix](support-matrix.md) §3 |
 | a headless console MUST be supported; a touchscreen is an optional presentation device | [support matrix](support-matrix.md) §3 |
-| UEFI Secure Boot where supported, TPM 2.0 measured boot, LUKS2-encrypted system and data volumes. With no TPM: a boot-time operator secret, and measured-boot evidence **labeled unavailable** | [support matrix](support-matrix.md) §3 |
+| UEFI with Secure Boot enabled by default where supported. **LUKS2 required**; a TPM2 key protector optional, a recovery passphrase required. A host that cannot provide LUKS2 is refused for HIL and for operational deployment, and is diagnostics-only | [program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md); [support matrix](support-matrix.md) §3 |
 | serviceable storage, battery power, touchscreen or external display support, and controllable network interfaces | [README](../README.md) |
 | two or more labeled network adapters, and a passive tap or approved capture method | [operations](operations.md) |
 | an interface layout **unknown until inventory** — roles are confirmed by an operator, never inferred | [commissioning](commissioning.md) |

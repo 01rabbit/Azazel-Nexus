@@ -47,7 +47,7 @@ Out of scope: any device-vendor-specific implementation and a cloud dependency f
 
 ## 2. Target platform, resource envelopes, commissioning, and admission
 
-The reference OS is a supported long-term-support Linux distribution with systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools, LUKS2, and a current kernel. The implementation MUST support a headless console; a touchscreen is an optional presentation device.
+The reference OS is **Debian 13 / amd64**, fixed as the program's initial platform baseline ([program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md); adopted in [ADR-0002](adr/0002-debian-13-baseline.md)). systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools and LUKS2 come from it, and no other distribution is a co-equal v1 support target. The implementation MUST support a headless console; a touchscreen is an optional presentation device.
 
 ### 2.1 Resource profile selection
 
@@ -536,7 +536,7 @@ Acceptance requires certificate chain and pin validation, manifest signature, al
 
 ## 12. Security, boot, update, and recovery
 
-The production assumption is UEFI Secure Boot where supported, TPM 2.0 measured boot, and LUKS2-encrypted system and data volumes. The LUKS data key SHOULD be TPM-sealed to approved PCR measurements with a recovery passphrase held under mission custody. If a TPM is unavailable, require a boot-time operator secret and label measured-boot evidence unavailable; do not silently claim hardware attestation.
+The boot path is UEFI, with Secure Boot enabled by default on machines that support it. **LUKS2-encrypted system and data volumes are required**, and a host that cannot provide LUKS2 is refused for operational deployment. TPM 2.0 measured boot is assumed where a TPM exists. The LUKS data key SHOULD be TPM-sealed to approved PCR measurements with a recovery passphrase held under mission custody. If a TPM is unavailable, require a boot-time operator secret and label measured-boot evidence unavailable; do not silently claim hardware attestation.
 
 The activation controller is the only component permitted to unmask operational services and issue generation-scoped systemd credentials. On every boot it validates the operator/site signature, hardware inventory digest, policy digest, security epoch, generation counter, expiry, renderer digest, and every generated-file digest. Any mismatch leaves operational units masked. An old-generation replay, a replaced renderer, a substituted path, a parallel boot race, and a service-default fallback MUST each produce zero operational packets and zero actions. Activation failure withdraws exposure, expires affected leases, stops or quarantines Deception, restores only owned last-known-good resources, and reports `ROLLBACK_INCOMPLETE` until observed state matches. Software rollback never restores obsolete trust state, policy, or hardware bindings. The controller MAY install the arbiter's intent-signing credential but MUST NOT be able to read or reuse it.
 

@@ -23,7 +23,8 @@ operational evidence exist). See the
 | **Knowledge Lite** | functional: a correct bundle is imported offline by an operator and its claims served read-only. Not a release, and not a statement about this node's cryptographic implementation ([the consumer](docs/knowledge-lite-consumer.md)) |
 | **Deception Lite** | **loopback-only.** The lifecycle and a functional layer bound to a private Unix socket are implemented. External reachability, redirection and field engagement are **not demonstrated** ([Deception Lite](docs/deception-lite.md)) |
 | **M.I.O. (Mission Intelligence Operator)** | M.I.O. routing and commissioning control plane implemented; provider execution unavailable pending hardware evidence and provider integration ([runtime control plane](docs/mio-runtime.md)) |
-| **Installer and HIL preflight** | target-local preflight implemented (`azazel-nexus hil-preflight`); **8 GiB target evidence pending** ([HIL preflight](docs/hil-preflight.md), [Nexus #115](https://github.com/01rabbit/Azazel-Nexus/issues/115)) |
+| **Platform baseline** | **Debian 13 / amd64**, fixed for v1 ([program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md), adopted in [ADR-0002](docs/adr/0002-debian-13-baseline.md)). Nothing has been installed from it: no host, no image, no measurement. Ubuntu, Fedora and the RHEL family are a [future evaluation profile](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/future-platform-profiles.md), not a v1 support target |
+| **Installer and HIL preflight** | target-local preflight implemented (`azazel-nexus hil-preflight`), and it refuses a host off the baseline; **8 GiB target evidence pending** ([HIL preflight](docs/hil-preflight.md), [Nexus #115](https://github.com/01rabbit/Azazel-Nexus/issues/115)) |
 | **AZ-04 Knowledge / AZ-06 Deception** | optional expansion. They extend depth and endurance through explicit contracts and **do not increase the baseline node's authority** ([integrated-node doctrine](docs/nexus-integrated-node.md)) |
 
 **What this does not say.** No measurement of the Core reserve exists on any
@@ -59,7 +60,7 @@ open.
 
 ## Design commitments
 
-- **Linux-first field appliance.** The target is a generic rugged x86_64 Linux PC with serviceable storage, battery power, touchscreen or external display support, and controllable network interfaces.
+- **Linux-first field appliance.** The target is a generic rugged x86_64 Linux PC with serviceable storage, battery power, touchscreen or external display support, and controllable network interfaces, running the program's platform baseline — **Debian 13 / amd64**, with LUKS2 required and Secure Boot enabled where the machine supports it.
 - **Deterministic control plane.** Models may summarize, prioritize, or recommend; only policy-bound deterministic logic can authorize enforcement.
 - **Offline-safe default.** Loss of cloud access, a mission module, or an AI service never disables local evidence collection, policy evaluation, audit, or configured containment.
 - **Evidence before interpretation.** Raw artifacts, normalized events, decisions, and enforcement results are correlated and retained with provenance.

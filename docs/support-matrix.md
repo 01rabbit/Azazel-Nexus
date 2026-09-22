@@ -59,14 +59,16 @@ qualification, and a machine satisfying all of them is still untested.
 | Product and deployment | `AZ-07` Azazel-Nexus Gateway — persistent, self-contained installation on a generic rugged x86_64 Linux PC | R0 baseline, product definitions |
 | Architecture | `x86_64`; other values are rejected by product admission | [contract ownership](contract-ownership.md) §4.1 |
 | Init and service model | systemd; the packaging target is "x86_64 systemd deployment" | program plan §5 R3 |
-| Reference OS | "a supported long-term-support Linux distribution with systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools, LUKS2, and a current kernel" — **no distribution, release, or kernel series is named anywhere** | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2; see §7 |
+| Reference OS | **Debian 13 / amd64**, installed from a signed netinst or a verified offline install bundle, with `main` plus `non-free-firmware`. systemd, nftables, `tc`, cgroup v2, TPM 2.0 tools and LUKS2 come from it. Updates are signed bundles against a pinned apt snapshot; there is no automatic update | [program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md), adopted in [ADR-0002](adr/0002-debian-13-baseline.md) |
 | Console | a headless console MUST be supported; a touchscreen is an optional presentation device | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2 |
-| Platform security assumption | UEFI Secure Boot where supported, TPM 2.0 measured boot, LUKS2-encrypted system and data volumes; with no TPM, a boot-time operator secret and measured-boot evidence labeled unavailable | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §12 |
+| Platform security assumption | UEFI, with **Secure Boot enabled by default** on machines that support it (program plan §15 OF-03). **LUKS2 is required**; a TPM2 key protector is optional and a recovery passphrase is required. A host that cannot provide LUKS2 stores no raw identity, is refused for hardware-in-the-loop measurement and for operational deployment, and may be used for diagnostics only | [program plan §15 OF-07](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md); [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §12 |
 | Language and runtime | CPython **≥ 3.11**, both distributions. A **software support baseline**, not a hardware qualification — see §3.3 | owner decision, 2026-09-21 ([#67](https://github.com/01rabbit/Azazel-Nexus/issues/67)) |
 | Capability rule | `resource profile ∩ topology profile ∩ verified asset set ∩ current trust/health state`; RAM alone enables nothing | [capability model](capability-model.md) §1 |
 
 Nothing in this table says any particular machine, distribution, or kernel
-satisfies it.
+satisfies it. **The baseline row is cited, not restated**: the frame is fixed
+once in the program plan, and a second statement of it here would be a copy
+with nothing to keep it honest.
 
 ### 3.1 Resource classes
 
@@ -292,13 +294,11 @@ measurement, not by a contributor choosing a plausible value.
 
 | Undeclared | What is actually written | How it gets declared |
 | --- | --- | --- |
-| OS distribution and release | "a supported long-term-support Linux distribution" — no distribution or version ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2) | as the `os_abi` of the first tested compatibility tuple |
-| Kernel series | "a current kernel" — no series or minimum ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §2) | as above |
+| Kernel series | Bounded, not declared: whatever Debian 13 ships. No series, minimum or maximum is stated, and a point release changes it without changing the baseline | as the `os_abi` of the first tested compatibility tuple |
 | Minimum versions of systemd, nftables, `tc`, cgroup v2 tooling, TPM 2.0 tooling, LUKS2 | The components are named; no version floor is stated anywhere | with the first tested tuple |
 | Required CPU feature set | The tuple carries `cpu_features` ([contract ownership](contract-ownership.md) §4.1); no values are declared, and model admission is expected to constrain them | with the first admitted model and the first tuple |
 | Measured Core reserve | Explicitly **unmeasured** for Nexus ([capability model](capability-model.md) §2) | by measurement on real hardware |
 | Supported NIC, capture, and storage device families | Nothing. Commissioning identifies interfaces by composite identity; no device family is declared compatible | per qualified entry, §5.1 |
-| Firmware/boot path requirements | "UEFI Secure Boot where supported" ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §12); the roadmaps state no UEFI, Secure Boot, or legacy-BIOS requirement | by owner decision, recorded here |
 | Security epoch values and `max_rollback_version` policy | The fields exist in the tested tuple; no values or numbering scheme are declared | with the release-admission policy ([update channel](update-channel.md) §3) |
 | Support window, release cadence, and end-of-support policy | None. Program releases are "capability gates rather than calendar commitments" (program plan §5), so no window exists to declare | by owner decision, if a release ever makes one meaningful |
 | Which Edge x86_64 package is admissible | Edge has "no single product package version" (R0 baseline), and Nexus requires that an admitted Edge package declare a single authoritative decision and enforcement boundary ([IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §1) | by Azazel-Edge, then by a tested tuple here |
