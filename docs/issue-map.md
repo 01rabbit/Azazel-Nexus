@@ -1,8 +1,8 @@
 # Live issue map and evidence status
 
-Checked: 2026-09-24. Open-issue state is a point-in-time GitHub snapshot;
+Checked: 2026-09-26. Open-issue state is a point-in-time GitHub snapshot;
 recheck issue comments, linked PRs, acceptance checkboxes, and current CI before
-changing a label or closing an issue. At the check time there were **21 open
+changing a label or closing an issue. At the check time there were **19 open
 issues and no open pull requests**. Classifications below describe the
 remaining acceptance work, not just whether code exists.
 
@@ -40,7 +40,7 @@ as a full local pass.
 | [#75](https://github.com/01rabbit/Azazel-Nexus/issues/75) | software-complete / hardware-unverified | The narrow status remains valid, but its reported test/E2E counts are stale and need refresh; the issue stays open pending hardware evidence. |
 | [#70](https://github.com/01rabbit/Azazel-Nexus/issues/70) | design decision required | The handwritten Ed25519 verifier's supported-security claim remains contingent on independent review. Differential tests alone do not close that review. |
 | [#68](https://github.com/01rabbit/Azazel-Nexus/issues/68) | software-complete / hardware-unverified | Measurement input path and software-side criteria are complete; HG-05 remains unmeasured on real hardware. |
-| [#56](https://github.com/01rabbit/Azazel-Nexus/issues/56) | active implementation | Current `main` runs the integration harness only as non-root. The uncommitted workflow asserts that identity and requires its CORE + Lite stage to execute; a separate root job runs both the 88-case suite and full harness, requiring `install accounts` and CORE + Lite stages to execute. Locally, 88 targeted cases passed as non-root, but root privileges are unavailable here and neither modified hosted job has run. The suite does not prove systemd or live-provider behavior. |
+| [#56](https://github.com/01rabbit/Azazel-Nexus/issues/56) | review / hosted CI pending | The feature branch adds a root job alongside the non-root integration job; it runs the 88-case suite and full harness and requires the install-accounts and CORE + Lite stages to execute. The recorded 88 targeted cases passed as non-root. The new GitHub Actions jobs have not run yet; root privileges are unavailable locally. Next: review the proposed workflow in its PR and inspect both hosted job results. This does not prove systemd enforcement or live-provider behavior. |
 | [#55](https://github.com/01rabbit/Azazel-Nexus/issues/55) | active implementation | Six of seven criteria are complete; recording the reason for audit state transitions remains. #5 shares the missing route/provenance/fallback-to-AuditLedger wiring. |
 | [#53](https://github.com/01rabbit/Azazel-Nexus/issues/53) | active implementation | Its own status says the Lite control/state surfaces are implemented, but children #5, #6, #55, #56 and hardware-dependent #68 remain open; the parent must remain open. |
 | [#44](https://github.com/01rabbit/Azazel-Nexus/issues/44) | software-complete / hardware-unverified | All software integration criteria are checked; its unchecked final item is real Edge startup under HG-07. |
