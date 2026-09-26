@@ -11,7 +11,12 @@ install → units masked → inventory → operator-confirmed commissioning
 
 The last stage is Nexus#56's and is not part of #43's sequence. It depends on
 nothing the others set up — it drives the library rather than the installed
-tree — which is why it is last and why it runs on a runner that is not root.
+tree. The ordinary integration job runs the harness as non-root; the separate
+root job runs the 88-case CORE + Lite suite and the harness on a fresh hosted
+VM, requiring `install accounts` and `CORE + Lite configurations` to actually
+execute. When both modified jobs pass, they verify the privilege-dependent
+software path without treating either run as HIL evidence; neither result has
+been observed from the uncommitted workflow yet.
 
 ## It establishes that the distribution does not contradict itself
 

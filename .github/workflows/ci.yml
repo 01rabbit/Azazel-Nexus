@@ -44,6 +44,19 @@ jobs:
       - name: Install the runtime distribution
         run: python -m pip install -e ./runtime
 
+      # The hosted runner is a non-root identity. Run the CORE/Lite composition
+      # explicitly here as well as in the full suite so a later runner-image
+      # change cannot silently make this half of Nexus#56 disappear.
+      - name: Prove CORE + Lite integration as non-root
+        run: |
+          python - <<'PY'
+          import os
+          if os.geteuid() == 0:
+              raise SystemExit("the runner unexpectedly executes as root")
+          PY
+          PYTHONDONTWRITEBYTECODE=1 python -m pytest \
+            -p no:cacheprovider tests/unit/test_core_lite_integration.py -q
+
       - name: Run unit tests
         run: python -m pytest tests/unit -q
 
@@ -101,6 +114,66 @@ jobs:
           if int(match.group(1)) < 50:
               sys.exit(f"only {match.group(1)} differential cases ran")
           print(f"{match.group(1)} differential cases agreed with libsodium")
+          PY
+
+  integration-as-root:
+    name: Install-to-status integration as root
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test and runtime distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          python -m pip install -e ./runtime
+
+      - name: Run CORE + Lite integration suite as root
+        run: |
+          python_bin="$(command -v python)"
+          sudo -- "$python_bin" -c \
+            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
+          sudo env \
+            PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPATH="$PWD/src:$PWD/runtime/src" \
+            "$python_bin" -m pytest -p no:cacheprovider \
+            tests/unit/test_core_lite_integration.py -q
+
+      # The complete harness includes the real install-accounts stage, which
+      # creates system accounts in this disposable hosted VM. Keep generated
+      # files outside the checkout and disable bytecode before running it.
+      - name: Run install-to-status harness as root
+        run: |
+          python_bin="$(command -v python)"
+          sudo -- "$python_bin" -c \
+            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
+          e2e_root="$(sudo mktemp -d /tmp/az-e2e-root.XXXXXX)"
+          report="$(sudo mktemp /tmp/az-e2e-root-report.XXXXXX)"
+          sudo env \
+            PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPATH="$PWD/src:$PWD/runtime/src" \
+            "$python_bin" tools/e2e.py --root "$e2e_root" --report "$report"
+          sudo env REPORT_PATH="$report" "$python_bin" - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          if os.geteuid() != 0:
+              sys.exit("the report check unexpectedly executes as non-root")
+          text = pathlib.Path(os.environ["REPORT_PATH"]).read_text()
+          for stage in ("install accounts", "CORE + Lite configurations"):
+              if not re.search(r"^ok\s+" + re.escape(stage) + r"\s+\(", text, re.M):
+                  sys.exit(f"root harness did not execute required stage: {stage}")
+          if re.search(r"^FAILED\s", text, re.M):
+              sys.exit("the root harness report contains a failed stage")
+          print("root harness executed install accounts and CORE + Lite stages")
           PY
 
   core-has-no-optional-dependency:
@@ -909,15 +982,22 @@ jobs:
       # it as the reason for the rest.
       - name: Run the integration harness
         run: |
-          sudo mkdir -p /tmp/az-e2e
-          sudo chown "$(id -u):$(id -g)" /tmp/az-e2e
-          python tools/e2e.py --root /tmp/az-e2e --report /tmp/az-e2e/report.md
+          python - <<'PY'
+          import os
+          if os.geteuid() == 0:
+              raise SystemExit("the integration runner unexpectedly executes as root")
+          PY
+          e2e_root="$(mktemp -d /tmp/az-e2e.XXXXXX)"
+          python tools/e2e.py --root "$e2e_root" --report "$RUNNER_TEMP/az-e2e-report.md"
 
       - name: Refuse a report whose stages all skipped
+        env:
+          REPORT_PATH: ${{ runner.temp }}/az-e2e-report.md
         run: |
           python - <<'PY'
           import pathlib, re, sys
-          text = pathlib.Path("/tmp/az-e2e/report.md").read_text()
+          import os
+          text = pathlib.Path(os.environ["REPORT_PATH"]).read_text()
           print(text)
           match = re.search(r"passed (\d+), not executed (\d+), failed (\d+), of (\d+)", text)
           if not match:
@@ -939,6 +1019,8 @@ jobs:
           # so runs everywhere this job does.
           if passed < 10:
               sys.exit(f"only {passed} of {total} stages executed; expected 10")
+          if not re.search(r"^ok\s+CORE \+ Lite configurations\s+\(", text, re.M):
+              sys.exit("the CORE + Lite configurations stage did not execute")
           PY
 
   fabric-extra:
