@@ -138,6 +138,7 @@ This division is intentional. It keeps the authority to change the field boundar
 **Plan**
 
 - [Implementation roadmap](docs/roadmap.md) — the staged delivery plan. It describes what is intended, not what exists; this page's table is what exists.
+- [Live issue map and evidence status](docs/issue-map.md) — current open-issue classifications, main CI evidence, and hardware boundary.
 
 **Project**
 
