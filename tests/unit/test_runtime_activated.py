@@ -34,7 +34,7 @@ from azazel_nexus.activation import (
     UnitTier,
     UnitVerdict,
 )
-from azazel_nexus.audit import AuditLedger
+from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus_runtime.activated import (
@@ -444,6 +444,57 @@ def test_a_narrowing_the_library_could_not_do_is_escalated(tmp_path):
     assert escalation.event["still_unreachable"]
 
 
+def test_audit_failure_does_not_skip_escalation_after_a_mask_failure(tmp_path):
+    class FailsFirstMask(RecordingUnitManager):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._failed_once = False
+
+        def mask(self, unit):
+            self.calls.append(("mask", unit))
+            if unit == CORE_UNITS[0].name and not self._failed_once:
+                self._failed_once = True
+                raise UnitOperationFailed(f"{unit} did not mask")
+            self._states[unit] = UnitState.MASKED
+
+    class UnavailableLedger:
+        def append(self, _event):
+            raise AuditUnavailable("synthetic ledger outage")
+
+    manager = FailsFirstMask(d.name for d in CORE_UNITS)
+    daemon = ActivationDaemon(
+        generations=GenerationStore(tmp_path / "nothing-promoted"),
+        ledger=UnavailableLedger(),
+        manager=manager,
+    )
+    with pytest.raises(AuditUnavailable):
+        daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    assert all(manager.state(definition.name) is UnitState.MASKED for definition in CORE_UNITS)
+    assert len(manager.calls) == len(CORE_UNITS) * 2
+
+
+def test_unexpected_generation_read_failure_remasks_all_governed_units(tmp_path):
+    generations = tmp_path / "generations"
+    broken = generations / "1"
+    broken.mkdir(parents=True)
+    (broken / "generation.json").write_text("{broken", encoding="utf-8")
+
+    manager = RecordingUnitManager(d.name for d in CORE_UNITS)
+    manager._states = {d.name: UnitState.ENABLED for d in CORE_UNITS}
+    daemon = ActivationDaemon(
+        generations=GenerationStore(generations),
+        ledger=AuditLedger(tmp_path / "ledger.jsonl"),
+        manager=manager,
+    )
+
+    with pytest.raises(ValueError):
+        daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    assert all(manager.state(definition.name) is UnitState.MASKED for definition in CORE_UNITS)
+    assert _events(tmp_path) == ["activation.composition_failed"]
+
+
 def test_a_unit_half_widened_is_still_taken_back(tmp_path):
     """The recorder notes the attempt before the call, not after.
 
@@ -487,13 +538,28 @@ def test_the_controllers_own_unit_has_no_key():
 
 def test_the_dbus_adapter_passes_a_method_and_a_unit_and_nothing_else():
     calls = []
-    manager = DbusUnitManager(call=lambda method, unit: calls.append((method, unit)))
+    states = {"azazel-auditd.service": "masked"}
+
+    def call(method, unit):
+        calls.append((method, unit))
+        if method == "UnmaskUnitFiles":
+            states[unit] = "disabled"
+        elif method == "EnableUnitFiles":
+            states[unit] = "enabled"
+        elif method == "MaskUnitFiles":
+            states[unit] = "masked"
+        if method == "GetUnitFileState":
+            return states[unit]
+
+    manager = DbusUnitManager(call=call)
     manager.unmask_and_enable("azazel-auditd.service")
     manager.mask("azazel-auditd.service")
     assert calls == [
         ("UnmaskUnitFiles", "azazel-auditd.service"),
         ("EnableUnitFiles", "azazel-auditd.service"),
+        ("GetUnitFileState", "azazel-auditd.service"),
         ("MaskUnitFiles", "azazel-auditd.service"),
+        ("GetUnitFileState", "azazel-auditd.service"),
     ]
     assert all(method in DbusUnitManager.METHODS for method, _ in calls)
 
@@ -507,6 +573,18 @@ def test_the_adapter_cannot_start_a_unit():
 
     assert "StartUnit" not in DbusUnitManager.METHODS
     assert not hasattr(DbusUnitManager, "start")
+
+
+def test_the_dbus_adapter_refuses_units_outside_its_fixed_table():
+    manager = DbusUnitManager(call=lambda *_: pytest.fail("must not call D-Bus"))
+    with pytest.raises(UnitOperationFailed):
+        manager.mask("sshd.service")
+
+
+def test_a_mask_reply_that_did_not_take_effect_is_a_manager_failure():
+    manager = DbusUnitManager(call=lambda method, unit: "enabled")
+    with pytest.raises(UnitOperationFailed, match="did not report.*masked"):
+        manager.mask("azazel-auditd.service")
 
 
 #: The modules allowed to start a process, contained the way

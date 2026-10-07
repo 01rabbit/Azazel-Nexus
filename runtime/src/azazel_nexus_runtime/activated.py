@@ -31,7 +31,12 @@ lookup and not an interpolation.
 
 from __future__ import annotations
 
+import os
+import re
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
@@ -55,7 +60,7 @@ from azazel_nexus.model_runtime import RUNTIMES
 
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
-from .units import UnitManager
+from .units import DbusUnitManager, UnitManager
 
 __all__ = [
     "ActivationDaemon",
@@ -167,8 +172,34 @@ class ActivationDaemon:
                 wired=wired_capabilities() if wired is None else wired,
             )
         except AuditUnavailable:
-            # The library has already masked everything. Nothing to take back,
-            # and nothing to record it with.
+            # The library attempts to narrow before it raises, but a failed
+            # mask plus an unavailable ledger must not skip this layer's
+            # broader fail-closed escalation.
+            if controller.unmaskable:
+                failures = self._remask_all(
+                    now=now,
+                    actor=actor,
+                    event_type="activation.audit_failure_remasked",
+                    error_type="AuditUnavailable",
+                )
+                if failures:
+                    raise RollbackFailed(
+                        "audit became unavailable while narrowing failed; these "
+                        f"governed units remain unmasked: {sorted(failures)}"
+                    )
+            raise
+        except Exception as exc:  # noqa: BLE001 - unexpected policy failure narrows
+            failures = self._remask_all(
+                now=now,
+                actor=actor,
+                event_type="activation.composition_failed",
+                error_type=type(exc).__name__,
+            )
+            if failures:
+                raise RollbackFailed(
+                    "an unexpected activation error occurred and these governed "
+                    f"units could not be remasked: {sorted(failures)}"
+                ) from exc
             raise
         if controller.unmaskable:
             # The library could not narrow something. It recorded that and
@@ -178,9 +209,33 @@ class ActivationDaemon:
             self._narrow_everything(
                 now=now, actor=actor, after=sorted(controller.unmaskable)
             )
-        if any(not verdict.granted and _is_failure(verdict) for verdict in outcome.verdicts):
+        if any(
+            not verdict.granted and _is_failure(verdict) for verdict in outcome.verdicts
+        ):
             self._roll_back(units, now=now, actor=actor, outcome=outcome)
         return outcome
+
+    def _remask_all(
+        self, *, now: str, actor: str, event_type: str, error_type: str
+    ) -> list[str]:
+        """Retry narrowing of every governed unit and record the attempt."""
+
+        failures: list[str] = []
+        for definition in self.definitions:
+            try:
+                self.manager.mask(definition.name)
+            except Exception as exc:  # noqa: BLE001 - collect all failures
+                failures.append(f"{definition.name}: {type(exc).__name__}")
+        self._record(
+            {
+                "event_type": event_type,
+                "error_type": error_type,
+                "remask_failures": sorted(failures),
+                "occurred_at": now,
+                "actor": actor,
+            }
+        )
+        return failures
 
     def _roll_back(
         self,
@@ -264,24 +319,108 @@ def _is_failure(verdict) -> bool:
     return verdict.reason.startswith("activation_failed")
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """One activation pass, then exit. `Type=oneshot`, and that is the point.
+def _run_once(
+    *, manager: UnitManager, root: Path, now: str, actor: str
+) -> ActivationOutcome:
+    """Compose the existing decision engine with fixed persistent paths.
 
-    A controller that stayed running would be a controller that could be
-    asked to activate again without a boot in between -- and the whole
-    discipline is that every pass re-derives the generation's digest from
-    the tree, which is a thing to do at boot rather than on request.
-
-    Refuses outside a service manager: there is no D-Bus connection to take,
-    and inventing one would mean this daemon deciding what a unit manager is.
+    Production evidence readers for the lease, commissioning signature,
+    measured health and Edge baseline do not exist yet. They are therefore
+    explicit absences, not guessed values or data loaded from unauthenticated
+    files. ``healthy=False`` is important: the library API's test-friendly
+    default is not evidence a production daemon may inherit.
     """
 
-    raise SystemExit(
-        "az-activated runs one pass per boot under systemd and takes its unit "
-        "manager from the service manager. Outside one there is nothing to "
-        "connect to; the pass itself is implemented in ActivationDaemon and "
-        "is what the E2E harness drives with an injected manager."
+    state = root / "var/lib/azazel/state"
+    daemon = ActivationDaemon(
+        generations=GenerationStore(root / "var/lib/azazel/generations"),
+        ledger=AuditLedger(state / "activation.jsonl"),
+        manager=manager,
+        definitions=CORE_UNITS,
     )
+    outcome = daemon.activate(
+        now=now,
+        actor=actor,
+        lease=None,
+        record=None,
+        edge=None,
+        healthy=False,
+        wired=wired_capabilities(),
+    )
+    if outcome.granted:
+        # This composition has no producer for any admission evidence. A
+        # grant here would mean a future change silently supplied authority.
+        failures: list[str] = []
+        for definition in CORE_UNITS:
+            try:
+                manager.mask(definition.name)
+            except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
+                failures.append(f"{definition.name}: {type(exc).__name__}")
+        raise RuntimeError(
+            "production activation composed without authenticated evidence "
+            "but the decision engine granted a unit; emergency remask failures: "
+            f"{sorted(failures)}"
+        )
+    return outcome
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run one fail-closed activation pass against systemd's system bus.
+
+    A zero exit status means the pass completed and its decision was recorded;
+    it does **not** mean any unit was granted. Authenticated admission-input
+    producers are not implemented, so this composition always supplies their
+    explicit absence and cannot widen a unit.
+    """
+
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv:
+        print("az-activated accepts no command-line arguments", file=sys.stderr)
+        return 2
+    from .runtime_paths import ROOT
+
+    invocation_id = os.environ.get("INVOCATION_ID", "")
+    if (
+        os.geteuid() != 0
+        or not Path("/run/systemd/system").is_dir()
+        or not re.fullmatch(r"[0-9a-fA-F]{32}", invocation_id)
+        or ROOT != Path("/")
+    ):
+        print(
+            "az-activated requires its root systemd service context and fixed "
+            "host paths",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .systemd_bus import SystemdBusSession
+
+    now = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    try:
+        with SystemdBusSession.connect() as session:
+            manager = DbusUnitManager(call=session)
+            outcome = _run_once(
+                manager=manager,
+                root=Path("/"),
+                now=now,
+                actor="azazel-activated",
+            )
+    except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
+        print(
+            f"az-activated failed before completing a safe pass: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+
+    reasons = sorted({verdict.reason.split(":", 1)[0] for verdict in outcome.verdicts})
+    print(
+        f"az-activated completed safely: granted=0, "
+        f"withheld={len(outcome.withheld)}, reasons={','.join(reasons)}"
+    )
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - the entry point

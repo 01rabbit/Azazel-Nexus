@@ -64,9 +64,16 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
     candidates: list[tuple[Path, str]] = []
     fixed = (
         (root / "pyproject.toml", "pyproject.toml"),
+        (root / "README.md", "README.md"),
+        (root / "LICENSE", "LICENSE"),
         (root / "runtime" / "pyproject.toml", "runtime/pyproject.toml"),
+        (root / "runtime" / "README.md", "runtime/README.md"),
         (root / "packaging" / "install.sh", "packaging/install.sh"),
         (root / "packaging" / "azazel-nexus.preset", "packaging/azazel-nexus.preset"),
+        (
+            root / "tools" / "stage_runtime_entrypoints.py",
+            "tools/stage_runtime_entrypoints.py",
+        ),
     )
     for source, archive_name in fixed:
         _regular_file(source)
