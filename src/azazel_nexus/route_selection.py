@@ -51,7 +51,7 @@ from enum import Enum
 from typing import Mapping, Optional, Sequence
 
 from .mio_profile import MioProfile
-from .remote_trust import Exclusion, RemoteAdmission
+from .remote_trust import RemoteAdmission
 from .route_evidence import Prediction
 from .routing import ROUTE_ORDER, Route
 from .sanitizer import PrivacyClass
@@ -349,6 +349,7 @@ def select(
 class FallbackDecision:
     """Where one request goes after its route failed, and whether that was the one."""
 
+    failed: Route
     route: Route
     reason: str
     #: True once the single permitted fallback has been used.
@@ -357,6 +358,7 @@ class FallbackDecision:
     def as_event(self) -> dict:
         return {
             "event_type": "mio.route.fallback",
+            "failed_route": self.failed.value,
             "route": self.route.value,
             "reason": self.reason,
             "spent": self.spent,
@@ -392,6 +394,7 @@ def fallback_once(
 
     if already_spent:
         return FallbackDecision(
+            failed=failed,
             route=Route.DETERMINISTIC_HANDOFF,
             reason=(
                 f"the one permitted fallback was already spent; {failed.value} "
@@ -412,6 +415,7 @@ def fallback_once(
     ]
     if not targets:
         return FallbackDecision(
+            failed=failed,
             route=Route.DETERMINISTIC_HANDOFF,
             reason=(
                 f"{failed.value} failed and no other route was permitted for this "
@@ -423,6 +427,7 @@ def fallback_once(
         )
     target = targets[0]
     return FallbackDecision(
+        failed=failed,
         route=target,
         reason=(
             f"{failed.value} failed; falling back once to {target.value}, which "
