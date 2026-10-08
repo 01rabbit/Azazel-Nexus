@@ -15,13 +15,17 @@ from tools.build_offline_bundle import build_bundle, repository_identity
 def _repo(root: Path) -> Path:
     files = {
         "pyproject.toml": b"[project]\nname='azazel-nexus'\n",
+        "README.md": b"Nexus package readme\n",
+        "LICENSE": b"Nexus license\n",
         "runtime/pyproject.toml": b"[project]\nname='azazel-nexus-runtime'\n",
+        "runtime/README.md": b"Nexus runtime package readme\n",
         "src/azazel_nexus/__init__.py": b"VERSION = 1\n",
         "src/azazel_nexus/module.py": b"def run(): return 1\n",
         "runtime/src/azazel_nexus_runtime/__init__.py": b"\n",
         "runtime/src/azazel_nexus_runtime/daemon.py": b"def main(): pass\n",
         "packaging/install.sh": b"#!/bin/sh\nexit 0\n",
         "packaging/azazel-nexus.preset": b"enable azazel-activated.service\n",
+        "tools/stage_runtime_entrypoints.py": b"def stage(): return 0\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
@@ -94,6 +98,10 @@ def test_manifest_matches_bundle_contents_and_normalized_metadata(tmp_path: Path
     assert set(members) == {item["path"] for item in manifest["files"]}
     assert not any("tests" in name or "__pycache__" in name or "egg-info" in name for name in members)
     assert members["packaging/install.sh"][1].mode == 0o755
+    assert members["README.md"][0] == b"Nexus package readme\n"
+    assert members["LICENSE"][0] == b"Nexus license\n"
+    assert members["runtime/README.md"][0] == b"Nexus runtime package readme\n"
+    assert members["tools/stage_runtime_entrypoints.py"][0] == b"def stage(): return 0\n"
     for item in manifest["files"]:
         data, info = members[item["path"]]
         assert item["sha256"] == hashlib.sha256(data).hexdigest()

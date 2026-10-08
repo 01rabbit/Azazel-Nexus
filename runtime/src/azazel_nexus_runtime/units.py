@@ -183,23 +183,59 @@ class DbusUnitManager(UnitManager):
     #: The methods this daemon may invoke. `StartUnit` is deliberately absent:
     #: activation decides what may run at the next boot, and starting a
     #: service now is a different act with a different blast radius.
-    METHODS = ("MaskUnitFiles", "UnmaskUnitFiles", "EnableUnitFiles", "GetUnit")
+    METHODS = (
+        "MaskUnitFiles",
+        "UnmaskUnitFiles",
+        "EnableUnitFiles",
+        "GetUnitFileState",
+        "GetActiveState",
+    )
+
+    def _known_unit(self, unit: str) -> str:
+        if unit not in UNIT_NAMES.values():
+            raise UnitOperationFailed(
+                "the service manager was asked about a unit outside the fixed "
+                "Nexus allowlist"
+            )
+        return unit
 
     def state(self, unit: str) -> UnitState:
-        answer = self.call("GetUnit", unit)
+        answer = self.call("GetUnitFileState", self._known_unit(unit))
         text = str(answer or "").strip().lower()
-        if text == "masked":
+        if text in {"masked", "masked-runtime"}:
             return UnitState.MASKED
-        if text == "enabled":
+        if text in {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias"}:
             return UnitState.ENABLED
-        return UnitState.DISABLED
+        if text in {
+            "disabled",
+            "static",
+            "indirect",
+            "generated",
+            "transient",
+            "invalid",
+        }:
+            return UnitState.DISABLED
+        raise UnitOperationFailed("systemd returned an unknown unit-file state")
 
     def mask(self, unit: str) -> None:
+        unit = self._known_unit(unit)
         self.call("MaskUnitFiles", unit)
+        if self.state(unit) is not UnitState.MASKED:
+            raise UnitOperationFailed(
+                "systemd did not report the governed unit as masked"
+            )
 
     def unmask_and_enable(self, unit: str) -> None:
+        unit = self._known_unit(unit)
         self.call("UnmaskUnitFiles", unit)
         self.call("EnableUnitFiles", unit)
+        if self.state(unit) is not UnitState.ENABLED:
+            raise UnitOperationFailed(
+                "systemd did not report the governed unit as enabled"
+            )
 
     def is_active(self, unit: str) -> bool:
-        return str(self.call("GetUnit", unit) or "").strip().lower() == "enabled"
+        answer = self.call("GetActiveState", self._known_unit(unit))
+        if not isinstance(answer, bool):
+            raise UnitOperationFailed("systemd returned an invalid active-state result")
+        return answer

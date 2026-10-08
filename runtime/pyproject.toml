@@ -20,10 +20,12 @@ requires-python = ">=3.11"
 # models and imports nothing that can spawn a process, open a socket or touch
 # host storage; this distribution is where all of that lives.
 #
-# A second entry here would be a second thing the privileged layer can be made
-# to load. There is none, and `tests/unit/test_runtime_boundary.py` is what
-# keeps it that way.
-dependencies = ["azazel-nexus"]
+# The one transport dependency is pinned because activation calls the system
+# bus through the fixed method table in `systemd_bus.py`. It receives no
+# executable, unit, path, or signature from a caller. No process launcher or
+# other transport dependency is present; the runtime boundary tests keep the
+# privileged dependency direction one-way.
+dependencies = ["azazel-nexus", "dbus-next==0.2.3"]
 
 [project.scripts]
 az-commissiond = "azazel_nexus_runtime.commissiond:main"

@@ -3,9 +3,10 @@
 #
 # IMPLEMENTATION_SPEC 2.3: installation MUST NOT start an operational network
 # service. This script masks every governed unit and starts none. The only
-# unit it enables is the activation controller, which opens no socket and
-# reaches no interface; on the next boot the controller revalidates the
-# current generation and unmasks what that generation admits.
+# unit it enables is the activation controller, which opens no network
+# socket and reaches no interface. On the next boot it runs one fail-closed
+# activation pass over the system D-Bus. Production authenticated evidence
+# loaders are not implemented yet, so this pass admits no governed unit.
 #
 # Everything below is checked against a declaration:
 #   - the accounts against azazel_nexus_runtime.hardening.SYSTEM_ACCOUNTS
@@ -20,6 +21,7 @@ UNIT_DIR="${DESTDIR:-}/lib/systemd/system"
 PRESET_DIR="${DESTDIR:-}/lib/systemd/system-preset"
 LIBEXEC="${DESTDIR:-}/usr/libexec/azazel"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 
 # Files and accounts are installed either way. The service-manager half --
 # daemon-reload, mask, enable -- needs a running systemd, and there is no
@@ -46,6 +48,16 @@ for argument in "$@"; do
     esac
 done
 
+# DESTDIR redirects installed files; it does not redirect systemctl. Refuse
+# before any host mutation unless the caller explicitly selects the staging
+# mode. Account creation is controlled separately below because account and
+# group tools likewise operate on the host even when files go to DESTDIR.
+if [ -n "${DESTDIR:-}" ] && [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    echo "refusing to install: DESTDIR stages files but cannot stage systemd state." >&2
+    echo "Pass --without-service-manager to avoid changing the host manager." >&2
+    exit 2
+fi
+
 if [ "$WITH_ACCOUNTS" = yes ] && [ "$(id -u)" -ne 0 ]; then
     echo "refusing to install: accounts and directory ownership need root." >&2
     echo "Pass --without-accounts to install the files at their declared" >&2
@@ -71,6 +83,10 @@ fi
 # could not read a trust anchor would be a node that fails at the moment it is
 # asked to verify something -- later, and with less of an explanation.
 PYTHON="${PYTHON:-python3}"
+if ! PYTHON=$(command -v "$PYTHON"); then
+    echo "refusing to install: the selected Python interpreter was not found." >&2
+    exit 1
+fi
 if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
     echo "refusing to install: Azazel-Nexus requires Python 3.11 or newer." >&2
     echo "Found: $("$PYTHON" --version 2>&1)" >&2
@@ -80,14 +96,29 @@ if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11)
     exit 1
 fi
 
+# The venv's ordinary console scripts live in its bin/ directory, while the
+# packaged units use fixed paths under /usr/libexec/azazel. Generate those
+# wrappers from the source/runtime declarations, and verify every import
+# before changing accounts, Nexus state directories, or systemd state.
+STAGER="$REPO_ROOT/tools/stage_runtime_entrypoints.py"
+if [ ! -f "$STAGER" ]; then
+    echo "refusing to install: runtime entrypoint staging tool is missing." >&2
+    exit 1
+fi
+if ! "$PYTHON" "$STAGER" --python "$PYTHON"; then
+    echo "refusing to install: runtime entrypoints could not be staged." >&2
+    exit 1
+fi
+
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
 for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-remoted; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
-        echo "Install the azazel-nexus-runtime distribution first and place" >&2
-        echo "its console scripts under $LIBEXEC." >&2
+        echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
+        echo "Python environment, then stage the fixed wrappers with" >&2
+        echo "tools/stage_runtime_entrypoints.py under $LIBEXEC." >&2
         exit 1
     fi
 done
@@ -168,4 +199,5 @@ systemctl mask azazel-mio-remoted.service
 systemctl enable azazel-activated.service
 
 echo "Azazel-Nexus installed. Operational units are masked."
-echo "Run commissioning, promote a generation, then reboot."
+echo "The next boot records a fail-closed activation decision; no unit is"
+echo "admitted until the required admission and health evidence is available."

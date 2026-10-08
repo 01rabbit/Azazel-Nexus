@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import inspect
 import re
-import pathlib
 import shutil
 import subprocess
 import sys
@@ -278,7 +277,7 @@ def test_no_stage_claims_the_run_was_on_real_hardware():
 # -- the installer's own half --------------------------------------------
 
 
-def test_the_installer_refuses_rather_than_pretending_without_systemd(tmp_path):
+def test_the_installer_refuses_rather_than_pretending_without_systemd():
     """Run, not grepped.
 
     The first version searched the script for the refusal message, which
@@ -294,17 +293,29 @@ def test_the_installer_refuses_rather_than_pretending_without_systemd(tmp_path):
     # refusals have different exit codes precisely so they can be told apart.
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "packaging" / "install.sh"), "--without-accounts"],
-        env={"DESTDIR": str(tmp_path), "PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
+        env={"PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert result.returncode == 3, result.stdout + result.stderr
     assert "refusing to install: systemd is not running" in result.stderr
-    assert not (tmp_path / "etc").exists(), (
-        "the installer created files before refusing; a refusal that has "
-        "already changed the host is a partial install"
+
+
+def test_destdir_refuses_host_systemd_changes_before_staging_files(tmp_path):
+    result = subprocess.run(
+        ["sh", str(REPO_ROOT / "packaging" / "install.sh"), "--without-accounts"],
+        env={
+            "DESTDIR": str(tmp_path),
+            "PATH": "/usr/sbin:/usr/bin:/bin:/sbin",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "DESTDIR stages files but cannot stage systemd state" in result.stderr
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_the_without_service_manager_mode_says_loudly_what_it_did_not_do():
@@ -360,20 +371,6 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
 
     from azazel_nexus.layout import LAYOUT
 
-    from azazel_nexus_runtime.hardening import PROFILES
-
-    libexec = tmp_path / "usr/libexec/azazel"
-    libexec.mkdir(parents=True)
-    # Derived from the profiles, so a new unit cannot be added without its
-    # shim -- which is what made this fail when `az-edge-probed` arrived, and
-    # is the failure worth keeping rather than the list worth extending.
-    shims = sorted({pathlib.Path(profile.executable).name for profile in PROFILES})
-    assert shims, "a vacuous loop: no profile declares an executable"
-    for name in shims:
-        shim = libexec / name
-        shim.write_text("#!/bin/sh\nexit 0\n")
-        shim.chmod(0o755)
-
     result = subprocess.run(
         [
             "sh",
@@ -381,7 +378,12 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
             "--without-service-manager",
             "--without-accounts",
         ],
-        env={"DESTDIR": str(tmp_path), "PATH": "/usr/sbin:/usr/bin:/bin:/sbin"},
+        env={
+            "DESTDIR": str(tmp_path),
+            "PATH": "/usr/sbin:/usr/bin:/bin:/sbin",
+            "PYTHON": sys.executable,
+            "PYTHONPATH": f"{REPO_ROOT / 'src'}:{REPO_ROOT / 'runtime' / 'src'}",
+        },
         capture_output=True,
         text=True,
         timeout=60,

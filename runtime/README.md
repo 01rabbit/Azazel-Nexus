@@ -13,6 +13,11 @@ netlink reads, and systemd operations. The dependency runs one way. The library
 never imports this package, and CI proves it by importing the library in a job
 where this package is not installed.
 
-Nothing here listens on a network. Every daemon speaks over a Unix domain
-socket and identifies its callers from the operating system's peer
-credentials — never from anything a caller says about itself.
+Nothing here listens on a network. Daemons that serve clients use Unix domain
+sockets and identify callers from operating-system peer credentials. The
+activation oneshot is different: it calls only the systemd system bus through
+the fixed D-Bus method table in `systemd_bus.py`; it never starts a unit. Its
+production composition supplies no authenticated admission evidence yet, so
+it withholds all governed services and records that decision rather than
+assuming readiness. Its `state/activation.jsonl` is a local controller ledger,
+not the `az-auditd` segmented shared chain; it is neither signed nor anchored.

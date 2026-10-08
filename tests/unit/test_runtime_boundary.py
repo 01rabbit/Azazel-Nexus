@@ -76,7 +76,7 @@ def test_the_runtime_exists_as_its_own_distribution():
 
     manifest = (REPO_ROOT / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "azazel-nexus-runtime"' in manifest
-    assert 'dependencies = ["azazel-nexus"]' in manifest
+    assert 'dependencies = ["azazel-nexus", "dbus-next==0.2.3"]' in manifest
 
     library = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "azazel-nexus-runtime" not in library, (

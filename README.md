@@ -116,6 +116,7 @@ This division is intentional. It keeps the authority to change the field boundar
 **What the node does on a host**
 
 - [Commissioning and activation](docs/commissioning.md) — composite interface identity, operator-confirmed roles, verified generations, and the management failsafe.
+- [User-prepared Debian Live install notes](docs/debian-live-install.md) — current package/entrypoint prerequisites, host paths, persistence considerations, and the unverified service-composition limit.
 - [HIL preflight](docs/hil-preflight.md) — one command on the target that answers whether the 8 GiB campaign may begin, and what it refuses to print.
 - [Inventory confidentiality](docs/inventory-confidentiality.md) — what is collected, where it is kept, and what may leave.
 - [Runtime boundary](docs/runtime-boundary.md) · [Operational design](docs/operations.md) · [Recovery](docs/recovery.md).

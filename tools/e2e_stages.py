@@ -63,22 +63,6 @@ def _install_files(harness: Harness) -> str:
     ownership is not, and the installer says so.
     """
 
-    from azazel_nexus_runtime.hardening import PROFILES
-
-    libexec = harness.root / "usr/libexec/azazel"
-    libexec.mkdir(parents=True, exist_ok=True)
-    # Derived from the profiles rather than listed. A hand-written list stops
-    # covering the newest unit exactly when that unit is the one to check.
-    for name in sorted({Path(profile.executable).name for profile in PROFILES}):
-        shim = libexec / name
-        module = name[len("az-") :].replace("-", "_")
-        shim.write_text(
-            "#!/bin/sh\n"
-            f'exec "{sys.executable}" -m azazel_nexus_runtime.{module} "$@"\n',
-            encoding="utf-8",
-        )
-        shim.chmod(0o755)
-
     result = subprocess.run(
         [
             "sh",
@@ -86,7 +70,7 @@ def _install_files(harness: Harness) -> str:
             "--without-service-manager",
             "--without-accounts",
         ],
-        env={**harness.env, "DESTDIR": str(harness.root)},
+        env={**harness.env, "DESTDIR": str(harness.root), "PYTHON": sys.executable},
         capture_output=True,
         text=True,
     )

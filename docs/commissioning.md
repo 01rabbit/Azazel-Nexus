@@ -1,7 +1,12 @@
 # Commissioning and Activation
 
-Status: **target contract**. No commissioning or activation code exists in this
-repository.
+Status: **partially implemented contract**. Read-only inventory, commissioning
+records, generation verification, and the activation decision model exist.
+The production activation composition connects the one-shot controller to
+systemd over D-Bus, but this repository does not yet provide authenticated
+lease/commissioning evidence loaders or the bootstrap path required to reach
+the commissioning service from a fresh install. This document remains the
+target contract; the implementation does not satisfy all of it.
 
 Related: [Capability model](capability-model.md) ·
 [Contract ownership](contract-ownership.md) ·
