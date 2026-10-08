@@ -266,8 +266,12 @@ Every route decision records:
 | the selection reason | why this candidate was predicted soonest |
 | the profile in force | the ceiling the decision was made under |
 
-`RouteDecision.as_event` today carries route, reason and inputs. It carries
-neither the evidence nor the exclusions; both are added.
+`Selection.as_event` carries the route, reason, profile, privacy class,
+permitted set, and every candidate's evidence or exclusion. The execution
+boundary in `route_audit` appends that event before returning the decision;
+it also records the failed origin and selected destination of a fallback and
+the distinct terminal outcome. A ledger failure therefore withholds the
+decision from execution rather than leaving an unaudited route choice.
 
 **A display that says remote is faster without these is a permanent setting.**
 

@@ -158,17 +158,21 @@ def stage(
         )
 
     daemons = declared_daemons(root)
-    _check_runtime_imports(interpreter, daemons, root=root)
     output_root = destdir if destdir is not None else Path("/")
     if not output_root.is_absolute():
         raise ValueError("DESTDIR must be absolute")
     destination = output_root / LIBEXEC_RELATIVE
     if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
         raise ValueError("runtime entrypoint destination must be a real directory")
-    destination.mkdir(parents=True, exist_ok=True)
     targets = [destination / name for name in daemons]
     if any(path.is_symlink() for path in targets):
         raise ValueError("refusing to replace a symlink runtime entrypoint")
+
+    # Refuse an unsafe destination before executing the selected interpreter.
+    # Import validation can fail for ordinary environment reasons; it must not
+    # obscure a path that the installer would never be allowed to replace.
+    _check_runtime_imports(interpreter, daemons, root=root)
+    destination.mkdir(parents=True, exist_ok=True)
 
     staged: list[Path] = []
     for name, target in daemons.items():

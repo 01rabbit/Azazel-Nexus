@@ -24,7 +24,6 @@ import pytest
 from azazel_nexus.lite_cache import classify_freshness
 from azazel_nexus.route_evidence import (
     EVIDENCE_MAX_BYTES,
-    EVIDENCE_SCHEMA,
     MIN_SAMPLES,
     OBSERVATION_FIELDS,
     OBSERVATION_TTL_SECONDS,
@@ -164,6 +163,14 @@ def test_an_expired_observation_is_not_used() -> None:
     ]
     assert fresh(stale, as_of=NOW) == ()
     assert predict(stale, candidate="local", as_of=NOW).predictable is False
+
+
+def test_a_future_observation_is_not_used() -> None:
+    future = [
+        an_observation(at="2026-09-21T12:00:01Z") for _ in range(MIN_SAMPLES)
+    ]
+    assert fresh(future, as_of=NOW) == ()
+    assert predict(future, candidate="local", as_of=NOW).predictable is False
 
 
 def test_the_expiry_boundary_is_the_declared_ttl() -> None:

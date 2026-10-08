@@ -201,7 +201,11 @@ def fresh(
             # An observation nobody can date is not evidence of when anything
             # happened, so it is dropped rather than treated as current.
             continue
-        if (now - observed).total_seconds() < OBSERVATION_TTL_SECONDS:
+        age_seconds = (now - observed).total_seconds()
+        # A timestamp in the future is not fresh evidence. Accepting a
+        # negative age here would let clock skew or a forged record extend
+        # its useful lifetime without bound.
+        if 0 <= age_seconds < OBSERVATION_TTL_SECONDS:
             kept.append(observation)
     return tuple(kept)
 
