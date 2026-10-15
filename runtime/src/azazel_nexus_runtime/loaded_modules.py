@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import _imp
 from importlib import machinery, util
 import os
+import re
 import sys
 from types import ModuleType
 
@@ -24,6 +25,46 @@ _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _MAX_MODULES = 2048
 _MAX_ATTRIBUTES = 65536
 _MISSING = object()
+# Spec-less helper modules created by pinned native modules (not by the import
+# system).  CPython Modules/pyexpat.c add_submodule() does PyModule_New() and
+# inserts into sys.modules and the parent dict; Cython registers
+# cython_runtime/_cython_X_Y_Z with PyImport_AddModule().  Both are bare
+# PyModule_New modules: __spec__/__loader__ None, no __file__/__path__.
+_EXTENSION_SUBMODULES = frozenset({("pyexpat", "errors"), ("pyexpat", "model")})
+_EXPAT_ALIASES = frozenset(
+    {"xml.parsers.expat.errors", "xml.parsers.expat.model"})
+_BARE_DUNDERS = frozenset(
+    {"__name__", "__doc__", "__package__", "__loader__", "__spec__"})
+_MAX_CODES = 512
+
+
+def _bounded_values(kind, namespace):
+    """Restrict non-dunder content of accepted spec-less modules.
+
+    kind: 'cython' (type objects, optional bool cline_in_traceback),
+    'errors' (str constants plus str->int / int->str dicts), 'model' (ints).
+    """
+    for key, value in namespace.items():
+        if key.startswith("__") and key.endswith("__"):
+            continue
+        if kind == "cython":
+            ok = (isinstance(value, type) if key != "cline_in_traceback"
+                  else type(value) is bool)
+        elif kind == "model":
+            ok = type(value) is int
+        elif type(value) is str:
+            ok = True
+        elif key in ("codes", "messages") and type(value) is dict:
+            first, second = (str, int) if key == "codes" else (int, str)
+            ok = (len(value) <= _MAX_CODES and all(
+                type(k) is first and type(v) is second for k, v in value.items()))
+        else:
+            ok = False
+        if not ok:
+            raise ApprovalRefused("spec-less module content refused")
+
+
+_CYTHON_HELPER = re.compile(r"_cython_[0-9]+_[0-9]+_[0-9]+", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -93,6 +134,8 @@ def _project_modules(registry, manifest, roots, main_path):
         files.add(terminal)
         return relative
 
+    native, specless, sources = {}, [], {}
+
     for alias, module in sorted(registry.items()):
         if not 0 < len(alias) <= 512 or type(module) is not ModuleType:
             raise ApprovalRefused("ordinary loaded modules required")
@@ -117,6 +160,9 @@ def _project_modules(registry, manifest, roots, main_path):
             pinned(main_path)
             modules.append((alias, "main", id(module), id(loader), main_relative))
             continue
+        if spec is None:
+            specless.append((alias, module, namespace, module_name))
+            continue
         if type(spec) is not machinery.ModuleSpec:
             raise ApprovalRefused("ordinary module spec required")
         details = _mapping(vars(spec), 32)
@@ -133,6 +179,8 @@ def _project_modules(registry, manifest, roots, main_path):
                     or package is not None or "__path__" in namespace):
                 raise ApprovalRefused("genuine builtin/frozen module required")
             modules.append((alias, "builtin" if builtin else "frozen", id(module), name))
+            if builtin:
+                native[alias] = (module, "builtin")
             continue
         if (type(origin) is not str or type(namespace.get("__file__")) is not str
                 or namespace["__file__"] != origin or not _under_roots(origin, roots)):
@@ -174,6 +222,47 @@ def _project_modules(registry, manifest, roots, main_path):
                 raise ApprovalRefused("ordinary pinned package directory required")
             locations = (expected,)
         modules.append((alias, kind, id(module), id(spec), id(loader), relative, cached, locations))
+        if kind == "source":
+            sources[alias] = module
+        if kind == "extension":
+            native[alias] = (module, kind)
+    for alias, module, namespace, module_name in sorted(specless, key=lambda row: row[0]):
+        expat_alias = alias in _EXPAT_ALIASES
+        if ((module_name != alias and not expat_alias)
+                or namespace.get("__spec__", _MISSING) is not None
+                or namespace.get("__loader__", _MISSING) is not None
+                or namespace.get("__package__", _MISSING) is not None
+                or not {key for key in namespace if key.startswith("__")} <= _BARE_DUNDERS):
+            raise ApprovalRefused("ordinary module spec required")
+        parent, _, child = alias.rpartition(".")
+        if expat_alias or (parent, child) in _EXTENSION_SUBMODULES:
+            _bounded_values("model" if child == "model" else "errors", namespace)
+        else:
+            _bounded_values("cython", namespace)
+        if expat_alias:
+            # xml/parsers/expat.py aliases pyexpat.errors/model under its own
+            # name; the object keeps __name__ 'pyexpat.<child>'.
+            canonical = "pyexpat." + child
+            shim = sources.get(parent)
+            if (module_name != canonical or shim is None
+                    or registry.get(canonical) is not module
+                    or vars(shim).get(child, _MISSING) is not module):
+                raise ApprovalRefused("spec-less submodule parent binding differs")
+            modules.append((alias, "extension-submodule-alias", id(module), id(shim), canonical))
+        elif (parent, child) in _EXTENSION_SUBMODULES:
+            owner = native.get(parent)
+            if (owner is None or registry.get(parent) is not owner[0]
+                    or vars(owner[0]).get(child, _MISSING) is not module):
+                raise ApprovalRefused("spec-less submodule parent binding differs")
+            modules.append((alias, "extension-submodule", id(module), id(owner[0]), parent))
+        elif alias == "cython_runtime" or _CYTHON_HELPER.fullmatch(alias):
+            # Limit: this only shows that some pinned ExtensionFileLoader module
+            # is loaded; Cython-ness of that module is not provable from its loader.
+            if not any(kind == "extension" for _, kind in native.values()):
+                raise ApprovalRefused("cython helper requires pinned extension")
+            modules.append((alias, "cython-helper", id(module)))
+        else:
+            raise ApprovalRefused("ordinary module spec required")
     if "__main__" not in registry:
         raise ApprovalRefused("controller main module missing")
     return tuple(modules), tuple(sorted(files)), tuple(sorted(absent))
