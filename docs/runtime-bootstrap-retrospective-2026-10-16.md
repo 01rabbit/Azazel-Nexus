@@ -97,3 +97,16 @@ Gate D — run
   behaviour (the journal-unavailable withdrawal) and passes with the fix.
 - Gate C/D: not started. They need the owner to revert the VM snapshot (run-4 state: marker, recovery_required grant)
   and grant temporary sudo for the sandboxed rehearsal.
+
+## 7. Run 5 (d93b7f2, 2026-10-16): stopped by an expired approval, an operator-procedure error
+- Before the run: snapshot reverted; Phase 2g installed d93b7f2; records re-finalized and placed (installed-files
+  sha256:1b639ef3…, admission sha256:d2ab65ef…); deployment, selection, generation and time initialized; approval
+  (payload sha256:20ca1c47…, valid until 23:28:49Z) owner-signed, verified and placed. Gate C passed at about 23:08Z:
+  admission about 2.4 s in total, no new files, no `.pyc`, helpers masked/inactive.
+- The start was issued at 23:42:17Z, after the approval had expired, because the time spent waiting for the owner's go
+  was not rechecked against the approval window. The controller refused at admission after about 1.4 s
+  (`ApprovalRefused`, exit 1). State afterwards: only `controller-used` and `supervisor.lock` exist; no deadline record,
+  no grant, an empty audit ledger, no overlay; helpers masked/inactive. The containment fix was not exercised.
+- Prevention (procedure, Gate D): immediately before `systemctl start`, in the same command, read the approval
+  `expires_at` and refuse to start unless at least 10 minutes remain. Ask for the owner's go before signing, not
+  after, so that the signature window starts only when everything else is ready.
