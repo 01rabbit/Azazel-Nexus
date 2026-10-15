@@ -54,7 +54,7 @@
   ],
   "not_verified": [
     "any admitted helper start, READY order, authenticated readiness, heartbeat, operator stop with confirmed containment, or deadline expiry on the real host",
-    "the importer-cache fix on the real host",
+    "the manifest-resolution performance fix on the real host",
     "anything beyond this VM (no hardware evidence)"
   ],
   "retry_requirements": "A retry needs the fixed code reinstalled and a fresh boot or snapshot revert: the controller-used marker is retained for this boot and selection/time/deployment records are create-only (stale-boot selection replacement is not implemented).",
@@ -73,5 +73,13 @@
     "start": "14:06:07Z: the controller passed cgroup admission and initial containment (two daemon-reloads requested by az-activated), then failed closed: 'az-activated failed before completing a safe pass: ApprovalRefused'. Helpers stayed masked/inactive; no deadline, audit record or overlay; only supervisor.lock and controller-used were created.",
     "diagnosis": "Sandboxed read-only replays (no files created, verified by find before/after) with the wrapper's exact interpreter flags (-IS), sys.path and dont_write_bytecode: approval at both time bounds, deployment binding, time window, generation, policy-bound capacity and the first-install audit genesis (sequence 0, empty ledger) all pass under the new privileges. Installed-files measurement refuses with 'uncovered negative Python importer cache': CPython caches the executed script path as a None importer entry (probe: '/run/<probe>.py'; controller: '/usr/libexec/azazel/az-activated'), and import_routing accepts None only for /usr/lib/python313.zip or covered directories. An earlier probe's capacity refusal was an artifact of a read-only probe sandbox, and its 'fixed controller main module required' refusal is an artifact of the probe's own __main__.",
     "privilege": "Temporary sudoers removed again after diagnosis (sudo -n refused)."
+  },
+  "third_attempt": {
+    "preparation": "Snapshot revert, temporary sudoers re-created by the owner, Phase 2e installed e17ed16 (packages + controller unit). Records re-finalized (unit_closure sha256:52f6a478989469df0e60add636fb050c260b6729984f6ae9a608727eb68e63cc, admission sha256:7dfccb20aa6ddd237f48b644dccaacb5f76ebc2deea55cacff0623e13e01f803), placed, deployment/selection/generation/time initialized, approval (granted 14:36:17Z, expires 15:21:17Z, payload sha256:0c232890c05c7e18d50f8528c133f0973512277b27ea13b070fae318ce52cab9) owner-signed on the Mac and verified before placement.",
+    "intermediate_finding_before_e17ed16": "With c943ca4 a controller-faithful replay (wrapper __main__ and importer-cache emulation) found spec-less extension-registered modules (cython_runtime, _cython_3_1_4 from the pinned PyYAML extension; pyexpat.errors/model from built-in pyexpat). That build was not started; e17ed16 admits exactly those.",
+    "pre_start_replay": "Without any diagnostic removal, the controller-faithful sandboxed replay passed installed files, initial admission verify, generation admission, capacity and first-install audit; no files were created.",
+    "start": "14:40:00Z: the controller passed containment (one daemon-reload) and was then SIGKILLed by systemd at 14:40:30Z: 'start operation timed out' (TimeoutStartSec=30s), 29.8 s CPU. Helpers stayed masked/inactive; no deadline, audit record or overlay; supervisor.lock and controller-used only.",
+    "diagnosis": "Timed sandbox replay: installed files 2.9 s, initial admission verify 43.7 s, generation admission 11.7 s (CPU-bound). cProfile: 97% in loaded_modules._project_modules -> resolve_installed_link -> _validate_manifest, re-validating the whole manifest for every loaded module (~12k calls, 18M _validate_file calls).",
+    "privilege": "Temporary sudoers removed after diagnosis."
   }
 }

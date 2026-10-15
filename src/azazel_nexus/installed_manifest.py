@@ -364,19 +364,39 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
         raise ApprovalRefused("installed manifest decoding refused") from None
 
 
-def resolve_installed_link(manifest: InstalledManifest, path: str) -> str:
-    """Resolve a selected regular file or declared link using manifest data only."""
+def installed_link_resolver(manifest: InstalledManifest):
+    """Validate the manifest once; return a path resolver over its data only.
+
+    The returned function validates each path and resolves it exactly like
+    resolve_installed_link, with the same refusals. It holds no state beyond
+    maps derived from this one validation; callers must not keep it across
+    observations.
+    """
     try:
         _validate_manifest(manifest)
-        _validate_path(path, _ROOTS_V4 if manifest.version == 4 else _ROOTS_V3)
-        file_paths = {entry.path for entry in manifest.files}
-        if path in file_paths:
-            return path
-        directory_paths = {entry.path for entry in manifest.directories}
+        version = manifest.version
+        roots = _ROOTS_V4 if version == 4 else _ROOTS_V3
+        file_paths = frozenset(entry.path for entry in manifest.files)
+        directory_paths = frozenset(entry.path for entry in manifest.directories)
         link_map = {entry.path: entry.target for entry in manifest.links}
-        if path not in link_map:
-            raise ApprovalRefused("installed manifest path is not a file or link")
-        return _resolve_link_path(path, file_paths, directory_paths, link_map,
-                                  manifest.version)
     except Exception:
         raise ApprovalRefused("installed manifest link resolution refused") from None
+
+    def resolve(path: str) -> str:
+        try:
+            _validate_path(path, roots)
+            if path in file_paths:
+                return path
+            if path not in link_map:
+                raise ApprovalRefused("installed manifest path is not a file or link")
+            return _resolve_link_path(path, file_paths, directory_paths, link_map,
+                                      version)
+        except Exception:
+            raise ApprovalRefused("installed manifest link resolution refused") from None
+
+    return resolve
+
+
+def resolve_installed_link(manifest: InstalledManifest, path: str) -> str:
+    """Resolve a selected regular file or declared link using manifest data only."""
+    return installed_link_resolver(manifest)(path)

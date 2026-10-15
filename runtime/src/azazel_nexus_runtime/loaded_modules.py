@@ -14,7 +14,7 @@ import re
 import sys
 from types import ModuleType
 
-from azazel_nexus.installed_manifest import InstalledManifest, resolve_installed_link
+from azazel_nexus.installed_manifest import InstalledManifest, installed_link_resolver
 from azazel_nexus.operator_trust import ApprovalRefused
 
 from .python_startup import _snapshot_at as _absence_snapshot_at, _stamp
@@ -125,10 +125,15 @@ def _project_modules(registry, manifest, roots, main_path):
         raise ApprovalRefused("dynamic loader preload must remain absent")
     files, absent, modules = set(), {"etc/ld.so.preload"}, []
     attribute_count = 0
+    # One manifest validation per projection; never reused across projections.
+    resolve = installed_link_resolver(manifest)
+    resolved = {}
 
     def pinned(origin):
         relative = _path(origin)
-        terminal = resolve_installed_link(manifest, relative)
+        terminal = resolved.get(relative)
+        if terminal is None:
+            terminal = resolved[relative] = resolve(relative)
         if terminal not in selected:
             raise ApprovalRefused("module origin is not independently pinned")
         files.add(terminal)
