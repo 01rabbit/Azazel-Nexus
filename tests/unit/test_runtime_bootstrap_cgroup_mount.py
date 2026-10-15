@@ -117,3 +117,110 @@ def test_rejects_empty_or_nonpositive_input_bounds():
     for mountinfo, fdinfo in ((b"", _fdinfo()), (_mount(), b"")):
         with pytest.raises(UnitOperationFailed):
             _parse(mountinfo=mountinfo, fdinfo=fdinfo)
+
+
+# --- _namespaces: self-only cgroup namespace admission (synthetic data) ---
+
+import os
+import stat
+
+from azazel_nexus_runtime import bootstrap_cgroup_mount as cgroup_mount
+
+GOOD_CGROUP = b"0::/system.slice/azazel-activated.service\n"
+
+
+def _ns_setup(tmp_path, monkeypatch, *, cgroup=GOOD_CGROUP, magic=None, swap=None):
+    target = tmp_path / "ns-target"
+    target.write_text("synthetic")
+    other = tmp_path / "ns-other"
+    other.write_text("synthetic other")
+    parent = tmp_path / "self-ns"
+    parent.mkdir()
+    link = parent / "cgroup"
+    link.symlink_to(target)
+    opened, reads = [], []
+    real_open = os.open
+    real_stat = os.stat
+
+    def fake_open(path, flags, *args, **kwargs):
+        if type(path) is str and path.startswith("/proc/"):
+            opened.append(path)
+            assert path == "/proc/self/ns", "unexpected proc access"
+            path = parent
+        return real_open(path, flags, *args, **kwargs)
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if swap is not None and path == "cgroup" and kwargs.get("follow_symlinks") is False:
+            reads.append("stat")
+            if len(reads) >= swap:
+                link.unlink()
+                link.symlink_to(other)
+        return result
+
+    def fake_read(path, limit):
+        reads.append(path)
+        assert path == "/proc/self/cgroup" and limit == 4096
+        return cgroup
+
+    def fs_type(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            return cgroup_mount._PROC_MAGIC
+        return cgroup_mount._NSFS_MAGIC if magic is None else magic
+
+    monkeypatch.setattr(cgroup_mount.os, "open", fake_open)
+    monkeypatch.setattr(cgroup_mount.os, "stat", fake_stat)
+    monkeypatch.setattr(cgroup_mount, "_read_proc", fake_read)
+    monkeypatch.setattr(cgroup_mount, "_filesystem_type", fs_type)
+    return target, opened
+
+
+def test_namespaces_accepts_exact_controller_line_and_is_deterministic(tmp_path, monkeypatch):
+    target, opened = _ns_setup(tmp_path, monkeypatch)
+    first = cgroup_mount._namespaces()
+    info = os.stat(target)
+    assert first == ((info.st_dev, info.st_ino),)
+    assert cgroup_mount._namespaces() == first
+    hash(first)
+    assert opened == ["/proc/self/ns"] * 2
+    assert not any("/proc/1" in path for path in opened)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"0::/system.slice/other.service\n",
+        b"0::/\n",
+        GOOD_CGROUP + b"1:name=systemd:/x\n",
+        b"1:name=systemd:/system.slice/azazel-activated.service\n",
+        b"12:cpu:/\n" + GOOD_CGROUP,
+        GOOD_CGROUP[:-1],
+        b"0::/system.slice/azazel-activated.service/child\n",
+        b"0::/../system.slice/azazel-activated.service\n",
+    ],
+)
+def test_namespaces_refuses_other_cgroup_content(tmp_path, monkeypatch, content):
+    _ns_setup(tmp_path, monkeypatch, cgroup=content)
+    with pytest.raises(UnitOperationFailed):
+        cgroup_mount._namespaces()
+
+
+def test_namespaces_refuses_wrong_nsfs_magic(tmp_path, monkeypatch):
+    _ns_setup(tmp_path, monkeypatch, magic=0x1234)
+    with pytest.raises(UnitOperationFailed, match="kernel namespace descriptor required"):
+        cgroup_mount._namespaces()
+
+
+@pytest.mark.parametrize("swap", [1, 2])
+def test_namespaces_refuses_link_changed_between_reads(tmp_path, monkeypatch, swap):
+    # swap=1: link replaced right after the initial lstat; swap=2: replaced
+    # around the /proc/self/cgroup read (recheck after the read must catch it).
+    _ns_setup(tmp_path, monkeypatch, swap=swap)
+    with pytest.raises(UnitOperationFailed, match="namespace link changed"):
+        cgroup_mount._namespaces()
+
+
+def test_namespaces_never_opens_pid1(tmp_path, monkeypatch):
+    _, opened = _ns_setup(tmp_path, monkeypatch)
+    cgroup_mount._namespaces()
+    assert opened == ["/proc/self/ns"]

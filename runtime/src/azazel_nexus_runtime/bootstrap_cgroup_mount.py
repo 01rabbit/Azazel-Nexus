@@ -1,8 +1,12 @@
 """Read-only fixed-path cgroup2 mount admission for trusted composition.
 
 No mount, namespace, process, or cgroup mutation. This checks the current
-process view and cgroup-namespace equivalence to PID 1; it does not authenticate
-PID 1 as the selected D-Bus manager or prove the unit's no-escape hardening.
+process view and requires the controller to sit at its fixed unit path relative
+to its own cgroup-namespace root (exact /proc/self/cgroup match); PID 1 is never
+opened. This is not a proof against a private cgroup namespace whose root
+already mimics that path (e.g. a container); containerised deployment is
+unsupported. It does not authenticate PID 1 as the selected D-Bus manager or
+prove the unit's no-escape hardening.
 The libc boundary is reviewed for Linux LP64 amd64/arm64. Other ABIs refuse.
 """
 
@@ -24,6 +28,13 @@ _CGROUP2_MAGIC = 0x63677270
 _PROC_MAGIC = 0x9FA0
 _NSFS_MAGIC = 0x6E736673
 _LIMIT = 1024 * 1024
+# The kernel prints this path relative to the reader's cgroup-namespace root.
+# systemd places the controller at this path and RestrictNamespaces=yes stops
+# the unit creating a namespace, so an exact match means the namespace root is
+# the hierarchy root systemd used. A capability-less root cannot open
+# /proc/1/ns (ptrace check), so PID 1 equivalence is not observable here.
+CONTROLLER_GROUP = "/system.slice/azazel-activated.service"
+_CONTROLLER_CGROUP = f"0::{CONTROLLER_GROUP}\n".encode("ascii")
 
 
 def _filesystem_type(fd):
@@ -110,33 +121,33 @@ def _read_proc(path, limit):
 
 
 def _namespaces():
-    values = []
-    for process in (str(os.getpid()), "1"):
-        parent = os.open(f"/proc/{process}/ns", _DIR_FLAGS)
+    parent = os.open("/proc/self/ns", _DIR_FLAGS)
+    try:
+        if _filesystem_type(parent) != _PROC_MAGIC:
+            raise UnitOperationFailed("kernel namespace source required")
+        before = os.stat("cgroup", dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise UnitOperationFailed("kernel namespace link required")
+        # Following this kernel magic link is deliberate. Validate its
+        # nsfs target, not a caller's matching symlink text.
+        fd = os.open("cgroup", os.O_RDONLY | os.O_CLOEXEC, dir_fd=parent)
         try:
-            if _filesystem_type(parent) != _PROC_MAGIC:
-                raise UnitOperationFailed("kernel namespace source required")
-            before = os.stat("cgroup", dir_fd=parent, follow_symlinks=False)
-            if not stat.S_ISLNK(before.st_mode):
-                raise UnitOperationFailed("kernel namespace link required")
-            # Following this kernel magic link is deliberate. Validate its
-            # nsfs target, not a caller's matching symlink text.
-            fd = os.open("cgroup", os.O_RDONLY | os.O_CLOEXEC, dir_fd=parent)
-            try:
-                info = os.fstat(fd)
-                if _filesystem_type(fd) != _NSFS_MAGIC:
-                    raise UnitOperationFailed("kernel namespace descriptor required")
-                after = os.stat("cgroup", dir_fd=parent, follow_symlinks=False)
-                if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-                    raise UnitOperationFailed("kernel namespace link changed")
-                values.append((info.st_dev, info.st_ino))
-            finally:
-                os.close(fd)
+            info = os.fstat(fd)
+            if _filesystem_type(fd) != _NSFS_MAGIC:
+                raise UnitOperationFailed("kernel namespace descriptor required")
+            middle = os.stat("cgroup", dir_fd=parent, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (middle.st_dev, middle.st_ino):
+                raise UnitOperationFailed("kernel namespace link changed")
+            if _read_proc("/proc/self/cgroup", 4096) != _CONTROLLER_CGROUP:
+                raise UnitOperationFailed("cgroup namespace root is not host root")
+            after = os.stat("cgroup", dir_fd=parent, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise UnitOperationFailed("kernel namespace link changed")
+            return ((info.st_dev, info.st_ino),)
         finally:
-            os.close(parent)
-    if values[0] != values[1]:
-        raise UnitOperationFailed("cgroup namespace differs from PID 1")
-    return tuple(values)
+            os.close(fd)
+    finally:
+        os.close(parent)
 
 
 def _open_fixed_root():

@@ -314,6 +314,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
                ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
                ("SendSIGKILL", "yes"),
                ("SetLoginEnvironment", "no"),
+               # systemd >= 254 otherwise bind-mounts the unit's memory.pressure
+               # writable below the read-only /sys/fs/cgroup; the cgroup mount
+               # admission refuses any mount below it.
+               ("MemoryPressureWatch", "off"),
                ("UnsetEnvironment", " ".join(BOOTSTRAP_UNSET_ENVIRONMENT))),
         rationale=(
             "The one daemon that runs as root, and the reason the other three "

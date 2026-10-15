@@ -174,14 +174,11 @@ def test_kernel_source_reader_rejects_wrong_filesystem_and_closes_fd(tmp_path, m
     assert not _is_open(opened[0])
 
 
-def _namespace_fixtures(tmp_path, *, different_targets=False):
+def _namespace_fixtures(tmp_path):
     target_a = tmp_path / "namespace-target-a"
     target_a.write_text("synthetic namespace target")
-    target_b = tmp_path / "namespace-target-b"
-    target_b.write_text("other synthetic namespace target")
-    target_b = target_b if different_targets else target_a
     parents = {}
-    for process, target in ((str(os.getpid()), target_a), ("1", target_b)):
+    for process, target in (("self", target_a),):
         parent = tmp_path / f"proc-{process}" / "ns"
         parent.mkdir(parents=True)
         (parent / "cgroup").symlink_to(target)
@@ -212,7 +209,7 @@ def test_namespace_reader_rejects_ordinary_parent_directory(tmp_path, monkeypatc
     with pytest.raises(UnitOperationFailed, match="kernel namespace source required"):
         cgroup_mount._namespaces()
 
-    assert opened == [f"/proc/{os.getpid()}/ns"]
+    assert opened == ["/proc/self/ns"]
 
 
 def test_namespace_reader_rejects_ordinary_target_file(tmp_path, monkeypatch):
@@ -229,35 +226,7 @@ def test_namespace_reader_rejects_ordinary_target_file(tmp_path, monkeypatch):
     with pytest.raises(UnitOperationFailed, match="kernel namespace descriptor required"):
         cgroup_mount._namespaces()
 
-    assert opened == [f"/proc/{os.getpid()}/ns"]
-
-
-@pytest.mark.parametrize("different_targets", [False, True])
-def test_namespace_reader_compares_opened_target_inodes(
-    tmp_path, monkeypatch, different_targets
-):
-    parents = _namespace_fixtures(tmp_path, different_targets=different_targets)
-    opened = _redirect_namespace_opens(monkeypatch, parents)
-
-    def filesystem_type(fd):
-        return (
-            cgroup_mount._PROC_MAGIC
-            if stat.S_ISDIR(os.fstat(fd).st_mode)
-            else cgroup_mount._NSFS_MAGIC
-        )
-
-    monkeypatch.setattr(cgroup_mount, "_filesystem_type", filesystem_type)
-
-    if different_targets:
-        with pytest.raises(UnitOperationFailed, match="namespace differs from PID 1"):
-            cgroup_mount._namespaces()
-    else:
-        observed = cgroup_mount._namespaces()
-        assert observed[0] == observed[1]
-        assert observed[0] == (os.stat(parents[f"/proc/{os.getpid()}/ns"] / "cgroup").st_dev,
-                               os.stat(parents[f"/proc/{os.getpid()}/ns"] / "cgroup").st_ino)
-
-    assert opened == [f"/proc/{os.getpid()}/ns", "/proc/1/ns"]
+    assert opened == ["/proc/self/ns"]
 
 
 def _manager_with_mount(handle, session_factory):

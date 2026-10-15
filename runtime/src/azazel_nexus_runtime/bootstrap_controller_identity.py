@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 import re
 
-from .bootstrap_cgroup_mount import _namespaces, _read_proc
+from .bootstrap_cgroup_mount import CONTROLLER_GROUP, _namespaces, _read_proc
 from .bootstrap_controller import BootstrapControllerIdentity
 from .runtime_paths import ROOT
 from .units import UnitOperationFailed
 
-_GROUP = "/system.slice/azazel-activated.service"
+_GROUP = CONTROLLER_GROUP
 
 
 def current_bootstrap_controller_identity():
