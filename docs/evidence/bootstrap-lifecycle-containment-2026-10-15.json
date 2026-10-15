@@ -1,0 +1,159 @@
+{
+  "date": "2026-10-15",
+  "issue": 93,
+  "scope": "Operator-executed lifecycle containment fixtures on the real Debian ARM64 systemd VM (transient azazel-nexus-readyorder-* units only). Systemd fixture mechanics, not product admission or deployment.",
+  "tool": {
+    "path": "tools/qualify_lifecycle_containment_sandbox.py",
+    "sha256": "b30342de9cd6fa91f167125245b65f4068313791c072eaac34b8d56b1c25fc70",
+    "reused": {
+      "tools/qualify_ready_order_sandbox.py": "66bcc235beaba2df61273ed236b20e95392f1f14e908aa0b0381126db498b33f",
+      "tools/qualify_bootstrap_deadline_sandbox.py": "187cc81d348b4c68ce7dff65cc3b97bf0c1930ebb8905156c15b325a5b1a0721"
+    },
+    "probe_sha256": "40b9cafb36e002c5f35fa5a83ff25fe591308439bc44946b723d0842f48d94a3",
+    "committed_in": "cccbf09"
+  },
+  "command": "hash-checked (sha256sum -c) then sudo /home/rabbit/nexus-rc2-conformance-20261013/bin/python /home/rabbit/azn-readyorder-20261015/tools/qualify_lifecycle_containment_sandbox.py --execute > /home/rabbit/azn-containment.log; EXIT appended",
+  "exit": 0,
+  "passed": true,
+  "operator_report": {
+    "scope": "systemd lifecycle containment fixtures only; not product admission/deployment",
+    "probe_sha256": "40b9cafb36e002c5f35fa5a83ff25fe591308439bc44946b723d0842f48d94a3",
+    "cases": {
+      "queued_start_containment": {
+        "case": "queued_start_containment",
+        "token": "238502c460b44f6cade625e7b4832036",
+        "units": {
+          "controller": "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-controller.service",
+          "audit": "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-audit.service",
+          "commission": "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-commission.service"
+        },
+        "queued_jobs": [
+          [
+            "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-audit.service",
+            "start",
+            "waiting"
+          ],
+          [
+            "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-commission.service",
+            "start",
+            "waiting"
+          ],
+          [
+            "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-controller.service",
+            "start",
+            "running"
+          ]
+        ],
+        "helpers_queued_during_gate": true,
+        "controller_main_pid": 28233,
+        "controller_activating_at_snapshot": true,
+        "controller_populated_before_kill": true,
+        "no_helper_events_before_kill": true,
+        "controller_phases": [
+          "preready"
+        ],
+        "killed_before_ready": true,
+        "all_settled": true,
+        "helper_started_after_kill": false,
+        "final_states": {
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-controller.service": "failed",
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-audit.service": "inactive",
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-commission.service": "inactive"
+        },
+        "cgroups_drained": {
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-audit.service": true,
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-commission.service": true,
+          "azazel-nexus-readyorder-238502c460b44f6cade625e7b4832036-controller.service": true
+        },
+        "all_cgroups_drained": true,
+        "jobs_drained": true,
+        "contained": true,
+        "error": null,
+        "cleanup_confirmed": true,
+        "retained_directory": null,
+        "passed": true
+      },
+      "audit_death_follow_stop": {
+        "case": "audit_death_follow_stop",
+        "token": "c7e629211aab4b34b2a07b663f135e93",
+        "units": {
+          "controller": "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-controller.service",
+          "audit": "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-audit.service",
+          "commission": "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-commission.service"
+        },
+        "all_active": true,
+        "audit_pid": 28358,
+        "audit_result": "signal",
+        "populated_before": {
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-controller.service": true,
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-audit.service": true,
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-commission.service": true
+        },
+        "all_populated_before": true,
+        "helper_states": {
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-audit.service": "failed",
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-commission.service": "inactive"
+        },
+        "helpers_stopped": true,
+        "controller_state": "active",
+        "controller_survived": true,
+        "helper_cgroups_drained": {
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-audit.service": true,
+          "azazel-nexus-readyorder-c7e629211aab4b34b2a07b663f135e93-commission.service": true
+        },
+        "all_helper_cgroups_drained": true,
+        "controller_cgroup_populated_after": true,
+        "contained": true,
+        "error": null,
+        "cleanup_confirmed": true,
+        "retained_directory": null,
+        "passed": true
+      },
+      "run_marker_mount_view": {
+        "case": "run_marker_mount_view",
+        "token": "e37cfede58684853b43d8451aeef2102",
+        "staging_parent": "/run",
+        "controller_active": true,
+        "marker_visible_on_host": true,
+        "recheck_returncode": 0,
+        "rerun_properties": {
+          "Result": "success",
+          "ExecMainPID": "0",
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ConditionResult": "no"
+        },
+        "new_recheck_events": [],
+        "rerun_refused": true,
+        "contained": true,
+        "error": null,
+        "cleanup_confirmed": true,
+        "retained_directory": null,
+        "passed": true
+      }
+    },
+    "passed": true
+  },
+  "interpretation": {
+    "queued_start_containment": "Controller SIGKILLed while activating (only 'preready' stamped, no marker), with audit and commission start jobs waiting: no helper process ever started, all cgroups drained (controller populated before the kill), no pending jobs.",
+    "audit_death_follow_stop": "With all three active and populated, audit SIGKILLed (Result=signal): commission follow-stopped via BindsTo, both helper cgroups drained, controller stayed active and populated.",
+    "run_marker_mount_view": "A PrivateTmp/ProtectSystem=strict controller wrote its once-marker under the per-boot /run tmpfs; the host sees it and a blocking recheck with ConditionPathExists=!marker was refused (ConditionResult=no, nothing ran)."
+  },
+  "independent_read_only_crosscheck": {
+    "by": "coordinator over read-only SSH, separate from the tool report",
+    "leftover_fixture_units": 0,
+    "leftover_staging": "none under /var/lib or /run",
+    "product_units": "all 8 azazel-* units disabled/inactive; none started or unmasked by the fixture"
+  },
+  "now_qualified_on_real_host": [
+    "Late/queued helper start containment when the controller dies before READY",
+    "Audit death follow-stops commission while the controller survives",
+    "Per-boot /run once-marker written by a sandboxed service is seen by the manager's condition (mount-view agreement)"
+  ],
+  "not_qualified": [
+    "Product unit lifecycle (requires installed units + genuine owner inputs)",
+    "Authenticated real audit/commission endpoints",
+    "Reboot/suspend behavior"
+  ]
+}

@@ -30,21 +30,53 @@
       "preset_directory": "/lib/systemd/system-preset",
       "libexec_directory": "/usr/libexec/azazel",
       "service_manager": "systemd",
-      "mask_units": ["azazel-commissiond.service", "azazel-auditd.service", "azazel-watchdog.service", "azazel-edge-probed.service", "azazel-model-fetchd.service", "azazel-mio-locald.service", "azazel-mio-remoted.service"],
-      "enable_units": ["azazel-activated.service"]
+      "mask_units": [
+        "azazel-commissiond.service",
+        "azazel-auditd.service",
+        "azazel-watchdog.service",
+        "azazel-edge-probed.service",
+        "azazel-model-fetchd.service",
+        "azazel-mio-locald.service",
+        "azazel-mio-remoted.service"
+      ],
+      "enable_units": [
+        "azazel-activated.service"
+      ]
     }
   },
   "phase1_destdir_staging": {
     "command": "env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/rabbit DESTDIR=<mktemp -d /home/rabbit/azn-destdir.XXXXXX> PYTHON=/home/rabbit/azn-install-20261015/venv/bin/python sh packaging/install.sh --without-service-manager --without-accounts",
     "exit": 0,
-    "installer_output": ["staged 8 fixed Nexus runtime entrypoints under /usr/libexec/azazel", "ACCOUNT STAGE NOT EXECUTED", "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."],
+    "installer_output": [
+      "staged 8 fixed Nexus runtime entrypoints under /usr/libexec/azazel",
+      "ACCOUNT STAGE NOT EXECUTED",
+      "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."
+    ],
     "staged_files": 18,
     "staged_directories": 35,
     "wrappers": "8 wrappers 0755 with shebang `#!<venv>/bin/python -IS`, fixed sys.path [stdlib, lib-dynload, venv site-packages], sys.dont_write_bytecode=True, single fixed entrypoint import; entrypoints were not executed",
-    "units_byte_identical_to_source": ["azazel-activated", "azazel-auditd", "azazel-commissiond", "azazel-edge-probed", "azazel-mio-locald", "azazel-mio-remoted", "azazel-model-fetchd", "azazel-watchdog"],
+    "units_byte_identical_to_source": [
+      "azazel-activated",
+      "azazel-auditd",
+      "azazel-commissiond",
+      "azazel-edge-probed",
+      "azazel-mio-locald",
+      "azazel-mio-remoted",
+      "azazel-model-fetchd",
+      "azazel-watchdog"
+    ],
     "preset_identical": true,
     "tmpfiles_identical": true,
-    "directory_modes_sample": {"etc/azazel": "755", "etc/azazel/bootstrap": "700", "etc/azazel/commissioning": "750", "var/lib/azazel": "711", "var/lib/azazel/run/audit": "2710", "var/lib/azazel/state/bootstrap": "700", "var/lib/azazel/bootstrap-generations": "700", "var/lib/azazel/secrets": "700"},
+    "directory_modes_sample": {
+      "etc/azazel": "755",
+      "etc/azazel/bootstrap": "700",
+      "etc/azazel/commissioning": "750",
+      "var/lib/azazel": "711",
+      "var/lib/azazel/run/audit": "2710",
+      "var/lib/azazel/state/bootstrap": "700",
+      "var/lib/azazel/bootstrap-generations": "700",
+      "var/lib/azazel/secrets": "700"
+    },
     "host_state_unchanged": "sha256 of a snapshot of /usr/libexec/azazel, /etc/azazel, /var/lib/azazel, /etc/systemd/system azazel entries, list-unit-files azazel*, service accounts, /lib/systemd/system/azazel* and tmpfiles.d was identical before and after (49f996ec60d789e921ff51007500e217080e3b8869febe9f97cb63cd4f08797e)",
     "cleanup": "DESTDIR scratch and the transferred archive were removed; /usr/libexec/azazel still absent on the host. The throwaway venv and extracted source remain at /home/rabbit/azn-install-20261015 (16M) for later approved phases."
   },
@@ -60,5 +92,27 @@
     "No product unit install into /lib/systemd/system or /etc/systemd/system",
     "No enrollment, approval, pin, time anchor, epoch or generation record",
     "No provider/fetch/Edge activation, capture/firewall, SSH/network change, CI, physical media or firmware operation"
-  ]
+  ],
+  "phase2_operator_run": {
+    "status": "PASSED (owner-approved persistent phase)",
+    "source_commit": "42c260e",
+    "archive_sha256": "8a09c648ee19465f93f9939474d772ce3498825790a69d58406c6dddf46dcef1",
+    "script": "phase2-provision-and-files.sh",
+    "script_sha256": "2f063c269999b111d5cabd69ebf79c6c58355e52b2c3bb9ecb915d5daa1bd1ef",
+    "script_review": "independently reviewed before use; symlink preflight/postcondition, install-then-verify native artifact, read bits, root-owned installer copy, failure guidance",
+    "exit": 0,
+    "native_verified_after_install": true,
+    "venv_site_packages_tree_digest": "9b2d6087d7e70bbf4c261764a8b73b9aef69b96263d3d80c70c497d238419b3f",
+    "installer_output": [
+      "staged 8 fixed Nexus runtime entrypoints under /usr/libexec/azazel",
+      "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."
+    ],
+    "crosscheck": {
+      "accounts": "azaudit, azcommission, azwatch, azprobe, azfetch, azmio, azremote (nologin) and group azazel-operator created",
+      "wrappers": "8 root-owned 0755 wrappers, shebang /opt/azazel-nexus/venv/bin/python -IS with fixed sys.path",
+      "units": "8 units in /lib/systemd/system, tmpfiles rule in /usr/lib/tmpfiles.d; all disabled/inactive; no masks or enable symlinks",
+      "venv": "/opt/azazel-nexus root-owned; only standard venv python/lib64 symlinks",
+      "audit_ledger": "/var/lib/azazel/state/audit azaudit:root 0700 (first-install genesis precondition)"
+    }
+  }
 }
