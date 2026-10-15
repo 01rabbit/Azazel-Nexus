@@ -10,13 +10,15 @@ the parser has no bug.
 | `az-commissiond` | `azcommission` | `AF_UNIX AF_NETLINK` | none |
 | `az-auditd` | `azaudit` | `AF_UNIX` | none |
 | `az-watchdog` | `azwatch` | `AF_UNIX` | none |
-| `az-activated` | `root` | `AF_UNIX AF_NETLINK` | none |
+| `az-activated` | `root` | `AF_UNIX AF_NETLINK` | `CAP_DAC_READ_SEARCH` only |
 
 `az-commissiond` reads `IFLA_PERM_ADDRESS` over a route netlink socket, which
 needs no `CAP_NET_ADMIN` and no internet address family. It therefore gets
 neither. Activation also rechecks that read-only inventory before consuming
-full commissioning evidence; its capability bounding set stays empty and no
-internet family is added. `az-activated` is the root-account exception:
+full commissioning evidence; its capability bounding set is exactly
+CAP_DAC_READ_SEARCH (to read the audit state and reach the operator-group
+sockets, with supplementary group azazel-operator) and no internet family
+is added. `az-activated` is the root-account exception:
 unmasking a unit means writing under `/etc/systemd/system`, and isolating
 that in one daemon is what makes the other three unprivileged.
 
@@ -156,6 +158,12 @@ class ServiceProfile:
     default_dependencies: bool = True
     before: tuple[str, ...] = ()
     conflicts: tuple[str, ...] = ()
+    #: Supplementary groups the unit runs with; empty for every unit but one.
+    supplementary_groups: tuple[str, ...] = ()
+    #: Capability bounding set override; empty means the shared empty set.
+    #: AmbientCapabilities stays empty for every unit (uid 0 gains the
+    #: bounding-set capabilities on exec; nothing is granted to non-root).
+    capability_bounding_set: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -300,6 +308,13 @@ PROFILES: tuple[ServiceProfile, ...] = (
         default_dependencies=False,
         before=("shutdown.target",),
         conflicts=("shutdown.target",),
+        # Owner-approved: the root controller runs without CAP_DAC_*, so it
+        # could not open the 0700 audit state or traverse the 2710 operator
+        # run directories and connect to the 0660 operator-group sockets.
+        # Exactly one capability (CAP_DAC_READ_SEARCH, bit 2, mask 0x4) and
+        # exactly one supplementary group; Ambient stays empty.
+        supplementary_groups=("azazel-operator",),
+        capability_bounding_set=("CAP_DAC_READ_SEARCH",),
         # The owner-adopted controller lifetime is long-lived Type=notify:
         # mandatory preflight/admission must precede READY, and READY must
         # precede waits on helper units ordered After this controller. The
@@ -603,6 +618,12 @@ def render_unit(profile: ServiceProfile) -> str:
         "[Service]",
         f"Type={profile.unit_type}",
         f"User={profile.account}",
+    ]
+    if profile.supplementary_groups:
+        lines.append(
+            "SupplementaryGroups=" + " ".join(profile.supplementary_groups)
+        )
+    lines += [
         f"ExecStart={profile.executable}",
         f"RuntimeDirectory={profile.runtime_directory}",
         f"RuntimeDirectoryMode={profile.runtime_directory_mode}",
@@ -615,6 +636,8 @@ def render_unit(profile: ServiceProfile) -> str:
     for path in profile.read_write_paths:
         lines.append(f"ReadWritePaths={path}")
     for key, value in SHARED_HARDENING:
+        if key == "CapabilityBoundingSet" and profile.capability_bounding_set:
+            value = " ".join(profile.capability_bounding_set)
         lines.append(f"{key}={value}")
     lines += ["", "[Install]", "WantedBy=multi-user.target", ""]
     return "\n".join(lines)

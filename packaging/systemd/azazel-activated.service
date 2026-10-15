@@ -19,6 +19,7 @@ Conflicts=shutdown.target
 [Service]
 Type=notify
 User=root
+SupplementaryGroups=azazel-operator
 ExecStart=/usr/libexec/azazel/az-activated
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750
@@ -58,7 +59,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=
 IPAddressDeny=any
 UMask=0027

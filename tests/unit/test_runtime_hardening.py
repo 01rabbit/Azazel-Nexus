@@ -292,7 +292,10 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
     for unit in with_netlink:
         settings = _settings(unit)
         assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK"]
-        assert settings["CapabilityBoundingSet"] == [""]
+        assert settings["CapabilityBoundingSet"] == (
+            ["CAP_DAC_READ_SEARCH"]
+            if unit == "azazel-activated.service" else [""]
+        )
         assert settings["AmbientCapabilities"] == [""]
         assert settings["IPAddressDeny"] == ["any"]
 
@@ -318,7 +321,7 @@ def test_every_unit_denies_ip_addresses():
 # -- capabilities ---------------------------------------------------------
 
 
-def test_every_unit_has_an_empty_capability_bounding_set():
+def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
     """Not "a small set". Empty.
 
     A bounding set is what a daemon may ever acquire, and none of these needs
@@ -327,9 +330,50 @@ def test_every_unit_has_an_empty_capability_bounding_set():
     """
 
     for profile in PROFILES:
+        if profile.unit == "azazel-activated.service":
+            continue
         settings = _settings(profile.unit)
         assert settings["CapabilityBoundingSet"] == [""]
         assert settings["AmbientCapabilities"] == [""]
+        assert "SupplementaryGroups" not in settings
+
+
+def test_only_the_controller_holds_one_capability_and_one_group():
+    """Owner-approved: root controller gets exactly CAP_DAC_READ_SEARCH and
+    SupplementaryGroups=azazel-operator; Ambient stays empty, no other unit
+    changes, NoNewPrivileges stays yes."""
+
+    widened = {
+        profile.unit
+        for profile in PROFILES
+        if profile.capability_bounding_set or profile.supplementary_groups
+    }
+    assert widened == {"azazel-activated.service"}
+    settings = _settings("azazel-activated.service")
+    assert settings["User"] == ["root"]
+    assert settings["CapabilityBoundingSet"] == ["CAP_DAC_READ_SEARCH"]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["SupplementaryGroups"] == ["azazel-operator"]
+    assert settings["NoNewPrivileges"] == ["yes"]
+
+
+@pytest.mark.parametrize("bounding,groups", [
+    (("CAP_DAC_READ_SEARCH", "CAP_DAC_OVERRIDE"), ("azazel-operator",)),
+    (("CAP_DAC_OVERRIDE",), ("azazel-operator",)),
+    (("CAP_DAC_READ_SEARCH",), ("azazel-operator", "wheel")),
+    (("CAP_DAC_READ_SEARCH",), ()),
+    ((), ("azazel-operator",)),
+])
+def test_a_wider_or_different_controller_declaration_does_not_render_the_unit(
+    bounding, groups,
+):
+    from dataclasses import replace
+
+    controller = next(p for p in PROFILES if p.unit == "azazel-activated.service")
+    changed = replace(
+        controller, capability_bounding_set=bounding, supplementary_groups=groups,
+    )
+    assert render_unit(changed) != _unit("azazel-activated.service")
 
 
 def test_every_unit_refuses_new_privileges():
@@ -486,6 +530,9 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
     for profile in PROFILES:
         settings = _settings(profile.unit)
         for key, value in SHARED_HARDENING:
+            if (key == "CapabilityBoundingSet"
+                    and profile.unit == "azazel-activated.service"):
+                value = "CAP_DAC_READ_SEARCH"
             assert settings.get(key) == [value], (
                 f"{profile.unit} sets {key} to {settings.get(key)} and the "
                 f"shared declaration says {value!r}"

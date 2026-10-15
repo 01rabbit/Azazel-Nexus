@@ -22,6 +22,16 @@ _UNIT = "azazel-activated.service"
 _SERVICE = "org.freedesktop.systemd1.Service"
 _CONTROLLER_PROFILE = next(profile for profile in PROFILES if profile.unit == _UNIT)
 _CONTROL_GROUP = "/system.slice/azazel-activated.service"
+#: CAP_DAC_READ_SEARCH is capability number 2, so the exact bounding mask is
+#: 1 << 2. Derived from the generated profile's declaration, never "any".
+_CAPABILITY_NUMBERS = {"CAP_DAC_READ_SEARCH": 2}
+_BOUNDING_MASK = 0
+for _name in _CONTROLLER_PROFILE.capability_bounding_set:
+    _BOUNDING_MASK |= 1 << _CAPABILITY_NUMBERS[_name]
+if _BOUNDING_MASK != 0x4:
+    raise RuntimeError("controller bounding set must be exactly CAP_DAC_READ_SEARCH")
+if _CONTROLLER_PROFILE.supplementary_groups != ("azazel-operator",):
+    raise RuntimeError("controller supplementary group must be exactly azazel-operator")
 _ONCE_PATH = "/run/azazel-nexus-bootstrap/controller-used"
 _SERVICE_VALUES = {
     "ControlPID": ("u", 0),
@@ -47,6 +57,9 @@ _SERVICE_VALUES = {
     "UnsetEnvironment": ("as", list(BOOTSTRAP_UNSET_ENVIRONMENT)),
     "SetLoginEnvironment": ("b", False),
     "PAMName": ("s", ""),
+    "SupplementaryGroups": ("as", ["azazel-operator"]),
+    "CapabilityBoundingSet": ("t", _BOUNDING_MASK),
+    "AmbientCapabilities": ("t", 0),
 }
 
 

@@ -1400,7 +1400,7 @@ units cannot be admitted through that expectation argument.
 Review identified missing environment/group and timer projections. The final
 implementation also checks UnsetEnvironment and SupplementaryGroups and requires
 independent expected SetLoginEnvironment and uint64 start/stop/runtime/watchdog
-timings at construction. Those values are copied before any await. No local
+timings at construction. The controller projection additionally requires, exactly, SupplementaryGroups=[azazel-operator], CapabilityBoundingSet=0x4 (CAP_DAC_READ_SEARCH only) and AmbientCapabilities=0 (owner-approved so the root controller can read the 0700 audit state and reach the operator-group sockets). Those values are copied before any await. No local
 policy duration or implicit systemd default was invented. Matching a zero or
 infinite timer is only an observation, not proof of a finite lifetime deadline.
 

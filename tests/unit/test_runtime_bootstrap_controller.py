@@ -195,6 +195,9 @@ class FakeBus:
             "UnsetEnvironment": Variant("as", list(BOOTSTRAP_UNSET_ENVIRONMENT)),
             "SetLoginEnvironment": Variant("b", False),
             "PAMName": Variant("s", ""),
+            "SupplementaryGroups": Variant("as", ["azazel-operator"]),
+            "CapabilityBoundingSet": Variant("t", 0x4),
+            "AmbientCapabilities": Variant("t", 0),
             "ExecStartEx": Variant(_EXEC_SIGNATURE, [command]),
         }
         properties.update({key: Variant(_EXEC_SIGNATURE, []) for key in _COMMANDS})
@@ -338,6 +341,53 @@ def test_controller_bounds_timeout_and_kill_properties_in_both_phases(
                 properties.pop(key)
             else:
                 properties[key] = Variant(signature, value)
+        return properties
+
+    with pytest.raises(UnitOperationFailed):
+        asyncio.run(_inspector(
+            FakeBus(phase=phase, mutate=mutate), phase=phase,
+        ).inspect())
+
+
+@pytest.mark.parametrize("phase", ["pre-ready", "ready"])
+@pytest.mark.parametrize("key,signature,value", [
+    # Exactly CAP_DAC_READ_SEARCH (bit 2): empty, wider, or different refuses.
+    ("CapabilityBoundingSet", "t", 0),
+    ("CapabilityBoundingSet", "t", 0x4 | 0x2),       # + CAP_DAC_OVERRIDE
+    ("CapabilityBoundingSet", "t", 0x4 | (1 << 12)),  # + CAP_NET_ADMIN
+    ("CapabilityBoundingSet", "t", 0x2),
+    ("CapabilityBoundingSet", "t", 2**64 - 1),
+    ("CapabilityBoundingSet", "s", "CAP_DAC_READ_SEARCH"),
+    ("AmbientCapabilities", "t", 0x4),
+    ("AmbientCapabilities", "t", 1),
+    ("SupplementaryGroups", "as", []),
+    ("SupplementaryGroups", "as", ["wheel"]),
+    ("SupplementaryGroups", "as", ["azazel-operator", "wheel"]),
+    ("SupplementaryGroups", "as", ["azazel-operator", "azazel-operator"]),
+    ("SupplementaryGroups", "as", ["azazel-audit"]),
+])
+def test_controller_requires_exact_capability_bound_and_group(
+    phase, key, signature, value,
+):
+    def mutate(interface, _count, properties):
+        if interface == "org.freedesktop.systemd1.Service":
+            properties[key] = Variant(signature, value)
+        return properties
+
+    with pytest.raises(UnitOperationFailed):
+        asyncio.run(_inspector(
+            FakeBus(phase=phase, mutate=mutate), phase=phase,
+        ).inspect())
+
+
+@pytest.mark.parametrize("phase", ["pre-ready", "ready"])
+@pytest.mark.parametrize("key", [
+    "CapabilityBoundingSet", "AmbientCapabilities", "SupplementaryGroups",
+])
+def test_controller_refuses_missing_capability_or_group_property(phase, key):
+    def mutate(interface, _count, properties):
+        if interface == "org.freedesktop.systemd1.Service":
+            properties.pop(key)
         return properties
 
     with pytest.raises(UnitOperationFailed):
