@@ -114,5 +114,39 @@
       "venv": "/opt/azazel-nexus root-owned; only standard venv python/lib64 symlinks",
       "audit_ledger": "/var/lib/azazel/state/audit azaudit:root 0700 (first-install genesis precondition)"
     }
+  },
+  "phase2b_operator_run": {
+    "status": "PASSED",
+    "source_commit": "47ee8cd",
+    "archive_sha256": "30838b6935a85f6e4b05b45e426f8b9484744de15d8530c8c7214c1a0f6de807",
+    "script_sha256": "48d2ba4bc4ca465da7cd4f80d7b722881ad9bdb1566a6f59974ec950c780296f",
+    "exit": 0,
+    "effect": "replaced only azazel_nexus and azazel_nexus_runtime in /opt/azazel-nexus venv; pinned native backend re-verified before and after; no pycache; root-owned",
+    "venv_site_packages_tree_digest": "ab1248f6e2c55b9318fd346f7e5ffde569842addcfa82ab9635fd05490f539d4"
+  },
+  "phase3_operator_run": {
+    "status": "PASSED (owner-approved persistent phase)",
+    "source_commit": "47ee8cd",
+    "script_sha256": "a7fb1d45e160cf50e77bfe6342eff3578b133de6ae20c704e030e29b003bc722",
+    "exit": 0,
+    "effect": "daemon-reload; 7 operational units masked to /dev/null; bootstrap tmpfiles applied (/run/azazel-nexus-bootstrap 0700, /run/systemd/system.control); azazel-activated enabled for the next boot; nothing started",
+    "crosscheck": "azazel-activated enabled/inactive; all 7 helpers masked/inactive; enable symlink in multi-user.target.wants"
+  },
+  "installed_files_candidate": {
+    "status": "owner-review candidate, not placed",
+    "path_on_host": "/home/rabbit/azn-candidates/installed-files.47ee8cd.candidate.json",
+    "schema": "azazel-nexus/selected-installed-files/v4",
+    "files": 1494,
+    "directories": 113,
+    "links": 6,
+    "sha256": "sha256:c687572bfaff9cf539727e2bc65fcd4e76d392862b8dffcac971d1fc73298eaa",
+    "generated_by": "installed runtime generate_installed_candidate as an unprivileged user; decoded with its own digest and measured against the real filesystem successfully; no product entrypoint executed",
+    "note": "Becomes admission unit_closure_digest only after the owner reviews it and places it root-owned at /etc/azazel/bootstrap/installed-files.json; any Debian python update changes it."
+  },
+  "package_observation_candidate": {
+    "digest": "sha256:397e686b07d53c19f80e9fb0ddc61616121c1d3eee8ea4aeebcdc0973776b04c",
+    "records": 1672,
+    "architecture": "arm64",
+    "note": "read-only observe-packages output; candidate for admission package_digest pending owner review"
   }
 }
