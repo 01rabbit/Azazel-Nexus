@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-15",
+  "issue": 93,
+  "scope": "Debian 13 ARM64 VM installer Phase 0 (read-only plan inspection) and Phase 1 (non-root DESTDIR staging with --without-service-manager --without-accounts) using current committed source. No persistent host change; no account, mask, enable, daemon-reload, start or reboot. Not a product deployment and not runtime admission.",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "commit": "9d9f7bd",
+    "archive": "git archive --format=tar 9d9f7bd",
+    "archive_sha256": "25a4e0670ae2adc773c674f5063ed1f07bc6312e1548a7559ca4dd4257ba6b8b",
+    "archive_members": 664,
+    "archive_sha256_verified_on_host": true
+  },
+  "host": {
+    "target": "rabbit@192.168.40.100 (Debian 13, aarch64), no sudo used",
+    "os_release": "ID=debian VERSION_ID=13"
+  },
+  "interpreter": {
+    "path": "/home/rabbit/azn-install-20261015/venv/bin/python",
+    "construction": "Throwaway ordinary unpacked CPython 3.13.5 venv (python3.13 -m venv --without-pip) under the operator home. Site-packages hold copies of dbus_next 0.2.3 and PyYAML 6.0.3 (with dist-info) from the existing conformance venv, the azazel_nexus and azazel_nexus_runtime packages from the verified 9d9f7bd archive, and the previously reviewed native backend.",
+    "why_not_existing_venv": "The existing conformance venv carries an editable install of an older 2026-10-13 source tree; the stager deliberately ignores .pth and system site-packages (tools/stage_runtime_entrypoints.py:120-127), so it cannot stage current source. The existing venv was not modified.",
+    "native_backend_sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "native_backend_note": "Same reviewed artifact pinned by tools/qualify_bootstrap_deadline_sandbox.py NATIVE_SHA256; verified by sha256 before copy. Import-only load check; no timer armed.",
+    "not_a_production_venv": "This is a staging fixture interpreter, not reviewed production provisioning and not admitted by the installed-files manifest."
+  },
+  "phase0_read_only": {
+    "install_sh_syntax": "sh -n packaging/install.sh => OK",
+    "profile_fields": {
+      "profile_id": "debian-13-systemd-installer-v1",
+      "unit_directory": "/lib/systemd/system",
+      "preset_directory": "/lib/systemd/system-preset",
+      "libexec_directory": "/usr/libexec/azazel",
+      "service_manager": "systemd",
+      "mask_units": ["azazel-commissiond.service", "azazel-auditd.service", "azazel-watchdog.service", "azazel-edge-probed.service", "azazel-model-fetchd.service", "azazel-mio-locald.service", "azazel-mio-remoted.service"],
+      "enable_units": ["azazel-activated.service"]
+    }
+  },
+  "phase1_destdir_staging": {
+    "command": "env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/rabbit DESTDIR=<mktemp -d /home/rabbit/azn-destdir.XXXXXX> PYTHON=/home/rabbit/azn-install-20261015/venv/bin/python sh packaging/install.sh --without-service-manager --without-accounts",
+    "exit": 0,
+    "installer_output": ["staged 8 fixed Nexus runtime entrypoints under /usr/libexec/azazel", "ACCOUNT STAGE NOT EXECUTED", "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."],
+    "staged_files": 18,
+    "staged_directories": 35,
+    "wrappers": "8 wrappers 0755 with shebang `#!<venv>/bin/python -IS`, fixed sys.path [stdlib, lib-dynload, venv site-packages], sys.dont_write_bytecode=True, single fixed entrypoint import; entrypoints were not executed",
+    "units_byte_identical_to_source": ["azazel-activated", "azazel-auditd", "azazel-commissiond", "azazel-edge-probed", "azazel-mio-locald", "azazel-mio-remoted", "azazel-model-fetchd", "azazel-watchdog"],
+    "preset_identical": true,
+    "tmpfiles_identical": true,
+    "directory_modes_sample": {"etc/azazel": "755", "etc/azazel/bootstrap": "700", "etc/azazel/commissioning": "750", "var/lib/azazel": "711", "var/lib/azazel/run/audit": "2710", "var/lib/azazel/state/bootstrap": "700", "var/lib/azazel/bootstrap-generations": "700", "var/lib/azazel/secrets": "700"},
+    "host_state_unchanged": "sha256 of a snapshot of /usr/libexec/azazel, /etc/azazel, /var/lib/azazel, /etc/systemd/system azazel entries, list-unit-files azazel*, service accounts, /lib/systemd/system/azazel* and tmpfiles.d was identical before and after (49f996ec60d789e921ff51007500e217080e3b8869febe9f97cb63cd4f08797e)",
+    "cleanup": "DESTDIR scratch and the transferred archive were removed; /usr/libexec/azazel still absent on the host. The throwaway venv and extracted source remain at /home/rabbit/azn-install-20261015 (16M) for later approved phases."
+  },
+  "persistent_side_effects_requiring_approval": {
+    "phase2_files_and_accounts": "sudo env PYTHON=<venv> sh packaging/install.sh --without-service-manager : writes /usr/libexec/azazel, /etc/azazel, /var/lib/azazel, /lib/systemd/system*, /usr/lib/tmpfiles.d and creates 7 system accounts + azazel-operator group (packaging/install.sh:180-252)",
+    "phase3_service_manager": "sudo env PYTHON=<venv> sh packaging/install.sh : additionally daemon-reload, masks 7 operational units in /etc/systemd/system, runs systemd-tmpfiles, and `systemctl enable azazel-activated.service` for the NEXT BOOT (packaging/install.sh:261-283)",
+    "phase4_start_controller": "systemctl start azazel-activated : root controller; documented to report a failed Type=notify start on a clean fail-closed refusal",
+    "phase5_reboot": "exercises the persistent enable; requires a VM snapshot and console access",
+    "rollback": "no uninstall script exists; prefer VM snapshot revert"
+  },
+  "not_performed": [
+    "No sudo, account creation, chown, daemon-reload, mask, enable, start or reboot",
+    "No product unit install into /lib/systemd/system or /etc/systemd/system",
+    "No enrollment, approval, pin, time anchor, epoch or generation record",
+    "No provider/fetch/Edge activation, capture/firewall, SSH/network change, CI, physical media or firmware operation"
+  ]
+}
