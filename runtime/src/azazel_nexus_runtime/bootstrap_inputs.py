@@ -146,11 +146,11 @@ def measure_bootstrap_installed_files(context: BootstrapContext) -> SelectedInst
         if (type(startup_before) is not StartupAbsence
                 or startup_before.paths != startup_absence_paths(interpreter)):
             raise ApprovalRefused("fixed Python startup absence required")
-        routing_before = observe_import_routing(import_paths, manifest)
-        if type(routing_before) is not ImportRouting or routing_before.import_paths != import_paths:
-            raise ApprovalRefused("fixed Python import routing required")
         main_path = next("/" + path for path, target in required.items()
                          if target == targets[ACTIVATION_CONTROLLER_UNIT])
+        routing_before = observe_import_routing(import_paths, manifest, main_path=main_path)
+        if type(routing_before) is not ImportRouting or routing_before.import_paths != import_paths:
+            raise ApprovalRefused("fixed Python import routing required")
         modules_before = observe_loaded_modules(manifest, import_paths, main_path)
         if type(modules_before) is not LoadedModules or modules_before.import_paths != import_paths:
             raise ApprovalRefused("fixed loaded module profile required")
@@ -171,7 +171,7 @@ def measure_bootstrap_installed_files(context: BootstrapContext) -> SelectedInst
         startup_after = observe_python_startup_absence(interpreter)
         if type(startup_after) is not StartupAbsence or startup_after != startup_before:
             raise ApprovalRefused("Python startup absence changed during installed measurement")
-        routing_after = observe_import_routing(import_paths, manifest)
+        routing_after = observe_import_routing(import_paths, manifest, main_path=main_path)
         if type(routing_after) is not ImportRouting or routing_after != routing_before:
             raise ApprovalRefused("Python import routing changed during installed measurement")
         modules_after = observe_loaded_modules(manifest, import_paths, main_path)

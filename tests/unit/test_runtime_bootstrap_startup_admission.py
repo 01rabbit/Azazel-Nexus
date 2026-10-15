@@ -94,7 +94,7 @@ def test_retained_bound_audit_refuses_startup_drift_before_submission(
         )
         monkeypatch.setattr(bootstrap_inputs, "observe_python_startup_absence", lambda interpreter:
             python_startup._observe_at(fd, interpreter, owner=os.getuid()))
-        monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _manifest:
+        monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _manifest, **_k:
             import_routing._routing(import_paths=paths))
         monkeypatch.setattr(bootstrap_inputs, "observe_loaded_modules", lambda _manifest, paths, _main:
             loaded_modules._loaded(import_paths=paths))

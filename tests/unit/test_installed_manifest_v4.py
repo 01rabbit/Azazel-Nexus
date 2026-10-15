@@ -352,7 +352,7 @@ def test_bootstrap_measurement_accepts_v4_manifest(bootstrap_tree, monkeypatch):
         import_paths=("/opt/env/site",), version=(3, 13, 5)))
     monkeypatch.setattr(bootstrap_inputs, "observe_python_startup_absence", lambda interpreter:
                         python_startup._observe_at(fd, interpreter, owner=owner))
-    monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _m:
+    monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _m, **_k:
                         import_routing._routing(import_paths=paths))
     monkeypatch.setattr(bootstrap_inputs, "observe_loaded_modules", lambda _m, paths, _main:
                         loaded_modules._loaded(import_paths=paths))

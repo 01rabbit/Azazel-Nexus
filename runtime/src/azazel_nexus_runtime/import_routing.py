@@ -103,7 +103,7 @@ def _zip_records(value, archive):
     return tuple(sorted(records))
 
 
-def _snapshot(import_paths, manifest):
+def _snapshot(import_paths, manifest, main_path=None):
     if (type(import_paths) is not tuple or validate_import_paths(import_paths) != import_paths
             or type(manifest) is not InstalledManifest
             or type(sys.meta_path) is not list or type(sys.path_hooks) is not list
@@ -141,9 +141,14 @@ def _snapshot(import_paths, manifest):
         if finder is None:
             # CPython caches this implicit missing zip before the wrapper
             # replaces sys.path. The separate fixed startup reader forbids it.
-            if path != "/usr/lib/python313.zip" and not _covered_directory(
-                path, import_paths, directories,
-            ):
+            # CPython (pymain) also probes the executed script path as a
+            # possible zip/directory importer and caches the failure as a
+            # negative entry. Accept it only for the exact running main path
+            # (the one loaded_modules pins) when it is a manifest FILE entry.
+            if path != "/usr/lib/python313.zip" and not (
+                main_path is not None and path == main_path
+                and path.removeprefix("/") in files
+            ) and not _covered_directory(path, import_paths, directories):
                 raise ApprovalRefused("uncovered negative Python importer cache")
             result.append((path, "none"))
         elif type(finder) is machinery.FileFinder:
@@ -211,11 +216,11 @@ def _snapshot(import_paths, manifest):
     return ImportRouting(import_paths, tuple(sorted(result)))
 
 
-def observe_import_routing(import_paths, manifest) -> ImportRouting:
+def observe_import_routing(import_paths, manifest, *, main_path=None) -> ImportRouting:
     """Only protected wrapper/manifest-derived inputs reach production here."""
     try:
-        first = _snapshot(import_paths, manifest)
-        if _snapshot(import_paths, manifest) != first:
+        first = _snapshot(import_paths, manifest, main_path)
+        if _snapshot(import_paths, manifest, main_path) != first:
             raise ApprovalRefused("Python import routing changed between observations")
         return first
     except Exception:

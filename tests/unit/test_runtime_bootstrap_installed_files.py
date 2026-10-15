@@ -138,7 +138,7 @@ def _wire_content_reader(monkeypatch, raw, *, contents=None, config=CONFIG):
     monkeypatch.setattr(bootstrap_inputs, "observe_running_python", observe_running)
     monkeypatch.setattr(bootstrap_inputs, "observe_python_startup_absence", _absence)
     monkeypatch.setattr(bootstrap_inputs, "observe_import_routing",
-                        lambda paths, _manifest: _routing(import_paths=paths))
+                        lambda paths, _manifest, **_k: _routing(import_paths=paths))
     monkeypatch.setattr(bootstrap_inputs, "observe_loaded_modules",
                         lambda _manifest, paths, _main: _loaded(import_paths=paths))
     return calls
@@ -506,7 +506,7 @@ def test_import_routing_required_before_and_after_full_measurement(monkeypatch, 
     good = _routing()
     calls = []
 
-    def observe(paths, manifest):
+    def observe(paths, manifest, **_k):
         assert paths == IMPORT_PATHS
         assert manifest.files
         calls.append(True)

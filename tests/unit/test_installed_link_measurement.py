@@ -177,7 +177,7 @@ def test_bootstrap_uses_declared_chain_then_measures_links_and_terminal_bytes(li
     ))
     monkeypatch.setattr(bootstrap_inputs, "observe_python_startup_absence", lambda interpreter:
         python_startup._observe_at(fd, interpreter, owner=os.getuid()))
-    monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _manifest:
+    monkeypatch.setattr(bootstrap_inputs, "observe_import_routing", lambda paths, _manifest, **_k:
         import_routing._routing(import_paths=paths))
     monkeypatch.setattr(bootstrap_inputs, "observe_loaded_modules", lambda _manifest, paths, _main:
         loaded_modules._loaded(import_paths=paths))
@@ -237,7 +237,7 @@ def test_bound_audit_start_refuses_pinned_interpreter_chain_drift(
     healthy_routing = import_routing._routing(import_paths=("/opt/env/site",))
     routing_state = {"drift": False, "calls": 0}
 
-    def observe_routing(paths, manifest):
+    def observe_routing(paths, manifest, **_k):
         del manifest
         if not routing_state["drift"]:
             return import_routing._routing(import_paths=paths)

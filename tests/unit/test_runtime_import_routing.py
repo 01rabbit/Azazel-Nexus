@@ -383,3 +383,64 @@ def test_helper_returns_immutable_expected_empty_snapshot():
     assert observed == ImportRouting(("/opt/env/site",), ())
     assert type(observed.import_paths) is tuple
     assert type(observed.cache) is tuple
+
+
+_WRAPPER = "/usr/libexec/azazel/az-activated"
+_OTHER = "/usr/libexec/azazel/az-auditd"
+
+
+def _wrapper_manifest(*, files=(_WRAPPER,), directories=(), links=()):
+    return InstalledManifest(
+        files=tuple(InstalledFile(path.removeprefix("/"), 0o755, 0, _EMPTY_DIGEST)
+                    for path in ("/opt/env/site/marker", *files)),
+        directories=tuple(InstalledDirectory(path) for path in ("opt/env/site", *directories)),
+        links=links,
+        version=3 if links else 2,
+    )
+
+
+def _observe_main(monkeypatch, manifest, *, main_path, path=_WRAPPER, finder=None):
+    with monkeypatch.context() as patch:
+        patch.setattr(import_routing.sys, "path", list(_IMPORT_PATHS))
+        patch.setattr(import_routing.sys, "meta_path", [
+            import_routing.machinery.BuiltinImporter,
+            import_routing.machinery.FrozenImporter,
+            import_routing.machinery.PathFinder,
+        ])
+        patch.setattr(import_routing.sys, "path_hooks", list(_standard_hooks()))
+        patch.setattr(import_routing.sys, "path_importer_cache", {path: finder})
+        return observe_import_routing(_IMPORT_PATHS, manifest, main_path=main_path)
+
+
+def test_negative_cache_for_exact_main_path_file_in_manifest_is_allowed(monkeypatch):
+    result = _observe_main(monkeypatch, _wrapper_manifest(), main_path=_WRAPPER)
+    assert result.cache == ((_WRAPPER, "none"),)
+
+
+@pytest.mark.parametrize("case", [
+    "main_path_none", "different_wrapper", "absent_from_manifest", "non_none_finder",
+    "directory_only", "symlink_only", "run_script", "tmp_script",
+])
+def test_negative_cache_outside_exact_main_path_file_is_refused(monkeypatch, case):
+    manifest, main_path, path, finder = _wrapper_manifest(), _WRAPPER, _WRAPPER, None
+    if case == "main_path_none":
+        main_path = None
+    elif case == "different_wrapper":
+        manifest, path = _wrapper_manifest(files=(_WRAPPER, _OTHER)), _OTHER
+    elif case == "absent_from_manifest":
+        manifest = _wrapper_manifest(files=())
+    elif case == "non_none_finder":
+        finder = _finder(_WRAPPER)
+    elif case == "directory_only":
+        manifest = _wrapper_manifest(files=(), directories=("usr/libexec/azazel/az-activated",))
+    elif case == "symlink_only":
+        from azazel_nexus.installed_manifest import InstalledLink
+        manifest = _wrapper_manifest(files=(), links=(
+            InstalledLink("usr/libexec/azazel/az-activated", "/opt/env/site/marker"),
+        ))
+    elif case == "run_script":
+        main_path = path = "/run/probe.py"
+    elif case == "tmp_script":
+        main_path = path = "/tmp/probe.py"
+    with pytest.raises(ApprovalRefused):
+        _observe_main(monkeypatch, manifest, main_path=main_path, path=path, finder=finder)

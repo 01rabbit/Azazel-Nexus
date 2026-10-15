@@ -54,8 +54,24 @@
   ],
   "not_verified": [
     "any admitted helper start, READY order, authenticated readiness, heartbeat, operator stop with confirmed containment, or deadline expiry on the real host",
-    "the fixes for findings 1 and 2 on the real host",
+    "the importer-cache fix on the real host",
     "anything beyond this VM (no hardware evidence)"
   ],
-  "retry_requirements": "A retry needs the fixed code reinstalled and a fresh boot or snapshot revert: the controller-used marker is retained for this boot and selection/time/deployment records are create-only (stale-boot selection replacement is not implemented)."
+  "retry_requirements": "A retry needs the fixed code reinstalled and a fresh boot or snapshot revert: the controller-used marker is retained for this boot and selection/time/deployment records are create-only (stale-boot selection replacement is not implemented).",
+  "second_attempt": {
+    "preparation": "Owner reverted the VM to the pre-placement memory snapshot (same boot 8c3dd0e1, /data tmpfs present, operator enrollment retained) and re-created the temporary sudoers entry. Phase 2c (root) replaced the venv packages and the controller unit with commit 669875c and ran daemon-reload only; systemd then reported CapabilityBoundingSet=cap_dac_read_search, SupplementaryGroups=azazel-operator, MemoryPressureWatch=no.",
+    "sandbox_probe_before_start": "Transient unit with the new controller sandbox: CapBnd/CapEff 0x4, CapAmb 0, Groups 979; exactly one /sys/fs/cgroup mount (no memory.pressure bind); /proc/self/ns/cgroup opens; audit ledger lists and statvfs works; run/audit and run/commission traverse; write into the ledger refused.",
+    "records": {
+      "unit_closure_digest": "sha256:e3b44884012ef4a2951dfe7925864fe3eb98a2e3bad2764c213e6d602c485a66",
+      "admission.json": "sha256:5faea63bd7c9afca37ea8f5fa9ca2988425c819773cbc819308d26b9cefa7d79",
+      "deployment.json": "sha256:e129bc222d6619bcef453105e5f54dfcaa338f4284af225cbab34488df6e7bfc",
+      "selection.json": "sha256:ba2c9367ecf048f305a0d84e9ff63544f5ca85600d06fab6424171c27d9395ed (approval_id 420f0b6a-e01e-497d-bc16-0da4d0723fd5)",
+      "generation_digest": "sha256:c91f4d0f9fe6a89f772392a413891c40abc29db5b334ef788438cee154bd7625",
+      "time_digest": "sha256:efd616d8dfb0bb8e8b34d65ac294f2ca552739969b05ba04cbb53cc14db3e41f",
+      "approval": "granted 14:04:19Z expires 14:49:19Z, payload sha256:fc5f25c68325696bf4bca1f2a52c27f38e91ea3245f051a16b7791c966438e5f, owner-signed on the Mac, verified before placement"
+    },
+    "start": "14:06:07Z: the controller passed cgroup admission and initial containment (two daemon-reloads requested by az-activated), then failed closed: 'az-activated failed before completing a safe pass: ApprovalRefused'. Helpers stayed masked/inactive; no deadline, audit record or overlay; only supervisor.lock and controller-used were created.",
+    "diagnosis": "Sandboxed read-only replays (no files created, verified by find before/after) with the wrapper's exact interpreter flags (-IS), sys.path and dont_write_bytecode: approval at both time bounds, deployment binding, time window, generation, policy-bound capacity and the first-install audit genesis (sequence 0, empty ledger) all pass under the new privileges. Installed-files measurement refuses with 'uncovered negative Python importer cache': CPython caches the executed script path as a None importer entry (probe: '/run/<probe>.py'; controller: '/usr/libexec/azazel/az-activated'), and import_routing accepts None only for /usr/lib/python313.zip or covered directories. An earlier probe's capacity refusal was an artifact of a read-only probe sandbox, and its 'fixed controller main module required' refusal is an artifact of the probe's own __main__.",
+    "privilege": "Temporary sudoers removed again after diagnosis (sudo -n refused)."
+  }
 }

@@ -440,7 +440,7 @@ def test_fixed_factory_uses_real_policy_codec_manifest_and_generation_reader(
             os.close(startup_fd)
 
     monkeypatch.setattr(inputs, "observe_python_startup_absence", observe_startup_absence)
-    monkeypatch.setattr(inputs, "observe_import_routing", lambda paths, _manifest:
+    monkeypatch.setattr(inputs, "observe_import_routing", lambda paths, _manifest, **_k:
         import_routing._routing(import_paths=paths))
     monkeypatch.setattr(inputs, "observe_loaded_modules", lambda _manifest, paths, _main:
         loaded_modules._loaded(import_paths=paths))
