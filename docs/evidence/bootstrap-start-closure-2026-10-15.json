@@ -1,0 +1,66 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "DefaultDependencies false on three bootstrap roots, explicit ordering/shutdown, integrated bounded transitive START rejection",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_start_closure.py": "8be3243c1328ed17232b1fec4682b97fea8da3ca7c0170d7125d3c5f11e9d20a",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "e3dcf5be80ba1f4a0c68d6a85322e79c92ce9a27e0408bba835388ed1c4221c2",
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "cb2f1c3d32ccbcf3c80f570609c7fc1e98764bfe23d6efa54b345eabb36cf95e",
+    "runtime/src/azazel_nexus_runtime/bootstrap_loaded.py": "36321c4b7b4a948fc224db586aa814cf96f7dcc8b7a8f09ebb580efd0bbefe9d",
+    "runtime/src/azazel_nexus_runtime/hardening.py": "9a63458fdb408ab0f152af8dc746927a361c4ee9b099787b94bb5bc72e0607c8",
+    "packaging/systemd/azazel-activated.service": "1c5172cf141335ae783708e1c6d83cc44334264dcf7b34fca2322487c678b36b",
+    "packaging/systemd/azazel-auditd.service": "376ba1c1b7f4ba88c68e18f1ee2dc474716fbe01cfd44176e0425046e075190f",
+    "packaging/systemd/azazel-commissiond.service": "2d3a42ce05b94086a9c6d7844e37e377925fee721385bb6f4f712c791b8c92db",
+    "tests/unit/test_runtime_bootstrap_start_closure.py": "c93e349aaa3b4d2816b6c1af50f2c437dafa67fcd0e9e70036266884c11eabf0",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "633082bc0b913eab8042a2dbbd95d6a10901f1f99eb39c3c7e39a51347daae84",
+    "tests/unit/test_runtime_bootstrap_controller.py": "6b6ade0843788a3026d5131711dbecc13e500ae367dd1d0efacd4afa5d76d158",
+    "tests/unit/test_runtime_bootstrap_loaded.py": "848230853d08eb0bcd9c927b1a4bfded2294a0d7e260e9c4fc59b23559b6333b",
+    "tests/unit/test_runtime_hardening.py": "55cd365a1aae23691c43ee14fca0eda49f483120cd1feec7e24b141960b323d9",
+    "tests/unit/test_runtime_bootstrap_lifetime.py": "65795b579f4f0917264a12dde08c62f68eab97eb9f8bdb3fabf9fa612e5e8d38",
+    "README.md": "fc5c1ce83041da6d55dd190977707779be1f348b9005c3785a57dd9bfcf48316"
+  },
+  "tests": {
+    "final_related": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+      "passed": 2583,
+      "skipped": 2,
+      "seconds": 9.99
+    },
+    "full_default_temp": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit",
+      "passed": 6257,
+      "failed": 64,
+      "errors": 26,
+      "skipped": 20,
+      "seconds": 44.79
+    },
+    "full_short_temp": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit --basetemp=/tmp/azn-full.yEmJy3 --junitxml=/tmp/azn-full.yEmJy3/results.xml --tb=short",
+      "passed": 6286,
+      "failed": 61,
+      "skipped": 20,
+      "seconds": 45.84,
+      "bootstrap_subset": {
+        "passed": 2448,
+        "skipped": 2,
+        "failed": 0
+      },
+      "junit_sha256": "482b5da9eb1cdd583d9459dc16e7990f58abd09bf6748d6d0657608038883d09"
+    },
+    "note": "Selections overlap, not additive; full suite remains red. Offline cached PyYAML==6.0.3 installed locally after full run; related node-config selection then passed."
+  },
+  "ruff": "ten changed source/test files pass; hardening.py recorded baseline F401 imports retained",
+  "diff_check": "pass",
+  "docs_links": "54 Markdown files pass",
+  "review": "Sol reviewed graph refusal scope. Luna implemented disjoint profile/projection/fixture/graph tests. Coordinator integrated manager and compared bracketing graph observations; restored explicit ordering-only sysinit/basic edges.",
+  "limits": [
+    "external devices refuse until following-group discovery supported",
+    "graph equality is sampled, not atomic transaction exclusion or interval continuity",
+    "mount executable effects and stop propagation not admitted",
+    "public opening/start still refuse",
+    "full suite has Mac/Linux platform and runtime dependency failures, not CI evidence",
+    "no VM/service deployment, CI, physical operations, commit/push"
+  ]
+}

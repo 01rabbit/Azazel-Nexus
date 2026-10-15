@@ -1,0 +1,34 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes, not a standalone committed diff",
+  "scope": "bound audit start, authenticated client handoff and closure invalidation",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "ed6b6702a8a73db93ed43a609cad3bf338bb272ee5fc0b645c572cfe5b0cbca5",
+    "tests/unit/test_runtime_bootstrap_manager_audit_peer.py": "0ed71a05fd30cb4276ca0af7b0036736035378ab2d0409f7e407f18718289a16",
+    "tests/unit/test_runtime_bootstrap_bound_audit.py": "966e103d020c67c240efb445f4024759a064593354ffc27978a277398ea8a84d",
+    "tests/unit/test_runtime_bootstrap_audit_handoff.py": "148cabe9c057e26b6ca8eec837b02286bd85c10a36aec7bab716f7eec8bedab0"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2143,
+    "skipped": 2,
+    "seconds": 8.71,
+    "environment": "macOS synthetic systemd, peer/path evidence and ledger; real supervisor algorithm, bridge, capture and client",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "four listed source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed composition and integration, found closure binding lifetime gap, then confirmed coordinator fix. Luna supplied six bound-start tests.",
+  "limits": [
+    "production public opening/start remain refusing",
+    "publication, commissioning and containment modeled; no real transport/host identity proof",
+    "commission identity/inventory readiness, entrypoint, process closure, dependency/conflict semantics and lifetime containment unfinished",
+    "no full repository suite, CI, Linux VM, deployment, physical operation, commit or push"
+  ]
+}

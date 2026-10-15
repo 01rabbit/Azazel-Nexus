@@ -1,0 +1,49 @@
+{
+  "schema": "azazel-nexus/local-development-checkpoint/v1",
+  "date": "2026-10-14",
+  "source_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "worktree": "dirty; local uncommitted implementation",
+  "selected_source_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_overlay_files.py": "51e7fb0dfeb206fa7ba51d5163663edf495ff1eedf813834e26e6a8e3553623d",
+    "src/azazel_nexus/bootstrap_overlay_journal.py": "e48bbb9af12f37ee912ac86d37698d29e1bdaed4259688bb1728feb9a2271cbc",
+    "tests/unit/test_runtime_bootstrap_overlay_close.py": "1fdcfa6a343c9d53abbbf0b044c412a93a6f493bfb76bf77e72ed112fbe8fe65",
+    "tests/unit/test_bootstrap_overlay_journal.py": "8911b7b61c069f29733398bbc8b2847184fe3da970d36ecd80b322342a0080b1"
+  },
+  "local_vm_hashes_match": true,
+  "test_arguments": "-m pytest -q tests/unit/test_runtime_bootstrap_overlay_close.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_manager_masked.py",
+  "pythonpath": ".:src:runtime/src",
+  "macos": {
+    "interpreter": ".venv/bin/python",
+    "passed": 250,
+    "skipped": 1,
+    "skip_reason": "offline analyzer requires Linux /usr/bin/systemd-analyze",
+    "failed": 0,
+    "duration_seconds": 0.88
+  },
+  "debian_arm64_vm": {
+    "interpreter": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python",
+    "passed": 251,
+    "skipped": 0,
+    "failed": 0,
+    "duration_seconds": 0.58,
+    "scratch_removed": true,
+    "environment_reused": true
+  },
+  "offline_analyzer": {
+    "version": "systemd 257 (257.13-1~deb13u1)",
+    "arguments": "--root=<temporary-fixture> --generators=no --man=no verify azazel-auditd.service azazel-commissiond.service",
+    "SYSTEMD_UNIT_PATH": "/system.control",
+    "result": "nonzero verify status and per-unit masked diagnostics",
+    "persistent_masks_excluded_from_search": true,
+    "live_manager_operation": false
+  },
+  "target_ruff_command": "ruff check runtime/src/azazel_nexus_runtime/bootstrap_overlay_files.py src/azazel_nexus/bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_overlay_close.py tests/unit/test_bootstrap_overlay_journal.py",
+  "target_ruff": "passed",
+  "diff_check": "passed",
+  "counts_overlap": true,
+  "full_suite": "not rerun",
+  "ci": "not run",
+  "production_start_fence": "not established",
+  "installed_lifecycle": "not run",
+  "hardware": "not tested"
+}

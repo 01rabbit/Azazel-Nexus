@@ -13,6 +13,7 @@ commissioning record the one path never tested.
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,23 @@ def test_refused_interfaces_are_listed_rather_than_dropped(tmp_path):
     assert rows, "every interface was dropped from the operator's view"
     assert all(not row["commissionable"] for row in rows)
     assert all(row["blocked_by"] for row in rows)
+
+
+def test_wizard_screen_and_prompts_exclude_raw_identity(tmp_path):
+    net = _tree(tmp_path)
+    for device in (tmp_path / "sys" / "devices").glob("pci0000:00/*"):
+        (device / "serial").write_text("private-serial\n")
+    proposal = propose(read_interfaces(net, permanent_mac_reader=lambda name: "aa:bb:cc:dd:ee:01"))
+    rows = render_rows(proposal)
+    assert rows
+    for row in rows:
+        assert set(row["description"]) <= {"physical_label", "bus_path"}
+    ask = _scripted(["skip", "skip"])
+    commission(proposal, ask=ask, confirm=lambda summary: True,
+               operator=OPERATOR, at=NOW, profiles_present=PROFILES)
+    displayed = repr(rows) + repr(ask.asked)
+    for raw in ("private-serial", "aa:bb:cc:dd:ee:01", "0x8086", "0x15b0"):
+        assert raw not in displayed
 
 
 # -- nothing is applied without confirmation ----------------------------
@@ -387,7 +405,8 @@ def test_commission_refuses_when_no_operator_can_be_asked(tmp_path):
     assert "will not proceed" in text
 
 
-def test_commission_writes_a_record_through_the_cli(tmp_path):
+@pytest.mark.parametrize("answers", [["observation", "skip"], ["skip", "skip"]])
+def test_commission_prepares_only_an_unsigned_in_memory_draft(tmp_path, answers):
     code, text = _run(
         [
             "commission",
@@ -399,12 +418,19 @@ def test_commission_writes_a_record_through_the_cli(tmp_path):
             *PROFILES,
         ],
         tmp_path,
-        ask=_scripted(["observation", "skip"]),
+        ask=_scripted(answers),
         confirm=lambda summary: True,
         permanent_mac_reader=lambda name: f"aa:bb:cc:dd:ee:{KERNEL_NAMES.index(name):02x}",
     )
     assert code == 0
-    assert "commissioning recorded" in text
+    assert "commissioning draft prepared" in text
+    assert "not signed, not persisted" in text
+    assert "not an activation approval" in text
+    assert "not measured profile evidence" in text
+    assert "commissioning recorded" not in text
+    assert "sha256:" not in text
+    if answers == ["skip", "skip"]:
+        assert "does not establish a running" in text
     for name in KERNEL_NAMES:
         assert name not in text
 
@@ -419,6 +445,72 @@ def test_a_cli_commissioning_the_operator_abandons_writes_nothing(tmp_path):
     )
     assert code == 2
     assert "abandoned" in text
+
+
+@pytest.mark.parametrize("consent", [True, False])
+def test_explicit_cli_draft_export_obeys_wizard_confirmation(tmp_path, monkeypatch, consent):
+    from azazel_nexus import commissioning_draft
+    monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *a, **kw: True)
+    monkeypatch.setattr(commissioning_draft, "read_protection_key", lambda path: b"synthetic-test-only")
+    output = tmp_path / "commissioning-draft.json"
+    code, text = _run(
+        ["commission", "--operator", OPERATOR, "--at", NOW, "--draft-output", str(output)],
+        tmp_path, ask=_scripted(["observation", "skip"]), confirm=lambda summary: consent,
+        permanent_mac_reader=lambda name: f"aa:bb:cc:dd:ee:{KERNEL_NAMES.index(name):02x}",
+    )
+    assert output.exists() is consent
+    if consent:
+        assert code == 0
+        assert json.loads(output.read_bytes())["status"] == "unsigned-draft"
+        assert "not signed" in text
+        assert "in memory only" not in text
+    else:
+        assert code == 2
+
+
+@pytest.mark.parametrize("fault", [None, "tamper", "wrong-purpose", "revoked", "inventory-change"])
+def test_cli_export_sign_review_flow_with_ephemeral_keys(tmp_path, monkeypatch, fault):
+    from nacl.signing import SigningKey
+    from azazel_nexus import commissioning_draft, cli
+    from azazel_nexus.operator_trust import OperatorTrust, ApprovalPurpose, approval_message
+    monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *a, **kw: True)
+    monkeypatch.setattr(commissioning_draft, "read_protection_key", lambda path: b"synthetic-only")
+    reader = lambda name: f"aa:bb:cc:dd:ee:{KERNEL_NAMES.index(name):02x}"  # noqa: E731
+    destination = tmp_path / "commissioning-draft.json"
+    code, _ = _run(
+        ["commission", "--operator", "operator-a", "--at", NOW, "--draft-output", str(destination)],
+        tmp_path, ask=_scripted(["observation", "skip"]), confirm=lambda summary: True,
+        permanent_mac_reader=reader,
+    )
+    assert code == 0
+    key = SigningKey.generate()
+    trust = OperatorTrust({"operator-a": bytes(key.verify_key)},
+                          frozenset({"operator-a"}) if fault == "revoked" else frozenset())
+    monkeypatch.setattr(cli, "load_operator_trust", lambda: trust)
+    purpose = ApprovalPurpose.ACTIVATION if fault == "wrong-purpose" else ApprovalPurpose.COMMISSIONING
+    signature = key.sign(approval_message(purpose, destination.read_bytes())).signature
+    sidecar = tmp_path / "commissioning-draft.sig"
+    sidecar.write_bytes(signature)
+    sidecar.chmod(0o600)
+    if fault == "tamper":
+        destination.write_bytes(destination.read_bytes() + b"\n")
+    if fault == "inventory-change":
+        reader = lambda name: "aa:bb:cc:dd:ff:00"  # noqa: E731
+    before = destination.read_bytes()
+    # Reuse the already created sysfs fixture; no second _tree creation.
+    out = io.StringIO()
+    code = main(["--sysfs", str(tmp_path / "sys" / "class" / "net"),
+                 "commission-review", "--operator", "operator-a"],
+                out=out, permanent_mac_reader=reader)
+    assert code == (0 if fault is None else 1)
+    assert destination.read_bytes() == before
+    if fault is None:
+        assert "assigned bindings verified" in out.getvalue()
+        assert "Nothing was imported or activated" in out.getvalue()
+    else:
+        assert "review refused" in out.getvalue()
 
 
 def test_the_console_script_points_at_the_entry_point():

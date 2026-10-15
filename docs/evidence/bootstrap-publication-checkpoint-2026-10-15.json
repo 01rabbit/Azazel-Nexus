@@ -1,0 +1,35 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved, no commit/push",
+  "scope": "supervisor publication checkpoint and captured published-file integrity",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "3ae0a3e8845c5cb3cf88494f1cb7e83512a75dcc158ef3c3e01dea202829dbad",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "b6a280879bf43d8ff7a3be2349a62ce81e2e2524623c9ac077abfc2e11d74c5e",
+    "runtime/src/azazel_nexus_runtime/bootstrap_overlay_files.py": "52e23076a1f0d8bd1002d5440852d84cd8062adfd51fcded64dc93c7e27f418a",
+    "tests/unit/test_runtime_bootstrap.py": "f737da415f5490e3a5062cf32cb5e73ed61365c1342b242d513a28e3e2ffeb47",
+    "tests/unit/test_runtime_bootstrap_manager.py": "9528e67fb701d3103c00af448b4dca579383b7b7e7733776dc3d6a8be25e31b4",
+    "tests/unit/test_runtime_bootstrap_published_pair.py": "528fc295a8fe770a738b2a152616942ce6280f18cf462868f8c44817b2ba62fe"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_publication_binding.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_runtime_bootstrap_published_pair.py tests/unit/test_runtime_bootstrap_directory_integration.py tests/unit/test_bootstrap_grant_store.py tests/unit/test_runtime_boundary.py",
+    "passed": 226,
+    "seconds": 1.82,
+    "environment": "local macOS synthetic manager and ordinary files",
+    "earlier_failures": [
+      "interim test fake lacked new keyword arguments; updated",
+      "missing published candidate raised raw FileNotFoundError; normalized to redacted ApprovalRefused"
+    ]
+  },
+  "ruff": "six source/test files pass",
+  "diff_check": "pass",
+  "review": "Astra independent source review found post-store cancellation/expiry gap; fixed and tested. Final bounded review found no blocking defect. Luna tests, coordinator integration.",
+  "limits": [
+    "production manager open_pair/start remains refusing",
+    "published checker has no production reload caller yet",
+    "directory bindings and pre-publication mask stamp capture remain caller responsibilities",
+    "byte bounded file reads not wall-clock bound; no atomic systemd/disk proof",
+    "no full suite, CI, Linux VM or real service operation"
+  ]
+}

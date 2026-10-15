@@ -16,7 +16,7 @@ from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
 from azazel_nexus.layout import LAYOUT
-from azazel_nexus_runtime.hardening import PROFILES, SYSTEM_ACCOUNTS
+from .hardening import PROFILES, SYSTEM_ACCOUNTS
 
 __all__ = [
     "CURRENT_INSTALL_PLATFORM_PROFILES",
@@ -35,9 +35,13 @@ __all__ = [
 _KEY = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 _UNQUOTED = re.compile(r"[A-Za-z0-9._+:/-]+\Z")
 _UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.service\Z")
+_PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+_TOOL = re.compile(r"(?:/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+|[A-Za-z0-9_+-]+)\Z")
 
 
 def _require_absolute(value: str, name: str) -> None:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be a string path")
     path = PurePosixPath(value)
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{name} must be an absolute normalized path")
@@ -57,21 +61,49 @@ class InstallPlatformProfile:
     libexec_directory: str
     service_manager: str
     required_tools: tuple[str, ...]
+    account_tools: tuple[str, ...] = ()
+    service_manager_tools: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.required_tools, tuple):
-            raise ValueError("required_tools must be immutable tuple data")
         for name in ("profile_id", "os_id", "version_id", "service_manager"):
-            if not getattr(self, name).strip():
+            if type(getattr(self, name)) is not str:
+                raise ValueError(f"{name} must be a string")
+        for name in ("required_tools", "account_tools", "service_manager_tools"):
+            tools = getattr(self, name)
+            if type(tools) is not tuple:
+                raise ValueError(f"{name} must be immutable tuple data")
+        if not _PROFILE_ID.fullmatch(self.profile_id):
+            raise ValueError("profile_id must be a normalized lowercase identifier")
+        for name in ("os_id", "version_id", "service_manager"):
+            value = getattr(self, name)
+            if not value or value != value.strip() or any(c.isspace() for c in value):
                 raise ValueError(f"{name} must be non-empty")
         for name in ("unit_directory", "preset_directory", "libexec_directory"):
             _require_absolute(getattr(self, name), name)
-        if not self.required_tools or any(
-            not item.strip() for item in self.required_tools
+        paths = tuple(
+            PurePosixPath(getattr(self, name))
+            for name in ("unit_directory", "preset_directory", "libexec_directory")
+        )
+        if any(
+            left == right or left in right.parents or right in left.parents
+            for index, left in enumerate(paths)
+            for right in paths[index + 1:]
         ):
-            raise ValueError("required_tools must contain non-empty tool names")
-        if len(set(self.required_tools)) != len(self.required_tools):
-            raise ValueError("required_tools must not contain duplicates")
+            raise ValueError("profile destinations must not overlap")
+        for name in ("required_tools", "account_tools", "service_manager_tools"):
+            tools = getattr(self, name)
+            if any(type(item) is not str or not _TOOL.fullmatch(item) for item in tools):
+                raise ValueError(f"{name} must contain safe tool names")
+            if len(set(tools)) != len(tools):
+                raise ValueError(f"{name} must not contain duplicates")
+        if not self.required_tools:
+            raise ValueError("required_tools must not be empty")
+        seen_tools: set[str] = set()
+        for name in ("required_tools", "account_tools", "service_manager_tools"):
+            tools = set(getattr(self, name))
+            if seen_tools & tools:
+                raise ValueError("profile tool sets must be disjoint")
+            seen_tools.update(tools)
 
 
 @dataclass(frozen=True)
@@ -169,15 +201,12 @@ CURRENT_INSTALL_PLATFORM_PROFILES: tuple[InstallPlatformProfile, ...] = (
         service_manager="systemd",
         required_tools=(
             "/bin/sh",
-            "id",
             "python3",
             "dirname",
             "install",
-            "getent",
-            "useradd",
-            "groupadd",
-            "systemctl",
         ),
+        account_tools=("id", "getent", "useradd", "groupadd"),
+        service_manager_tools=("systemctl", "systemd-tmpfiles"),
     ),
 )
 
@@ -297,8 +326,13 @@ def build_install_plan(
     profile: InstallPlatformProfile,
     *,
     preset_declarations: Sequence[tuple[str, str]],
+    with_accounts: bool = True,
+    with_service_manager: bool = True,
 ) -> InstallPlan:
     """Project repository declarations into immutable install-intent data."""
+
+    if type(with_accounts) is not bool or type(with_service_manager) is not bool:
+        raise ValueError("install modes must be explicit booleans")
 
     declared_units = {service.unit for service in PROFILES}
     declarations = tuple(preset_declarations)
@@ -314,6 +348,14 @@ def build_install_plan(
     disabled = tuple(unit for action, unit in declarations if action == "disable")
     if enabled != ("azazel-activated.service",):
         raise ValueError("install plan must enable only the activation controller")
+
+    declared_exec_directories = {
+        str(PurePosixPath(service.executable).parent) for service in PROFILES
+    }
+    if declared_exec_directories != {profile.libexec_directory}:
+        raise ValueError(
+            "install profile libexec path differs from rendered systemd entrypoints"
+        )
 
     files = tuple(
         FileDestination(
@@ -357,6 +399,10 @@ def build_install_plan(
         directories=directories,
         accounts=SYSTEM_ACCOUNTS,
         groups=groups,
-        required_tools=profile.required_tools,
+        required_tools=(
+            *profile.required_tools,
+            *(profile.account_tools if with_accounts else ()),
+            *(profile.service_manager_tools if with_service_manager else ()),
+        ),
         service_manager=intent,
     )

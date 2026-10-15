@@ -12,6 +12,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
+from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
 
 __all__ = ["SystemdBusSession", "SystemdUnitCalls"]
@@ -21,6 +23,12 @@ MANAGER_PATH = "/org/freedesktop/systemd1"
 MANAGER_INTERFACE = "org.freedesktop.systemd1.Manager"
 PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 UNIT_INTERFACE = "org.freedesktop.systemd1.Unit"
+
+# Transport bounds, not node-health measurements or bootstrap lease duration.
+# An unanswered D-Bus call must not keep the refusing controller stuck forever.
+# A timeout is uncertainty: callers must not infer completion or retry widening.
+_BUS_TIMEOUT_SECONDS = 10.0
+_SYSTEM_BUS_ADDRESS = SYSTEM_BUS_ADDRESS
 
 _UNITS = frozenset(UNIT_NAMES.values())
 _ACTIVE_STATES = frozenset(
@@ -82,7 +90,7 @@ class SystemdUnitCalls:
                 raise UnitOperationFailed("systemd returned an unknown unit-file state")
             return value
 
-        if method == "GetActiveState":
+        if method in {"GetActiveState", "GetInactiveState"}:
             unit_reply = self._exchange(MANAGER_INTERFACE, "GetUnit", "s", [unit])
             object_path = self._one(unit_reply, "o", "GetUnit")
             expected_path = _unit_object_path(unit)
@@ -99,7 +107,7 @@ class SystemdUnitCalls:
             value = getattr(variant, "value", None)
             if not isinstance(value, str) or value not in _ACTIVE_STATES:
                 raise UnitOperationFailed("systemd returned an invalid active state")
-            return value == "active"
+            return value == ("inactive" if method == "GetInactiveState" else "active")
 
         signatures = {
             "MaskUnitFiles": ("asbb", "a(sss)"),
@@ -134,6 +142,29 @@ class SystemdUnitCalls:
             raise UnitOperationFailed(f"systemd returned an invalid {method} reply")
         return reply.body
 
+    def bootstrap_profile(self):
+        """Observe fixed Manager properties and classify the reviewed profile.
+
+        This is read-only. A matching profile is compatibility evidence only;
+        it does not authorize publishing files or changing systemd state.
+        """
+        version = self._manager_property("Version", "s")
+        unit_path = self._manager_property("UnitPath", "as")
+        return observe_bootstrap_systemd_profile(version=version, unit_path=unit_path)
+
+    def _manager_property(self, name: str, signature: str):
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [MANAGER_INTERFACE, name],
+            path=MANAGER_PATH,
+        )
+        variant = self._one(reply, "v", f"Manager.{name}")
+        value = getattr(variant, "value", None)
+        if (getattr(variant, "signature", None) != signature
+                or (signature == "s" and type(value) is not str)
+                or (signature == "as" and type(value) is not list)):
+            raise UnitOperationFailed("systemd manager profile property refused")
+        return value
+
     @staticmethod
     def _one(reply: _Reply, signature: str, operation: str) -> object:
         if reply.signature != signature or len(reply.body) != 1:
@@ -142,14 +173,14 @@ class SystemdUnitCalls:
 
 
 def _unit_object_path(unit: str) -> str:
-    """Encode a known ASCII unit name as systemd's D-Bus object path."""
+    """Encode systemd's byte-wise bus label (not unit-name validation)."""
 
     encoded = "".join(
-        character
-        if character.isalnum() or character == "_"
-        else f"_{ord(character):02x}"
-        for character in unit
-    )
+        chr(byte)
+        if 65 <= byte <= 90 or 97 <= byte <= 122 or (index > 0 and 48 <= byte <= 57)
+        else f"_{byte:02x}"
+        for index, byte in enumerate(unit.encode("utf-8"))
+    ) or "_"
     return f"/org/freedesktop/systemd1/unit/{encoded}"
 
 
@@ -170,6 +201,7 @@ class SystemdBusSession:
         self._previous_loop = previous_loop
         self._message_type = message_type
         self._message_factory = message_factory
+        self._admitted_owner = getattr(bus, "_azazel_systemd_owner", None)
         self.calls = SystemdUnitCalls(self._exchange)
 
     @classmethod
@@ -179,7 +211,6 @@ class SystemdBusSession:
         try:
             from dbus_next import Message, MessageType
             from dbus_next.aio import MessageBus
-            from dbus_next.constants import BusType
         except ImportError as exc:  # pragma: no cover - exercised on target
             raise UnitOperationFailed(
                 "the pinned dbus-next runtime dependency is not installed"
@@ -195,16 +226,53 @@ class SystemdBusSession:
             )
 
         loop = asyncio.new_event_loop()
+        bus = None
         try:
             # dbus-next 0.2.3 binds its asyncio transport to the current loop
             # while constructing MessageBus. Keep that loop current for both
             # construction and connection, then restore the caller's context.
             asyncio.set_event_loop(loop)
-            bus = MessageBus(bus_type=BusType.SYSTEM)
-            loop.run_until_complete(bus.connect())
-        except Exception as exc:  # noqa: BLE001 - translated at the trust boundary
-            loop.close()
-            asyncio.set_event_loop(previous_loop)
+            require_supported_dbus_next()
+            # Do not let DBUS_SYSTEM_BUS_ADDRESS redirect privileged control.
+            class FixedBus(FixedSystemBusSocket, MessageBus):
+                pass
+
+            bus = FixedBus(bus_address=_SYSTEM_BUS_ADDRESS)
+            loop.run_until_complete(
+                asyncio.wait_for(bus.connect(), _BUS_TIMEOUT_SECONDS)
+            )
+            from .bootstrap_manager_identity import inspect_bootstrap_manager_identity
+
+            identity = loop.run_until_complete(inspect_bootstrap_manager_identity(
+                bus=bus, message_factory=Message, message_type=MessageType,
+                timeout_seconds=_BUS_TIMEOUT_SECONDS,
+            ))
+            bus._azazel_systemd_owner = identity.owner
+        except BaseException as exc:
+            try:
+                if bus is not None:
+                    try:
+                        bus.disconnect()
+                    except Exception:
+                        pass  # Connection failure remains a redacted refusal.
+            finally:
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.wait(pending, timeout=_BUS_TIMEOUT_SECONDS))
+                finally:
+                    try:
+                        loop.close()
+                    finally:
+                        try:
+                            if isinstance(bus, FixedSystemBusSocket):
+                                bus._close_fixed_socket()
+                        finally:
+                            asyncio.set_event_loop(previous_loop)
+            if not isinstance(exc, Exception):
+                raise
             raise UnitOperationFailed(
                 "could not connect to the system D-Bus service manager"
             ) from exc
@@ -237,16 +305,19 @@ class SystemdBusSession:
             }
             if allowed.get(member) != signature or path != MANAGER_PATH:
                 raise UnitOperationFailed("the systemd client refused a call shape")
-        elif (
-            member != "Get"
-            or signature != "ss"
-            or path not in {_unit_object_path(unit) for unit in _UNITS}
-            or list(body) != [UNIT_INTERFACE, "ActiveState"]
-        ):
+        elif member != "Get" or signature != "ss":
+            raise UnitOperationFailed("the systemd client refused a property call")
+        elif path == MANAGER_PATH:
+            if (len(body) != 2 or body[0] != MANAGER_INTERFACE
+                    or type(body[1]) is not str
+                    or body[1] not in {"Version", "UnitPath"}):
+                raise UnitOperationFailed("the systemd client refused a manager property")
+        elif (path not in {_unit_object_path(unit) for unit in _UNITS}
+                or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
 
         message = self._message_factory(
-            destination=DESTINATION,
+            destination=self._admitted_owner or DESTINATION,
             path=path,
             interface=interface,
             member=member,
@@ -254,7 +325,9 @@ class SystemdBusSession:
             body=list(body),
         )
         try:
-            reply = self._loop.run_until_complete(self._bus.call(message))
+            reply = self._loop.run_until_complete(
+                asyncio.wait_for(self._bus.call(message), _BUS_TIMEOUT_SECONDS)
+            )
         except Exception as exc:  # noqa: BLE001 - translated at the trust boundary
             raise UnitOperationFailed(
                 f"systemd D-Bus call {member} did not complete"
@@ -265,18 +338,30 @@ class SystemdBusSession:
             raise UnitOperationFailed(
                 f"systemd D-Bus call {member} returned an invalid message type"
             )
+        if self._admitted_owner is not None and getattr(reply, "sender", None) != self._admitted_owner:
+            raise UnitOperationFailed("systemd D-Bus reply owner refused")
         return _Reply(reply.signature, reply.body)
 
     def __call__(self, method: str, unit: str) -> object:
         return self.calls(method, unit)
 
+    def bootstrap_profile(self):
+        """Read manager compatibility facts; performs no control operation."""
+        return self.calls.bootstrap_profile()
+
     def close(self) -> None:
         try:
             self._bus.disconnect()
         finally:
-            if not self._loop.is_closed():
-                self._loop.close()
-            asyncio.set_event_loop(self._previous_loop)
+            try:
+                if not self._loop.is_closed():
+                    self._loop.close()
+            finally:
+                try:
+                    if isinstance(self._bus, FixedSystemBusSocket):
+                        self._bus._close_fixed_socket()
+                finally:
+                    asyncio.set_event_loop(self._previous_loop)
 
     def __enter__(self) -> "SystemdBusSession":
         return self

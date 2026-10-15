@@ -8,8 +8,14 @@
 [Unit]
 Description=Azazel-Nexus audit ledger
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md
+DefaultDependencies=no
 After=azazel-activated.service
+After=sysinit.target
+After=basic.target
+Before=shutdown.target
+Conflicts=shutdown.target
 Requires=azazel-activated.service
+BindsTo=azazel-activated.service
 
 [Service]
 Type=notify
@@ -17,9 +23,22 @@ User=azaudit
 ExecStart=/usr/libexec/azazel/az-auditd
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750
+Restart=no
+KillMode=control-group
+NotifyAccess=main
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+TimeoutStartFailureMode=kill
+TimeoutStopFailureMode=kill
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+SetLoginEnvironment=no
+UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT LD_BIND_NOW LD_DEBUG LD_DEBUG_OUTPUT LD_DYNAMIC_WEAK LD_HWCAP_MASK LD_LIBRARY_PATH LD_ORIGIN_PATH LD_POINTER_GUARD LD_PREFER_MAP_32BIT_EXEC LD_PRELOAD LD_PROFILE LD_PROFILE_OUTPUT LD_SHOW_AUXV LD_TRACE_LOADED_OBJECTS LD_TRACE_PRELINKING LD_USE_LOAD_BIAS LD_VERBOSE LD_WARN LOCPATH MALLOC_TRACE NLSPATH PYTHONEXECUTABLE PYTHONHOME PYTHONPATH TZDIR __PYVENV_LAUNCHER__
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/run
-ReadWritePaths=/var/lib/azazel/state
+ReadWritePaths=/var/lib/azazel/state/audit
+ReadWritePaths=/var/lib/azazel/state/auditd
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-15",
+  "scope": "First operator-executed native sandbox trial failed before arm; subsequent source correction is not a successful rerun",
+  "operator_report": {
+    "scope": "native timer sandbox only",
+    "results": [{
+      "mode": "expiry",
+      "properties": {"Result": "exit-code", "ExecMainCode": "1", "ExecMainStatus": "1", "ActiveState": "failed", "SubState": "failed"},
+      "markers": [
+        "Traceback (most recent call last):",
+        "  File \"/run/azazel-nexus-qualification-0zq6m4y8/probe.py\", line 6, in <module>",
+        "    n=importlib.util.module_from_spec(s); s.loader.exec_module(n)",
+        "  File \"<frozen importlib._bootstrap>\", line 813, in module_from_spec",
+        "  File \"<frozen importlib._bootstrap_external>\", line 1320, in create_module",
+        "  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed",
+        "ImportError: /run/azazel-nexus-qualification-0zq6m4y8/_bootstrap_deadline.cpython-313-aarch64-linux-gnu.so: failed to map segment from shared object"
+      ],
+      "passed": false
+    }],
+    "error": "RuntimeError: fixture stop unconfirmed: azazel-nexus-qualification-360eef90e1c54e8baf96a32006f4bcfa.service",
+    "cleanup_confirmed": false,
+    "unconfirmed_units": ["azazel-nexus-qualification-360eef90e1c54e8baf96a32006f4bcfa.service"],
+    "retained_directory": "/run/azazel-nexus-qualification-0zq6m4y8"
+  },
+  "provenance": "Operator pasted actual trial JSON. Coordinator independently re-observed mount and unit properties over read-only SSH; no separate raw root journal capture or retained-file digest is claimed",
+  "read_only_commands": [
+    "findmnt -T /run -no TARGET,FSTYPE,OPTIONS",
+    "findmnt -T /var/lib -no TARGET,FSTYPE,OPTIONS",
+    "systemctl show azazel-nexus-qualification-360eef90e1c54e8baf96a32006f4bcfa.service --property=LoadState,ActiveState,SubState,MainPID,ControlPID,Result,ExecMainCode,ExecMainStatus",
+    "systemctl show azazel-nexus-qualification-360eef90e1c54e8baf96a32006f4bcfa.service --property=KillMode,ControlGroup,Job",
+    "stat -c '%F %a %u' /var /var/lib",
+    "stat -c '%F %a %U' /run/azazel-nexus-qualification-0zq6m4y8"
+  ],
+  "observations": {
+    "run_mount": {"target": "/run", "type": "tmpfs", "options": "rw,nosuid,nodev,noexec,relatime,size=297752k,mode=755,inode64"},
+    "var_lib_mount": {"target": "/", "type": "ext4", "options": "rw,relatime,errors=remount-ro"},
+    "staging_parents": "/var and /var/lib are ordinary root-owned0755 directories; fixed parent check succeeded under unprivileged Python",
+    "failed_unit": {"LoadState": "loaded", "ActiveState": "failed", "SubState": "failed", "MainPID": "0", "ControlPID": "0", "ControlGroup": "", "Job": "", "KillMode": "control-group", "Result": "exit-code", "ExecMainCode": "1", "ExecMainStatus": "1"},
+    "retained_directory": "root-owned0700; contents not read or removed by coordinator"
+  },
+  "diagnosis": [
+    "Extension mapping failed before native arm/check or ARMED marker. Host /run noexec explains rejected executable mapping; moving only fixture staging to verified executable /var/lib will test the correction without remounting or sandbox relaxation",
+    "Tool required inactive before reset-failed, so a stopped but failed unit was conservatively retained. Reset failure state before fresh inactive/dead/zero main/control PID checks; original test result remains exit-code failure"
+  ],
+  "correction": {
+    "source": "tools/qualify_bootstrap_deadline_sandbox.py",
+    "sha256": "187cc81d348b4c68ce7dff65cc3b97bf0c1930ebb8905156c15b325a5b1a0721",
+    "staging": "Fixed /var/lib parent with root ownership/non-writable/no-symlink checks and noexec refusal; unique root-only child. No unsafe fallback/remount",
+    "cleanup": "Stop, reset only exact fixture, then reobserve LoadState/ActiveState/SubState/MainPID/ControlPID; require inactive/dead/zero PIDs. Reset failure accepted only if fresh observation is not-found with same quiescent values",
+    "review": "Sol independent read-only review found no scoped blocker; native timer outcome still requires actual rerun",
+    "vm_update": "Original handoff runner hash checked before atomic replacement; new source hash matched, default plan and protected parent check passed. Same pinned native artifact retained; no extension load or service action by coordinator"
+  },
+  "validation": {
+    "source_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "dirty": true,
+    "test_sha256": "95095a63c1ce9e53463e0164da783d2e854efd933d01463131108e7e22e1ee02",
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_bootstrap_deadline_sandbox_tool.py tests/unit/test_runtime_hardening.py --junitxml=/tmp/azn-linux-check.I6YGHW/sandbox-noexec-fix-macos.xml --tb=short",
+    "macos": {"passed": 53, "failed": 0, "skipped": 0, "seconds": 0.08},
+    "linux_command": "cd /tmp/azn-sandbox-handoff.SNurJL/source-noexec && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_bootstrap_deadline_sandbox_tool.py tests/unit/test_runtime_hardening.py --junitxml=/tmp/azn-sandbox-handoff.SNurJL/noexec-fix-linux.xml --tb=short",
+    "linux": {"passed": 53, "failed": 0, "skipped": 0, "seconds": 0.07},
+    "counts": "20 tool and33 hardening cases, overlapping earlier selections, not additive or full-suite results. No real unit action during synthetic tests",
+    "coverage": "Mocked noexec/symlink/writable staging refusal; failed-stop-reset-observe ordering; nonzero PID refusal; post-GC observation; uncertain stop/deletion preserves results/resources",
+    "ruff_command": "ruff check tools/qualify_bootstrap_deadline_sandbox.py tests/unit/test_bootstrap_deadline_sandbox_tool.py",
+    "ruff": "pass",
+    "docs_links": "54 Markdown files pass",
+    "diff_check": "pass",
+    "reports": {
+      "macos": {"path": "/tmp/azn-linux-check.I6YGHW/sandbox-noexec-fix-macos.xml", "sha256": "9499ac494f03fdf36c7a17fc1c75be9d2756da8aa63c11293ee1850e3bfcba5f"},
+      "linux": {"path": "/tmp/azn-linux-check.I6YGHW/sandbox-noexec-fix-linux.xml", "sha256": "6cac2140f68c535bcd7b2877b9825efb889b5fba6e3b5d0e5c9b3e436585efe7"}
+    },
+    "input_overlay": {"path": "/tmp/azn-linux-check.I6YGHW/sandbox-noexec-fix-tests.tar.gz", "sha256": "4621166ce210b32e53e2944b9ccbe1c1c36eeee0f9ac175dd513941970e05704", "base_sha256": "67849e4860f684181fa0a95034913d781229c5176c4cc1517b39f9130a32d21f", "runner_test_and_overlay_hashes_match_after_vm_tests": true},
+    "cleanup": "Removed only owner-verified newly created VM source-noexec5.9MiB plus copied archives after checks. Small operator handoff and actual failed root-owned fixture retained"
+  },
+  "qualification": {"expiry": "not achieved", "release": "not executed", "native_timer_sandbox": "unverified", "production_factory": "still refusing"},
+  "remaining": ["Operator interactive sudo rerun of updated hash-pinned command", "Explicit cleanup of original retained root-owned fixture after evidence review; no discovery/deletion by corrected tool", "Other native lifecycle and genuine deployment input gates remain unchanged"],
+  "not_performed_by_coordinator": ["privileged service operations", "mount changes", "sandbox relaxation", "native rebuild/arm/release", "CI", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "commit/push"]
+}

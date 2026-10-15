@@ -1,0 +1,45 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved; hashes identify only this increment",
+  "scope": "cross-session start owner pin, persisted supervisor ordering and audit segment ordering",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_start.py": "1425b64ef46ffc1eadf88e0fc2b522a44c8f95adeaf81cb9eb7d89e100db0ba7",
+    "tests/unit/test_runtime_bootstrap_start.py": "8c3c4ebdc83a16c46ff3516c0cd285cb1c627a743c56f65a2f1a307d1b8fedbb",
+    "tests/unit/test_runtime_bootstrap.py": "60859462e2e596cf773ec78dbbcf08102f34ae7079c05562e5c8a0b9b8cda8af",
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "3f490f1d829d570c8dfa24a701a8eb0a01266f45ae2d754a987f092eea0c9995",
+    "runtime/src/azazel_nexus_runtime/auditd.py": "d4d1583243a5188f8e8aa47b97bc57d6a140f425ef16fa22ac2d0e553bccf4a6",
+    "tests/unit/test_runtime_auditd.py": "c7e852f6ddd180095feb94211ed88418d8179c60c4c98c746b9d71565a5958c9"
+  },
+  "verification": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_start.py tests/unit/test_runtime_bootstrap_stop.py tests/unit/test_runtime_bootstrap_owner_binding.py tests/unit/test_bootstrap_grant_transaction.py tests/unit/test_bootstrap_grant_store.py tests/unit/test_runtime_auditd.py tests/unit/test_runtime_bootstrap_audit_client.py tests/unit/test_runtime_bootstrap_audit_live.py",
+    "passed": 335,
+    "elapsed_seconds": 0.83,
+    "environment": "local macOS; fake D-Bus and temporary ordinary directories",
+    "ruff_command": "ruff check runtime/src/azazel_nexus_runtime/bootstrap.py runtime/src/azazel_nexus_runtime/bootstrap_start.py runtime/src/azazel_nexus_runtime/auditd.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_start.py tests/unit/test_runtime_auditd.py",
+    "ruff": "pass",
+    "diff_check": "pass"
+  },
+  "assertions": [
+    "Absent or malformed enclosing manager owner refuses construction",
+    "New connection owner matching its transport pin but differing from prior grant refuses before Subscribe/StartUnit",
+    "Refused observer cannot retry",
+    "Reloaded ordinary-file journal is pair_grant_opened at controller READY",
+    "Reloaded journal holds the matching helper start intent before each helper start",
+    "Failed grant-opened or auditd-start-intent advance prevents the gated notification/start and contains the pair",
+    "Midnight-crossing historical supervisor events preserve the actual ordinary-file ledger chain",
+    "Backward day append after audit restart refuses without changing files or heads",
+    "Expiry, cancellation, lost audit readiness or withdrawn admission during commissioning intent persistence prevents commissiond start"
+  ],
+  "review": "Astra independently identified ordering/persistence defects and reviewed the supervisor fixes and owner pin; Luna implemented audit segment protection; coordinator inspected and tested the integrated changes. This is not full production admission review.",
+  "not_verified": [
+    "Installed runtime composition and service lifecycle",
+    "Independent start/readiness/deployment admission",
+    "Power-loss durability or hardware",
+    "Linux execution of this increment",
+    "GitHub Actions"
+  ],
+  "service_operations": false,
+  "production_widening_enabled": false
+}

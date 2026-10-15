@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 bounded current startup-override absence on the actual protected measurement path",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/python_startup.py": "bc2be71bd35b4179eb2a2de88dc9351539548c4f7d88411b5c92173b9cb6636b",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "b1e1d8d29949b7ee59f94934859834a134ca89b9531dda778521c8118fb11da2",
+      "tests/unit/test_runtime_python_startup.py": "9a69dda0ee548804cb4c81d599a5655877141e2331d5336569eba9f140bb8663",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "9a6d889019fd19390eb9dfa93bfe00550a2dd0a2fd879936fb9323bcc6aa6da0",
+      "tests/unit/test_installed_link_measurement.py": "f357990fc6d0a63d4eeaf9bfd12b7bb49661da035c414097dc402fdd270dabfe",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "35b2de06e8f2069afe244ba0aa6220f758646088ded8897fd7c0e6467530cd51",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "e9b33bbf5dee37d1140e6c900bc3f9e40da2cca383c502fd5966f151346f599b"
+    }
+  },
+  "fixed_candidates": [
+    "lexical /opt/.../bin/python[3[.13]]._pth derived from the pinned canonical wrapper",
+    "/usr/bin/python3.13._pth",
+    "/usr/bin/pybuilddir.txt",
+    "/usr/bin/Modules/Setup.local",
+    "/usr/lib/python313.zip"
+  ],
+  "implementation": "Fixed-root no-follow protected ancestry traversal. Existing leaf of any kind refuses. Only errno ENOENT means absent; missing intermediate index and ancestor stamps retained. Recheck named/fd/shared ancestors and absent component, repeat entire observation twice. Actual measure_bootstrap_installed_files requires correct observation type/path set before full measurement and identical result afterward. No new negative manifest/profile selector/approval or fallback",
+  "references": [
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Modules/getpath.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Modules/getpath.c"
+  ],
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_startup.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/startup-macos.xml",
+    "macos": {"passed": 3165, "skipped": 6, "seconds": 18.78},
+    "test_only_review_amendment": "Sol found public-observer test named redaction but covered success only and still statted actual root. Added targeted root/fd mocks and success/refusal parameter with exact sanitized error/cleanup assertion. Subsequent same isolated Python pytest tests/unit/test_runtime_python_startup.py -q --tb=short:25 passed in0.10s. Production unchanged; macOS broad report precedes this test-only addition",
+    "linux_command": "cd /tmp/azx.f51jbF && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_runtime_bootstrap_protected_admission.py --basetemp=/tmp/azy.SAMxiA --junitxml=/tmp/azx.f51jbF/final-startup.xml --tb=short",
+    "linux": {"passed": 195, "failed": 0, "skipped": 0, "seconds": 0.46},
+    "development_results": "First macOS focused91 passed/3 failed due error mock not hitting duplicated fd and invalid mocked root fd; corrected tests only. Subsequent focused94 passed. Initial Linux194 passed before final test-only review amendment; final195 passed. Counts overlap and are not summed",
+    "causal": "Retained bound-audit real protected-tree baseline admits/publishes, then python._pth appears; startup reader refuses before full installed-file measurement (pytest.fail guard) and before any StartUnit. Shared fixture readers use real ordinary-tree absence traversal, not a production-validator bypass",
+    "review": "Sol independently reviewed production and final test amendment; no remaining scoped finding",
+    "lint": "Seven changed Python files pass host Ruff; no unrelated repository-wide lint rerun/cleanup",
+    "limits": "Prior full Linux suite25 failures remain, full suite not rerun; native deadline tests remain unbuilt/skipped and are not counted as passes"
+  },
+  "actual_linux_readonly_probe": {
+    "python_invocation": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python -IS -c <python_code>",
+    "python_code": "import sys,json;sys.path.extend([\"/tmp/azx.f51jbF/src\",\"/tmp/azx.f51jbF/runtime/src\"]);sys.dont_write_bytecode=True;from azazel_nexus_runtime.python_startup import observe_python_startup_absence;result=observe_python_startup_absence(\"/opt/env/bin/python\");print(json.dumps({\"fixed_paths\":len(result.paths),\"repeated_protected_absence\":True,\"installed_or_admitted\":False,\"meaning\":\"actual read-only filesystem probe, not an installed /opt venv\"}))",
+    "fixed_paths": 5,
+    "repeated_protected_absence": true,
+    "installed_or_admitted": false,
+    "meaning": "Existing Debian13 ARM64 actual fixed-root filesystem probe, not protected installation, service lifecycle or historical startup proof"
+  },
+  "input": {
+    "path": "/tmp/azn-linux-check.I6YGHW/startup/final-source.tar.gz",
+    "sha256": "b237c0e433042936eb6ae29130d1c6d1af30651a07b67160d3da1b42d7133aab",
+    "archive_bytes": 1276068,
+    "files": 506,
+    "input_bytes": 5138387,
+    "member_digest_algorithm": "SHA256 of archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "members_digest": "eb76e64ef41d56534d6cef31b02bd348f0d7c888e70963052733369d4971a655",
+    "local_current_members_match": true,
+    "remote_archive_hash_match": true,
+    "remote_members_match_after_tests": true,
+    "initial_archive_sha256": "70e165f04f01e774025028cdddc1009e3bf64b656cce1873a8b74cd6aa153cb7",
+    "scope": "Focused source/test snapshot, not a release artifact or full-suite snapshot"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/startup-macos.xml", "sha256": "13d17c0141f99eddfe0316d5b72f5670f9ca29dd3eba2b4206bc4263e82386fb"},
+    "linux_initial": {"path": "/tmp/azn-linux-check.I6YGHW/startup/initial-linux.xml", "sha256": "3d6aeff8e5c3475adc2a79c48bab9f23f845570c182148ce94bcd0971795abe8"},
+    "linux_final": {"path": "/tmp/azn-linux-check.I6YGHW/startup/final-startup.xml", "sha256": "d643184e330b746c6b92fe0ffe82cc3b0a90e1ce63d6cf5558f43d564065f901"}
+  },
+  "cleanup": "Exact task-created remote /tmp/azx.f51jbF(8.5MiB) and /tmp/azy.SAMxiA(520KiB) removed after owner/non-symlink/source checks; absence confirmed. Small local reports/archives retained. User data/Boot archives/existing VM environments untouched",
+  "remaining": [
+    "Five candidates only: not complete prefix fallback, stdlib/import routing, native-loader coverage or historical startup proof",
+    "Repeated observations are not filesystem freezing or hostile privileged-process resistance",
+    "Native timer compile/ABI and actual system-manager lifecycle/suspend evidence",
+    "Independent deployment records/pins; public opening/start/readiness still refuses",
+    "Prior local project .venv replacement unresolved; isolated test execution does not restore or modify it"
+  ],
+  "not_performed": ["CI", "compiler download/install or native compilation", "real service deployment/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "repository commit/push"]
+}

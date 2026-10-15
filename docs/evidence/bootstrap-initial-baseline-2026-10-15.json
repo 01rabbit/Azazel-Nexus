@@ -1,0 +1,39 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved",
+  "scope": "initial persistent-mask baseline with no synthetic journal ownership",
+  "files_sha256": {
+    "src/azazel_nexus/bootstrap_overlay_journal.py": "ff7dc25a71996581ee9593dcb40b1384c19017f64c03530e7ef301ba762ea6e4",
+    "runtime/src/azazel_nexus_runtime/bootstrap_close_files.py": "5bb212bc331015211411214c16065fab3528567a16f5862139014f8661d6fd22",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdrawal.py": "98a3625fbb06656ac07a37d5e2ae597b720deac43b50a931d868b67b830271ad",
+    "tests/unit/test_bootstrap_overlay_journal.py": "7f9f168f130ce8a822bf82c987b0b2cf79b866a50ba9520a07970139cd002b09",
+    "tests/unit/test_runtime_bootstrap_initial_baseline.py": "1501d3d72b848132dd75104927175027c277c84664e50b70d3b04510cb21c9dd"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_initial_baseline.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_close_files.py tests/unit/test_runtime_bootstrap_withdrawal_binding.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_directory_integration.py",
+    "passed": 165,
+    "seconds": 2.67,
+    "environment": "local macOS, ordinary temporary files and fake D-Bus"
+  },
+  "ruff": "five changed source/test files pass",
+  "diff_check": "pass",
+  "review": "Astra independently reviewed the explicit initial mode in the existing closure adapter and found no concrete safety defect within protected-directory/held-lock assumptions; Luna authored optional-store tests; coordinator reviewed and integrated.",
+  "coverage": [
+    "true fixed-name absence differs from malformed, symlink, FIFO, bad mode, permission error, unexpected entries, closed store, or appearance between observations",
+    "initial close reports persistent mask fragments without creating a journal or mutating overlay files",
+    "missing journal plus any pair entry refuses without adopting ownership",
+    "journal appearance or changed masks invalidates initial observation",
+    "retained ownership refuses journal disappearance",
+    "existing manager reload/mask-observe/job-drain exercised with real ordinary files and fake systemd"
+  ],
+  "limits": [
+    "absence is not proof that no historical journal ever existed",
+    "initial baseline is not grant authority, stopped-process/cgroup proof or loaded-state proof by itself",
+    "production all-five observations depend on fixed grouped directory wrappers",
+    "no Linux rerun or full suite this increment",
+    "mandatory directory provisioning/write policy and production publication/start/readiness/entrypoint remain incomplete",
+    "no CI, service, physical media, firmware or provider/fetch/Edge operation"
+  ]
+}

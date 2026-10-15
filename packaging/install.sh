@@ -17,9 +17,6 @@
 # 3 cannot drift away from the installer that is supposed to apply them.
 set -eu
 
-UNIT_DIR="${DESTDIR:-}/lib/systemd/system"
-PRESET_DIR="${DESTDIR:-}/lib/systemd/system-preset"
-LIBEXEC="${DESTDIR:-}/usr/libexec/azazel"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 
@@ -87,14 +84,68 @@ if ! PYTHON=$(command -v "$PYTHON"); then
     echo "refusing to install: the selected Python interpreter was not found." >&2
     exit 1
 fi
-if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+STAGING_PATH=/usr/sbin:/usr/bin:/sbin:/bin
+python_fixed() {
+    /usr/bin/env -i PATH="$STAGING_PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 "$PYTHON" "$@"
+}
+python_stager() {
+    if [ -n "${DESTDIR:-}" ]; then
+        /usr/bin/env -i PATH="$STAGING_PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            DESTDIR="$DESTDIR" "$PYTHON" "$@"
+    else
+        python_fixed "$@"
+    fi
+}
+if ! python_fixed -IS -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
     echo "refusing to install: Azazel-Nexus requires Python 3.11 or newer." >&2
-    echo "Found: $("$PYTHON" --version 2>&1)" >&2
+    echo "Found: $(python_fixed --version 2>&1)" >&2
     echo "3.11 is where tomllib enters the standard library, and tomllib is" >&2
     echo "what reads the trust anchor a Knowledge Lite bundle verifies" >&2
     echo "against. There is no fallback parser and no partial mode." >&2
     exit 1
 fi
+
+# Select a declared install profile before writing any files. This is a pure
+# os-release/layout projection; it does not inspect CPU/HIL compatibility or
+# operate the service manager. Unknown platforms are refused, and new physical
+# targets are enabled only by adding a reviewed profile rather than a broad
+# fallback.
+PROFILE_FIELDS="$REPO_ROOT/tools/install_profile_fields.py"
+if [ ! -f "$PROFILE_FIELDS" ]; then
+    echo "refusing to install: install platform profile tool is missing." >&2
+    exit 1
+fi
+profile_field() {
+    set -- --field "$1"
+    [ "$WITH_ACCOUNTS" = yes ] || set -- "$@" --without-accounts
+    [ "$WITH_SERVICE_MANAGER" = yes ] || set -- "$@" --without-service-manager
+    python_fixed -IS "$PROFILE_FIELDS" "$@"
+}
+if ! INSTALL_PROFILE_ID=$(profile_field profile_id); then
+    echo "refusing to install: this host has no reviewed install profile." >&2
+    exit 1
+fi
+UNIT_DIR=$(profile_field unit_directory) || exit 1
+PRESET_DIR=$(profile_field preset_directory) || exit 1
+LIBEXEC=$(profile_field libexec_directory) || exit 1
+SERVICE_MANAGER=$(profile_field service_manager) || exit 1
+REQUIRED_TOOLS=$(profile_field required_tools) || exit 1
+if [ "$SERVICE_MANAGER" != systemd ]; then
+    echo "refusing to install: this profile has no supported service-manager adapter." >&2
+    exit 1
+fi
+while IFS= read -r tool; do
+    [ -n "$tool" ] || continue
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "refusing to install: reviewed profile requires missing tool $tool." >&2
+        exit 1
+    fi
+done <<EOF
+$REQUIRED_TOOLS
+EOF
+UNIT_DIR="${DESTDIR:-}$UNIT_DIR"
+PRESET_DIR="${DESTDIR:-}$PRESET_DIR"
+LIBEXEC="${DESTDIR:-}$LIBEXEC"
 
 # The venv's ordinary console scripts live in its bin/ directory, while the
 # packaged units use fixed paths under /usr/libexec/azazel. Generate those
@@ -105,7 +156,8 @@ if [ ! -f "$STAGER" ]; then
     echo "refusing to install: runtime entrypoint staging tool is missing." >&2
     exit 1
 fi
-if ! "$PYTHON" "$STAGER" --python "$PYTHON"; then
+if ! python_stager -IS "$STAGER" --python "$PYTHON" \
+    --platform-profile "$INSTALL_PROFILE_ID"; then
     echo "refusing to install: runtime entrypoints could not be staged." >&2
     exit 1
 fi
@@ -149,14 +201,38 @@ make_dir() {  # mode group path
         install -d -m "$1" "${DESTDIR:-}$3"
     fi
 }
+make_owned_dir() {  # mode owner group path
+    if [ "$WITH_ACCOUNTS" = yes ]; then
+        install -d -m "$1" -o "$2" -g "$3" "${DESTDIR:-}$4"
+    else
+        install -d -m "$1" "${DESTDIR:-}$4"
+    fi
+}
 
 make_dir 0755 root /etc/azazel
 make_dir 0750 azcommission /etc/azazel/commissioning
+make_dir 0700 root /etc/azazel/bootstrap
 make_dir 0755 root /etc/azazel/systemd
-make_dir 0750 root /var/lib/azazel
-make_dir 0750 azazel-operator /var/lib/azazel/run
-make_dir 0750 azaudit /var/lib/azazel/state
+# Common parents allow traversal only. Operators get to each socket by group;
+# daemon accounts write only their own service-owned leaf directory.
+make_dir 0711 root /var/lib/azazel
+make_dir 0711 root /var/lib/azazel/run
+# Linux setgid-directory semantics make each service's socket inherit the
+# operator GID while retaining the daemon's primary GID for SO_PEERCRED. The
+# runtime verifies the resulting socket GID and refuses if the filesystem or
+# host does not provide the declared behavior.
+make_owned_dir 2710 azaudit azazel-operator /var/lib/azazel/run/audit
+make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
+make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
+make_dir 0711 root /var/lib/azazel/state
+make_owned_dir 0700 azaudit root /var/lib/azazel/state/audit
+make_owned_dir 0700 azaudit root /var/lib/azazel/state/auditd
+make_owned_dir 0700 azcommission root /var/lib/azazel/state/commission
+make_owned_dir 0700 azwatch root /var/lib/azazel/state/watchdog
+make_dir 0700 root /var/lib/azazel/state/bootstrap
+make_dir 0700 root /var/lib/azazel/state/bootstrap-overlay
 make_dir 0700 root /var/lib/azazel/generations
+make_dir 0700 root /var/lib/azazel/bootstrap-generations
 make_dir 0750 azfetch /var/lib/azazel/fetch
 make_dir 0750 azmio /var/lib/azazel/mio
 make_dir 0750 azremote /var/lib/azazel/remote
@@ -172,6 +248,8 @@ install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-locald.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-remoted.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
+install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
+install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then
     echo "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."
@@ -192,6 +270,12 @@ systemctl mask azazel-edge-probed.service
 systemctl mask azazel-model-fetchd.service
 systemctl mask azazel-mio-locald.service
 systemctl mask azazel-mio-remoted.service
+
+# Resolve this fixed rule name through tmpfiles configuration precedence so
+# administrator overrides are not bypassed. The vendor rule preserves existing
+# mode/ownership and has no cleanup or helper publication/unmask operation.
+# DESTDIR staging exits before this point and never invokes host tmpfiles.
+systemd-tmpfiles --create azazel-nexus-bootstrap.conf
 
 # Enabled, not started: the controller runs at the next boot, which is where
 # revalidation belongs. Starting it here would activate against a generation

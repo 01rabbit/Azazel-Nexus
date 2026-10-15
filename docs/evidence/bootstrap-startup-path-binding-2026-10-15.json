@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-15",
+  "topic": "canonical bootstrap wrapper to pinned initial import-path coverage",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "src/azazel_nexus/installed_files.py": "6064a744058987c2c6ce66d38ff04ce04a678682784ad5e0a4258a0d6ac7e409",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "7b02db307be3bc03bd929b968a33e6601ae8f4b1949551fe60e4a133def3e1d5",
+      "runtime/src/azazel_nexus_runtime/startup_wrapper.py": "f618771caf6bb3760a63b055d9c54b7a70d92713d51612207a50df23a576bd3c",
+      "tools/stage_runtime_entrypoints.py": "d5ebb3794dacb19d7a63ae53944e62cbc8a29208a8dd85b7c39578ff10dffe82",
+      "tests/unit/test_runtime_startup_wrapper.py": "4898366394e7950919f1fcdfe73ae81aa6e57b2ef4fc8f0c4cab537becd1d015",
+      "tests/unit/test_installed_pinned_content.py": "3897a8db57807c92115d2e08f38c01bb3cbc8cc3b4ec1035b6a61c3db87d76d1",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "2538b37db47d529572188f1d024f5ad5e625672934f6e86c749b42556278777c",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "218bfa16e0ff7baea6fee50e998d596cbfb1b9db6069e7dfd1ec5f3e43a65fc2",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "06334f9bf0b36df76356e94058199af5ee8bc0766b88143c7ed040b890e55642",
+      "tests/unit/test_stage_runtime_entrypoints.py": "eb22df9ed8db6bd164c447df4c5187ec6d6d7776d978a68648478fe624a3b2f8"
+    }
+  },
+  "binding": [
+    "Three fixed wrapper targets derived from compiled unit expectations",
+    "Same independently pinned manifest; protected content read verifies exact selected hashes and repeated identity",
+    "Reader limits: 1-3 sorted unique listed files, each <=65536 bytes, aggregate <=196608 bytes",
+    "Pure canonical render/parse shared by stager and admission; no execution of candidate wrapper",
+    "All wrappers share exact interpreter and ordered initial import paths",
+    "Exact interpreter path selected as 0755 regular file; exact directory roots have v2 records or .zip roots have pinned regular-file entries",
+    "Full existing manifest measurement then protected raw reread",
+    "No additional approval, new schema, automatic path discovery or start grant"
+  ],
+  "review": {
+    "Sol": "Found stager file-root/admission mismatch; main restricted stager to dirs/.zip and Sol confirmed addressed. No other blocker within reviewed scope.",
+    "Luna": "Disjoint pure-wrapper/stager and pinned-content/admission test work",
+    "coordinator": "Added real manager bound-start drift regressions; required protected-read race tests retain their intended before-measurement causality; enforced render/parser byte-bound symmetry"
+  },
+  "tests": {
+    "environment": "macOS arm64 / CPython3.11.15; ordinary synthetic files and temporary venvs only",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+    "passed": 2902,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 15.34,
+    "overlapping_subruns_not_added": true,
+    "not_full_suite": true,
+    "causal": [
+      "Pinned reader bound/hash/link/replacement/selection tests",
+      "Canonical wrapper extra-code/target/path/encoding/bound refusal",
+      "Missing interpreter/import-root records and mismatched wrapper paths refuse",
+      "Zip-only pinned v1 case remains valid; ordinary v1 directory imports refuse coverage",
+      "Actual private bound audit start sees changed wrapper or new import-dir file and refuses before StartUnit",
+      "Protected factory uses synthetic regular interpreter and canonical wrappers; no interpreter execution"
+    ]
+  },
+  "checks": {
+    "ruff": "10 changed source/test files pass",
+    "diff": "pass",
+    "docs_links": "54 Markdown files pass",
+    "repository_wide_lint": "Not rerun; existing unrelated CLI/hardening warnings remain separately recorded",
+    "full_unit_suite": "Not rerun; earlier macOS full-suite red status remains separately recorded"
+  },
+  "limitations": [
+    "Canonical startup-path binding is not complete import resolution or interpreter/native-loader closure",
+    "Interpreter symlinks still refuse; staging supports them without claiming admission",
+    "Initial CPython startup/config/native dependencies precede wrapper code and need separate admission",
+    "Repeated observations are not a filesystem freeze or hostile-root defense",
+    "Public bootstrap opening/start remains refusing",
+    "No Linux systemd/D-Bus service qualification, VM deployment, CI, physical device operation, commit or push"
+  ]
+}

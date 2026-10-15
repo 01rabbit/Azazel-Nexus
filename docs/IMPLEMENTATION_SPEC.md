@@ -194,6 +194,313 @@ ledger, the watchdog) needs a verified generation, health and a valid lease.
 `EDGE_BASELINE` needs a verified local Edge Core on top. `ENFORCEMENT` needs a
 complete commissioning record on top of that.
 
+**Supporting-only bootstrap (owner-adopted implementation contract,
+2026-10-14).** Before normal commissioning, the activation controller MAY use
+the separate [two-helper bootstrap contract](runtime-activation-remaining.md#proposed-supporting-only-bootstrap-contract)
+for exactly `azazel-auditd.service` and `azazel-commissiond.service`.
+This is not an ordinary `SUPPORTING` tier grant or `ActivationLease`. It MUST
+bind an independently admitted bootstrap generation, protected current context,
+purpose-specific operator approval, health and immutable per-boot deadline.
+It MUST supervise audit-first readiness and stop/remask both helpers on loss
+of any prerequisite, cancellation, expiry or commissioning phase transition.
+Both notify helpers bind to the activation controller with `After`, `Requires`
+and `BindsTo`; commissiond additionally declares those dependencies on auditd.
+Following the owner's option-1 decision (2026-10-15), bootstrap consumes one
+controller execution attempt per boot. Before constructing the selected
+Supervisor or publishing a grant, the controller MUST exclusively create and
+retain `/run/azazel-nexus-bootstrap/controller-used`. The private directory is
+prepared by tmpfiles without any age/removal rule. No normal exit, failed
+attempt, cleanup or same-boot retry removes the marker. PID 1's controller unit
+declares `ConditionPathExists=!/run/azazel-nexus-bootstrap/controller-used`;
+the loaded controller inspector MUST confirm that exact non-triggering,
+negated condition and its historical successful evaluation. Marker identity
+checks are composed with the existing transaction guard for the full selected
+lifetime. Ordinary activation without bootstrap selection does not claim it.
+This retains the execution-time `BindsTo+After` check while preventing a fresh
+controller execution through a dependency start after the attempt is consumed,
+assuming normal PID 1 condition evaluation and a shared stable marker path.
+The marker is refusal state, not approval or a deadline; it creates no new
+authority. Mount-view agreement and crash/queued-job behavior require Linux
+system-manager verification. Other implicit/transitive service-start closure,
+executable/import coverage and suspend-inclusive expiry remain separate gates.
+Installer checks, profile helpers and staging execute Python with `-IS`.
+Generated runtime wrappers use the same site-disabled mode and explicit initial
+import paths as staging's import validation. The selected conventional venv's
+lexical prefix determines its package roots without processing `.pth` or site
+customization; missing installed dependencies refuse rather than inherit other
+site paths. This restricts startup path construction, not complete executable
+integrity: observed paths remain installation candidates, and unsupported aliases,
+directory membership, bytecode and native loader dependencies remain separate
+admission requirements. No bootstrap start gate is opened by staging.
+The protected bootstrap installed-file reader MUST decode the independently
+pinned manifest and require the fixed controller, auditd and commissiond
+executables from the declared service profiles, each with mode 0755, before
+measurement. A manifest selecting only unrelated files is insufficient. The
+same manifest bytes are measured and reread afterward; changes refuse. These
+mandatory entrypoints are a coverage floor, not proof of their interpreter,
+imports or the rest of the process closure.
+The same independently pinned installed-file document MAY use the explicit v2
+schema to declare exact directory membership. V2 directories have protected
+no-follow identities and exact 0755 mode; expected immediate children derive
+from the files/directories union. Descendant intermediate directories must be
+declared, empty directories remain empty, and extra entries refuse. Bounded
+enumeration and named identity checks bracket file hashing in both repeated
+observations. V1 semantics remain unchanged. Neither a v2 version tag nor a
+candidate emitted from explicit operator paths establishes that all import
+roots were selected; completeness and later filesystem drift remain separate
+admission requirements. No independent approval or start grant is created.
+Bootstrap admission also reads and verifies the three fixed wrapper files
+against their entries in that same pinned manifest. A pure shared renderer and
+parser require the exact canonical `-IS` wrapper and compiled target for each
+unit, without executing wrapper content. All three wrappers MUST agree on the
+interpreter and ordered import paths. The interpreter requires an exact 0755
+regular-file entry or an explicitly pinned v3 leaf-link chain to one; each
+initial import path requires an exact declared directory
+record or a pinned regular `.zip` entry. Ancestor-only directory coverage is
+insufficient. Full manifest measurement and the protected manifest reread follow
+these checks. The fixed content reader is limited to three 64-KiB files, with
+protected metadata, hash and repeated named-identity checks before returning any
+bytes. This binds canonical startup paths to approved coverage, not interpreter
+startup semantics, native-loader closure, arbitrary import mutation or functional
+module resolution. Unlisted interpreter links remain refused, not silently
+resolved. V3 adds sorted unique `links` records with exact `path` and `target`.
+Targets are canonical absolute /usr or /opt paths, or single basename siblings;
+directory aliases and relative paths containing slashes are unsupported. Every
+declared chain, used or unused, MUST terminate in a listed regular file within
+eight links. Collisions, cycles, missing targets and file/link ancestors refuse.
+Link identity/text checks use protected no-follow parents, lstat/readlink and
+named identity rereads before and after file hashing in both observations.
+Links themselves are never opened/followed. The same manifest pin covers all
+link text and terminal file bytes; bootstrap additionally requires terminal
+mode 0755. At most 1024 links are accepted. This does not admit pyvenv config,
+initial interpreter/native loading, directory aliases or later filesystem drift.
+Repeated protected generation admission MUST also recheck policy-bound capacity
+without replaying the stopped-writer audit preflight after auditd is running.
+The selected supervisor requires a controller-owned kernel deadline guard,
+armed once from the freshly verified retained absolute BOOTTIME deadline before
+blocking generation admission/publication/READY/start. The Linux native backend
+uses a one-shot absolute self-SIGKILL timer, never a caller PID or extra service.
+Every refresh checks the same guard; no extension is supported. Only successful
+confirmed transaction cleanup permits explicit release. GC, context exit and
+failed cleanup do not disarm it. Exec deletes POSIX timers, so selected
+supervision must not exec. This does not wake a suspended host or establish
+instantaneous helper containment; native lifetime qualification remains required.
+Runtime wheels require the compiled Linux backend for their target Python ABI;
+no backendless portable-wheel fallback is supported. Installer staging imports
+and checks the native loader but never arms a timer. Missing/unsupported backend
+fails closed. Public pair opening/start remains unavailable until the remaining
+execution-admission and native qualification obligations are satisfied.
+The matching ARM64 CPython3.13.5 backend has now passed isolated compiled-source
+smoke tests for self expiry, retained/GC-dropped handles, invalid input, active
+rearm refusal, idempotent/final release (including survival past the cancelled
+deadline), and fork-owner refusal. Child tests bind the exact extension loader
+and source-package origin, use `-IS`, and require operation markers before fatal
+termination. Fork descendants explicitly default/unblock a short fatal alarm.
+This does not qualify a production wheel, systemd sandbox, exec, suspend or
+manager/controller-to-helper containment. See
+[native qualification](evidence/bootstrap-native-qualification-2026-10-15.json).
+Before exec, the three selected-bootstrap units MUST disable login environment
+construction, have no PAM stack, and remove the exact compiled loader/Python
+environment-name set. Loaded helper and controller inspection MUST require
+empty Environment, EnvironmentFiles and PassEnvironment, the exact removal
+set, SetLoginEnvironment=false and empty PAMName. Retained start checks bracket
+helper/graph inspection with fresh full controller observations in the current
+pre-READY or READY phase; a READY transition or observed drift refuses. Mutable
+reply lists are copied before any subsequent await. Installer Python children
+receive only fixed PATH/LANG/LC_ALL; only the staging child additionally receives
+explicit DESTDIR when selected. These constraints do not undo code already
+loaded by the installer shell or establish whole-OS native-loader integrity.
+See [launch environment evidence](evidence/bootstrap-launch-environment-2026-10-15.json).
+The selected bootstrap additionally supports only conventional protected
+`/opt/.../bin/python`, `python3` or `python3.13` venv paths. Its lexical parent
+venv's `pyvenv.cfg` MUST be a pinned 0644 regular file of 1–4096 bytes, read
+through the existing protected content reader, not reopened by pathname. The
+fixed metadata profile requires home `/usr/bin`, no system site packages,
+canonical `3.13.micro` creation version and executable `/usr/bin/python3.13`.
+Only unique standard venv keys are accepted; optional command/prompt are inert
+metadata and never executed. The pinned 0755 base interpreter and resolved
+wrapper interpreter terminal MUST have identical size/hash, followed by full
+measurement of both. This permits a pinned regular copy without equating its
+startup semantics with a symlink. Version/executable metadata does not prove
+the running interpreter's version, ABI or kernel executable identity. Separate
+current-interpreter observation below is required; startup-override and native
+qualification remain open.
+These profile mechanics impose no CPU-architecture restriction and do not
+change the runtime package's general Python floor. See
+[venv binding evidence](evidence/bootstrap-python-venv-binding-2026-10-15.json).
+Before and after full installed-file measurement, the fixed current-Python
+observer MUST inspect only its own kernel procfs executable. It verifies procfs
+directories, bounds the protected root-owned 0755 single-link executable to
+64MiB, hashes twice through the same descriptor with rewind/metadata checks,
+and brackets named kernel-executable identity, PID and Python state. Both
+observations MUST match the independently pinned terminal bytes and each other.
+The fixed state is Linux CPython3.13 final/GIL-enabled, empty ABI flags, matching
+cfg microversion, base executable `/usr/bin/python3.13`, `/usr` prefixes,
+`-IS` flags, little-endian 64-bit state, exact wrapper executable/import paths
+and bytecode-write suppression. No alias fallback is inferred. The existing
+procfs statfs adapter supports Linux LP64 amd64/arm64; this is not qualification
+for other native ABIs. An accepted fingerprint reads at most128MiB, twice per
+measurement admission. This binds current executable content and observed
+state, not historical mapped pages, selected-path inode equality, native
+libraries, arbitrary in-process mutation resistance or a filesystem freeze.
+See [current Python evidence](evidence/bootstrap-running-python-2026-10-15.json).
+Selected bootstrap also MUST check a fixed bounded startup-override absence set:
+the lexical wrapper interpreter's `._pth`, `/usr/bin/python3.13._pth`,
+`/usr/bin/pybuilddir.txt`, `/usr/bin/Modules/Setup.local` and
+`/usr/lib/python313.zip`. Any existing object, including empty files and dangling
+links, refuses. The fixed-root reader traverses protected root-owned directories
+without following links. Only ENOENT establishes a missing component; other
+lookup errors refuse. Named/fd ancestry, missing-component location and shared
+ancestor stamps are bracketed and repeated, then compared before/after full
+installed-file measurement. Missing intermediate components are recorded rather
+than silently ignored. No negative-input manifest, selector or approval is added.
+This is repeated current absence of those five candidates, not historical
+startup proof, every prefix fallback, stdlib/import closure or a filesystem
+freeze. See [startup absence evidence](evidence/bootstrap-python-startup-2026-10-15.json).
+Protected measurement also checks current import routing before and after file
+measurement. Only the standard builtin/frozen/path meta finders and standard
+ZIP/FileFinder path hooks are supported; configured callbacks are not invoked.
+Initial roots require exact declared directories or pinned ZIP files. Cached
+FileFinders require exact declared subdirectories beneath those roots, standard
+loader/suffix order, no instance method overrides and plain bounded cache data.
+ZIP finders require explicit pinned archives and a bounded detached directory
+table; CPython3.13's module-level cache is checked, not an older `_files` layout.
+Cache identity/data must remain unchanged. The implicit negative
+`/usr/lib/python313.zip` cache entry is allowed only with the surrounding startup
+absence checks. At most2048 finders and16384 aggregate cached names are observed;
+each ZIP table is limited to4096 plain records. This is routing metadata
+qualification, not loaded-module/bytecode coverage, ZIP table correspondence to
+archive bytes, future imports, hostile in-process defense or full import closure.
+See [import routing evidence](evidence/bootstrap-import-routing-2026-10-15.json).
+The first operational source-prototype profile is explicitly **unpacked
+directories and ordinary packages**, not ZIP execution. ZIP entries/wrappers
+remain valid generic candidates, but do not pass this selected bootstrap
+profile. Namespace and sourceless-only modules are unsupported. The profile
+requires current module metadata to bind the fixed controller `__main__`,
+standard source/native loader name/path pairs, exact pinned origins (including
+declared v3 leaf chains), and ordinary package search directories beneath the
+approved import roots. Builtin/frozen labels must name modules known to the
+running interpreter; aliases retain canonical registry identities. In-flight
+initialization, optimization other than exact zero and pycache redirection
+refuse. Source bytecode cache names must be canonical: cache bytes must be
+independently pinned or their derived paths must be observed absent through the
+protected fixed-root reader. The reader also requires `/etc/ld.so.preload`
+absent. Snapshots bracket full measurement, with at most2048 modules and65536
+metadata attributes. This binds current metadata to measured candidates, not
+historical executed bytes or source/bytecode equivalence. The existing trusted
+Debian kernel/glibc/native-loader substrate is explicit; no universal ELF/OS
+hermeticity or hostile privileged/in-process defense is claimed. See
+[loaded-module profile evidence](evidence/bootstrap-loaded-modules-2026-10-15.json).
+The three bootstrap-related units explicitly disable `DefaultDependencies` to
+avoid pulling `sysinit.target` into their START transactions. Ordering after
+`sysinit.target`/`basic.target` and before shutdown is declared explicitly;
+`Conflicts=shutdown.target` preserves shutdown behavior. Controller and loaded
+helper inspection require the effective boolean value to be false.
+After Reload and around pair inspection, and again at retained start checks,
+a bounded inspector traverses effective `Requires`/`Wants`/`BindsTo` from all
+three roots. It rejects any external service, socket, timer, path, automount,
+swap or scope, and rejects asynchronous activation channels throughout the
+visited graph. Device followers are discovered using fixed read-only
+`ListUnitsByPatterns([], ["*.device"])` and separate Device `SysFSPath`
+properties. All units sharing a nonempty canonical sysfs path join the graph;
+following links must resolve to a same-group anchor. Both the inventory and
+the graph are remeasured. Inventories exceeding 512 entries, missing/malformed
+required identities, changed membership and non-idle reached devices are refused.
+Only active, idle target/mount/slice/device infrastructure is traversed, bounded to
+64 units and 1024 dependency entries. Complete detached graph observations
+must match, both within each inspection and across the bracketing observations.
+This detects disallowed paths; it does not authorize mount executables, model
+stop-propagation effects or establish atomic graph stability during submission.
+The protected loaded policy additionally requires every positive `Requires`,
+`Wants` and `BindsTo` edge to appear in `After`. External positive prerequisites
+(including `Requisite`) must be observed active and idle; pinned `Conflicts`
+and inverse `ConflictedBy` peers must be loaded, inactive and idle. Positive
+and conflict sets must not overlap across the pair, and conflicts with either
+helper or the controller refuse. These bounded repeated observations do not
+establish atomic exclusion of subsequent external state/job changes.
+These native ordering/lifetime declarations do not replace audited readiness,
+deadline checks or a start-job revocation fence. Cleanup must deny new starts
+and contain pending/late starts before stopping the pair and withdrawing its
+owned grant; a persistent mask alone is not proof against a higher-priority
+volatile override. The production grant path remains refusing until that
+mechanism is implemented and reviewed.
+The controller uses PID 1's fixed 30-second service watchdog, with SIGKILL
+on watchdog failure, rather than launching another Nexus watchdog service.
+The main supervision path renews it only after READY confirmation and fresh
+admission/progress checks. Notifications and synchronous guards are charged
+to the retained BOOTTIME deadline; steady waits are capped at 10 seconds and
+the freshly recomputed approval remainder. Cleanup never feeds the watchdog.
+This is a running-system hang backstop, not independent suspend-inclusive
+expiry enforcement or proof of bounded startup/stop completion.
+After fresh prerequisite checks, the supervisor durably records a per-boot
+grant-transaction intent before asking the manager to open the exact pair. Once
+that manager operation is confirmed, the controller sends systemd READY so
+the `After=`-ordered auditd helper can start. It then confirms both audit-chain
+continuity and an append receipt before requesting commissioning. The
+protected transaction record is a crash-recovery write-ahead record, **not**
+an audit event or replacement for the audit chain. Because the audit socket
+does not exist until auditd starts, the supervisor MUST NOT require an
+audit-chain append before starting auditd. Once auditd is ready, it appends the
+previously journaled controller/grant intent and returns a receipt whose
+digest is retained in the transaction record; only then may the commissioning
+start intent be appended and its start requested. The ordering and receipt
+binding MUST be covered by crash-boundary tests. An interrupted or
+durability-uncertain transaction MUST remain
+non-replayable and refuse a new grant; it is not automatically repaired or
+reinitialized. The transaction record is boot-bound and a new boot requires a
+new independently approved context. Grant withdrawal is permitted only after
+confirmed start fencing and stopped/inactive helpers; it must not remove
+another lifecycle's grant. Partial grant/withdrawal failures remain
+containment failures. These are backend obligations, not authorization to
+deploy the current refusing adapter.
+Historical intent events MUST be appended in occurrence order: the grant
+intent and its verified receipt precede the later controller-ready intent.
+An append into a day preceding an already existing ledger segment MUST be
+refused before writing; daily segmentation must not reorder the hash chain.
+After persisting commissioning start intent, admission/deadline, auditd
+readiness and cancellation MUST be checked again before requesting its start.
+Each manager start handoff MUST carry the captured durable per-unit start
+intent and a fresh synchronous checkpoint: `auditd_start_intent` for auditd,
+`commissiond_start_intent` with its retained audit receipt for commissiond.
+The supervisor checks before and after the handoff; the backend must also
+invoke the checkpoint at its start boundaries. A changed intent, expiry,
+cancellation or unconfirmed return prevents subsequent readiness-phase
+advancement and enters containment. This callback does not replace the
+backend's owner/job/lifetime fences and must not be run inside an event loop
+that it would re-enter through synchronous admission checks.
+No fetch, provider, watchdog, Edge baseline, capture or enforcement authority
+is included. Normal generation readers MUST reject bootstrap metadata.
+Bootstrap-only trees use the separate root-owned private namespace
+`/var/lib/azazel/bootstrap-generations/`. They MUST NOT be published into
+`/var/lib/azazel/generations/`, whose numeric entries determine the latest
+operational generation. This separates storage selection as well as metadata
+types; no automatic migration or deletion of existing generations is permitted.
+The durable grant transaction is stored per boot under the existing
+root-private `/var/lib/azazel/state/bootstrap/` directory, beside—but distinct
+from—the retained deadline and shared lock. A transaction filename is derived
+only from the validated current boot UUID. Files are create-once/CAS-updated;
+unfinished markers and ambiguous fsync outcomes require explicit recovery and
+must never be reset by an installer. Closed history is retained, not silently
+garbage-collected.
+Deployment MUST remain refusing until protected producers, bounded service jobs,
+controller-lifetime binding and reboot/persistent-mask fencing are implemented
+and independently reviewed. Adopting this contract authorizes implementation,
+not installation, service startup, key enrollment or a hardware-success claim.
+
+**Administrator-managed provisioning (owner-selected, 2026-10-14).** Implement
+the explicit administrator-managed bootstrap setup first on the development VM,
+using a common versioned contract that also supports later physical Debian
+installations. VM address, SSH credentials, architecture and hypervisor identity
+MUST NOT become trust defaults or be embedded in that contract. Separate
+persistent administrator declarations from fresh boot/time/device/health
+observations and from purpose-specific activation approval. Moving or cloning
+a deployment requires target identity review, fresh measurements and boot-bound
+approval; do not copy live grants or retained deadlines. Platform adapters may
+vary how evidence is collected, but MUST NOT bypass admission or silently fall
+back to weaker evidence. A local administrator-managed record is not an
+independent rollback anchor. Existing Debian 13 / amd64 support baseline and
+hardware gates remain unchanged; ARM64 VM tests are software evidence only.
+
 A node whose ledger and watchdog are running can account for itself. It has
 said nothing about an Edge Core and must not be read as having:
 `edge_baseline_ready` is derived from what was established about Edge, **not**
@@ -245,9 +552,14 @@ obsolete, cross-role, or policy-incompatible artifact is rejected.
   resource-governor.yaml
   systemd/*.conf                # unit drop-ins installed by packages
 /var/lib/azazel/
-  run/                          # sockets, PID-free transient state (0750)
-  state/                        # durable state machines and idempotency index
+  run/                          # socket tree (0711 traversal parents; per-daemon 2710 leaves)
+  state/                        # traversal-only parent; daemon-owned private leaves
+  state/audit/                  # azaudit's segmented hash chain
+  state/auditd/                 # azaudit refusal log, outside chain segments
+  state/commission/             # azcommission's refusal log
+  state/watchdog/               # azwatch's fence, ledger and refusal log
   generations/<n>/              # private versioned staging tree; promoted, never edited in place
+  bootstrap-generations/<n>/    # separate root-private bootstrap-only namespace; not operational latest
   secrets/                      # root-only credential material, preferably tmpfs-backed
 /data/azazel/
   evidence/objects/             # content-addressed encrypted artifacts
@@ -265,7 +577,7 @@ Each daemon MUST use a dedicated, non-login system account: `azobs`, `azevidence
 
 ## 4. Runtime units
 
-All local APIs use Unix domain sockets under `/var/lib/azazel/run/` unless an explicit loopback TCP port is specified. Socket ACLs are the first authorization boundary; every request also carries a workload identity and trace ID.
+All local APIs use Unix domain sockets under `/var/lib/azazel/run/` unless an explicit loopback TCP port is specified. Root-owned parent directories permit traversal but not listing; each daemon-owned setgid leaf supplies the operator group to its socket. Daemon accounts are not members of the operator group. The runtime verifies socket mode, owner and expected operator GID before accepting requests, then derives operator membership from kernel peer credentials and supplementary groups. Socket ACLs are the first authorization boundary; every request also carries a workload identity and trace ID.
 
 | Unit / executable | Account | Listens or consumes | Owns | Required behavior |
 | --- | --- | --- | --- | --- |

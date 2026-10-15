@@ -1,0 +1,40 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "owner-approved strict-start redesign: one consumed controller execution attempt retained under transaction guard; native negative start condition",
+  "files_sha256": {
+    "src/azazel_nexus/bootstrap_controller_once.py": "87f31eda219764d5736f9acb1327b669b77da00060fb6b3f224ba8b5d16f76b2",
+    "runtime/src/azazel_nexus_runtime/bootstrap_entrypoint.py": "25f7045077e5b88cf8fa25e407db170fd056150826d9fb13b8167c08624d6c4e",
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "5f31442cc2d66fc6485276f8fe6f36ea7d3d3931ac1c376095e67cd9fd4b7d91",
+    "runtime/src/azazel_nexus_runtime/hardening.py": "a1a473221c40a1074b1cfc7aa201365c3c80c688cfe78975a75a9cb4191d43dd",
+    "packaging/systemd/azazel-activated.service": "d2def978960db63e024ef169106eeaf0a372d634a890a2e77fd50b6da4a299d4",
+    "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf": "978f2c6b880604b69f3df2bb4ef5e6828f5e6bbaacb35a5b6c9da4f1073be476",
+    "tests/unit/test_bootstrap_controller_once.py": "3ec4c3138dfbaa2838fe84a8e24acfd07a444b9be8a45fa1b7af25278e6dc8b8",
+    "tests/unit/test_runtime_bootstrap_entrypoint.py": "34c94a9981192dfc17af6d0c4ce80f1d9fa6443f456f201feab9baef17bcfb17",
+    "tests/unit/test_runtime_bootstrap_controller.py": "c3822279fc1ef60898e02204bb5a40d1a9e514d39e945a8279bd7890e22be9ea",
+    "tests/unit/test_runtime_hardening.py": "634d6c0b9fb2b39e5c333b2fb22256924eba5c0394dd287073cec662450f177b",
+    "tests/unit/test_packaging.py": "5fe33b4544d8136f71fb95935c22141c0f397f4445a3b08a27c3524ef5103f7e",
+    "tests/unit/test_bootstrap_tmpfiles_packaging.py": "99d254d381ae298fdf0a89c17c528af6422a1debace0a72c418e1aba05d15d48"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_packaging.py tests/unit/test_runtime_activated_entrypoint.py",
+    "passed": 2450,
+    "skipped": 2,
+    "seconds": 8.86,
+    "environment": "local synthetic regular files, fake bus and recording manager; no PID 1 lifecycle trace"
+  },
+  "ruff": "nine changed source/test files pass; hardening.py baseline F401 imports remain as previously recorded",
+  "diff_check": "pass",
+  "docs_links": "54 Markdown files pass",
+  "review": "Sol source/causal review; Luna marker/packaging tests in disjoint scopes; coordinator source and integration. Healthy PID 1 condition evaluation and shared stable marker pathname are assumptions to verify.",
+  "limits": [
+    "public opening/start remain refusing",
+    "no assertion of unconditional condition failure enforcement: upstream environment/OOM error path remains a limit",
+    "marker pathname mount-view agreement not established by primitive",
+    "actual controller death, queued/late requests, reload and reboot require system-manager verification",
+    "implicit/transitive activation closure, executable/import closure and BOOTTIME obligations remain open",
+    "no CI, VM, service deployment, physical operation, source commit/push"
+  ]
+}

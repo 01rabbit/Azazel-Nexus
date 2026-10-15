@@ -1,0 +1,236 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 actual compiled-source native deadline smoke qualification, not release/deployment",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c": "9962eb0719fc17572f3f0adf0525c133124daba17c3dc916def626e5bdd64cdc",
+      "tests/unit/test_runtime_bootstrap_native_deadline.py": "294a1c8dc470897c39f0a5ea473b0fd3d4a0578dae0061ae248b114a0367f594"
+    },
+    "change": "C source unchanged this increment. Tests now assert exact child extension/source origin, -IS, flushed post-operation/GC markers, default/unblocked fork-child fatal alarm and invalid/rearm/release behavior. Original wait-past-cancelled-deadline proof retained."
+  },
+  "environment": {
+    "os": "Debian13 ARM64 existing VM",
+    "python": "3.13.5",
+    "soabi": "cpython-313-aarch64-linux-gnu",
+    "python_package": "3.13.5-2+deb13u5",
+    "libc_package": "2.41-12+deb13u4",
+    "compiler": "GCC14.2.0-19",
+    "privilege": "ordinary existing user; no sudo/system install/venv sync"
+  },
+  "toolchain": {
+    "lock": "bootstrap-native-toolchain-inputs-2026-10-15.json",
+    "lock_sha256": "49eb8eafd1668e31f921262bc470fe2f632c11a53f8c2cdb421fe10cefbbf05b",
+    "verification": "Coordinator reverified gpgv signatures against protected existing Debian archive keyring, signed Date/Valid-Until, exact uncompressed Packages size/SHA256 against each signed InRelease, candidate package identity/version/size/SHA256 in authenticated indexes, then all28 downloaded archive hashes before extraction. Same version mirrored in main/security accepted only with identical non-Filename fields.",
+    "download_bytes": 45351552,
+    "archives": 28,
+    "extraction": "apt-get download exact name=version only in private /tmp task root; no install/update. dpkg-deb archive paths/types and relative link targets checked before -x. No block/loop/device archive entries accepted.",
+    "scripts": {
+      "inputs": {
+        "path": "/tmp/azn-linux-check.I6YGHW/native-inputs.py",
+        "sha256": "7117541f274ff5ed138181af9655d931a99dbb8ff572e84668c864d80a0abbfa"
+      },
+      "build": {
+        "path": "/tmp/azn-linux-check.I6YGHW/native-build.py",
+        "sha256": "328933825b55ac68de8331c838322e6690932ccd4656395cb7aaa081f14c8edb"
+      }
+    },
+    "state": "/var/lib/dpkg/status SHA256 unchanged before/after. Existing compiler cc1/root-owned runtime libraries reused/read-only; runtime DSO copies confined to task sysroot. Compiler LD_LIBRARY_PATH only selected task binutils libs, not copied libc or test environment. No project/VM dependency installation."
+  },
+  "build": {
+    "argv": [
+      "/tmp/azn-native.0GbNgE/toolroot/usr/bin/aarch64-linux-gnu-gcc-14",
+      "--sysroot=/tmp/azn-native.0GbNgE/toolroot",
+      "-B/tmp/azn-native.0GbNgE/toolroot/usr/lib/gcc/aarch64-linux-gnu/14/",
+      "-B/tmp/azn-native.0GbNgE/toolroot/usr/bin/",
+      "-B/usr/libexec/gcc/aarch64-linux-gnu/14/",
+      "-nostdinc",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/lib/gcc/aarch64-linux-gnu/14/include",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/include/aarch64-linux-gnu",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/include",
+      "-I/tmp/azn-native.0GbNgE/toolroot/usr/include/python3.13",
+      "-shared",
+      "-fPIC",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wl,-z,relro",
+      "-Wl,-z,now",
+      "-o",
+      "/tmp/azn-native.0GbNgE/tree/runtime/src/azazel_nexus_runtime/_bootstrap_deadline.cpython-313-aarch64-linux-gnu.so",
+      "/tmp/azn-native.0GbNgE/tree/runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c"
+    ],
+    "compiler_version": "aarch64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+    "compiler_sha256": "fb051a6c58961fb6aec758acf50d7d0375eecff740d0706388092829e3fb7a41",
+    "cc1_sha256": "8b4cebfca2ac1ac9edbdac9b335830d8ad27372e930e3c816ea3018b4fdb9fbc",
+    "source_sha256": "9962eb0719fc17572f3f0adf0525c133124daba17c3dc916def626e5bdd64cdc",
+    "host_sysroot_copies": [
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/libc.so.6",
+        "sha256": "70fa4c4cf57eabeb96097cce47582d02379c4cd1de3db3e98ade4dd7089a1b13",
+        "bytes": 1716616
+      },
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+        "sha256": "1b882eddacd494b060413a8aa4f0a4754ee3f84775e68cecbf8a86092b59cca6",
+        "bytes": 201344
+      },
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1",
+        "sha256": "9a146967dc38c3820c5dc21c3209812655f66b6551264072b187bd0e787947e0",
+        "bytes": 133768
+      }
+    ],
+    "returncode": 0,
+    "output": "/tmp/azn-native.0GbNgE/tree/runtime/src/azazel_nexus_runtime/_bootstrap_deadline.cpython-313-aarch64-linux-gnu.so",
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "LANG": "C",
+      "LC_ALL": "C",
+      "LD_LIBRARY_PATH": "/tmp/azn-native.0GbNgE/tool-libs"
+    },
+    "output_sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "output_bytes": 71048
+  },
+  "rt_alignment": {
+    "argv": [
+      "/tmp/azn-native.0GbNgE/toolroot/usr/bin/aarch64-linux-gnu-gcc-14",
+      "--sysroot=/tmp/azn-native.0GbNgE/toolroot",
+      "-B/tmp/azn-native.0GbNgE/toolroot/usr/lib/gcc/aarch64-linux-gnu/14/",
+      "-B/tmp/azn-native.0GbNgE/toolroot/usr/bin/",
+      "-B/usr/libexec/gcc/aarch64-linux-gnu/14/",
+      "-nostdinc",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/lib/gcc/aarch64-linux-gnu/14/include",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/include/aarch64-linux-gnu",
+      "-isystem",
+      "/tmp/azn-native.0GbNgE/toolroot/usr/include",
+      "-I/tmp/azn-native.0GbNgE/toolroot/usr/include/python3.13",
+      "-shared",
+      "-fPIC",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wl,-z,relro",
+      "-Wl,-z,now",
+      "-o",
+      "/tmp/azn-native.0GbNgE/linked-with-rt.so",
+      "/tmp/azn-native.0GbNgE/tree/runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c",
+      "-lrt"
+    ],
+    "result": "Matches setup.py rt library requirement; output byte-identical to tested extension",
+    "sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "production_wheel_built": false
+  },
+  "elf": {
+    "class": "ELF64 little-endian",
+    "machine": "AArch64",
+    "type": "DYN",
+    "needed": [
+      "libc.so.6"
+    ],
+    "bind_now": true,
+    "meaning": "Readelf inspection, not complete native-loader or wheel closure proof"
+  },
+  "artifact": {
+    "local_path": "/tmp/azn-linux-check.I6YGHW/native/_bootstrap_deadline.cpython-313-aarch64-linux-gnu.so",
+    "bytes": 71048,
+    "sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "purpose": "Small qualification artifact only, not installed/admitted/release-signed runtime"
+  },
+  "tests": {
+    "linux_command": "cd /tmp/azn-native.0GbNgE/tree && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_native_deadline.py tests/unit/test_runtime_bootstrap_kernel_deadline.py tests/unit/test_runtime_bootstrap_lifetime.py tests/unit/test_runtime_bootstrap_lifetime_signals.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_native_build.py --junitxml=/tmp/azn-native.0GbNgE/final-native.xml --tb=short",
+    "linux": {
+      "passed": 133,
+      "skipped": 0,
+      "seconds": 3.17,
+      "native_cases_within_same_run": 5,
+      "other_related_cases": 128
+    },
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_runtime_bootstrap_native_deadline.py tests/unit/test_runtime_bootstrap_kernel_deadline.py tests/unit/test_runtime_bootstrap_lifetime.py tests/unit/test_runtime_bootstrap_lifetime_signals.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_native_build.py --junitxml=/tmp/azn-linux-check.I6YGHW/native/macos.xml --tb=short",
+    "macos": {
+      "passed": 128,
+      "skipped": 5,
+      "seconds": 0.77,
+      "native_passes": 0
+    },
+    "native_cases": [
+      "retained handle: CHECKED/COLLECTED markers then self-SIGKILL",
+      "GC-dropped handle: CHECKED/DROPPED_AND_COLLECTED then self-SIGKILL",
+      "bool/float/overflow/past refusal before valid arm; active rearm refusal; idempotent/final release",
+      "explicit release survives original2s deadline and still refuses renewal",
+      "fork child cannot release parent handle; own default/unblocked short fatal alarm bounds child lifetime"
+    ],
+    "development": "Initial5 native tests passed before final test-only -IS/alarm changes. One invocation named nonexistent test_runtime_bootstrap_supervisor.py: no tests ran; corrected to actual test_runtime_bootstrap.py. Counts overlap, not added.",
+    "review": "Sol C/static test review found no C blocker; marker/loader/fork-alarm findings fixed and confirmed. Review is not system-manager evidence.",
+    "lint": "Changed native test file passes Ruff; C compile -Wall -Wextra -Werror succeeds. No unrelated repository-wide lint cleanup.",
+    "limits": "Previous full-unit25 failures remain; full suite not rerun. 133 is not133 native tests or CI success."
+  },
+  "input": {
+    "path": "/tmp/azn-linux-check.I6YGHW/native/final-source.tar.gz",
+    "sha256": "2d3557fd90734018bb7ee917b1e95f11d89e8abb6aa771f5f2951f21cc3cfc35",
+    "archive_bytes": 1277275,
+    "files": 506,
+    "input_bytes": 5141591,
+    "members_digest": "26ace1535b6a64bcc90605d5ddb7359aa6783cd21579c59de20f0e25f0dacde7",
+    "member_digest_algorithm": "SHA256 archive-order name + NUL + member SHA256 hex + LF, UTF-8",
+    "local_current_members_match": true,
+    "transferred_hash_match": true,
+    "remote_source_members_match_after_tests": true,
+    "generated_extension_separate": true
+  },
+  "reports": {
+    "linux": {
+      "path": "/tmp/azn-linux-check.I6YGHW/native/final-native.xml",
+      "sha256": "76b806c42e10c0976ebaf165754fa5f7fb3b8f43abeca651e65a537011d0c4e0"
+    },
+    "macos": {
+      "path": "/tmp/azn-linux-check.I6YGHW/native/macos.xml",
+      "sha256": "2c23b6125d63ef0afce42df972d4fa6248fef8034da7d70a3243af924f6db99a"
+    },
+    "initial_native": {
+      "path": "/tmp/azn-linux-check.I6YGHW/native/native.xml",
+      "sha256": "a4c8da32859bcb7e00137e4f0686c109d0752a019c256e3902a55ca0f573c4ac"
+    },
+    "build": {
+      "path": "/tmp/azn-linux-check.I6YGHW/native/build.json",
+      "sha256": "5c0a0582698eaf2579d7e3a7dda96e726b77b3426a7dba3f2746d26b3ec6158a"
+    }
+  },
+  "static_syscall_profile": "Read-only systemd-analyze shows @system-service includes @timer, whose expansion contains timer_create/gettime/settime/delete. This is a table inspection only, not enforced unit sandbox qualification.",
+  "remaining": [
+    "Production wheel/reviewed installed-file closure and native-loader constraints",
+    "Actual unit sandbox, exec, suspend, reboot, queued-job and controller-to-helper lifetime evidence",
+    "Complete startup/import admission and independently provisioned records/pins",
+    "Public opening/start/readiness still refusing",
+    "Prior local project .venv incident unresolved; isolated tests do not restore it"
+  ],
+  "cleanup": {
+    "removed": ["/tmp/azn-native.0GbNgE", "/tmp/nexus-native-inputs-20261015.py"],
+    "observed_task_root_size": "246MiB",
+    "verification": "Exact owned non-symlink paths and script hash checked again before removal; package status hash unchanged; absence confirmed afterward",
+    "retained": "Small local extension, source archives, input lock, scripts and XML/build reports; no45MiB package archive cache retained",
+    "recovery": "Generated toolchain can be reconstructed from authenticated pinned package inputs when those archives remain available; no user or Boot archive removed"
+  },
+  "not_performed": [
+    "CI",
+    "system package install/update",
+    "venv dependency install/sync",
+    "real service deployment/start",
+    "provider/fetch/Edge activation",
+    "physical/block/loop/firmware operations",
+    "repository commit/push"
+  ],
+  "references": [
+    "https://manpages.debian.org/trixie/apt/apt-get.8.en.html",
+    "https://manpages.debian.org/trixie/dpkg/dpkg-deb.1.en.html"
+  ]
+}

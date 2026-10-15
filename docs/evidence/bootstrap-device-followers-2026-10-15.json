@@ -1,0 +1,42 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "read-only device follower inventory consumed by integrated publication/retained start closure",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_start_closure.py": "ae9338f651b712ca6537f66516da60289e51fae65c5862aa34dfe10f1ef59333",
+    "tests/unit/test_runtime_bootstrap_device_closure.py": "faca8836a8bee0b9d7b315210f11b7a88e159c0c4a5095c2f88f731da4b33d20",
+    "tests/unit/test_runtime_bootstrap_start_closure.py": "01ad51cc122af1fc8c147dbf8da2a767ec97cd8d8ff92f846ce4e86fe4c4c7ad",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "45c0ce0ccba0a5e361eed88d66b3b9644597c8680e3780a34bcc412283d9e579"
+  },
+  "tests": {
+    "related": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+      "passed": 2609,
+      "skipped": 2,
+      "seconds": 10.42,
+      "note": "before final strengthening of the manager integration test; production source unchanged afterward"
+    },
+    "final_focused": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_manager_publication.py tests/unit/test_runtime_bootstrap_device_closure.py",
+      "passed": 57,
+      "skipped": 0,
+      "seconds": 1.3
+    },
+    "environment": "local synthetic bus and ordinary-file publication; no native enumeration",
+    "note": "Selections overlap, not additive. Prior full macOS unit audit remains red, recorded in bootstrap-start-closure-2026-10-15.json; not rerun here."
+  },
+  "ruff": "four changed source/test files pass",
+  "diff_check": "pass",
+  "docs_links": "54 Markdown files pass",
+  "review": "Sol source/causal review found no blocking defect in observation scope; Luna disjoint inventory and retained-start tests; coordinator detached Unit primitives before inventory awaits and strengthened valid independent-policy integration.",
+  "limits": [
+    "512-entry inventory and 64-node graph bounds may refuse larger environments",
+    "all same-SysFSPath siblings are traversed; no unique path-derived leader assumption",
+    "no atomic graph stability, hotplug permission or physical device identity admission",
+    "mount execution, stop propagation, executable/import closure and BOOTTIME remain open",
+    "public widening still refuses",
+    "no CI, VM/service deployment, device-file operation, commit/push"
+  ]
+}

@@ -169,11 +169,24 @@ class PrincipalPolicy:
                 continue
         return cls(operator_gid=operator_gid, service_uids=frozenset(uids))
 
-    def classify(self, uid: int, gid: int, pid: int) -> Principal:
+    def classify(
+        self,
+        uid: int,
+        gid: int,
+        pid: int,
+        supplementary_groups: Iterable[int] = (),
+    ) -> Principal:
+        groups = tuple(supplementary_groups)
+        if any(type(group) is not int or group < 0 for group in groups):
+            raise SocketMisconfigured("kernel supplementary groups are malformed")
         classes = set()
         if uid == 0:
             classes.add(PrincipalClass.ROOT)
-        if self.operator_gid is not None and gid == self.operator_gid:
+        if (
+            self.operator_gid is not None
+            and uid not in self.service_uids
+            and (gid == self.operator_gid or self.operator_gid in groups)
+        ):
             classes.add(PrincipalClass.OPERATOR)
         if uid in self.service_uids:
             classes.add(PrincipalClass.SERVICE)
@@ -197,8 +210,38 @@ def peer_credentials(connection) -> tuple[int, int, int]:
     return pid, uid, gid
 
 
+def peer_supplementary_groups(connection) -> tuple[int, ...]:
+    """Read the peer's kernel-reported supplementary GIDs on Linux.
+
+    On systems without ``SO_PEERGROUPS`` no supplementary principal is
+    inferred; primary-GID and root/service classification still work. Linux
+    operator accounts may therefore use ordinary supplementary group
+    membership without changing their primary group.
+    """
+
+    import socket as socket_module
+    import struct
+
+    option = getattr(socket_module, "SO_PEERGROUPS", None)
+    if option is None:
+        return ()
+    try:
+        raw = connection.getsockopt(
+            socket_module.SOL_SOCKET, option, 4 * 65536
+        )
+    except OSError:
+        return ()
+    if len(raw) % 4:
+        raise SocketMisconfigured("kernel supplementary groups are malformed")
+    return tuple(group for (group,) in struct.iter_unpack("=I", raw))
+
+
 def verify_socket(
-    path: Path, *, expected_mode: int = REQUIRED_SOCKET_MODE, expected_uid: int | None = None
+    path: Path,
+    *,
+    expected_mode: int = REQUIRED_SOCKET_MODE,
+    expected_uid: int | None = None,
+    expected_gid: int | None = None,
 ) -> None:
     """Refuse to serve on a socket that is not what packaging declared.
 
@@ -225,4 +268,9 @@ def verify_socket(
         raise SocketMisconfigured(
             f"{path} is owned by uid {info.st_uid} and this daemon runs as "
             f"{owner}; a socket it does not own is a socket it cannot vouch for"
+        )
+    if expected_gid is not None and info.st_gid != expected_gid:
+        raise SocketMisconfigured(
+            f"{path} has an unexpected group; the socket ACL does not match "
+            "the reviewed operator group"
         )

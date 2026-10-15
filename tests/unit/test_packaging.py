@@ -27,6 +27,11 @@ PACKAGING = REPO_ROOT / "packaging"
 INSTALLER = PACKAGING / "install.sh"
 PRESET = PACKAGING / "azazel-nexus.preset"
 UNIT_DIR = PACKAGING / "systemd"
+BOOTSTRAP_TMPFILES = PACKAGING / "tmpfiles.d" / "azazel-nexus-bootstrap.conf"
+EXPECTED_BOOTSTRAP_TMPFILES = (
+    b"d /run/systemd/system.control :0755 :root :root - -\n"
+    b"d /run/azazel-nexus-bootstrap :0700 :root :root - -\n"
+)
 
 GOVERNED = tuple(d.name for d in CORE_UNITS)
 ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT,)
@@ -88,6 +93,14 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
         f"the packaged units are {present}; the controller governs "
         f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}"
     )
+
+
+def test_bootstrap_tmpfiles_creates_only_exact_persistent_runtime_directories():
+    raw = BOOTSTRAP_TMPFILES.read_bytes()
+    directives = [line for line in raw.splitlines(keepends=True)
+                  if line.strip() and not line.lstrip().startswith(b"#")]
+    assert directives == EXPECTED_BOOTSTRAP_TMPFILES.splitlines(keepends=True)
+    assert all(line.split()[-2:] == [b"-", b"-"] for line in directives)
 
 
 def test_each_unit_file_declares_the_account_its_definition_names():
@@ -189,7 +202,12 @@ def test_the_installer_masks_every_governed_unit():
     refuses until the controller unmasks it against a revalidated generation.
     """
 
-    assert sorted(_systemctl_calls("mask")) == sorted(GOVERNED)
+    installer_masks = _systemctl_calls("mask")
+    preset_masks = [unit for verb, unit in _preset_directives() if verb == "disable"]
+    assert sorted(installer_masks) == sorted(GOVERNED)
+    assert sorted(installer_masks) == sorted(preset_masks), (
+        "installer mask actions and declarative preset intent must stay aligned"
+    )
 
 
 def test_the_installer_enables_only_the_activation_controller():
@@ -206,7 +224,19 @@ def test_the_installer_refuses_while_the_daemons_it_names_are_absent():
 
     text = _installer()
     assert "refusing to install" in text
-    assert "/usr/libexec/azazel" in text
+    assert "install_profile_fields.py" in text
+    assert 'LIBEXEC=$(profile_field libexec_directory)' in text
+    assert '--platform-profile "$INSTALL_PROFILE_ID"' in text
+
+
+def test_installer_resolves_a_reviewed_os_profile_before_writing():
+    text = _installer()
+    profile_resolution = text.index('INSTALL_PROFILE_ID=$(profile_field profile_id)')
+    first_account_write = text.index('useradd --system')
+    first_directory_write = text.index('make_dir 0755 root /etc/azazel')
+    assert profile_resolution < first_account_write
+    assert profile_resolution < first_directory_write
+    assert "no reviewed install profile" in text
 
 
 def test_every_unit_names_an_executable_the_installer_checks_for():
@@ -236,24 +266,37 @@ def test_the_installer_creates_exactly_the_declared_layout():
     nothing notices.
     """
 
+    installer = _installer()
     found = {
-        path: (int(mode, 8), group)
+        path: (int(mode, 8), "root", group)
         for mode, group, path in re.findall(
-            r"^make_dir (\d{4}) (\S+) (/\S+)$", _installer(), re.M
+            r"^make_dir (\d{4}) (\S+) (/\S+)$", installer, re.M
         )
     }
-    declared = {spec.path: (spec.mode, spec.group) for spec in LAYOUT}
+    found.update({
+        path: (int(mode, 8), owner, group)
+        for mode, owner, group, path in re.findall(
+            r"^make_owned_dir (\d{4}) (\S+) (\S+) (/\S+)$", installer, re.M
+        )
+    })
+    declared = {
+        spec.path: (spec.mode, spec.owner, spec.group)
+        for spec in LAYOUT
+    }
     assert found == declared, (
         "the installer and the layout disagree about a directory's mode or "
         "group. A writable path nobody declared is a path nobody set the "
         "owner of"
     )
-    assert all(spec.owner == "root" for spec in LAYOUT), (
-        "a directory is declared to a non-root owner and `make_dir` always "
-        "passes `-o root`; the two would disagree silently"
-    )
+    assert all(
+        spec.owner == "root" or spec.path in found
+        for spec in LAYOUT
+    ), "non-root-owned layout paths must use the explicit make_owned_dir adapter"
     assert '-o root -g "$2"' in _installer(), (
         "`make_dir` no longer applies the declared ownership"
+    )
+    assert '-o "$2" -g "$3"' in _installer(), (
+        "`make_owned_dir` no longer applies declared service ownership"
     )
 
 
@@ -262,34 +305,90 @@ def test_the_declared_modes_survive_creation(tmp_path):
     for spec in LAYOUT:
         target = tmp_path / spec.path.lstrip("/")
         assert target.is_dir(), f"{spec.path} was not created"
-        assert stat.S_IMODE(target.stat().st_mode) == spec.mode, (
+        observed_mode = stat.S_IMODE(target.stat().st_mode)
+        assert observed_mode == spec.mode, (
             f"{spec.path} was created with the process umask rather than the "
             f"declared {spec.mode:04o}"
         )
 
 
+def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
+    socket_dirs = {
+        spec.path: spec
+        for spec in LAYOUT
+        if spec.path.startswith("/var/lib/azazel/run/")
+    }
+    assert set(socket_dirs) == {
+        "/var/lib/azazel/run/audit",
+        "/var/lib/azazel/run/commission",
+        "/var/lib/azazel/run/watchdog",
+    }
+    for spec in socket_dirs.values():
+        assert stat.S_ISGID & spec.mode
+        assert spec.group == "azazel-operator"
+        assert spec.mode & 0o007 == 0
+
+
+def test_service_accounts_are_not_added_to_the_operator_socket_group():
+    installer = _installer()
+    assert 'usermod --append --groups azazel-operator' not in installer
+    assert "usermod --append --groups azaudit azwatch" not in installer
+
+
+def test_service_state_writers_have_private_installer_owned_leaves():
+    expected = {
+        "/var/lib/azazel/state/audit": ("azaudit", "root"),
+        "/var/lib/azazel/state/auditd": ("azaudit", "root"),
+        "/var/lib/azazel/state/commission": ("azcommission", "root"),
+        "/var/lib/azazel/state/watchdog": ("azwatch", "root"),
+    }
+    for path, (owner, group) in expected.items():
+        spec = next(item for item in LAYOUT if item.path == path)
+        assert (spec.mode, spec.owner, spec.group) == (0o700, owner, group)
+        assert f"make_owned_dir 0700 {owner} {group} {path}" in _installer()
+
+
 def test_a_child_does_not_inherit_a_parent_created_on_the_way(tmp_path):
-    """`/var/lib/azazel/run` at 0750 under a parent nobody set the mode of.
+    """`/var/lib/azazel/run` stays traversal-only under a default-mode parent.
 
     `mkdir(parents=True)` would have created the parent at whatever umask the
-    shell had, which is a boundary set by the environment.
+    shell had, which is a boundary set by the environment. The traversal-only
+    mode deliberately grants no listing/read permission to ordinary users.
     """
 
     create_layout(tmp_path)
     parent = tmp_path / "var/lib/azazel"
-    assert stat.S_IMODE(parent.stat().st_mode) == 0o750
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o711
 
 
 def test_the_socket_directory_is_not_world_readable():
     """Socket ACLs are the first authorization boundary (§4)."""
 
     spec = next(s for s in LAYOUT if s.path.endswith("/run"))
-    assert not spec.mode & 0o007
+    assert not spec.mode & 0o006
 
 
 def test_the_secret_directory_is_root_only():
     spec = next(s for s in LAYOUT if s.path.endswith("/secrets"))
     assert spec.mode == 0o700
+
+
+def test_bootstrap_persistence_directory_is_root_private_and_installed():
+    spec = next(s for s in LAYOUT if s.path == "/var/lib/azazel/state/bootstrap")
+    assert spec.mode == 0o700 and spec.group == "root"
+    assert "make_dir 0700 root /var/lib/azazel/state/bootstrap" in _installer()
+
+
+def test_administrator_bootstrap_configuration_directory_is_root_private():
+    spec = next(s for s in LAYOUT if s.path == "/etc/azazel/bootstrap")
+    assert spec.mode == 0o700 and spec.group == "root"
+    assert "make_dir 0700 root /etc/azazel/bootstrap" in _installer()
+
+
+def test_bootstrap_overlay_journal_has_an_isolated_root_private_directory():
+    spec = next(s for s in LAYOUT if s.path == "/var/lib/azazel/state/bootstrap-overlay")
+    assert spec.mode == 0o700 and spec.group == "root"
+    assert "make_dir 0700 root /var/lib/azazel/state/bootstrap-overlay" in _installer()
 
 
 def test_a_layout_entry_must_be_absolute_and_explained():

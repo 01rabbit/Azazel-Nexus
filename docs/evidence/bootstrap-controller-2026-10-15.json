@@ -1,0 +1,35 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "existing dirty worktree preserved; hashes identify complete current files, not exclusively this increment",
+  "scope": "independent local controller identity and repeated pre-ready observations in private manager preparation",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "56f3ecfc338e823d4009b05528ff81ba83a67a05a289aeafbac1955bfda74808",
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller_identity.py": "143dde0ce93c4378a9893edfe2a3ec8e53a50a686bb390de79d0ed65e701a04c",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "0d193e246c49e6088e4861a4c2fdf462a3efb3aec2dc02318e7cfa42fa987cd6",
+    "tests/unit/test_runtime_bootstrap_controller.py": "a507a3f1fe7aadf5b61b700703a38eb366471c35736e5df4a2d03da1c554a606",
+    "tests/unit/test_runtime_bootstrap_controller_identity.py": "610f9c06a718df97708fb5834992c3870a256a689c4a764b81b3ca1834457d3b",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "0d34d8114c768bc9fdffecd8bc8f7d9050e8ad487b3af77a64bd3b7c050a1f0f"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 1989,
+    "skipped": 2,
+    "seconds": 7.35,
+    "environment": "local macOS, synthetic bus/proc/namespace seams and ordinary files/socketpairs",
+    "skip_reasons": ["installer requires Linux os-release", "requires Linux systemd-analyze"]
+  },
+  "ruff": "six named source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra identified retained mutable reply data. Luna detached validated projections and added mutation/laundering regressions. Coordinator inspected implementation, integrated manager/local identity and corrected fault injection callback with reached assertions.",
+  "limits": [
+    "first controller bus observation occurs after publication; private preparation has no production open_pair caller",
+    "ready-phase observer exists but is not yet connected to startup; READY send is not ready acknowledgement",
+    "outstanding job identity is checked, not job type",
+    "no controller hang bound, complete process closure or atomic external dependency start exclusion proved",
+    "no authenticated audit peer readiness or actual start/entrypoint composition completed",
+    "no full repository suite, Linux VM, CI, live service/hardware operation, commit or push"
+  ]
+}

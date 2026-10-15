@@ -1,0 +1,33 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "direct isolated Python wrappers and pending-native-job deadline regressions",
+  "files_sha256": {
+    "tools/stage_runtime_entrypoints.py": "6aa1807e9d8e3fa4a10b152d922283171c23088e09e3539ec4ec46b13066fd1e",
+    "tests/unit/test_stage_runtime_entrypoints.py": "fa869a7aeb6bf19e2ea870ece63b25b53cae0ca959d772de462fd0d16bd09084",
+    "tests/unit/test_stage_runtime_isolation.py": "2fd1f9fa96a698110173591f47114c898e73e192b811170add7c0da7a4d3981e",
+    "tests/unit/test_runtime_bootstrap_start.py": "82941ed131420740eb19fa5157d08d321ca178700bcc599a9cf7c187abf344c1",
+    "tests/unit/test_runtime_bootstrap_stop.py": "ac4e51a164433a81d43d5d0bbef75a61aff2cba1da951bc0844d0b67c5742d03"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_runtime_bootstrap_start.py tests/unit/test_runtime_bootstrap_stop.py tests/unit/test_packaging.py",
+    "passed": 160,
+    "skipped": 0,
+    "seconds": 1.67,
+    "environment": "local synthetic ordinary files and fake bus; temporary venv executes harmless synthetic module",
+    "earlier_failures": "Path subclass rejection corrected; long synthetic paths shortened within retained 127-byte shebang bound"
+  },
+  "ruff": "five listed source/test files pass",
+  "diff_check": "pass",
+  "docs_links": "54 Markdown files pass",
+  "review": "Astra source boundary review; Luna source and pending-job tests in disjoint scopes; coordinator reviewed and ran integration selection",
+  "limits": [
+    "interpreter links remain installable but not integrity-admitted",
+    "no complete interpreter/native-library/import closure claim",
+    "job timeout is not native cancellation or completion",
+    "no VM, CI, deployment, source commit/push",
+    "next runtime task: retain publication checking context for actual pre-start checkpoints; graph transaction obligation still open"
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 supporting-only launch environment and retained controller checks",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/launch_environment.py": "d60248f3030e45ae9f8f4e6a810f426ff9e4e2b73a42775d2d9b9936d65daa84",
+      "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "a4b4f3e8f71e05fbc2126eba5787408e4fec12577a96d1d460588170de2a9ba6",
+      "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "a0ab163082fab935b76a05e3671570508710a92825cd69b875b7cdaf1f9d5b5e",
+      "packaging/install.sh": "183719f76f62e9a2acd3182f419f43f99cdb667ff9610a76f95253a654054944",
+      "tools/stage_runtime_entrypoints.py": "24788b48ac5d67365c83186e3f1f645e91db4c2da70b9ebfa3f8d493884653e8"
+    }
+  },
+  "changes": [
+    "Exactly controller/auditd/commissiond profiles disable login environment and remove 31 fixed loader/Python names; other profiles unchanged",
+    "Loaded controller/helper Service inspection requires empty Environment/EnvironmentFiles/PassEnvironment/PAMName, exact UnsetEnvironment and SetLoginEnvironment false",
+    "Retained bound-start checks bracket graph/helper inspection with full controller observations in the current pre-READY/READY phase",
+    "Validated reply arrays are detached before later awaits; four causal reply-mutation regressions preserve baseline fingerprints",
+    "Installer Python children run through absolute /usr/bin/env with fixed PATH/LANG/LC_ALL; only staging receives selected DESTDIR",
+    "Both staging subprocess probes receive a fresh minimal environment"
+  ],
+  "linux_input": {
+    "archive": "/tmp/azn-linux-check.I6YGHW/launch-env.tar.gz",
+    "sha256": "4a15244f8dec0fd0ad29cee1ec910d09a821c6bcc8092c706c13d75612085afe",
+    "archive_bytes": 1729281,
+    "files": 601,
+    "input_bytes": 6325296,
+    "member_digest_algorithm": "SHA256 of archive-order name + literal backslash-zero + file SHA256 hex + literal backslash-n, UTF-8",
+    "members_digest": "dfccba580d12cc2a158e11cbadbcc759e6c6737dd0142c9d1a85198592e0e414",
+    "current_local_members_match": true,
+    "transferred_archive_match": true,
+    "remote_members_match_after_tests": true,
+    "fixture_correction": "First run omitted .git sentinel needed by checkout-refusal tests: 469 passed, 2 failed, 5 skipped. Added empty .git only in disposable source copy and removed only its generated failed-harness root before rerun; no product changes to make those tests pass."
+  },
+  "validation": {
+    "macos": {
+      "command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py --tb=short",
+      "python": "3.11.15",
+      "pytest": "9.1.1",
+      "pynacl": "1.6.2",
+      "pyyaml": "6.0.3",
+      "dbus_next": "0.2.3",
+      "passed": 3016,
+      "skipped": 6,
+      "seconds": 17.25
+    },
+    "linux": {
+      "environment": "existing Debian13 ARM64 VM, existing Python3.13.5 venv; ordinary user, no sudo/install/service changes",
+      "command": "cd /tmp/aze.CNl8up && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_launch_environment.py tests/unit/test_runtime_bootstrap_loaded.py tests/unit/test_runtime_bootstrap_controller.py tests/unit/test_runtime_bootstrap_manager_publication.py tests/unit/test_runtime_hardening.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_bootstrap_tmpfiles_packaging.py tests/unit/test_e2e_harness.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_native_deadline.py --basetemp=/tmp/azt.3OwcOP --junitxml=/tmp/aze.CNl8up/launch.xml --tb=short",
+      "passed": 471,
+      "failed": 0,
+      "skipped": 5,
+      "seconds": 1.43,
+      "native_timer_passes": 0,
+      "native_timer_skipped": 4,
+      "initial_xml": {
+        "path": "/tmp/azn-linux-check.I6YGHW/launch-initial.xml",
+        "sha256": "720aa35896270190a7455a3bab21f36ed3b0dbd31dedfccbb1578e33b6f540e6"
+      },
+      "final_xml": {
+        "path": "/tmp/azn-linux-check.I6YGHW/launch.xml",
+        "bytes": 148856,
+        "sha256": "9dc27999cba9c80273c5b91a24404791cdc83d5aa3b25b2107d606b3a878ceb0"
+      }
+    },
+    "counts": "Overlapping selections and earlier runs are not summed. Previous Linux full-suite 25 failures remain; full suite not rerun here.",
+    "ruff": "14 selected Python files pass; hardening.py has three preexisting HEAD F401 findings, retained without unrelated cleanup. Linux Ruff unavailable.",
+    "shell": "sh -n packaging/install.sh passes",
+    "documentation": "54 Markdown internal-link check passes; JSON parses; git diff --check passes",
+    "review": "Sol independent source review found no remaining scoped issue after reply-list detachment and retained controller-Service fix; not native/system-manager evidence"
+  },
+  "cleanup": {
+    "remote_task_directories_removed": ["/tmp/aze.CNl8up", "/tmp/azt.3OwcOP"],
+    "observed_sizes_before": ["9.6MiB", "160MiB"],
+    "validation": "Exact task-created paths, lstat directory/non-symlink/current-user ownership verified before removal; absence checked afterward",
+    "retained": "Small local source archive and both XML reports; no user or Boot archives removed"
+  },
+  "tooling_incident": {
+    "cause": "Agent used project-scoped uv run, replacing repository .venv Python3.11.15 with Python3.12.13 and leaving pytest absent",
+    "source_loss": false,
+    "original_environment_restored": false,
+    "response": "User informed. Exact original dependency inventory unavailable; no guessed restore/sync. Subsequent tests use --no-project --isolated cached environment. Repository .venv remains altered and must not be treated as restored."
+  },
+  "remaining": [
+    "Bounded interpreter/ABI/pyvenv/startup/import/native-loader execution profile",
+    "Compiled native timer tests and actual system-manager lifecycle/suspend/cleanup qualification",
+    "Independently provisioned deployment records and pins",
+    "Public manager open/start/unmask/readiness remains refusing",
+    "This is not whole-OS hermeticity and does not undo native code already loaded in installer shell"
+  ],
+  "not_performed": ["CI", "native compilation", "service deployment/start", "provider/Edge activation", "physical/block/loop/firmware operations", "development-repository commit/push"]
+}

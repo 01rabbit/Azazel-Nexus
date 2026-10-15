@@ -12,11 +12,13 @@ import json
 import time
 from pathlib import Path
 
-import pytest
-
+import azazel_nexus_runtime.principal as principal
+import azazel_nexus_runtime.runtime_paths as runtime_paths
+import azazel_nexus_runtime.serve as serve
+import azazel_nexus_runtime.watchdog as watchdog_module
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.generation import GenerationStore
-from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager, UnitKey
+from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
 from azazel_nexus_runtime.watchdog import (
     REGISTRY,
     VERBS,
@@ -167,6 +169,40 @@ def test_the_status_verb_is_read_only_and_the_probe_verb_is_not_an_operators():
     probe = next(v for v in VERBS if v.name == "watchdog.probe")
     assert PrincipalClass.OPERATOR in status.admits
     assert PrincipalClass.OPERATOR not in probe.admits
+
+
+def test_watchdog_composition_uses_its_private_state_and_audit_leaf(monkeypatch, tmp_path):
+    captured = {}
+    expected_state = tmp_path / "state" / "watchdog"
+
+    def sink_for(service):
+        captured["audit_service"] = service
+        return lambda _event: None
+
+    monkeypatch.setattr(runtime_paths, "watchdog_state_dir", lambda: expected_state)
+    monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
+    monkeypatch.setattr(
+        runtime_paths,
+        "audit_sink",
+        sink_for,
+    )
+    monkeypatch.setattr(
+        principal.PrincipalPolicy,
+        "resolve",
+        classmethod(lambda cls: object()),
+    )
+    monkeypatch.setattr(
+        serve,
+        "serve_forever",
+        lambda **kwargs: captured.update(kwargs) or 17,
+    )
+
+    assert watchdog_module.main(stop=lambda: True) == 17
+    service = captured["handler"].__self__
+    assert service.ledger.path == expected_state / "watchdog.jsonl"
+    assert service.fences.path == expected_state / "fences.json"
+    assert captured["audit_service"] == "watchdog"
+    assert captured["path"] == tmp_path / "watchdog.sock"
 
 
 # -- a fence survives the watchdog ---------------------------------------

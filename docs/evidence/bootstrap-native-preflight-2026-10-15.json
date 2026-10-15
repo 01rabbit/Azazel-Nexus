@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-15",
+  "scope": "Read-only current Debian ARM64 VM system-manager preflight, not native lifecycle qualification",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true
+  },
+  "commands": [
+    "systemctl is-system-running",
+    "systemctl show azazel-activated.service azazel-auditd.service azazel-commissiond.service --property=Id,LoadState,ActiveState,SubState,UnitFileState",
+    "command -v systemd-run",
+    "command -v systemd-analyze",
+    "systemctl --version | head -n 1",
+    "systemd-analyze unit-paths",
+    "systemctl show --property=Version"
+  ],
+  "observations": {
+    "system_state": "running",
+    "manager_version": "257.13-1~deb13u1",
+    "unit_paths": [
+      "/etc/systemd/system.control", "/run/systemd/system.control",
+      "/run/systemd/transient", "/run/systemd/generator.early",
+      "/etc/systemd/system", "/etc/systemd/system.attached",
+      "/run/systemd/system", "/run/systemd/system.attached",
+      "/run/systemd/generator", "/usr/local/lib/systemd/system",
+      "/usr/lib/systemd/system", "/run/systemd/generator.late"
+    ],
+    "units": {
+      "azazel-activated.service": {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead", "UnitFileState": ""},
+      "azazel-auditd.service": {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead", "UnitFileState": ""},
+      "azazel-commissiond.service": {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead", "UnitFileState": ""}
+    },
+    "tools": {"systemd-run": "/usr/bin/systemd-run", "systemd-analyze": "/usr/bin/systemd-analyze"},
+    "caveat": "The bare systemd command was not on the SSH shell PATH; systemctl version and real Manager Version were obtained instead"
+  },
+  "next_authority": "Explicit permission for service installation/start on this VM is needed before native qualification. Existing installer enables controller at next boot and is not a read-only preflight. Genuine independent enrollment/pins/approval/time/epoch/generation deployment inputs also remain required; no synthetic success substitutes for them",
+  "not_performed": ["installer execution", "service installation/start/enable", "systemd-run invocation", "systemd manager mutation", "CI", "provider/fetch/Edge activation", "physical/block/loop/firmware operation", "commit/push"],
+  "tests": "No tests rerun in this read-only preflight; previous test results retain their original source and scope"
+}

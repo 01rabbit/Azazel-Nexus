@@ -18,12 +18,29 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditUnavailable
 
-__all__ = ["ROOT", "audit_sink", "ledger_dir", "socket_path", "state_dir"]
+__all__ = [
+    "ROOT",
+    "audit_sink",
+    "ledger_dir",
+    "socket_path",
+    "state_dir",
+    "watchdog_state_dir",
+]
 
 #: Empty unless the harness sets it. Read once, on purpose.
 ROOT = Path(os.environ.get("AZAZEL_ROOT", "/"))
+_SOCKET_LEAVES = {
+    "audit": "audit",
+    "commission": "commission",
+    "watchdog": "watchdog",
+}
+_STATE_LEAVES = {
+    "audit": "auditd",
+    "commission": "commission",
+    "watchdog": "watchdog",
+}
 
 
 def _under(absolute: str) -> Path:
@@ -31,36 +48,38 @@ def _under(absolute: str) -> Path:
 
 
 def socket_path(name: str) -> Path:
-    """`/var/lib/azazel/run/<name>.sock`, under the root.
+    """Return the fixed daemon-owned leaf socket path under the root.
 
-    `name` is a literal from this package, never a caller's string: the
-    daemons each know their own socket, and a path assembled from input would
-    be the one thing the protocol spent its design refusing.
+    The mapping is deliberately closed and installation-owned. Do not create
+    missing parents here: doing so would apply ambient umask/ownership instead
+    of the reviewed service-specific mode and group.
     """
 
-    if not name.isalnum():
+    try:
+        leaf = _SOCKET_LEAVES[name]
+    except (KeyError, TypeError):
         raise ValueError(
-            f"{name!r} is not a socket name this package declares; socket "
-            "names are literals here, not values"
-        )
-    directory = _under("/var/lib/azazel/run")
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"{name}.sock"
+            "socket name is not declared by this runtime"
+        ) from None
+    return _under(f"/var/lib/azazel/run/{leaf}/{name}.sock")
 
 
 def state_dir() -> Path:
-    directory = _under("/var/lib/azazel/state")
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+    """Return the installer-created state root; never create it as a daemon."""
+    return _under("/var/lib/azazel/state")
 
 
 def ledger_dir() -> Path:
-    directory = state_dir() / "audit"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+    """Return auditd's installer-owned chain directory."""
+    return state_dir() / "audit"
 
 
-def audit_sink() -> Callable[[dict], None]:
+def watchdog_state_dir() -> Path:
+    """Return the watchdog-only installer-owned state directory."""
+    return state_dir() / _STATE_LEAVES["watchdog"]
+
+
+def audit_sink(service: str) -> Callable[[dict], None]:
     """Where a daemon's own refusals go.
 
     A daemon records its refusals directly rather than through `az-auditd`:
@@ -73,7 +92,11 @@ def audit_sink() -> Callable[[dict], None]:
     different file.
     """
 
-    path = state_dir() / "refusals.jsonl"
+    try:
+        leaf = _STATE_LEAVES[service]
+    except (KeyError, TypeError):
+        raise ValueError("service state name is not declared by this runtime") from None
+    path = state_dir() / leaf / "refusals.jsonl"
 
     def record(event: dict) -> None:
         import json

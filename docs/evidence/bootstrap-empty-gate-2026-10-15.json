@@ -1,0 +1,27 @@
+{
+  "schema": "azazel-nexus/local-development-evidence/v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "source_state": "uncommitted; existing dirty changes preserved",
+  "source_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "a44f66420818125e132d80adfc28d7a9da840bafba77ac7496c7e6648773af82",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "2ab60c4709fa67fbd862d81e913403dee021082843e44f11964fc2ef7a57b0f2",
+    "tests/unit/test_runtime_bootstrap.py": "4eb48e61dfeae2b09f5c1271d1d7dbd73004e8011237bd6e63963e5ce2f797e1",
+    "tests/unit/test_runtime_bootstrap_empty_gate.py": "85e8b7378b83a97fdef5a45ee607219991a87f97a0d0eaba7d24b7710447f980"
+  },
+  "test_arguments": "tests/unit/test_runtime_bootstrap_empty_gate.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_manager_stopped.py tests/unit/test_runtime_bootstrap_stopped.py tests/unit/test_runtime_bootstrap_cgroup.py tests/unit/test_runtime_bootstrap_stop.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_close_files.py tests/unit/test_bootstrap_grant_transaction.py tests/unit/test_bootstrap_grant_store.py",
+  "mac": {"command_prefix": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q", "passed": 265, "seconds": 1.11},
+  "debian_arm64": {
+    "command_prefix": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q --basetemp=<separate-private-fixture-root>/t",
+    "passed": 265,
+    "hashes_match_local": true,
+    "environment": "existing interpreter; no package installation; disposable copy/fixtures removed"
+  },
+  "lint": "Ruff passed on four listed source/test files; git diff --check passed; repository-wide lint not rerun",
+  "review": "No withdrawal or success path bypassing cgroup refusal found. Descriptor borrowing lifetime made explicit and covered by early-close refusal regression.",
+  "containment_record_schema": "azazel-nexus/bootstrap-containment-evidence/v2",
+  "remaining": ["owned withdrawal implementation", "restored-mask post-withdrawal observation", "production root/mount admission", "controller filesystem-IO lifetime guarantee", "production composition and installed lifecycle validation"],
+  "safety": "No live service/cgroup operation, CI, provider/fetch/Edge activation, hardware, source-branch commit or push. Widening and actual grant withdrawal remain refused.",
+  "full_suite": "Not rerun for this increment; older counts are not current-run counts"
+}

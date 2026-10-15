@@ -1,0 +1,35 @@
+{
+  "schema": "azazel-nexus/local-development-checkpoint/v1",
+  "date": "2026-10-14",
+  "source_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "worktree": "dirty; source changes and this evidence are local",
+  "selected_source_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_masked.py": "516d836a26b1d397aab304272faef6f6e30aaf651d9e3204e73fb1ee09bfe46f",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "968bfa2221ee4036d429c60486232d5d3b34abffd783e610f079f26fd6d14bfb",
+    "tests/unit/test_runtime_bootstrap_masked.py": "0971737c3310c74818fe5915dd7777c2e0b2896f8e4060507dcdf29a0af97c6c",
+    "tests/unit/test_runtime_bootstrap_manager_masked.py": "8ec236967b8964017f46108e451dd0649ee6e8fd08456cd55c7f600a663e65ad"
+  },
+  "local_vm_hashes_match": true,
+  "macos": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_manager_masked.py tests/unit/test_runtime_bootstrap_manager_loaded.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap.py tests/unit/test_offline_bundle.py",
+    "passed": 171,
+    "failed": 0,
+    "duration_seconds": 2.44
+  },
+  "debian_arm64_vm": {
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_manager_masked.py tests/unit/test_runtime_bootstrap_manager_loaded.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap.py",
+    "passed": 162,
+    "failed": 0,
+    "duration_seconds": 0.56,
+    "execution": "disposable source copy, existing interpreter, synthetic bus only; scratch removed"
+  },
+  "target_ruff_command": "ruff check runtime/src/azazel_nexus_runtime/bootstrap_masked.py runtime/src/azazel_nexus_runtime/bootstrap_manager.py tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_manager_masked.py tools/build_offline_bundle.py tests/unit/test_offline_bundle.py",
+  "target_ruff": "passed",
+  "diff_check": "passed",
+  "counts_overlap": true,
+  "full_suite": "not rerun",
+  "ci": "not run",
+  "installed_systemd_lifecycle": "not run",
+  "production_bootstrap": "still refusing; fence and recovery integration incomplete",
+  "hardware": "not tested"
+}

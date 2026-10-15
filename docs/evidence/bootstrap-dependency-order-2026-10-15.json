@@ -1,0 +1,41 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete file hashes not standalone committed diff",
+  "scope": "ordered positive dependencies and repeated inactive/idle conflict observation",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_loaded.py": "6fa71ba332a5e8e4d0edf85364da55e383b24a9311df28f481cb8cd673c8ca56",
+    "runtime/src/azazel_nexus_runtime/bootstrap_prerequisites.py": "f9f3076637b322b971b0edfcaefdeb619d847aa199ebaac1ddf37b7c7149425d",
+    "tests/unit/test_runtime_bootstrap_loaded.py": "a81bf6076a5f0546f162ed78084e74164c18a760a1aef6822119a0f2b31d1f0f",
+    "tests/unit/test_runtime_bootstrap_loaded_policy.py": "ae5f7b2f5b46e1b362a195e45b9abf5f55b618b75a5ad5b618ad8cdf7c4d416e",
+    "tests/unit/test_runtime_bootstrap_prerequisites.py": "08d0f94d9a8a9ce91e524d733c75003634a5f567d7fe3cca14f3ee049091ba31",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "6e3695733fbae7a5a6efbfc65dfec32e93b04c837a1aa08416fb5392a36e59bd"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2215,
+    "skipped": 2,
+    "seconds": 9.23,
+    "environment": "macOS synthetic bus and ordinary-file tests",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "six listed source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra required both Conflicts and ConflictedBy, overlap before exclusions, combined64 bound; reviewed implementation. Luna added fixed shutdown target, exact64 acceptance/65refusal and conflict/state drift regressions; coordinator integrated publication fixture.",
+  "sources": [
+    "https://raw.githubusercontent.com/systemd/systemd/v257/src/core/unit.c",
+    "https://raw.githubusercontent.com/systemd/systemd/v257/src/core/unit-dependency-atom.c"
+  ],
+  "limits": [
+    "observational quiescence, not atomic no-external-job proof",
+    "StartUnit mode fail unchanged; public widening still refuses",
+    "no automatic production policy migration",
+    "process/import closure, lifetime containment, dependency concurrency proof and production entrypoint unfinished",
+    "no live service, VM, CI, physical operation, source commit or push"
+  ]
+}

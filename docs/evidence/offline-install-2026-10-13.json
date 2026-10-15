@@ -1,0 +1,49 @@
+{
+  "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
+  "scope": "Debian 13 ARM64 VM, unprivileged staging, not production activation or hardware admission",
+  "source": {
+    "base_commit": "778d61bab79805288e136b2f6d0502146e4f3910",
+    "worktree": "dirty",
+    "selected_inputs_sha256": "1b8f3d30a7d61d57d37c3371f4090e998c11987568b3d02b7e95ebf54143edba",
+    "archive_size": 349791,
+    "archive_sha256": "885aeda0b8cf0a84d6ab2e17e3b98f1693a48cfb3e95c500c412b74f130b414c",
+    "host_archive": "/tmp/nexus-offline-install-check.UPEyG3/nexus-source-final.tar.gz",
+    "vm_directory": "/home/rabbit/nexus-offline-install-check.V1NEnF",
+    "manifest": "nexus-source-final.tar.gz.manifest.json"
+  },
+  "builder": {
+    "python": "3.13.5",
+    "setuptools": "84.0.0",
+    "wheel": "0.48.0",
+    "packaging": "26.3",
+    "preparation": "Dependency wheels downloaded online; subsequent package build and fresh install used --no-index",
+    "reproducibility": "not measured",
+    "production_builder_selected": false
+  },
+  "wheels_final_sha256": {
+    "azazel_nexus-0.0.1.dev0-py3-none-any.whl": "18d7f9481ae5f14834a28ce8962fa3edb89d526de051b97df38e1fd17e248f75",
+    "azazel_nexus_runtime-0.0.1.dev0-py3-none-any.whl": "a073d6d68c882b861baa89fb26590dce2c13128c88e222bbcc161b362e627934",
+    "dbus_next-0.2.3-py3-none-any.whl": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
+    "pyyaml-6.0.3-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c"
+  },
+  "results": {
+    "fresh_venv_no_index_install": "pass",
+    "pip_check": "pass",
+    "staged_runtime_wrappers": 8,
+    "installer_mode": ["DESTDIR", "--without-service-manager", "--without-accounts"],
+    "accounts_and_ownership": "not executed",
+    "systemd_mutation": "not executed",
+    "activation": "not executed",
+    "local_related_tests_passed": 81,
+    "vm_related_tests_passed": 81,
+    "ci": "not executed"
+  },
+  "limitations": [
+    "Unsigned unreleased local wheels; hashes are not release authentication",
+    "ARM64 Python 3.13 PyYAML wheel is not an amd64 wheel",
+    "No encrypted commissioning deployment or actual signature enrollment",
+    "No provider admission, physical media or firmware operation",
+    "Initial build attempt lacked setuptools; dedicated builder resolved the preparation failure",
+    "Earlier artifacts under this scratch directory predate staging and draft-permission fixes; use final artifacts only"
+  ]
+}

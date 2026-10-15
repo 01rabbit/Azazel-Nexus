@@ -611,7 +611,11 @@ def test_every_payload_verb_in_the_product_names_its_contract():
     accepting = [
         v for v in (*AUDIT_VERBS, mio_remoted.INFER_VERB) if v.accepts_payload
     ]
-    assert sorted(v.name for v in accepting) == ["audit.append", "remote.infer"]
+    assert sorted(v.name for v in accepting) == [
+        "audit.append",
+        "audit.bootstrap.append",
+        "remote.infer",
+    ]
     for verb in accepting:
         assert verb.payload_contract.strip(), verb.name
 

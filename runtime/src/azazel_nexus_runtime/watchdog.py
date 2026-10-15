@@ -50,7 +50,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.degradation import DeadlineExceeded, call_with_deadline
@@ -306,7 +306,7 @@ def main(
     ready: Optional[Callable[[], None]] = None,
 ) -> int:
     from .principal import PrincipalPolicy
-    from .runtime_paths import audit_sink, ledger_dir, socket_path, state_dir
+    from .runtime_paths import audit_sink, socket_path, watchdog_state_dir
     from .serve import serve_forever
     from .units import DbusUnitManager
 
@@ -319,14 +319,14 @@ def main(
 
     service = WatchdogService(
         manager=DbusUnitManager(call=refuse),
-        ledger=AuditLedger(ledger_dir() / "watchdog.jsonl"),
-        fences=FenceStore(state_dir() / "fences.json"),
+        ledger=AuditLedger(watchdog_state_dir() / "watchdog.jsonl"),
+        fences=FenceStore(watchdog_state_dir() / "fences.json"),
     )
     return serve_forever(
         path=socket_path("watchdog"),
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(),
-        audit=audit_sink(),
+        audit=audit_sink("watchdog"),
         handler=service.handle,
         stop=stop,
         ready=ready,

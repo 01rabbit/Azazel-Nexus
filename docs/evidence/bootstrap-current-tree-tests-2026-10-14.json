@@ -1,0 +1,75 @@
+{
+  "schema": "azazel-nexus/local-test-evidence/v1",
+  "date": "2026-10-14",
+  "scope": "Current bootstrap/runtime source integration; local Debian ARM64 tests, not CI or installed lifecycle verification",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "base_commit": "778d61bab79805288e136b2f6d0502146e4f3910",
+    "worktree": "dirty; uncommitted changes included",
+    "selected_paths": [
+      "src",
+      "runtime",
+      "tests",
+      "tools",
+      "packaging",
+      "pyproject.toml",
+      ".github"
+    ],
+    "selected_file_count": 303,
+    "sorted_sha256_manifest_digest": "499822aea26858e6047767bf473063a47ec59c4c499908fe00e4cb1977f26c4e",
+    "manifest_algorithm": "git ls-files --cached --others --exclude-standard -z for selected paths; sort -zu; SHA-256 each file with two-space relative-path listing; SHA-256 listing bytes",
+    "local_vm_match": true,
+    "vm_only_excluded_file": "src/._azazel_nexus.egg-info",
+    "excluded_file_deleted": false,
+    "documentation_outside_selected_paths_byte_matched": false
+  },
+  "environment": {
+    "architecture": "arm64",
+    "os": "Debian 13",
+    "python": "3.13.5",
+    "pytest": "9.1.1",
+    "venv": "/home/rabbit/nexus-rc2-conformance-20261013",
+    "source": "/home/rabbit/nexus-generation-review.q6DBZI/source",
+    "environment_recreated": false
+  },
+  "test": {
+    "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest --basetemp=\"$task_test_dir\" -q -ra",
+    "scratch_creation": "mktemp -d /home/rabbit/nfull.XXXXXX",
+    "passed": 4489,
+    "skipped": 1,
+    "warnings": 2,
+    "duration_seconds": 41.08,
+    "exit_code": 0,
+    "skip": "tests/unit/test_e2e_harness.py:289: systemd is running here, so the refusal is not reachable",
+    "warning": "Python 3.13 multiprocessing fork from multithreaded process in two test_bootstrap_deadline_crash cases"
+  },
+  "lint": {
+    "repository_wide_ruff": {
+      "version": "0.9.4",
+      "findings": 72,
+      "exit_code": 1,
+      "success": false,
+      "unrelated_cleanup_performed": false
+    },
+    "diff_check": "pass",
+    "markdown_links": {
+      "result": "pass",
+      "files": 54
+    }
+  },
+  "claims": {
+    "github_actions": false,
+    "installed_systemd_lifecycle_verified": false,
+    "production_activation_completed": false,
+    "hardware_verified": false,
+    "operator_keys_provisioned": false,
+    "provider_or_edge_activation": false
+  },
+  "remaining": [
+    "Independent context/provisioning source selection and implementation",
+    "Semantic policy, installed closure and complete health admission",
+    "Durable grant recovery and controller lifetime/reboot fencing",
+    "Authenticated readiness and final production entrypoint integration",
+    "Separately authorized installed lifecycle verification"
+  ]
+}

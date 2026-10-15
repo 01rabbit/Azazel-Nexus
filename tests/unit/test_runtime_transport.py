@@ -26,6 +26,7 @@ from azazel_nexus_runtime.principal import (
     PrincipalClass,
     PrincipalPolicy,
     SocketMisconfigured,
+    peer_supplementary_groups,
     verify_socket,
 )
 from azazel_nexus_runtime.protocol import (
@@ -41,7 +42,6 @@ from azazel_nexus_runtime.transport import (
     MAX_FRAME_BYTES,
     SocketServer,
     bind_socket,
-    read_frame,
     send_frame,
 )
 
@@ -150,6 +150,18 @@ def test_a_socket_is_bound_with_the_declared_mode(tmp_path):
     try:
         verify_socket(path)
         assert path.stat().st_mode & 0o777 == 0o660
+    finally:
+        listener.close()
+
+
+def test_a_socket_must_match_the_reviewed_group_before_it_is_served(tmp_path):
+    path = tmp_path / "operator.sock"
+    expected_gid = tmp_path.stat().st_gid
+    listener = bind_socket(path, expected_gid=expected_gid)
+    try:
+        verify_socket(path, expected_gid=expected_gid)
+        with pytest.raises(SocketMisconfigured, match="reviewed operator group"):
+            verify_socket(path, expected_gid=expected_gid + 1)
     finally:
         listener.close()
 
@@ -320,17 +332,20 @@ def test_the_server_classifies_exactly_what_the_kernel_reported(server):
     REPORTED = (4444, 4242, 4343)  # (pid, uid, gid), as SO_PEERCRED orders them
 
     class Spy(PrincipalPolicy):
-        def classify(self, uid, gid, pid):
+        def classify(self, uid, gid, pid, supplementary_groups=()):
             seen.append((uid, gid, pid))
-            return super().classify(uid, gid, pid)
+            return super().classify(uid, gid, pid, supplementary_groups)
 
     engine.policy = Spy(operator_gid=4343, service_uids=frozenset())
     original = transport_module.peer_credentials
+    original_groups = transport_module.peer_supplementary_groups
     transport_module.peer_credentials = lambda connection: REPORTED
+    transport_module.peer_supplementary_groups = lambda connection: ()
     try:
         reply, _ = _exchange(server, {"verb": "node.ping", "arguments": {}})
     finally:
         transport_module.peer_credentials = original
+        transport_module.peer_supplementary_groups = original_groups
 
     assert seen == [(4242, 4343, 4444)], (
         "the server did not pass on what the credential read returned; it "
@@ -350,6 +365,64 @@ def test_reaching_the_socket_is_not_itself_a_permission(server):
     principal = policy.classify(uid=12345, gid=12345, pid=1)
     assert principal.classes == frozenset()
     assert not principal.admits(PING.admits)
+
+
+def test_supplementary_operator_group_grants_operator_but_never_elevates_a_service():
+    operator_gid = 9001
+    service_uid = 9002
+    policy = PrincipalPolicy(
+        operator_gid=operator_gid,
+        service_uids=frozenset({service_uid}),
+    )
+
+    operator = policy.classify(1000, 1000, 1, (operator_gid,))
+    service = policy.classify(service_uid, 1001, 2, (operator_gid,))
+
+    assert operator.classes == frozenset({PrincipalClass.OPERATOR})
+    assert service.classes == frozenset({PrincipalClass.SERVICE})
+
+
+def test_linux_peer_supplementary_groups_are_kernel_reported():
+    import socket as socket_module
+
+    if not hasattr(socket_module, "SO_PEERGROUPS"):
+        pytest.skip("SO_PEERGROUPS is Linux-specific")
+    left, right = socket_module.socketpair(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    try:
+        assert set(peer_supplementary_groups(left)) == set(os.getgroups())
+    finally:
+        left.close()
+        right.close()
+
+
+def test_linux_supplementary_operator_can_reach_and_use_its_socket(tmp_path):
+    if not hasattr(socket, "SO_PEERGROUPS"):
+        pytest.skip("SO_PEERGROUPS is Linux-specific")
+    operator_gid = next(
+        (group for group in os.getgroups() if group != os.getgid()), None
+    )
+    if operator_gid is None:
+        pytest.skip("test process has no supplementary group to exercise")
+
+    leaf = tmp_path / "audit"
+    leaf.mkdir()
+    os.chown(leaf, os.getuid(), operator_gid)
+    os.chmod(leaf, 0o2710)
+    path = leaf / "audit.sock"
+    listener = bind_socket(path, expected_gid=operator_gid)
+    registry = VerbRegistry([
+        Verb("node.operator_only", admits=frozenset({PrincipalClass.OPERATOR}))
+    ])
+    engine = SocketServer(
+        registry=registry,
+        policy=PrincipalPolicy(operator_gid=operator_gid, service_uids=frozenset()),
+        audit=lambda _event: None,
+    )
+    try:
+        reply, _ = _exchange((listener, engine, [], path), {"verb": "node.operator_only"})
+        assert reply == {"ok": True, "result": {"verb": "node.operator_only"}}
+    finally:
+        listener.close()
 
 
 def test_a_principals_audit_fields_carry_nothing_a_caller_chose(server):

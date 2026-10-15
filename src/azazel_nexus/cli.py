@@ -22,6 +22,11 @@ from typing import Callable, Optional, Sequence, TextIO
 from .capability import CORE_CAPABILITIES
 from .cognition import read_cognition
 from .commissioning import REQUIRED_PROFILES, CommissioningRefused, propose
+from .commissioning_draft import (
+    DraftRefused, export_draft, read_draft_review_inputs, verify_draft_review,
+)
+from .operator_store import load_operator_trust
+from .operator_trust import ApprovalRefused
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
 from .edge_package import (
@@ -38,6 +43,7 @@ from .hil_preflight import (
     BOOT_ID_PATH,
     COMMISSIONING_DIR,
     PROTECTION_KEY,
+    OPERATOR_SCREEN_FIELDS,
     OperatorDecisions,
     PreflightResult,
     PreflightRefused,
@@ -288,7 +294,8 @@ def _render_interfaces(report: OperatorReport, out: TextIO) -> None:
         print("No interfaces were read from this host.", file=out)
         return
     for interface in report.interfaces:
-        facts = ", ".join(f"{k}={v}" for k, v in sorted(interface.description.items()))
+        facts = ", ".join(f"{k}={v}" for k, v in sorted(interface.description.items())
+                          if k in OPERATOR_SCREEN_FIELDS)
         state = interface.role or ("unassigned" if interface.commissionable else "not commissionable")
         print(f"{interface.handle}  {state}", file=out)
         print(f"    {facts}", file=out)
@@ -457,8 +464,9 @@ def _cmd_commission(
     ask: Optional[Callable[[str, Sequence[str]], str]],
     confirm: Optional[Callable[[str], bool]],
     permanent_mac_reader=no_permanent_mac,
+    proposal_reader=None,
 ) -> int:
-    proposal = propose(
+    proposal = proposal_reader() if proposal_reader is not None else propose(
         read_interfaces(args.sysfs, permanent_mac_reader=permanent_mac_reader)
     )
     for row in render_rows(proposal):
@@ -493,16 +501,50 @@ def _cmd_commission(
         print(f"refused: {exc}", file=out)
         return 1
 
-    print(f"commissioning recorded: digest {record.digest()}", file=out)
+    if args.draft_output is not None:
+        try:
+            export_draft(record, args.draft_output)
+        except DraftRefused:
+            print("Draft export refused; inspect destination before retrying. Nothing was signed or activated.", file=out)
+            return 1
+        print("Unsigned private draft exported; not a persisted commissioning approval.", file=out)
+    print("commissioning draft prepared; raw bindings and digest are not displayed", file=out)
+    print(
+        ("    This draft is in memory only: not signed, not persisted, and not "
+         if args.draft_output is None else "    This exported draft is not signed and is not ") +
+        "an activation approval. Profile names are operator assertions, not "
+        "measured profile evidence.",
+        file=out,
+    )
     if record.observe_only:
         print(
-            "    No interface carries a role. The node observes and enforces "
-            "nothing, which is a completed commissioning, not an incomplete "
-            "one.",
+            "    No interface carries a role in this draft. This records the "
+            "operator's choice to assign none; it does not establish a running "
+            "observation or enforcement service.",
             file=out,
         )
     return 0
 
+
+
+def _cmd_commission_review(args, out, permanent_mac_reader, proposal_reader=None) -> int:
+    """Verify a protected draft without importing, writing or activating it."""
+    try:
+        trust = load_operator_trust()
+        payload, signature = read_draft_review_inputs()
+        current = proposal_reader() if proposal_reader is not None else propose(
+            read_interfaces(args.sysfs, permanent_mac_reader=permanent_mac_reader))
+        verify_draft_review(payload=payload, signature=signature, operator=args.operator,
+                            trust=trust, current=current)
+    except (DraftRefused, ApprovalRefused, CommissioningRefused, OSError):
+        print("Signed draft review refused. Check protected inputs, enrollment and current inventory locally.", file=out)
+        return 1
+    print(
+        "Signed draft review: assigned bindings verified. This does not prove "
+        "the entire inventory is unchanged or profiles are measured. Nothing "
+        "was imported or activated.", file=out,
+    )
+    return 0
 
 
 def _cmd_hil_preflight(
@@ -654,14 +696,17 @@ def main(
     argv: Optional[Sequence[str]] = None,
     *,
     out: Optional[TextIO] = None,
+    err: Optional[TextIO] = None,
     ask: Optional[Callable[[str, Sequence[str]], str]] = None,
     confirm: Optional[Callable[[str], bool]] = None,
     text: Optional[Callable[[str], str]] = None,
     permanent_mac_reader=no_permanent_mac,
+    commissioning_proposal_reader=None,
 ) -> int:
     import sys
 
     stream = out if out is not None else sys.stdout
+    error_stream = err if err is not None else sys.stderr
     parser = argparse.ArgumentParser(
         prog="azazel-nexus",
         description="Read-only inventory, resource profile, commissioning, "
@@ -685,11 +730,39 @@ def main(
     sub.add_parser("profile", help="measured RAM and the profile it selects")
     sub.add_parser("status", help="everything above, as it currently stands")
     sub.add_parser("health", help="units and the audit chain")
+    sub.add_parser(
+        "bootstrap-deployment-preview",
+        help="validate canonical administrator JSON from stdin; no installation or admission",
+    )
+    sub.add_parser("bootstrap-deployment-initialize", help="interactive first declaration publication; no activation")
+    sub.add_parser("bootstrap-deployment-recover", help="interactive completion of matching pending declaration; no repair")
+    sub.add_parser("bootstrap-selection-initialize", help="interactive initial per-boot selection; no approval or activation")
+    sub.add_parser("bootstrap-selection-recover", help="complete exact pending selection; no replacement or deadline reset")
+    installed = sub.add_parser("installed-files-check", help="read-only pinned selected file comparison; not runtime admission")
+    installed.add_argument("--manifest-digest", required=True, help="independently reviewed sha256:hex manifest pin")
+    candidate_parser = sub.add_parser(
+        "installed-files-candidate",
+        help="emit a read-only selected-file candidate manifest; not admission",
+    )
+    candidate_parser.add_argument(
+        "--directory", action="append", default=None,
+        help=("explicit installed directory path (repeat in sorted unique order; "
+              "does not discover directories)"),
+    )
+    candidate_parser.add_argument(
+        "--link", action="append", default=None,
+        help=("explicit installed symlink path (repeat in sorted unique order; "
+              "does not discover links)"),
+    )
 
     wizard = sub.add_parser("commission", help="assign roles, with confirmation")
     wizard.add_argument("--operator", required=True)
     wizard.add_argument("--at", required=True, help="RFC3339 timestamp")
     wizard.add_argument("--profiles", nargs="*", default=())
+    wizard.add_argument("--draft-output", type=Path,
+                        help="unsigned export to /etc/azazel/commissioning/commissioning-draft.json; requires encrypted protected storage; never activates")
+    review = sub.add_parser("commission-review", help="verify protected signed draft against current inventory; no activation")
+    review.add_argument("--operator", required=True, help="previously enrolled operator key label")
 
     preflight = sub.add_parser(
         "hil-preflight",
@@ -728,10 +801,141 @@ def main(
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    if args.command in {"bootstrap-selection-initialize", "bootstrap-selection-recover"}:
+        from .bootstrap_selection_cli import run_publication
+        return run_publication(source=sys.stdin, out=stream,
+                               recovery=args.command == "bootstrap-selection-recover")
+
+    if args.command == "installed-files-check":
+        from .installed_files import measure_installed_files
+
+        try:
+            if sys.stdin.isatty():
+                raise ApprovalRefused("bounded canonical manifest stdin required")
+            raw = sys.stdin.buffer.read(1024 * 1024 + 1)
+            result = measure_installed_files(raw, expected_digest=args.manifest_digest)
+        except (ApprovalRefused, OSError, AttributeError, ValueError):
+            print("Selected installed file inspection refused; no changes made.", file=stream)
+            return 1
+        print(f"Selected files matched: {result.file_count}; bytes: {result.total_bytes}", file=stream)
+        directory_count = getattr(result, "directory_count", 0)
+        if directory_count:
+            print(f"Selected directories matched: {directory_count}", file=stream)
+        link_count = getattr(result, "link_count", 0)
+        if link_count:
+            print(f"Selected links matched: {link_count}", file=stream)
+        print("Manifest: " + result.manifest_digest, file=stream)
+        print("NOT dependency closure, provenance, compatibility or runtime admission.", file=stream)
+        return 0
+
+    if args.command == "installed-files-candidate":
+        import json
+
+        print(
+            "Candidate only: not dependency closure, approval, or admission.",
+            file=error_stream,
+        )
+        try:
+            if sys.stdin.isatty():
+                raise ValueError("redirect bounded JSON into stdin")
+            raw = sys.stdin.buffer.read((1 << 20) + 1)
+            if type(raw) is not bytes or not 0 < len(raw) <= (1 << 20):
+                raise ValueError("candidate input size refused")
+
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate candidate JSON key")
+                    result[key] = value
+                return result
+
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+            if type(document) is not dict or set(document) != {"paths"}:
+                raise ValueError("candidate fields refused")
+            selected = document["paths"]
+            if type(selected) is not list or not 0 < len(selected) <= 4096:
+                raise ValueError("candidate path list refused")
+            paths = tuple(selected)
+            if paths != tuple(sorted(set(paths))):
+                raise ValueError("candidate paths must be sorted and unique")
+            from .installed_manifest import _validate_path
+
+            for path in paths:
+                _validate_path(path)
+            directories = tuple(args.directory or ())
+            if len(directories) > 1024:
+                raise ValueError("candidate directory count refused")
+            if directories != tuple(sorted(set(directories))):
+                raise ValueError("candidate directories must be sorted and unique")
+            for directory in directories:
+                _validate_path(directory)
+            links = tuple(args.link or ())
+            if len(links) > 1024:
+                raise ValueError("candidate link count refused")
+            if links != tuple(sorted(set(links))):
+                raise ValueError("candidate links must be sorted and unique")
+            for link in links:
+                _validate_path(link)
+            from .installed_candidate import generate_installed_candidate
+
+            if args.directory is None and args.link is None:
+                candidate = generate_installed_candidate(paths)
+            elif args.link is None:
+                candidate = generate_installed_candidate(
+                    paths, directories=directories,
+                )
+            elif args.directory is None:
+                candidate = generate_installed_candidate(paths, links=links)
+            else:
+                candidate = generate_installed_candidate(
+                    paths, directories=directories, links=links,
+                )
+            if type(candidate) is not bytes or not candidate:
+                raise ValueError("candidate manifest unavailable")
+        except Exception:
+            print("Installed files candidate refused; no changes made.", file=error_stream)
+            return 1
+
+        if out is None:
+            sys.stdout.buffer.write(candidate)
+            sys.stdout.buffer.flush()
+        else:
+            try:
+                stream.write(candidate)
+            except TypeError:
+                stream.write(candidate.decode("utf-8"))
+        return 0
+
+    if args.command in {"bootstrap-deployment-initialize", "bootstrap-deployment-recover"}:
+        from .bootstrap_deployment_cli import run_publication
+        return run_publication(source=sys.stdin, out=stream,
+                               recovery=args.command == "bootstrap-deployment-recover")
+
+    if args.command == "bootstrap-deployment-preview":
+        from hashlib import sha256
+        from .bootstrap_deployment import decode_bootstrap_deployment
+
+        try:
+            if sys.stdin.isatty():
+                raise ApprovalRefused("redirect canonical JSON into stdin")
+            raw = sys.stdin.buffer.read(4097)
+            decode_bootstrap_deployment(raw)
+        except (ApprovalRefused, OSError, AttributeError, ValueError):
+            print("Deployment preview refused; no changes made.", file=stream)
+            return 1
+        print("Declaration syntax valid; NOT installed, NOT admitted, NOT authorized.", file=stream)
+        print("Declaration SHA-256: " + sha256(raw).hexdigest(), file=stream)
+        print("Independent node, policy and fresh runtime checks remain required.", file=stream)
+        return 0
+
     if args.command == "commission":
         return _cmd_commission(
-            args, stream, ask, confirm, permanent_mac_reader
+            args, stream, ask, confirm, permanent_mac_reader, commissioning_proposal_reader
         )
+
+    if args.command == "commission-review":
+        return _cmd_commission_review(args, stream, permanent_mac_reader, commissioning_proposal_reader)
 
     if args.command == "hil-preflight":
         return _cmd_hil_preflight(

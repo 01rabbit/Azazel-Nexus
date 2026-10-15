@@ -1,0 +1,48 @@
+{
+  "schema": "azazel-nexus/local-software-evidence/v1",
+  "date": "2026-10-13",
+  "source_base": "778d61bab79805288e136b2f6d0502146e4f3910",
+  "worktree": "uncommitted; pre-existing changes preserved",
+  "selected_source_listing_sha256": "ffb11499a0be547e5628e44056971f260c093e33d1bcce3f62d2e3f3732c6c19",
+  "selected_source_matches_mac_and_vm": true,
+  "selected_source_files": [
+    "src/azazel_nexus/fabric_boundary.py",
+    "runtime/src/azazel_nexus_runtime/proposal_review.py",
+    "runtime/src/azazel_nexus_runtime/commission_cli.py",
+    "tests/unit/test_commissioning_approval.py",
+    "tests/unit/test_current_inventory_binding.py",
+    "tests/unit/test_runtime_proposal_export.py",
+    "tests/unit/test_runtime_proposal_review.py"
+  ],
+  "mac_related_tests": {"passed": 125, "failed": 0, "seconds": 1.0},
+  "debian_arm64_full_unit": {
+    "passed": 3781,
+    "failed": 0,
+    "skipped": 1,
+    "seconds": 38.96,
+    "cwd": "/home/rabbit/nexus-lease-review-20261013",
+    "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests/unit -q --tb=short --basetemp=/home/rabbit/nxsf7"
+  },
+  "targeted_ruff": "pass",
+  "repository_wide_lint": "not rerun; existing findings unchanged",
+  "comparison": {
+    "excluded_snapshot_fields": ["inventory_id", "collected_at", "inventory_digest"],
+    "both_self_digests_validated": true,
+    "inputs_mutated": false,
+    "other_fields_and_order": "exact equality",
+    "timestamp_check": "whole-second UTC; current must not precede retained; not trusted-time evidence"
+  },
+  "test_scope": "actual CLI and ordinary temporary-file storage; synthetic hardware/node/trust/encryption seams and ephemeral Ed25519 keys",
+  "review": "independent read-only inspection; no material finding in bounded current-hardware comparison",
+  "integration_gaps": [
+    "legacy commissioning record cannot preserve full signed evidence alone",
+    "generation binding for full commissioning evidence is not yet implemented",
+    "operational role-config renderer and authoritative promotion are absent",
+    "policy/epoch/high-water, trusted clock and node-health producers remain incomplete",
+    "unsigned Edge manifest/probe is not authenticated package admission"
+  ],
+  "ci_executed": false,
+  "production_activation_or_provider_admission": false,
+  "hardware_or_firmware_operation": false,
+  "issue_93": "open"
+}

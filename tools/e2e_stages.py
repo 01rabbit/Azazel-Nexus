@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -97,7 +98,7 @@ def _install_files(harness: Harness) -> str:
     wrong = [
         spec.path
         for spec in LAYOUT
-        if (harness.root / spec.path.lstrip("/")).stat().st_mode & 0o777 != spec.mode
+        if stat.S_IMODE((harness.root / spec.path.lstrip("/")).stat().st_mode) != spec.mode
     ]
     if wrong:
         raise RuntimeError(f"{wrong} were created with the wrong mode")

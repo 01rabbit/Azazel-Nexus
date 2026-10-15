@@ -1,0 +1,33 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "read-only explicit selected installed-file candidate generator and CLI",
+  "files_sha256": {
+    "src/azazel_nexus/installed_candidate.py": "0a0c52a4fd82ef8bab84cae20e801264abaeb81adb7360dde9a45898f50a5eef",
+    "src/azazel_nexus/cli.py": "ca32002c032a0e432879a5f8e55787da4f9cee9d49c8370d62b8578ad91d5f47",
+    "tests/unit/test_installed_candidate.py": "9f29b3f1c5f9cddf76a0e41acafe4e441658eb5c9b457fcdaf662b698eb47be1",
+    "tests/unit/test_installed_files_cli.py": "b26c9dd6cb5315aa06e4cc77344819c3f6d4e970c6ffdc6d57a091c4144e89d5"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_runtime_bootstrap_context_observation.py tests/unit/test_runtime_bootstrap_protected_admission.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py",
+    "passed": 120,
+    "skipped": 0,
+    "seconds": 1.72,
+    "environment": "local macOS temporary regular-file trees; injected CLI inputs; no deployed selection"
+  },
+  "ruff": {
+    "passed": "candidate module and two test files",
+    "existing": "cli.py F401 tpm_present confirmed in HEAD, left unchanged"
+  },
+  "diff_check": "pass",
+  "review": "Astra reviewed descriptor and repeated-measurement design; identified stdout refusal pollution. Corrected to stderr and tested default stdout buffer. Luna implemented CLI and focused tests; coordinator added growth/truncation and FD cleanup tests.",
+  "limits": [
+    "candidate is not approval/pin/closure/provenance",
+    "no symlink resolution, recursive discovery or complete executable/input enumeration",
+    "bounded bytes/count not hard wall-clock filesystem guarantee",
+    "no manifest or protected inputs installed, no source commit/push or VM/CI/service/hardware operation",
+    "full bootstrap suite not rerun because this increment changes only candidate generation and CLI; targeted admission/staging regressions included"
+  ]
+}

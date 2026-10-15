@@ -10,7 +10,11 @@ manager, and adds the one thing a decision cannot have: **a rollback**.
 A pass that enables three units and fails on the fourth has left the node in a
 state nobody chose. Either the whole set is granted or none of it is, so a
 failure re-masks everything this pass widened -- including the units that
-succeeded.
+succeeded -- and requires a positive inactive-state observation. Masking does
+not stop an already running service. Without reviewed stop authority, such a
+service produces an explicit containment failure, not a successful rollback.
+An inactive observation is not proof of continuing inactivity or an empty
+cgroup; supervision and job/lifetime guarantees remain separate gates.
 
 Rolling *forward* is not available. The failure means the service manager did
 not do what it was asked, and a component that responds to that by asking for
@@ -27,6 +31,12 @@ that is answered by widening.
 No shell. No command line. No unit name, path, argument or environment from a
 caller. Units are addressed by a key from `units.UNIT_NAMES`, which is a
 lookup and not an interpolation.
+
+Protected per-boot bootstrap selection routes to the supporting-only
+BootstrapSupervisor under one retained transaction lock. Selection expresses
+intent, not approval; invalid selection never falls back to ordinary activation.
+Only confirmed absence retains the ordinary path. Public bootstrap opening and
+start gates remain refusing pending their separate admission obligations.
 """
 
 from __future__ import annotations
@@ -54,13 +64,18 @@ from azazel_nexus.activation import (
 )
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
+from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.generation import GenerationStore
+from azazel_nexus.hil_preflight import read_boot_id
+from azazel_nexus.operator_store import load_operator_trust
 
 from azazel_nexus.model_runtime import RUNTIMES
 
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
-from .units import DbusUnitManager, UnitManager
+from .units import DbusUnitManager, UnitManager, UnitOperationFailed
+from .node_config import load_declared_node
+from .commissioning_input import load_commissioning_evidence
 
 __all__ = [
     "ActivationDaemon",
@@ -103,6 +118,17 @@ class RollbackFailed(Exception):
     """The node could not be returned to the state it started the pass in."""
 
 
+def _mask_and_confirm_inactive(manager: UnitManager, unit: str) -> None:
+    """Prevent future starts; refuse to equate that with stopping a process.
+
+    This observation grants no StartUnit/StopUnit authority and is not a
+    lifetime guarantee. Unknown or transitional activity is not containment.
+    """
+    manager.mask(unit)
+    if manager.is_inactive(unit) is not True:
+        raise UnitOperationFailed("masked unit has no confirmed inactive state")
+
+
 class ManagedUnitController(UnitController):
     """Bridges the library's controller to a `UnitManager`.
 
@@ -120,7 +146,7 @@ class ManagedUnitController(UnitController):
         return self.manager.state(unit)
 
     def _mask(self, unit: str) -> None:
-        self.manager.mask(unit)
+        _mask_and_confirm_inactive(self.manager, unit)
 
     def _unmask_and_enable(self, unit: str) -> None:
         # Recorded before the call, not after. A call that fails part way
@@ -149,6 +175,8 @@ class ActivationDaemon:
         edge: Optional[EdgeBaselineState] = None,
         healthy: bool = True,
         wired: Optional[Sequence[str]] = None,
+        commissioning_evidence: Optional[CommissioningEvidence] = None,
+        require_commissioning_evidence: bool = False,
     ) -> ActivationOutcome:
         units = ManagedUnitController(self.manager)
         controller = ActivationController(
@@ -165,6 +193,8 @@ class ActivationDaemon:
                 record=record,
                 edge=edge,
                 healthy=healthy,
+                commissioning_evidence=commissioning_evidence,
+                require_commissioning_evidence=require_commissioning_evidence,
                 # `None` means "ask the distribution", which is what a node
                 # does. A caller may pass a set to exercise a build other than
                 # this one; it may not pass one to widen this one, because the
@@ -185,7 +215,7 @@ class ActivationDaemon:
                 if failures:
                     raise RollbackFailed(
                         "audit became unavailable while narrowing failed; these "
-                        f"governed units remain unmasked: {sorted(failures)}"
+                        f"governed units lack confirmed containment: {sorted(failures)}"
                     )
             raise
         except Exception as exc:  # noqa: BLE001 - unexpected policy failure narrows
@@ -198,7 +228,7 @@ class ActivationDaemon:
             if failures:
                 raise RollbackFailed(
                     "an unexpected activation error occurred and these governed "
-                    f"units could not be remasked: {sorted(failures)}"
+                    f"units lack confirmed containment: {sorted(failures)}"
                 ) from exc
             raise
         if controller.unmaskable:
@@ -223,7 +253,7 @@ class ActivationDaemon:
         failures: list[str] = []
         for definition in self.definitions:
             try:
-                self.manager.mask(definition.name)
+                _mask_and_confirm_inactive(self.manager, definition.name)
             except Exception as exc:  # noqa: BLE001 - collect all failures
                 failures.append(f"{definition.name}: {type(exc).__name__}")
         self._record(
@@ -251,7 +281,7 @@ class ActivationDaemon:
         failures: list[str] = []
         for unit in units.widened:
             try:
-                self.manager.mask(unit)
+                _mask_and_confirm_inactive(self.manager, unit)
                 taken_back.append(unit)
             except Exception as exc:  # noqa: BLE001 - recorded below, then escalated
                 failures.append(f"{unit}: {exc}")
@@ -280,7 +310,7 @@ class ActivationDaemon:
         unreachable: list[str] = []
         for definition in self.definitions:
             try:
-                self.manager.mask(definition.name)
+                _mask_and_confirm_inactive(self.manager, definition.name)
             except Exception as exc:  # noqa: BLE001
                 unreachable.append(f"{definition.name}: {exc}")
         self._record(
@@ -319,13 +349,46 @@ def _is_failure(verdict) -> bool:
     return verdict.reason.startswith("activation_failed")
 
 
+def _collect_input_status(root: Path) -> dict[str, str]:
+    """Read real prerequisites without publishing identities or granting trust.
+
+    Collection follows narrowing, so any reader failure cannot strand a
+    previously enabled service. Staged-root tests never inspect host inputs.
+    These observations are diagnostic, not an ActivationContext or health.
+    """
+    if root != Path("/"):
+        return {key: "not_collected_staged_root" for key in ("operator_trust", "boot", "declared_node")}
+    result = {}
+    try:
+        load_declared_node()
+        result["declared_node"] = "protected_declaration_only"
+    except Exception:  # noqa: BLE001 - no parser diagnostics or identity enter audit
+        result["declared_node"] = "unavailable_or_refused"
+    try:
+        trust = load_operator_trust()
+        result["operator_trust"] = (
+            "active_keys_present" if set(trust.public_keys) - trust.revoked else "no_active_keys"
+        )
+    except Exception:  # noqa: BLE001 - reader failure is absent evidence, never a grant
+        result["operator_trust"] = "unavailable_or_refused"
+    try:
+        boot_id = read_boot_id()
+        result["boot"] = "observed" if type(boot_id) is str and re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot_id
+        ) else "unavailable_or_invalid"
+    except Exception:  # noqa: BLE001 - never include raw reader exceptions/identity in audit
+        result["boot"] = "unavailable_or_invalid"
+    return result
+
+
 def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str
 ) -> ActivationOutcome:
     """Compose the existing decision engine with fixed persistent paths.
 
-    Production evidence readers for the lease, commissioning signature,
-    measured health and Edge baseline do not exist yet. They are therefore
+    Full commissioning evidence is loaded after mandatory narrowing. Production
+    readers for the lease, measured health and Edge baseline are still absent.
+    Those remain
     explicit absences, not guessed values or data loaded from unauthenticated
     files. ``healthy=False`` is important: the library API's test-friendly
     default is not evidence a production daemon may inherit.
@@ -338,6 +401,16 @@ def _run_once(
         manager=manager,
         definitions=CORE_UNITS,
     )
+    failures = daemon._remask_all(now=now, actor=actor,
+        event_type="activation.evidence_preflight_masked", error_type="preflight")
+    if failures:
+        daemon._narrow_everything(now=now, actor=actor, after=failures)
+    evidence = None
+    if root == Path("/"):
+        try:
+            evidence = load_commissioning_evidence()
+        except Exception:  # noqa: BLE001 - evidence failure never bypasses the refusing pass
+            evidence = None
     outcome = daemon.activate(
         now=now,
         actor=actor,
@@ -346,31 +419,68 @@ def _run_once(
         edge=None,
         healthy=False,
         wired=wired_capabilities(),
+        commissioning_evidence=evidence,
+        require_commissioning_evidence=True,
     )
     if outcome.granted:
-        # This composition has no producer for any admission evidence. A
-        # grant here would mean a future change silently supplied authority.
+        # Full commissioning evidence does not supply a lease or node health.
+        # A grant here would mean a future change silently supplied authority.
         failures: list[str] = []
         for definition in CORE_UNITS:
             try:
-                manager.mask(definition.name)
+                _mask_and_confirm_inactive(manager, definition.name)
             except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
                 failures.append(f"{definition.name}: {type(exc).__name__}")
         raise RuntimeError(
-            "production activation composed without authenticated evidence "
+            "production activation composed without lease/health admission evidence "
             "but the decision engine granted a unit; emergency remask failures: "
             f"{sorted(failures)}"
         )
+    # Do not gather optional diagnostic inputs before mandatory narrowing.
+    # Merely loading an enrolled key or observing a boot is not admission.
+    inputs = _collect_input_status(root)
+    inputs["full_commissioning"] = "verified_current_binding" if evidence is not None else "unavailable"
+    missing = [
+        "authoritative_commissioning_admission", "activation_approval_loader",
+        "node_identity", "activation_policy", "renderer_measurement",
+        "epoch_high_water", "trusted_clock", "node_health", "edge_evidence",
+    ]
+    if evidence is None:
+        missing.extend(("authenticated_commissioning", "inventory_binding"))
+    daemon.ledger.append({
+        "event_type": "activation.inputs_incomplete",
+        "observed_inputs": inputs,
+        "missing_producers": missing,
+        "generation": outcome.generation,
+        "occurred_at": now,
+        "actor": actor,
+    })
     return outcome
+
+
+def _narrow_bootstrap_core_units():
+    """Fixed broad mask/inactivity pass; no ordinary admission attempt."""
+    from .systemd_bus import SystemdBusSession
+
+    failures = []
+    with SystemdBusSession.connect() as session:
+        manager = DbusUnitManager(call=session)
+        for definition in CORE_UNITS:
+            try:
+                _mask_and_confirm_inactive(manager, definition.name)
+            except Exception:
+                failures.append(definition.name)
+    if failures:
+        raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run one fail-closed activation pass against systemd's system bus.
 
     A zero exit status means the pass completed and its decision was recorded;
-    it does **not** mean any unit was granted. Authenticated admission-input
-    producers are not implemented, so this composition always supplies their
-    explicit absence and cannot widen a unit.
+    it does **not** mean any unit was granted. Full commissioning evidence may
+    be available, but lease, authoritative admission and health producers remain
+    absent, so this composition cannot widen a unit.
     """
 
     if argv is None:
@@ -400,6 +510,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     )
     try:
+        from azazel_nexus.bootstrap_selection_optional import load_optional_bootstrap_selection
+
+        try:
+            selected = load_optional_bootstrap_selection()
+        except Exception as primary:
+            from .bootstrap_entrypoint import narrow_invalid_selection
+            narrow_invalid_selection(primary, narrow=_narrow_bootstrap_core_units)
+            raise
+        if selected is not None:
+            from .bootstrap_entrypoint import run_selected_bootstrap
+            run_selected_bootstrap(selected, narrow=_narrow_bootstrap_core_units)
+            print("az-activated supporting bootstrap stopped after confirmed containment")
+            return 0
         with SystemdBusSession.connect() as session:
             manager = DbusUnitManager(call=session)
             outcome = _run_once(
@@ -409,6 +532,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 actor="azazel-activated",
             )
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
+        from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
+        if EMERGENCY_UNCONFIRMED in getattr(exc, "__notes__", ()):
+            print("az-activated emergency narrowing unconfirmed", file=sys.stderr)
         print(
             f"az-activated failed before completing a safe pass: {type(exc).__name__}",
             file=sys.stderr,

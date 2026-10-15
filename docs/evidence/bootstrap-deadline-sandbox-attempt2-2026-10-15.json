@@ -1,0 +1,120 @@
+{
+  "date": "2026-10-15",
+  "scope": "Operator-executed native timer sandbox qualification on existing Debian ARM64 VM, not complete Nexus service lifecycle",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "runner_sha256": "187cc81d348b4c68ce7dff65cc3b97bf0c1930ebb8905156c15b325a5b1a0721"
+  },
+  "operator_report": {
+    "scope": "native timer sandbox only",
+    "results": [
+      {
+        "mode": "expiry",
+        "properties": {
+          "Result": "signal",
+          "ExecMainCode": "2",
+          "ExecMainStatus": "9",
+          "ActiveState": "failed",
+          "SubState": "failed"
+        },
+        "markers": [
+          "ARMED"
+        ],
+        "passed": true
+      },
+      {
+        "mode": "release",
+        "properties": {
+          "Result": "success",
+          "ExecMainCode": "1",
+          "ExecMainStatus": "0",
+          "ActiveState": "active",
+          "SubState": "exited"
+        },
+        "markers": [
+          "ARMED",
+          "RELEASE_SURVIVED"
+        ],
+        "passed": true
+      }
+    ],
+    "staging_parent": "/var/lib",
+    "native_sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "probe_sha256": "355201c99eafc5151f04db38fc42fc6843744f06fd70dc064145c6c135543ada",
+    "properties": [
+      "Type=exec",
+      "User=root",
+      "Restart=no",
+      "RemainAfterExit=yes",
+      "RuntimeMaxSec=10s",
+      "TimeoutStartSec=5s",
+      "TimeoutStopSec=5s",
+      "KillMode=control-group",
+      "SendSIGKILL=yes",
+      "NoNewPrivileges=yes",
+      "ProtectSystem=strict",
+      "ProtectHome=yes",
+      "PrivateTmp=yes",
+      "PrivateDevices=yes",
+      "ProtectKernelTunables=yes",
+      "ProtectKernelModules=yes",
+      "ProtectControlGroups=yes",
+      "RestrictNamespaces=yes",
+      "RestrictSUIDSGID=yes",
+      "LockPersonality=yes",
+      "MemoryDenyWriteExecute=yes",
+      "SystemCallArchitectures=native",
+      "SystemCallFilter=@system-service",
+      "CapabilityBoundingSet=",
+      "AmbientCapabilities=",
+      "IPAddressDeny=any",
+      "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
+      "UMask=0027",
+      "SetLoginEnvironment=no",
+      "StandardOutput=journal",
+      "StandardError=journal",
+      "SyslogIdentifier=azazel-nexus-qualification-probe",
+      "UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT LD_BIND_NOW LD_DEBUG LD_DEBUG_OUTPUT LD_DYNAMIC_WEAK LD_HWCAP_MASK LD_LIBRARY_PATH LD_ORIGIN_PATH LD_POINTER_GUARD LD_PREFER_MAP_32BIT_EXEC LD_PRELOAD LD_PROFILE LD_PROFILE_OUTPUT LD_SHOW_AUXV LD_TRACE_LOADED_OBJECTS LD_TRACE_PRELINKING LD_USE_LOAD_BIAS LD_VERBOSE LD_WARN LOCPATH MALLOC_TRACE NLSPATH PYTHONEXECUTABLE PYTHONHOME PYTHONPATH TZDIR __PYVENV_LAUNCHER__"
+    ],
+    "error": null,
+    "cleanup_confirmed": true,
+    "unconfirmed_units": [],
+    "retained_directory": null
+  },
+  "provenance": "Operator supplied actual privileged trial JSON. Coordinator matched exact property list and probe hash to current tool, and re-read staged runner/native hashes over SSH. No independent root journal/cgroup capture or fixture unit names are supplied by this success report.",
+  "independent_read_only_checks": {
+    "runner_and_native_hashes_match": true,
+    "probe_hash_matches_current_probe": true,
+    "only_listed_qualification_unit": "Old failed attempt azazel-nexus-qualification-360eef90e1c54e8baf96a32006f4bcfa.service",
+    "product_units": "azazel-activated.service, azazel-auditd.service and azazel-commissiond.service remain not-found/inactive/dead"
+  },
+  "interpretation": {
+    "expiry": "Passed: ARMED then CLD_KILLED/SIGKILL with Result=signal, not the manager timeout outcome",
+    "release": "Passed: separate process released timer and survived beyond original deadline; normal successful exit",
+    "cleanup": "This trial reports all generated fixture units stopped/cleared and its own staging directory removed. Release active/exited property was captured before cleanup. Does not remove or qualify previous failed trial.",
+    "qualified": "Pinned CPython3.13 ARM64 native module load/arm/expiry/release under the configured controller sandbox subset with Type=exec fixtures and executable /var/lib staging"
+  },
+  "supersedes": "Attempt1 remains recorded as a failure. Corrected retry qualifies only the narrow timer sandbox gate; prior noexec and cleanup defects were in the fixture runner.",
+  "not_qualified": [
+    "Type=notify/READY protocol",
+    "Authenticated real product audit/commission endpoints",
+    "Controller-to-helper BindsTo/After containment and queued/late jobs",
+    "Production marker/mount-view agreement",
+    "Reboot/suspend behavior",
+    "Genuine operator enrollment/pins/approvals/time/epoch/generation deployment inputs",
+    "Production factory opening or full #93 runtime operation",
+    "Hardware installation or verification"
+  ],
+  "tests": "Two actual systemd fixture outcomes supplied by operator. No unit suite/CI/native rebuild repeated to count this result; prior 53/53 synthetic selections retain their original scope.",
+  "cleanup_remaining": "Old root-owned /run/azazel-nexus-qualification-0zq6m4y8 and its failed unit metadata are separate retained first-attempt evidence, not part of successful retry cleanup.",
+  "not_performed_by_coordinator": [
+    "Privileged service operations",
+    "CI",
+    "Native rebuild or repeat timer run",
+    "Provider/fetch/Edge activation",
+    "Physical/block/loop/firmware operations",
+    "Commit/push"
+  ]
+}

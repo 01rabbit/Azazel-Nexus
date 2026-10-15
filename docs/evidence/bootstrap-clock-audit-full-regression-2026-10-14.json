@@ -1,0 +1,24 @@
+{
+  "scope": "dirty-source local Debian ARM64 regression; not CI, installed-lifecycle or production build evidence",
+  "base_head": "778d61bab79805288e136b2f6d0502146e4f3910",
+  "review_source": "/home/rabbit/nexus-generation-review.q6DBZI/source",
+  "python": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python",
+  "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests --basetemp=<mktemp -d /home/rabbit/nx.XXXXXX> -q",
+  "initial_result": {"passed": 4818, "failed": 6, "skipped": 1, "warnings": 2, "seconds": 65.16},
+  "initial_failure": "test_e2e_harness temporary roots were 77 bytes; enforced maximum is 72 bytes for Unix socket paths",
+  "correction": "shorten only temporary basetemp prefix; no product code or socket safety limit changed",
+  "final_result": {"passed": 4824, "failed": 0, "skipped": 1, "warnings": 2, "seconds": 40.93},
+  "warnings": "two existing Python 3.13 multiprocessing/fork deprecations in deadline crash tests",
+  "selected_source_identity": {
+    "matched_files": 301,
+    "selection": "288 .py files under src, runtime/src, tests and tools; 10 tracked regular packaging files; pyproject.toml, runtime/pyproject.toml, README.md; sorted unique relative paths",
+    "manifest_line": "<sha256><two spaces><relative path><newline>",
+    "manifest_sha256": "e94bad28006b41458228a9854b7a21726b79f62c35d361c9ad2df74df020bd4e",
+    "comparison": "delegated local/VM per-file comparison matched; coordinator independently recomputed local aggregate",
+    "limitation": "not every repository file, installed package, venv byte, or build artifact was compared"
+  },
+  "venv_modified": false,
+  "live_services_or_clock_changed": false,
+  "ci_run": false,
+  "goal_complete": false
+}

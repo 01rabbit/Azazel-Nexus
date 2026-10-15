@@ -1,0 +1,68 @@
+{
+  "schema": "azazel-nexus/local-prototype-evidence/v1",
+  "date": "2026-10-15",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "retained dirty worktree; no source branch commit or push",
+  "scope": "manager withdrawal with explicit held-file backend; synthetic bus/regular files only",
+  "sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "32297567873f4b500ceaaf0800aee7a6c4ec7072a380008e77b5e4ccdc61a6e4",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdrawal.py": "6b8ac5bb0771e953f1587a8f202c7b622066f6031e91e84c341a7cbf9d90127f",
+    "tests/unit/test_runtime_bootstrap_withdrawal_binding.py": "a8599e8e7c6a92001fe851482ed9db8180cf6b14d78f38da6820460a6c5115f4",
+    "tests/unit/test_runtime_bootstrap_manager_withdrawal.py": "f0d1d6cde32ce1f35fcdf55229dc5716f575c9d5388a763a5941ae26ee19add4"
+  },
+  "local_vm_hashes_match": true,
+  "mac": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_withdrawal_binding.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_empty_gate.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_restore_files.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_overlay_withdraw.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_manager_stopped.py",
+    "passed": 280,
+    "elapsed_seconds": 2.84
+  },
+  "debian_arm64": {
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit --basetemp=\"$testroot/t\" --tb=short",
+    "passed": 5674,
+    "skipped": 3,
+    "warnings": 2,
+    "elapsed_seconds": 45.08,
+    "warning": "multiprocessing fork in multi-threaded crash-test process (DeprecationWarning)",
+    "fixture": "private source snapshot with disposable synthetic Git commit, separate private fixture root on existing home filesystem; existing interpreter",
+    "temporary_source_and_fixtures_removed": true
+  },
+  "lint": {
+    "target_ruff": {
+      "files": [
+        "runtime/src/azazel_nexus_runtime/bootstrap_manager.py",
+        "runtime/src/azazel_nexus_runtime/bootstrap_withdrawal.py",
+        "tests/unit/test_runtime_bootstrap_withdrawal_binding.py",
+        "tests/unit/test_runtime_bootstrap_manager_withdrawal.py"
+      ],
+      "result": "pass"
+    },
+    "git_diff_check": "pass",
+    "document_links": {
+      "result": "pass",
+      "markdown_files": 54
+    },
+    "repository_wide": "not run"
+  },
+  "review": {
+    "astra_findings": [
+      "P1 ordinary close could not recover withdrawing/closed journal",
+      "P2 early binding/root errors retained cache and bypassed exception normalization"
+    ],
+    "resolution": "retained narrowing recovery path plus explicit grant selection before unlink; early error cache invalidation and normalized refusal",
+    "rereview": "both addressed; no further concrete blocker in bounded static review",
+    "main": "reviewed changes; added completed-journal restart regression; combined Mac tests and VM full unit suite"
+  },
+  "remaining": [
+    "canonical production directory and cgroup mount admission",
+    "externally supervised controller lifetime",
+    "grant publication/start/readiness composition",
+    "installed systemd D-Bus runtime end-to-end verification"
+  ],
+  "not_run": [
+    "GitHub Actions",
+    "live service lifecycle",
+    "hardware"
+  ],
+  "authority": "Default manager still refuses without explicit backend; no provider, fetch, Edge activation or hardware operation"
+}

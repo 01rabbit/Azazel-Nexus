@@ -41,8 +41,7 @@ cheaper. It anchors nothing.
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
 
@@ -128,6 +127,38 @@ EVENT_SCHEMAS: Mapping[str, tuple[Argument, ...]] = {
         )),
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
+    "bootstrap.controller_ready_intent": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "bootstrap.grant_intent": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "bootstrap.start_intent": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+        Argument("unit_key", ArgumentKind.ENUM, choices=("auditd", "commissiond")),
+    ),
+    "bootstrap.ready": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+        Argument("unit_key", ArgumentKind.ENUM, choices=("auditd", "commissiond")),
+    ),
+    "bootstrap.stopped": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "bootstrap.stopping": (
+        Argument("approval_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
 }
 
 
@@ -135,15 +166,32 @@ VERBS = (
     Verb(
         "audit.append",
         arguments=(
-            Argument("event_type", ArgumentKind.ENUM, choices=tuple(sorted(EVENT_SCHEMAS))),
+            Argument("event_type", ArgumentKind.ENUM,
+                     choices=tuple(sorted(name for name in EVENT_SCHEMAS
+                                           if not name.startswith("bootstrap.")))),
         ),
         admits=frozenset({PrincipalClass.ROOT, PrincipalClass.SERVICE}),
         accepts_payload=True,
         payload_contract="EVENT_SCHEMAS[event_type]",
     ),
     Verb(
+        "audit.bootstrap.append",
+        arguments=(
+            Argument("event_type", ArgumentKind.ENUM,
+                     choices=tuple(sorted(name for name in EVENT_SCHEMAS
+                                           if name.startswith("bootstrap.")))),
+        ),
+        admits=frozenset({PrincipalClass.ROOT}),
+        accepts_payload=True,
+        payload_contract="EVENT_SCHEMAS[event_type]",
+    ),
+    Verb(
         "audit.verify",
         admits=frozenset({PrincipalClass.ROOT, PrincipalClass.OPERATOR}),
+    ),
+    Verb(
+        "audit.bootstrap.observe",
+        admits=frozenset({PrincipalClass.ROOT}),
     ),
 )
 
@@ -247,8 +295,14 @@ class SegmentedLedger:
         continues the chain rather than starting one.
         """
 
-        head = self.head()
         segment = self.current_segment(day=day)
+        segments = self.segments()
+        if segments and segment.name < segments[-1].name:
+            raise AuditUnavailable(
+                f"{segment.name} precedes the latest audit segment "
+                f"{segments[-1].name}; appending would reorder the chain"
+            )
+        head = self.head()
         return AuditLedger(segment).append(event, chain_from=head)
 
     def checkpoint(self) -> tuple[Checkpoint, ...]:
@@ -282,6 +336,8 @@ class AuditService:
         self.ledger = ledger
         self.verified = False
         self.break_reason: Optional[str] = None
+        self.head_sequence = 0
+        self.head_hash = GENESIS_HASH
 
     def start(self) -> None:
         """Verify the whole chain. Report a break; never repair one.
@@ -292,6 +348,7 @@ class AuditService:
 
         try:
             self.ledger.verify()
+            self.head_sequence, self.head_hash = self.ledger.head()
         except AuditChainBroken as exc:
             self.verified = False
             self.break_reason = str(exc)
@@ -300,6 +357,14 @@ class AuditService:
         self.break_reason = None
 
     def handle(self, request) -> dict:
+        if request.verb.name == "audit.bootstrap.observe":
+            if not self.verified:
+                raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
+            return {
+                "verified": True,
+                "head_sequence": self.head_sequence,
+                "head_hash": self.head_hash,
+            }
         if request.verb.name == "audit.verify":
             return {
                 "verified": self.verified,
@@ -316,6 +381,9 @@ class AuditService:
             )
         payload = getattr(request, "payload", None) or {}
         event_type = request.arguments["event_type"]
+        if (event_type.startswith("bootstrap.")
+                != (request.verb.name == "audit.bootstrap.append")):
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "event writer")
         event = _bind_event(event_type, payload)
         # Every declared schema carries `occurred_at`, and `_bind_event` has
         # already refused a payload missing it. The segment a record lands in
@@ -327,6 +395,8 @@ class AuditService:
             # Fail closed. Telling a caller the event is recorded when it is
             # not would make the next entry's hash depend on that claim.
             raise
+        self.head_sequence = entry.sequence
+        self.head_hash = entry.event_hash
         return {"sequence": entry.sequence, "event_hash": entry.event_hash}
 
 
@@ -369,22 +439,35 @@ def main(
     stop: Callable[[], bool] = lambda: False,
     ready: Optional[Callable[[], None]] = None,
 ) -> int:
-    """Verify the chain, then serve. Refusing to serve a broken one."""
+    """Verify the chain, then serve diagnostics and verified writes.
+
+    A broken chain is intentionally served without systemd readiness so an
+    operator can inspect ``audit.verify``.  It must never be represented as a
+    ready audit service; ``AuditService`` continues to refuse appends.
+    """
 
     from .principal import PrincipalPolicy
     from .runtime_paths import audit_sink, ledger_dir, socket_path
     from .serve import serve_forever
+    from .systemd_notify import runtime_ready_callback
 
     service = AuditService(SegmentedLedger(ledger_dir()))
     service.start()
+    # ``start`` reports a broken ledger as ``verified=False`` rather than
+    # raising, preserving the read-only diagnostic endpoint.  Do not pass a
+    # READY callback in that case: serve_forever binds the listener before
+    # notifying systemd, so readiness is the boundary we must withhold.
+    startup_ready = (
+        ready if ready is not None else runtime_ready_callback()
+    ) if service.verified else None
     return serve_forever(
         path=socket_path("audit"),
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(),
-        audit=audit_sink(),
+        audit=audit_sink("audit"),
         handler=service.handle,
         stop=stop,
-        ready=ready,
+        ready=startup_ready,
     )
 
 

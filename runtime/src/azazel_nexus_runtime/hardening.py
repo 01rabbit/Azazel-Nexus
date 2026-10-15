@@ -10,11 +10,13 @@ the parser has no bug.
 | `az-commissiond` | `azcommission` | `AF_UNIX AF_NETLINK` | none |
 | `az-auditd` | `azaudit` | `AF_UNIX` | none |
 | `az-watchdog` | `azwatch` | `AF_UNIX` | none |
-| `az-activated` | `root` | `AF_UNIX` | none beyond root's |
+| `az-activated` | `root` | `AF_UNIX AF_NETLINK` | none |
 
 `az-commissiond` reads `IFLA_PERM_ADDRESS` over a route netlink socket, which
 needs no `CAP_NET_ADMIN` and no internet address family. It therefore gets
-neither. `az-activated` is the exception and the reason the others are not:
+neither. Activation also rechecks that read-only inventory before consuming
+full commissioning evidence; its capability bounding set stays empty and no
+internet family is added. `az-activated` is the root-account exception:
 unmasking a unit means writing under `/etc/systemd/system`, and isolating
 that in one daemon is what makes the other three unprivileged.
 
@@ -49,6 +51,7 @@ from typing import Mapping, Sequence
 
 from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 from azazel_nexus.layout import LAYOUT
+from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 
 __all__ = [
     "PROFILES",
@@ -103,6 +106,7 @@ class ServiceProfile:
     read_write_paths: tuple[str, ...]
     after: tuple[str, ...] = ()
     requires: tuple[str, ...] = ()
+    binds_to: tuple[str, ...] = ()
     unit_type: str = "notify"
     runtime_directory: str = "azazel"
     runtime_directory_mode: str = "0750"
@@ -147,6 +151,11 @@ class ServiceProfile:
     #: reach arrive as a commissioning drop-in built from the signed Provider
     #: Registry, so shipping this unit ships a service that can reach nothing.
     is_inference_transport: bool = False
+    #: Extra systemd unit conditions, rendered in declaration order.
+    conditions: tuple[tuple[str, str], ...] = ()
+    default_dependencies: bool = True
+    before: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -240,7 +249,13 @@ class ServiceProfile:
                     "invented one. They belong to the scope one provider runs "
                     "in, not to the host"
                 )
-        declared = {spec.path for spec in LAYOUT} | {"/etc/systemd/system"}
+        declared = {spec.path for spec in LAYOUT} | {
+            "/etc/systemd/system", "/run/systemd/system.control",
+            "/run/azazel-nexus-bootstrap",
+        }
+        if ("/run/systemd/system.control" in self.read_write_paths
+                and self.unit != ACTIVATION_CONTROLLER_UNIT):
+            raise ValueError("bootstrap overlay is writable only by the activation controller")
         outside = sorted(set(self.read_write_paths) - declared)
         if outside:
             raise ValueError(
@@ -269,19 +284,43 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="root",
         description="Azazel-Nexus activation controller",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
-        address_families=("AF_UNIX",),
+        after=("systemd-tmpfiles-setup.service", "sysinit.target", "basic.target"),
+        address_families=("AF_UNIX", "AF_NETLINK"),
         read_write_paths=(
             "/var/lib/azazel",
             "/var/lib/azazel/generations",
             "/var/lib/azazel/state",
             "/etc/systemd/system",
+            "/run/systemd/system.control",
+            "/run/azazel-nexus-bootstrap",
         ),
-        unit_type="oneshot",
-        extra=(("RemainAfterExit", "yes"),),
+        conditions=(
+            ("ConditionPathExists", "!/run/azazel-nexus-bootstrap/controller-used"),
+        ),
+        default_dependencies=False,
+        before=("shutdown.target",),
+        conflicts=("shutdown.target",),
+        # The owner-adopted controller lifetime is long-lived Type=notify:
+        # mandatory preflight/admission must precede READY, and READY must
+        # precede waits on helper units ordered After this controller. The
+        # selected activated entrypoint retains this supervisor through cleanup.
+        unit_type="notify",
+        extra=(("Restart", "no"), ("KillMode", "control-group"),
+               ("NotifyAccess", "main"), ("WatchdogSec", "30s"),
+               ("WatchdogSignal", "SIGKILL"),
+               ("TimeoutStartSec", "30s"), ("TimeoutStopSec", "10s"),
+               ("TimeoutStartFailureMode", "kill"),
+               ("TimeoutStopFailureMode", "kill"),
+               ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("SetLoginEnvironment", "no"),
+               ("UnsetEnvironment", " ".join(BOOTSTRAP_UNSET_ENVIRONMENT))),
         rationale=(
             "The one daemon that runs as root, and the reason the other three "
             "do not: unmasking a unit means writing under /etc/systemd/system, "
-            "and isolating that here is what leaves the rest unprivileged."
+            "and isolating that here is what leaves the rest unprivileged. "
+            "Read-only route netlink rechecks full commissioning evidence; "
+            "no network-admin capability or internet address family is granted."
         ),
     ),
     ServiceProfile(
@@ -413,13 +452,31 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus commissioning daemon",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/commissioning.md",
         address_families=("AF_UNIX", "AF_NETLINK"),
-        read_write_paths=("/etc/azazel/commissioning", "/var/lib/azazel/run"),
-        after=(ACTIVATION_CONTROLLER_UNIT,),
-        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        read_write_paths=(
+            "/etc/azazel/commissioning",
+            "/var/lib/azazel/run",
+            "/var/lib/azazel/state/commission",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT, "azazel-auditd.service", "sysinit.target", "basic.target"),
+        requires=(ACTIVATION_CONTROLLER_UNIT, "azazel-auditd.service"),
+        binds_to=(ACTIVATION_CONTROLLER_UNIT, "azazel-auditd.service"),
+        default_dependencies=False,
+        before=("shutdown.target",),
+        conflicts=("shutdown.target",),
+        extra=(("Restart", "no"), ("KillMode", "control-group"),
+               ("NotifyAccess", "main"),
+               ("TimeoutStartSec", "30s"), ("TimeoutStopSec", "10s"),
+               ("TimeoutStartFailureMode", "kill"),
+               ("TimeoutStopFailureMode", "kill"),
+               ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("SetLoginEnvironment", "no"),
+               ("UnsetEnvironment", " ".join(BOOTSTRAP_UNSET_ENVIRONMENT))),
         rationale=(
             "Reads IFLA_PERM_ADDRESS over a route netlink socket, which needs "
             "neither CAP_NET_ADMIN nor an internet address family. It gets "
-            "neither. It is not root."
+            "neither. It is not root. Its notify startup waits for auditd, "
+            "and loss of auditd also stops commissioning."
         ),
     ),
     ServiceProfile(
@@ -429,9 +486,26 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus audit ledger",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         address_families=("AF_UNIX",),
-        read_write_paths=("/var/lib/azazel/run", "/var/lib/azazel/state"),
-        after=(ACTIVATION_CONTROLLER_UNIT,),
+        read_write_paths=(
+            "/var/lib/azazel/run",
+            "/var/lib/azazel/state/audit",
+            "/var/lib/azazel/state/auditd",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT, "sysinit.target", "basic.target"),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        binds_to=(ACTIVATION_CONTROLLER_UNIT,),
+        default_dependencies=False,
+        before=("shutdown.target",),
+        conflicts=("shutdown.target",),
+        extra=(("Restart", "no"), ("KillMode", "control-group"),
+               ("NotifyAccess", "main"),
+               ("TimeoutStartSec", "30s"), ("TimeoutStopSec", "10s"),
+               ("TimeoutStartFailureMode", "kill"),
+               ("TimeoutStopFailureMode", "kill"),
+               ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("SetLoginEnvironment", "no"),
+               ("UnsetEnvironment", " ".join(BOOTSTRAP_UNSET_ENVIRONMENT))),
         rationale=(
             "Appends to a hash chain on local storage. It needs no capability "
             "and no network, and it is the single writer, so nothing else "
@@ -445,7 +519,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus degradation coordinator",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/capability-model.md",
         address_families=("AF_UNIX",),
-        read_write_paths=("/var/lib/azazel/run", "/var/lib/azazel/state"),
+        read_write_paths=(
+            "/var/lib/azazel/run",
+            "/var/lib/azazel/state/watchdog",
+        ),
         after=("azazel-auditd.service",),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         rationale=(
@@ -503,10 +580,20 @@ def render_unit(profile: ServiceProfile) -> str:
         f"Description={profile.description}",
         f"Documentation={profile.documentation}",
     ]
+    if not profile.default_dependencies:
+        lines.append("DefaultDependencies=no")
     for unit in profile.after:
         lines.append(f"After={unit}")
+    for key, value in profile.conditions:
+        lines.append(f"{key}={value}")
+    for unit in profile.before:
+        lines.append(f"Before={unit}")
+    for unit in profile.conflicts:
+        lines.append(f"Conflicts={unit}")
     for unit in profile.requires:
         lines.append(f"Requires={unit}")
+    for unit in profile.binds_to:
+        lines.append(f"BindsTo={unit}")
     lines += [
         "",
         "[Service]",

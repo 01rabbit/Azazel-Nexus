@@ -1,0 +1,24 @@
+{
+  "schema": "azazel-nexus/local-development-evidence/v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty and uncommitted; existing differences preserved",
+  "source_sha256": {
+    "src/azazel_nexus/bootstrap_overlay_journal.py": "a5f0d0269aee96ad8558b1f6b07a72985fa3549552abb4388d5a1288efe0f524",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdraw_files.py": "64dd64c9179970dcd8ba6dfb2ee5f890b5164dc8671fca0fa594026bc800af26",
+    "tests/unit/test_bootstrap_overlay_journal.py": "57fd46c4911d8f587d347f5d0fcdd2505e55e345bdc8a1c3114041906810a85e",
+    "tests/unit/test_runtime_bootstrap_overlay_withdraw.py": "41d70ccf5e128298fe2686f21cc590574d37f5a0c0ebc9cb0a7bdef0dbd0fb62"
+  },
+  "test_arguments": "tests/unit/test_runtime_bootstrap_overlay_withdraw.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_overlay_close.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_runtime_bootstrap_close_files.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_empty_gate.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_bootstrap_grant_transaction.py tests/unit/test_bootstrap_grant_store.py",
+  "local": {"command_prefix": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q", "passed": 309, "skipped": 1, "seconds": 1.29},
+  "debian_arm64": {
+    "command_prefix": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q --basetemp=<separate-private-fixture-root>/t",
+    "passed": 310, "skipped": 0, "seconds": 1.01,
+    "hashes_match_local": true,
+    "environment": "existing interpreter; no package install; temporary copies/fixtures removed"
+  },
+  "lint": "Target Ruff and git diff --check passed; repository-wide lint not rerun",
+  "review": "No concrete durability or ownership-deletion issue found under held-lock/protected-owner assumptions. Claimed drop-in mask bypass retracted after pinned systemd v257 source inspection; nonempty unit closure admission remains distinct.",
+  "remaining": ["canonical production precedence-directory binding", "phase-aware fresh containment callback composition", "pinned-owner reload and restored loaded-mask observation", "final stopped/cgroup recheck and journal completion", "controller lifetime and production runtime composition"],
+  "safety": "Only regular-file synthetic fixtures mutated. No live systemd/cgroup, hardware, CI, source-branch commit or push. File primitive returns withdrawing; deployed withdraw_pair and widening remain refused."
+}

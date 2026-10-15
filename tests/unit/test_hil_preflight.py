@@ -24,6 +24,7 @@ import os
 import re
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -827,7 +828,7 @@ def _protected_node(tmp_path: Path) -> dict:
     }
 
 
-def _cli(tmp_path, node, *, answers, texts, confirms, audit=None):
+def _cli(tmp_path, node, *, answers, texts, confirms, audit=None, architecture="x86_64"):
     import io
 
     from azazel_nexus.cli import main
@@ -857,14 +858,21 @@ def _cli(tmp_path, node, *, answers, texts, confirms, audit=None):
     ]
     if audit is not None:
         argv += ["--audit", str(audit)]
-    code = main(
-        argv,
-        out=out,
-        ask=lambda prompt, choices: next(answered),
-        confirm=lambda prompt: next(confirmed),
-        text=lambda prompt: next(written),
-        permanent_mac_reader=lambda name: f"02:00:00:00:00:{KERNEL_NAMES.index(name):02x}",
-    )
+    # This helper already supplies synthetic OS, RAM, TPM and storage. Do not
+    # accidentally combine those fixtures with the test runner's real CPU.
+    # Production detection/gates remain unchanged, including ARM64 refusal.
+    def collect(**kwargs):
+        return preflight.collect_readonly_inventory(**kwargs, uname=lambda: os.uname_result(
+            ("Linux", "synthetic", "synthetic-kernel", "synthetic", architecture)))
+    with patch("azazel_nexus.cli.collect_readonly_inventory", side_effect=collect):
+        code = main(
+            argv,
+            out=out,
+            ask=lambda prompt, choices: next(answered),
+            confirm=lambda prompt: next(confirmed),
+            text=lambda prompt: next(written),
+            permanent_mac_reader=lambda name: f"02:00:00:00:00:{KERNEL_NAMES.index(name):02x}",
+        )
     return code, out.getvalue()
 
 
@@ -884,6 +892,17 @@ def test_the_command_answers_ready_on_a_protected_node(tmp_path):
     assert "runbook: hil-8gib-" in text
     assert (node["record_dir"] / "commissioning.json").is_file()
     AuditLedger(audit).verify()
+
+
+def test_arm64_cannot_pass_the_amd64_hil_campaign_gate(tmp_path):
+    node = _protected_node(tmp_path)
+    code, text = _cli(tmp_path, node, answers=["management", "observation"],
+        texts=[SYNTHETIC_ASSET, "approval-synthetic-1"], confirms=[True, True, True, True],
+        architecture="aarch64")
+    assert code == 1
+    assert BLOCKED in text and "A-2" in text
+    assert READY not in text
+    assert not (node["record_dir"] / "commissioning.json").exists()
 
 
 def test_the_command_prints_no_identity_on_the_ready_path(tmp_path):

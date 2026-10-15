@@ -1,0 +1,139 @@
+{
+  "date": "2026-10-15",
+  "topic": "isolated Debian13 ARM64 full-unit validation and fixture corrections",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "186c34036064d49be7040ebecdb3c2fd8f6326429440b42f800b06aa39913702",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "22377a5a6a02e71f30813f2e126c06e941ce7c6be045aa60d09e302b07bb67b1",
+      "tests/unit/test_bootstrap_tmpfiles_packaging.py": "dfd65f9929c8496a06290beaea3c6b16beeff27bb7cf6105968182d748303834",
+      "tests/unit/test_e2e_harness.py": "145a7c02257097ccde711e99de97cd5d7f3ca0be332130f09fcc9ecd5179bbc1"
+    }
+  },
+  "environment": {
+    "os": "Debian13",
+    "architecture": "aarch64",
+    "python": "3.13.5",
+    "kernel": "6.12.111+deb13-arm64",
+    "soabi": "cpython-313-aarch64-linux-gnu",
+    "user": "ordinary existing VM user; no sudo",
+    "existing_venv": "/home/rabbit/nexus-rc2-conformance-20261013",
+    "dependencies_present": [
+      "pytest",
+      "nacl",
+      "yaml",
+      "dbus_next"
+    ],
+    "missing": [
+      "cc/gcc/clang/tcc/zig",
+      "Python.h",
+      "setuptools",
+      "ruff"
+    ],
+    "native_backend_compiled": false,
+    "system_changes": "None; no package/container/VM configuration or service installation"
+  },
+  "inputs": {
+    "initial": {
+      "sha256": "d08c688f14a7ae59c5d420b456bbb31f42388be8b464ce383fd26328e8f84b0d",
+      "bytes": 1685916,
+      "files": 582,
+      "omissions": [
+        "contract fixtures",
+        ".github source metadata"
+      ],
+      "result": "Incomplete test input, not final source validation"
+    },
+    "complete": {
+      "local_path": "/tmp/azn-linux-check.I6YGHW/source-complete.tar.gz",
+      "sha256": "7eeb754b111d36abc05e91d35f76f7953eba25242ebb2e135e662941199a632d",
+      "bytes": 1718942,
+      "files": 598,
+      "input_bytes": 6295064,
+      "members_digest": "fc8ae360ddfc133ffda28692f504ca8e9acd38adb222cf46dcd5945c43627f76",
+      "local_source_match_before": true,
+      "remote_archive_hash_match": true,
+      "remote_source_match_after": true
+    },
+    "git_metadata": "Synthetic Git snapshot histories were created only in temporary test copies for git-worktree/tool tests. They are not the development branch HEAD; no development-repository commit or push."
+  },
+  "tests": {
+    "command": "env PYTHONPATH=/tmp/azn-linux-check.Sp8tbm/tree-complete:/tmp/azn-linux-check.Sp8tbm/tree-complete/src:/tmp/azn-linux-check.Sp8tbm/tree-complete/runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -c 'import os,pytest; os.chdir(\"/tmp/azn-linux-check.Sp8tbm/tree-complete\"); raise SystemExit(pytest.main([\"-q\",\"tests/unit\",\"--basetemp=/tmp/anz.widxuk\",\"--junitxml=/tmp/azn-linux-check.Sp8tbm/unit-complete.xml\",\"--tb=short\"]))'",
+    "initial": {
+      "passed": 6793,
+      "failed": 92,
+      "errors": 12,
+      "skipped": 7,
+      "seconds": 49.18
+    },
+    "final": {
+      "passed": 6872,
+      "failed": 25,
+      "errors": 0,
+      "skipped": 7,
+      "seconds": 47.72,
+      "related_subset_within_same_full_run": {
+        "passed": 2975,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 4,
+        "note": "Extracted from final JUnit using the existing related file patterns; not a second run or additive count"
+      }
+    },
+    "native_tests": {
+      "passed": 0,
+      "skipped": 4,
+      "reason": "No compiled backend/toolchain/headers"
+    },
+    "failure_groups": {
+      "test_model_acquisition": 1,
+      "test_model_import": 22,
+      "test_operator_view": 2
+    },
+    "failure_condition": {
+      "available_bytes_observed": 1337319424,
+      "required_model_headroom_bytes": 2147483648,
+      "source": "model_import.MIN_FREE_HEADROOM_BYTES/_room_for",
+      "action": "Left unchanged; outside #93 scope. Use a sufficiently provisioned environment or separately review unit-capacity injection; do not lower production reserve."
+    },
+    "junit": {
+      "initial_local_path": "/tmp/azn-linux-check.I6YGHW/unit-initial.xml",
+      "initial_sha256": "fd7d89ee7d0df64bb5ac57b771db0c152511011fe645ca4f5d13b3db3803b8db",
+      "final_local_path": "/tmp/azn-linux-check.I6YGHW/unit-complete.xml",
+      "final_sha256": "fe68ec2493bec79e3e7d27c26131f3c7dbb768c73ae47836894a8466532200fd",
+      "final_bytes": 4629151
+    }
+  },
+  "fixes": [
+    "Explicit fixture modes under restored umask0002; production metadata checks unchanged",
+    "Temporary installer checkout substitutes only harmless wrapper staging; real install/profile/layout/tmpfiles behavior still tested, no native installation claim",
+    "Completed test snapshot contract/.github inputs; workflows not executed"
+  ],
+  "review": {
+    "Sol": "Read-only review of four fixture changes found no blocker or weakened production gate",
+    "Luna": "Disjoint test fixture corrections",
+    "coordinator": "Input transfer/hash verification, real Linux full runs, JUnit classification and post-test source recheck"
+  },
+  "checks": {
+    "ruff": "Four changed tests pass on development host; Ruff absent in VM",
+    "diff": "pass",
+    "docs_links": "54 Markdown files pass"
+  },
+  "cleanup": {
+    "remote_initial_basetemp_removed_mib": 156,
+    "remote_final_basetemp_removed_mib": 162,
+    "remote_snapshot_root_removed_mib": 43,
+    "remote_roots_removed_verified": true,
+    "available_bytes_after": 1523081216,
+    "local_raw_artifacts": "Small input archives/JUnit reports retained at listed temporary paths; may be removed by OS temporary cleanup. No Boot/legacy user archive deleted."
+  },
+  "remaining": [
+    "Native Linux backend build/execution unavailable without a compiler and matching Python headers, or a reviewed matching Linux arm64 CPython313 wheel",
+    "No systemd/D-Bus installed lifecycle, suspend, death/reboot or hardware qualification",
+    "Execution-admission runtime profile remains incomplete",
+    "Public widening/start gates remain refusing; #93 remains open",
+    "CI not run; no physical/block/loop operation or firmware change; no service deployment"
+  ]
+}

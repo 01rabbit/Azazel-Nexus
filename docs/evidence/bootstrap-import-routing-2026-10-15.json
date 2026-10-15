@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 bounded current import routing on protected installed-file measurement path",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/import_routing.py": "fc78ed510e6a8b171d10b10e3d10eb75e9e6a235fa31fb8a52f143f01eda6d89",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "683aaa649780e1b8d0fa0b8fa0a20c5f39855c0444a73591f41d2dc9fc713bb0",
+      "tests/unit/test_runtime_import_routing.py": "1b35122d8263ad7dc76bec0f022750f119d627143fbd5d74ec455fd4bdc266dc",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "dbd7386174a384a95987b4f8a026c34f6a8bf23b5717e95c99ab3e6bf26bc177",
+      "tests/unit/test_installed_link_measurement.py": "d0da2c06da10b221fb1529be52de27f9904ee34db5ddb66cc276c04bceefcf03",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "830c28102369d33e350bb09a5e64310f6e00f4cedfa7d6bb9591f36b67ebc3f4",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "de6abf316328847072f34d28766722d28c182de788b96bcaa7a89b2e158fd7c8"
+    }
+  },
+  "implementation": {
+    "integration": "Actual measure_bootstrap_installed_files calls observer after current-interpreter/startup-absence checks and requires same typed roots/cache observation after full measurement",
+    "routing": "Exact builtin/frozen/path meta finders, ZIP/FileFinder path hooks, canonical FileFinder hook code/globals/closure loader details. Configured hooks/finders are not invoked",
+    "coverage": "Exact declared initial directories or pinned ZIPs; cached FileFinder subdirectories must be exactly declared under approved directory roots. Standard suffix/loader order required",
+    "instance_state": "Reject method-shadowing/unknown instance attributes; plain finite FileFinder time and bounded name sets copied. ZIP instance shape follows actual3.13 module-level cache, with older host-interpreter compatibility branch. Global ZIP key types checked before lookup, typed bounded TOC detached, identity/data drift refused",
+    "limits": "2048 cached finders/global ZIP entries,4096 records per ZIP table,16384 aggregate cached names; canonical bounded string/number data only",
+    "negative_cache": "Implicit None cache for /usr/lib/python313.zip is allowed only with surrounding protected startup-absence checks; other cache paths require coverage",
+    "not_authority": "No new shared format/manifest version/pin source/grant or public-start widening. Observations are process-local, not persisted readiness"
+  },
+  "references": [
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/importlib/_bootstrap_external.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/importlib/_bootstrap.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/zipimport.py"
+  ],
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_import_routing.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/import-routing/final-macos.xml",
+    "macos": {"passed": 3190, "skipped": 7, "seconds": 18.80},
+    "linux_command": "cd /tmp/azm.Jc4y9b && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_import_routing.py tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_runtime_bootstrap_protected_admission.py --basetemp=/tmp/azj.KcG1Ql --junitxml=/tmp/azm.Jc4y9b/final-import-routing.xml --tb=short",
+    "linux": {"passed": 219, "failed": 0, "skipped": 0, "seconds": 0.53},
+    "development": "Initial focused85 passed/2 failed exposed standalone root-coverage and early cache-snapshot gaps, then87 passed. Initial broad3183/7 and Linux212 passed preceded Sol P2 fixes; not final evidence. Main found retained routing-drift fixture also created ._pth, fixed branch and asserted both routing observations are reached. Review then added instance/cache state,3.13 ZIP layout and hostile colliding global-key regressions; final focused94 passed before final broader/Linux runs",
+    "causal": "Retained bound-audit fixture passes actual ordinary-tree protected measurement/publication first, then changes routing during fresh admission; both routing observations are reached and no StartUnit occurs. Pure observer tests include no invocation of custom hooks/equality, exact root coverage, genuine ZIP importer objects/TOC shapes with synthetic archive path bindings, and detached cache-state stability",
+    "review": "Sol independently reviewed production and seven-file integration; finder instance override, CPython3.13 ZIP layout, global-key callback gaps fixed and confirmed; no remaining material scoped finding",
+    "lint": "Seven changed Python files pass host Ruff. No unrelated repository-wide lint rerun/cleanup",
+    "counts": "Overlapping selections/subruns are not summed. Previous full Linux25 failures remain, full suite not rerun. Previous five actual native timer passes remain separately recorded; native C/artifact unchanged and not recompiled/rerun here"
+  },
+  "actual_linux_probe": {
+    "command": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python -IS /tmp/azm.Jc4y9b/probe.py /tmp/azm.Jc4y9b",
+    "script": {"local_path": "/tmp/azn-linux-check.I6YGHW/import-routing/probe.py", "sha256": "4f1023c9bc573c9fac989682afc37a71e3f823c27d318f5c6811a1f8d25a119d"},
+    "python": "3.13.5",
+    "standard_route_accepted": true,
+    "cache_entries": 6,
+    "instance_override_refused": true,
+    "meaning": "Actual CPython standard finder/hook/cache objects, but child roots/cache scoped in memory and manifest declarations synthetic. No protected installation/admission, module-origin coverage or runtime activation proven"
+  },
+  "input": {
+    "path": "/tmp/azn-linux-check.I6YGHW/import-routing/final-source.tar.gz",
+    "sha256": "64633c81722ccc550a89b57fc8b5456b671fa02068d9efd6faf75b8e5d898444",
+    "archive_bytes": 1283536,
+    "files": 508,
+    "input_bytes": 5168647,
+    "member_digest_algorithm": "SHA256 of archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "members_digest": "6736377b04ac3cd7856384bfa03277fb0eef5faee25ebdeecbf7c38f31360608",
+    "local_current_members_match": true,
+    "remote_archive_hash_match": true,
+    "remote_members_match_after_tests_and_probe": true,
+    "scope": "Focused source/test snapshot, not release or full-suite input"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/import-routing/final-macos.xml", "sha256": "32db9ef50869be1fe482eed9ab112e15041def12554dad1af4edf22e77bc8b1b"},
+    "linux_initial": {"path": "/tmp/azn-linux-check.I6YGHW/import-routing/initial-linux.xml", "sha256": "d9a6470c5ee79f7b083b9e62bb2f2b657cf515285ed7e8aa9b2b75b8aaf1508b"},
+    "linux_final": {"path": "/tmp/azn-linux-check.I6YGHW/import-routing/final-import-routing.xml", "sha256": "1ce952f71175e2c8b44c0f73d180094cc13f396f6b1f951cdf6bb1a32d22ebb4"}
+  },
+  "cleanup": "Exact owned non-symlink remote /tmp/azm.Jc4y9b(8.6MiB) and /tmp/azj.KcG1Ql(576KiB) removed after508 member/source verification; absence confirmed. Small local source/XML/probe retained. No user or Boot data removed",
+  "remaining": [
+    "Loaded-module/native-origin and bytecode coverage; ZIP TOC correspondence to independently pinned archive bytes",
+    "Complete startup/stdlib/native-loader and deployment qualification; current routing is not future import or filesystem-freeze proof",
+    "Arbitrary in-process/privileged code mutation resistance is not claimed",
+    "Actual system-manager sandbox/exec/suspend/lifetime and independent deployment records/pins",
+    "Public opening/start/readiness remains refusing; provider/fetch/Edge activation unchanged",
+    "Prior local project .venv incident unresolved; isolated tests do not restore or modify it"
+  ],
+  "not_performed": ["CI", "native rebuild", "service deployment/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "repository commit/push"]
+}

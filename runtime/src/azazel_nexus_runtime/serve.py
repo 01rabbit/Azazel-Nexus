@@ -47,12 +47,16 @@ def serve_forever(
     like the address being in use when nothing holds it.
     """
 
-    listener = bind_socket(path)
-    listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
-    engine = SocketServer(registry=registry, policy=policy, audit=audit)
-    if ready is not None:
-        ready()
+    # The listener's group controls who can reach it before protocol-level
+    # SO_PEERCRED policy runs. Match the socket to the operator group resolved
+    # for this daemon; a filesystem that does not provide the declared Linux
+    # setgid-directory inheritance fails before READY or accept.
+    listener = bind_socket(path, expected_gid=getattr(policy, "operator_gid", None))
     try:
+        listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
+        engine = SocketServer(registry=registry, policy=policy, audit=audit)
+        if ready is not None:
+            ready()
         while not stop():
             try:
                 connection, _ = listener.accept()

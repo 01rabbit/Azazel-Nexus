@@ -76,7 +76,7 @@ def test_the_runtime_exists_as_its_own_distribution():
 
     manifest = (REPO_ROOT / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "azazel-nexus-runtime"' in manifest
-    assert 'dependencies = ["azazel-nexus", "dbus-next==0.2.3"]' in manifest
+    assert 'dependencies = ["azazel-nexus", "dbus-next==0.2.3", "PyYAML==6.0.3"]' in manifest
 
     library = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "azazel-nexus-runtime" not in library, (
@@ -204,7 +204,22 @@ EXPECTED_SCRIPTS = (
 #: happens once per hardware class (Nexus#68,
 #: `docs/core-reserve-measurement.md`). A masked unit for it would sit on
 #: every node describing work no node performs.
-OPERATOR_TOOLS = ("az-core-reserve-probe",)
+# az-nexus-bootstrap prepares only administrator-selected generation files;
+# it is not a daemon, unit, widening backend or service-start command.
+OPERATOR_TOOLS = ("az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap")
+
+
+@pytest.mark.parametrize("option", ["--root", "--generation", "--expected-context"])
+def test_bootstrap_operator_command_rejects_target_overrides_before_input(option, monkeypatch):
+    from azazel_nexus_runtime import bootstrap_cli
+
+    def forbidden(**kwargs):
+        pytest.fail("invalid override reached provisioning")
+
+    monkeypatch.setattr(bootstrap_cli, "run_generation", forbidden)
+    with pytest.raises(SystemExit) as result:
+        bootstrap_cli.main(["generation-publish", option, "untrusted"])
+    assert result.value.code == 2
 
 
 def _declared_scripts() -> dict[str, str]:

@@ -262,15 +262,16 @@ def main(
     """
 
     from .runtime_paths import audit_sink, socket_path
+    from .systemd_notify import runtime_ready_callback
 
     return serve_forever(
         path=socket_path("commission"),
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(),
-        audit=audit_sink(),
+        audit=audit_sink("commission"),
         handler=CommissionService().handle,
         stop=stop,
-        ready=ready,
+        ready=ready if ready is not None else runtime_ready_callback(),
     )
 
 

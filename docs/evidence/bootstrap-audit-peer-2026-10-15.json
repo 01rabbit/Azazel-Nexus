@@ -1,0 +1,42 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; hashes cover current complete files, not only this increment",
+  "scope": "fixed audit service identity, peer proof in real audit append/observe exchange and private manager binding",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_audit_identity.py": "c0bf71efcd6d6c442316dc03d80b58e095fb5080ebf511c96585fcd162332712",
+    "runtime/src/azazel_nexus_runtime/bootstrap_audit_peer.py": "2adc61e9985896fd39d09c503082fc4048ed993c547e53d0a7a0af06bb60d9df",
+    "runtime/src/azazel_nexus_runtime/bootstrap_audit_client.py": "447eca51595f869da527ebff0a546b48327c3a72739543fcc5ec1ddf7064d2f8",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "369ae5b85758c0ca8c985575e3828c7be489b8a760e2dd4b61ce953c47194844",
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "09f6fa850ccd028e3b0f3ff1053930187d82489059766f180204bdeed5066e3b",
+    "tests/unit/test_runtime_bootstrap_audit_identity.py": "40c517845ab27900d4f68184b6ca992d76bd6e027d752f46b3870c5279618f47",
+    "tests/unit/test_runtime_bootstrap_audit_peer.py": "5b36f133e7f92441d137381aa3cb0096c66a7871255fc3b00be8ca319c017e74",
+    "tests/unit/test_runtime_bootstrap_audit_path.py": "0ebe496741daae971bafcd96715146c1126fbc40c459f97ad26054d94b7e9bac",
+    "tests/unit/test_runtime_bootstrap_manager_audit_peer.py": "240c38cfeaa940568ac6111917bd709d19800805eaac311f2af660d627e5456e",
+    "tests/unit/test_runtime_bootstrap_audit_client.py": "60e6b5cbdb62379fd28121d667c4b6f62833c193cb3f0ab436256d5222869011"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2117,
+    "skipped": 2,
+    "seconds": 7.6,
+    "environment": "local macOS synthetic D-Bus/kernel peer/proc/namespace evidence; path tests use real temporary directories and Unix sockets with synthetic Linux UID/GID/SGID metadata",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "ten named changed source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed design and found local check ordering gap around synchronous systemd revalidation. Coordinator repeated local checks afterward; four real-client mutation regressions cover pre-send/final observe/append rejection. Astra confirmed fix. Luna workers provided audit identity observer and real-client peer tests; coordinator integrated descriptor path/manager tests.",
+  "limits": [
+    "missing production binding refuses; explicitly injected socket_factory without binding remains a trusted test seam",
+    "manager capture is private and not yet reached from production startup; public start refuses",
+    "identity snapshots are not full loaded-hardening, process closure, lifetime, commission readiness or entrypoint evidence",
+    "deadline checked refusal, not hard wall-time preemption: synchronous revalidation and own session/cleanup budgets can exceed exchange budget before refusal",
+    "original stopped audit startup anchor and receipt sequencing unchanged",
+    "no full repository suite, Linux VM, CI, real service/hardware operation, commit or push"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved; not committed or pushed",
+  "scope": "independently pinned loaded-unit expectations and enclosing systemd owner binding",
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_boundary.py",
+    "passed": 1815,
+    "skipped": 2,
+    "seconds": 6.74,
+    "environment": "local macOS, ordinary files and synthetic systemd transport",
+    "skip_reasons": ["installer host os-release unavailable", "Linux systemd-analyze unavailable"],
+    "earlier_failure": "stale controller lifetime assertion prohibited the already-declared tmpfiles After edge; corrected to require that exact edge, without permitting helper dependencies",
+    "collection_error": "an earlier targeted command named nonexistent prestart_store/declared_context test files; no tests ran; corrected using actual file inventory"
+  },
+  "files_sha256": {
+  "src/azazel_nexus/bootstrap_prestart_policy.py": "0d9e300980268664537b0ea44f17eda2240d231cd389af634f555d4a53555427",
+  "src/azazel_nexus/bootstrap_store.py": "52fefd9b733ddffcf2b246cafe374c88ee7c6cf9db75116bb9a803baabdc4c43",
+  "runtime/src/azazel_nexus_runtime/bootstrap_loaded.py": "97edfc39f661f0e76b4ba917f6a20794c711ee0a3883c66b56aedc33b47b76d2",
+  "runtime/src/azazel_nexus_runtime/bootstrap_loaded_policy.py": "757428bc625e50baa20b5becbbef463659c51c72983f7f7151e77b5ad1a64dc0",
+  "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "892a8fc1284f0f55f89cf567955f27c0d7f5d151632bc46735784b03a79397ca",
+  "tests/unit/test_bootstrap_prestart_policy.py": "0eddb519c9b26b7e45d9fd614cde165eed13cfd6e7acca45f3d6fcc306ee4dce",
+  "tests/unit/test_bootstrap_declared_policy.py": "918f6d65066530af2204fcf0aa5ca804c6520dbe3381fcb894f528fe128bbb6c",
+  "tests/unit/test_runtime_bootstrap_prestart.py": "0915e74de4dd89aaac58aba76926cca1fbddc1344d744d7019e7de25b5f3cc7c",
+  "tests/unit/test_runtime_bootstrap_loaded.py": "4e3ba0143b85062f46cb92bb3fc8a71409f1c8d8dedb2da06e6a88c7f7365470",
+    "tests/unit/test_runtime_bootstrap_loaded_policy.py": "54a4a0c37ad39708e2ee37c9b50504e9aeac67cedae18465a18e618a583521fb",
+  "tests/unit/test_runtime_bootstrap_manager_loaded.py": "9cc668b425be2c240a4c5de3081c26684c3e8653d94115eab03895ebc70c1457",
+  "tests/unit/test_runtime_bootstrap_lifetime.py": "b0b137d76e50ee8f004fe956d99b940ecd0b2cf7b564eec94fa9912c8935f1ea"
+},
+  "ruff": "12 changed source/test files pass",
+  "diff_check": "pass",
+  "post_review_test": {
+    "change": "positive policy test now explicitly supplies and preserves var.mount After/Requires; removed claim that profile pin proves mount hardening; no source change",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_loaded_policy.py",
+    "passed": 19,
+    "seconds": 0.38,
+    "ruff_and_diff_check": "pass",
+    "count_note": "subset rerun after test-only correction; not added to broad-run unique count"
+  },
+  "review": "Astra found runtime imports of private library helpers; replaced with a public fixed core-store reader and local duplicate-key decoder. Coordinator reviewed implementation and final boundary tests pass. Luna implemented codec/tests; coordinator integrated reader boundary and v3/v4 coverage.",
+  "limits": [
+    "new loaded policy producer is not yet connected to publication/start/activated entrypoint",
+    "manager open_pair/start remain refusing",
+    "policy expectations are not measured systemd state or complete dependency/process closure",
+    "no CI, Linux VM rerun, real service operation, hardware operation, commit or push"
+  ]
+}

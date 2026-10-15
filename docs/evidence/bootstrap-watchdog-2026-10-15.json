@@ -1,0 +1,43 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; full current file hashes",
+  "scope": "fixed systemd controller watchdog and admission-bound main-loop renewal",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "7f358f52af3705f5daf7c922b06988f32ec13be862f8da8f01b82b789269accf",
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "253ca8cbe19446a9d60285248d23b7945162226cb1f0a3adff59836f5807b680",
+    "runtime/src/azazel_nexus_runtime/systemd_notify.py": "54dcad3045f0b2daa599164d6e71810ca7ba0c15ca014660ef770ed718cc33d4",
+    "runtime/src/azazel_nexus_runtime/hardening.py": "f67e3ef1ea10ffb28e7d099afb7b98836bedec1bf811201e6eed2d0894de5127",
+    "packaging/systemd/azazel-activated.service": "3003bc1733e08f3af022c58c92540e289298e43d9c2275d62c2fa5e25332d8f9",
+    "tests/unit/test_runtime_bootstrap.py": "2a5f9bbecba7da33e9f1c64f1d9f278c48b1a195ec1f222f6d18c56d36a51bba",
+    "tests/unit/test_runtime_bootstrap_controller.py": "2936a07c736be93974296c7df1b52ecc671331eae0e4ef85a9892ed74c721672",
+    "tests/unit/test_runtime_bootstrap_watchdog.py": "08e78006143d66cc48100c8a1a8b97100060cd15241a07b4a82236e6b00bc5ce",
+    "tests/unit/test_runtime_systemd_notify.py": "93a13e8fe78f053aa3aedc6138ef0a973b218b6782840e4c0f3bcd97e09f5ee4"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_notify.py tests/unit/test_runtime_hardening.py tests/unit/test_packaging.py",
+    "passed": 2319,
+    "skipped": 2,
+    "seconds": 9.34,
+    "environment": "local macOS synthetic systemd, ordinary Unix sockets and fake clock; includes hardening/packaging/notifier tests beyond prior bootstrap selection",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": {
+    "passed": "seven changed source/test files excluding hardening.py",
+    "existing": "hardening.py has three F401 unused imports (dataclasses.field, typing.Mapping, typing.Sequence), confirmed present in base HEAD; not changed"
+  },
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed watchdog wiring; stale wait and synchronous guard expiry/cancellation gaps fixed and confirmed. Luna implemented notifier and regressions. Coordinator verified rendered profile equivalence and inspector rejection tests.",
+  "limits": [
+    "not real PID1 watchdog/hang/restart/suspend evidence",
+    "startup/helper-stop bounds, process/import closure, dependency concurrency and entrypoint unfinished",
+    "public widening remains refusing",
+    "watchdog is not immutable BOOTTIME approval expiry enforcement",
+    "no live service, VM, CI, physical operation, source commit or push"
+  ]
+}

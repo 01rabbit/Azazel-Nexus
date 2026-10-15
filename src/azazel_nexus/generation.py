@@ -27,13 +27,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import fcntl
+import os
+import re
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
 __all__ = [
     "Generation",
     "GenerationRefused",
+    "GenerationCommitUncertain",
     "GenerationStore",
     "tree_digest",
 ]
@@ -41,6 +46,55 @@ __all__ = [
 
 class GenerationRefused(Exception):
     """The generation was not created, or is not what it claims to be."""
+
+
+class GenerationCommitUncertain(GenerationRefused):
+    """Complete tree became visible, but directory durability was not confirmed.
+
+    Do not automatically retry: inspect this number and current state first.
+    This exception is not permission to activate the visible generation.
+    """
+
+    def __init__(self, number: int):
+        self.number = number
+        super().__init__(f"generation {number} published; durability unconfirmed; inspect before retry")
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _make_store_root(path: Path) -> None:
+    # Each newly created directory also needs its entry synced in its parent.
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        _sync_directory(directory.parent)
+
+
+def _unique_metadata(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise GenerationRefused("duplicate generation metadata field")
+        result[key] = value
+    return result
 
 
 def tree_digest(files: Mapping[str, bytes]) -> str:
@@ -53,13 +107,16 @@ def tree_digest(files: Mapping[str, bytes]) -> str:
     scoring and which applies equally here.
     """
 
-    digest = hashlib.sha256()
-    for path in sorted(files):
-        if not path or path.startswith("/") or ".." in Path(path).parts:
+    for path in files:
+        if (type(path) is not str or not path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or "\x00" in path):
             raise GenerationRefused(
                 f"{path!r} is not a path inside the generation tree; a "
                 "generation describes its own contents and nothing outside them"
             )
+    digest = hashlib.sha256()
+    for path in sorted(files):
         digest.update(path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(hashlib.sha256(files[path]).hexdigest().encode("ascii"))
@@ -85,10 +142,31 @@ class Generation:
     rolled_back_from: Optional[int] = None
     rollback_reason: Optional[str] = None
     actor: Optional[str] = None
+    commissioning_evidence_binding: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if type(self.number) is not int:
+            raise GenerationRefused("generation number must be an integer")
+        for value in (self.supersedes, self.rolled_back_from):
+            if value is not None and type(value) is not int:
+                raise GenerationRefused("generation ancestry must be an integer or null")
+        for value in (self.rollback_reason, self.actor):
+            if value is not None and type(value) is not str:
+                raise GenerationRefused("generation rollback attribution must be text or null")
+        if type(self.created_at) is not str:
+            raise GenerationRefused("generation creation time must be text")
         if self.number < 1:
             raise GenerationRefused("generation numbers start at 1")
+        if any(value is not None and value < 1 for value in (self.supersedes, self.rolled_back_from)):
+            raise GenerationRefused("generation ancestry numbers start at 1")
+        if self.rolled_back_from is not None and self.rolled_back_from >= self.number:
+            raise GenerationRefused("rollback ancestry must precede its generation")
+        if self.commissioning_evidence_binding is not None:
+            binding = self.commissioning_evidence_binding
+            if type(binding) is not str or re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", binding) is None:
+                raise GenerationRefused(
+                    "commissioning evidence binding must match hmac-sha256:[0-9a-f]{64}"
+                )
         if self.supersedes is not None and self.supersedes >= self.number:
             raise GenerationRefused(
                 f"generation {self.number} claims to supersede {self.supersedes}; "
@@ -135,13 +213,15 @@ class GenerationStore:
     def numbers(self) -> tuple[int, ...]:
         if not self.root.is_dir():
             return ()
-        return tuple(
-            sorted(
-                int(child.name)
-                for child in self.root.iterdir()
-                if child.is_dir() and child.name.isdigit()
-            )
-        )
+        numbers = []
+        for child in self.root.iterdir():
+            if not child.name.isdigit():
+                continue  # Includes all hidden partial staging directories.
+            if (not re.fullmatch(r"[1-9][0-9]*", child.name)
+                    or child.is_symlink() or not child.is_dir()):
+                raise GenerationRefused("noncanonical generation entry; inspect store before retry")
+            numbers.append(int(child.name))
+        return tuple(sorted(numbers))
 
     def current(self) -> Optional[Generation]:
         numbers = self.numbers()
@@ -149,12 +229,23 @@ class GenerationStore:
 
     def read(self, number: int) -> Generation:
         try:
-            raw = json.loads(self._meta(number).read_text(encoding="utf-8"))
-        except OSError as exc:
-            raise GenerationRefused(
-                f"generation {number} has no readable metadata: {exc}"
-            ) from exc
-        return Generation(**raw)
+            raw = json.loads(self._meta(number).read_text(encoding="utf-8"),
+                             object_pairs_hook=_unique_metadata)
+            if type(raw) is not dict:
+                raise GenerationRefused("ordinary generation metadata must be an object")
+            # This reader owns only the existing operational format. A
+            # bootstrap schema/purpose must never inherit its normal lease.
+            if any(name in raw for name in ("schema", "purpose", "variant")):
+                raise GenerationRefused("non-operational generation format refused")
+            generation = Generation(**raw)
+            if type(generation.number) is not int or generation.number != number:
+                raise GenerationRefused("generation number does not match its directory")
+            if (type(generation.commissioning_digest) is not str or
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", generation.commissioning_digest) is None):
+                raise GenerationRefused("ordinary generation needs a commissioning digest")
+            return generation
+        except (OSError, ValueError, TypeError, RecursionError):
+            raise GenerationRefused("generation metadata unreadable or malformed") from None
 
     def create(
         self,
@@ -165,37 +256,101 @@ class GenerationStore:
         rolled_back_from: Optional[int] = None,
         rollback_reason: Optional[str] = None,
         actor: Optional[str] = None,
+        commissioning_evidence_binding: str | None = None,
     ) -> Generation:
-        """Write a new generation. Never edits an existing one."""
+        """Stage privately, read back, then publish once under a writer lock.
+
+        Hidden partial staging stays for explicit inspection; it is never a
+        numbered/current generation. The root must be trusted local storage;
+        advisory locking is not protection against its privileged owner.
+        """
+
+        # Freeze caller-owned mappings before deriving the digest or writing.
+        snapshot = dict(files)
+        if any(type(value) is not bytes for value in snapshot.values()):
+            raise GenerationRefused("generation file contents must be immutable bytes")
+        digest = tree_digest(snapshot)
+        _make_store_root(self.root)
+        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise GenerationRefused("generation writer already active") from None
+            return self._create_locked(snapshot, digest=digest, root_fd=root_fd,
+                created_at=created_at, commissioning_digest=commissioning_digest,
+                rolled_back_from=rolled_back_from, rollback_reason=rollback_reason,
+                actor=actor, commissioning_evidence_binding=commissioning_evidence_binding)
+        finally:
+            os.close(root_fd)
+
+    def _create_locked(self, files, *, digest, root_fd, created_at, commissioning_digest,
+                       rolled_back_from, rollback_reason, actor, commissioning_evidence_binding):
 
         numbers = self.numbers()
         number = (numbers[-1] + 1) if numbers else 1
+        if rolled_back_from is not None and (not numbers or rolled_back_from != numbers[-1]):
+            raise GenerationRefused("current generation changed before rollback publication")
+        if rolled_back_from is not None and self.read(rolled_back_from).commissioning_evidence_binding is not None:
+            raise GenerationRefused("bound rollback requires a validated forward render and approval")
         generation = Generation(
             number=number,
-            digest=tree_digest(files),
+            digest=digest,
             created_at=created_at,
             commissioning_digest=commissioning_digest,
             supersedes=numbers[-1] if numbers else None,
             rolled_back_from=rolled_back_from,
             rollback_reason=rollback_reason,
             actor=actor,
+            commissioning_evidence_binding=commissioning_evidence_binding,
         )
 
         directory = self.root / str(number)
-        if directory.exists():
+        if directory.exists() or directory.is_symlink():
             raise GenerationRefused(
                 f"generation {number} already exists; a generation is promoted "
                 "once and never edited in place"
             )
-        directory.mkdir(parents=True)
-        for path in sorted(files):
-            target = directory / "tree" / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(files[path])
-        self._meta(number).write_text(
-            json.dumps(generation.__dict__, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        metadata = dict(generation.__dict__)
+        if generation.commissioning_evidence_binding is None:
+            metadata.pop("commissioning_evidence_binding")
+        stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root))
+        published = False
+        try:
+            tree = stage / "tree"
+            tree.mkdir(mode=0o700)
+            for path in sorted(files):
+                target = tree / path
+                # mkdir(parents=True) applies mode only to the last directory.
+                parent = tree
+                for part in Path(path).parts[:-1]:
+                    parent = parent / part
+                    parent.mkdir(mode=0o700, exist_ok=True)
+                _write_private(target, files[path])
+            _write_private(stage / "generation.json",
+                (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode("utf-8"))
+            observed = {str(p.relative_to(tree)): p.read_bytes()
+                        for p in sorted(tree.rglob("*")) if p.is_file()}
+            try:
+                observed_metadata = json.loads((stage / "generation.json").read_bytes())
+            except (ValueError, UnicodeError):
+                raise GenerationRefused("staged generation metadata read-back refused") from None
+            if observed != files or observed_metadata != metadata:
+                raise GenerationRefused("staged generation read-back mismatch")
+            for child in sorted(tree.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                if child.is_dir():
+                    _sync_directory(child)
+            _sync_directory(tree)
+            _sync_directory(stage)
+            if directory.exists() or directory.is_symlink():
+                raise GenerationRefused("generation already exists; never edited in place")
+            stage.rename(directory)
+            published = True
+            os.fsync(root_fd)
+        except OSError:
+            if published:
+                raise GenerationCommitUncertain(number) from None
+            raise GenerationRefused("generation staging failed; inspect hidden partial state") from None
         return generation
 
     def read_tree(self, number: int) -> dict[str, bytes]:
@@ -243,6 +398,14 @@ class GenerationStore:
             raise GenerationRefused(
                 f"generation {number} is already current; a rollback to the "
                 "current generation would record a reversal that did not happen"
+            )
+        if (
+            target.commissioning_evidence_binding is not None
+            or latest.commissioning_evidence_binding is not None
+        ):
+            raise GenerationRefused(
+                "rollback is refused for generations with commissioning evidence binding; "
+                "a new validated forward render and approval are required"
             )
         return self.create(
             self.read_tree(number),

@@ -1,0 +1,34 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "protected optional selection and retained-lock activated/bootstrap composition",
+  "files_sha256": {
+    "src/azazel_nexus/bootstrap_selection_optional.py": "fb5be2abb21c7ed6c1a4bf708dcee97007dfd94579cc075ba60684d803c78296",
+    "src/azazel_nexus/bootstrap_store.py": "8bc8e98a26aa59252e4d57e8dfbe5debd6f381623c6500331f0eac21c4c292e0",
+    "runtime/src/azazel_nexus_runtime/bootstrap_entrypoint.py": "de122a5a93d5d760a957ce6d83560f9bec53ec174ff04088f6d13eb6b3b2a3a4",
+    "runtime/src/azazel_nexus_runtime/activated.py": "77ce3148d7f2b2db857217c45e351d39ea0c668efb6c9310c61f230882513f4e",
+    "tests/unit/test_runtime_activated_entrypoint.py": "57afa92c711f1ef66c8556fe583124efc867f4c853e1ae852c33a997e48d9e53",
+    "tests/unit/test_runtime_bootstrap_entrypoint.py": "000e27e64ee92ec26febe39c3ccf80dd4cca7633c1c6b90dd4d4c637b6a60496",
+    "tests/unit/test_bootstrap_selection_optional.py": "dbc8647f1086b710b58c9dbf31bcbee2d39e82f56fe8c6b93189171df6c4fd89"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_activated.py tests/unit/test_runtime_activated_entrypoint.py",
+    "passed": 2323,
+    "skipped": 2,
+    "seconds": 9.31,
+    "environment": "local synthetic tests; Luna execution report"
+  },
+  "ruff": "seven listed source/test files passed",
+  "diff_check": "pass",
+  "review": "Astra read-only boundary review: no blocking defect found; coordinator inspected composition and retained refusal gates",
+  "limits": [
+    "selection is intent, not approval or admission",
+    "public manager opening/start still refuse; no successful service startup claimed",
+    "missing protected parent is refusal, not ordinary-mode absence",
+    "present-selection optional tests use synthetic strict-reader seams",
+    "masking and inactive observation do not prove ongoing containment",
+    "no CI, VM, systemd deployment, physical operations, source commit or push"
+  ]
+}

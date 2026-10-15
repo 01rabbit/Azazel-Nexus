@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 private source-prototype manager protocol composition",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "af07ce7d1aba2f415cab0adcb80754e8c41a4be53b4b7e7551cffcf05781139b",
+      "tests/unit/test_runtime_bootstrap_prototype_manager.py": "c330a3a5523643ba757b3af3b5410b2daca3ef426d9ebc5aa1be2be0f2f2f4de",
+      "tests/unit/test_runtime_bootstrap_prototype_publication.py": "76c6b766ba097351510c557fbc236c0fd290ac287dbc40f782a1d19e5c3672dd",
+      "tests/unit/test_runtime_bootstrap_prototype_entrypoint.py": "365ddd31f17f1b5c29e80e8cb97c6a187f840bbbe8669fd27c7d3010bb6fbab0",
+      "tests/unit/test_runtime_bootstrap_manager_publication.py": "77a883a28a4fc66ece75cb84951f22746375f3dff9ad021111fea00cf8b1694a",
+      "tests/unit/test_runtime_bootstrap_bound_audit.py": "43c43db9924d13ba7ad20a1cf7c8544f9f40dde79d7717ed1ac5c091a970982e",
+      "tests/unit/test_runtime_bootstrap_audit_handoff.py": "f325009b452288ecff60b50f92cd7128c43247d84eaea77cc8b7a1019c96038e"
+    }
+  },
+  "implementation": {
+    "adapter": "Private subclass delegates to existing retained publication, bound audit/commission jobs and authenticated helper readiness. No duplicate transaction backend, new authority or runtime enabling flag",
+    "review_fix": "Readiness brackets peer exchange with retained publication/controller/policy/closure reinspection; actual published-file unlink during synthetic peer success refuses",
+    "production": "Fixed factory still yields BootstrapNarrowingManager. Public production pair opening/start/readiness and individual unmask remain refusing. No production selection path added for prototype adapter"
+  },
+  "coverage": [
+    "Protocol exact-object forwarding, exact-pair dispatch, propagated failures and retained-check ordering",
+    "Actual owned ordinary-file publication, journal retention, loaded-unit fake transport and reached Reload/owner failures",
+    "Real supervisor plus public prototype helper dispatch, actual bound jobs/identity/client code with synthetic publication/containment seams; audit peer, commission peer, inventory and receipt failure cases",
+    "Actual selected entrypoint and supervisor with private adapter, explicit synthetic publication/OS job/identity/readiness/cleanup; same audit record/head client and audit-failure prevents commission"
+  ],
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_import_routing.py tests/unit/test_runtime_loaded_modules.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/prototype-manager-macos-final.xml",
+    "macos": {"passed": 3239, "skipped": 7, "failed": 0, "seconds": 20.06},
+    "linux_command": "cd /tmp/az-prototype.HUXT2w && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_prototype_manager.py tests/unit/test_runtime_bootstrap_prototype_publication.py tests/unit/test_runtime_bootstrap_prototype_entrypoint.py tests/unit/test_runtime_bootstrap_manager_publication.py tests/unit/test_runtime_bootstrap_bound_audit.py tests/unit/test_runtime_bootstrap_bound_commission.py tests/unit/test_runtime_bootstrap_audit_handoff.py tests/unit/test_runtime_bootstrap_entrypoint.py --junitxml=/tmp/az-prototype.HUXT2w/linux.xml --tb=short",
+    "linux": {"passed": 89, "skipped": 0, "failed": 0, "seconds": 0.85},
+    "ruff_command": "ruff check runtime/src/azazel_nexus_runtime/bootstrap_manager.py tests/unit/test_runtime_bootstrap_prototype*.py tests/unit/test_runtime_bootstrap_manager_publication.py tests/unit/test_runtime_bootstrap_bound_audit.py tests/unit/test_runtime_bootstrap_audit_handoff.py",
+    "ruff": "pass, 7 Python files",
+    "docs_links": "54 Markdown files pass",
+    "diff_check": "pass",
+    "review": "Sol independent read-only source review; readiness finding fixed and reviewed. Luna disjoint test contributions; coordinator integrated and reran final selections",
+    "intermediate_failures": "Readiness test fixtures initially lacked newly required retained checks; selected synthetic publication wrongly advanced grant and asserted exactly two readiness calls despite repeated supervisor checks. Corrected fixtures/assertions, not production admission. Final results above supersede intermediate failures",
+    "counts": "Selections overlap prior and intermediate runs, are not additive, and are not a new full-suite result. Prior full Linux suite remains 6872 passed /25 failed /7 skipped from unrelated capacity reserve conditions"
+  },
+  "snapshot": {
+    "path": "/tmp/azn-linux-check.I6YGHW/prototype-manager-source.tar.gz",
+    "sha256": "67849e4860f684181fa0a95034913d781229c5176c4cc1517b39f9130a32d21f",
+    "bytes": 1290750,
+    "source_file_members": 474,
+    "local_current_members_match": true,
+    "remote_archive_hash_match": true,
+    "remote_members_match_after_tests": true,
+    "metadata": "macOS tar AppleDouble metadata excluded from source-member comparison; Linux tar reported ignored LIBARCHIVE xattr keywords. Not runtime input or release archive"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/prototype-manager-macos-final.xml", "sha256": "68e74b84403138b68bb5cdcd8f7ded337549fdea5f1d9d3086158eb26785d1a0"},
+    "linux": {"path": "/tmp/azn-linux-check.I6YGHW/prototype-manager-linux.xml", "sha256": "2da33ca1c64bef1b0271930dfe4ab5be97453c657c5f2f6b127891a6ef9f63b9"}
+  },
+  "cleanup": "Removed only the newly created owner-verified non-symlink remote /tmp/az-prototype.HUXT2w (7.1MiB) after source/report verification; absence confirmed. Small local archive/reports retained. Existing user environments/data untouched",
+  "limits": [
+    "Component-composed software evidence, not a single protected publication-to-cleanup native lifecycle",
+    "Actual native system-manager sandbox/timer, mount-view, queued jobs, controller death, reboot/suspend qualification remains before real opening",
+    "Genuine operator enrollment, pins, approvals, time/epoch/policy/generation records remain deployment inputs; fixtures confer no authority",
+    "Prior repository .venv replacement incident remains unresolved; isolated tests neither restore nor further modify it"
+  ],
+  "not_performed": ["CI", "actual service installation/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "native deadline rebuild/rearming", "repository commit/push"]
+}

@@ -1,8 +1,9 @@
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
-from azazel_nexus.install_platform import (
+from azazel_nexus_runtime.install_platform import (
     CURRENT_INSTALL_PLATFORM_PROFILES,
     InstallPlatformProfile,
     build_install_plan,
@@ -10,6 +11,7 @@ from azazel_nexus.install_platform import (
     parse_preset_declarations,
     select_install_profile,
 )
+from tools.install_profile_fields import resolve as resolve_profile_field
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.hardening import PROFILES, SYSTEM_ACCOUNTS
 
@@ -80,6 +82,29 @@ def test_profiles_and_plans_reject_mutable_collections():
         )
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"profile_id": None},
+        {"os_id": 7},
+        {"unit_directory": None},
+        {"required_tools": ("install", 7)},
+        {"required_tools": ("install\nfalse",)},
+    ],
+)
+def test_profile_rejects_wrongly_typed_or_unsafe_values(override):
+    with pytest.raises(ValueError):
+        replace(CURRENT_INSTALL_PLATFORM_PROFILES[0], **override)
+
+
+def test_profile_rejects_overlapping_install_destinations():
+    with pytest.raises(ValueError, match="destinations must not overlap"):
+        replace(
+            CURRENT_INSTALL_PLATFORM_PROFILES[0],
+            libexec_directory="/lib/systemd/system/azazel",
+        )
+
+
 def test_install_plan_uses_absolute_destinations_and_existing_declarations():
     selected = select_install_profile({"ID": "debian", "VERSION_ID": "13"})
     plan = build_install_plan(
@@ -145,3 +170,64 @@ def test_install_plan_rejects_unreviewed_manager_enablement():
             selected,
             preset_declarations=(("enable", "azazel-commissiond.service"),),
         )
+
+
+def test_plan_refuses_libexec_profile_that_disagrees_with_rendered_units():
+    current = CURRENT_INSTALL_PLATFORM_PROFILES[0]
+    changed = replace(current, libexec_directory="/opt/azazel/libexec")
+    with pytest.raises(ValueError, match="libexec path differs"):
+        build_install_plan(
+            changed, preset_declarations=parse_preset_declarations(PRESET_TEXT)
+        )
+
+
+@pytest.mark.parametrize(
+    ("with_accounts", "with_service_manager", "forbidden"),
+    [
+        (False, True, {"id", "getent", "useradd", "groupadd"}),
+        (True, False, {"systemctl", "systemd-tmpfiles"}),
+        (False, False, {"id", "getent", "useradd", "groupadd", "systemctl", "systemd-tmpfiles"}),
+    ],
+)
+def test_plan_only_requires_tools_for_enabled_install_modes(
+    with_accounts, with_service_manager, forbidden
+):
+    selected = CURRENT_INSTALL_PLATFORM_PROFILES[0]
+    plan = build_install_plan(
+        selected,
+        preset_declarations=parse_preset_declarations(PRESET_TEXT),
+        with_accounts=with_accounts,
+        with_service_manager=with_service_manager,
+    )
+
+    assert forbidden.isdisjoint(plan.required_tools)
+    assert {"/bin/sh", "python3", "dirname", "install"} <= set(plan.required_tools)
+
+
+def test_installer_field_resolver_emits_plan_derived_current_paths(tmp_path):
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=debian\nVERSION_ID=13\n", encoding="utf-8")
+
+    assert resolve_profile_field(
+        field="profile_id", os_release_path=os_release
+    ) == "debian-13-systemd-installer-v1"
+    assert resolve_profile_field(
+        field="unit_directory", os_release_path=os_release
+    ) == "/lib/systemd/system"
+    assert resolve_profile_field(
+        field="libexec_directory", os_release_path=os_release
+    ) == "/usr/libexec/azazel"
+    assert resolve_profile_field(
+        field="enable_units", os_release_path=os_release
+    ) == "azazel-activated.service"
+    assert "systemctl" in resolve_profile_field(
+        field="required_tools", os_release_path=os_release
+    ).splitlines()
+    assert "systemctl" not in resolve_profile_field(
+        field="required_tools",
+        os_release_path=os_release,
+        with_service_manager=False,
+    ).splitlines()
+    assert "useradd" not in resolve_profile_field(
+        field="required_tools", os_release_path=os_release, with_accounts=False
+    ).splitlines()
