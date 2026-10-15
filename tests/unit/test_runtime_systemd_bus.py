@@ -119,7 +119,7 @@ def test_active_state_resolves_only_the_expected_unit_object_and_property():
 
     assert SystemdUnitCalls(exchange)("GetActiveState", unit) is True
     assert calls == [
-        (MANAGER_INTERFACE, "GetUnit", "s", [unit], {}),
+        (MANAGER_INTERFACE, "GetUnit", "s", [unit], {"allow_no_such_unit": True}),
         (
             PROPERTIES_INTERFACE,
             "Get",

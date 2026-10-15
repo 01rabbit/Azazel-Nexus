@@ -6020,6 +6020,21 @@ candidate (1494 files, 113 directories, 6 links) whose pure layout self-checks
 and real-filesystem measurement pass; the installed runtime must first be
 updated to decode v4, after which the owner-review candidate is regenerated.
 
+Installer phases 2, 2b and 3 then ran on the VM (owner-approved): a root-owned
+runtime venv, accounts, files, seven masked units and `azazel-activated` enabled
+for the next boot. Starting the controller (phase 4) failed closed with
+`RollbackFailed`: every unit stayed masked and inactive, but the pass could never
+complete because Manager.GetUnit returns `org.freedesktop.systemd1.NoSuchUnit`
+for masked units systemd has not loaded, and the adapter treated every bus error
+as failure, so inactivity could never be confirmed. Synthetic tests had always
+modelled loaded units. The fix accepts exactly that error name, only for GetUnit
+inside the active/inactive query, only with fresh `masked` file state and a
+re-read that the unit is still not loaded, and reads it as "inactive" (the same
+claim the loaded path makes from ActiveState, not proof of no processes); every
+other error still refuses and LoadUnit is never used. An independent review
+found no critical or high issue. The bootstrap inspectors that call GetUnit
+directly on the masked pair need the same treatment before a real bootstrap run.
+
 Both changes were independently reviewed with no critical or high finding; the
 genesis review also mutation-tested the change. Follow-ups addressed: wording
 that overstated single use, stamp-change and exact-int tests, a real-factory and

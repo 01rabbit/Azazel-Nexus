@@ -148,5 +148,20 @@
     "records": 1672,
     "architecture": "arm64",
     "note": "read-only observe-packages output; candidate for admission package_digest pending owner review"
+  },
+  "phase4_operator_run": {
+    "status": "RAN; controller failed closed with RollbackFailed (product bug found on the real host)",
+    "script_sha256": "9079e9816c2520befcb2d0245329d2e1ea70e91fb5f6db65792941182811ed0f",
+    "observed": {
+      "start_exit": 1,
+      "Result": "exit-code",
+      "ExecMainStatus": 1,
+      "ActiveState": "failed",
+      "journal": "az-activated failed before completing a safe pass: RollbackFailed",
+      "helpers_after": "all 7 operational units still masked/inactive; nothing started or unmasked"
+    },
+    "root_cause": "SystemdUnitCalls GetActiveState/GetInactiveState use Manager.GetUnit, which returns org.freedesktop.systemd1.NoSuchUnit ('Unit ... not loaded') for masked units systemd has not loaded (verified read-only with busctl: auditd/commissiond/watchdog not loaded, GetUnitFileState masked). _exchange turns every error into UnitOperationFailed, so is_inactive can never confirm inactivity; the preflight remask fails for every governed unit and _narrow_everything raises RollbackFailed (runtime/src/azazel_nexus_runtime/systemd_bus.py ~92-110, ~335; activated.py ~404-407).",
+    "safety": "Fail-closed held: no unit was widened. But the controller can never complete a safe pass on a real host with correctly masked units, and synthetic tests did not cover not-loaded units.",
+    "next": "Fix: treat exactly NoSuchUnit plus a fresh GetUnitFileState 'masked' as inactive (no LoadUnit), with tests and independent review; then re-run Phase 4 before Phase 5."
   }
 }

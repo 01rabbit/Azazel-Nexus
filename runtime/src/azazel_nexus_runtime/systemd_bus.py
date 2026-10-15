@@ -66,6 +66,11 @@ _UNIT_FILE_STATES = frozenset(
 class _Reply:
     signature: str
     body: list
+    #: True only for an opted-in call that got exactly systemd's NoSuchUnit.
+    no_such_unit: bool = False
+
+
+_NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
 
 
 class SystemdUnitCalls:
@@ -91,7 +96,31 @@ class SystemdUnitCalls:
             return value
 
         if method in {"GetActiveState", "GetInactiveState"}:
-            unit_reply = self._exchange(MANAGER_INTERFACE, "GetUnit", "s", [unit])
+            unit_reply = self._exchange(
+                MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True
+            )
+            if getattr(unit_reply, "no_such_unit", False) is True:
+                # GetUnit never loads a unit, so NoSuchUnit means systemd holds
+                # no unit object: it has no ActiveState to report and is not
+                # active, activating, deactivating or holding a job. That is
+                # read as "inactive" -- the same claim the loaded path makes
+                # from ActiveState alone, not proof that no process exists --
+                # and only with fresh masked file state (every governed unit
+                # must be masked) and a re-read confirming it is still not
+                # loaded. Anything else is refused.
+                state_reply = self._exchange(
+                    MANAGER_INTERFACE, "GetUnitFileState", "s", [unit]
+                )
+                if self._one(state_reply, "s", "GetUnitFileState") != "masked":
+                    raise UnitOperationFailed(
+                        "systemd reported an unloaded unit that is not masked"
+                    )
+                recheck = self._exchange(
+                    MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True
+                )
+                if getattr(recheck, "no_such_unit", False) is not True:
+                    raise UnitOperationFailed("governed unit was loaded during observation")
+                return method == "GetInactiveState"
             object_path = self._one(unit_reply, "o", "GetUnit")
             expected_path = _unit_object_path(unit)
             if object_path != expected_path:
@@ -292,6 +321,7 @@ class SystemdBusSession:
         body: Sequence[object],
         *,
         path: str = MANAGER_PATH,
+        allow_no_such_unit: bool = False,
     ) -> _Reply:
         if interface not in {MANAGER_INTERFACE, PROPERTIES_INTERFACE}:
             raise UnitOperationFailed("the systemd client refused an interface")
@@ -333,6 +363,13 @@ class SystemdBusSession:
                 f"systemd D-Bus call {member} did not complete"
             ) from exc
         if reply.message_type == self._message_type.ERROR:
+            name = getattr(reply, "error_name", None)
+            if (allow_no_such_unit and member == "GetUnit"
+                    and type(name) is str and name == _NO_SUCH_UNIT):
+                if (self._admitted_owner is not None
+                        and getattr(reply, "sender", None) != self._admitted_owner):
+                    raise UnitOperationFailed("systemd D-Bus reply owner refused")
+                return _Reply("", [], no_such_unit=True)
             raise UnitOperationFailed(f"systemd D-Bus call {member} returned an error")
         if reply.message_type != self._message_type.METHOD_RETURN:
             raise UnitOperationFailed(
