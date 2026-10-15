@@ -163,5 +163,29 @@
     "root_cause": "SystemdUnitCalls GetActiveState/GetInactiveState use Manager.GetUnit, which returns org.freedesktop.systemd1.NoSuchUnit ('Unit ... not loaded') for masked units systemd has not loaded (verified read-only with busctl: auditd/commissiond/watchdog not loaded, GetUnitFileState masked). _exchange turns every error into UnitOperationFailed, so is_inactive can never confirm inactivity; the preflight remask fails for every governed unit and _narrow_everything raises RollbackFailed (runtime/src/azazel_nexus_runtime/systemd_bus.py ~92-110, ~335; activated.py ~404-407).",
     "safety": "Fail-closed held: no unit was widened. But the controller can never complete a safe pass on a real host with correctly masked units, and synthetic tests did not cover not-loaded units.",
     "next": "Fix: treat exactly NoSuchUnit plus a fresh GetUnitFileState 'masked' as inactive (no LoadUnit), with tests and independent review; then re-run Phase 4 before Phase 5."
+  },
+  "phase2b_second_run": {
+    "status": "PASSED",
+    "source_commit": "ad897e5",
+    "archive_sha256": "c847e9f20f9631c70d399ff1cbb045785e998978cd46c84cbbc703053af4465e",
+    "script_sha256": "791bb3aacd4644d24ed9f3da0c254d9221e78a64d78e6714ca729f018cd171ac",
+    "exit": 0,
+    "venv_site_packages_tree_digest": "f7d172d3c7becdb2f0a5111bbce020564c67a8703def82a590f67a4a59bddc56"
+  },
+  "phase4_second_run": {
+    "status": "PASSED as designed: fail-closed activation pass completed on the real host",
+    "source_commit": "ad897e5 (includes 1fc0bb9 NoSuchUnit fix)",
+    "script_sha256": "9079e9816c2520befcb2d0245329d2e1ea70e91fb5f6db65792941182811ed0f",
+    "journal": [
+      "az-activated completed safely: granted=0, withheld=7, reasons=no_generation",
+      "azazel-activated.service: Failed with result 'protocol'."
+    ],
+    "observed": {
+      "ExecMainStatus": 0,
+      "Result": "protocol",
+      "ActiveState": "failed"
+    },
+    "interpretation": "The controller completed its fail-closed pass (exit 0, nothing granted, all seven governed units withheld for no_generation). systemd reports 'protocol' because the ordinary pass sends no READY on a Type=notify unit, exactly as documented. The previous RollbackFailed is resolved on the real host.",
+    "helpers_after": "all 7 operational units masked/inactive; /etc/systemd/system masks unchanged"
   }
 }
