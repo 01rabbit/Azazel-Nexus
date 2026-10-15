@@ -6001,6 +6001,25 @@ consistent with the documented separation: signing stays in the operator's own
 tool, never in Nexus. An independent review found no critical or high issue; its
 wording and private-import findings are addressed.
 
+Building a real installed-files candidate on the Debian ARM64 VM exposed a gap
+that synthetic declarations had hidden: Debian's `libpython3.13-minimal` ships
+`/usr/lib/python3.13/sitecustomize.py -> /etc/python3.13/sitecustomize.py` and
+`config-3.13-*/libpython3.13.so -> ../../aarch64-linux-gnu/libpython3.13.so.1`,
+which the v3 manifest refuses, so the stdlib directory the wrappers put on
+`sys.path` could not be pinned at all. Manifest schema v4 (v1-v3 bytes and
+behaviour unchanged) adds only `etc/` as a pinnable root and relative link
+targets of the form `(../)* name(/name)*`, normalized against the link's parent
+and kept inside an allowed root. That adds sha-checked pins, never trust: every
+link must still resolve to a pinned file, module origins stay under `/usr` or
+`/opt`, and a v4 manifest may not pin `etc/ld.so.preload` in any form. The
+generator emits v4 only when a selection needs it. An independent review found
+no critical or high issue; its lexical-normalization, pinned-read version and
+preload-placement findings are fixed. On the VM, as an unprivileged user and
+with no product entrypoint executed, the v4 generator produced a complete
+candidate (1494 files, 113 directories, 6 links) whose pure layout self-checks
+and real-filesystem measurement pass; the installed runtime must first be
+updated to decode v4, after which the owner-review candidate is regenerated.
+
 Both changes were independently reviewed with no critical or high finding; the
 genesis review also mutation-tested the change. Follow-ups addressed: wording
 that overstated single use, stamp-change and exact-int tests, a real-factory and

@@ -867,24 +867,24 @@ def main(
             paths = tuple(selected)
             if paths != tuple(sorted(set(paths))):
                 raise ValueError("candidate paths must be sorted and unique")
-            from .installed_manifest import _validate_path
+            from .installed_manifest import _ROOTS_V4, _validate_path
 
             for path in paths:
-                _validate_path(path)
+                _validate_path(path, _ROOTS_V4)
             directories = tuple(args.directory or ())
             if len(directories) > 1024:
                 raise ValueError("candidate directory count refused")
             if directories != tuple(sorted(set(directories))):
                 raise ValueError("candidate directories must be sorted and unique")
             for directory in directories:
-                _validate_path(directory)
+                _validate_path(directory, _ROOTS_V4)
             links = tuple(args.link or ())
             if len(links) > 1024:
                 raise ValueError("candidate link count refused")
             if links != tuple(sorted(set(links))):
                 raise ValueError("candidate links must be sorted and unique")
             for link in links:
-                _validate_path(link)
+                _validate_path(link, _ROOTS_V4)
             from .installed_candidate import generate_installed_candidate
 
             if args.directory is None and args.link is None:

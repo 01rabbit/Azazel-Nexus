@@ -4,7 +4,7 @@ This data model does not read files, establish a complete dependency closure,
 or grant admission. A separate bounded reader measures selected paths.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 import re
@@ -15,6 +15,7 @@ from .operator_trust import ApprovalRefused
 _SCHEMA_V1 = "azazel-nexus/selected-installed-files/v1"
 _SCHEMA_V2 = "azazel-nexus/selected-installed-files/v2"
 _SCHEMA_V3 = "azazel-nexus/selected-installed-files/v3"
+_SCHEMA_V4 = "azazel-nexus/selected-installed-files/v4"
 _MAX_RAW_BYTES = 1 << 20
 _MAX_FILES = 4096
 _MAX_DIRECTORIES = 1024
@@ -29,9 +30,14 @@ _PINNED_HEX = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMPONENT = re.compile(r"[A-Za-z0-9_.+-]+\Z")
 
 
-def _validate_path(path):
+_ROOTS_V3 = ("usr/", "opt/")
+_ROOTS_V4 = ("usr/", "opt/", "etc/")
+_PRELOAD = "etc/ld.so.preload"
+
+
+def _validate_path(path, roots=_ROOTS_V3):
     if (type(path) is not str or not path.isascii() or not 1 <= len(path) <= _MAX_PATH
-            or not path.startswith(("usr/", "opt/"))):
+            or not path.startswith(roots)):
         raise ApprovalRefused("installed manifest path refused")
     components = path.split("/")
     if (len(components) > _MAX_DEPTH
@@ -40,10 +46,10 @@ def _validate_path(path):
         raise ApprovalRefused("installed manifest path refused")
 
 
-def _validate_file(value):
+def _validate_file(value, version=3):
     if type(value) is not InstalledFile:
         raise ApprovalRefused("installed manifest file entry required")
-    _validate_path(value.path)
+    _validate_path(value.path, _ROOTS_V4 if version == 4 else _ROOTS_V3)
     if type(value.mode) is not int or value.mode not in {0o644, 0o755}:
         raise ApprovalRefused("installed manifest mode refused")
     if type(value.size) is not int or not 0 <= value.size <= _MAX_FILE_SIZE:
@@ -52,27 +58,59 @@ def _validate_file(value):
         raise ApprovalRefused("installed manifest file digest refused")
 
 
-def _validate_directory(value):
+def _validate_directory(value, version=3):
     if type(value) is not InstalledDirectory:
         raise ApprovalRefused("installed manifest directory entry required")
-    _validate_path(value.path)
+    _validate_path(value.path, _ROOTS_V4 if version == 4 else _ROOTS_V3)
     if type(value.mode) is not int or value.mode != 0o755:
         raise ApprovalRefused("installed manifest directory mode refused")
 
 
-def _validate_link(value):
+def _validate_link(value, version=3):
     if type(value) is not InstalledLink:
         raise ApprovalRefused("installed manifest link entry required")
-    _validate_path(value.path)
+    roots = _ROOTS_V4 if version == 4 else _ROOTS_V3
+    _validate_path(value.path, roots)
     target = value.target
     if (type(target) is not str or not target.isascii() or not 1 <= len(target) <= _MAX_PATH
             or any(ord(char) < 32 or ord(char) == 127 for char in target)):
         raise ApprovalRefused("installed manifest link target refused")
-    if target.startswith(("/usr/", "/opt/")):
+    if version == 4:
+        if target.startswith("/"):
+            _validate_path(target[1:], roots)
+        else:
+            _normalize_relative(value.path, target)
+    elif target.startswith(("/usr/", "/opt/")):
         _validate_path(target[1:])
     elif ("/" in target or target in {".", ".."}
           or _COMPONENT.fullmatch(target) is None):
         raise ApprovalRefused("installed manifest link target refused")
+
+
+def _normalize_relative(link_path, target):
+    """Join a v4 relative target to the link's parent; stay in roots.
+
+    Grammar: (".." "/")* name ("/" name)*. No "." component, and no ".."
+    after a normal component, so the lexical join equals kernel resolution
+    (no intermediate component can be an undeclared symlink).
+    """
+    parts = link_path.split("/")[:-1]
+    components = target.split("/")
+    if any(component in {"", "."} or _COMPONENT.fullmatch(component) is None
+           for component in components):
+        raise ApprovalRefused("installed manifest link target refused")
+    ups = 0
+    while ups < len(components) and components[ups] == "..":
+        ups += 1
+    names = components[ups:]
+    if not names or any(component == ".." for component in names):
+        raise ApprovalRefused("installed manifest link target refused")
+    if ups > len(parts):
+        raise ApprovalRefused("installed manifest link target escapes root")
+    resolved = "/".join(parts[:len(parts) - ups] + names)
+    # The result must itself be a valid manifest path (allowed root, bounds).
+    _validate_path(resolved, _ROOTS_V4)
+    return resolved
 
 
 @dataclass(frozen=True, repr=False)
@@ -81,27 +119,31 @@ class InstalledFile:
     mode: int
     size: int
     sha256: str
+    # Schema 4 entry rules (etc/ roots, nested link targets); ignored by equality.
+    v4: bool = field(default=False, compare=False)
 
     def __post_init__(self):
-        _validate_file(self)
+        _validate_file(self, 4 if self.v4 is True else 3)
 
 
 @dataclass(frozen=True, repr=False)
 class InstalledDirectory:
     path: str
     mode: int = 0o755
+    v4: bool = field(default=False, compare=False)
 
     def __post_init__(self):
-        _validate_directory(self)
+        _validate_directory(self, 4 if self.v4 is True else 3)
 
 
 @dataclass(frozen=True, repr=False)
 class InstalledLink:
     path: str
     target: str
+    v4: bool = field(default=False, compare=False)
 
     def __post_init__(self):
-        _validate_link(self)
+        _validate_link(self, 4 if self.v4 is True else 3)
 
 
 @dataclass(frozen=True, repr=False)
@@ -119,12 +161,12 @@ def _validate_manifest(manifest):
     if (type(manifest) is not InstalledManifest or type(manifest.files) is not tuple
             or type(manifest.directories) is not tuple or type(manifest.links) is not tuple
             or type(manifest.version) is not int
-            or manifest.version not in {1, 2, 3}):
+            or manifest.version not in {1, 2, 3, 4}):
         raise ApprovalRefused("installed manifest required")
     if not 0 < len(manifest.files) <= _MAX_FILES:
         raise ApprovalRefused("installed manifest file count refused")
     for entry in manifest.files:
-        _validate_file(entry)
+        _validate_file(entry, manifest.version)
     paths = tuple(entry.path for entry in manifest.files)
     if paths != tuple(sorted(set(paths))):
         raise ApprovalRefused("installed manifest paths must be sorted and unique")
@@ -137,7 +179,7 @@ def _validate_manifest(manifest):
     if len(manifest.directories) > _MAX_DIRECTORIES:
         raise ApprovalRefused("installed manifest directory count refused")
     for entry in manifest.directories:
-        _validate_directory(entry)
+        _validate_directory(entry, manifest.version)
     directory_paths = tuple(entry.path for entry in manifest.directories)
     if directory_paths != tuple(sorted(set(directory_paths))):
         raise ApprovalRefused("installed manifest directory paths must be sorted and unique")
@@ -146,7 +188,7 @@ def _validate_manifest(manifest):
     if len(manifest.links) > _MAX_LINKS:
         raise ApprovalRefused("installed manifest link count refused")
     for entry in manifest.links:
-        _validate_link(entry)
+        _validate_link(entry, manifest.version)
     link_paths = tuple(entry.path for entry in manifest.links)
     if link_paths != tuple(sorted(set(link_paths))):
         raise ApprovalRefused("installed manifest link paths must be sorted and unique")
@@ -176,13 +218,20 @@ def _validate_manifest(manifest):
                 raise ApprovalRefused(
                     "installed manifest intermediate directory is not declared"
                 )
-    if manifest.version == 3:
+    if manifest.version == 4 and (
+            _PRELOAD in all_paths or _PRELOAD in {
+                entry.target[1:] for entry in manifest.links
+                if entry.target.startswith("/")}):
+        raise ApprovalRefused("dynamic loader preload must remain absent")
+    if manifest.version in {3, 4}:
         link_map = {entry.path: entry.target for entry in manifest.links}
         for path in link_paths:
-            _resolve_link_path(path, file_paths, directory_set, link_map)
+            if _resolve_link_path(path, file_paths, directory_set, link_map,
+                                  manifest.version) == _PRELOAD:
+                raise ApprovalRefused("dynamic loader preload must remain absent")
 
 
-def _resolve_link_path(path, file_paths, directory_paths, link_map):
+def _resolve_link_path(path, file_paths, directory_paths, link_map, version=3):
     seen = set()
     current = path
     depth = 0
@@ -200,6 +249,8 @@ def _resolve_link_path(path, file_paths, directory_paths, link_map):
         target = link_map[current]
         if target.startswith("/"):
             current = target[1:]
+        elif version == 4:
+            current = _normalize_relative(current, target)
         else:
             parent = current.rpartition("/")[0]
             current = f"{parent}/{target}" if parent else target
@@ -208,7 +259,7 @@ def _resolve_link_path(path, file_paths, directory_paths, link_map):
 def _document(manifest):
     document = {
         "schema": {
-            1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: _SCHEMA_V3,
+            1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: _SCHEMA_V3, 4: _SCHEMA_V4,
         }[manifest.version],
         "files": [
             {"path": entry.path, "mode": entry.mode, "size": entry.size,
@@ -221,7 +272,7 @@ def _document(manifest):
             {"path": entry.path, "mode": entry.mode}
             for entry in manifest.directories
         ]
-    elif manifest.version == 3:
+    elif manifest.version in {3, 4}:
         document["directories"] = [
             {"path": entry.path, "mode": entry.mode}
             for entry in manifest.directories
@@ -269,6 +320,10 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
             if set(document) != {"schema", "files", "directories", "links"}:
                 raise ApprovalRefused("installed manifest fields refused")
             version = 3
+        elif schema == _SCHEMA_V4:
+            if set(document) != {"schema", "files", "directories", "links"}:
+                raise ApprovalRefused("installed manifest fields refused")
+            version = 4
         else:
             raise ApprovalRefused("installed manifest schema refused")
         if type(document["files"]) is not list:
@@ -279,9 +334,9 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
         for item in document["files"]:
             if type(item) is not dict or set(item) != {"path", "mode", "size", "sha256"}:
                 raise ApprovalRefused("installed manifest entry fields refused")
-            entries.append(InstalledFile(**item))
+            entries.append(InstalledFile(**item, v4=version == 4))
         directories = []
-        if version in {2, 3}:
+        if version in {2, 3, 4}:
             if type(document["directories"]) is not list:
                 raise ApprovalRefused("installed manifest directory list refused")
             if len(document["directories"]) > _MAX_DIRECTORIES:
@@ -289,9 +344,9 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
             for item in document["directories"]:
                 if type(item) is not dict or set(item) != {"path", "mode"}:
                     raise ApprovalRefused("installed manifest directory fields refused")
-                directories.append(InstalledDirectory(**item))
+                directories.append(InstalledDirectory(**item, v4=version == 4))
         links = []
-        if version == 3:
+        if version in {3, 4}:
             if type(document["links"]) is not list:
                 raise ApprovalRefused("installed manifest link list refused")
             if len(document["links"]) > _MAX_LINKS:
@@ -299,7 +354,7 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
             for item in document["links"]:
                 if type(item) is not dict or set(item) != {"path", "target"}:
                     raise ApprovalRefused("installed manifest link fields refused")
-                links.append(InstalledLink(**item))
+                links.append(InstalledLink(**item, v4=version == 4))
         manifest = InstalledManifest(tuple(entries), tuple(directories), version,
                                      tuple(links))
         if encode_installed_manifest(manifest) != raw:
@@ -313,7 +368,7 @@ def resolve_installed_link(manifest: InstalledManifest, path: str) -> str:
     """Resolve a selected regular file or declared link using manifest data only."""
     try:
         _validate_manifest(manifest)
-        _validate_path(path)
+        _validate_path(path, _ROOTS_V4 if manifest.version == 4 else _ROOTS_V3)
         file_paths = {entry.path for entry in manifest.files}
         if path in file_paths:
             return path
@@ -321,6 +376,7 @@ def resolve_installed_link(manifest: InstalledManifest, path: str) -> str:
         link_map = {entry.path: entry.target for entry in manifest.links}
         if path not in link_map:
             raise ApprovalRefused("installed manifest path is not a file or link")
-        return _resolve_link_path(path, file_paths, directory_paths, link_map)
+        return _resolve_link_path(path, file_paths, directory_paths, link_map,
+                                  manifest.version)
     except Exception:
         raise ApprovalRefused("installed manifest link resolution refused") from None

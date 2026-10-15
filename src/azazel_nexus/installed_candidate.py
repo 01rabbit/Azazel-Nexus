@@ -11,44 +11,49 @@ import stat
 from .installed_files import _DIR, _directory, _identity, _snapshot_at
 from .installed_manifest import (
     InstalledDirectory, InstalledFile, InstalledLink, InstalledManifest,
-    encode_installed_manifest, _validate_path, _MAX_DIRECTORIES, _MAX_FILES,
+    encode_installed_manifest, _validate_link, _validate_path, _ROOTS_V3, _ROOTS_V4,
+    _MAX_DIRECTORIES, _MAX_FILES,
     _MAX_LINKS, _MAX_FILE_SIZE, _MAX_TOTAL_SIZE,
 )
 from .operator_trust import ApprovalRefused
 
 
-def _selection(paths):
+def _selection(paths, roots=_ROOTS_V3):
     if type(paths) is not tuple or not 0 < len(paths) <= _MAX_FILES:
         raise ApprovalRefused("bounded explicit file selection required")
     for path in paths:
-        _validate_path(path)
+        _validate_path(path, roots)
     if paths != tuple(sorted(set(paths))):
         raise ApprovalRefused("sorted unique file selection required")
 
 
-def _directory_selection(directories):
+def _directory_selection(directories, roots=_ROOTS_V3):
     if type(directories) is not tuple or len(directories) > _MAX_DIRECTORIES:
         raise ApprovalRefused("bounded explicit directory selection required")
     for path in directories:
-        _validate_path(path)
+        _validate_path(path, roots)
     if directories != tuple(sorted(set(directories))):
         raise ApprovalRefused("sorted unique directory selection required")
 
 
-def _link_selection(links):
+def _link_selection(links, roots=_ROOTS_V3):
     if type(links) is not tuple or len(links) > _MAX_LINKS:
         raise ApprovalRefused("bounded explicit link selection required")
     for path in links:
-        _validate_path(path)
+        _validate_path(path, roots)
     if links != tuple(sorted(set(links))):
         raise ApprovalRefused("sorted unique link selection required")
 
 
-def _candidate_at(root_fd, paths, *, owner, directories=(), links=()):
-    """Private ordinary-tree test seam; production root is fixed."""
-    _selection(paths)
-    _directory_selection(directories)
-    _link_selection(links)
+def _candidate_at(root_fd, paths, *, owner, directories=(), links=(), allow_etc=False):
+    """Private ordinary-tree test seam; production root is fixed.
+
+    ``allow_etc`` admits the schema 4 etc/ root; the public generator sets it.
+    """
+    roots = _ROOTS_V4 if allow_etc else _ROOTS_V3
+    _selection(paths, roots)
+    _directory_selection(directories, roots)
+    _link_selection(links, roots)
     identities = {"": _directory(root_fd, owner)}
     entries = []
     link_entries = []
@@ -93,7 +98,7 @@ def _candidate_at(root_fd, paths, *, owner, directories=(), links=()):
                         or _identity(os.stat(components[-1], dir_fd=parent,
                                              follow_symlinks=False)) != _identity(before)):
                     raise ApprovalRefused("candidate file changed")
-                entries.append(InstalledFile(path, mode, count, digest.hexdigest()))
+                entries.append(InstalledFile(path, mode, count, digest.hexdigest(), True))
                 identities[path] = _identity(before)
             finally:
                 os.close(fd)
@@ -119,7 +124,7 @@ def _candidate_at(root_fd, paths, *, owner, directories=(), links=()):
                     or before.st_nlink != 1 or not 0 < before.st_size <= 512):
                 raise ApprovalRefused("candidate link metadata refused")
             target = os.readlink(components[-1], dir_fd=parent)
-            link_entry = InstalledLink(path, target)
+            link_entry = InstalledLink(path, target, True)
             after = os.stat(components[-1], dir_fd=parent, follow_symlinks=False)
             if _identity(after) != _identity(before):
                 raise ApprovalRefused("candidate link changed during observation")
@@ -127,10 +132,20 @@ def _candidate_at(root_fd, paths, *, owner, directories=(), links=()):
             identities[path] = _identity(before)
         finally:
             os.close(parent)
+    # Schema 4 only when some selected entry cannot be expressed in schema 3
+    # (an etc/ path or a link target outside the v3 rules); otherwise the
+    # schema 1/2/3 bytes are unchanged.
+    needs_v4 = any(entry.path.startswith("etc/") for entry in entries)
+    needs_v4 = needs_v4 or any(path.startswith("etc/") for path in (*directories, *links))
+    for link_entry in link_entries:
+        try:
+            _validate_link(link_entry, 3)
+        except ApprovalRefused:
+            needs_v4 = True
     manifest = InstalledManifest(
         tuple(entries),
-        tuple(InstalledDirectory(path) for path in directories),
-        3 if links else (2 if directories else 1),
+        tuple(InstalledDirectory(path, 0o755, True) for path in directories),
+        4 if needs_v4 else (3 if links else (2 if directories else 1)),
         tuple(link_entries),
     )
     first = _snapshot_at(root_fd, manifest, owner=owner)
@@ -147,19 +162,20 @@ def generate_installed_candidate(
     paths: tuple[str, ...], *, directories: tuple[str, ...] = (),
     links: tuple[str, ...] = (),
 ) -> bytes:
-    """Observe explicit /usr or /opt regular files under protected root only.
+    """Observe explicit /usr, /opt or (schema 4) /etc regular files under protected root only.
 
     Unlisted links, directory aliases, implicit discovery and device paths refuse.
     An operator must review selection completeness and independently admit pins.
     """
     try:
-        _selection(paths)
-        _directory_selection(directories)
-        _link_selection(links)
+        _selection(paths, _ROOTS_V4)
+        _directory_selection(directories, _ROOTS_V4)
+        _link_selection(links, _ROOTS_V4)
         fd = os.open("/", _DIR)
         try:
             return _candidate_at(
                 fd, paths, owner=0, directories=directories, links=links,
+                allow_etc=True,
             )
         finally:
             os.close(fd)

@@ -80,6 +80,8 @@ def _project_modules(registry, manifest, roots, main_path):
     main_relative = _path(main_path)
     if main_relative not in selected or selected[main_relative].mode != 0o755:
         raise ApprovalRefused("pinned controller wrapper required")
+    if "etc/ld.so.preload" in selected or "etc/ld.so.preload" in links:
+        raise ApprovalRefused("dynamic loader preload must remain absent")
     files, absent, modules = set(), {"etc/ld.so.preload"}, []
     attribute_count = 0
 

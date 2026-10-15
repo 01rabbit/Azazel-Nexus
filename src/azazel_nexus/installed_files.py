@@ -222,7 +222,8 @@ def _read_pinned_at(root_fd, raw, *, expected_digest, paths, owner):
     entries = {entry.path: entry for entry in manifest.files}
     if any(path not in entries or entries[path].size > 65536 for path in paths):
         raise ApprovalRefused("pinned content selection missing or exceeds bound")
-    selected = InstalledManifest(tuple(entries[path] for path in paths))
+    selected = InstalledManifest(tuple(entries[path] for path in paths),
+                                 version=manifest.version)
     first_content = dict.fromkeys(paths, b"")
     first = _snapshot_at(root_fd, selected, owner=owner, contents=first_content)
     second_content = dict.fromkeys(paths, b"")
