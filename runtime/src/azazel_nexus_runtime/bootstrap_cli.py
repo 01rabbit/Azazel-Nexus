@@ -1,14 +1,17 @@
 """Administrator provisioning command, never a service activation entrypoint."""
 
 import argparse
+from hashlib import sha256
 import sys
 
 from azazel_nexus.bootstrap_generation import verify_bootstrap_generation
+from azazel_nexus.bootstrap_prestart_policy import decode_pinned_prestart_policy
 from azazel_nexus.bootstrap_generation_publish import BootstrapGenerationDurabilityUncertain
 from azazel_nexus.bootstrap_clock_store import TimeDurabilityUncertain
 from azazel_nexus.generation import GenerationRefused
 from azazel_nexus.operator_trust import ApprovalRefused
 
+from .bootstrap_loaded_policy import decode_loaded_bootstrap_policy
 from .bootstrap_declared_context import load_declared_bootstrap_context
 from .bootstrap_provisioning import (
     publish_selected_bootstrap_generation, selected_publication_digest,
@@ -123,14 +126,56 @@ def run_generation(*, source, out, publish):
     return 0
 
 
+def run_loaded_units_preview(*, source, out):
+    """Read-only check of supplied admission.json and loaded-units.json lines.
+
+    Nothing is installed, read from the host, or authorized; live units and the
+    systemd profile are still checked at admission.
+    """
+    try:
+        if source.isatty():
+            raise ApprovalRefused("preview needs redirected input")
+
+        def line(limit):
+            raw = source.buffer.readline(limit + 2)
+            if not raw.endswith(b"\n") or len(raw) > limit + 1:
+                raise ApprovalRefused("bounded complete input lines required")
+            return raw[:-1]
+
+        admission = line(8192)
+        loaded_raw = line(65536)
+        if source.buffer.read(1):
+            raise ApprovalRefused("unexpected preview input")
+        # The pin is tautological: only canonicality and type checks apply here.
+        digest = "sha256:" + sha256(admission).hexdigest()
+        policy = decode_pinned_prestart_policy(admission, expected_digest=digest)
+        if policy.loaded_policy_digest is None:
+            raise ApprovalRefused("v4 admission policy required")
+        decode_loaded_bootstrap_policy(loaded_raw, prestart_policy=policy)
+    except (ApprovalRefused, GenerationRefused, OSError, AttributeError, ValueError,
+            RecursionError, TypeError):
+        print("Loaded-units preview refused; no changes made.", file=out)
+        return 1
+    print("Loaded-units policy valid against the supplied v4 admission policy; "
+          "NOT installed, NOT admitted, NOT authorized.", file=out)
+    print("Admission policy SHA-256 (deployment policy_digest): " + digest, file=out)
+    print("Loaded-units policy SHA-256 (admission loaded_policy_digest): sha256:"
+          + sha256(loaded_raw).hexdigest(), file=out)
+    print("Digests are of the supplied bytes only, not verified pins; package, closure, "
+          "live loaded units and systemd profile are checked only at admission.", file=out)
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="az-nexus-bootstrap")
     parser.add_argument("operation", choices=("generation-preview", "generation-publish",
                                                "time-initialize", "time-recover",
-                                               "observe-packages"))
+                                               "observe-packages", "loaded-units-preview"))
     args = parser.parse_args(argv)
     if args.operation == "observe-packages":
         return run_package_observation(out=sys.stdout)
+    if args.operation == "loaded-units-preview":
+        return run_loaded_units_preview(source=sys.stdin, out=sys.stdout)
     if args.operation in {"time-initialize", "time-recover"}:
         return run_time(source=sys.stdin, out=sys.stdout, recovery=args.operation == "time-recover")
     return run_generation(source=sys.stdin, out=sys.stdout,

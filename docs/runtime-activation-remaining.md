@@ -5945,8 +5945,12 @@ purpose policy with the store's own decoder and prints the
 refuse a tty, bound input to the reader limits, write nothing and print one
 fixed refusal line. An independent review found that deeply nested JSON escaped
 the approval preview as an uncaught `RecursionError`; both previews now fail
-closed on it, pinned by tests. A loaded-units preview is deferred (it needs a v4
-admission policy and a runtime-side entry), and the existing
+closed on it, pinned by tests. `az-nexus-bootstrap loaded-units-preview` reads
+two canonical lines (a v4 admission policy, then loaded-units JSON) and checks
+the loaded-units policy against that admission with the runtime's own decoder,
+printing digests of the supplied bytes only — package, closure, live units and
+the systemd profile are still checked at admission; its independent review
+found no escape path and its wording findings are addressed. The existing
 `installed-files-candidate` already produces context-free manifest candidates.
 The previews confer no admission, enrollment or authorization.
 
