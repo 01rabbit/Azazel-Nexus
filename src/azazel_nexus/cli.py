@@ -734,6 +734,14 @@ def main(
         "bootstrap-deployment-preview",
         help="validate canonical administrator JSON from stdin; no installation or admission",
     )
+    sub.add_parser(
+        "bootstrap-admission-preview",
+        help="validate canonical prestart admission policy JSON from stdin; no installation or admission",
+    )
+    sub.add_parser(
+        "bootstrap-approval-policy-preview",
+        help="validate canonical bootstrap approval policy JSON from stdin; no installation or enrollment",
+    )
     sub.add_parser("bootstrap-deployment-initialize", help="interactive first declaration publication; no activation")
     sub.add_parser("bootstrap-deployment-recover", help="interactive completion of matching pending declaration; no repair")
     sub.add_parser("bootstrap-selection-initialize", help="interactive initial per-boot selection; no approval or activation")
@@ -927,6 +935,57 @@ def main(
         print("Declaration syntax valid; NOT installed, NOT admitted, NOT authorized.", file=stream)
         print("Declaration SHA-256: " + sha256(raw).hexdigest(), file=stream)
         print("Independent node, policy and fresh runtime checks remain required.", file=stream)
+        return 0
+
+    if args.command == "bootstrap-admission-preview":
+        from hashlib import sha256
+        from .bootstrap_prestart_policy import decode_pinned_prestart_policy
+
+        try:
+            if sys.stdin.isatty():
+                raise ApprovalRefused("redirect canonical JSON into stdin")
+            raw = sys.stdin.buffer.read(8193)
+            if not raw or len(raw) > 8192:
+                raise ApprovalRefused("policy size refused")
+            digest = "sha256:" + sha256(raw).hexdigest()
+            # Self-pinned: the pin is tautological (digest of the input itself).
+            # The call is used only for its canonicality and type checks.
+            policy = decode_pinned_prestart_policy(raw, expected_digest=digest)
+        except (ApprovalRefused, OSError, AttributeError, ValueError, TypeError,
+                RecursionError):
+            print("Admission preview refused; no changes made.", file=stream)
+            return 1
+        print("Admission policy syntax valid; NOT installed, NOT admitted, NOT authorized.", file=stream)
+        print("Admission policy SHA-256 (deployment policy_digest): " + digest, file=stream)
+        if policy.loaded_policy_digest is None:
+            print("Schema: v3", file=stream)
+        else:
+            print("Schema: v4", file=stream)
+            print("Loaded-units policy pin: " + policy.loaded_policy_digest, file=stream)
+        print("Independent package, closure, profile and fresh runtime checks remain required.", file=stream)
+        return 0
+
+    if args.command == "bootstrap-approval-policy-preview":
+        # Private helper imported deliberately: it is the single canonical decoder
+        # used by the protected store, so the preview cannot drift from it.
+        from .bootstrap_store import _decode_policy
+
+        try:
+            if sys.stdin.isatty():
+                raise ApprovalRefused("redirect canonical JSON into stdin")
+            raw = sys.stdin.buffer.read(65537)
+            if not raw or len(raw) > 65536:
+                raise ApprovalRefused("policy size refused")
+            policy = _decode_policy(raw)
+        # RecursionError: deeply nested JSON reaches json.loads bare here, unlike
+        # the protected reader whose caller fails closed on any exception.
+        except (ApprovalRefused, OSError, AttributeError, ValueError, TypeError,
+                RecursionError):
+            print("Approval policy preview refused; no changes made.", file=stream)
+            return 1
+        print("Approval policy syntax valid; NOT installed, NOT enrolled, NOT authorized.", file=stream)
+        print("Approval policy digest (deployment approval_policy_digest): " + policy.digest(), file=stream)
+        print("Operator enrollment and signatures remain separate.", file=stream)
         return 0
 
     if args.command == "commission":

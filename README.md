@@ -45,6 +45,8 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | `commission` | role assignment, with explicit operator confirmation |
 | `commission-review` | read-only signature and assigned-binding review of a protected draft; no import or activation |
 | `bootstrap-deployment-preview` | bounded canonical administrator declaration syntax/hash check from stdin; no publication or admission |
+| `bootstrap-admission-preview` | bounded canonical prestart admission policy syntax/hash check from stdin; not installed, admitted or authorized |
+| `bootstrap-approval-policy-preview` | bounded canonical bootstrap approval policy syntax/digest check from stdin; no installation, enrollment or authorization |
 | `bootstrap-deployment-initialize` | interactive first declaration publication, with digest re-entry and separate confirmation; no overwrite or activation |
 | `bootstrap-deployment-recover` | interactive completion of an exact retained pending declaration; no repair, reset or activation |
 | `bootstrap-selection-initialize` | interactive first per-boot selection publication; digest and operation confirmation; no approval or activation |

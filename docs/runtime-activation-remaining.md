@@ -5891,3 +5891,71 @@ open and is not closed beyond this evidence.
 [Ready-order fixture evidence](evidence/bootstrap-ready-order-sandbox-2026-10-15.json)
 records the tool/source hashes, the synthetic result, the Ruff scope, the review
 disposition, all three real-host attempts and the operator's passing report.
+
+### 2026-10-15 — composition status, containment fixtures, installer staging
+
+Three independent read-only investigations (acceptance conditions, provisioning
+inputs, composition/factory) were integrated into a finite status record. The
+production factory `bootstrap_narrowing_manager_in_transaction` builds the base
+`BootstrapNarrowingManager`, whose `open_pair`, `start_and_wait`, `unmask` and
+`is_ready` refuse unconditionally; no runtime input makes them succeed, and the
+implemented delegations live only on the private `_PrototypeBootstrapManager`.
+The refusal is kept: the inputs and native evidence a reviewed selection change
+would need are not all present. Every provisioning input has a protected reader,
+but enrollment, the purpose policy, reviewed pins, the per-boot selection, time
+anchor and signed approval are owner inputs, and the initial-deadline genesis
+remains the provisioning design gate in the 2026-10-14 table (rows 1, 4 and 7):
+it was deliberately not implemented, because approval verification and the
+owner's source/genesis decisions must precede it. An initial claim that the
+deployment and selection publishers were unexposed was checked and corrected:
+they are `azazel-nexus bootstrap-deployment-*` / `bootstrap-selection-*`.
+
+`tools/qualify_lifecycle_containment_sandbox.py` adds three operator-only fixture
+cases on the READY-order primitives: controller death while helper starts are
+still queued (late-start containment, with positive proof the kill preceded
+READY: controller events are only `preready` and no marker exists), audit death
+follow-stopping commission while the controller survives, and a sandboxed
+controller writing its once-marker under the per-boot `/run` tmpfs, whose
+re-run is refused by the manager on a blocking start. Its 30 synthetic tests
+pass; an independent review found no hard-constraint violation and its findings
+(kill-before-READY proof, controller cgroup baseline, evaluated-condition
+recheck, interrupt-safe cleanup, tmpfs check, per-case isolation) are addressed.
+The privileged VM run is pending the operator.
+
+On the Debian ARM64 VM the installer's read-only Phase 0 and non-root Phase 1
+(`DESTDIR` staging with `--without-service-manager --without-accounts`) ran
+against a verified archive of commit `9d9f7bd`, using a throwaway ordinary
+unpacked venv with the previously reviewed native backend (the existing
+conformance venv holds an editable install of older source that the stager
+correctly ignores; it was not modified). Exit 0; all eight units, the preset and
+the tmpfiles rule were byte-identical to source; wrappers carry the `-IS`
+shebang and fixed import path; a host-state snapshot was identical before and
+after; the scratch root was removed. The persistent phases — system accounts,
+masks, `systemctl enable azazel-activated` for the next boot, controller start
+and reboot — were not run and need explicit owner approval.
+
+Following the selected sequence (validation/preview without writes before any
+protected publication), two read-only previews were added:
+`azazel-nexus bootstrap-admission-preview` validates canonical prestart admission
+JSON with the same decoder the protected reader uses and prints the
+`sha256:` digest the deployment `policy_digest` must carry (plus the v4
+loaded-units pin); `azazel-nexus bootstrap-approval-policy-preview` validates the
+purpose policy with the store's own decoder and prints the
+`approval_policy_digest`, without echoing operator labels or duration. Both
+refuse a tty, bound input to the reader limits, write nothing and print one
+fixed refusal line. An independent review found that deeply nested JSON escaped
+the approval preview as an uncaught `RecursionError`; both previews now fail
+closed on it, pinned by tests. A loaded-units preview is deferred (it needs a v4
+admission policy and a runtime-side entry), and the existing
+`installed-files-candidate` already produces context-free manifest candidates.
+The previews confer no admission, enrollment or authorization.
+
+This session's related tests: 74 passed across the three fixture-tool suites;
+104 passed for the preview suite with the deployment-preview, boundary and CLI
+companions;
+the changed files pass the project Ruff ruleset and the 54-document link check.
+No product unit, enable, reboot, provider/fetch/Edge activation, CI, push or
+Issue closure occurred. [Composition status](evidence/bootstrap-composition-status-2026-10-15.json)
+and [installer staging](evidence/bootstrap-installer-staging-2026-10-15.json)
+evidence record the classification, gates, owner-input procedure, commands and
+hashes.
