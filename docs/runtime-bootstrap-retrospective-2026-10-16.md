@@ -81,3 +81,19 @@ Gate D — run
   close the grant. Do not change the production `open_pair` refusal.
 - Add the Gate B integration test for exactly this path; keep the underlying cause in `BootstrapContainmentFailed`.
 - Reaching READY still requires a separately reviewed production-factory decision (out of scope of these fixes).
+
+## 6. Gate status after the run-4 fix (2026-10-16, desk only; the VM was not touched)
+- Fix: `BootstrapNarrowingManager.withdraw_pair` accepts a grant in prepared / pair_grant_intent / closing as
+  "unpublished" only when the latest `close_starts()` fence is the unjournaled mask baseline and a fresh
+  loaded-mask observation matches it (journal absent, no pair entry in the overlay, mask stamps unchanged). It
+  removes nothing and grants nothing. Close evidence records `grant_withdrawal: "unpublished-baseline"`, a label only.
+  The production `open_pair` refusal is unchanged.
+- Gate A: an independent desk trace is in `docs/evidence/bootstrap-gate-a-trace-2026-10-16.md`. Expected outcome:
+  `open_pair` refused → containment confirmed → grant `closed` → deadline released → exit 1, so the unit is `failed`.
+  Open risks: total time against `TimeoutStartSec=30s` (estimated, not measured); loaded masked-stub FragmentPath
+  and mask stamps after `MaskUnitFiles` (empirically fine in run 4's first `_contain`).
+- Gate B: `tests/unit/test_runtime_bootstrap_unpublished_withdrawal.py` runs the real supervisor, manager, closure,
+  withdrawal and journal store on a host-mirroring tree, with a fake bus and cgroup tree. It fails against the pre-fix
+  behaviour (the journal-unavailable withdrawal) and passes with the fix.
+- Gate C/D: not started. They need the owner to revert the VM snapshot (run-4 state: marker, recovery_required grant)
+  and grant temporary sudo for the sandboxed rehearsal.

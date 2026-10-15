@@ -100,6 +100,11 @@ def _require_profile(session):
         raise UnitOperationFailed("systemd compatibility profile was not admitted")
 
 
+# Grant phases before any pair publication can have been attempted. A closing
+# grant qualifies only through the fresh unjournaled-baseline observation.
+_UNPUBLISHED_PHASES = frozenset({"prepared", "pair_grant_intent", "closing"})
+
+
 class BootstrapNarrowingManager:
     """Trusted composition dependency, not a CLI/RPC or general unit API.
 
@@ -139,6 +144,7 @@ class BootstrapNarrowingManager:
         self._withdrawal_files = withdrawal_files
         self._containment_files = closed_overlay_files
         self._closed_observation = None
+        self._withdrawal_kind = None
         self._publication_inputs = None
         self._publication_check = None
         self._controller_binding = None
@@ -974,6 +980,13 @@ class BootstrapNarrowingManager:
             raise UnitOperationFailed(
                 "bootstrap transaction identity required for grant withdrawal"
             )
+        self._withdrawal_kind = None
+        baseline = self._closed_overlay_files
+        if (baseline is not None and self._containment_files is baseline
+                and baseline.initial_baseline()):
+            self._confirm_unpublished_withdrawal(transaction, baseline)
+            self._withdrawal_kind = "unpublished-baseline"
+            return
         files = self._withdrawal_files
         masked = self._closed_observation
         if files is None or masked is None or self._cgroup_root_identity is None:
@@ -1011,6 +1024,7 @@ class BootstrapNarrowingManager:
             final = self._observe_withdrawal_fence(restored, owner, root)
             self._containment_files = restored
             self._closed_observation = final
+            self._withdrawal_kind = "withdrawn"
         except Exception:
             # No success cache survives uncertainty; durable intent is retained.
             self._closed_observation = None
@@ -1018,6 +1032,57 @@ class BootstrapNarrowingManager:
         finally:
             if root is not None:
                 os.close(root)
+
+    @property
+    def withdrawal_kind(self) -> str | None:
+        """Descriptive evidence label of the last confirmed withdrawal only.
+
+        Never consulted for a decision: it distinguishes "nothing was
+        published" from "owned files were withdrawn" in close evidence.
+        """
+        return self._withdrawal_kind
+
+    def _confirm_unpublished_withdrawal(self, transaction, baseline) -> None:
+        """Nothing to withdraw: the latest fence is the unjournaled mask baseline.
+
+        Only a grant that never reached pair_grant_opened qualifies. The fresh
+        loaded-mask observation must match the close_starts() fence and the
+        baseline must still show no journal and no overlay entry for the pair.
+        This removes no file and grants nothing; a journal or overlay entry
+        that appears refuses as before.
+        """
+        masked = self._closed_observation
+        self._closed_observation = None
+        if (masked is None or self._cgroup_root_identity is None
+                or transaction.phase not in _UNPUBLISHED_PHASES):
+            raise UnitOperationFailed("bootstrap owned withdrawal unconfirmed")
+
+        def operation(session):
+            arguments = dict(bus=session._bus, message_factory=session._message_factory,
+                             message_type=session._message_type, timeout_seconds=self._timeout)
+
+            async def observe():
+                if baseline.check() != masked.fragments:
+                    raise UnitOperationFailed("bootstrap unpublished baseline changed")
+                current = await BootstrapMaskedPairInspector(
+                    **arguments, expected_owner=masked.owner,
+                    expected_fragments=masked.fragments,
+                ).inspect()
+                if (not current.same_closure(masked)
+                        or baseline.check() != masked.fragments):
+                    raise UnitOperationFailed("bootstrap unpublished baseline changed")
+
+            return observe()
+
+        try:
+            self._check_cgroup_mount()
+            self._run_owned(operation)
+            self._check_cgroup_mount()
+            if not baseline.initial_baseline() or self._containment_files is not baseline:
+                raise UnitOperationFailed("bootstrap unpublished baseline changed")
+        except Exception:
+            raise UnitOperationFailed("bootstrap owned withdrawal unconfirmed") from None
+        self._closed_observation = masked
 
     def _observe_withdrawal_fence(self, files, owner, root):
         """Phase-aware fresh observation, including mixed absent/present masks.

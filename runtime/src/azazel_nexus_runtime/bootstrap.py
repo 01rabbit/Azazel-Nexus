@@ -410,6 +410,9 @@ class BootstrapSupervisor:
             try:
                 if self.manager.withdraw_pair(self._grant_transaction) is not None:
                     failures.append("withdrawal")
+                elif getattr(self.manager, "withdrawal_kind", None) == "unpublished-baseline":
+                    # Evidence label only; containment was already required above.
+                    grant_withdrawal = "unpublished-baseline"
                 else:
                     grant_withdrawal = "confirmed"
             except Exception:

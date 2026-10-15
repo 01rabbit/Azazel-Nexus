@@ -62,6 +62,10 @@ class BootstrapClosedOverlayFiles:
         self._stamps = self._mask_stamps()
         self.check()
 
+    def initial_baseline(self) -> bool:
+        """Whether the latest close() found no journal; not a never-existed proof."""
+        return self._initial is True and self._journal is None
+
     def check(self):
         if self._initial:
             return self._check_initial()
