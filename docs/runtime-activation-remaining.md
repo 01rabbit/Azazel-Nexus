@@ -5815,3 +5815,79 @@ operation or development-repository commit/push occurred. Execution-profile
 admission and native lifecycle qualification still block public opening; no
 provider/Edge activation was added. Exact commands, source/archive/XML hashes
 and limits are in [launch evidence](evidence/bootstrap-launch-environment-2026-10-15.json).
+
+### 2026-10-15 — READY-order / bind-stop fixture tool (prepared, not yet run)
+
+The native timer sandbox evidence explicitly left "Type=notify/READY protocol"
+and "controller-to-helper BindsTo/After containment and queued/late jobs"
+*not qualified*. A new operator-only tool, `tools.qualify_ready_order_sandbox`,
+is the fixture that will close exactly those, separately from product admission.
+It reuses the native timer tool's `_stage_parent` and `_stop_fixture` for staging
+and fixture stop/cleanup, and operates only uniquely named transient
+`azazel-nexus-readyorder-<32hex>-{controller,audit,commission,recheck}.service`
+units; its `UNIT_PATTERN` refuses every product unit name. Default is plan-only:
+no subprocess, no systemd, no artifact read. `--execute` refuses unless already
+root and never attempts sudo.
+
+On a real host the three Type=notify fixtures reproduce the product edges
+(`After`/`Requires`/`BindsTo`). It proves, by system-wide CLOCK_MONOTONIC event
+timestamps, that the controller readies before either helper starts and that the
+order is controller → audit → commission; that the helpers are held during the
+controller's pre-READY gate (no helper event then, helper start jobs waiting);
+that each unit is observed populated in its own cgroup *before* the kill, so a
+later absence or emptiness counts as drain rather than an unobserved path; that
+killing the controller's main process follow-stops both helpers, drains their
+cgroups (retried) and their systemd jobs; and that the consumed
+`ConditionPathExists=!/run/azazel-nexus-bootstrap/controller-used` once-marker
+refuses a fresh controller re-run. Stop and containment are confirmed before any
+runner cleanup, and staging is removed only when every attempted unit's stop is
+confirmed.
+
+Synthetic regression starts no systemd: `tests/unit/test_ready_order_sandbox_tool.py`
+is **24 passed**, **44 passed** with the sibling deadline-tool suite. The happy-path
+fake models the real hold, and a dedicated test fails the run when a helper starts
+before READY, so that gate cannot silently regress. One `real_process` test runs
+the actual probe text with a throwaway notify socket and asserts its argv-role +
+`__file__`-directory + stamp + READY contract. The two changed files pass the
+project's effective Ruff ruleset (`E4,E7,E9,F`, ruff 0.17.0) — the same bar the
+sibling tool meets; ruff 0.17.0's expanded compiled default additionally flags the
+shared, accepted broad-except cleanup pattern on both tools and is recorded, not
+chased. Diff is two added files only; the 54-document link check passes. An
+independent fresh-context review found no hard-constraint violation and three
+non-critical findings (cgroup baseline/retry, held-before-READY gating, re-run
+await condition), all addressed.
+
+Two privileged real-host attempts have run. Attempt 1 **failed**: the controller
+held the helpers correctly but wrote no events and went to failed, from a
+command()/probe argument-contract bug — the probe read its staging directory from
+an argv the tool never passed and raised before stamping; the monkeypatched tests
+do not execute the probe text, so they missed it. The probe now self-locates via
+`__file__`, covered by the new `real_process` test. Attempt 2 then **passed every
+qualification check on the real host** — ordered READY timeline
+(preready < ready < audit < commission), helpers held and both waiting,
+all cgroups populated before the kill, controller death follow-stopping both
+helpers with cgroup and job drain, and the once-marker refusing the re-run — but
+reported `passed=false` on a cleanup artifact: `systemctl stop` returned "not
+loaded" for the BindsTo-followed helpers and the condition-skipped recheck unit,
+which systemd had already garbage-collected (the terminal stopped state the
+containment checks had confirmed). A `_confirm_or_stop` wrapper now treats an
+already not-found unit as confirmed stopped and only stops a still-loaded one,
+reusing the unchanged sibling `_stop_fixture`; four tests cover it. Attempt 3 then
+**passed cleanly on the real host**: `passed=true`, `error=null`,
+`cleanup_confirmed=true`, no retained directory, exit 0 — every ready-order,
+containment (cgroup + job drain) and re-run-refusal check true. A separate
+read-only cross-read (no sudo) confirmed no leftover fixture units, no leftover
+staging directories, and that the product `azazel-activated`/`auditd`/`commissiond`
+units stayed `not-found`/inactive — the fixture never touched them.
+
+No product unit operation, native rebuild, CI, provider/Edge activation,
+physical/firmware operation or commit/push occurred. The privileged actions were
+the three fixture attempts above, which operated only their own uniquely named
+transient units under an operator root session (the tool never attempts sudo); the
+two earlier failures left root-owned staging directories the operator removed.
+This qualifies systemd fixture mechanics, not product admission/deployment, and
+fabricates no enrollment/pins/approval/time/epoch/generation input. Issue #93 stays
+open and is not closed beyond this evidence.
+[Ready-order fixture evidence](evidence/bootstrap-ready-order-sandbox-2026-10-15.json)
+records the tool/source hashes, the synthetic result, the Ruff scope, the review
+disposition, all three real-host attempts and the operator's passing report.

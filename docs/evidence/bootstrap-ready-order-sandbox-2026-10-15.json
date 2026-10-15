@@ -1,0 +1,155 @@
+{
+  "date": "2026-10-15",
+  "issue": 93,
+  "scope": "A new operator-only systemd READY-order / bind-stop fixture tool, its synthetic regression and source provenance, and the operator's PASSING privileged run on a real Debian ARM64 systemd host (attempt 3 after two recorded earlier failures). This qualifies systemd fixture mechanics only; it is not product admission/deployment.",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "5bb1a62b0fa9e623de0dca755c9fac3bf1833035",
+    "dirty": true,
+    "added_files": {
+      "tools/qualify_ready_order_sandbox.py": "66bcc235beaba2df61273ed236b20e95392f1f14e908aa0b0381126db498b33f",
+      "tests/unit/test_ready_order_sandbox_tool.py": "36b296a4a39cbd289a5847a33c82393fe97ec27ebf2dc4cbf226921a5b79cc5c"
+    },
+    "existing_sources_unchanged": true
+  },
+  "tool": {
+    "module": "tools.qualify_ready_order_sandbox",
+    "invocation": "python -m tools.qualify_ready_order_sandbox from the repo root, OR python /abs/path/tools/qualify_ready_order_sandbox.py from any cwd (a __package__ bootstrap puts the repo root on sys.path); add --execute under an operator root session",
+    "reuses": "tools.qualify_bootstrap_deadline_sandbox._stage_parent and ._stop_fixture (staging and fixture stop/cleanup)",
+    "probe_sha256": "40b9cafb36e002c5f35fa5a83ff25fe591308439bc44946b723d0842f48d94a3",
+    "default_mode": "plan-only; no subprocess, no systemd, no artifact reads; prints probe hash, staging parent and the Type=notify property subset",
+    "fixture_units": "uniquely named azazel-nexus-readyorder-<32hex>-{controller,audit,commission,recheck}.service transient units only; UNIT_PATTERN refuses every product unit name",
+    "properties_count": 33,
+    "lifecycle_only_properties": [
+      "Type=notify", "NotifyAccess=main", "RuntimeMaxSec=180s",
+      "TimeoutStartSec=30s", "TimeoutStopSec=5s", "StandardOutput=journal",
+      "StandardError=journal", "SyslogIdentifier=azazel-nexus-readyorder-probe",
+      "UnsetEnvironment=(controller removal set)"
+    ]
+  },
+  "claims_the_tool_will_establish_on_a_real_host": [
+    "Type=notify READY sequencing controller -> audit -> commission by system-wide CLOCK_MONOTONIC event timestamps",
+    "helpers are held behind the controller until it signals READY (no helper event during the pre-READY gate; helper start jobs observed waiting)",
+    "each unit is observed populated in its own cgroup before the kill (a live baseline), so later absence/emptiness counts as drain rather than an unobserved path",
+    "on controller death, BindsTo follow-stops audit and commission; their cgroups drain (populated 0 or removed, retried) and their systemd jobs drain",
+    "the consumed ConditionPathExists=!.../controller-used once-marker refuses a fresh controller re-run (ConditionResult=no, nothing ran)",
+    "stop and containment are confirmed before any runner cleanup; staging is removed only when every attempted fixture unit's stop is confirmed"
+  ],
+  "synthetic_regression": {
+    "command": "PYTHONPATH=src uv run --no-project --isolated --offline --with pytest python -m pytest tests/unit/test_ready_order_sandbox_tool.py",
+    "result": "24 passed",
+    "together_with_sibling": "tests/unit/test_ready_order_sandbox_tool.py + tests/unit/test_bootstrap_deadline_sandbox_tool.py => 44 passed",
+    "nature": "mostly injected / monkeypatched: these set states and check the tool's control flow and verification logic without systemd. One test is marked real_process: it runs the actual PROBE text in a subprocess with a throwaway NOTIFY_SOCKET and asserts the probe takes its role from argv, resolves its own directory from __file__, stamps the event and sends READY=1. None of these is evidence of a real systemd lifecycle.",
+    "note": "The happy-path fake models the real hold (helpers stamp nothing until the first active poll), and a dedicated test fails the run when a helper runs before controller READY, so the held-before-READY gate cannot silently regress."
+  },
+  "real_host_attempt1": {
+    "status": "FAILED and superseded; recorded, not hidden.",
+    "host": "Debian ARM64 systemd VM (rabbit@192.168.40.100), systemd-run/systemctl present, cgroup v2, /var/lib exec, python3.13.5",
+    "command": "sudo /home/rabbit/nexus-rc2-conformance-20261013/bin/python /home/rabbit/azn-readyorder-20261015/tools/qualify_ready_order_sandbox.py --execute",
+    "tool_sha256_at_attempt1": "b18311676ad2f27991e820151b294594aab00cd8f3caa4f177034a87e79ccaa3",
+    "observed": "passed=false, exit=1. ready_order.held_jobs showed controller running with audit+commission waiting and helpers_held_before_ready=true (the hold worked), but events=[] and the controller unit went to failed; controller_death and rerun_refusal never ran; a root-owned /var/lib/azazel-nexus-readyorder-6vb0lsde was retained.",
+    "root_cause": "command()/PROBE argument-contract bug: command() launched the probe as `python3.13 -IS <dir>/probe.py <role>` but the PROBE read its staging directory from sys.argv[2], which was never passed. The probe raised IndexError on its first line, before stamping any event. The monkeypatched run() tests never execute the PROBE text, so they could not catch it.",
+    "fix": "PROBE now resolves its directory from Path(__file__).resolve().parent (the deadline tool's self-locating idiom), removing the missing-argv dependency; a new real_process test runs the PROBE and asserts the argv-role + __file__-directory + stamp + READY contract. Corrected tool sha256 2ffe1aacf0b9764860b30379f973eb8b4fa266951ddafce489b11e56b75232d0, probe sha256 40b9cafb36e002c5f35fa5a83ff25fe591308439bc44946b723d0842f48d94a3.",
+    "cleanup_remaining": "The retained root-owned /var/lib/azazel-nexus-readyorder-6vb0lsde from this failed attempt is separate first-attempt residue; it needs an operator `sudo rm -rf` and is not part of a successful run's cleanup (the operator removed it before attempt 2)."
+  },
+  "real_host_attempt2": {
+    "status": "Substantively PASSED but reported passed=false on a cleanup-confirmation artifact; superseded by the cleanup fix.",
+    "tool_sha256_at_attempt2": "2ffe1aacf0b9764860b30379f973eb8b4fa266951ddafce489b11e56b75232d0",
+    "token": "c1398cd118f04e40b3b22b1d472c5512",
+    "substantive_result": "Every qualification check passed on the real host: ready_order ordered=true with events controller preready(145533091037649) < ready(145537091657062) < audit start(145537140745531) < commission start(145537183778083), helpers_held_before_ready=true with both helpers waiting, all_active=true, all_populated_before=true; controller_death helpers_stopped=true, all_cgroups_drained=true (controller+audit+commission), jobs_drained=true (controller main pid 26957 killed); rerun_refusal ConditionResult=no, ExecMainPID=0, refused=true.",
+    "artifact": "passed=false only because cleanup_confirmed=false: `systemctl stop` returned exit 5 (not loaded) for audit, commission and the recheck unit. BindsTo-followed helpers and the condition-skipped recheck unit are transient units systemd garbage-collects once inactive, so they were already gone by cleanup time -- the terminal stopped state, which the containment checks had already confirmed. A root-owned /var/lib/azazel-nexus-readyorder-fy07hmh_ was retained.",
+    "fix": "Added _confirm_or_stop() in the tool: it reuses the sibling _stop_fixture only when the unit is still loaded, and treats an already not-found (garbage-collected) unit as confirmed stopped, tolerating a race into GC after the check. The sibling tool is unchanged. Four synthetic tests cover the new branch. Corrected tool sha256 66bcc235beaba2df61273ed236b20e95392f1f14e908aa0b0381126db498b33f; probe sha256 unchanged (40b9cafb...).",
+    "cleanup_remaining": "/var/lib/azazel-nexus-readyorder-fy07hmh_ is attempt-2 residue awaiting an operator `sudo rm -rf` (the operator removed it before attempt 3)."
+  },
+  "real_host_operator_report": {
+    "status": "PASSED on the real host (attempt 3).",
+    "tool_sha256": "66bcc235beaba2df61273ed236b20e95392f1f14e908aa0b0381126db498b33f",
+    "probe_sha256": "40b9cafb36e002c5f35fa5a83ff25fe591308439bc44946b723d0842f48d94a3",
+    "token": "f3f3217ba48d461f81aae03fbd231ca9",
+    "command": "sudo /home/rabbit/nexus-rc2-conformance-20261013/bin/python /home/rabbit/azn-readyorder-20261015/tools/qualify_ready_order_sandbox.py --execute",
+    "exit": 0,
+    "passed": true,
+    "ready_order": {
+      "events_monotonic_ns": {
+        "controller_preready": 145856847106643,
+        "controller_ready": 145860848256026,
+        "audit_start": 145860908750688,
+        "commission_start": 145860930891685
+      },
+      "ordered": true,
+      "helpers_held_before_ready": true,
+      "held_jobs": "controller running; audit and commission waiting",
+      "all_active": true,
+      "all_populated_before": true
+    },
+    "controller_death": {
+      "controller_main_pid": 27149,
+      "helpers_stopped": true,
+      "all_cgroups_drained": true,
+      "jobs_drained": true
+    },
+    "rerun_refusal": {"ConditionResult": "no", "ExecMainPID": "0", "refused": true},
+    "cleanup_confirmed": true,
+    "retained_directory": null,
+    "unconfirmed_units": [],
+    "independent_read_only_crosscheck": {
+      "by": "coordinator over read-only SSH (no sudo), separate from the tool's self-report",
+      "leftover_fixture_units": "none (systemctl list-units --all azazel-nexus-readyorder-* empty)",
+      "leftover_failed_units": "none",
+      "leftover_staging_dirs": "none under /var/lib",
+      "product_units": "azazel-activated.service, azazel-auditd.service and azazel-commissiond.service are LoadState=not-found / inactive / dead -- never operated by the fixture",
+      "probe_journal": "not read: the SSH account is not in systemd-journal, so a privileged journal cross-read of the probe identifier was not available; the event-file timestamps and systemctl show properties are the primary evidence"
+    },
+    "interpretation": "On real systemd this establishes exactly the two items the native timer sandbox left not-qualified: Type=notify READY sequencing controller->audit->commission (held before READY), and controller-to-helper BindsTo/After containment with cgroup+job drain on controller death, plus the once-marker re-run refusal. It remains a synthetic fixture: it is NOT product admission/deployment and fabricates no enrollment/pins/approval/time/epoch/generation input."
+  },
+  "ruff": {
+    "version": "0.17.0",
+    "project_ruleset_command": "ruff check --isolated --select E4,E7,E9,F tools/qualify_ready_order_sandbox.py tests/unit/test_ready_order_sandbox_tool.py",
+    "project_ruleset_result": "All checks passed",
+    "note": "E4,E7,E9,F is the project's established effective ruleset: the sibling qualify_bootstrap_deadline_sandbox.py passes it too. ruff 0.17.0's expanded compiled default additionally flags BLE001 (broad except in cleanup), I001, ISC004 and one test RUF059 on these files; the SAME expanded default also flags the pre-existing, accepted deadline tool (e.g. BLE001). The established bar was matched, not lowered; the expanded-default delta is recorded rather than chased."
+  },
+  "docs_link_check": "python3 tools/check_docs_links.py => internal links OK (54 Markdown files checked)",
+  "diff": "Two added untracked files only; no existing source, test, unit, packaging or runtime file was modified.",
+  "independent_review": {
+    "reviewer": "independent fresh-context agent (no shared working context)",
+    "hard_constraints": "no critical violations: never operates product units, refuses non-root before any work, plan-only does zero external work, hardening subset not weakened, ordering/BindsTo/rerun proofs are real",
+    "findings_addressed": [
+      "MEDIUM: cgroup drain accepted absence with no populated baseline and no retry -> added cgroup_populated() baseline gate (all_populated_before) and a bounded drain retry; absence is credited only after a confirmed populated observation",
+      "MEDIUM: helpers-held-before-READY was ungated and the fake wrote helper events at enqueue -> gated passed on helpers_held_before_ready, made the fake model the real hold, and added a test that fails the run when a helper starts pre-READY",
+      "LOW: rerun-refusal await waited on bare inactivity (flaky early return) -> now awaits ConditionResult=no"
+    ]
+  },
+  "vm_execution": {
+    "status": "DONE. Attempts 1 and 2 ran and are recorded (arg-contract bug, then a cleanup-confirmation artifact); attempt 3 PASSED with cleanup_confirmed=true and no retained directory (see real_host_operator_report). The tool never attempts sudo; the operator ran --execute.",
+    "staged_on_host": "/home/rabbit/azn-readyorder-20261015/tools/ holds __init__.py, qualify_bootstrap_deadline_sandbox.py (canonical 187cc81d...) and the corrected qualify_ready_order_sandbox.py (66bcc235...), verified by sha256 on the host; host plan-only reports probe 40b9cafb...",
+    "plan_only": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python /home/rabbit/azn-readyorder-20261015/tools/qualify_ready_order_sandbox.py",
+    "execute": "sudo /home/rabbit/nexus-rc2-conformance-20261013/bin/python /home/rabbit/azn-readyorder-20261015/tools/qualify_ready_order_sandbox.py --execute",
+    "host_requirements": "real systemd with /usr/bin/systemd-run, /usr/bin/systemctl and /usr/bin/python3.13; cgroup v2 under /sys/fs/cgroup/system.slice; /var/lib not noexec",
+    "host_prereqs_confirmed": "systemd-run/systemctl/journalctl present; cgroup2fs with /sys/fs/cgroup/system.slice; /var/lib rw (not noexec); python3.13.5; sudo requires a password so the operator must run --execute interactively",
+    "capture": "stdout is one JSON object; exit 0 iff passed. Record that JSON, the fixture unit names, and a root journal/cgroup cross-read as the privileged operator_report in a follow-up update to this file.",
+    "invocation_note": "run by absolute script path (a __package__ bootstrap puts the repo root on sys.path), or by -m from the directory that contains tools/. Running -m from an unrelated cwd fails with ModuleNotFoundError: No module named 'tools'."
+  },
+  "now_qualified_on_real_host": [
+    "Type=notify READY sequencing controller->audit->commission with helpers held before READY",
+    "Controller-to-helper BindsTo/After follow-stop on controller death, with empty cgroups and drained jobs",
+    "Consumed ConditionPathExists once-marker refusing a controller re-run"
+  ],
+  "not_qualified": [
+    "Authenticated real product audit/commission endpoints",
+    "Genuine operator enrollment/pins/approvals/time/epoch/generation deployment inputs (the fixture fabricates none and tests only systemd mechanics)",
+    "Production factory opening or full #93 runtime operation",
+    "Reboot/suspend behavior",
+    "Hardware installation or verification"
+  ],
+  "not_performed": [
+    "Any product unit operation (azazel-activated/auditd/commissiond were never started, stopped or referenced; cross-read shows them not-found/inactive)",
+    "CI",
+    "Native rebuild or repeat of the already-successful native timer sandbox run",
+    "Provider/fetch/Edge activation",
+    "Physical/block/loop/firmware operations",
+    "Development-repository commit/push or Issue #93 closure"
+  ],
+  "privileged_operations_performed": [
+    "Only the tool's own uniquely named transient azazel-nexus-readyorder-* fixture units were created, observed and stopped on the real host, under an operator root session; the tool never attempted sudo."
+  ]
+}
