@@ -54,7 +54,7 @@ def test_root_backed_mission_directory_has_no_fallback(space, monkeypatch):
 
 
 @pytest.mark.parametrize("changes", [{"f_bavail": -1}, {"f_bavail": 900},
-                                    {"f_frsize": 0}, {"f_flag": resources.os.ST_RDONLY}])
+                                    {"f_frsize": 0}])
 def test_invalid_or_readonly_storage_refused(space, monkeypatch, changes):
     stats = dict(f_frsize=4096, f_bavail=512, f_bfree=768, f_blocks=1024, f_flag=0)
     monkeypatch.setattr(resources.os, "fstatvfs", lambda fd: SimpleNamespace(**(stats | changes)))

@@ -6056,6 +6056,21 @@ properties remain to be observed on the VM: the `masked-runtime` report for the
 owned overlay file, and whether systemd collects a just-loaded idle helper
 between lookups (that would refuse, fail-closed, but could make the flow flaky).
 
+The bootstrap resource floor could never pass inside the real controller either:
+the prestart measures `/data` from within the service, where `ProtectSystem=strict`
+makes `/data` a read-only bind, so `statvfs` reports `ST_RDONLY` and the mission
+measurement refused. A probe in a transient `ProtectSystem=strict` unit on the VM
+confirmed it (`ST_RDONLY`, mount `ro`, superblock `rw`, same `0:49` device). The
+measurement now ignores that per-mount flag only when exactly one
+`/proc/self/mountinfo` entry for `/data` on the opened descriptor's device shows a
+writable superblock; a read-only superblock, missing or duplicate entry, or a
+malformed `/data` line still refuses, and unrelated exotic mounts no longer can.
+The figure is free space on a writable filesystem, not proof that the controller
+may write there; no write access was granted. Because the goal forbids block
+device work, the test VM's `/data` is a 512 MiB tmpfs mounted for the boot, which
+is separate from root and writable but not durable storage. An independent review
+found no critical or high issue, and the real VM mountinfo parses as expected.
+
 Both changes were independently reviewed with no critical or high finding; the
 genesis review also mutation-tested the change. Follow-ups addressed: wording
 that overstated single use, stamp-change and exact-int tests, a real-factory and
