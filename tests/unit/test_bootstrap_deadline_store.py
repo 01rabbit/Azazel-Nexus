@@ -395,3 +395,30 @@ def test_public_reader_writer_flow_and_missing_state_redaction(state_store):
     with pytest.raises(ApprovalRefused, match="^protected bootstrap state refused$"):
         store.advance_deadline(approval=approval, boot_id=BOOT_ID, now=START,
                                boottime_ns=120 * NS, clock_trusted=True)
+
+
+@pytest.mark.parametrize("present", [
+    ("initial.json",), ("checkpoint.json",), ("transaction.pending",),
+    ("checkpoint.next",), ("initial.json", "checkpoint.json"),
+])
+def test_first_admission_retain_refuses_when_any_state_exists(state_store, present):
+    directory, approval, initial, owner = state_store
+    for name in present:
+        (directory / name).write_bytes(b"pre-existing")
+    before = {name: (directory / name).read_bytes() for name in present}
+    with pytest.raises(ApprovalRefused):
+        _retain(directory, initial, owner)
+    assert {path.name for path in directory.iterdir()} == set(present)
+    assert {name: (directory / name).read_bytes() for name in present} == before
+    with pytest.raises((ApprovalRefused, FileNotFoundError)):
+        _advance(directory, approval, owner)
+
+
+def test_first_admission_state_then_advance_uses_same_admitted_fields(state_store):
+    directory, approval, initial, owner = state_store
+    retained = _retain(directory, initial, owner)
+    advanced = _advance(directory, approval, owner)
+    assert (advanced.admitted_at, advanced.admitted_boottime_ns,
+            advanced.deadline_boottime_ns) == (
+        retained.admitted_at, retained.admitted_boottime_ns,
+        retained.deadline_boottime_ns)

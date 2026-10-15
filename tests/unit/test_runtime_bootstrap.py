@@ -335,6 +335,7 @@ class Harness:
             boot_id_reader=options.pop(
                 "boot_id_reader", lambda: self.deadline.approval.context.boot_id
             ),
+            initial_admission=options.pop("initial_admission", None),
         )
 
     def refresh(self):

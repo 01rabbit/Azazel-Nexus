@@ -5954,9 +5954,51 @@ found no escape path and its wording findings are addressed. The existing
 `installed-files-candidate` already produces context-free manifest candidates.
 The previews confer no admission, enrollment or authorization.
 
+The owner then decided the three provisioning gates of the 2026-10-14 table:
+first-install audit genesis (row 4), declared-constant epoch/revocation (row 1,
+with no anti-rollback claim) and in-controller first admission of the deadline
+(row 7, option 1). Independent designs were written and reviewed before code.
+
+First-install genesis rides in admission.json: a v5 prestart policy with
+`audit_mode: "first-install-genesis"` and a closed `audit_genesis` object
+(sequence 0, the genesis hash, the node digest, a provisioning id that only makes
+the digest distinct). The operator's signed supporting-bootstrap approval already
+binds admission.json through `BootstrapContext.policy_digest`, so no new
+authority, purpose or approval flag exists. `inspect_first_install_audit` accepts
+only an existing, correctly owned, mode-0700, empty ledger directory, stable
+across two scans; it takes no expected head, so nothing observed is adopted.
+`inspect_existing_audit` still refuses genesis, v3/v4 bytes and behaviour are
+unchanged, and the live-head guards accept exactly `(0, genesis)` at sequence 0.
+Once the first `bootstrap.grant_intent` lands the policy refuses; nothing else
+enforces single use, so a wiped ledger plus a fresh signed approval would be
+accepted again (assurance stays `LOCAL_CONTINUITY_ONLY`).
+
+First admission of the deadline happens inside the controller run:
+`ProtectedBootstrapInitialAdmission` (the only caller of `begin_deadline` and
+`retain_initial_deadline`, composed by a fixed no-argument factory) is used by
+`BootstrapSupervisor._admit_first` in the order fresh verify, generation
+admission, stopped-writer prestart, re-verify and create-only retain, then the
+normal refresh/advance check that arms the kernel guard from the retained
+absolute deadline before any grant, publication, READY or start. Refresh still
+never initializes, a refused retain never falls back to advance, and the legacy
+order is kept when no initializer is supplied. Two consequences are stated
+rather than hidden: prestart and generation admission now run before the kernel
+guard is armed (still pre-READY, so the controller unit's `TimeoutStartSec=30s`
+with `TimeoutStartFailureMode=kill` bounds them), and until cross-boot renewal
+exists a node bootstraps once — retrying needs clean state (a VM snapshot
+revert), never deletion of retained records.
+
+Both changes were independently reviewed with no critical or high finding; the
+genesis review also mutation-tested the change. Follow-ups addressed: wording
+that overstated single use, stamp-change and exact-int tests, a real-factory and
+real-store first-admission test, and a supervisor test that runs first admission
+through a genesis prestart to the first audit receipt.
+
 This session's related tests: 74 passed across the three fixture-tool suites;
 104 passed for the preview suite with the deployment-preview, boundary and CLI
-companions;
+companions; after the genesis and first-admission changes, the combined related
+selection (bootstrap runtime and store suites, auditd, hardening, boundary/CLI
+and fixture tools) is 3019 passed / 7 skipped;
 the changed files pass the project Ruff ruleset and the 54-document link check.
 No product unit, enable, reboot, provider/fetch/Edge activation, CI, push or
 Issue closure occurred. [Composition status](evidence/bootstrap-composition-status-2026-10-15.json)

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import re
 from typing import Protocol
 
+from azazel_nexus.audit import GENESIS_HASH
 from azazel_nexus.operator_trust import ApprovalRefused
 
 from .bootstrap_audit import AuditObservation
@@ -32,8 +33,9 @@ class WriterHead:
     digest: str
 
     def __post_init__(self) -> None:
-        if (type(self.sequence) is not int or self.sequence <= 0
-                or type(self.digest) is not str or not _HASH.fullmatch(self.digest)):
+        if (type(self.sequence) is not int or self.sequence < 0
+                or type(self.digest) is not str or not _HASH.fullmatch(self.digest)
+                or (self.sequence == 0) != (self.digest == GENESIS_HASH)):
             raise ValueError("invalid writer head")
 
 

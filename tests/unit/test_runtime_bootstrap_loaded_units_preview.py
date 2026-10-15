@@ -124,3 +124,29 @@ def test_secret_marker_never_echoed():
     for data in (secret + b"\n" + loaded + b"\n", admission + b"\n" + secret + b"\n"):
         code, text = _run(data)
         assert code == 1 and "SECRET-MARKER" not in text and text == REFUSED
+
+
+def test_v5_genesis_admission_is_accepted_and_labelled():
+    from azazel_nexus.audit import GENESIS_HASH
+    from azazel_nexus.bootstrap_prestart_policy import FirstInstallGenesis
+
+    loaded = _raw()
+    genesis = replace(
+        _pinned(loaded), audit_sequence=0, audit_head=GENESIS_HASH,
+        first_install_genesis=FirstInstallGenesis(
+            "sha256:" + "1" * 64, "33333333-3333-4333-8333-333333333333"))
+    admission = encode_prestart_policy(genesis)
+    code, text = _run(admission + b"\n" + loaded + b"\n")
+    assert code == 0
+    assert text.splitlines()[0] == (
+        "Loaded-units policy valid against the supplied v5 admission policy; "
+        "NOT installed, NOT admitted, NOT authorized.")
+    assert "Admission policy SHA-256 (deployment policy_digest): sha256:" \
+        + sha256(admission).hexdigest() in text
+
+
+def test_v3_admission_still_refused_by_loaded_units_preview():
+    loaded = _raw()
+    admission = encode_prestart_policy(replace(_pinned(loaded), loaded_policy_digest=None))
+    code, text = _run(admission + b"\n" + loaded + b"\n")
+    assert (code, text) == (1, REFUSED)

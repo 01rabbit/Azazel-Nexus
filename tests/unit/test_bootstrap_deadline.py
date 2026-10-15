@@ -282,3 +282,11 @@ def test_deadline_state_is_not_an_authorization_token(approval):
     _, _, _, _, verified = approval
     assert isinstance(_begin(verified), BootstrapDeadline)
     assert not isinstance(_begin(verified), VerifiedBootstrapApproval)
+
+
+def test_begin_deadline_remaining_is_derived_from_expires_at(approval):
+    _key, _context, _trust, _policy, verified = approval
+    full = _begin(verified, now=START, boottime_ns=100 * NS)
+    assert full.deadline_boottime_ns - 100 * NS == 300 * NS
+    later = _begin(verified, now="2026-10-13T00:01:00Z", boottime_ns=500 * NS)
+    assert later.deadline_boottime_ns - 500 * NS == 240 * NS

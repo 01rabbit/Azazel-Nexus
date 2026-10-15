@@ -14,7 +14,7 @@ import json
 import math
 from typing import Callable, Protocol
 
-from azazel_nexus.bootstrap_approval import BootstrapContext
+from azazel_nexus.bootstrap_approval import BootstrapContext, VerifiedBootstrapApproval
 from azazel_nexus.bootstrap_deadline import (
     BootstrapDeadline,
     read_boottime_ns,
@@ -181,6 +181,10 @@ class BootstrapSupervisor:
     READY. The separate ``audit_continuation`` inspector verifies extensions of
     the last verified head; initial preflight alone is not continuing assurance.
     The generation shape verifier alone is insufficient.
+    ``initial_admission`` is the ONLY initializer of the retained deadline
+    (``verify()`` then ``retain(approval)`` after prestart). ``refresh`` MUST
+    NOT initialize, and a refused ``retain`` never falls back to ``refresh``.
+    ``None`` keeps the legacy behaviour (no initialization).
     ``transaction`` serializes the entire lifetime across processes and yields
     a canonical-path identity recheck. The default is the protected fixed-path
     lock, not a no-op. Other required dependencies have no permissive defaults
@@ -209,6 +213,7 @@ class BootstrapSupervisor:
         grant_store_factory=grant_transaction_store_in_transaction,
         grant_transaction_factory=None,
         boot_id_reader: Callable[[], str] = read_boot_id,
+        initial_admission=None,
     ) -> None:
         if (
             type(poll_seconds) not in (int, float)
@@ -233,6 +238,12 @@ class BootstrapSupervisor:
             grant_transaction_factory or _new_grant_transaction
         )
         self.boot_id_reader = boot_id_reader
+        if initial_admission is not None and not all(
+            callable(getattr(initial_admission, name, None))
+            for name in ("verify", "retain")
+        ):
+            raise ValueError("protected bootstrap initial admission required")
+        self.initial_admission = initial_admission
         self.controller_ready = controller_ready
         if controller_watchdog is None:
             from .systemd_notify import notify_watchdog
@@ -303,18 +314,7 @@ class BootstrapSupervisor:
             )
         if self.deadline_guard(current) is not None:
             raise ApprovalRefused("bootstrap kernel deadline unconfirmed")
-        generation = self.admit_generation(current.approval.context)
-        if type(generation) is not VerifiedBootstrapGeneration or (
-            generation.number,
-            generation.digest,
-        ) != (
-            current.approval.context.generation,
-            current.approval.context.generation_digest,
-        ):
-            raise ApprovalRefused(
-                "independently admitted bootstrap generation required"
-            )
-        self._admitted_generation = generation
+        self._require_generation(current.approval.context)
         next_head = self._audit_head
         if self._audit_head is not None and self._live_audit is None:
             next_head = self.audit_continuation(current.approval.context, self._audit_head)
@@ -650,19 +650,85 @@ class BootstrapSupervisor:
             raise ApprovalRefused("bootstrap start completion unconfirmed")
         check_start()
 
-    def _supervise(self) -> None:
-        initial = self._check()
-        if self._cancelled():
-            return
-        # Run before any controller record can advance the expected audit head,
-        # and only while both helpers are initially contained. Never rerun this
-        # stopped-writer check after auditd legitimately starts appending.
-        initial_head = self.prestart(initial.approval.context)
-        if type(initial_head) is not AuditObservation:
+    def _require_generation(self, context: BootstrapContext) -> VerifiedBootstrapGeneration:
+        generation = self.admit_generation(context)
+        if type(generation) is not VerifiedBootstrapGeneration or (
+            generation.number,
+            generation.digest,
+        ) != (
+            context.generation,
+            context.generation_digest,
+        ):
+            raise ApprovalRefused(
+                "independently admitted bootstrap generation required"
+            )
+        self._admitted_generation = generation
+        return generation
+
+    def _set_initial_head(self, head) -> None:
+        if type(head) is not AuditObservation:
             raise ApprovalRefused("bootstrap prestart observation required")
-        self._audit_head = initial_head
-        self._stopped_audit_head = initial_head
-        self._check()
+        self._audit_head = head
+        self._stopped_audit_head = head
+
+    def _admit_first(self) -> BootstrapDeadline | None:
+        """First admission: verify, prestart, create-only retain, then arm guard.
+
+        Never falls back to ``refresh``/advance when ``retain`` refuses.
+        """
+        self._check_transaction()
+        approval = self.initial_admission.verify()
+        if type(approval) is not VerifiedBootstrapApproval:
+            raise ApprovalRefused("verified bootstrap approval required")
+        # Never retain a deadline for an unadmitted generation.
+        self._require_generation(approval.context)
+        if self._cancelled():
+            return None
+        # Stopped-writer audit check, once, before any controller record.
+        head = self.prestart(approval.context)
+        if type(head) is not AuditObservation:
+            raise ApprovalRefused("bootstrap prestart observation required")
+        self._check_transaction()
+        if self._cancelled():
+            return None
+        retained = self.initial_admission.retain(approval)
+        if type(retained) is not BootstrapDeadline or retained.approval != approval:
+            raise ApprovalRefused("retained bootstrap deadline differs from verified approval")
+        self._set_initial_head(head)
+        # The normal refresh/advance path binds the kernel guard to the
+        # retained absolute deadline, before grant create/open_pair/READY.
+        current = self._check()
+        if (
+            current.approval,
+            current.admitted_at,
+            current.admitted_boottime_ns,
+            current.deadline_boottime_ns,
+        ) != (
+            retained.approval,
+            retained.admitted_at,
+            retained.admitted_boottime_ns,
+            retained.deadline_boottime_ns,
+        ):
+            raise ApprovalRefused("bootstrap admission cannot be renewed")
+        return current
+
+    def _supervise(self) -> None:
+        if self.initial_admission is None:
+            initial = self._check()
+            if self._cancelled():
+                return
+            # Run before any controller record can advance the expected audit head,
+            # and only while both helpers are initially contained. Never rerun this
+            # stopped-writer check after auditd legitimately starts appending.
+            initial_head = self.prestart(initial.approval.context)
+            if type(initial_head) is not AuditObservation:
+                raise ApprovalRefused("bootstrap prestart observation required")
+            self._set_initial_head(initial_head)
+            self._check()
+        else:
+            initial = self._admit_first()
+            if initial is None:
+                return
         if self._cancelled():
             return
 

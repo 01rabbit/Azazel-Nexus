@@ -8,11 +8,15 @@ generation admission or service operation happens here.
 from dataclasses import dataclass
 from typing import Callable
 
-from azazel_nexus.bootstrap_approval import BootstrapContext, parse_bootstrap_time
-from azazel_nexus.bootstrap_deadline import BootstrapDeadline, read_boottime_ns
+from azazel_nexus.bootstrap_approval import (
+    BootstrapContext, VerifiedBootstrapApproval, parse_bootstrap_time,
+)
+from azazel_nexus.bootstrap_deadline import (
+    BootstrapDeadline, begin_deadline, read_boottime_ns,
+)
 from azazel_nexus.bootstrap_clock import AdministratorTimeWindow
 from azazel_nexus.bootstrap_clock_store import load_administrator_time_window
-from azazel_nexus.bootstrap_deadline_store import advance_deadline
+from azazel_nexus.bootstrap_deadline_store import advance_deadline, retain_initial_deadline
 from azazel_nexus.bootstrap_store import (
     load_bootstrap_approval,
     read_bootstrap_installed_manifest,
@@ -394,6 +398,51 @@ class ProtectedAdministratorClockObservation:
         return AdministratorBootstrapObservation(fresh)()
 
 
+def _verified_observation(observe):
+    """Fresh double observation and verification; persists nothing.
+
+    Returns ``(approval, current_observation, elapsed_boottime_ns)``. Shared by
+    the refresh adapter and the initial-admission adapter so both apply the
+    identical fresh trust/context/time/boot checks.
+    """
+    before = observe()
+    if (
+        type(before) is not BootstrapObservation
+        or read_boot_id() != before.context.boot_id
+    ):
+        raise ApprovalRefused("current bootstrap boot observation required")
+    approval = _verify_observation(before)
+    current = observe()
+    if (
+        type(current) is not BootstrapObservation
+        or (current.context, current.operator)
+        != (before.context, before.operator)
+        or parse_bootstrap_time(current.now) < parse_bootstrap_time(before.now)
+        or parse_bootstrap_time(current.earliest_utc) < parse_bootstrap_time(before.earliest_utc)
+        or type(current.time_window) is not type(before.time_window)
+    ):
+        raise ApprovalRefused("bootstrap context changed during verification")
+    # Reverify at the current trusted time, including fresh protected trust.
+    fresh = _verify_observation(current)
+    if fresh != approval or read_boot_id() != current.context.boot_id:
+        raise ApprovalRefused(
+            "bootstrap trust or boot changed during verification"
+        )
+    elapsed = read_boottime_ns()
+    current.require_current_window(elapsed)
+    return fresh, current, elapsed
+
+
+def _require_stable_after_retention(current, elapsed):
+    if read_boot_id() != current.context.boot_id:
+        raise ApprovalRefused("bootstrap boot changed during retention")
+    if current.time_window is not None:
+        final_elapsed = read_boottime_ns()
+        current.require_current_window(final_elapsed)
+        if final_elapsed < elapsed:
+            raise ApprovalRefused("bootstrap elapsed clock moved backward during retention")
+
+
 @dataclass(frozen=True)
 class ProtectedBootstrapInputs:
     """Supervisor refresh adapter. Missing retained state never initializes it.
@@ -407,31 +456,7 @@ class ProtectedBootstrapInputs:
 
     def __call__(self) -> BootstrapDeadline:
         try:
-            before = self.observe()
-            if (
-                type(before) is not BootstrapObservation
-                or read_boot_id() != before.context.boot_id
-            ):
-                raise ApprovalRefused("current bootstrap boot observation required")
-            approval = _verify_observation(before)
-            current = self.observe()
-            if (
-                type(current) is not BootstrapObservation
-                or (current.context, current.operator)
-                != (before.context, before.operator)
-                or parse_bootstrap_time(current.now) < parse_bootstrap_time(before.now)
-                or parse_bootstrap_time(current.earliest_utc) < parse_bootstrap_time(before.earliest_utc)
-                or type(current.time_window) is not type(before.time_window)
-            ):
-                raise ApprovalRefused("bootstrap context changed during verification")
-            # Reverify at the current trusted time, including fresh protected trust.
-            fresh = _verify_observation(current)
-            if fresh != approval or read_boot_id() != current.context.boot_id:
-                raise ApprovalRefused(
-                    "bootstrap trust or boot changed during verification"
-                )
-            elapsed = read_boottime_ns()
-            current.require_current_window(elapsed)
+            fresh, current, elapsed = _verified_observation(self.observe)
             retained = advance_deadline(
                 approval=fresh,
                 boot_id=current.context.boot_id,
@@ -439,13 +464,52 @@ class ProtectedBootstrapInputs:
                 boottime_ns=elapsed,
                 clock_trusted=current.clock_trusted,
             )
-            if read_boot_id() != current.context.boot_id:
-                raise ApprovalRefused("bootstrap boot changed during retention")
-            if current.time_window is not None:
-                final_elapsed = read_boottime_ns()
-                current.require_current_window(final_elapsed)
-                if final_elapsed < elapsed:
-                    raise ApprovalRefused("bootstrap elapsed clock moved backward during retention")
+            _require_stable_after_retention(current, elapsed)
+            return retained
+        except Exception:
+            raise ApprovalRefused(
+                "protected bootstrap runtime inputs refused"
+            ) from None
+
+
+@dataclass(frozen=True)
+class ProtectedBootstrapInitialAdmission:
+    """The only initializer of the retained bootstrap deadline.
+
+    Composed by ``protected_bootstrap_initial_admission`` from fixed protected
+    observations; it is not a flag, selection, environment or CLI input. The
+    supervisor calls ``verify`` (read-only) first and ``retain`` only after
+    prestart. ``retain`` re-verifies, requires the same approval, and then
+    uses the create-only store; it never advances or overwrites existing
+    state, and refusal must never fall back to ``ProtectedBootstrapInputs``.
+    """
+
+    observe: Callable[[], BootstrapObservation]
+
+    def verify(self) -> VerifiedBootstrapApproval:
+        try:
+            return _verified_observation(self.observe)[0]
+        except Exception:
+            raise ApprovalRefused(
+                "protected bootstrap runtime inputs refused"
+            ) from None
+
+    def retain(self, expected: VerifiedBootstrapApproval) -> BootstrapDeadline:
+        try:
+            if type(expected) is not VerifiedBootstrapApproval:
+                raise ApprovalRefused("verified bootstrap approval required")
+            fresh, current, elapsed = _verified_observation(self.observe)
+            if fresh != expected:
+                raise ApprovalRefused("bootstrap approval changed before retention")
+            state = begin_deadline(
+                fresh,
+                boot_id=current.context.boot_id,
+                now=current.now,
+                boottime_ns=elapsed,
+                clock_trusted=current.clock_trusted,
+            )
+            retained = retain_initial_deadline(state)
+            _require_stable_after_retention(current, elapsed)
             return retained
         except Exception:
             raise ApprovalRefused(
@@ -466,6 +530,18 @@ def protected_bootstrap_inputs() -> ProtectedBootstrapInputs:
     context = protected_bootstrap_context_observation()
     observation = ProtectedAdministratorClockObservation(context)
     return ProtectedBootstrapInputs(observation)
+
+
+def protected_bootstrap_initial_admission() -> ProtectedBootstrapInitialAdmission:
+    """Compose the fixed first-admission initializer (no selection input).
+
+    Uses the same protected context and administrator-time observations as
+    ``protected_bootstrap_inputs``. Initialization still requires fresh
+    verification, successful prestart and the create-only store.
+    """
+    context = protected_bootstrap_context_observation()
+    observation = ProtectedAdministratorClockObservation(context)
+    return ProtectedBootstrapInitialAdmission(observation)
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,9 @@
 """Read existing audit continuity before bootstrap; never establish genesis.
 
+The one exception is ``inspect_first_install_audit``: it takes no expected head,
+adopts nothing it observes, and accepts only a correctly owned, writer-protected,
+empty ledger directory. Genesis is established only by an admitted v5 policy.
+
 The independent expected head must come from admitted provisioning/anchor state,
 not from this reader or an unsigned local checkpoint. Matching bytes proves
 continuity to that expectation, not anchor authenticity or complete health.
@@ -47,6 +51,14 @@ class AuditObservation:
     segments: int
     total_bytes: int
 
+    def __post_init__(self):
+        if (type(self.sequence) is not int or type(self.segments) is not int
+                or type(self.total_bytes) is not int or type(self.digest) is not str):
+            raise ValueError("invalid audit observation")
+        if (self.sequence == 0) != (self.digest == GENESIS_HASH) or (
+                self.sequence == 0 and (self.segments != 0 or self.total_bytes != 0)):
+            raise ValueError("invalid audit observation")
+
     @property
     def assurance(self) -> str:
         """This reader checks continuity, not an independent anchor receipt."""
@@ -57,7 +69,7 @@ def _stamp(info):
     return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _names(fd, maximum):
+def _names(fd, maximum, allow_empty=False):
     names = []
     with os.scandir(fd) as entries:
         for entry in entries:
@@ -65,6 +77,8 @@ def _names(fd, maximum):
                 raise ApprovalRefused("audit segment count exceeds observation bound")
             names.append(entry.name)
     if not names:
+        if allow_empty:
+            return []
         raise ApprovalRefused("existing bounded audit history required")
     for name in names:
         if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl", name):
@@ -73,9 +87,9 @@ def _names(fd, maximum):
     return sorted(names)
 
 
-def _snapshot(fd, *, owner, max_total_bytes, max_segments):
+def _snapshot(fd, *, owner, max_total_bytes, max_segments, allow_empty=False):
     before = _protected(fd, owner=owner, directory=True)
-    names = _names(fd, max_segments)
+    names = _names(fd, max_segments, allow_empty)
     remaining = max_total_bytes
     result = []
     for name in names:
@@ -84,7 +98,7 @@ def _snapshot(fd, *, owner, max_total_bytes, max_segments):
         identity, raw = _read_segment(fd, name, owner=owner, limit=remaining)
         result.append((name, identity, raw))
         remaining -= len(raw)
-    if names != _names(fd, max_segments) or _stamp(before) != _stamp(
+    if names != _names(fd, max_segments, allow_empty) or _stamp(before) != _stamp(
         _protected(fd, owner=owner, directory=True)
     ):
         raise ApprovalRefused("audit directory changed during observation")
@@ -131,15 +145,18 @@ def _inspect_at(fd, *, owner, expected_head, max_total_bytes, max_segments, allo
     try:
         if (type(allow_extension) is not bool
                 or type(expected_head) is not tuple or len(expected_head) != 2
-                or type(expected_head[0]) is not int or expected_head[0] <= 0
+                or type(expected_head[0]) is not int or expected_head[0] < 0
                 or type(expected_head[1]) is not str or not _HEX.fullmatch(expected_head[1])
+                or (expected_head[0] == 0) != (expected_head[1] == GENESIS_HASH)
+                or (expected_head[0] == 0 and not allow_extension)
                 or any(type(value) is not int or value <= 0
                        for value in (max_total_bytes, max_segments))):
             raise ApprovalRefused("independent non-genesis audit expectation required")
+        genesis = expected_head[0] == 0  # Extension-only continuation from empty.
         first = _snapshot(fd, owner=owner, max_total_bytes=max_total_bytes,
-                          max_segments=max_segments)
+                          max_segments=max_segments, allow_empty=genesis)
         sequence, digest = 0, GENESIS_HASH
-        anchored = False
+        anchored = genesis
         for _name, _identity, raw in first:
             segment_start = sequence
             if not raw.endswith(b"\n"):
@@ -173,12 +190,37 @@ def _inspect_at(fd, *, owner, expected_head, max_total_bytes, max_segments, allo
         if not anchored or (not allow_extension and (sequence, digest) != expected_head):
             raise ApprovalRefused("audit anchor differs")
         if first != _snapshot(fd, owner=owner, max_total_bytes=max_total_bytes,
-                              max_segments=max_segments):
+                              max_segments=max_segments, allow_empty=genesis):
             raise ApprovalRefused("audit history changed during verification")
         return AuditObservation(sequence, digest, len(first),
                                 sum(len(raw) for _, _, raw in first))
     except Exception:
         raise ApprovalRefused("existing bootstrap audit continuity refused") from None
+
+
+def _scan_entries(fd):
+    with os.scandir(fd) as entries:
+        return [entry.name for entry in entries]
+
+
+def _inspect_genesis_at(fd, *, owner, max_total_bytes, max_segments):
+    """Private seam: an empty, protected, stable directory; no head is taken."""
+    try:
+        if any(type(value) is not int or value <= 0 for value in (max_total_bytes, max_segments)):
+            raise ApprovalRefused("bounded audit observation required")
+        before = _protected(fd, owner=owner, directory=True)
+        if stat.S_IMODE(before.st_mode) != 0o700:
+            raise ApprovalRefused("first-install audit directory mode refused")
+        if _scan_entries(fd):
+            raise ApprovalRefused("first-install audit directory is not empty")
+        after = _protected(fd, owner=owner, directory=True)
+        if _stamp(before) != _stamp(after) or _scan_entries(fd) or _stamp(after) != _stamp(
+            _protected(fd, owner=owner, directory=True)
+        ):
+            raise ApprovalRefused("audit directory changed during observation")
+        return AuditObservation(0, GENESIS_HASH, 0, 0)
+    except Exception:
+        raise ApprovalRefused("first-install bootstrap audit refused") from None
 
 
 def _open_ledger(owner):
@@ -211,6 +253,16 @@ def inspect_existing_audit(*, expected_head, max_total_bytes, max_segments):
                               max_segments=max_segments, allow_extension=False)
 
 
+def inspect_first_install_audit(*, max_total_bytes, max_segments):
+    """Fixed-path read-only genesis producer; takes and adopts no head.
+
+    Accepts only an existing, correctly owned, writer-protected, empty ledger
+    directory. Whether genesis is expected is decided by the admitted v5 policy.
+    """
+    return _inspect_protected(expected_head=None, max_total_bytes=max_total_bytes,
+                              max_segments=max_segments, allow_extension=False, genesis=True)
+
+
 def inspect_audit_extension(*, expected_head, max_total_bytes, max_segments):
     """Verify an unchanged or extended prefix of previously verified history.
 
@@ -221,7 +273,8 @@ def inspect_audit_extension(*, expected_head, max_total_bytes, max_segments):
                               max_segments=max_segments, allow_extension=True)
 
 
-def _inspect_protected(*, expected_head, max_total_bytes, max_segments, allow_extension):
+def _inspect_protected(*, expected_head, max_total_bytes, max_segments, allow_extension,
+                       genesis=False):
     try:
         owner = pwd.getpwnam("azaudit").pw_uid
         if type(owner) is not int or owner <= 0:
@@ -229,9 +282,13 @@ def _inspect_protected(*, expected_head, max_total_bytes, max_segments, allow_ex
         fd = _open_ledger(owner)
         try:
             identity = os.fstat(fd)
-            result = _inspect_at(fd, owner=owner, expected_head=expected_head,
-                                 max_total_bytes=max_total_bytes, max_segments=max_segments,
-                                 allow_extension=allow_extension)
+            if genesis:
+                result = _inspect_genesis_at(fd, owner=owner, max_total_bytes=max_total_bytes,
+                                             max_segments=max_segments)
+            else:
+                result = _inspect_at(fd, owner=owner, expected_head=expected_head,
+                                     max_total_bytes=max_total_bytes, max_segments=max_segments,
+                                     allow_extension=allow_extension)
             current = _open_ledger(owner)
             try:
                 if _stamp(identity) != _stamp(os.fstat(current)):

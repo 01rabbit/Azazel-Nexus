@@ -71,7 +71,24 @@ producer for existing nonempty audit history. It reads auditd's actual fixed
 file identities and bounded UTF-8 segmented-chain contents twice, and requires
 an independently supplied exact expected head and explicit observation limits.
 It does not trust its own measured head or a local unsigned checkpoint. Empty
-history is refused: fresh genesis still needs separately admitted provisioning.
+history is refused by this reader. Fresh genesis is admitted only through a v5
+prestart admission policy (`audit_mode: "first-install-genesis"`), which the
+operator's signed bootstrap approval binds through `policy_digest`;
+`bootstrap_audit.inspect_first_install_audit` then accepts exactly an existing,
+correctly owned, mode-0700, EMPTY ledger directory, takes no expected head and
+yields the fixed genesis observation. Once history exists that policy refuses, so
+later boots need an existing-history (v3/v4) admission. Nothing machine-enforces
+single use beyond that: a wiped ledger plus a fresh signed approval would be
+accepted again, and assurance remains `LOCAL_CONTINUITY_ONLY`.
+
+The controller run now performs the first admission of the bootstrap deadline
+itself: after a fresh approval verification, generation admission and the
+stopped-writer prestart, `ProtectedBootstrapInitialAdmission` re-verifies and
+creates the immutable deadline exactly once (create-only), and the kernel guard
+is armed from that retained deadline before any grant, publication, READY or
+start. The supervisor's refresh still never initializes. Until cross-boot renewal
+exists, a node bootstraps once; a retry needs a clean state (on a VM, a snapshot
+revert), never deletion of retained records.
 The caller must establish that the writer is stopped and authenticate the
 expected head; this producer supplies neither fact nor a complete health grant.
 It is not yet connected to the production startup path.

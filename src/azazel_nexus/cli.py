@@ -959,8 +959,18 @@ def main(
         print("Admission policy SHA-256 (deployment policy_digest): " + digest, file=stream)
         if policy.loaded_policy_digest is None:
             print("Schema: v3", file=stream)
-        else:
+        elif policy.first_install_genesis is None:
             print("Schema: v4", file=stream)
+            print("Loaded-units policy pin: " + policy.loaded_policy_digest, file=stream)
+        else:
+            print("Schema: v5", file=stream)
+            print("Audit mode: first-install-genesis", file=stream)
+            print("First-install genesis: accepted only while the audit ledger directory "
+                  "exists, is correctly owned and is EMPTY; publish an existing-history "
+                  "(v3/v4) admission after the first successful bootstrap.", file=stream)
+            print("Genesis node digest: " + policy.first_install_genesis.node_digest, file=stream)
+            print("Genesis provisioning_id (distinguishes this policy's digest; not checked "
+                  "elsewhere): " + policy.first_install_genesis.provisioning_id, file=stream)
             print("Loaded-units policy pin: " + policy.loaded_policy_digest, file=stream)
         print("Independent package, closure, profile and fresh runtime checks remain required.", file=stream)
         return 0

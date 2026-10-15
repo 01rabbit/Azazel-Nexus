@@ -199,3 +199,38 @@ def test_preview_refuses_interactive_stdin(monkeypatch, command, refusal):
     output = io.StringIO()
     assert cli.main([command], out=output) == 1
     assert output.getvalue() == refusal
+
+
+def test_admission_preview_v5_prints_genesis_mode_and_provisioning_id(run):
+    from dataclasses import replace
+    from azazel_nexus.audit import GENESIS_HASH
+    from azazel_nexus.bootstrap_prestart_policy import FirstInstallGenesis
+
+    node = "sha256:" + "1" * 64
+    pid = "33333333-3333-4333-8333-333333333333"
+    raw = encode_prestart_policy(replace(
+        prestart(LOADED), audit_sequence=0, audit_head=GENESIS_HASH,
+        first_install_genesis=FirstInstallGenesis(node, pid)))
+    result, output = run(ADMISSION, raw)
+    assert result == 0
+    assert "sha256:" + hashlib.sha256(raw).hexdigest() in output
+    assert "Schema: v5\n" in output
+    assert "Audit mode: first-install-genesis\n" in output
+    assert ("First-install genesis: accepted only while the audit ledger directory exists, "
+            "is correctly owned and is EMPTY; publish an existing-history (v3/v4) admission "
+            "after the first successful bootstrap.\n") in output
+    assert "one-shot" not in output
+    assert "Genesis node digest: " + node + "\n" in output
+    assert ("Genesis provisioning_id (distinguishes this policy's digest; not checked "
+            "elsewhere): " + pid + "\n") in output
+    assert "Loaded-units policy pin: " + LOADED + "\n" in output
+
+
+def test_admission_preview_v5_without_loaded_pin_refused(run):
+    document = json.loads(encode_prestart_policy(prestart(LOADED)))
+    document["schema"] = "azazel-nexus/bootstrap-prestart-policy/v5"
+    del document["loaded_policy_digest"]
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    result, output = run(ADMISSION, raw)
+    assert result == 1
+    assert output == ADMISSION_REFUSAL

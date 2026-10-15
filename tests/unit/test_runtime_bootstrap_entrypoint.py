@@ -135,6 +135,8 @@ def _install_composition(monkeypatch, *, events, selection="retained", guard=Non
                         lambda: (events.append("refresh-factory") or "refresh"))
     monkeypatch.setattr(entrypoint, "protected_bootstrap_generation_admission",
                         lambda: (events.append("admit-factory") or "admit"))
+    monkeypatch.setattr(entrypoint, "protected_bootstrap_initial_admission",
+                        lambda: events.append("initial-factory"))  # None: legacy path
     monkeypatch.setattr(entrypoint, "notify_ready", lambda: None)
     monkeypatch.setattr(entrypoint, "notify_watchdog", lambda: None)
     return guard, client
@@ -207,6 +209,8 @@ def test_supervisor_receives_exactly_the_fixed_composition_callbacks(monkeypatch
     manager = SimpleNamespace()
     guard, client = _install_composition(monkeypatch, events=events, manager=manager)
     captured = {}
+    monkeypatch.setattr(entrypoint, "protected_bootstrap_initial_admission",
+                        lambda: "initial")
 
     class Supervisor:
         def __init__(self, **options):
@@ -224,10 +228,41 @@ def test_supervisor_receives_exactly_the_fixed_composition_callbacks(monkeypatch
     assert captured["record"] is captured["audit_head_reader"] is client
     assert captured["refresh"] == "refresh"
     assert captured["admit_generation"] == "admit"
+    assert captured["initial_admission"] == "initial"
+    assert set(captured) == {
+        "manager", "refresh", "initial_admission", "admit_generation",
+        "deadline_guard", "record", "audit_head_reader", "controller_ready",
+        "controller_watchdog", "transaction", "emergency_narrow", "stopped",
+        "wait", "poll_seconds",
+    }
     assert captured["controller_ready"] is entrypoint.notify_ready
     assert captured["controller_watchdog"] is entrypoint.notify_watchdog
     assert captured["poll_seconds"] == entrypoint._POLL_SECONDS
     assert captured["stopped"].__self__ is captured["wait"].__self__
+
+
+def test_initial_admission_factory_is_fixed_and_takes_no_selection(monkeypatch):
+    import inspect
+    from azazel_nexus_runtime import bootstrap_inputs
+
+    assert not inspect.signature(
+        bootstrap_inputs.protected_bootstrap_initial_admission).parameters
+    events = []
+    _install_composition(monkeypatch, events=events, manager=SimpleNamespace())
+    seen = []
+    monkeypatch.setattr(entrypoint, "protected_bootstrap_initial_admission",
+                        lambda *a, **k: seen.append((a, k)) or "initial")
+
+    class Supervisor:
+        def __init__(self, **_options):
+            pass
+
+        def run(self):
+            return BootstrapResult()
+
+    monkeypatch.setattr(entrypoint, "BootstrapSupervisor", Supervisor)
+    entrypoint.run_selected_bootstrap("retained", narrow=lambda: None)
+    assert seen == [((), {})]
 
 
 def test_lock_acquisition_failure_does_not_narrow(monkeypatch):
@@ -481,6 +516,8 @@ def test_actual_supervisor_runs_with_harness_dependencies(monkeypatch):
                         lambda: harness.refresh)
     monkeypatch.setattr(entrypoint, "protected_bootstrap_generation_admission",
                         lambda: harness.admit)
+    monkeypatch.setattr(entrypoint, "protected_bootstrap_initial_admission",
+                        lambda: None)  # legacy path under the actual supervisor
 
     @contextmanager
     def store_factory(_guard):

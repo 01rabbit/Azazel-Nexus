@@ -10,7 +10,7 @@ import socket
 import time
 from dataclasses import dataclass
 
-from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.audit import GENESIS_HASH, AuditUnavailable
 
 from .auditd import EVENT_SCHEMAS
 from .transport import MAX_FRAME_BYTES, _HEADER
@@ -166,9 +166,10 @@ class BootstrapAuditClient:
                     or set(result) != {"verified", "head_sequence", "head_hash"}
                     or result["verified"] is not True
                     or type(result["head_sequence"]) is not int
-                    or result["head_sequence"] <= 0
+                    or result["head_sequence"] < 0
                     or type(result["head_hash"]) is not str
-                    or not _HASH.fullmatch(result["head_hash"])):
+                    or not _HASH.fullmatch(result["head_hash"])
+                    or (result["head_sequence"] == 0) != (result["head_hash"] == GENESIS_HASH)):
                 raise ValueError("bootstrap audit observation refused")
             return result["head_sequence"], result["head_hash"]
         except Exception as error:

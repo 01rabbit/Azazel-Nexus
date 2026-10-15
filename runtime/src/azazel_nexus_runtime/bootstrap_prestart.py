@@ -5,7 +5,9 @@ from azazel_nexus.operator_trust import ApprovalRefused
 
 from .bootstrap_resources import BootstrapResourceThresholds, require_bootstrap_resources
 from .bootstrap_state_capacity import BootstrapStateFloors, require_bootstrap_state_capacity
-from .bootstrap_audit import AuditObservation, inspect_existing_audit, inspect_audit_extension
+from .bootstrap_audit import (
+    AuditObservation, inspect_existing_audit, inspect_audit_extension, inspect_first_install_audit,
+)
 from .units import UnitKey
 
 
@@ -44,17 +46,23 @@ def check_bootstrap_existing_audit(*, expected, manager) -> AuditObservation:
     Before/after inactive observations are not a continuous writer lock or a
     defense against hostile root. The controller's lifetime transaction and
     independently reviewed service graph remain prerequisites. No service is
-    stopped, masked, started or enabled here. No missing-history genesis.
+    stopped, masked, started or enabled here. Genesis only for an admitted v5 policy.
     """
     try:
         policy = load_bootstrap_prestart_policy(expected=expected)
         _require_helpers_stopped(manager)
-        observed = inspect_existing_audit(
-            expected_head=(policy.audit_sequence, policy.audit_head),
-            max_total_bytes=policy.max_audit_bytes, max_segments=policy.max_audit_segments,
-        )
+        if policy.first_install_genesis is not None:
+            # Admitted v5 genesis: empty ledger only; nothing observed is adopted.
+            observed = inspect_first_install_audit(
+                max_total_bytes=policy.max_audit_bytes, max_segments=policy.max_audit_segments,
+            )
+        else:
+            observed = inspect_existing_audit(
+                expected_head=(policy.audit_sequence, policy.audit_head),
+                max_total_bytes=policy.max_audit_bytes, max_segments=policy.max_audit_segments,
+            )
         if (type(observed) is not AuditObservation
-                or (observed.sequence, observed.digest) != (policy.audit_sequence, policy.audit_head)):
+                or (observed.sequence, observed.digest) != policy.expected_audit_head):
             raise ApprovalRefused("audit observation differs from policy")
         _require_helpers_stopped(manager)
         if load_bootstrap_prestart_policy(expected=expected) != policy:

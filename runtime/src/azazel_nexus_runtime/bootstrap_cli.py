@@ -150,13 +150,14 @@ def run_loaded_units_preview(*, source, out):
         digest = "sha256:" + sha256(admission).hexdigest()
         policy = decode_pinned_prestart_policy(admission, expected_digest=digest)
         if policy.loaded_policy_digest is None:
-            raise ApprovalRefused("v4 admission policy required")
+            raise ApprovalRefused("v4 or v5 admission policy required")
         decode_loaded_bootstrap_policy(loaded_raw, prestart_policy=policy)
     except (ApprovalRefused, GenerationRefused, OSError, AttributeError, ValueError,
             RecursionError, TypeError):
         print("Loaded-units preview refused; no changes made.", file=out)
         return 1
-    print("Loaded-units policy valid against the supplied v4 admission policy; "
+    version = "v5" if policy.first_install_genesis is not None else "v4"
+    print(f"Loaded-units policy valid against the supplied {version} admission policy; "
           "NOT installed, NOT admitted, NOT authorized.", file=out)
     print("Admission policy SHA-256 (deployment policy_digest): " + digest, file=out)
     print("Loaded-units policy SHA-256 (admission loaded_policy_digest): sha256:"

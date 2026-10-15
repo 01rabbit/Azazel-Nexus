@@ -13,7 +13,10 @@ from azazel_nexus.bootstrap_selection_store import load_bootstrap_selection
 from azazel_nexus.operator_trust import ApprovalRefused
 
 from .bootstrap import BootstrapSupervisor, BootstrapResult
-from .bootstrap_inputs import protected_bootstrap_inputs, protected_bootstrap_generation_admission
+from .bootstrap_inputs import (
+    protected_bootstrap_inputs, protected_bootstrap_generation_admission,
+    protected_bootstrap_initial_admission,
+)
 from .bootstrap_lifetime import BootstrapProcessLifetime
 from .bootstrap_manager import bootstrap_narrowing_manager_in_transaction
 from .systemd_notify import notify_ready, notify_watchdog
@@ -91,6 +94,7 @@ def _run_selected_locked(selection, *, narrow, guard):
             supervisor = BootstrapSupervisor(
                 manager=manager,
                 refresh=protected_bootstrap_inputs(),
+                initial_admission=protected_bootstrap_initial_admission(),
                 admit_generation=protected_bootstrap_generation_admission(),
                 deadline_guard=lifetime.deadline_guard,
                 record=client, audit_head_reader=client,
