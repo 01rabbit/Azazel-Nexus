@@ -187,5 +187,24 @@
     },
     "interpretation": "The controller completed its fail-closed pass (exit 0, nothing granted, all seven governed units withheld for no_generation). systemd reports 'protocol' because the ordinary pass sends no READY on a Type=notify unit, exactly as documented. The previous RollbackFailed is resolved on the real host.",
     "helpers_after": "all 7 operational units masked/inactive; /etc/systemd/system masks unchanged"
+  },
+  "phase5_operator_run": {
+    "status": "PASSED (owner-approved reboot with snapshot and console access)",
+    "script_sha256": "86a06823adf5f5253451ef93be3a07d0040b84525df7ed0d548f0fc78425cdc4",
+    "exit": 0,
+    "boot_id": "8c3dd0e1-89fd-4abc-8427-e1d3c304277f",
+    "booted_at": "2026-10-15T20:59:11+09:00",
+    "journal": [
+      "az-activated completed safely: granted=0, withheld=7, reasons=no_generation",
+      "azazel-activated.service: Failed with result 'protocol'."
+    ],
+    "observed": {
+      "ssh": "active",
+      "azazel-activated": "enabled / failed (protocol: no READY from the ordinary pass, as documented)",
+      "helpers": "all 7 masked / inactive",
+      "per_boot_dirs": "/run/azazel-nexus-bootstrap (0700) and /run/systemd/system.control recreated by tmpfiles",
+      "failed_units": "only azazel-activated"
+    },
+    "interpretation": "The persistent next-boot enable works on the real host: the controller ran at boot as root, completed its fail-closed pass, admitted nothing, and the node remained reachable."
   }
 }
