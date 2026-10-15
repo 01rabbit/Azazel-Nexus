@@ -165,6 +165,28 @@ def read_bootstrap_loaded_policy() -> bytes:
         raise ApprovalRefused("protected loaded bootstrap policy refused") from None
 
 
+def read_bootstrap_approval_policy() -> BootstrapApprovalPolicy:
+    """Read and decode the fixed protected purpose policy for request previews.
+
+    This is the same stable protected read and canonical decoder the approval
+    verifier uses for `policy.json`; it confers no approval or enrollment.
+    """
+    try:
+        with _bootstrap_directory() as directory_fd:
+            original = os.fstat(directory_fd)
+            raw = _read_file_at(directory_fd, "policy.json", owner=0,
+                                limit=MAX_APPROVAL_BYTES)
+            with _bootstrap_directory() as current_fd:
+                current = os.fstat(current_fd)
+                if ((original.st_dev, original.st_ino) != (current.st_dev, current.st_ino)
+                        or _read_file_at(current_fd, "policy.json", owner=0,
+                                         limit=MAX_APPROVAL_BYTES) != raw):
+                    raise ApprovalRefused("bootstrap approval policy changed")
+            return _decode_policy(raw)
+    except Exception:
+        raise ApprovalRefused("protected bootstrap approval policy refused") from None
+
+
 def load_bootstrap_approval(*, expected: BootstrapContext, operator: str,
                             now: str) -> VerifiedBootstrapApproval:
     """Read one stable protected snapshot; all public refusals are redacted.

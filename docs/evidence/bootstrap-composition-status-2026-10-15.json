@@ -201,11 +201,12 @@
     "6. Review and place admission.json (package digest from az-nexus-bootstrap observe-packages, installed-files manifest digest, systemd profile digest, floors/limits, audit head) and installed-files.json.",
     "7. Publish deployment.json (6 fields; digests derived, epoch/revocation/operator chosen by owner): azazel-nexus bootstrap-deployment-preview < file, then azazel-nexus bootstrap-deployment-initialize on a root tty.",
     "8. Publish the bootstrap generation (az-nexus-bootstrap generation-preview / generation-publish).",
-    "9. Per boot: publish selection.json for the current boot_id with a fresh approval_id (azazel-nexus bootstrap-selection-initialize); mint the time anchor (az-nexus-bootstrap time-initialize); sign approval.json off-host and place approval.json + 64-byte approval.sig."
+    "9. Per boot: publish selection.json for the current boot_id with a fresh approval_id (azazel-nexus bootstrap-selection-initialize); mint the time anchor (az-nexus-bootstrap time-initialize); print the exact canonical payload and signed-message digest with `az-nexus-bootstrap approval-request` (stdin: {\"expires_at\":...,\"granted_at\":...}); sign the message off-host with the enrolled operator key; place approval.json (payload bytes) and the 64-byte approval.sig."
   ],
   "corrections": [
     "The same trace reported no installed-files manifest generator; `azazel-nexus installed-files-candidate` already provides a context-free canonical candidate (src/azazel_nexus/installed_candidate.py:146-165, cli.py:743-756).",
-    "An initial provisioning trace reported the deployment and selection publishers as unexposed; an independent check found them exposed as azazel-nexus bootstrap-deployment-{preview,initialize,recover} and bootstrap-selection-{initialize,recover} (src/azazel_nexus/cli.py:734-740, 804-807, 910-930; pyproject.toml:31). No CLI change is needed."
+    "An initial provisioning trace reported the deployment and selection publishers as unexposed; an independent check found them exposed as azazel-nexus bootstrap-deployment-{preview,initialize,recover} and bootstrap-selection-{initialize,recover} (src/azazel_nexus/cli.py:734-740, 804-807, 910-930; pyproject.toml:31). No CLI change is needed.",
+    "No tool previously produced the canonical approval payload for off-host signing (only the verifier called bootstrap_payload); az-nexus-bootstrap approval-request now prints it read-only from the declared context, signs nothing, and states that drift, trust changes, the time window or a reboot can still make admission refuse."
   ],
   "not_performed": [
     "No key, signature, approval, enrollment, pin, time, epoch or generation record was created or promoted from test material",

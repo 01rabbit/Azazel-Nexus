@@ -5988,6 +5988,19 @@ with `TimeoutStartFailureMode=kill` bounds them), and until cross-boot renewal
 exists a node bootstraps once — retrying needs clean state (a VM snapshot
 revert), never deletion of retained records.
 
+No tool produced the canonical approval payload the owner must sign: only the
+verifier called `bootstrap_payload`. `az-nexus-bootstrap approval-request` now
+prints, read-only, the exact payload bytes for the protected declared context
+and operator plus the owner-chosen `granted_at`/`expires_at`, and the SHA-256 of
+the domain-separated message to sign off-host with the enrolled operator key. It
+mirrors the verifier's policy, operator and duration checks through a new public
+`read_bootstrap_approval_policy` reader, signs nothing, holds no key, writes
+nothing, and states that drift, enrollment/revocation, the trusted time window or
+a reboot can still make admission refuse a correctly signed approval. This is
+consistent with the documented separation: signing stays in the operator's own
+tool, never in Nexus. An independent review found no critical or high issue; its
+wording and private-import findings are addressed.
+
 Both changes were independently reviewed with no critical or high finding; the
 genesis review also mutation-tested the change. Follow-ups addressed: wording
 that overstated single use, stamp-change and exact-int tests, a real-factory and

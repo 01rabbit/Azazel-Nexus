@@ -229,3 +229,42 @@ def test_public_refusal_redacts_paths_and_raw_errors(store, monkeypatch):
         bootstrap_store.load_bootstrap_approval(expected=context, operator=OPERATOR, now=START)
     assert str(error.value) == "protected bootstrap approval refused"
     assert calls == ["opened"]
+
+
+def _policy_reader(monkeypatch):
+    read_file_at = bootstrap_store._read_file_at
+    monkeypatch.setattr(
+        bootstrap_store, "_read_file_at",
+        lambda fd, name, *, owner, limit: read_file_at(
+            fd, name, owner=os.getuid() if owner == 0 else owner, limit=limit),
+    )
+
+
+def test_policy_reader_returns_the_verifier_decoded_policy(store, monkeypatch):
+    _, _, policy, *_ = store
+    _policy_reader(monkeypatch)
+    assert bootstrap_store.read_bootstrap_approval_policy() == policy
+
+
+def test_policy_reader_redacts_noncanonical_policy(store, monkeypatch):
+    directory, *_ = store
+    _policy_reader(monkeypatch)
+    raw = (directory / "policy.json").read_bytes()
+    (directory / "policy.json").write_bytes(raw.replace(b",", b", ", 1))
+    with pytest.raises(ApprovalRefused, match="^protected bootstrap approval policy refused$"):
+        bootstrap_store.read_bootstrap_approval_policy()
+
+
+def test_policy_reader_refuses_a_change_between_reads(store, monkeypatch):
+    directory, *_ = store
+    read_file_at = bootstrap_store._read_file_at
+    calls = {"count": 0}
+
+    def changing(fd, name, *, owner, limit):
+        calls["count"] += 1
+        raw = read_file_at(fd, name, owner=os.getuid(), limit=limit)
+        return raw if calls["count"] == 1 else raw + b" "
+
+    monkeypatch.setattr(bootstrap_store, "_read_file_at", changing)
+    with pytest.raises(ApprovalRefused, match="^protected bootstrap approval policy refused$"):
+        bootstrap_store.read_bootstrap_approval_policy()
