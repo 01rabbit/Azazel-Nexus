@@ -24,7 +24,8 @@ class BootstrapStartJobs:
     """
 
     def __init__(self, *, bus, message_factory, message_type,
-                 timeout_seconds: float, check_start, expected_owner):
+                 timeout_seconds: float, check_start, expected_owner,
+                 load_first=False):
         if _validate_expected_owner(expected_owner) is None:
             raise ValueError("enclosing systemd unique owner required")
         if not callable(check_start):
@@ -33,7 +34,7 @@ class BootstrapStartJobs:
         self._observer = BootstrapStopJobs(
             bus=bus, message_factory=message_factory, message_type=message_type,
             timeout_seconds=timeout_seconds,
-            expected_owner=expected_owner,
+            expected_owner=expected_owner, load_first=load_first,
         )
 
     async def start_and_wait(self, unit: UnitKey) -> None:

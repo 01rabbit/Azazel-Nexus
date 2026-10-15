@@ -64,6 +64,8 @@ class ReadyThenStartBus(DelayedReadyBus):
         self.handlers.remove(handler)
 
     async def call(self, message):
+        if message.member == "LoadUnit":  # fake: LoadUnit is the same lookup as GetUnit
+            message.member = "GetUnit"
         if message.member == "GetNameOwner" or message.member == "GetAll":
             return await super().call(message)
         if message.member == "GetUnit":

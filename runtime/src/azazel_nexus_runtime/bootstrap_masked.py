@@ -29,6 +29,20 @@ class MaskedBootstrapPair:
     owner: str
     fragments: tuple[tuple[UnitKey, str], ...]
     fingerprint: str
+    #: Units systemd held no object for (masked per fresh GetUnitFileState).
+    #: Their `fragments` path is file-attested (the caller's owned-file
+    #: expectation), NOT systemd-attested: systemd reported no FragmentPath.
+    not_loaded: tuple[UnitKey, ...] = ()
+
+    def same_closure(self, other: "MaskedBootstrapPair") -> bool:
+        """Same owner and fragments; ignores the loaded/not-loaded flag.
+
+        Across separate inspections a StopUnit or systemd GC legitimately flips
+        a masked unit between loaded and not loaded. Within one inspection the
+        flag stays strict (and it stays in `fingerprint`).
+        """
+        return (type(other) is MaskedBootstrapPair and self.owner == other.owner
+                and self.fragments == other.fragments)
 
 
 def _variant_value(properties, key: str, signature: str, value_type: type):
@@ -100,8 +114,20 @@ class BootstrapMaskedPairInspector:
     """
 
     def __init__(self, *, bus, message_factory, message_type, timeout_seconds,
-                 expected_owner=None):
+                 expected_owner=None, expected_fragments=None):
         self._expected_owner = _validate_expected_owner(expected_owner)
+        # Opt-in: only a caller holding the owned-file fragments may have a
+        # not-loaded masked unit accepted, and only at that file-attested path.
+        self._expected = None
+        if expected_fragments is not None:
+            if (type(expected_fragments) is not tuple
+                    or len(expected_fragments) != len(_PAIR)
+                    or any(type(item) is not tuple or len(item) != 2
+                           or item[0] is not unit
+                           for item, unit in zip(expected_fragments, _PAIR))):
+                raise ValueError("expected pair fragments malformed")
+            self._expected = {unit: _fragment_path(path)
+                              for unit, path in expected_fragments}
         self._reader = BootstrapStopJobs(
             bus=bus, message_factory=message_factory, message_type=message_type,
             timeout_seconds=timeout_seconds,
@@ -116,11 +142,15 @@ class BootstrapMaskedPairInspector:
         units = tuple((unit, UNIT_NAMES[unit], _unit_object_path(UNIT_NAMES[unit]))
                       for unit in _PAIR)
 
-        async def snapshot() -> tuple[tuple[UnitKey, str], ...]:
+        async def snapshot() -> tuple[tuple[UnitKey, str, bool], ...]:
             fragments = []
             for unit, name, path in units:
-                if await reader._call("GetUnit", "s", [name], "o") != [path]:
-                    raise UnitOperationFailed("masked bootstrap object changed")
+                if not await reader._get_unit(
+                    name, path, masked_not_loaded=self._expected is not None,
+                    fragment=(self._expected or {}).get(unit),
+                ):
+                    fragments.append((unit, self._expected[unit], False))
+                    continue
                 body = await reader._call(
                     "GetAll", "s", [UNIT_INTERFACE], "a{sv}",
                     path=path, interface=PROPERTIES_INTERFACE,
@@ -128,7 +158,7 @@ class BootstrapMaskedPairInspector:
                 if len(body) != 1:
                     raise UnitOperationFailed("masked bootstrap properties missing")
                 # Copy primitive strings into a tuple before any further await.
-                fragments.append(_unit_snapshot(unit, body[0]))
+                fragments.append((*_unit_snapshot(unit, body[0]), True))
             return tuple(fragments)
 
         async def operation() -> MaskedBootstrapPair:
@@ -145,15 +175,22 @@ class BootstrapMaskedPairInspector:
             if (before != after or final_profile != observed_profile
                     or await reader._owner() != owner):
                 raise UnitOperationFailed("masked bootstrap pair changed during inspection")
+            pairs = tuple((unit, path) for unit, path, _loaded in after)
+            missing = tuple(unit for unit, _path, loaded in after if not loaded)
+            document = {"owner": owner, "fragments": [[unit.value, path]
+                                                       for unit, path in pairs]}
+            if missing:
+                # Absent for an all-loaded pair, so those fingerprints are
+                # unchanged; present, it can never equal a loaded one.
+                document["not_loaded"] = [unit.value for unit in missing]
             encoded = json.dumps(
-                {"owner": owner, "fragments": [[unit.value, path]
-                                                for unit, path in after]},
-                sort_keys=True, separators=(",", ":"),
+                document, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
             return MaskedBootstrapPair(
                 owner=owner,
-                fragments=after,
+                fragments=pairs,
                 fingerprint="sha256:" + hashlib.sha256(encoded).hexdigest(),
+                not_loaded=missing,
             )
 
         try:

@@ -174,7 +174,9 @@ def _projection(unit, unit_properties, service_properties, dependencies, service
 class BootstrapLoadedUnitInspector:
     """One observation on an already-owned dedicated system-bus connection.
 
-    Only GetNameOwner, GetUnit and Properties.GetAll are issued. Two identical
+    Only GetNameOwner, GetUnit and Properties.GetAll are issued; with the
+    opt-in `load_first` (published pair after Reload, pinned owner) every
+    snapshot uses LoadUnit instead of GetUnit as the lookup (no job, no start). Two identical
     projected snapshots and stable owner/path are required; this is not atomic
     with a later Start and does not validate the transitive graph or bytes on
     disk. Expected edges must come from independent semantic admission, not
@@ -182,7 +184,10 @@ class BootstrapLoadedUnitInspector:
     """
 
     def __init__(self, *, bus, message_factory, message_type, timeout_seconds,
-                 expected_service_settings, expected_owner=None):
+                 expected_service_settings, expected_owner=None, load_first=False):
+        if type(load_first) is not bool or (load_first and expected_owner is None):
+            raise ValueError("load_first requires a bool flag and a pinned owner")
+        self._load_first = load_first
         # Snapshot independent values before any awaits; never learn policy
         # from the manager's observed values. Start/stop pins must be positive
         # and within the shipped ceiling. This is not proof that a native kill
@@ -206,7 +211,9 @@ class BootstrapLoadedUnitInspector:
         name, path = UNIT_NAMES[unit], _unit_object_path(UNIT_NAMES[unit])
 
         async def snapshot():
-            if await reader._call("GetUnit", "s", [name], "o") != [path]:
+            if self._load_first:
+                await reader._load_pair_unit(name, path)
+            elif await reader._call("GetUnit", "s", [name], "o") != [path]:
                 raise UnitOperationFailed("loaded bootstrap object changed")
             result = []
             for interface in (UNIT_INTERFACE, _SERVICE):

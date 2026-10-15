@@ -66,6 +66,7 @@ class BootstrapRestoreSequence:
                     raise UnitOperationFailed("bootstrap restored fence changed")
                 observed = await BootstrapMaskedPairInspector(
                     **self._arguments, expected_owner=owner,
+                    expected_fragments=fragments,
                 ).inspect()
                 if (observed.fragments != fragments or self._files.check() != fragments
                         or await _observe_profile(reader) != profile

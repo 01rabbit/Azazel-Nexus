@@ -29,6 +29,15 @@ _RULE = (
 )
 _JOB = re.compile(r"/org/freedesktop/systemd1/job/([1-9][0-9]*)\Z")
 _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
+_NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
+#: Stable snapshot value for a masked unit systemd holds no object for.
+#: This is file-attested, not systemd-attested: systemd held no object, so
+#: the value only records that a fresh GetUnitFileState reported a mask.
+NOT_LOADED = "not-loaded"
+_RUNTIME_MASK_DIR = "/run/systemd/system.control/"
+_ETC_MASK_DIR = "/etc/systemd/system/"
+_MASK_STATES = frozenset({"masked", "masked-runtime"})
+_NOT_LOADED_REPLY = object()
 
 
 def _validate_expected_owner(owner):
@@ -51,8 +60,12 @@ class BootstrapStopJobs:
     """
 
     def __init__(self, *, bus, message_factory, message_type, timeout_seconds: float,
-                 expected_owner=None):
+                 expected_owner=None, load_first=False):
         self._expected_owner = _validate_expected_owner(expected_owner)
+        if type(load_first) is not bool:
+            raise ValueError("load_first must be a bool")
+        # Only the start-side pre-start inactive precondition reads this.
+        self._load_first = load_first
         if (
             type(timeout_seconds) not in (int, float)
             or not math.isfinite(timeout_seconds)
@@ -101,6 +114,7 @@ class BootstrapStopJobs:
         path=MANAGER_PATH,
         interface=MANAGER_INTERFACE,
         destination=DESTINATION,
+        allow_no_such_unit=False,
     ):
         cleanup_call = member in {"Unsubscribe", "RemoveMatch"}
         if (cleanup_call and not self._cleanup_open) or (
@@ -129,6 +143,15 @@ class BootstrapStopJobs:
         ):
             raise UnitOperationFailed("late bootstrap stop reply refused")
         if (
+            allow_no_such_unit
+            and member == "GetUnit"
+            and reply.message_type == getattr(self._types, "ERROR", None)
+            and getattr(reply, "sender", None) == target
+            and type(getattr(reply, "error_name", None)) is str
+            and reply.error_name == _NO_SUCH_UNIT
+        ):
+            return _NOT_LOADED_REPLY
+        if (
             reply.message_type != self._types.METHOD_RETURN
             or getattr(reply, "sender", None) != target
             or reply.signature != reply_signature
@@ -136,6 +159,65 @@ class BootstrapStopJobs:
         ):
             raise UnitOperationFailed("bootstrap stop D-Bus reply refused")
         return reply.body
+
+    async def _get_unit(self, name, path, *, masked_not_loaded=False, fragment=None):
+        """GetUnit; True when loaded at `path`, never loads the unit.
+
+        Only with masked_not_loaded, exactly NoSuchUnit (same owner/sender
+        pin) is read as "not loaded, masked": a fresh GetUnitFileState must
+        report the mask and a GetUnit re-read must still be NoSuchUnit, else
+        refuse. With `fragment` (the file-attested owned path) the required
+        state is derived from it: /run/systemd/system.control/ (the owned
+        runtime overlay mask) -> "masked-runtime"; /etc/systemd/system/ (the
+        installer's /dev/null link) -> "masked"; any other path refuses.
+        Without `fragment` (callers already inside a verified closed phase,
+        which have no attested path) exactly {"masked", "masked-runtime"} is
+        accepted. Returns False for that observation. Any other error is
+        refused.
+        """
+        reply = await self._call(
+            "GetUnit", "s", [name], "o", allow_no_such_unit=masked_not_loaded,
+        )
+        if reply is _NOT_LOADED_REPLY:
+            if fragment is None:
+                allowed = _MASK_STATES
+            elif type(fragment) is str and fragment.startswith(_RUNTIME_MASK_DIR):
+                allowed = frozenset({"masked-runtime"})
+            elif type(fragment) is str and fragment.startswith(_ETC_MASK_DIR):
+                allowed = frozenset({"masked"})
+            else:
+                raise UnitOperationFailed("unloaded bootstrap unit mask path refused")
+            state = await self._call("GetUnitFileState", "s", [name], "s")
+            if len(state) != 1 or type(state[0]) is not str or state[0] not in allowed:
+                raise UnitOperationFailed("unloaded bootstrap unit is not masked")
+            again = await self._call(
+                "GetUnit", "s", [name], "o", allow_no_such_unit=True,
+            )
+            if again is not _NOT_LOADED_REPLY:
+                raise UnitOperationFailed("bootstrap unit loaded during observation")
+            return False
+        if reply != [path]:
+            raise UnitOperationFailed("bootstrap job unit identity changed")
+        return True
+
+    async def _load_pair_unit(self, name, path):
+        """LoadUnit as the lookup for exactly the published pair; no job.
+
+        Only azazel-auditd.service / azazel-commissiond.service at their own
+        object path, only after publication + Reload, only under the retained
+        owner pin (same sender/owner checks as every `_call`). It is never a
+        start: DefaultDependencies=false units load inactive and no job is
+        created. NoSuchUnit or any error, or a different object path, refuses.
+        Callers must still read the unit's properties in the same snapshot.
+        """
+        if (type(name) is not str
+                or name not in (UNIT_NAMES[UnitKey.AUDITD], UNIT_NAMES[UnitKey.COMMISSIOND])
+                or path != _unit_object_path(name)):
+            raise UnitOperationFailed("bootstrap load outside exact pair")
+        if self._expected_owner is None or self._manager_owner != self._expected_owner:
+            raise UnitOperationFailed("bootstrap load requires the pinned systemd owner")
+        if await self._call("LoadUnit", "s", [name], "o") != [path]:
+            raise UnitOperationFailed("bootstrap pair unit load object changed")
 
     async def _owner(self):
         result = await self._call(
@@ -193,8 +275,14 @@ class BootstrapStopJobs:
 
         async def observe_state(expected):
             path = _unit_object_path(name)
-            if await self._call("GetUnit", "s", [name], "o") != [path]:
-                raise UnitOperationFailed("bootstrap job unit identity changed")
+            if starting and expected == "inactive" and self._load_first:
+                # Post-publication the idle pair may have been garbage-collected
+                # since inspection: the lookup is the load (no job, no start).
+                await self._load_pair_unit(name, path)
+            elif not await self._get_unit(
+                name, path, masked_not_loaded=(expected == "inactive" and not starting),
+            ):
+                return
             state = await self._call(
                 "Get", "ss", [UNIT_INTERFACE, "ActiveState"], "v",
                 path=path, interface=PROPERTIES_INTERFACE,

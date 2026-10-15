@@ -53,6 +53,7 @@ from .systemd_bus import SystemdBusSession
 from .units import DbusUnitManager, UNIT_NAMES, UnitKey, UnitOperationFailed, UnitState
 
 _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
+_LOAD_ROOTS = frozenset(UNIT_NAMES[unit] for unit in _PAIR)
 
 
 @contextmanager
@@ -244,8 +245,10 @@ class BootstrapNarrowingManager:
                     raise UnitOperationFailed("bootstrap owned closure changed")
                 current = await BootstrapMaskedPairInspector(
                     **arguments, expected_owner=masked.owner,
+                    expected_fragments=masked.fragments,
                 ).inspect()
-                if current != masked or self._containment_files.check() != masked.fragments:
+                if (not current.same_closure(masked)
+                        or self._containment_files.check() != masked.fragments):
                     raise UnitOperationFailed("bootstrap loaded closure changed")
                 self._check_cgroup_mount()
 
@@ -300,8 +303,9 @@ class BootstrapNarrowingManager:
                         raise UnitOperationFailed("bootstrap owned closure changed")
                     current = await BootstrapMaskedPairInspector(
                         **arguments, expected_owner=masked.owner,
+                        expected_fragments=masked.fragments,
                     ).inspect()
-                    if (current != masked
+                    if (not current.same_closure(masked)
                             or self._closed_overlay_files.check() != masked.fragments):
                         raise UnitOperationFailed("bootstrap loaded closure changed")
                     self._check_cgroup_mount()
@@ -497,6 +501,7 @@ class BootstrapNarrowingManager:
                 bus=session._bus, message_factory=session._message_factory,
                 message_type=session._message_type, timeout_seconds=self._timeout,
                 expected_owner=expected_owner, check_start=check_start,
+                load_first=True,
             )
             bridge = _StartCheckpointBridge(session._loop, client._observer)
             return bridge.run(
@@ -768,6 +773,7 @@ class BootstrapNarrowingManager:
                 closure = await BootstrapStartClosureInspector(
                     **arguments, expected_owner=owner,
                     systemd_profile_digest=policy.systemd_profile_digest,
+                    load_roots=_LOAD_ROOTS,
                 ).inspect()
                 prerequisites = await BootstrapPrerequisiteInspector(
                     **arguments, expected_owner=owner, policy=policy,
@@ -777,7 +783,7 @@ class BootstrapNarrowingManager:
                 for unit in _PAIR:
                     expected = policy.units[unit]
                     observations.append(await BootstrapLoadedUnitInspector(
-                        **arguments, expected_owner=owner,
+                        **arguments, expected_owner=owner, load_first=True,
                         expected_service_settings=expected.service_settings,
                     ).inspect(unit, expected_dependencies=expected.dependencies))
                     await check_manager()
@@ -788,6 +794,7 @@ class BootstrapNarrowingManager:
                 if await BootstrapStartClosureInspector(
                     **arguments, expected_owner=owner,
                     systemd_profile_digest=policy.systemd_profile_digest,
+                    load_roots=_LOAD_ROOTS,
                 ).inspect() != closure:
                     raise UnitOperationFailed("publication start closure changed")
                 await check_manager()
@@ -855,6 +862,7 @@ class BootstrapNarrowingManager:
                     closure = await BootstrapStartClosureInspector(
                         **arguments, expected_owner=owner,
                         systemd_profile_digest=policy.systemd_profile_digest,
+                        load_roots=_LOAD_ROOTS,
                     ).inspect()
                     before = await BootstrapPrerequisiteInspector(
                         **arguments, expected_owner=owner, policy=policy,
@@ -865,7 +873,7 @@ class BootstrapNarrowingManager:
                         # pre-start fingerprint: ExecStartEx execution metadata
                         # legitimately changes after auditd starts.
                         await BootstrapLoadedUnitInspector(
-                            **arguments, expected_owner=owner,
+                            **arguments, expected_owner=owner, load_first=True,
                             expected_service_settings=expected.service_settings,
                         ).inspect(unit, expected_dependencies=expected.dependencies)
                     if await BootstrapPrerequisiteInspector(
@@ -875,6 +883,7 @@ class BootstrapNarrowingManager:
                     if await BootstrapStartClosureInspector(
                         **arguments, expected_owner=owner,
                         systemd_profile_digest=policy.systemd_profile_digest,
+                        load_roots=_LOAD_ROOTS,
                     ).inspect() != closure:
                         raise UnitOperationFailed("retained publication start closure changed")
                     if await BootstrapControllerInspector(
@@ -1040,6 +1049,7 @@ class BootstrapNarrowingManager:
                         raise UnitOperationFailed("withdrawal manager profile changed")
                     current = await BootstrapMaskedPairInspector(
                         **arguments, expected_owner=owner,
+                        expected_fragments=fragments,
                     ).inspect()
                     if (current.fragments != fragments or files.check() != fragments
                             or await _observe_profile(reader) != profile
@@ -1058,6 +1068,7 @@ class BootstrapNarrowingManager:
                 await check_closed()
                 result = await BootstrapMaskedPairInspector(
                     **arguments, expected_owner=owner,
+                    expected_fragments=fragments,
                 ).inspect()
                 if (result.fragments != fragments or files.check() != fragments
                         or await _observe_profile(reader) != profile

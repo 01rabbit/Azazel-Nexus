@@ -124,10 +124,24 @@ async def _device_inventory(reader):
 
 
 class BootstrapStartClosureInspector:
-    """Read two complete graphs; no LoadUnit, mutation, start or learned pin."""
+    """Read two complete graphs; no mutation, start, job or learned pin.
+
+    LoadUnit is never used in the masked/closed phases and never for external
+    units (activated, targets, mounts, slices, devices keep GetUnit). Only when
+    the caller opts in with `load_roots`, and only for the published pair
+    (azazel-auditd.service / azazel-commissiond.service) after publication and
+    Reload, LoadUnit replaces GetUnit as that root's lookup in every snapshot,
+    because systemd does not load the unreferenced pair on its own. It is never
+    StartUnit and creates no job. By default no LoadUnit is issued.
+    """
 
     def __init__(self, *, bus, message_factory, message_type, timeout_seconds,
-                 expected_owner, systemd_profile_digest):
+                 expected_owner, systemd_profile_digest, load_roots=frozenset()):
+        if (type(load_roots) is not frozenset
+                or not load_roots <= {"azazel-auditd.service",
+                                      "azazel-commissiond.service"}):
+            raise ValueError("load_roots may only name the published pair")
+        self._load_roots = load_roots
         self._owner = _validate_expected_owner(expected_owner)
         if self._owner is None:
             raise ValueError("retained systemd owner required")
@@ -158,7 +172,9 @@ class BootstrapStartClosureInspector:
             while pending:
                 name = pending.pop(0)
                 path = _unit_object_path(name)
-                if await reader._call("GetUnit", "s", [name], "o") != [path]:
+                if name in self._load_roots:
+                    await reader._load_pair_unit(name, path)
+                elif await reader._call("GetUnit", "s", [name], "o") != [path]:
                     raise UnitOperationFailed("start closure object changed")
                 reply = await reader._call(
                     "GetAll", "s", [UNIT_INTERFACE], "a{sv}",

@@ -55,6 +55,7 @@ class BootstrapCloseSequence:
                     raise UnitOperationFailed("bootstrap close manager changed")
                 observed = await BootstrapMaskedPairInspector(
                     **self._arguments, expected_owner=owner,
+                    expected_fragments=fragments,
                 ).inspect()
                 if observed.fragments != fragments:
                     raise UnitOperationFailed("loaded masks do not match owned closure")
@@ -73,6 +74,7 @@ class BootstrapCloseSequence:
             # This final observation is not stopped/cgroup-empty evidence.
             result = await BootstrapMaskedPairInspector(
                 **self._arguments, expected_owner=owner,
+                expected_fragments=fragments,
             ).inspect()
             if (result.fragments != fragments or self._files.check() != fragments
                     or await _observe_profile(reader) != profile

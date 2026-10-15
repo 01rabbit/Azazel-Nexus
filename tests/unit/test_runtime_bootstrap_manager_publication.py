@@ -75,6 +75,8 @@ class CombinedLoadedBus:
         self.audit_device_edge = False
 
     async def call(self, message):
+        if message.member == "LoadUnit":  # fake: LoadUnit is the same lookup as GetUnit
+            message.member = "GetUnit"
         if self.device_bus is not None:
             if message.member == "ListUnitsByPatterns":
                 return await self.device_bus.call(message)
@@ -675,7 +677,7 @@ def test_manager_observes_external_prerequisites_around_loaded_pair(tmp_path, mo
                     )
                 })
                 return _reply("a{sv}", properties)
-            if message.member == "GetUnit" and message.body[0] in PAIR:
+            if message.member in {"GetUnit", "LoadUnit"} and message.body[0] in PAIR:
                 helper_gets.append(message.body[0])
             reply = await original(message)
             if (message.member == "GetAll" and message.body == [UNIT_INTERFACE]

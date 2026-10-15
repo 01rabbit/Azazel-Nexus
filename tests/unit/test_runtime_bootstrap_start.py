@@ -79,6 +79,8 @@ class FakeBus:
             handler(message)
 
     async def call(self, message):
+        if message.member == "LoadUnit":  # fake: LoadUnit is the same lookup as GetUnit
+            message.member = "GetUnit"
         reply = await self._respond(message)
         if reply.sender is None:
             reply.sender = message.destination

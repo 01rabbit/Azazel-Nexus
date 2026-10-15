@@ -57,6 +57,8 @@ def test_authenticated_audit_handoff_gates_commission(evidence, monkeypatch, fai
             self.job.remove_message_handler(handler)
 
         async def call(self, message):
+            if message.member == "LoadUnit":  # fake: same lookup as GetUnit
+                message.member = "GetUnit"
             if message.member == "GetUnit":
                 self.reader = (self.commission if message.body == ["azazel-commissiond.service"]
                                else self.audit)

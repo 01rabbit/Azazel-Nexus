@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .bootstrap_cgroup import observe_cgroup_at, validate_cgroup_root
 from .bootstrap_masked import _variant_value, _observe_profile
-from .bootstrap_stop import BootstrapStopJobs, _validate_expected_owner
+from .bootstrap_stop import NOT_LOADED, BootstrapStopJobs, _validate_expected_owner
 from .systemd_bus import PROPERTIES_INTERFACE, UNIT_INTERFACE, _unit_object_path
 from .units import UNIT_NAMES, UnitKey, UnitOperationFailed
 
@@ -63,8 +63,17 @@ class BootstrapStoppedPairInspector:
                 await guard()
                 name = UNIT_NAMES[unit]
                 path = _unit_object_path(name)
-                if await reader._call("GetUnit", "s", [name], "o") != [path]:
-                    raise UnitOperationFailed("bootstrap stopped object changed")
+                # The enclosing check_closed fence requires the masked closure;
+                # the reader additionally demands fresh masked file state.
+                if not await reader._get_unit(name, path, masked_not_loaded=True):
+                    expected = "/system.slice/" + name
+                    observed = observe_cgroup_at(self._root, expected,
+                                                 owner_uid=self._uid)
+                    if observed[0] != "absent":
+                        raise UnitOperationFailed("unattributed bootstrap cgroup remains")
+                    result.append((unit, NOT_LOADED, observed))
+                    await guard()
+                    continue
                 props = await properties(path, UNIT_INTERFACE)
                 if (_variant_value(props, "Id", "s", str) != name
                         or _variant_value(props, "ActiveState", "s", str) != "inactive"):

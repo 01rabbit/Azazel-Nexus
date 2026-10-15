@@ -6031,9 +6031,30 @@ modelled loaded units. The fix accepts exactly that error name, only for GetUnit
 inside the active/inactive query, only with fresh `masked` file state and a
 re-read that the unit is still not loaded, and reads it as "inactive" (the same
 claim the loaded path makes from ActiveState, not proof of no processes); every
-other error still refuses and LoadUnit is never used. An independent review
-found no critical or high issue. The bootstrap inspectors that call GetUnit
-directly on the masked pair need the same treatment before a real bootstrap run.
+other error still refuses and the activation adapter never uses LoadUnit. An
+independent review found no critical or high issue.
+
+The bootstrap inspectors had the same real-host gap in two places. In the
+masked/closed phases (masked-pair, stopped-pair and post-stop observations) an
+unloaded helper is now accepted only as an explicit "not loaded" value: exact
+`NoSuchUnit` from the pinned manager, fresh file state derived from the
+file-attested fragment (`/run/systemd/system.control` -> `masked-runtime`,
+`/etc/systemd/system` -> `masked`), a re-read still not loaded, and for the
+stopped pair an absent cgroup. Cross-observation closed checks compare owner and
+fragments, not the loaded flag, so a StopUnit or garbage collection between
+observations does not spuriously refuse; within one inspection the two
+snapshots stay strict. After publication and Reload, nothing references the
+unmasked helpers, so systemd does not load them and the start-closure,
+loaded-unit and pre-start inactivity checks could never see them. Those checks
+now use Manager.LoadUnit as the lookup for exactly `azazel-auditd.service` and
+`azazel-commissiond.service`, with the manager owner pinned and the object path
+fixed, never in masked/closed phases and never for the controller or external
+units (the prerequisite observer above still never loads). LoadUnit creates no
+job and starts nothing; a still-masked result reports LoadState `masked` and is
+refused. An independent review found no critical or high issue. Two real-host
+properties remain to be observed on the VM: the `masked-runtime` report for the
+owned overlay file, and whether systemd collects a just-loaded idle helper
+between lookups (that would refuse, fail-closed, but could make the flow flaky).
 
 Both changes were independently reviewed with no critical or high finding; the
 genesis review also mutation-tested the change. Follow-ups addressed: wording
