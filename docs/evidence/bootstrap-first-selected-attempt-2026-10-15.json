@@ -53,8 +53,8 @@
     "fail-closed behaviour of the real selected start: a pre-admission refusal left both helpers masked/inactive with no deadline, audit record or overlay"
   ],
   "not_verified": [
-    "any admitted helper start, READY order, authenticated readiness, heartbeat, operator stop with confirmed containment, or deadline expiry on the real host",
-    "the manifest-resolution performance fix on the real host",
+    "confirmed containment after the production open_pair refusal (BootstrapContainmentFailed on the host)",
+    "any admitted helper start, READY order, authenticated readiness, heartbeat, operator stop, deadline expiry (unreachable with the production manager by design)",
     "anything beyond this VM (no hardware evidence)"
   ],
   "retry_requirements": "A retry needs the fixed code reinstalled and a fresh boot or snapshot revert: the controller-used marker is retained for this boot and selection/time/deployment records are create-only (stale-boot selection replacement is not implemented).",
@@ -81,5 +81,18 @@
     "start": "14:40:00Z: the controller passed containment (one daemon-reload) and was then SIGKILLed by systemd at 14:40:30Z: 'start operation timed out' (TimeoutStartSec=30s), 29.8 s CPU. Helpers stayed masked/inactive; no deadline, audit record or overlay; supervisor.lock and controller-used only.",
     "diagnosis": "Timed sandbox replay: installed files 2.9 s, initial admission verify 43.7 s, generation admission 11.7 s (CPU-bound). cProfile: 97% in loaded_modules._project_modules -> resolve_installed_link -> _validate_manifest, re-validating the whole manifest for every loaded module (~12k calls, 18M _validate_file calls).",
     "privilege": "Temporary sudoers removed after diagnosis."
+  },
+  "fourth_attempt": {
+    "build": "6c8edbf (manifest validated once per projection), installed by Phase 2f after snapshot revert; records re-finalized (unit_closure sha256:95dab07aabed0a9de2b4f14649bcc688b2aa5f4a6c7c5d1c029d3d0fe7d1b551, admission sha256:f1bb704830e1dd87b6c89cd0a7387011e42eb76d9752fb9d9d5f19cd3a907f6e), deployment/selection/generation/time initialized, approval (payload sha256:00adda8de258c1cf03f47477fb99aa58d76d448687b528aea6b126e8cda85416) owner-signed and verified.",
+    "pre_start_replay": "Controller-faithful timed replay, no diagnostic removal: installed files 0.2 s, initial admission verify 1.8 s, generation admission 0.4 s, capacity and first-install audit pass; no files created.",
+    "known_design_limit_declared_before_start": "The production BootstrapNarrowingManager refuses open_pair/start_and_wait (bootstrap_manager.py:963-969, 1088-1091) and is_ready is False, so READY/helper start were not reachable. With the owner's agreement this run was declared a designed-refusal verification: expected admission -> retained deadline -> grant intent -> open_pair refusal -> confirmed containment.",
+    "start": "15:02:59Z: two controller-requested daemon-reloads (~9.5 s apart), then 'az-activated failed before completing a safe pass: BootstrapContainmentFailed' at 15:03:10Z, 9.6 s CPU. This is NOT the expected outcome: containment was not confirmed.",
+    "post_state": "initial.json and checkpoint.json (retained deadline, deadline_boottime_ns 7115686956966) and grant-<boot>.json phase recovery_required (recovery_evidence_digest set; audit/close digests null) were created; bootstrap-overlay and /run/systemd/system.control empty; azazel-auditd/commissiond still masked (/etc -> /dev/null) and inactive; audit ledger empty; controller-used marker present.",
+    "verified_on_host": [
+      "first admission passes end-to-end in the real controller (deadline retained, grant intent recorded)",
+      "production open_pair refusal (grant moved to recovery_required)",
+      "helpers never started; audit ledger untouched"
+    ],
+    "operator_rule": "The owner stated that a further failure stops the work. Work on the VM stopped after this run; temporary sudoers removed."
   }
 }
