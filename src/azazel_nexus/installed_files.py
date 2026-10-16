@@ -11,7 +11,11 @@ from hashlib import sha256
 import os
 import stat
 
-from .installed_manifest import InstalledManifest, decode_installed_manifest
+from .installed_manifest import (
+    InstalledManifest,
+    decode_installed_manifest,
+    decode_scope,
+)
 from .operator_trust import ApprovalRefused
 
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -243,14 +247,15 @@ def read_pinned_installed_files(
     checks. This is not full manifest measurement, approval or code execution.
     """
     try:
-        decode_installed_manifest(raw, expected_digest=expected_digest)
-        fd = os.open("/", _DIR)
-        try:
-            return _read_pinned_at(
-                fd, raw, expected_digest=expected_digest, paths=paths, owner=0,
-            )
-        finally:
-            os.close(fd)
+        with decode_scope():
+            decode_installed_manifest(raw, expected_digest=expected_digest)
+            fd = os.open("/", _DIR)
+            try:
+                return _read_pinned_at(
+                    fd, raw, expected_digest=expected_digest, paths=paths, owner=0,
+                )
+            finally:
+                os.close(fd)
     except Exception:
         raise ApprovalRefused("pinned installed content refused") from None
 
@@ -268,11 +273,12 @@ def measure_installed_files(raw: bytes, *, expected_digest: str) -> SelectedInst
     them against later changes. No generation, execution, policy update or start.
     """
     try:
-        decode_installed_manifest(raw, expected_digest=expected_digest)
-        fd = os.open("/", _DIR)
-        try:
-            return _measure_at(fd, raw, expected_digest=expected_digest, owner=0)
-        finally:
-            os.close(fd)
+        with decode_scope():
+            decode_installed_manifest(raw, expected_digest=expected_digest)
+            fd = os.open("/", _DIR)
+            try:
+                return _measure_at(fd, raw, expected_digest=expected_digest, owner=0)
+            finally:
+                os.close(fd)
     except Exception:
         raise ApprovalRefused("selected installed files refused") from None

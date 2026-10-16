@@ -4,6 +4,8 @@ This data model does not read files, establish a complete dependency closure,
 or grant admission. A separate bounded reader measures selected paths.
 """
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
@@ -296,8 +298,47 @@ def encode_installed_manifest(manifest: InstalledManifest) -> bytes:
         raise ApprovalRefused("installed manifest encoding refused") from None
 
 
+_DECODE_SCOPE = ContextVar("azazel_installed_manifest_decode_scope", default=None)
+
+
+@contextmanager
+def decode_scope():
+    """Share pure decoding of byte-identical manifests inside ONE measurement call.
+
+    Not a cache across calls: the scope exists only for the dynamic extent of
+    the ``with`` block, is emptied and discarded on exit, and nested use joins the outer
+    scope. Callers still read and hash every file afresh; a hit requires the
+    freshly supplied bytes to equal the previously decoded bytes exactly, and
+    refusals are never memoized.
+    """
+    if _DECODE_SCOPE.get() is not None:
+        yield
+        return
+    scope = {}
+    token = _DECODE_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        # Emptied before the reset so a context copied into a task or thread
+        # can never hit after the outermost scope has exited.
+        scope.clear()
+        _DECODE_SCOPE.reset(token)
+
+
 def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledManifest:
     """Decode canonical bytes only when their independently pinned hash matches."""
+    scope = _DECODE_SCOPE.get()
+    if scope is None:
+        return _decode_installed_manifest(raw, expected_digest)
+    hit = scope.get(expected_digest) if type(expected_digest) is str else None
+    if hit is not None and type(raw) is bytes and raw == hit[0]:
+        return hit[1]
+    manifest = _decode_installed_manifest(raw, expected_digest)
+    scope[expected_digest] = (raw, manifest)
+    return manifest
+
+
+def _decode_installed_manifest(raw, expected_digest):
     try:
         if (type(raw) is not bytes or not 0 < len(raw) <= _MAX_RAW_BYTES
                 or type(expected_digest) is not str

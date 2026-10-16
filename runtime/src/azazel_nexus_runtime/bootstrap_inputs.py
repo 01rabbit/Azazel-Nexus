@@ -28,7 +28,11 @@ from azazel_nexus.bootstrap_generation_store import load_bootstrap_generation
 from azazel_nexus.installed_files import (
     SelectedInstalledFiles, measure_installed_files, read_pinned_installed_files,
 )
-from azazel_nexus.installed_manifest import decode_installed_manifest, resolve_installed_link
+from azazel_nexus.installed_manifest import (
+    decode_installed_manifest,
+    decode_scope,
+    resolve_installed_link,
+)
 from azazel_nexus.bootstrap_deployment import bind_bootstrap_deployment
 from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
 from azazel_nexus.hil_preflight import read_boot_id
@@ -74,110 +78,111 @@ def measure_bootstrap_installed_files(context: BootstrapContext) -> SelectedInst
     import closure, or loaded systemd configuration.
     """
     try:
-        if type(context) is not BootstrapContext:
-            raise ApprovalRefused("independent bootstrap context required")
-        raw = read_bootstrap_installed_manifest()
-        manifest = decode_installed_manifest(
-            raw, expected_digest=context.unit_closure_digest,
-        )
-        targets = {
-            ACTIVATION_CONTROLLER_UNIT: "azazel_nexus_runtime.activated:main",
-            UNIT_NAMES[UnitKey.AUDITD]: "azazel_nexus_runtime.auditd:main",
-            UNIT_NAMES[UnitKey.COMMISSIOND]: "azazel_nexus_runtime.commissiond:main",
-        }
-        required = {
-            profile.executable.removeprefix("/"): targets[profile.unit]
-            for profile in PROFILES if profile.unit in targets
-        }
-        if len(required) != 3:
-            raise ApprovalRefused("fixed bootstrap executable profile differs")
-        executable_paths = {entry.path for entry in manifest.files if entry.mode == 0o755}
-        if not required.keys() <= executable_paths:
-            raise ApprovalRefused("bootstrap entrypoints missing from installed selection")
-        paths = tuple(sorted(required))
-        contents = read_pinned_installed_files(
-            raw, expected_digest=context.unit_closure_digest, paths=paths,
-        )
-        if type(contents) is not tuple or len(contents) != len(paths):
-            raise ApprovalRefused("pinned bootstrap wrapper content required")
-        startup = tuple(parse_wrapper(content, target=required[path])
-                        for path, content in zip(paths, contents, strict=True))
-        if len(set(startup)) != 1:
-            raise ApprovalRefused("bootstrap wrapper startup paths differ")
-        interpreter, import_paths = startup[0]
-        resolved_interpreter = resolve_installed_link(manifest, interpreter.removeprefix("/"))
-        if resolved_interpreter not in executable_paths:
-            raise ApprovalRefused("bootstrap interpreter is not independently pinned")
-        directories = {entry.path for entry in manifest.directories}
-        pinned_files = {entry.path for entry in manifest.files}
-        for path in import_paths:
-            relative = path.removeprefix("/")
-            if (relative not in directories
-                    and not (path.endswith(".zip") and relative in pinned_files)):
-                raise ApprovalRefused("bootstrap initial import path is not covered")
-        if any(path.removeprefix("/") not in directories for path in import_paths):
-            raise ApprovalRefused("bootstrap source profile requires unpacked imports")
-        # pyvenv.cfg is consulted by CPython before the wrapper body. Never
-        # reopen an unpinned pathname or accept creation metadata as executable
-        # identity: the base bytes and any copied interpreter must also match.
-        entries = {entry.path: entry for entry in manifest.files}
-        base = entries.get(BASE_INTERPRETER)
-        selected = entries[resolved_interpreter]
-        if (base is None or base.mode != 0o755
-                or (selected.size, selected.sha256) != (base.size, base.sha256)):
-            raise ApprovalRefused("bootstrap base interpreter selection differs")
-        config_path = pyvenv_config_path(interpreter)
-        config = entries.get(config_path)
-        if (config is None or config.mode != 0o644
-                or not 0 < config.size <= MAX_PYVENV_BYTES):
-            raise ApprovalRefused("bootstrap Python venv metadata not pinned")
-        config_contents = read_pinned_installed_files(
-            raw, expected_digest=context.unit_closure_digest, paths=(config_path,),
-        )
-        if type(config_contents) is not tuple or len(config_contents) != 1:
-            raise ApprovalRefused("pinned Python venv content required")
-        version = validate_pyvenv_config(config_contents[0])
-        running_before = observe_running_python()
-        validate_running_python(
-            running_before, interpreter=interpreter, import_paths=import_paths,
-            version=version, expected_file=selected,
-        )
-        startup_before = observe_python_startup_absence(interpreter)
-        if (type(startup_before) is not StartupAbsence
-                or startup_before.paths != startup_absence_paths(interpreter)):
-            raise ApprovalRefused("fixed Python startup absence required")
-        main_path = next("/" + path for path, target in required.items()
-                         if target == targets[ACTIVATION_CONTROLLER_UNIT])
-        routing_before = observe_import_routing(import_paths, manifest, main_path=main_path)
-        if type(routing_before) is not ImportRouting or routing_before.import_paths != import_paths:
-            raise ApprovalRefused("fixed Python import routing required")
-        modules_before = observe_loaded_modules(manifest, import_paths, main_path)
-        if type(modules_before) is not LoadedModules or modules_before.import_paths != import_paths:
-            raise ApprovalRefused("fixed loaded module profile required")
-        measured = measure_installed_files(
-            raw, expected_digest=context.unit_closure_digest
-        )
-        if (type(measured) is not SelectedInstalledFiles
-                or measured.manifest_digest != context.unit_closure_digest
-                or read_bootstrap_installed_manifest() != raw):
-            raise ApprovalRefused("bootstrap installed file measurement differs")
-        running_after = observe_running_python()
-        validate_running_python(
-            running_after, interpreter=interpreter, import_paths=import_paths,
-            version=version, expected_file=selected,
-        )
-        if running_after != running_before:
-            raise ApprovalRefused("current Python changed during installed measurement")
-        startup_after = observe_python_startup_absence(interpreter)
-        if type(startup_after) is not StartupAbsence or startup_after != startup_before:
-            raise ApprovalRefused("Python startup absence changed during installed measurement")
-        routing_after = observe_import_routing(import_paths, manifest, main_path=main_path)
-        if type(routing_after) is not ImportRouting or routing_after != routing_before:
-            raise ApprovalRefused("Python import routing changed during installed measurement")
-        modules_after = observe_loaded_modules(manifest, import_paths, main_path)
-        if type(modules_after) is not LoadedModules or modules_after != modules_before:
-            raise ApprovalRefused("loaded module profile changed during installed measurement")
-        return measured
+        with decode_scope():
+            if type(context) is not BootstrapContext:
+                raise ApprovalRefused("independent bootstrap context required")
+            raw = read_bootstrap_installed_manifest()
+            manifest = decode_installed_manifest(
+                raw, expected_digest=context.unit_closure_digest,
+            )
+            targets = {
+                ACTIVATION_CONTROLLER_UNIT: "azazel_nexus_runtime.activated:main",
+                UNIT_NAMES[UnitKey.AUDITD]: "azazel_nexus_runtime.auditd:main",
+                UNIT_NAMES[UnitKey.COMMISSIOND]: "azazel_nexus_runtime.commissiond:main",
+            }
+            required = {
+                profile.executable.removeprefix("/"): targets[profile.unit]
+                for profile in PROFILES if profile.unit in targets
+            }
+            if len(required) != 3:
+                raise ApprovalRefused("fixed bootstrap executable profile differs")
+            executable_paths = {entry.path for entry in manifest.files if entry.mode == 0o755}
+            if not required.keys() <= executable_paths:
+                raise ApprovalRefused("bootstrap entrypoints missing from installed selection")
+            paths = tuple(sorted(required))
+            contents = read_pinned_installed_files(
+                raw, expected_digest=context.unit_closure_digest, paths=paths,
+            )
+            if type(contents) is not tuple or len(contents) != len(paths):
+                raise ApprovalRefused("pinned bootstrap wrapper content required")
+            startup = tuple(parse_wrapper(content, target=required[path])
+                            for path, content in zip(paths, contents, strict=True))
+            if len(set(startup)) != 1:
+                raise ApprovalRefused("bootstrap wrapper startup paths differ")
+            interpreter, import_paths = startup[0]
+            resolved_interpreter = resolve_installed_link(manifest, interpreter.removeprefix("/"))
+            if resolved_interpreter not in executable_paths:
+                raise ApprovalRefused("bootstrap interpreter is not independently pinned")
+            directories = {entry.path for entry in manifest.directories}
+            pinned_files = {entry.path for entry in manifest.files}
+            for path in import_paths:
+                relative = path.removeprefix("/")
+                if (relative not in directories
+                        and not (path.endswith(".zip") and relative in pinned_files)):
+                    raise ApprovalRefused("bootstrap initial import path is not covered")
+            if any(path.removeprefix("/") not in directories for path in import_paths):
+                raise ApprovalRefused("bootstrap source profile requires unpacked imports")
+            # pyvenv.cfg is consulted by CPython before the wrapper body. Never
+            # reopen an unpinned pathname or accept creation metadata as executable
+            # identity: the base bytes and any copied interpreter must also match.
+            entries = {entry.path: entry for entry in manifest.files}
+            base = entries.get(BASE_INTERPRETER)
+            selected = entries[resolved_interpreter]
+            if (base is None or base.mode != 0o755
+                    or (selected.size, selected.sha256) != (base.size, base.sha256)):
+                raise ApprovalRefused("bootstrap base interpreter selection differs")
+            config_path = pyvenv_config_path(interpreter)
+            config = entries.get(config_path)
+            if (config is None or config.mode != 0o644
+                    or not 0 < config.size <= MAX_PYVENV_BYTES):
+                raise ApprovalRefused("bootstrap Python venv metadata not pinned")
+            config_contents = read_pinned_installed_files(
+                raw, expected_digest=context.unit_closure_digest, paths=(config_path,),
+            )
+            if type(config_contents) is not tuple or len(config_contents) != 1:
+                raise ApprovalRefused("pinned Python venv content required")
+            version = validate_pyvenv_config(config_contents[0])
+            running_before = observe_running_python()
+            validate_running_python(
+                running_before, interpreter=interpreter, import_paths=import_paths,
+                version=version, expected_file=selected,
+            )
+            startup_before = observe_python_startup_absence(interpreter)
+            if (type(startup_before) is not StartupAbsence
+                    or startup_before.paths != startup_absence_paths(interpreter)):
+                raise ApprovalRefused("fixed Python startup absence required")
+            main_path = next("/" + path for path, target in required.items()
+                             if target == targets[ACTIVATION_CONTROLLER_UNIT])
+            routing_before = observe_import_routing(import_paths, manifest, main_path=main_path)
+            if type(routing_before) is not ImportRouting or routing_before.import_paths != import_paths:
+                raise ApprovalRefused("fixed Python import routing required")
+            modules_before = observe_loaded_modules(manifest, import_paths, main_path)
+            if type(modules_before) is not LoadedModules or modules_before.import_paths != import_paths:
+                raise ApprovalRefused("fixed loaded module profile required")
+            measured = measure_installed_files(
+                raw, expected_digest=context.unit_closure_digest
+            )
+            if (type(measured) is not SelectedInstalledFiles
+                    or measured.manifest_digest != context.unit_closure_digest
+                    or read_bootstrap_installed_manifest() != raw):
+                raise ApprovalRefused("bootstrap installed file measurement differs")
+            running_after = observe_running_python()
+            validate_running_python(
+                running_after, interpreter=interpreter, import_paths=import_paths,
+                version=version, expected_file=selected,
+            )
+            if running_after != running_before:
+                raise ApprovalRefused("current Python changed during installed measurement")
+            startup_after = observe_python_startup_absence(interpreter)
+            if type(startup_after) is not StartupAbsence or startup_after != startup_before:
+                raise ApprovalRefused("Python startup absence changed during installed measurement")
+            routing_after = observe_import_routing(import_paths, manifest, main_path=main_path)
+            if type(routing_after) is not ImportRouting or routing_after != routing_before:
+                raise ApprovalRefused("Python import routing changed during installed measurement")
+            modules_after = observe_loaded_modules(manifest, import_paths, main_path)
+            if type(modules_after) is not LoadedModules or modules_after != modules_before:
+                raise ApprovalRefused("loaded module profile changed during installed measurement")
+            return measured
     except Exception:
         raise ApprovalRefused("protected bootstrap installed files refused") from None
 
