@@ -23,7 +23,7 @@ Not verified: confirmed containment after the refusal; READY/helper start/heartb
 ## 2. Root cause of run 4 (code-confirmed)
 
 1. `BootstrapSupervisor.run` → `_supervise` creates the grant and advances `pair_grant_intent`; production
-   `BootstrapNarrowingManager.open_pair` refuses (`bootstrap_manager.py:963-969`) before any overlay publication.
+   `BootstrapNarrowingManager.open_pair` refuses (`bootstrap_manager.py:969-976`) before any overlay publication.
 2. `_finish_transaction` advances to `closing` and runs `_contain` again (2nd daemon-reload in the journal).
 3. `_contain` calls `manager.withdraw_pair` whenever the grant is a `GrantTransaction` not in `closed`
    (`bootstrap.py:408-417`).
