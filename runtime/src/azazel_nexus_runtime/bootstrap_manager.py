@@ -10,9 +10,13 @@ from contextlib import contextmanager
 import math
 import os
 import time
+import uuid
 
 from azazel_nexus.bootstrap_grant_transaction import GrantTransaction, advance_transaction
+from azazel_nexus.bootstrap_grant_store import grant_transaction_store_in_transaction
+from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.bootstrap_approval import VerifiedBootstrapApproval
+from azazel_nexus.operator_trust import ApprovalRefused
 from azazel_nexus.bootstrap_lock import BootstrapTransactionGuard
 from azazel_nexus.bootstrap_overlay_journal import overlay_journal_store_in_transaction
 
@@ -154,6 +158,9 @@ class BootstrapNarrowingManager:
         self._withdrawal_kind = None
         self._publication_inputs = None
         self._publication_check = None
+        # Private composition seams (tests); never caller, env or config input.
+        self._boot_id_reader = read_boot_id
+        self._grant_store_opener = grant_transaction_store_in_transaction
         self._controller_binding = None
         self._controller_grant = None
         self._controller_notification_sent = False
@@ -788,6 +795,52 @@ class BootstrapNarrowingManager:
         if check() is not None or self._publication_check is not check:
             raise UnitOperationFailed("retained publication admission changed")
 
+    def _retire_prior_boot_journal(self, store, guard):
+        """Retire an overlay journal left by an earlier boot, or change nothing.
+
+        Only a journal whose intent boot id differs from the current kernel boot
+        id is touched. The retirement "record" is a read-only verification that
+        the prior boot's preserved grant transaction exists and carries the same
+        grant id, context digest and payload digests, and reached phase
+        "closed" (recovery_required or any unfinished phase keeps manual
+        review); nothing is written for it. Any failure raises, which refuses
+        publication with the journal left in place.
+
+        Stale published/closing journals normally fail earlier, in
+        close_starts (design Case B), so the reboot-reset branch here is
+        reached only by direct calls today. After a retirement the base
+        withdrawal object forgets the journal, so a later containment in this
+        process takes the unpublished-baseline path.
+        """
+        journal = store.load_optional()
+        if journal is None:
+            return
+        current_boot = self._boot_id_reader()
+        try:
+            if (type(current_boot) is not str
+                    or str(uuid.UUID(current_boot)) != current_boot):
+                raise ValueError
+        except (ValueError, AttributeError, TypeError):
+            raise UnitOperationFailed("current boot id refused") from None
+        if journal.intent.boot_id == current_boot:
+            return  # Same-boot journal: existing behaviour, never retired.
+        files = self._withdrawal_files
+        if files is None:
+            raise UnitOperationFailed("prior boot journal retirement unavailable")
+
+        def verify_preserved_identity(summary):
+            with self._grant_store_opener(guard) as grants:
+                prior = grants.load(boot_id=summary["boot_id"])
+            if (type(prior) is not GrantTransaction
+                    or prior.boot_id != summary["boot_id"]
+                    or prior.phase != "closed"
+                    or prior.grant_id != summary["grant_id"]
+                    or prior.unit_payload_digests != journal.intent.payload_digests
+                    or prior.context_digest != "sha256:" + summary["context_digest"]):
+                raise ApprovalRefused("prior boot grant identity differs from journal")
+
+        files.retire_prior_boot(journal, current_boot, verify_preserved_identity)
+
     def _publish_and_inspect_pair(self, transaction, *, approval, check_publish):
         """Integrated preparation only; not complete closure/lifetime admission.
 
@@ -831,6 +884,8 @@ class BootstrapNarrowingManager:
         directories.check()
         masks = _mask_paths(**paths)
         checkpoint()
+        self._retire_prior_boot_journal(store, guard)
+        directories.check()
         # The initial absent/closed observation ceases to be a current fence
         # as soon as publication may begin, including partial failure.
         self._closed_observation = None
