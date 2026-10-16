@@ -587,6 +587,12 @@ def advance_overlay(journal: OverlayJournal, action: str, *,
         # The files have been removed and the effective persistent masks
         # independently confirmed. Journal removal is a separate fsynced step.
         return OverlayJournal(journal.intent, "closed")
+    if action == "reboot-reset":
+        if journal.phase not in {"published", "closing", "withdrawing"}:
+            raise ApprovalRefused("bootstrap overlay reboot reset refused")
+        # Narrowing only: records that nothing is owned. The caller, not this
+        # pure function, must have proved a different boot and no pair entry.
+        return OverlayJournal(journal.intent, "closed")
     raise ApprovalRefused("bootstrap overlay journal action refused")
 
 

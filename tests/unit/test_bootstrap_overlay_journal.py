@@ -919,3 +919,29 @@ def test_load_optional_refuses_journal_appearing_between_absence_checks(
     monkeypatch.setattr(overlay_journal.os, "stat", appearing_stat)
     with pytest.raises(ApprovalRefused, match="appeared"):
         store.load_optional()
+
+
+@pytest.mark.parametrize("phase", ["published", "closing", "withdrawing"])
+def test_reboot_reset_closes_published_closing_and_withdrawing(phase):
+    journal = published()
+    if phase != "published":
+        journal = advance_overlay(journal, "close-starts")
+    if phase == "withdrawing":
+        journal = advance_overlay(journal, "begin-withdrawal")
+
+    closed = advance_overlay(journal, "reboot-reset")
+
+    assert closed == OverlayJournal(journal.intent, "closed")
+    assert closed.owned_files == ()
+    assert decode_overlay_journal(encode_overlay_journal(closed)) == closed
+
+
+@pytest.mark.parametrize("phase", ["intent", "partial", "closed"])
+def test_reboot_reset_refused_outside_owned_phases(phase):
+    journal = new_overlay_journal(intent())
+    if phase == "partial":
+        journal = created(journal, COMMISSIOND, inode=20)
+    if phase == "closed":
+        journal = OverlayJournal(intent(), "closed")
+    with pytest.raises(ApprovalRefused, match="reboot reset refused"):
+        advance_overlay(journal, "reboot-reset")

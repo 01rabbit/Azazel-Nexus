@@ -1,11 +1,18 @@
 """Held-file withdrawal binding; no production opener or grant authority."""
 
 import os
+import uuid
+from hashlib import sha256
 from pathlib import Path
 
 from azazel_nexus.bootstrap_grant_transaction import GrantTransaction
 from azazel_nexus.bootstrap_lock import BootstrapTransactionGuard
-from azazel_nexus.bootstrap_overlay_journal import OverlayIntent, OverlayJournal
+from azazel_nexus.bootstrap_overlay_journal import (
+    OverlayIntent,
+    OverlayJournal,
+    advance_overlay,
+    encode_overlay_journal,
+)
 from azazel_nexus.operator_trust import ApprovalRefused
 
 from .bootstrap_overlay_files import _closing_candidate, _present
@@ -81,6 +88,81 @@ class BootstrapWithdrawalFiles:
             return False
         self._bind_intent(current.intent)
         return True
+
+    def retire_prior_boot(self, expected, current_boot_id, record_retirement):
+        """Remove a journal that provably belongs to a finished earlier boot.
+
+        Grants no authority: it only deletes a moot record. The caller must
+        pass the kernel boot id (canonical lowercase UUID); injection is for
+        tests. `record_retirement` is a required audit step called with one
+        summary mapping (event "retiring", phase, boot_id, grant_id,
+        context_digest, journal_sha256; no payload) before any mutation; it
+        must return normally or the journal is left untouched. The record
+        announces an attempt, not completion: a later failure or retry may
+        produce repeated records, which callers must treat as idempotent.
+        """
+        self._guard()
+        if (type(expected) is not OverlayJournal or not callable(record_retirement)):
+            raise ApprovalRefused("prior boot journal retirement arguments refused")
+        try:
+            if (type(current_boot_id) is not str
+                    or str(uuid.UUID(current_boot_id)) != current_boot_id):
+                raise ValueError
+        except (ValueError, AttributeError, TypeError):
+            raise ApprovalRefused("prior boot journal current boot id refused") from None
+        current = self._store.load()
+        if current != expected:
+            raise ApprovalRefused("prior boot journal differs from expected")
+        if current.intent.boot_id == current_boot_id:
+            raise ApprovalRefused("prior boot journal belongs to current boot")
+        stamps = _withdraw_paths(**self._args)
+        if self._stamps is not None and stamps != self._stamps:
+            raise ApprovalRefused("prior boot journal retirement masks changed")
+        if current.phase not in {"closed", "published", "closing", "withdrawing"}:
+            raise ApprovalRefused("prior boot journal phase refused")
+
+        def pair_absent():
+            if any(_present(self._args["overlay_fd"], UNIT_NAMES[key])
+                   for key in (UnitKey.AUDITD, UnitKey.COMMISSIOND)):
+                raise ApprovalRefused("prior boot journal retirement pair entry present")
+
+        def stable(journal):
+            self._guard()
+            pair_absent()
+            if self._store.load() != journal:
+                raise ApprovalRefused("prior boot journal changed during retirement")
+            if _withdraw_paths(**self._args) != stamps:
+                raise ApprovalRefused("prior boot journal retirement masks changed")
+
+        stable(expected)
+        try:
+            record_retirement({
+                "event": "retiring",
+                "phase": current.phase,
+                "boot_id": current.intent.boot_id,
+                "grant_id": current.intent.grant_id,
+                "context_digest": current.intent.context_digest,
+                "journal_sha256": sha256(encode_overlay_journal(current)).hexdigest(),
+            })
+        except Exception:
+            raise ApprovalRefused("prior boot journal audit record refused") from None
+        stable(expected)
+        closed = current
+        try:
+            if current.phase != "closed":
+                closed = advance_overlay(current, "reboot-reset")
+                self._store.replace(current, closed)
+                self._guard()
+                if self._store.load() != closed:
+                    raise ApprovalRefused("prior boot journal reset not confirmed")
+            stable(closed)
+            self._store.remove(closed)
+        finally:
+            # Once mutation began no bound ownership may outlive the journal.
+            self._intent = None
+            self._owned = None
+            self._stamps = None
+            self._selected_transaction = None
 
     def close(self):
         # No truncation or ownership transition: all present entries must
