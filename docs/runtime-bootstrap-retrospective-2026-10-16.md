@@ -110,3 +110,29 @@ Gate D — run
 - Prevention (procedure, Gate D): immediately before `systemctl start`, in the same command, read the approval
   `expires_at` and refuse to start unless at least 10 minutes remain. Ask for the owner's go before signing, not
   after, so that the signature window starts only when everything else is ready.
+
+## 8. Run 6 (d93b7f2, 2026-10-16): designed refusal contained and closed
+- Procedure: snapshot revert → Phase 2g → records placed (same digests as run 5) → approval (payload
+  sha256:305cc4f4…, valid until 01:18:55Z) owner-signed, verified and placed → Gate C (admission about 2.4 s, no new
+  files, no `.pyc`) → start at 00:37:27Z inside a command that refused to start with less than 10 minutes left
+  (2488 s remained). The owner's go was given before signing.
+- Observed: two daemon reloads (one per `_contain`); exit 1 after about 10 s with
+  `az-activated failed before completing a safe pass: UnitOperationFailed` (the production `open_pair` refusal);
+  unit `failed` (Result=exit-code).
+- Afterwards: grant `closed` with close evidence
+  sha256:2c33a18b794182e5a28d347733dfed74cab36dd80cd6c5114a0e89d1d4b838ff. That equals the containment-evidence digest
+  recomputed for both helpers stopped, inactive, cgroup-empty and masked, with `grant_withdrawal: "unpublished-baseline"`.
+  No recovery evidence; `initial.json` and the checkpoint retained; helpers masked/inactive with their installer masks
+  unchanged; `system.control`, the overlay and the audit ledger empty. Only `controller-used`, `supervisor.lock`, the
+  deadline records and the grant were created. The deadline release did not raise; a raise would have replaced the
+  reported exception with `ApprovalRefused`.
+- All seven installer masks (`/etc/systemd/system/azazel-*.service -> /dev/null`) kept their installation timestamps,
+  so the entrypoint's final `narrow()` created no new mask. Not shown directly: deletion of the kernel deadline timer
+  (it leaves no artifact) and the absence of a transient StartUnit (no bus trace was captured); both are inferred from
+  the exit path and the final state. An independent review found every observation consistent with the Gate A trace.
+- The recorded UTC (00:39:31Z) is about 2 minutes later than the operator's clock at start. This is consistent with
+  the time record's upper bound (anchor plus the 120 s uncertainty), not a VM clock fault.
+- This verifies on the test VM, not hardware: first admission, deadline retention, the grant intent, the designed
+  widening refusal, confirmed containment and a closed grant. It does not verify READY, helper start, heartbeat,
+  operator stop or deadline expiry. Those remain unreachable until a separately reviewed production-factory
+  decision is made.
