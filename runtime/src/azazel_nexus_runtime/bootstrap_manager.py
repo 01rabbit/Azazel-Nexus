@@ -49,7 +49,9 @@ from .bootstrap_systemd_profile import (
     observe_bootstrap_systemd_profile,
     bootstrap_systemd_profile_digest,
 )
-from .systemd_bus import SystemdBusSession
+from .systemd_bus import (
+    SystemdBusSession, PROPERTIES_INTERFACE, UNIT_INTERFACE, _unit_object_path,
+)
 from .units import DbusUnitManager, UNIT_NAMES, UnitKey, UnitOperationFailed, UnitState
 
 _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
@@ -57,6 +59,7 @@ _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
 # process start): controller TimeoutStartSec (30 s) minus a 5 s margin.
 # Fixed code constant; not an env/CLI/config input.
 READY_TOTAL_SECONDS = 25.0
+_CONTROLLER_UNIT = "azazel-activated.service"
 _LOAD_ROOTS = frozenset(UNIT_NAMES[unit] for unit in _PAIR)
 
 
@@ -364,6 +367,82 @@ class BootstrapNarrowingManager:
             ).drain()
 
         self._run_owned(operation)
+
+    def controller_stop_observed(self) -> bool:
+        """Read-only: a systemd-side stop of this controller is in progress.
+
+        One owned-loop observation, pinned to the retained controller binding's
+        systemd owner (no binding or a different owner is False). True only for
+        a "stop" job on exactly azazel-activated.service, or its ActiveState
+        "deactivating" when no other job is queued for the controller. Any
+        other controller job (start, restart, try-restart, reload) makes the
+        answer False, even if the unit is deactivating: restart fails closed.
+        Helper-unit jobs and states never count. No unit operation is issued;
+        any bus error, malformed reply, timeout or absent unit is False.
+        """
+        binding = self._controller_binding
+        if binding is None:
+            return False
+        pinned = _validate_expected_owner(binding[1])
+        if pinned is None:
+            return False
+
+        def operation(session):
+            reader = BootstrapStopJobs(
+                bus=session._bus, message_factory=session._message_factory,
+                message_type=session._message_type, timeout_seconds=self._timeout,
+                expected_owner=pinned,
+            )
+            path = _unit_object_path(_CONTROLLER_UNIT)
+
+            async def observe():
+                owner = await reader._owner()
+                if owner != pinned:
+                    raise UnitOperationFailed("controller observation owner changed")
+                reader._manager_owner = owner
+                body = await reader._call("ListJobs", "", [], "a(usssoo)")
+                if type(body) is not list or len(body) != 1 or type(body[0]) is not list:
+                    raise UnitOperationFailed("controller job list malformed")
+                if len(body[0]) > 4096:
+                    raise UnitOperationFailed("controller job list exceeds budget")
+                stop = other = False
+                for row in body[0]:
+                    if type(row) is not list or len(row) != 6:
+                        raise UnitOperationFailed("controller job row malformed")
+                    job, unit, kind, _state, job_path, unit_path = row
+                    if (type(job) is not int or type(unit) is not str
+                            or type(kind) is not str or type(job_path) is not str
+                            or type(unit_path) is not str):
+                        raise UnitOperationFailed("controller job row malformed")
+                    if unit != _CONTROLLER_UNIT:
+                        continue
+                    if unit_path != path:
+                        raise UnitOperationFailed("controller job row malformed")
+                    if kind == "stop":
+                        stop = True
+                    else:
+                        other = True
+                if other:
+                    return False
+                if stop:
+                    return True
+                if await reader._call("GetUnit", "s", [_CONTROLLER_UNIT], "o") != [path]:
+                    raise UnitOperationFailed("controller unit object changed")
+                state = await reader._call(
+                    "Get", "ss", [UNIT_INTERFACE, "ActiveState"], "v",
+                    path=path, interface=PROPERTIES_INTERFACE,
+                )
+                if (len(state) != 1 or getattr(state[0], "signature", None) != "s"
+                        or type(getattr(state[0], "value", None)) is not str):
+                    raise UnitOperationFailed("controller ActiveState malformed")
+                return state[0].value == "deactivating"
+
+            return reader._bounded(observe())
+
+        try:
+            return self._run_owned(operation) is True
+        except Exception:
+            return False
 
     def is_masked(self, unit: UnitKey) -> bool:
         name = _name(unit)
