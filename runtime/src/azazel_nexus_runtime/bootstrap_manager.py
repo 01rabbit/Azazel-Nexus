@@ -849,6 +849,9 @@ class BootstrapNarrowingManager:
         admission obligations are unmet. Tests use ordinary files/fake systemd.
         Retained resources belong to the enclosing transaction factory.
         """
+        # Contract: the caller must run check_publish() immediately before this
+        # call (bootstrap's _publication_checkpoint); no full check is repeated
+        # on entry (only guard()/directories.check()).
         self._publication_check = None
         if (self._publication_inputs is None
                 or type(transaction) is not GrantTransaction
@@ -871,7 +874,12 @@ class BootstrapNarrowingManager:
             if check_publish() is not None:
                 raise UnitOperationFailed("publication admission unconfirmed")
 
-        checkpoint()
+        # No full check_publish() here: bootstrap's _publication_checkpoint ran
+        # immediately before open_pair with no await/IO or irreversible step
+        # between (covered by it, and by the checkpoint() before the journal
+        # retire below). Keep the cheap local fences.
+        guard()
+        directories.check()
         self._check_cgroup_mount()
         controller_identity = current_bootstrap_controller_identity()
         policy = load_loaded_bootstrap_policy(expected=approval.context)
@@ -979,7 +987,9 @@ class BootstrapNarrowingManager:
         if load_loaded_bootstrap_policy(expected=approval.context) != policy:
             raise UnitOperationFailed("publication loaded policy changed")
         check_files()
-        checkpoint()
+        # No trailing checkpoint(): bootstrap runs check_publish() immediately
+        # after open_pair returns (covered by it); only in-memory assignments
+        # follow.
         self._controller_binding = (controller_identity, owner, policy.systemd_profile_digest)
         self._controller_grant = transaction
 
@@ -1127,7 +1137,8 @@ class BootstrapNarrowingManager:
                     continue
                 checkpoint()
                 break
-        checkpoint()
+        # No trailing checkpoint(): covered by the checkpoint() before break and
+        # by bootstrap's check_ready() right after return.
         self._controller_ready_confirmed = True
 
     def open_pair(self, transaction: GrantTransaction, *, approval, check_publish) -> None:

@@ -158,10 +158,14 @@ def test_false_publication_checkpoint_refuses_before_journal_or_files(tmp_path):
 
 
 @pytest.mark.parametrize("stop_at, expected_phase, owned, present", [
-    (3, "intent", 0, 0),
-    (4, "intent", 0, 1),
-    (5, "partial", 1, 1),
-    (8, "published", 2, 2),
+    # Full-check positions after redundant-checkpoint removal (READY budget):
+    # 1 before journal create, 2 top of unit 0, 3 before unit-0 replace,
+    # 4 top of unit 1, 5 before unit-1 replace. No check after the final
+    # replace (the manager's checkpoint before Reload covers it).
+    (2, "intent", 0, 0),
+    (3, "intent", 0, 1),
+    (4, "partial", 1, 1),
+    (5, "partial", 1, 2),
 ])
 def test_checkpoint_rejection_preserves_partial_publication_evidence(
     tmp_path, stop_at, expected_phase, owned, present,
@@ -186,6 +190,21 @@ def test_checkpoint_rejection_preserves_partial_publication_evidence(
         assert len(list(env["overlay_path"].iterdir())) == present
         # No restart/retry or unowned-file cleanup is inferred from failure.
         assert all((env["masks_path"] / name).is_symlink() for name in PAIR)
+
+
+def test_no_full_check_after_final_journal_replace_in_publication(tmp_path):
+    approval = _approval()
+    transaction = _transaction(approval)
+    calls = 0
+
+    def checkpoint():
+        nonlocal calls
+        calls += 1
+
+    with _environment(tmp_path) as env:
+        _publish(env, approval, transaction, checkpoint)
+        assert env["store"].load().phase == "published"
+    assert calls == 5
 
 
 @pytest.mark.parametrize("checkpoint", [None, False, "allow"])

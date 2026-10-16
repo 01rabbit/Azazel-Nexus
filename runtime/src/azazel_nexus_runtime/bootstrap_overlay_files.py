@@ -270,7 +270,8 @@ def _publish_candidates_at(*, overlay_fd: int, masks_fd: int,
         if check_publish is not None and check_publish() is not None:
             raise ApprovalRefused("publication admission checkpoint refused")
 
-    checkpoint()
+    # No checkpoint() here: covered by the checkpoint() before journal_store.create
+    # (only pure construction and read-only validation in between).
     payloads = _fixed_payloads()
     current = new_overlay_journal(intent)
     _validate_inputs(overlay_fd=overlay_fd, masks_fd=masks_fd,
@@ -297,11 +298,13 @@ def _publish_candidates_at(*, overlay_fd: int, masks_fd: int,
                 "bootstrap helper ownership record outcome uncertain"
             ) from None
         current = updated
-        checkpoint()
+        # No loop-tail checkpoint(): covered by the next iteration's top
+        # checkpoint(); after the last unit by the manager's checkpoint() that
+        # gates the D-Bus Reload (read-only verification only in between).
     _validate_inputs(overlay_fd=overlay_fd, masks_fd=masks_fd,
                      higher_priority_fd=higher_priority_fd,
                      owner_uid=owner_uid, journal=current, payloads=payloads)
-    checkpoint()
+    # No final checkpoint(): covered by the manager checkpoint() before Reload.
     if journal_store.load() != current or current.phase != "published":
         raise ApprovalRefused("bootstrap helper file publication incomplete")
     return current

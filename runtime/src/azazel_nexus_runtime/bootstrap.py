@@ -867,8 +867,11 @@ class BootstrapSupervisor:
             raise ApprovalRefused("bootstrap pair grant completion unconfirmed")
         check_publish()
         self._advance_grant("pair_grant_opened")
-        self._check()
+        # <- full _check() covered by the first checkpoint in confirm_controller_ready
         if self._cancelled():
+            # Keep the failure signal: an admission loss coinciding with a stop
+            # still raises, as before C7.
+            self._check()
             return
 
         # systemd orders both notify helpers After this controller. READY is
@@ -880,7 +883,8 @@ class BootstrapSupervisor:
         def check_ready():
             self._intent_checkpoint(ready_transaction, "pair_grant_opened", "controller READY")
 
-        check_ready()
+        # <- no check_ready() here: confirm_controller_ready's first checkpoint()
+        # runs it (plus cgroup/identity) before notify, nothing in between.
         if self.manager.confirm_controller_ready(
             ready_transaction, check_ready=check_ready, notify=self.controller_ready,
         ) is not None:

@@ -582,38 +582,35 @@ def test_manager_refuses_final_loaded_policy_change(tmp_path, monkeypatch):
         assert manager._closed_observation is None
 
 
-def test_manager_callback_failure_after_publication_keeps_journal_and_closes_session(
+def test_manager_has_no_full_check_after_session_close_and_keeps_journal(
     tmp_path, monkeypatch,
 ):
+    # The trailing checkpoint after the owned session closes was removed as
+    # redundant: bootstrap's check_publish() runs immediately after open_pair
+    # returns. No full check may fire once the bus has been used.
     with _environment(tmp_path) as env:
         manager, sessions, bus, approval, _policy_value, _policy_calls, _confirms, _checks = (
             _manager_fixture(env, monkeypatch)
         )
 
         calls = []
-        closed_during_callback = []
+        calls_after_bus = []
 
-        def fail_after_publish():
+        def check_publish():
             calls.append(True)
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             if bus.calls:
-                closed_during_callback.append(
-                    bool(sessions and sessions[-1].closed)
-                )
-                return False
+                calls_after_bus.append(True)
             return None
 
-        with pytest.raises(UnitOperationFailed):
-            manager._publish_and_inspect_pair(
-                _transaction(approval), approval=approval,
-                check_publish=fail_after_publish,
-            )
+        manager._publish_and_inspect_pair(
+            _transaction(approval), approval=approval, check_publish=check_publish,
+        )
 
         published = env["store"].load_optional()
         assert published is not None and published.phase == "published"
-        assert calls
-        assert closed_during_callback == [True]
+        assert calls and calls_after_bus == []
         assert manager._closed_observation is None
         session, = sessions
         assert bus.disconnected and session.closed and session._loop.is_closed()
