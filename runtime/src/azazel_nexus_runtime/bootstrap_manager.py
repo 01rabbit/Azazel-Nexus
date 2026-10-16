@@ -53,6 +53,10 @@ from .systemd_bus import SystemdBusSession
 from .units import DbusUnitManager, UNIT_NAMES, UnitKey, UnitOperationFailed, UnitState
 
 _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
+# Whole-READY-step ceiling, measured from confirm_controller_ready entry (not
+# process start): controller TimeoutStartSec (30 s) minus a 5 s margin.
+# Fixed code constant; not an env/CLI/config input.
+READY_TOTAL_SECONDS = 25.0
 _LOAD_ROOTS = frozenset(UNIT_NAMES[unit] for unit in _PAIR)
 
 
@@ -942,7 +946,11 @@ class BootstrapNarrowingManager:
                 or not callable(check_ready) or not callable(notify)):
             raise UnitOperationFailed("retained controller READY context required")
         identity, owner, profile_digest = binding
-        deadline = time.monotonic() + self._timeout
+        # One total ceiling for the whole READY step. Synchronous checkpoints
+        # are each full verifications and are not charged to the per-inspect
+        # async budget (self._timeout); retained-deadline expiry is enforced by
+        # check_ready itself on every checkpoint.
+        deadline = time.monotonic() + READY_TOTAL_SECONDS
 
         def checkpoint():
             if (self._controller_binding != binding or self._controller_grant != grant
@@ -965,10 +973,13 @@ class BootstrapNarrowingManager:
         with self._owned_loop() as session:
             while True:
                 checkpoint()  # synchronous admission must run outside asyncio
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UnitOperationFailed("controller READY context expired or changed")
                 inspector = BootstrapControllerInspector(
                     bus=session._bus, message_factory=session._message_factory,
                     message_type=session._message_type,
-                    timeout_seconds=deadline - time.monotonic(),
+                    timeout_seconds=min(self._timeout, remaining),
                     expected_owner=owner, systemd_profile_digest=profile_digest,
                     identity=identity, phase="ready",
                 )
@@ -977,7 +988,7 @@ class BootstrapNarrowingManager:
                 except BootstrapControllerNotReady:
                     checkpoint()
                     session._loop.run_until_complete(
-                        asyncio.sleep(min(0.01, deadline - time.monotonic()))
+                        asyncio.sleep(max(0.0, min(0.01, deadline - time.monotonic())))
                     )
                     continue
                 checkpoint()

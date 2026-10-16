@@ -3,12 +3,25 @@
 Not start authorization. A synchronous guard cannot be preempted: it must obey
 its existing bounded contract. Expired or failed checks never release a pause.
 The owning manager must disconnect and drain the retained session on all exits.
+
+Time spent inside a synchronous check is not charged to the async job budget:
+the owned loop's clock is held back by the measured check duration. The total
+held-back time is capped by a fixed ceiling; beyond it the bridge fails closed.
+Real bound on one start job: 10 s async budget + START_SYNC_CEILING_SECONDS +
+the overshoot of the last synchronous check (the ceiling is checked only after
+each check returns, since a synchronous guard cannot be preempted).
 """
 
 import asyncio
 import math
 
 from .units import UnitOperationFailed
+
+# Bound on total synchronous verification one start job may exclude from its
+# async budget (3 phases of roughly 4 s expected, with generous headroom). Fixed
+# code constant (no env/CLI/config). Checked after each check returns, so the
+# worst case also includes the overshoot of the last check.
+START_SYNC_CEILING_SECONDS = 25.0
 
 _PHASES = ("before_observation", "before_submission", "after_completion")
 
@@ -25,6 +38,8 @@ class _StartCheckpointBridge:
         self._deadline = None
         self._failed = False
         self._used = False
+        self._real_time = None
+        self._paused = 0.0
 
     async def checkpoint(self, phase, deadline):
         if (self._failed or asyncio.get_running_loop() is not self._loop
@@ -55,8 +70,14 @@ class _StartCheckpointBridge:
         if self._used or not callable(check_start):
             raise UnitOperationFailed("single-use bootstrap bridge requires a checkpoint")
         self._used = True
-        task = self._loop.create_task(awaitable)
+        real_time = self._loop.time
+        self._real_time = real_time
+        task = None
         try:
+            # Relies on the pure-Python asyncio loop looking up time() on the
+            # instance (not uvloop); removed in the finally below.
+            self._loop.time = lambda: real_time() - self._paused
+            task = self._loop.create_task(awaitable)
             while not task.done():
                 self._loop.run_until_complete(asyncio.wait(
                     {task, self._notice}, return_when=asyncio.FIRST_COMPLETED,
@@ -66,8 +87,15 @@ class _StartCheckpointBridge:
                 self._check_pending(task)
                 # The owned loop is stopped here. Admission may use a separate
                 # synchronous D-Bus session without re-entering a running loop.
-                if check_start() is not None:
+                began = real_time()
+                try:
+                    refused = check_start() is not None
+                finally:
+                    self._paused += max(0.0, real_time() - began)
+                if refused:
                     raise UnitOperationFailed("bootstrap synchronous checkpoint refused")
+                if not self._paused <= START_SYNC_CEILING_SECONDS:
+                    raise UnitOperationFailed("bootstrap synchronous checkpoint ceiling exceeded")
                 self._check_pending(task)
                 self._notice = self._loop.create_future()
                 self._pending[2].set_result(None)
@@ -80,13 +108,19 @@ class _StartCheckpointBridge:
             self._observer._usable = False
             if self._pending is not None:
                 self._pending[2].cancel()
-            task.cancel()
-            def discard(finished):
-                try:
-                    finished.result()
-                except BaseException:
-                    pass
-            task.add_done_callback(discard)
+            if task is not None:
+                task.cancel()
+
+                def discard(finished):
+                    try:
+                        finished.result()
+                    except BaseException:
+                        pass
+                task.add_done_callback(discard)
             raise
         finally:
             self._notice.cancel()
+            try:
+                del self._loop.time
+            except AttributeError:
+                pass

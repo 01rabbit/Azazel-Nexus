@@ -887,6 +887,10 @@ class BootstrapSupervisor:
             raise ApprovalRefused("controller READY completion unconfirmed")
         check_ready()
         self._controller_ready_confirmed = True
+        # READY=1 starts the 30 s watchdog; renew it now rather than after the
+        # first helper start's checkpoints. Heartbeat conditions still apply.
+        if not self._cancelled():
+            self._heartbeat()
         self._check()
         if self._cancelled():
             return

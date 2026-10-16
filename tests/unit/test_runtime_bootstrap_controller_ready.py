@@ -195,6 +195,8 @@ def test_checkpoint_cancellation_stops_pending_readiness_poll(monkeypatch):
 def test_checkpoint_expiry_stops_pending_readiness_poll(monkeypatch):
     bus = DelayedReadyBus(ready_after=20)
     manager, sessions = _manager(bus, monkeypatch, timeout=0.1)
+    # The READY step now has one total ceiling (not the per-inspect timeout).
+    monkeypatch.setattr(manager_module, "READY_TOTAL_SECONDS", 0.1)
     checks = []
 
     def check_ready():

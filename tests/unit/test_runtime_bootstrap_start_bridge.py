@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from azazel_nexus_runtime import bootstrap_start_bridge
 from azazel_nexus_runtime.bootstrap_manager import BootstrapNarrowingManager
 from azazel_nexus_runtime.units import UnitKey, UnitOperationFailed
 
@@ -92,7 +93,10 @@ def test_success_runs_three_sync_callbacks_on_one_owned_idle_session():
 
 
 @pytest.mark.parametrize("failure", ["raise", "false", "expiry"])
-def test_presubmission_checkpoint_refusal_or_expiry_never_submits_start(failure):
+def test_presubmission_checkpoint_refusal_or_expiry_never_submits_start(failure, monkeypatch):
+    # Sync check time is no longer charged to the job budget; "expiry" now means
+    # exceeding the total synchronous-check ceiling.
+    monkeypatch.setattr(bootstrap_start_bridge, "START_SYNC_CEILING_SECONDS", 0.05)
     manager, bus, session, _sessions = _manager_with_bus(timeout=0.04)
     calls = []
 
