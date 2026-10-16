@@ -520,7 +520,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise
         if selected is not None:
             from .bootstrap_entrypoint import run_selected_bootstrap
-            run_selected_bootstrap(selected, narrow=_narrow_bootstrap_core_units)
+            result = run_selected_bootstrap(selected, narrow=_narrow_bootstrap_core_units)
+            if getattr(result, "stopping_record", "recorded") == "absent-manager-stop":
+                print("az-activated supporting bootstrap stopped by manager after "
+                      "helpers; stopping record unavailable")
+                return 0
             print("az-activated supporting bootstrap stopped after confirmed containment")
             return 0
         with SystemdBusSession.connect() as session:

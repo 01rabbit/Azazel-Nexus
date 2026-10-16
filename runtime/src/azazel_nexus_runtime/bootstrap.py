@@ -15,6 +15,7 @@ import math
 from typing import Callable, Protocol
 
 from azazel_nexus.bootstrap_approval import BootstrapContext, VerifiedBootstrapApproval
+from azazel_nexus.audit import AuditUnavailable
 from azazel_nexus.bootstrap_deadline import (
     BootstrapDeadline,
     read_boottime_ns,
@@ -30,11 +31,12 @@ from azazel_nexus.operator_trust import ApprovalRefused
 from .units import UnitKey
 from .bootstrap_audit import AuditObservation
 from .bootstrap_audit_client import AuditAppendReceipt, BootstrapAuditClient
-from .bootstrap_audit_live import BootstrapLiveAuditHead
+from .bootstrap_audit_live import BootstrapLiveAuditHead, WriterHead
 from .bootstrap_overlay_files import new_overlay_intent
 from .bootstrap_prestart import inspect_bootstrap_prestart, check_bootstrap_audit_extension
 
 _ORDER = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
+_READINESS_LOST = "bootstrap helper readiness lost"
 
 
 def _new_grant_transaction(deadline, generation) -> GrantTransaction:
@@ -160,6 +162,13 @@ class BootstrapManager(Protocol):
     def is_masked(self, unit: UnitKey) -> bool: ...
     def is_inactive(self, unit: UnitKey) -> bool: ...
     def is_ready(self, unit: UnitKey) -> bool: ...
+    def controller_stop_observed(self) -> bool:
+        """Read-only: systemd has a stop job for, or is deactivating, this controller.
+
+        Observation only; no unit operation, no caller input. Any uncertainty
+        or bus error must be False (or raise), which keeps recovery_required.
+        """
+        ...
 
 
 @dataclass(frozen=True)
@@ -167,6 +176,13 @@ class BootstrapResult:
     """Only returned after both helpers were positively contained."""
 
     state: str = "stopped"
+    # "recorded" for a full close; "absent-manager-stop" when a systemd-initiated
+    # stop ended the helpers first so bootstrap.stopping could not be written.
+    stopping_record: str = "recorded"
+
+    def __post_init__(self) -> None:
+        if self.stopping_record not in ("recorded", "absent-manager-stop"):
+            raise ValueError("invalid stopping record state")
 
 
 class BootstrapSupervisor:
@@ -284,6 +300,8 @@ class BootstrapSupervisor:
         self._last_elapsed: int | None = None
         self._used = False
         self._check_transaction: Callable[[], None] | None = None
+        self._last_receipt: AuditAppendReceipt | None = None
+        self._supervise_failure: BaseException | None = None
 
     def _check(self) -> BootstrapDeadline:
         if self._check_transaction is None:
@@ -351,7 +369,10 @@ class BootstrapSupervisor:
         }
         if unit is not None:
             record["unit_key"] = unit.value
-        return self.record(record)
+        receipt = self.record(record)
+        if type(receipt) is AuditAppendReceipt:
+            self._last_receipt = receipt
+        return receipt
 
     def _contain(self) -> str:
         # Masks alone cannot fence queued jobs or a higher-priority override.
@@ -499,6 +520,62 @@ class BootstrapSupervisor:
         ).encode("ascii")
         return "sha256:" + sha256(raw).hexdigest()
 
+    def _manager_stop_digest(self, containment: str) -> str:
+        post = self._post_containment_chain()
+        journal = self._grant_transaction
+        head = self._audit_head
+        receipt = self._last_receipt
+        if (type(journal) is not GrantTransaction or type(head) not in (AuditObservation, WriterHead)
+                or type(receipt) is not AuditAppendReceipt):
+            raise ApprovalRefused("manager stop evidence unavailable")
+        raw = json.dumps(
+            {
+                "schema": "azazel-nexus/bootstrap-close-evidence/v2",
+                "stopping_record": "absent-manager-stop",
+                "boot_id": journal.boot_id,
+                "grant_id": journal.grant_id,
+                "last_head_sequence": head.sequence,
+                "last_head_digest": head.digest,
+                "last_receipt": _receipt_digest(receipt),
+                "post_containment_sequence": post.sequence,
+                "post_containment_digest": post.digest,
+                "containment": containment,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        return "sha256:" + sha256(raw).hexdigest()
+
+    def _post_containment_chain(self) -> AuditObservation:
+        """Read-only stopped-writer re-verification of the on-disk chain.
+
+        Runs only after containment confirmed auditd inactive. The tip must be
+        consistent with the last verified head and last receipt.
+        """
+        head = self._audit_head
+        receipt = self._last_receipt
+        base = self._stopped_audit_head
+        if (type(head) not in (AuditObservation, WriterHead)
+                or type(receipt) is not AuditAppendReceipt
+                or type(base) is not AuditObservation
+                or self._previous is None or receipt.sequence > head.sequence):
+            raise ApprovalRefused("audit chain evidence unavailable")
+        observed = self.audit_continuation(self._previous.approval.context, base)
+        if (type(observed) is not AuditObservation
+                or observed.sequence < max(head.sequence, receipt.sequence)
+                or (observed.sequence == head.sequence and observed.digest != head.digest)
+                or (observed.sequence == receipt.sequence
+                    and observed.digest != receipt.event_hash)):
+            raise ApprovalRefused("audit chain not intact after containment")
+        return observed
+
+    def _observe_manager_stop(self) -> bool:
+        # Single read-only sample before containment; any doubt is "not observed".
+        try:
+            return getattr(self.manager, "controller_stop_observed")() is True
+        except Exception:
+            return False
+
     def _recovery_digest(self, failure: BaseException) -> str:
         journal = self._grant_transaction
         raw = json.dumps(
@@ -525,12 +602,19 @@ class BootstrapSupervisor:
             except Exception:
                 pass  # Retain the original containment/store failure.
 
-    def _finish_transaction(self) -> None:
+    def _finish_transaction(self) -> str:
+        """Close the transaction; return "recorded" or "absent-manager-stop".
+
+        The latter is returned only for a proven systemd-initiated stop whose
+        ``bootstrap.stopping`` record was unavailable; see the operator-stop
+        design (Option C). Every other shortfall keeps recovery_required.
+        """
         self._controller_ready_confirmed = False
+        cause, self._supervise_failure = self._supervise_failure, None
         journal = self._grant_transaction
         if type(journal) is not GrantTransaction:
             self._contain()
-            return
+            return "recorded"
 
         close_error = None
         if journal.phase not in {"closing", "closed", "recovery_required"}:
@@ -542,17 +626,32 @@ class BootstrapSupervisor:
                 close_error = exc
 
         audit_error = None
+        manager_stop = False
         if self._live_audit is not None:
             try:
                 self._record("bootstrap.stopping")
             except Exception as exc:
                 audit_error = exc
+                if (type(exc) is AuditUnavailable and close_error is None
+                        and journal.phase == "closing"
+                        and self._stop_cause_eligible(cause)):
+                    manager_stop = self._observe_manager_stop()
 
         try:
             close_evidence = self._contain()
         except BaseException as exc:
             self._mark_recovery(exc)
             raise
+
+        stopping_record = "recorded"
+        if manager_stop and close_error is None and audit_error is not None:
+            try:
+                close_evidence = self._manager_stop_digest(close_evidence)
+            except Exception:
+                pass  # Unprovable: keep audit_error and recovery_required.
+            else:
+                audit_error = None
+                stopping_record = "absent-manager-stop"
 
         failure = close_error or audit_error
         if failure is not None:
@@ -565,6 +664,15 @@ class BootstrapSupervisor:
         except Exception as exc:
             self._mark_recovery(exc)
             raise
+        return stopping_record
+
+    def _stop_cause_eligible(self, cause: BaseException | None) -> bool:
+        if cause is None:
+            try:
+                return self._cancelled()
+            except Exception:
+                return False
+        return type(cause) is ApprovalRefused and str(cause) == _READINESS_LOST
 
     def _cancelled(self) -> bool:
         value = self.stopped()
@@ -575,7 +683,7 @@ class BootstrapSupervisor:
     def _ready(self, units: tuple[UnitKey, ...]) -> None:
         for unit in units:
             if self.manager.is_ready(unit) is not True:
-                raise ApprovalRefused("bootstrap helper readiness lost")
+                raise ApprovalRefused(_READINESS_LOST)
 
     def _publication_checkpoint(self, transaction: GrantTransaction) -> BootstrapDeadline:
         """Revalidate the exact retained intent, admission and cancellation.
@@ -940,13 +1048,18 @@ class BootstrapSupervisor:
                     raise
                 try:
                     self._supervise()
-                except BaseException:
-                    self._finish_transaction()
+                except BaseException as cause:
+                    self._supervise_failure = cause
+                    closed = self._finish_transaction()
+                    if closed == "absent-manager-stop":
+                        # Only the helper-stop-window readiness loss is eligible.
+                        self._release_deadline_guard()
+                        return BootstrapResult(stopping_record=closed)
                     self._release_deadline_guard()
                     raise
-                self._finish_transaction()
+                closed = self._finish_transaction()
                 self._release_deadline_guard()
-                return BootstrapResult()
+                return BootstrapResult(stopping_record=closed)
 
     def _release_deadline_guard(self) -> None:
         if self.deadline_guard.release_after_stop() is not None:
