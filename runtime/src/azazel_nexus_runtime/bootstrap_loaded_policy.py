@@ -63,23 +63,15 @@ def _profile_azazel_edges():
         raise ApprovalRefused("loaded helper profiles unavailable")
     expected = {unit: {key: set() for key in _DEPENDENCIES} for unit in _UNITS}
     direct = (("after", "After"), ("requires", "Requires"), ("binds_to", "BindsTo"))
-    reverse = (("after", "Before"), ("requires", "RequiredBy"), ("binds_to", "BoundBy"))
     for unit in _UNITS:
         profile = profiles[UNIT_NAMES[unit]]
         for field, key in direct:
             for name in getattr(profile, field, ()):
                 if name.startswith("azazel-"):
                     expected[unit][key].add(name)
-    # Inverse relationships are relevant only between the exact protected pair.
-    for target in _UNITS:
-        for source in _UNITS:
-            if source is target:
-                continue
-            source_profile = profiles[UNIT_NAMES[source]]
-            target_name = UNIT_NAMES[target]
-            for field, key in reverse:
-                if target_name in getattr(source_profile, field.lower(), ()):
-                    expected[target][key].add(UNIT_NAMES[source])
+    # In-pair inverse sets (Before/RequiredBy/BoundBy) are expected EMPTY: systemd
+    # garbage-collects an inactive peer, so a freshly loaded single unit never
+    # reports them. Any appearance fails closed as a changed environment.
     return expected
 
 

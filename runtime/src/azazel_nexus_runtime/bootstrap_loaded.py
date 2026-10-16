@@ -79,8 +79,6 @@ def _dependency_policy(unit, value):
         allowed = {_CONTROLLER}
         if unit is UnitKey.COMMISSIOND and key in {"After", "Requires", "BindsTo"}:
             allowed.add(UNIT_NAMES[UnitKey.AUDITD])
-        if unit is UnitKey.AUDITD and key in {"Before", "RequiredBy", "BoundBy"}:
-            allowed.add(UNIT_NAMES[UnitKey.COMMISSIOND])
         if type(names) is not frozenset or len(names) > 256 or any(
             type(name) is not str or not 0 < len(name) <= 256
             or "/" in name or any(char.isspace() for char in name)

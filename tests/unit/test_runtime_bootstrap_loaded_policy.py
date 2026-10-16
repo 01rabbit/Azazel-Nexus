@@ -56,12 +56,10 @@ def _prestart(*, loaded_digest=LOADED_DIGEST, profile_digest=PROFILE_DIGEST):
 def _document():
     controller = "azazel-activated.service"
     audit = UNIT_NAMES[UnitKey.AUDITD]
-    commission = UNIT_NAMES[UnitKey.COMMISSIOND]
     edges = {
         UnitKey.AUDITD: {
-            "After": [controller], "Before": [commission],
-            "Requires": [controller], "RequiredBy": [commission],
-            "BindsTo": [controller], "BoundBy": [commission],
+            "After": [controller], "Requires": [controller],
+            "BindsTo": [controller],
         },
         UnitKey.COMMISSIOND: {
             "After": sorted([controller, audit]),
@@ -214,14 +212,11 @@ def test_v3_prestart_policy_without_loaded_digest_is_refused():
         )
 
 
-@pytest.mark.parametrize("mutation", ["extra_unit", "missing_inverse", "extra_service_keys"])
+@pytest.mark.parametrize("mutation", ["extra_unit", "extra_service_keys"])
 def test_policy_rejects_widened_or_incomplete_expectations(mutation):
     document = _document()
     if mutation == "extra_unit":
         document["units"]["azazel-other.service"] = next(iter(document["units"].values()))
-    elif mutation == "missing_inverse":
-        audit = document["units"][UNIT_NAMES[UnitKey.AUDITD]]["dependencies"]
-        audit["BoundBy"] = []
     else:
         service = document["units"][UNIT_NAMES[UnitKey.AUDITD]]["service_settings"]
         service.update({
@@ -242,6 +237,67 @@ def test_malformed_and_noncanonical_policy_refuses(document):
         raw = json.dumps(document).encode()
         with pytest.raises(ApprovalRefused):
             loaded.decode_loaded_bootstrap_policy(raw, prestart_policy=_pinned(raw))
+
+
+@pytest.mark.parametrize("unit", [UnitKey.AUDITD, UnitKey.COMMISSIOND])
+@pytest.mark.parametrize("key", ["Before", "RequiredBy", "BoundBy"])
+def test_populated_inverse_edge_now_refuses(unit, key):
+    document = _document()
+    document["units"][UNIT_NAMES[unit]]["dependencies"][key] = [
+        UNIT_NAMES[UnitKey.COMMISSIOND if unit is UnitKey.AUDITD else UnitKey.AUDITD]
+    ]
+    raw = _raw(document)
+    with pytest.raises(ApprovalRefused):
+        loaded.decode_loaded_bootstrap_policy(raw, prestart_policy=_pinned(raw))
+
+
+MEASURED_IMPLICIT = {
+    "After": ["-.mount", "system.slice", "systemd-journald.socket",
+              "systemd-tmpfiles-setup.service", "tmp.mount"],
+    "Requires": ["-.mount", "system.slice"],
+    "Wants": ["-.mount", "tmp.mount"],
+}
+
+
+def _measured_document():
+    document = _document()
+    for record in document["units"].values():
+        dependencies = record["dependencies"]
+        for key, names in MEASURED_IMPLICIT.items():
+            dependencies[key] = sorted(set(dependencies[key]) | set(names))
+    return document
+
+
+def test_measured_implicit_edges_are_accepted_by_decoder():
+    raw = _raw(_measured_document())
+    result = loaded.decode_loaded_bootstrap_policy(raw, prestart_policy=_pinned(raw))
+    for entry in result.units.values():
+        expected = entry.dependencies
+        assert set(MEASURED_IMPLICIT["After"]) <= expected["After"]
+        assert set(MEASURED_IMPLICIT["Requires"]) <= expected["Requires"]
+        assert expected["Wants"] == frozenset(MEASURED_IMPLICIT["Wants"])
+        assert not (expected["Before"] | expected["RequiredBy"] | expected["BoundBy"])
+
+
+def test_measured_record_missing_after_ordering_for_positive_edge_refuses():
+    document = _measured_document()
+    dependencies = document["units"][UNIT_NAMES[UnitKey.AUDITD]]["dependencies"]
+    dependencies["After"] = [n for n in dependencies["After"] if n != "tmp.mount"]
+    raw = _raw(document)
+    with pytest.raises(ApprovalRefused):
+        loaded.decode_loaded_bootstrap_policy(raw, prestart_policy=_pinned(raw))
+
+
+@pytest.mark.parametrize("key,name", [("Requires", "system.slice"), ("Wants", "-.mount")])
+def test_decoder_does_not_guard_implicit_os_edges(key, name):
+    # The decoder only checks internal consistency; the live exact-equality
+    # comparison (bootstrap_loaded._projection), not the decoder, guards
+    # implicit OS edges against the observed unit.
+    document = _measured_document()
+    dependencies = document["units"][UNIT_NAMES[UnitKey.AUDITD]]["dependencies"]
+    dependencies[key] = [n for n in dependencies[key] if n != name]
+    raw = _raw(document)
+    loaded.decode_loaded_bootstrap_policy(raw, prestart_policy=_pinned(raw))
 
 
 def test_missing_nexus_inverse_is_refused():

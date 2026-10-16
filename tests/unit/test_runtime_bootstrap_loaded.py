@@ -165,10 +165,6 @@ def _unit_properties(unit_name, _object_path):
         dependencies["After"].append(AUDIT_UNIT)
         dependencies["Requires"].append(AUDIT_UNIT)
         dependencies["BindsTo"].append(AUDIT_UNIT)
-    elif unit_name == AUDIT_UNIT:
-        dependencies["Before"].append(COMMISSION_UNIT)
-        dependencies["RequiredBy"].append(COMMISSION_UNIT)
-        dependencies["BoundBy"].append(COMMISSION_UNIT)
     properties = {
         "Id": unit_name,
         "Names": [unit_name],
@@ -271,10 +267,6 @@ def _dependencies(unit=UnitKey.AUDITD, **overrides):
     if unit is UnitKey.COMMISSIOND:
         for key in ("After", "Requires", "BindsTo"):
             expected[key] = expected[key] | {AUDIT_UNIT}
-    elif unit is UnitKey.AUDITD:
-        expected["Before"] = frozenset({COMMISSION_UNIT})
-        expected["RequiredBy"] = frozenset({COMMISSION_UNIT})
-        expected["BoundBy"] = frozenset({COMMISSION_UNIT})
     expected.update(overrides)
     return expected
 
@@ -386,14 +378,14 @@ def test_commission_requires_forward_audit_lifetime_edge(edge):
 
 
 @pytest.mark.parametrize("edge", ["Before", "RequiredBy", "BoundBy"])
-def test_observed_audit_cannot_omit_independently_expected_reverse_edge(edge):
+def test_observed_audit_populated_inverse_edge_refuses(edge):
     async def run():
-        def remove_reverse(_snapshot, interface, props):
+        def add_reverse(_snapshot, interface, props):
             if interface == UNIT_INTERFACE:
-                props[edge] = Variant("as", [])
+                props[edge] = Variant("as", [COMMISSION_UNIT])
             return props
 
-        bus = FakeBus(UnitKey.AUDITD, mutate=remove_reverse)
+        bus = FakeBus(UnitKey.AUDITD, mutate=add_reverse)
         with pytest.raises(UnitOperationFailed):
             await _inspector(bus).inspect(
                 UnitKey.AUDITD, expected_dependencies=_dependencies(UnitKey.AUDITD),
@@ -403,7 +395,22 @@ def test_observed_audit_cannot_omit_independently_expected_reverse_edge(edge):
     asyncio.run(run())
 
 
-def test_audit_reverse_commission_edges_are_allowed():
+@pytest.mark.parametrize("edge", ["Before", "RequiredBy", "BoundBy"])
+def test_expected_audit_policy_cannot_permit_inverse_commission_edge(edge):
+    async def run():
+        expected = _dependencies(UnitKey.AUDITD)
+        expected[edge] = frozenset({COMMISSION_UNIT})
+        bus = FakeBus(UnitKey.AUDITD)
+        with pytest.raises(UnitOperationFailed):
+            await _inspector(bus).inspect(
+                UnitKey.AUDITD, expected_dependencies=expected,
+            )
+        assert bus.calls == []
+
+    asyncio.run(run())
+
+
+def test_audit_has_no_inverse_commission_edges_by_default():
     async def run():
         bus = FakeBus(UnitKey.AUDITD)
         result = await _inspector(bus).inspect(
@@ -411,9 +418,86 @@ def test_audit_reverse_commission_edges_are_allowed():
         )
         assert result.unit is UnitKey.AUDITD
         properties = _unit_properties(AUDIT_UNIT, "unused")
-        assert properties["Before"].value == [COMMISSION_UNIT]
-        assert properties["RequiredBy"].value == [COMMISSION_UNIT]
-        assert properties["BoundBy"].value == [COMMISSION_UNIT]
+        for key in ("Before", "RequiredBy", "BoundBy"):
+            assert properties[key].value == []
+
+    asyncio.run(run())
+
+
+MEASURED_IMPLICIT = {
+    "After": ["-.mount", "system.slice", "systemd-journald.socket",
+              "systemd-tmpfiles-setup.service", "tmp.mount"],
+    "Requires": ["-.mount", "system.slice"],
+    "Wants": ["-.mount", "tmp.mount"],
+}
+
+
+def _with_implicit(mapping):
+    result = {key: list(value) for key, value in mapping.items()}
+    for key, names in MEASURED_IMPLICIT.items():
+        result[key] = [*result[key], *names]
+    return result
+
+
+def _implicit_mutator(drop=None, extra=None):
+    def mutate(_snapshot, interface, props):
+        if interface == UNIT_INTERFACE:
+            current = {key: list(props[key].value) for key in DEPENDENCY_KEYS}
+            current = _with_implicit(current)
+            if drop is not None:
+                current[drop[0]].remove(drop[1])
+            if extra is not None:
+                current[extra[0]].append(extra[1])
+            for key in DEPENDENCY_KEYS:
+                props[key] = Variant("as", current[key])
+        return props
+
+    return mutate
+
+
+def _expected_with_implicit(unit):
+    expected = _dependencies(unit)
+    for key, names in MEASURED_IMPLICIT.items():
+        expected[key] = expected[key] | frozenset(names)
+    return expected
+
+
+@pytest.mark.parametrize("unit", [UnitKey.AUDITD, UnitKey.COMMISSIOND])
+def test_measured_implicit_edges_match_live_comparison(unit):
+    async def run():
+        bus = FakeBus(unit, mutate=_implicit_mutator())
+        result = await _inspector(bus).inspect(
+            unit, expected_dependencies=_expected_with_implicit(unit),
+        )
+        assert result.unit is unit
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("unit", [UnitKey.AUDITD, UnitKey.COMMISSIOND])
+@pytest.mark.parametrize("key,name", [
+    ("After", "tmp.mount"), ("Requires", "system.slice"), ("Wants", "-.mount"),
+])
+def test_missing_implicit_edge_in_live_unit_refuses(unit, key, name):
+    async def run():
+        bus = FakeBus(unit, mutate=_implicit_mutator(drop=(key, name)))
+        with pytest.raises(UnitOperationFailed):
+            await _inspector(bus).inspect(
+                unit, expected_dependencies=_expected_with_implicit(unit),
+            )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("unit", [UnitKey.AUDITD, UnitKey.COMMISSIOND])
+@pytest.mark.parametrize("key", ["After", "Wants", "Conflicts"])
+def test_extra_edge_in_live_unit_refuses(unit, key):
+    async def run():
+        bus = FakeBus(unit, mutate=_implicit_mutator(extra=(key, "extra.mount")))
+        with pytest.raises(UnitOperationFailed):
+            await _inspector(bus).inspect(
+                unit, expected_dependencies=_expected_with_implicit(unit),
+            )
 
     asyncio.run(run())
 

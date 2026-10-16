@@ -2906,9 +2906,10 @@ record, clock, service, hardware, existing venv or remote Git state was changed.
 
 The commissiond profile and rendered unit now declare `After`, `Requires` and
 `BindsTo` on auditd as well as the activation controller. The read-only loaded
-unit inspector requires those forward edges for commissiond and permits only
-the corresponding reverse commissiond edges (`Before`, `RequiredBy`, `BoundBy`)
-on auditd. Expected dependencies still come from independent admission, not
+unit inspector requires those forward edges for commissiond and expects
+auditd's in-pair inverse edges (`Before`, `RequiredBy`, `BoundBy`) to be empty
+(option O1, see `docs/evidence/bootstrap-design-loaded-dependencies-2026-10-16.md`;
+systemd cannot report them for a freshly loaded single unit). Expected dependencies still come from independent admission, not
 the observed graph. This is portable systemd configuration, not a VM hostname,
 IP address or architecture trust default.
 
@@ -4620,8 +4621,9 @@ and remains usable by nonwidening readers. The new loaded-policy reader refuses
 v3 rather than inventing defaults. Protected `loaded-units.json` contains exactly
 auditd/commissiond, all 27 dependency projections and five timing/environment
 settings. The complete canonical bytes and systemd-profile digest are pinned by
-the independently selected pre-start policy. Nexus edges and pair inverses are
-checked against source profiles; OS/mount dependencies and inherited settings
+the independently selected pre-start policy. Nexus forward edges are
+checked against source profiles and auditd's in-pair inverse edges are expected
+empty (O1, see `docs/evidence/bootstrap-design-loaded-dependencies-2026-10-16.md`); OS/mount dependencies and inherited settings
 remain explicit administrator expectations, never copied from observed D-Bus
 properties. Returned mappings are fresh views of immutable tuple storage.
 
