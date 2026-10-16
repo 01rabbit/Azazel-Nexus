@@ -1,6 +1,6 @@
 # Gate A desk trace: selected bootstrap, designed open_pair refusal (read-only)
 
-Repo: /Users/mao/Developer/GitHub/Azazel-Nexus. Paths below are relative to runtime/src/azazel_nexus_runtime (R/) or src/azazel_nexus (S/).
+Repository root. Paths below are relative to runtime/src/azazel_nexus_runtime (R/) or src/azazel_nexus (S/).
 Line numbers are from my first read. The working tree was being edited in parallel during my read: bootstrap.py shifted by about +3 after line 410 and bootstrap_manager.py by about +6 after line 190, and withdraw_pair now contains a draft of the fix. Function names are authoritative, line numbers can drift by a few lines.
 
 Expected outcome (summary): admission ok, deadline retained, grant created then `pair_grant_intent`, `open_pair` raises UnitOperationFailed, grant moves to `closing`, no audit record (no `_live_audit`), `_contain` confirms, grant becomes `closed`, kernel timer is released, the original UnitOperationFailed propagates, main prints `az-activated failed before completing a safe pass: UnitOperationFailed` and returns 1. The unit ends `failed` (Result=exit-code, status 1). That failed unit is the EXPECTED result, not a containment failure.
