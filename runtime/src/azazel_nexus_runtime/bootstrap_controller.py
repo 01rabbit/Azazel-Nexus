@@ -110,7 +110,8 @@ def _unit_projection(properties, identity, phase):
             or len(conditions[0]) != 5
             or any(type(value) is not kind for value, kind in zip(
                 conditions[0], (str, bool, bool, str, int), strict=True))
-            or conditions[0] != ["ConditionPathExists", False, True, _ONCE_PATH, 1]
+            or conditions[0][:4] != ["ConditionPathExists", False, True, _ONCE_PATH]
+            or conditions[0][4] not in (0, 1)
             or _value(properties, "ConditionResult", "b", bool) is not True):
         raise UnitOperationFailed("controller one-use start condition refused")
     allowed_states = {("activating", "start")}
@@ -153,7 +154,9 @@ def _unit_projection(properties, identity, phase):
     values["Names"] = sorted(names)
     values["InvocationID"] = values["InvocationID"].hex()
     values["Job"] = [job[0], job[1]]
-    values["Conditions"] = [list(conditions[0])]
+    # The per-condition state is 0 after any daemon-reload and 1 before one;
+    # it is not part of the identity, so it is not projected.
+    values["Conditions"] = [list(conditions[0][:4])]
     values["ConditionResult"] = True
     return values
 

@@ -268,7 +268,7 @@ def test_controller_requires_fixed_watchdog_before_and_after_ready(phase, key, s
 
 @pytest.mark.parametrize("phase", ["pre-ready", "ready"])
 @pytest.mark.parametrize("fault", [
-    "missing", "extra", "wrong-path", "positive", "trigger", "untested",
+    "missing", "extra", "wrong-path", "positive", "trigger",
     "boolean-result", "wrong-signature", "failed-result",
 ])
 def test_controller_requires_native_one_use_condition(phase, fault):
@@ -286,8 +286,6 @@ def test_controller_requires_native_one_use_condition(phase, fault):
             conditions[0][2] = False
         elif fault == "trigger":
             conditions[0][1] = True
-        elif fault == "untested":
-            conditions[0][4] = 0
         elif fault == "boolean-result":
             conditions[0][4] = True
         elif fault == "wrong-signature":
@@ -618,3 +616,40 @@ def test_inspector_rejects_bad_owner_digest_identity_and_phase_before_calls():
         with pytest.raises(ValueError):
             _inspector(bus, **changes)
     assert not bus.calls
+
+
+def _condition_state_mutator(state):
+    def mutate(interface, _count, props):
+        if interface == UNIT_INTERFACE:
+            props["Conditions"].value[0][4] = state
+        return props
+    return mutate
+
+
+@pytest.mark.parametrize("phase", ["pre-ready", "ready"])
+@pytest.mark.parametrize("state", [0, 1])
+def test_controller_accepts_condition_state_untested_or_passed(phase, state):
+    bus = FakeBus(phase=phase, mutate=_condition_state_mutator(state))
+    asyncio.run(_inspector(bus, phase=phase).inspect())
+
+
+@pytest.mark.parametrize("phase", ["pre-ready", "ready"])
+@pytest.mark.parametrize("state", [-1, -2, 2, 3])
+def test_controller_refuses_other_condition_states(phase, state):
+    bus = FakeBus(phase=phase, mutate=_condition_state_mutator(state))
+    with pytest.raises(UnitOperationFailed):
+        asyncio.run(_inspector(bus, phase=phase).inspect())
+
+
+def test_condition_state_is_not_projected():
+    from azazel_nexus_runtime.bootstrap_controller import _unit_projection
+
+    snapshots = []
+    for state in (1, 0):
+        props = FakeBus(phase="pre-ready")._unit_properties()
+        props["Conditions"].value[0][4] = state
+        snapshots.append(_unit_projection(props, IDENTITY, "pre-ready"))
+    assert snapshots[0] == snapshots[1]
+    assert snapshots[0]["Conditions"] == [[
+        "ConditionPathExists", False, True,
+        "/run/azazel-nexus-bootstrap/controller-used"]]

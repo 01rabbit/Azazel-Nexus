@@ -39,18 +39,18 @@ def test_selected_bootstrap_routes_without_ordinary_fallback(monkeypatch, capsys
     def selection():
         calls.append("selection")
         if mode == "invalid":
-            raise ApprovalRefused("private invalid selection")
+            raise ApprovalRefused("invalid selection refused")
         return selected
 
     def run(actual, *, narrow):
         assert actual is selected and callable(narrow)
         calls.append("bootstrap")
         if mode == "emergency-unconfirmed":
-            failure = ApprovalRefused("private primary failure")
+            failure = ApprovalRefused("primary failure refused")
             failure.add_note(bootstrap_entrypoint.EMERGENCY_UNCONFIRMED)
             raise failure
         if mode == "composition-fails":
-            raise ApprovalRefused("private incomplete gate")
+            raise ApprovalRefused("incomplete gate refused")
 
     def narrow_invalid(primary, *, narrow):
         assert isinstance(primary, ApprovalRefused) and callable(narrow)
@@ -241,3 +241,93 @@ def test_entrypoint_does_not_report_a_bus_failure_as_a_safe_pass(
     error = capsys.readouterr().err
     assert "failed before completing a safe pass: ConnectionError" in error
     assert "private detail" not in error
+
+
+def test_failure_label_carries_static_message_only_for_allowlisted_literals() -> None:
+    from azazel_nexus.operator_trust import ApprovalRefused
+    from azazel_nexus_runtime.bootstrap_controller import BootstrapControllerNotReady
+    from azazel_nexus_runtime.bootstrap_overlay_files import OverlayPublicationUncertain
+    from azazel_nexus_runtime.units import UnitOperationFailed
+
+    label = activated._failure_label
+    assert label(UnitOperationFailed("controller one-use start condition refused")) == (
+        "UnitOperationFailed: controller one-use start condition refused")
+    assert label(ApprovalRefused("bootstrap completion unconfirmed")) == (
+        "ApprovalRefused: bootstrap completion unconfirmed")
+    # Class-only: other classes, subclasses, unlisted/odd messages, odd args.
+    assert label(ConnectionError("private detail")) == "ConnectionError"
+    assert label(OSError(13, "/secret/path")) == "PermissionError"
+    assert label(OverlayPublicationUncertain("private path /x")) == (
+        "OverlayPublicationUncertain")
+    assert label(BootstrapControllerNotReady("private")) == "BootstrapControllerNotReady"
+    assert label(OverlayPublicationUncertain("bootstrap completion unconfirmed")) == (
+        "OverlayPublicationUncertain")
+    assert label(ApprovalRefused("private \u00e9 text")) == "ApprovalRefused"
+    assert label(ApprovalRefused(b"bootstrap completion unconfirmed")) == "ApprovalRefused"
+    assert label(ApprovalRefused(7)) == "ApprovalRefused"
+    assert label(ApprovalRefused("not in the allowlist")) == "ApprovalRefused"
+    assert label(UnitOperationFailed("x could not be enabled")) == "UnitOperationFailed"
+    assert label(UnitOperationFailed("'k' is not a unit this daemon governs. y")) == (
+        "UnitOperationFailed")
+    assert label(UnitOperationFailed("bootstrap cgroup root unavailable", "b")) == (
+        "UnitOperationFailed")
+    assert label(UnitOperationFailed()) == "UnitOperationFailed"
+
+
+def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
+    import ast
+
+    root = Path(activated.__file__).parent
+    modules = ("bootstrap", "bootstrap_controller", "bootstrap_entrypoint",
+               "bootstrap_manager", "bootstrap_loaded", "bootstrap_resources",
+               "bootstrap_restore", "units", "systemd_socket")
+    found: set[str] = set()
+    for module in modules:
+        for node in ast.walk(ast.parse((root / f"{module}.py").read_text())):
+            if (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+                    and isinstance(node.exc.func, ast.Name)
+                    and node.exc.func.id in ("ApprovalRefused", "UnitOperationFailed")
+                    and len(node.exc.args) == 1
+                    and isinstance(node.exc.args[0], ast.Constant)
+                    and type(node.exc.args[0].value) is str):
+                found.add(node.exc.args[0].value)
+    found.add("bootstrap helper readiness lost")  # bootstrap._READINESS_LOST
+    found = {m for m in found if "/" not in m and "{" not in m}
+    assert activated._STATIC_FAILURE_MESSAGES == found
+    assert all("/" not in m and "{" not in m and m.isascii() and m.isprintable()
+               for m in activated._STATIC_FAILURE_MESSAGES)
+
+
+def test_entrypoint_logs_subclass_message_class_only(monkeypatch, capsys) -> None:
+    from azazel_nexus_runtime.bootstrap_overlay_files import OverlayPublicationUncertain
+
+    _arrange_bus_failure(monkeypatch, OverlayPublicationUncertain("private path /x"))
+    assert activated.main([]) == 1
+    error = capsys.readouterr().err
+    assert "safe pass: OverlayPublicationUncertain" in error
+    assert "private" not in error
+
+
+def _arrange_bus_failure(monkeypatch, failure) -> None:
+    monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("INVOCATION_ID", "b" * 32)
+    monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda path: True if path == Path("/run/systemd/system") else original_is_dir(path),
+    )
+    monkeypatch.setattr(
+        SystemdBusSession, "connect",
+        staticmethod(lambda: (_ for _ in ()).throw(failure)),
+    )
+
+
+def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys) -> None:
+    from azazel_nexus_runtime.units import UnitOperationFailed
+
+    _arrange_bus_failure(
+        monkeypatch, UnitOperationFailed("controller one-use start condition refused"))
+    assert activated.main([]) == 1
+    assert ("failed before completing a safe pass: UnitOperationFailed: "
+            "controller one-use start condition refused") in capsys.readouterr().err
