@@ -1122,3 +1122,74 @@ def test_expired_call_is_bounded_and_translated_to_refusal():
             )
 
     asyncio.run(run())
+
+
+INFINITY = 2**64 - 1
+
+
+def _watchdog_run(pinned, observed, *, second=None):
+    async def run():
+        def mutate(snapshot, interface, props):
+            if interface == SERVICE_INTERFACE:
+                value = observed if second is None or snapshot == 1 else second
+                props["WatchdogUSec"] = Variant("t", value)
+            return props
+
+        bus = FakeBus(UnitKey.AUDITD, mutate=mutate)
+        return await _inspector(
+            bus, expected_service_settings=_service_settings(WatchdogUSec=pinned)
+        ).inspect(UnitKey.AUDITD, expected_dependencies=_dependencies())
+
+    return asyncio.run(run())
+
+
+def test_unset_watchdog_pin_accepts_zero_and_infinity_with_equal_projection():
+    first = _watchdog_run(INFINITY, INFINITY)
+    second = _watchdog_run(INFINITY, 0)
+    assert first.fingerprint == second.fingerprint
+
+
+@pytest.mark.parametrize("observed", [1, 999, 2**64, True, False, float("inf")])
+def test_unset_watchdog_pin_rejects_other_values_and_types(observed):
+    with pytest.raises(UnitOperationFailed) as info:
+        _watchdog_run(INFINITY, observed)
+    assert str(info.value) == (
+        "loaded bootstrap observation refused: service property WatchdogUSec")
+
+
+def test_unset_watchdog_pin_refuses_changes_between_snapshots():
+    # Canonicalised, so 0 -> infinity between snapshots is stable, but a
+    # different value is still refused.
+    assert _watchdog_run(INFINITY, 0, second=INFINITY).fingerprint
+    with pytest.raises(UnitOperationFailed):
+        _watchdog_run(INFINITY, 0, second=5)
+
+
+def test_finite_watchdog_pin_is_exact():
+    assert _watchdog_run(30_000_000, 30_000_000)
+    for observed in (0, INFINITY, 30_000_001):
+        with pytest.raises(UnitOperationFailed) as info:
+            _watchdog_run(30_000_000, observed)
+        assert str(info.value).endswith("service property WatchdogUSec")
+
+
+def test_refusal_labels_are_fixed_and_name_the_failing_check():
+    def refuse(interface_name, key, value, signature):
+        async def run():
+            def mutate(_snapshot, interface, props):
+                if interface == interface_name:
+                    props[key] = Variant(signature, value)
+                return props
+
+            with pytest.raises(UnitOperationFailed) as info:
+                await _inspector(FakeBus(UnitKey.AUDITD, mutate=mutate)).inspect(
+                    UnitKey.AUDITD, expected_dependencies=_dependencies())
+            return str(info.value)
+
+        return asyncio.run(run())
+
+    base = "loaded bootstrap observation refused: "
+    assert refuse(SERVICE_INTERFACE, "Type", "simple", "s") == base + "service property"
+    assert refuse(SERVICE_INTERFACE, "TimeoutStartUSec", 999, "t") == base + "service property"
+    assert refuse(UNIT_INTERFACE, "DefaultDependencies", True, "b") == base + "unit property"
+    assert refuse(UNIT_INTERFACE, "After", ["x.service"], "as") == base + "dependencies"

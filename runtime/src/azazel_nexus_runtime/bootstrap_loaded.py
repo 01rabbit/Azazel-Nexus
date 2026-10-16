@@ -71,6 +71,27 @@ def _expected(properties, key, signature, value):
     return observed
 
 
+class _Stage(Exception):
+    """Internal marker carrying a fixed, non-secret label of the failing check."""
+
+    def __init__(self, label):
+        super().__init__(label)
+        self.label = label
+
+
+_WATCHDOG_UNSET = 2**64 - 1
+
+
+def _watchdog(properties, pinned):
+    # systemd reports infinity for a never-started unit without WatchdogSec and 0
+    # once it has been started. Only an unset (infinity) pin accepts both, and the
+    # value is canonicalised to the pin; a finite pin stays exact.
+    observed = _value(properties, "WatchdogUSec", "t")
+    if pinned == _WATCHDOG_UNSET and type(observed) is int and observed in (0, _WATCHDOG_UNSET):
+        return pinned
+    return _expected(properties, "WatchdogUSec", "t", pinned)
+
+
 def _dependency_policy(unit, value):
     if type(value) is not dict or set(value) != set(_DEPENDENCIES):
         raise UnitOperationFailed("independent complete dependency projection required")
@@ -129,25 +150,38 @@ def _projection(unit, unit_properties, service_properties, dependencies, service
         "SourcePath": ("s", ""), "DropInPaths": ("as", []),
         "NeedDaemonReload": ("b", False),
     }
-    values = {
-        key: _expected(unit_properties, key, *spec)
-        for key, spec in unit_expected.items()
-    }
-    for key, names in dependencies.items():
-        observed = _value(unit_properties, key, "as")
-        if (type(observed) is not list or len(observed) > 256
-                or any(type(item) is not str for item in observed)
-                or len(set(observed)) != len(observed) or sorted(observed) != names):
-            raise UnitOperationFailed("loaded bootstrap dependencies differ")
-        values[key] = sorted(observed)
+    try:
+        values = {
+            key: _expected(unit_properties, key, *spec)
+            for key, spec in unit_expected.items()
+        }
+    except Exception:
+        raise _Stage("unit property") from None
+    try:
+        for key, names in dependencies.items():
+            observed = _value(unit_properties, key, "as")
+            if (type(observed) is not list or len(observed) > 256
+                    or any(type(item) is not str for item in observed)
+                    or len(set(observed)) != len(observed) or sorted(observed) != names):
+                raise UnitOperationFailed("loaded bootstrap dependencies differ")
+            values[key] = sorted(observed)
+    except Exception:
+        raise _Stage("dependencies") from None
     service_expected = dict(_SERVICE_EXPECTED)
     service_expected.update(service_settings)
     service_expected["User"] = ("s", profile.account)
     service_expected.update({key: (_EXEC_SIGNATURE, []) for key in _COMMANDS})
-    service = {
-        key: _expected(service_properties, key, *spec)
-        for key, spec in service_expected.items()
-    }
+    service = {}
+    for key, spec in service_expected.items():
+        try:
+            if key == "WatchdogUSec":
+                service[key] = _watchdog(service_properties, spec[1])
+            else:
+                service[key] = _expected(service_properties, key, *spec)
+        except Exception:
+            raise _Stage(
+                "service property WatchdogUSec" if key == "WatchdogUSec"
+                else "service property") from None
     commands = _value(service_properties, "ExecStartEx", _EXEC_SIGNATURE)
     if type(commands) is not list or len(commands) != 1:
         raise UnitOperationFailed("single fixed bootstrap command required")
@@ -238,6 +272,20 @@ class BootstrapLoadedUnitInspector:
 
         try:
             return await reader._bounded(operation())
-        except Exception:
+        except Exception as error:
             reader._usable = False
+            label = error.label if isinstance(error, _Stage) else None
+            if label == "dependencies":
+                raise UnitOperationFailed(
+                    "loaded bootstrap observation refused: dependencies") from None
+            if label == "unit property":
+                raise UnitOperationFailed(
+                    "loaded bootstrap observation refused: unit property") from None
+            if label == "service property WatchdogUSec":
+                raise UnitOperationFailed(
+                    "loaded bootstrap observation refused: service property WatchdogUSec"
+                ) from None
+            if label == "service property":
+                raise UnitOperationFailed(
+                    "loaded bootstrap observation refused: service property") from None
             raise UnitOperationFailed("loaded bootstrap observation refused") from None
