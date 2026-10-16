@@ -345,7 +345,8 @@ class AdministratorBootstrapObservation:
     Pass this producer to ProtectedBootstrapInputs. `observe` must independently
     supply current time/context measurements; reading the declaration must never
     manufacture clock trust or installed-health evidence. Platform adapters may
-    vary, not the policy/binding checks. No production entrypoint is enabled here.
+    vary, not the policy/binding checks. The fixed bootstrap entrypoint consumes
+    this via protected_bootstrap_inputs; it still grants nothing by itself.
     """
 
     observe: Callable[[], BootstrapObservation]

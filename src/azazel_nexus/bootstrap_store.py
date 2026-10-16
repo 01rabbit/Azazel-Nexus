@@ -1,7 +1,7 @@
 """Read protected bootstrap approval evidence; never create a grant or key.
 
 Fixed root-owned input directory, no public path/owner overrides. This reader
-is not wired into production activation. Its result still needs semantic
+is consumed by the bootstrap entrypoint. Its result still needs semantic
 admission, trusted time, retained deadlines and reviewed lifetime enforcement.
 """
 

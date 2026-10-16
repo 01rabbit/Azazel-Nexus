@@ -1,6 +1,6 @@
 """Held-descriptor owned-file closure for the connected narrowing sequence.
 
-No production directory opener: trusted composition retains descriptors and
+No directory opener here: trusted composition (the factory) retains descriptors and
 the transaction lock for the complete sequence. Paths are independent expected
 manager fragment locations, not paths learned from D-Bus or CLI inputs.
 """

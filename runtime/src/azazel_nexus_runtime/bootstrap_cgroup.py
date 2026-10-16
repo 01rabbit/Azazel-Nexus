@@ -2,7 +2,8 @@
 
 Composition must independently establish that the descriptor is the host's
 admitted cgroup-v2 hierarchy, not a caller-supplied regular filesystem. This
-module has no production opener. Ordinary-file fixtures test the parser and
+module opens nothing itself (the fixed mount opener is
+bootstrap_cgroup_mount). Ordinary-file fixtures test the parser and
 traversal only. Absence/emptiness is not proof of no process migration or of a
 continuing fence; admitted unit hardening and same-owner observations surround it.
 """

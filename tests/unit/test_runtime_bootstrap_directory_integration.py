@@ -171,7 +171,7 @@ def test_fixed_manager_composition_owns_lifetimes_without_service_calls(tmp_path
             raise RuntimeError("synthetic failure")
         return constructed_manager
 
-    monkeypatch.setattr(module, "BootstrapNarrowingManager", construct)
+    monkeypatch.setattr(module, "_PrototypeBootstrapManager", construct)
     with _environment(tmp_path) as env:
         def journal(guard):
             assert guard is env["guard"]

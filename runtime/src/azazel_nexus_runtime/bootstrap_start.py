@@ -16,7 +16,9 @@ class BootstrapStartJobs:
     deadline, exact installed notify-unit/dependency closure, controller lifetime
     and the deployment's persistent-mask/reboot fence. Missing evidence raises.
     It must be bounded and return None on success, not a truthy permission flag.
-    This class supplies none of those facts. There is no production factory yet.
+    This class supplies none of those facts. The factory-selected manager
+    builds it for supervised test-VM qualification; every start still
+    requires fresh checks.
     Dedicated connection ownership/teardown is the enclosing manager's duty.
     expected_owner must be retained from the enclosing grant admission, not
     learned afresh from this connection. A newly authenticated manager does not

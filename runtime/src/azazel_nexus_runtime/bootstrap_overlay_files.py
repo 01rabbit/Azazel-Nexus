@@ -1,8 +1,9 @@
 """Journaled publication and closing of the exact bootstrap helper pair.
 
 This is a private file-transaction primitive, not a grant or start fence. It
-has no production path opener and is not wired to the supervisor or CLI. A
-Publication requires independent admission and a deployment start fence.
+is reached only through the bootstrap manager's factory-selected, check-gated
+open path (supervised test-VM qualification). Publication requires
+independent admission and a deployment start fence.
 Closing preserves ownership while narrowing on-disk files; it does not prove
 the loaded fence. The adapter must separately reload and inspect systemd.
 """
@@ -255,8 +256,8 @@ def _publish_candidates_at(*, overlay_fd: int, masks_fd: int,
 
     It does not reload systemd, establish a start fence or grant either unit.
     Callers supply a preconstructed intent only for the fake-descriptor tests;
-    production composition must use `_publish_verified_approval_at` and must
-    remain unreachable until independent systemd gates are implemented/reviewed.
+    production composition must use `_publish_verified_approval_at`; every
+    publication still requires a fresh full admission checkpoint.
     """
     if type(guard) is not BootstrapTransactionGuard:
         raise ApprovalRefused("bootstrap transaction guard required")
@@ -441,7 +442,7 @@ def _close_candidates_at(*, overlay_fd: int, masks_fd: int,
     inode lets recovery accept the original digest or an empty file without
     adopting replacement files. The private directory and held controller lock
     exclude untrusted writers; this does not resist arbitrary privileged writes
-    or malicious inode reuse. Descriptors have no production path opener here.
+    or malicious inode reuse. Descriptors are borrowed; this function opens no paths.
     """
     if type(guard) is not BootstrapTransactionGuard:
         raise ApprovalRefused("bootstrap transaction guard required")

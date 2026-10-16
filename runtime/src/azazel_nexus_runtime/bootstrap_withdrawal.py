@@ -1,4 +1,4 @@
-"""Held-file withdrawal binding; no production opener or grant authority."""
+"""Held-file withdrawal binding; borrowed descriptors only, no grant authority."""
 
 import os
 import uuid

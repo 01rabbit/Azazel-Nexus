@@ -239,7 +239,7 @@ def test_delegate_failure_propagates_without_later_delegates(monkeypatch, operat
     assert calls == [operation]
 
 
-def test_production_narrowing_manager_remains_closed():
+def test_base_narrowing_manager_class_still_refuses_open_and_start():
     manager = _manager(BootstrapNarrowingManager)
     transaction = _transaction()
     for unit in (UnitKey.AUDITD, UnitKey.COMMISSIOND):

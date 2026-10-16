@@ -1,7 +1,7 @@
 """Fixed-pair inactive/PID/cgroup observations under a revalidated close fence.
 
 The trusted root descriptor must identify the admitted host cgroup-v2 mount.
-No production opener is provided. The supported unit layout is system.slice;
+This module opens nothing itself. The supported unit layout is system.slice;
 other layouts require explicit review, not a fallback to observed paths.
 """
 

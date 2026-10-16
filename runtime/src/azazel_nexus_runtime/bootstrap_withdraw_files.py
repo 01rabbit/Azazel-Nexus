@@ -1,7 +1,8 @@
 """Recoverable removal of owned empty masks, not a completed withdrawal.
 
 Trusted composition retains the lifetime lock and provides fresh containment
-checks. This synchronous file phase has no production opener. It returns the
+checks. This synchronous file phase takes borrowed descriptors from the factory's
+directory composition. It returns the
 retained withdrawing journal, never closed: manager reload, restored loaded
 masks and final containment are still required before completing the journal.
 """

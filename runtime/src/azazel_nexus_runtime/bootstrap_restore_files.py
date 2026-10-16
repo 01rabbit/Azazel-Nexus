@@ -1,7 +1,7 @@
 """Retained post-unlink file observation and journal completion.
 
 Only trusted composition supplies these borrowed directory descriptors/paths
-and the lifetime guard. No production opener, removal of journals, or inference
+and the lifetime guard. No opener, removal of journals, or inference
 of loaded manager state is provided. Final evidence must come from the connected
 same-owner restoration sequence, never from candidate data or an RPC caller.
 """

@@ -3,7 +3,8 @@
 CancelJob does not undo an operation that has begun. Queue absence is NOT
 inactive/cgroup/loaded-mask evidence. The enclosing deployment must keep its
 start fence closed, then stop and observe both helpers before grant withdrawal.
-No production manager installs this component yet.
+The bootstrap manager composes this component; callers still must keep the
+start fence closed as above.
 """
 
 from .bootstrap_stop import BootstrapStopJobs, _validate_expected_owner

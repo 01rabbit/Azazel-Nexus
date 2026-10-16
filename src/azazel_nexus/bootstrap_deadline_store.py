@@ -2,8 +2,8 @@
 
 Only an independently admitted controller may initialize this store. Neither
 missing state nor an unfinished transaction is a reason to initialize again.
-Local files are not an independent rollback anchor. Production composition is
-not wired; private descriptor seams exist for ordinary-file fault tests.
+Local files are not an independent rollback anchor. The bootstrap entrypoint
+composes this store; private descriptor seams exist for ordinary-file tests.
 """
 
 from contextlib import contextmanager

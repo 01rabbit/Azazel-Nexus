@@ -2,7 +2,8 @@
 
 Not an activation lease, service admission, protected-state reader or signer.
 Expected context and policy must be independently supplied from protected
-deployment state. No production bootstrap path consumes this evidence yet.
+deployment state. The bootstrap entrypoint consumes this evidence only together with those
+independent admissions.
 """
 
 from dataclasses import asdict, dataclass

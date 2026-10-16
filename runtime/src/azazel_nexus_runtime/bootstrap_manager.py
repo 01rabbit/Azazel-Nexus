@@ -1,8 +1,10 @@
 """Synchronous narrowing adapter for the bootstrap supervisor.
 
-Each operation owns and closes its dedicated system-bus session. Widening
-remains refused: no reviewed persistent-mask/lifetime/reboot grant backend is
-installed. Merely constructing this adapter neither connects nor operates.
+Each operation owns and closes its dedicated system-bus session. The base
+class still refuses widening; the factory builds the private subclass
+`_PrototypeBootstrapManager`, selected for supervised test-VM qualification,
+whose open/start paths each require fresh full checks. Merely constructing
+this adapter neither connects nor operates.
 """
 
 import asyncio
@@ -71,8 +73,11 @@ _LOAD_ROOTS = frozenset(UNIT_NAMES[unit] for unit in _PAIR)
 def bootstrap_narrowing_manager_in_transaction(guard, *, job_timeout_seconds):
     """Own fixed filesystem/cgroup dependencies for the supervisor's held lock.
 
-    This prepares only narrowing. It neither acquires another lock nor calls
-    systemd, publishes a journal, creates directories, or enables starts.
+    This composes the manager and its fixed dependencies only. It neither
+    acquires another lock nor calls systemd, publishes a journal, or creates
+    directories itself. The manager it yields is `_PrototypeBootstrapManager`,
+    selected by this factory for supervised test-VM qualification; every
+    open/start still requires fresh full checks. No env/flag/config selects it.
     Entry-point composition must retain this context for the entire supervisor
     transaction, including cleanup. Missing deployment prerequisites refuse.
     """
@@ -84,7 +89,7 @@ def bootstrap_narrowing_manager_in_transaction(guard, *, job_timeout_seconds):
             open_bootstrap_cgroup_mount() as mount:
         directories.check()
         guard()
-        manager = BootstrapNarrowingManager(
+        manager = _PrototypeBootstrapManager(
             job_timeout_seconds=job_timeout_seconds,
             closed_overlay_files=directories.closed_files(journal_store=store, guard=guard),
             withdrawal_files=directories.withdrawal_files(journal_store=store, guard=guard),
@@ -119,9 +124,10 @@ _UNPUBLISHED_PHASES = frozenset({"prepared", "pair_grant_intent", "closing"})
 class BootstrapNarrowingManager:
     """Trusted composition dependency, not a CLI/RPC or general unit API.
 
-    The factory is a private composition/testing seam, not a caller-selected bus
-    address. Production must use the fixed system-bus factory and an independently
-    admitted closure. This class cannot turn a bootstrap approval into a start.
+    The factory is a private composition seam, not a caller-selected bus
+    address. It builds the subclass `_PrototypeBootstrapManager` (supervised
+    test-VM qualification); this base class by itself cannot turn a bootstrap
+    approval into a start.
 
     cgroup_root_fd is BORROWED, like the file backend's descriptors and held
     transaction guard. Composition must keep it open and must not reuse its
@@ -158,7 +164,7 @@ class BootstrapNarrowingManager:
         self._withdrawal_kind = None
         self._publication_inputs = None
         self._publication_check = None
-        # Private composition seams (tests); never caller, env or config input.
+        # Private composition seams; never caller, env or config input.
         self._boot_id_reader = read_boot_id
         self._grant_store_opener = grant_transaction_store_in_transaction
         self._controller_binding = None
@@ -605,7 +611,8 @@ class BootstrapNarrowingManager:
                         ) from None
 
     def _run_owned_start(self, unit: UnitKey, *, expected_owner, check_start):
-        """Private job composition; not reachable from production start API."""
+        """Private job composition; reached only via the factory-selected subclass's
+        start paths, each behind fresh full checks."""
         _name(unit)
         if not self._controller_ready_confirmed:
             raise UnitOperationFailed("controller READY barrier not confirmed")
@@ -845,8 +852,9 @@ class BootstrapNarrowingManager:
         """Integrated preparation only; not complete closure/lifetime admission.
 
         Publishing/reloading is a widening mutation even without StartUnit.
-        There is intentionally no production caller while open_pair's remaining
-        admission obligations are unmet. Tests use ordinary files/fake systemd.
+        Its caller is open_pair of the manager the factory selects for
+        supervised test-VM qualification; every call still requires a fresh
+        full check_publish checkpoint. Tests use ordinary files/fake systemd.
         Retained resources belong to the enclosing transaction factory.
         """
         # Contract: the caller must run check_publish() immediately before this
@@ -1142,6 +1150,8 @@ class BootstrapNarrowingManager:
         self._controller_ready_confirmed = True
 
     def open_pair(self, transaction: GrantTransaction, *, approval, check_publish) -> None:
+        # Base class refuses; the factory builds `_PrototypeBootstrapManager`,
+        # which overrides this with the check-gated publication.
         if type(transaction) is not GrantTransaction:
             raise UnitOperationFailed(
                 "bootstrap transaction identity required for pair grant"
@@ -1326,6 +1336,8 @@ class BootstrapNarrowingManager:
             self._cgroup_mount.check()
 
     def start_and_wait(self, unit: UnitKey, *, transaction, check_start) -> None:
+        # Base class refuses; the factory builds `_PrototypeBootstrapManager`,
+        # which overrides this with the check-gated bound starts.
         _name(unit)
         raise UnitOperationFailed(
             "bootstrap deployment fencing unavailable; widening refused"
@@ -1339,11 +1351,11 @@ class BootstrapNarrowingManager:
 
 
 class _PrototypeBootstrapManager(BootstrapNarrowingManager):
-    """Private protocol composition for regular-file/fake-transport qualification.
+    """Private protocol composition (name kept by owner decision D7).
 
-    Not selected by the production factory, CLI, environment, or an approval
-    flag. Native system-manager qualification and a separately reviewed factory
-    change remain necessary before real service opening. All transaction,
+    Selected by the bootstrap factory for supervised test-VM qualification;
+    not selectable by CLI, environment, or an approval flag. Every open/start
+    still requires fresh full checks. All transaction,
     publication and authenticated-peer state stays in the retained base manager;
     this adapter adds no second backend or grant authority. Individual unmask
     remains refused by the base implementation.
