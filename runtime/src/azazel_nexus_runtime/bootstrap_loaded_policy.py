@@ -69,9 +69,10 @@ def _profile_azazel_edges():
             for name in getattr(profile, field, ()):
                 if name.startswith("azazel-"):
                     expected[unit][key].add(name)
-    # In-pair inverse sets (Before/RequiredBy/BoundBy) are expected EMPTY: systemd
+    # In-pair inverse sets (Before/RequiredBy/BoundBy) are recorded EMPTY: systemd
     # garbage-collects an inactive peer, so a freshly loaded single unit never
-    # reports them. Any appearance fails closed as a changed environment.
+    # reports them. The loaded inspector tolerates exactly commissiond in auditd's
+    # three inverse sets once commissiond is loaded; any other name fails closed.
     return expected
 
 

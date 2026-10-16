@@ -18,6 +18,7 @@ from .units import UNIT_NAMES, UnitKey, UnitOperationFailed
 _SERVICE = "org.freedesktop.systemd1.Service"
 _CONTROLLER = "azazel-activated.service"
 _PAIR = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
+_AUDIT_LOADED_INVERSE = frozenset({"Before", "RequiredBy", "BoundBy"})
 _DEPENDENCIES = (
     "After", "Before", "Requires", "Wants", "BindsTo", "Requisite", "Upholds",
     "PartOf", "Conflicts", "ConflictedBy", "OnFailure", "OnSuccess", "Triggers",
@@ -162,9 +163,19 @@ def _projection(unit, unit_properties, service_properties, dependencies, service
             observed = _value(unit_properties, key, "as")
             if (type(observed) is not list or len(observed) > 256
                     or any(type(item) is not str for item in observed)
-                    or len(set(observed)) != len(observed) or sorted(observed) != names):
+                    or len(set(observed)) != len(observed)):
                 raise UnitOperationFailed("loaded bootstrap dependencies differ")
-            values[key] = sorted(observed)
+            observed = sorted(observed)
+            if unit is UnitKey.AUDITD and key in _AUDIT_LOADED_INVERSE:
+                # Once commissiond is loaded systemd reports it as the in-pair
+                # inverse of auditd. Accept the pin with or without exactly that
+                # one name and canonicalise to the pin.
+                commissiond = UNIT_NAMES[UnitKey.COMMISSIOND]
+                if commissiond in observed and commissiond not in names:
+                    observed.remove(commissiond)
+            if observed != names:
+                raise UnitOperationFailed("loaded bootstrap dependencies differ")
+            values[key] = observed
     except Exception:
         raise _Stage("dependencies") from None
     service_expected = dict(_SERVICE_EXPECTED)

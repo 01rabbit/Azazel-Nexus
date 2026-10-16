@@ -377,20 +377,76 @@ def test_commission_requires_forward_audit_lifetime_edge(edge):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("edge", ["Before", "RequiredBy", "BoundBy"])
-def test_observed_audit_populated_inverse_edge_refuses(edge):
-    async def run():
-        def add_reverse(_snapshot, interface, props):
-            if interface == UNIT_INTERFACE:
-                props[edge] = Variant("as", [COMMISSION_UNIT])
-            return props
+INVERSE_EDGES = ("Before", "RequiredBy", "BoundBy")
 
-        bus = FakeBus(UnitKey.AUDITD, mutate=add_reverse)
+
+def _inverse_mutator(**lists):
+    def mutate(_snapshot, interface, props):
+        if interface == UNIT_INTERFACE:
+            for key, names in lists.items():
+                props[key] = Variant("as", list(names))
+        return props
+
+    return mutate
+
+
+def _inspect_audit(**lists):
+    async def run():
+        bus = FakeBus(UnitKey.AUDITD, mutate=_inverse_mutator(**lists))
+        return await _inspector(bus).inspect(
+            UnitKey.AUDITD, expected_dependencies=_dependencies(UnitKey.AUDITD),
+        )
+
+    return asyncio.run(run())
+
+
+def test_audit_with_loaded_commissiond_inverse_projects_equal_to_empty():
+    empty = _inspect_audit()
+    loaded = _inspect_audit(**{key: [COMMISSION_UNIT] for key in INVERSE_EDGES})
+    assert loaded == empty
+    assert loaded.fingerprint == empty.fingerprint
+
+
+@pytest.mark.parametrize("edge", INVERSE_EDGES)
+def test_audit_commissiond_inverse_accepted_per_property(edge):
+    assert _inspect_audit(**{edge: [COMMISSION_UNIT]}) == _inspect_audit()
+
+
+@pytest.mark.parametrize("edge", INVERSE_EDGES)
+@pytest.mark.parametrize("names", [
+    ["foo.service"], ["azazel-activated.service"], [AUDIT_UNIT],
+    [COMMISSION_UNIT, "foo.service"], [COMMISSION_UNIT, "azazel-activated.service"],
+    [COMMISSION_UNIT, COMMISSION_UNIT],
+])
+def test_observed_audit_other_inverse_names_refuse(edge, names):
+    with pytest.raises(UnitOperationFailed):
+        _inspect_audit(**{edge: names})
+
+
+@pytest.mark.parametrize("edge", INVERSE_EDGES)
+def test_audit_other_name_refuses_even_when_other_edges_have_commissiond(edge):
+    lists = {key: [COMMISSION_UNIT] for key in INVERSE_EDGES}
+    lists[edge] = ["foo.service"]
+    with pytest.raises(UnitOperationFailed):
+        _inspect_audit(**lists)
+
+
+@pytest.mark.parametrize("edge", ["After", "Requires", "Wants", "BindsTo", "PartOf", "Conflicts"])
+def test_audit_commissiond_in_other_properties_still_refuses(edge):
+    base = {"After": [CONTROLLER], "Requires": [CONTROLLER], "BindsTo": [CONTROLLER]}
+    with pytest.raises(UnitOperationFailed):
+        _inspect_audit(**{edge: [*base.get(edge, []), COMMISSION_UNIT]})
+
+
+@pytest.mark.parametrize("edge", INVERSE_EDGES)
+def test_commissiond_own_inverse_properties_stay_exact(edge):
+    async def run():
+        bus = FakeBus(UnitKey.COMMISSIOND, mutate=_inverse_mutator(**{edge: [COMMISSION_UNIT]}))
         with pytest.raises(UnitOperationFailed):
             await _inspector(bus).inspect(
-                UnitKey.AUDITD, expected_dependencies=_dependencies(UnitKey.AUDITD),
+                UnitKey.COMMISSIOND,
+                expected_dependencies=_dependencies(UnitKey.COMMISSIOND),
             )
-        assert any(call.member == "GetAll" for call in bus.calls)
 
     asyncio.run(run())
 
