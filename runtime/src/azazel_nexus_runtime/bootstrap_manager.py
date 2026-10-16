@@ -389,8 +389,27 @@ class BootstrapNarrowingManager:
 
     def is_inactive(self, unit: UnitKey) -> bool:
         name = _name(unit)
-        with self._session() as session:
-            return DbusUnitManager(session).is_inactive(name)
+        masked = self._closed_observation
+        if masked is None:
+            with self._session() as session:
+                return DbusUnitManager(session).is_inactive(name)
+        # Under a confirmed fence the unit's mask may be the owned empty
+        # overlay ("masked-runtime"), which the generic unloaded-unit read
+        # refuses; observe it against the fence's attested fragment instead.
+        if type(masked) is not MaskedBootstrapPair:
+            raise UnitOperationFailed("bootstrap inactivity fence unavailable")
+        fragment = dict(masked.fragments).get(unit)
+        if type(fragment) is not str:
+            raise UnitOperationFailed("bootstrap inactivity fragment unavailable")
+
+        def operation(session):
+            return BootstrapStopJobs(
+                bus=session._bus, message_factory=session._message_factory,
+                message_type=session._message_type, timeout_seconds=self._timeout,
+                expected_owner=masked.owner,
+            ).observe_inactive(unit, fragment=fragment)
+
+        return self._run_owned(operation) is True
 
     def stop_and_wait(self, unit: UnitKey) -> None:
         _name(unit)

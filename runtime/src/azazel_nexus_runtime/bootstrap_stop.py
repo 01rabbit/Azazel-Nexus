@@ -243,6 +243,55 @@ class BootstrapStopJobs:
     async def stop_and_wait(self, unit: UnitKey) -> None:
         await self._job(unit)
 
+    async def observe_inactive(self, unit: UnitKey, *, fragment: str) -> bool:
+        """Fresh inactivity read of one pair unit against its attested mask path.
+
+        No job and no load. An unloaded unit counts as inactive only when its
+        fresh GetUnitFileState matches the mask the fragment attests
+        (`_get_unit`): the owned empty overlay in /run/systemd/system.control
+        is "masked-runtime", the installer link in /etc is "masked". A loaded
+        unit reports its ActiveState. Requires the pinned systemd owner.
+        """
+        if not self._usable:
+            raise UnitOperationFailed("bootstrap stop connection must be discarded")
+        if type(unit) is not UnitKey or unit not in _PAIR:
+            raise UnitOperationFailed("bootstrap inactivity unit outside exact pair")
+        if type(fragment) is not str:
+            raise UnitOperationFailed("bootstrap inactivity mask path required")
+        if self._busy:
+            raise UnitOperationFailed("bootstrap stop transaction already in progress")
+        self._busy = True
+        name = UNIT_NAMES[unit]
+
+        async def operation():
+            owner = await self._owner()
+            if self._expected_owner is None or owner != self._expected_owner:
+                raise UnitOperationFailed("enclosing systemd owner changed")
+            self._manager_owner = owner
+            path = _unit_object_path(name)
+            if not await self._get_unit(
+                name, path, masked_not_loaded=True, fragment=fragment,
+            ):
+                return True
+            state = await self._call(
+                "Get", "ss", [UNIT_INTERFACE, "ActiveState"], "v",
+                path=path, interface=PROPERTIES_INTERFACE,
+            )
+            if (
+                len(state) != 1
+                or getattr(state[0], "signature", None) != "s"
+                or type(getattr(state[0], "value", None)) is not str
+            ):
+                raise UnitOperationFailed("bootstrap inactivity state unconfirmed")
+            return state[0].value == "inactive"
+
+        try:
+            return await self._bounded(operation()) is True
+        except Exception:
+            raise UnitOperationFailed("bootstrap inactivity observation refused") from None
+        finally:
+            self._usable = False  # single use: one observation per transaction
+
     async def _job(self, unit: UnitKey, *, _start_check=None,
                    _start_checkpoint=None) -> None:
         # The public stop API never supplies a start guard. Only the separate
