@@ -189,12 +189,53 @@ reproducible, and a test parses `_integration_view` to assert it reads no
 clock of its own: a status built from a hidden wall clock cannot be replayed
 from its inputs.
 
-## 7. What is still not done
+## 7. What is recorded, and what is still not
 
-Nothing writes these events to the audit ledger. The rows carry `as_event()`
-and nothing calls it on the operator path.
+**Transitions are recorded by the component that causes them, with their
+reason** ([#55](https://github.com/01rabbit/Azazel-Nexus/issues/55)).
+`az-watchdog` is the runtime owner that narrows a capability: every fence goes
+through `WatchdogService._fence`, which appends a `watchdog.fenced` entry to
+its own audit ledger (`watchdog.jsonl`, the leaf `main()` already wires). The
+entry carries the reason and the state the unit left, not only the state it
+reached:
 
-## 7. The edge axis carries eight words, not two
+| field | value |
+| --- | --- |
+| `unit` | the fixed unit name |
+| `reason` | the `FenceReason` value |
+| `previous_state` | `in_service`, or `fenced` |
+| `previous_reason` | the earlier `FenceReason`, or `null` |
+| `state` | `fenced` |
+| `detail`, `occurred_at` | as before |
+
+- **An identical observation is not a transition.** The unit is masked again,
+  and nothing is appended; a periodic probe of a fenced unit does not grow the
+  ledger. A change of reason alone is a transition and is recorded.
+- **A restart is not a transition.** Stored fences are re-masked and nothing
+  is appended. An unreadable fence file fails closed with every unit fenced
+  for `fence_store_unreadable`, a reason that names the file, not the unit;
+  the first real observation of a unit after that is therefore a transition
+  and is recorded, rather than being mistaken for a repeat.
+- **A failed append neither stops the fence nor invents a record.** The
+  transition is held in memory with its original prior state and time, and
+  retried when the same unit is next observed (an observation of another unit
+  does not retry it). A corrupt ledger is treated like an unwritable one. That
+  retry queue does not survive a restart: a transition whose record failed and
+  whose daemon then restarted is not in the ledger.
+- **`detail` is not sanitised.** It carries the text of the deadline or
+  generation refusal, which can include file paths. No secret reaches it
+  today; nothing bounds or redacts it either.
+
+**Still not done: the view itself is not written.** `IntegrationView.as_event()`
+and the rows' `as_event()` have no caller on the operator path, deliberately:
+`status` is read-only and must work on a node whose ledger cannot be written.
+The watchdog's ledger is its own leaf, not the `az-auditd` chain. `az-auditd`
+declares a `watchdog.fenced` schema, but nothing submits to it and it does not
+match this event: its unit choices are short names, it lists four of the six
+reasons, and it has no `detail` or `previous_*` fields. Reconciling the two is
+not done here.
+
+## 8. The edge axis carries eight words, not two
 
 [#44](https://github.com/01rabbit/Azazel-Nexus/issues/44) requires the five
 Edge checks to fail **separately** on the display as well as in the decision,

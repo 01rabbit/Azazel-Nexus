@@ -12,6 +12,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 import azazel_nexus_runtime.principal as principal
 import azazel_nexus_runtime.runtime_paths as runtime_paths
 import azazel_nexus_runtime.serve as serve
@@ -55,7 +57,155 @@ def _service(tmp_path, *, clock=None, generations=None) -> WatchdogService:
 
 
 def _events(tmp_path):
-    return [e.event for e in AuditLedger(tmp_path / "ledger.jsonl")]
+    ledger = AuditLedger(tmp_path / "ledger.jsonl")
+    ledger.verify()
+    return [e.event for e in ledger]
+
+
+def test_first_fence_records_reason_and_prior_state_not_only_post_value(tmp_path):
+    service = _service(tmp_path)
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+
+    [event] = _events(tmp_path)
+    assert event["event_type"] == "watchdog.fenced"
+    assert event["unit"] == "azazel-auditd.service"
+    assert event["reason"] == "unhealthy"
+    assert event["previous_state"] == "in_service"
+    assert event["previous_reason"] is None
+    assert event["state"] == "fenced"
+    assert event["reason"] != event["state"]
+    assert event["previous_state"] != event["state"]
+    assert event["occurred_at"] == NOW
+    assert event["detail"] == "the daemon reported itself unwell"
+
+
+def test_identical_observation_masks_again_without_another_record(tmp_path):
+    service = _service(tmp_path, clock=lambda: 0)
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    original = _events(tmp_path)
+    assert len(original) == 1
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    assert _events(tmp_path) == original
+    assert service.manager.calls == [("mask", "azazel-auditd.service")] * 2
+
+
+def test_reason_only_change_records_previous_reason(tmp_path):
+    service = _service(tmp_path, clock=_ticks(0, 10, 20, 10_000))
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: True)
+    first, changed = _events(tmp_path)
+    assert first["previous_state"] == "in_service"
+    assert changed["previous_state"] == changed["state"] == "fenced"
+    assert changed["previous_reason"] == "unhealthy"
+    assert changed["reason"] == "deadline_exceeded"
+    assert service.fenced["azazel-auditd.service"] == "deadline_exceeded"
+    assert service.fences.load() == service.fenced
+
+
+def test_generation_mismatch_records_each_unit_once(tmp_path):
+    store = GenerationStore(tmp_path / "generations")
+    store.create(
+        {"suricata.yaml": b"role: observation\n"},
+        created_at=NOW,
+        commissioning_digest=DIGEST,
+    )
+    service = _service(tmp_path, generations=store)
+    (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"tampered\n")
+    assert service.check_generation(now=NOW) is False
+    original = _events(tmp_path)
+    assert len(original) == len(UNIT_NAMES)
+    assert {event["unit"] for event in original} == set(UNIT_NAMES.values())
+    assert all(
+        event["reason"] == "generation_mismatch"
+        and event["previous_state"] == "in_service"
+        and event["previous_reason"] is None
+        and event["state"] == "fenced"
+        for event in original
+    )
+    assert service.check_generation(now=NOW) is False
+    assert _events(tmp_path) == original
+    assert service.manager.calls == [
+        ("mask", unit) for unit in sorted(UNIT_NAMES.values())
+    ] * 2
+
+
+def test_failed_audit_retries_original_transition_on_identical_observation(tmp_path):
+    service = _service(tmp_path, clock=lambda: 0)
+    append = service.ledger.append
+
+    def refuse(event):
+        raise AuditUnavailable("read-only ledger")
+
+    service.ledger.append = refuse
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    assert service.fenced["azazel-auditd.service"] == "unhealthy"
+    assert service.fences.load() == service.fenced
+    assert service.manager.calls == [("mask", "azazel-auditd.service")]
+    assert _events(tmp_path) == []
+    service.ledger.append = append
+    service.probe("auditd", budget_ms=250, now="later", call=lambda: False)
+    [event] = _events(tmp_path)
+    assert event["previous_state"] == "in_service"
+    assert event["previous_reason"] is None
+    assert event["reason"] == "unhealthy"
+    assert event["state"] == "fenced"
+    assert event["occurred_at"] == NOW
+    service.probe("auditd", budget_ms=250, now="later still", call=lambda: False)
+    assert _events(tmp_path) == [event]
+
+
+def test_failed_audit_preserves_transitions_across_reason_changes(tmp_path):
+    service = _service(tmp_path)
+    append = service.ledger.append
+
+    def refuse(event):
+        raise AuditUnavailable("read-only ledger")
+
+    service.ledger.append = refuse
+    service.note_interrupted_restart("auditd", now=NOW, detail="interrupted")
+    service.note_restart_budget_spent("auditd", now="later", detail="spent")
+    assert _events(tmp_path) == []
+    service.ledger.append = append
+    service.note_restart_budget_spent("auditd", now="retry", detail="still spent")
+    first, changed = _events(tmp_path)
+    assert first["previous_state"] == "in_service"
+    assert first["previous_reason"] is None
+    assert first["reason"] == changed["previous_reason"] == "restart_interrupted"
+    assert changed["previous_state"] == "fenced"
+    assert changed["reason"] == "restart_budget_spent"
+    assert first["detail"] == "interrupted"
+    assert changed["detail"] == "spent"
+
+
+def test_restart_remasks_without_recording_reload_or_identical_observation(tmp_path):
+    first = _service(tmp_path)
+    first.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    original = _events(tmp_path)
+    assert len(original) == 1
+    second = _service(tmp_path)
+    assert second.manager.calls == [("mask", "azazel-auditd.service")]
+    assert _events(tmp_path) == original
+    second.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    assert second.manager.calls == [("mask", "azazel-auditd.service")] * 2
+    assert _events(tmp_path) == original
+
+
+def test_status_reads_stay_read_only_regression(tmp_path):
+    service = _service(tmp_path)
+    service.note_interrupted_restart("auditd", now=NOW, detail="interrupted")
+    original = _events(tmp_path)
+    ledger_bytes = service.ledger.path.read_bytes()
+    fence_bytes = service.fences.path.read_bytes()
+    request = Request(
+        verb=REGISTRY.resolve("watchdog.status", OPERATOR),
+        arguments={},
+        principal=OPERATOR,
+    )
+    for _ in range(10):
+        assert service.handle(request) == {"fenced": service.fenced}
+    assert service.ledger.path.read_bytes() == ledger_bytes
+    assert service.fences.path.read_bytes() == fence_bytes
+    assert _events(tmp_path) == original
 
 
 # -- three conditions, three records -------------------------------------
@@ -122,8 +272,10 @@ def test_an_interrupted_restart_is_its_own_reason(tmp_path):
     assert service.fenced["azazel-watchdog.service"] == "restart_interrupted"
 
 
-def test_the_four_reasons_are_distinct():
-    assert len({reason.value for reason in FenceReason}) == len(FenceReason)
+def test_all_fence_reasons_are_distinct():
+    values = [reason.value for reason in FenceReason.__members__.values()]
+    assert len(set(values)) == len(values)
+    assert "fence_store_unreadable" in values
 
 
 def test_each_fence_is_recorded_with_its_own_reason(tmp_path):
@@ -254,12 +406,37 @@ def test_a_restarted_watchdog_masks_again_rather_than_only_remembering(tmp_path)
     )
 
 
-def test_an_unreadable_fence_file_fences_everything_rather_than_nothing(tmp_path):
+@pytest.mark.parametrize("contents", ["{ this is not json", "[]"])
+def test_an_unreadable_fence_file_fences_everything_rather_than_nothing(tmp_path, contents):
     """A corrupt file must not silently return a node to service."""
 
-    (tmp_path / "fences.json").write_text("{ this is not json", encoding="utf-8")
+    (tmp_path / "fences.json").write_text(contents, encoding="utf-8")
     service = _service(tmp_path)
-    assert set(service.fenced) == set(UNIT_NAMES.values())
+    assert service.fenced == {
+        unit: "fence_store_unreadable" for unit in UNIT_NAMES.values()
+    }
+    assert service.manager.calls == [("mask", unit) for unit in sorted(UNIT_NAMES.values())]
+    assert _events(tmp_path) == []
+
+
+def test_unreadable_fences_record_first_real_observation_and_keep_it_on_restart(tmp_path):
+    (tmp_path / "fences.json").write_text("{ not json", encoding="utf-8")
+    service = _service(tmp_path)
+    assert service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False) is False
+
+    [event] = _events(tmp_path)
+    assert event["unit"] == "azazel-auditd.service"
+    assert event["previous_state"] == "fenced"
+    assert event["previous_reason"] == "fence_store_unreadable"
+    assert event["reason"] == "unhealthy"
+    assert event["state"] == "fenced"
+    expected = {unit: "fence_store_unreadable" for unit in UNIT_NAMES.values()}
+    expected["azazel-auditd.service"] = "unhealthy"
+    assert service.fences.load() == expected
+    restarted = _service(tmp_path)
+    assert restarted.fenced == expected
+    assert restarted.manager.calls == [("mask", unit) for unit in sorted(UNIT_NAMES.values())]
+    assert _events(tmp_path) == [event]
 
 
 def test_a_fence_file_naming_a_unit_this_daemon_does_not_govern_is_ignored(tmp_path):
@@ -279,6 +456,58 @@ def test_a_missing_fence_file_is_no_fences(tmp_path):
 
 
 # -- narrowing needs no permission ---------------------------------------
+
+
+def test_corrupt_ledger_does_not_interrupt_fencing_all_units_and_retries(tmp_path):
+    store = GenerationStore(tmp_path / "generations")
+    store.create(
+        {"suricata.yaml": b"role: observation\n"},
+        created_at=NOW,
+        commissioning_digest=DIGEST,
+    )
+    service = _service(tmp_path, generations=store)
+    service.ledger.path.write_text("not a ledger record\n", encoding="utf-8")
+    (store.root / "1" / "tree" / "suricata.yaml").write_bytes(b"tampered\n")
+
+    assert service.check_generation(now=NOW) is False
+    expected = {unit: "generation_mismatch" for unit in UNIT_NAMES.values()}
+    assert service.fenced == service.fences.load() == expected
+    assert service.manager.calls == [("mask", unit) for unit in sorted(UNIT_NAMES.values())]
+    assert service.ledger.path.read_text(encoding="utf-8") == "not a ledger record\n"
+
+    service.ledger.path.unlink()
+    assert service.check_generation(now="later") is False
+    events = _events(tmp_path)
+    assert len(events) == len(UNIT_NAMES)
+    assert {event["unit"] for event in events} == set(UNIT_NAMES.values())
+    assert all(
+        event["previous_state"] == "in_service"
+        and event["previous_reason"] is None
+        and event["reason"] == "generation_mismatch"
+        and event["occurred_at"] == NOW
+        for event in events
+    )
+
+
+def test_unwritable_ledger_path_retries_once_on_identical_observation(tmp_path):
+    service = _service(tmp_path, clock=lambda: 0)
+    service.ledger.path.mkdir()
+    assert service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False) is False
+    assert service.fenced == service.fences.load() == {"azazel-auditd.service": "unhealthy"}
+    assert service.manager.calls == [("mask", "azazel-auditd.service")]
+    assert list(service.ledger.path.iterdir()) == []
+
+    service.ledger.path.rmdir()
+    service.ledger.path.touch()
+    assert _events(tmp_path) == []
+    service.probe("auditd", budget_ms=250, now="later", call=lambda: False)
+    [event] = _events(tmp_path)
+    assert event["previous_state"] == "in_service"
+    assert event["previous_reason"] is None
+    assert event["reason"] == "unhealthy"
+    assert event["occurred_at"] == NOW
+    service.probe("auditd", budget_ms=250, now="later still", call=lambda: False)
+    assert _events(tmp_path) == [event]
 
 
 def test_a_fence_happens_even_when_the_ledger_cannot_be_written(tmp_path):
@@ -310,7 +539,18 @@ def test_a_fence_happens_even_when_the_unit_will_not_mask(tmp_path):
     )
     service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
     assert service.fenced["azazel-auditd.service"] == "unhealthy"
-    assert _events(tmp_path)[0]["unit"] == "azazel-auditd.service"
+    [first] = _events(tmp_path)
+    assert first["unit"] == "azazel-auditd.service"
+    assert first["previous_state"] == "in_service"
+    assert first["previous_reason"] is None
+    assert first["reason"] == "unhealthy"
+    service.note_interrupted_restart("auditd", now="later", detail="interrupted")
+    first_again, changed = _events(tmp_path)
+    assert first_again == first
+    assert changed["unit"] == "azazel-auditd.service"
+    assert changed["previous_state"] == "fenced"
+    assert changed["previous_reason"] == "unhealthy"
+    assert changed["reason"] == "restart_interrupted"
 
 
 def test_a_fence_happens_even_when_it_cannot_be_persisted(tmp_path):

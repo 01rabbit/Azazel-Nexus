@@ -603,21 +603,15 @@ def _import_operation(facts: ViewFacts) -> Operation:
 
 
 def _acquisition_operation(facts: ViewFacts) -> Operation:
-    """Never available in this build: there is no fetcher to confirm.
-
-    Absent rather than disabled. A node with no acquisition path has nothing
-    for an operator to turn on, and showing the confirmation anyway -- with
-    that as its reason -- is what stops somebody looking for the setting.
-    """
+    """Unavailable: no acquisition path is commissioned/startable on this node."""
 
     return Operation(
         confirmation=Confirmation.MODEL_ACQUISITION,
         available=False,
         reason=(
-            "this build contains no fetcher, so there is no acquisition path "
-            "to confirm. It is absent rather than switched off, and the "
-            "offline import route is unaffected: a node that cannot download "
-            "installs from an operator's media"
+            "no acquisition path is commissioned/startable on this node. "
+            "It is absent rather than switched off. "
+            "The offline import route is unaffected: install from an operator's media"
         ),
     )
 

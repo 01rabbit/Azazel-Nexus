@@ -85,22 +85,22 @@ def test_the_runtime_exists_as_its_own_distribution():
     )
 
 
-#: The one module in the runtime distribution permitted to reach the network,
-#: and the issue that permitted it.
+#: The two modules in the runtime distribution permitted to reach the network,
+#: for artifact fetching and remote inference.
 #:
 #: This list is the record of a boundary that moved. Until Nexus#105 the scan
 #: below asserted that **nothing** here could reach an internet address
 #: family; the artifact fetch service needed to, so the assertion is now
-#: "nothing except this". Naming the exemption in the suite is the point: a
+#: "nothing except the named transports". Naming the exemption in the suite is the point: a
 #: guarantee that quietly weakened and left no trace is one nobody can audit
 #: afterwards, and "the test still passes" would have been true either way.
 #:
-#: Adding a second name here is a deliberate act with a reviewer attached.
+#: Adding another name here is a deliberate act with a reviewer attached.
 EGRESS_EXEMPT = {"artifact_egress.py", "inference_egress.py"}
 
 
 def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
-    """`AF_UNIX` only, everywhere but one module. Checked against the source.
+    """`AF_UNIX` only, outside the two named transport modules. Checked against the source.
 
     A daemon that could construct an `AF_INET` socket is a daemon whose
     `IPAddressDeny=any` is the only thing standing between it and the network

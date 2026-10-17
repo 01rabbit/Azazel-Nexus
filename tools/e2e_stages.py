@@ -292,7 +292,7 @@ def _failure(harness: Harness) -> str:
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
     from azazel_nexus_runtime.watchdog import FenceStore, WatchdogService
 
-    ticks = iter([0, 10])
+    ticks = iter([0, 10, 20, 30])
     service = WatchdogService(
         manager=RecordingUnitManager(UNIT_NAMES.values()),
         ledger=AuditLedger(harness.root / "var/lib/azazel/state/watchdog.jsonl"),
@@ -304,7 +304,27 @@ def _failure(harness: Harness) -> str:
         raise RuntimeError("an unwell daemon was reported healthy")
     if service.fenced.get("azazel-auditd.service") != "unhealthy":
         raise RuntimeError(f"the fence is {service.fenced}")
-    return "an unwell daemon was fenced and recorded as unhealthy"
+    ledger = AuditLedger(harness.root / "var/lib/azazel/state/watchdog.jsonl")
+    ledger.verify()
+    entries = list(ledger)
+    if len(entries) != 1:
+        raise RuntimeError(f"expected one fence record, found {len(entries)}")
+    event = entries[0].event
+    expected = {
+        "event_type": "watchdog.fenced",
+        "unit": "azazel-auditd.service",
+        "reason": "unhealthy",
+        "previous_state": "in_service",
+        "previous_reason": None,
+        "state": "fenced",
+    }
+    if any(event.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(f"unexpected fence transition: {event}")
+    service.probe("auditd", budget_ms=250, now=NOW, call=lambda: False)
+    ledger.verify()
+    if len(list(ledger)) != len(entries):
+        raise RuntimeError("an identical observation appended another fence record")
+    return "unhealthy fence reason and prior in_service state read from verified ledger; repeat deduplicated"
 
 
 def _rollback(harness: Harness) -> str:
