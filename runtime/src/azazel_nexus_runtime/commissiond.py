@@ -1,61 +1,46 @@
-"""`az-commissiond`: it reads permanent MACs, and that is the whole daemon (#38).
+"""Local commissioning inventory and ROOT-only trust replacement (#38, #86).
 
-Not "primarily". The verb table has two entries and neither of them changes
-anything on the host.
-
-## The ordinal problem
-
-An operator picks an interface from a list. The obvious request carries the
-row number — and the row number means nothing on its own, because the kernel
-may enumerate differently on the next boot, a USB adapter may be unplugged
-between the listing and the confirmation, and a second read may simply return
-a different order.
-
-So a request carries an ordinal **and the digest of the enumeration it was
-chosen from**. The daemon re-enumerates, digests what it now sees, and
-compares. If the digests differ the request is refused and the operator is
-asked to look again — not silently re-resolved against the new list, which is
-how a confirmation for one adapter gets applied to another.
-
-The digest covers each interface's composite identity in order, so two
-enumerations agreeing on it agree on which adapter is at every position.
-That is what turns an ordinal into an identification.
-
-## What it refuses
-
-*No `IFLA_PERM_ADDRESS`* — refused. There is no fallback to the current MAC,
-which is the address the device is presently using and which a bond, a
-randomisation or an attacker changes. `docs/commissioning.md` §3 forbids
-resolving an assignment from it, and a fallback here would be that, one layer
-down and harder to see.
-
-*A stale snapshot* — refused, with the instruction to re-read the inventory.
-
-*Anything else* — there is nothing else. No verb here assigns a role, changes
-a link, or writes to the host.
+Inventory remains read-only. Trust replacement has its own explicit verb
+allowlist and short-lived, peer-bound interactive confirmation.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence
 
 from azazel_nexus.commissioning import describe_for_operator
 from azazel_nexus.inventory import InterfaceReadout, read_interfaces
 
 from .netlink import LinkRecord, NetlinkUnavailable, read_links
 from .principal import PrincipalClass, PrincipalPolicy
+from .protocol import (
+    Argument,
+    ArgumentKind,
+    Refusal,
+    RequestRefused,
+    Verb,
+    VerbRegistry,
+)
+from .repin_confirmation import (
+    ANCHOR_FILENAME,
+    REASONS,
+    ConfirmationLike,
+    OutcomeLike,
+    RepinConfirmation,
+    RepinRequestLike,
+    production_repin,
+)
 from .serve import serve_forever
-from .protocol import Argument, ArgumentKind, Refusal, RequestRefused, Verb, VerbRegistry
 
 __all__ = [
     "MAX_INTERFACES",
+    "VERBS",
     "CommissionService",
     "Snapshot",
-    "VERBS",
     "build_snapshot",
 ]
 
@@ -77,7 +62,7 @@ class Snapshot:
     """
 
     readouts: tuple[InterfaceReadout, ...]
-    permanent_macs: tuple[Optional[str], ...]
+    permanent_macs: tuple[str | None, ...]
     digest: str
 
     def __post_init__(self) -> None:
@@ -107,7 +92,7 @@ class Snapshot:
         return rows
 
 
-def _composite(readout: InterfaceReadout, permanent_mac: Optional[str]) -> list:
+def _composite(readout: InterfaceReadout, permanent_mac: str | None) -> list:
     """What the digest covers for one interface.
 
     The permanent address is included: an adapter swapped for another in the
@@ -123,8 +108,8 @@ def _composite(readout: InterfaceReadout, permanent_mac: Optional[str]) -> list:
 
 def build_snapshot(
     *,
-    sysfs: Optional[Path] = None,
-    links: Optional[Sequence[LinkRecord]] = None,
+    sysfs: Path | None = None,
+    links: Sequence[LinkRecord] | None = None,
     read_links_fn: Callable[[], Sequence[LinkRecord]] = read_links,
 ) -> Snapshot:
     """Enumerate, read permanent addresses, and digest the pair.
@@ -143,7 +128,7 @@ def build_snapshot(
     records = list(links) if links is not None else list(read_links_fn())
     by_name = {record.name: record for record in records if record.name}
 
-    macs: list[Optional[str]] = []
+    macs: list[str | None] = []
     for readout in readouts:
         record = by_name.get(readout.kernel_name)
         macs.append(record.permanent_mac if record is not None else None)
@@ -159,7 +144,7 @@ def build_snapshot(
     )
 
 
-#: The whole verb table. Two entries, neither of which changes anything.
+#: Read-only inventory verbs. Trust mutation is separately declared below.
 VERBS = (
     Verb(
         "commission.inventory",
@@ -175,25 +160,62 @@ VERBS = (
     ),
 )
 
-REGISTRY = VerbRegistry(VERBS)
+REPIN_VERBS = (
+    Verb(
+        "trust.repin.challenge",
+        arguments=(
+            Argument("reason", ArgumentKind.ENUM, choices=REASONS),
+            Argument("new_anchor_file", ArgumentKind.ENUM, choices=(ANCHOR_FILENAME,)),
+        ),
+        admits=frozenset({PrincipalClass.ROOT}),
+    ),
+    Verb(
+        "trust.repin.confirm",
+        arguments=(
+            Argument("nonce", ArgumentKind.DIGEST),
+            Argument("echo", ArgumentKind.IDENTIFIER),
+        ),
+        admits=frozenset({PrincipalClass.ROOT}),
+    ),
+)
+
+REGISTRY = VerbRegistry(VERBS + REPIN_VERBS)
 
 
 class CommissionService:
-    """The handler behind the socket. Re-enumerates on every request.
+    """Local commissioning handler with separate inventory and repin state.
 
-    Not cached. A cached enumeration is a description of the host at the
-    moment it was cached, and the request it would answer is precisely the one
-    asking whether the host still looks that way.
+    Inventory re-enumerates on each inventory request. Only repin challenges
+    are retained, and they expire or are consumed by one confirmation attempt.
     """
 
     def __init__(
         self,
         *,
-        sysfs: Optional[Path] = None,
+        sysfs: Path | None = None,
         read_links_fn: Callable[[], Sequence[LinkRecord]] = read_links,
+        repin: Callable[[RepinRequestLike, ConfirmationLike], OutcomeLike] = production_repin,
+        commissioning_dir: Path | None = None,
+        snapshot_dir: Path | None = None,
+        clock: Callable[[], float] | None = None,
+        now: Callable[[], str] | None = None,
     ) -> None:
         self.sysfs = sysfs
         self.read_links_fn = read_links_fn
+        from .runtime_paths import ROOT, state_dir
+
+        options = {}
+        if clock is not None:
+            options["clock"] = clock
+        if now is not None:
+            options["now"] = now
+        self.repin_confirmation = RepinConfirmation(
+            commissioning_dir=(commissioning_dir if commissioning_dir is not None
+                               else ROOT / "etc/azazel/commissioning"),
+            snapshot_dir=(snapshot_dir if snapshot_dir is not None
+                          else state_dir() / "commission"),
+            repin=repin, **options,
+        )
 
     def snapshot(self) -> Snapshot:
         try:
@@ -202,6 +224,10 @@ class CommissionService:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "netlink") from exc
 
     def handle(self, request) -> dict:
+        if request.verb.name == "trust.repin.challenge":
+            return self.repin_confirmation.challenge(request.principal, **request.arguments)
+        if request.verb.name == "trust.repin.confirm":
+            return self.repin_confirmation.confirm(request.principal, **request.arguments)
         if request.verb.name == "commission.inventory":
             snapshot = self.snapshot()
             return {"snapshot": snapshot.digest, "interfaces": snapshot.describe()}
@@ -248,10 +274,10 @@ class CommissionService:
 
 
 def main(
-    argv: Optional[Sequence[str]] = None,
+    argv: Sequence[str] | None = None,
     *,
     stop: Callable[[], bool] = lambda: False,
-    ready: Optional[Callable[[], None]] = None,
+    ready: Callable[[], None] | None = None,
 ) -> int:
     """Serve until stopped.
 

@@ -1,0 +1,281 @@
+"""Local commissioning challenges; no trust-store mutation lives here.
+
+The only input name is a fixed leaf in the commissioning directory. A
+confirmation consumes its challenge even when it fails. The operation receives
+an immutable copy of the bytes whose fingerprint the operator confirmed.
+
+Interactive confirmation guards human intent against accidental/non-root use,
+not against a malicious root process. A ROOT socket caller receives both the
+nonce and confirmation words and can confirm without the CLI or a TTY.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+import secrets
+import stat
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+
+from .principal import Principal, PrincipalClass
+from .protocol import Refusal, RequestRefused
+
+ANCHOR_FILENAME = "repin-anchor.json"
+REASONS = ("rotation", "recovery", "compromise")
+CHALLENGE_SECONDS = 60.0
+MAX_ANCHOR_BYTES = 64 * 1024
+MAX_CHALLENGES = 32
+
+
+@dataclass(frozen=True)
+class RepinRequestLike:
+    new_anchor_path: Path
+    reason: str
+    principal: str
+
+
+@dataclass(frozen=True)
+class ConfirmationLike:
+    nonce: str
+    confirmed_at: str
+
+
+class OutcomeLike(Protocol):
+    promoted: bool
+    generation: int
+
+
+@dataclass(frozen=True)
+class _Challenge:
+    principal: Principal
+    reason: str
+    digest: str
+    echo: str
+    expires: float
+
+
+def _refuse() -> None:
+    # Never return an exception, file content, reason, path or library outcome
+    # as a refusal detail: the shared transport may record that detail.
+    raise RequestRefused(Refusal.ARGUMENT_RANGE, "repin_confirmation")
+
+
+def production_repin(request: RepinRequestLike, confirmation: ConfirmationLike) -> OutcomeLike:
+    """INTEGRATION REQUIRED: bind TrustStore, ledger and commissioned context.
+
+    Lane B supplies RepinRequest/RepinConfirmation and the new TrustStore.repin
+    signature. Do not fall back to the pre-#86 method or infer a trust root.
+    """
+    from azazel_nexus import lite_trust
+
+    del lite_trust
+    raise RuntimeError("repin integration required")
+
+
+class RepinConfirmation:
+    def __init__(
+        self,
+        *,
+        commissioning_dir: Path,
+        snapshot_dir: Path,
+        repin: Callable[[RepinRequestLike, ConfirmationLike], OutcomeLike] = production_repin,
+        clock: Callable[[], float] = time.monotonic,
+        now: Callable[[], str] = lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    ) -> None:
+        self.commissioning_dir = commissioning_dir
+        self.snapshot_dir = snapshot_dir
+        self.repin = repin
+        self.clock = clock
+        self.now = now
+        # Not thread-safe: relies on single-threaded serve_forever dispatch.
+        self._pending: dict[str, _Challenge] = {}
+
+    @staticmethod
+    def _root(principal: Principal) -> None:
+        # None means credentials were not checked, never an admitted root.
+        if (type(principal) is not Principal or principal.uid != 0
+                or PrincipalClass.ROOT not in principal.classes):
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED)
+
+    def _read_anchor(self) -> bytes:
+        directory = os.open(self.commissioning_dir,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            fd = os.open(ANCHOR_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                         | os.O_CLOEXEC, dir_fd=directory)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ANCHOR_BYTES:
+                    _refuse()
+                content = stream.read(MAX_ANCHOR_BYTES + 1)
+                if not content or len(content) > MAX_ANCHOR_BYTES:
+                    _refuse()
+                return content
+        finally:
+            os.close(directory)
+
+    def challenge(self, principal: Principal, reason: str, new_anchor_file: str) -> dict:
+        self._root(principal)
+        if reason not in REASONS or new_anchor_file != ANCHOR_FILENAME:
+            _refuse()
+        try:
+            digest = "sha256:" + hashlib.sha256(self._read_anchor()).hexdigest()
+            now = self.clock()
+            self._pending = {key: value for key, value in self._pending.items()
+                             if value.expires > now}
+            if len(self._pending) >= MAX_CHALLENGES:
+                _refuse()
+            nonce = "sha256:" + secrets.token_hex(32)
+            # IDENTIFIER grammar, human-readable words plus fresh random text.
+            echo = "REPIN-TRUST-" + secrets.token_hex(8)
+            self._pending[nonce] = _Challenge(principal, reason, digest, echo,
+                                              now + CHALLENGE_SECONDS)
+            return {"nonce": nonce, "reason": reason, "new_fingerprint": digest,
+                    "confirmation_words": echo, "expires_in": CHALLENGE_SECONDS}
+        except (OSError, ValueError):
+            _refuse()
+
+    def confirm(self, principal: Principal, nonce: str, echo: str) -> dict:
+        self._root(principal)
+        pending = self._pending.pop(nonce, None)
+        if (pending is None or self.clock() >= pending.expires
+                or principal != pending.principal
+                or not hmac.compare_digest(echo, pending.echo)):
+            _refuse()
+        snapshot = None
+        result = None
+        try:
+            content = self._read_anchor()
+            digest = "sha256:" + hashlib.sha256(content).hexdigest()
+            if not hmac.compare_digest(digest, pending.digest):
+                _refuse()
+            # Separate daemon-owned state directory. O_EXCL/0600 prevents a
+            # second local principal from replacing the confirmed file before
+            # the library opens it. The fixed input file is never passed on.
+            directory = os.open(self.snapshot_dir, os.O_RDONLY | os.O_DIRECTORY
+                                | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                info = os.fstat(directory)
+                if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                    _refuse()
+                leaf = ".repin-" + secrets.token_hex(16)
+                fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
+                snapshot = self.snapshot_dir / leaf
+            finally:
+                os.close(directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            outcome = self.repin(
+                RepinRequestLike(snapshot, pending.reason, "root"),
+                ConfirmationLike(nonce, self.now()),
+            )
+            # Library reason strings, fingerprints and exception text are not
+            # response fields. Only typed outcome values cross this boundary;
+            # cleanup below may add a fixed boolean.
+            if (type(outcome.promoted) is not bool or type(outcome.generation) is not int
+                    or outcome.generation < 0):
+                _refuse()
+            result = {"promoted": outcome.promoted, "generation": outcome.generation}
+        except Exception as error:
+            # Library refusals can include file contents or key parser text.
+            # Keep them out of replies, refusal sinks and journal tracebacks.
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "repin_confirmation") from error
+        finally:
+            if snapshot is not None:
+                try:
+                    snapshot.unlink(missing_ok=True)
+                except OSError:
+                    # Cleanup cannot undo a committed promotion or mask an
+                    # in-flight exception. Expose only a fixed boolean on a
+                    # completed operation; never return paths/error text.
+                    if result is not None:
+                        result["cleanup_failed"] = True
+        return result
+
+
+def _exchange(verb: str, arguments: dict) -> dict:
+    """One fixed local socket, authenticating the installed daemon account."""
+    import grp
+    import json
+    import pwd
+    import socket
+
+    from .principal import peer_credentials, verify_socket
+    from .runtime_paths import socket_path
+    from .transport import read_frame, send_frame
+
+    path = socket_path("commission")
+    uid = pwd.getpwnam("azcommission").pw_uid
+    gid = grp.getgrnam("azazel-operator").gr_gid
+    verify_socket(path, expected_uid=uid, expected_gid=gid)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(5.0)
+        connection.connect(str(path))
+        pid, peer_uid, _peer_gid = peer_credentials(connection)
+        if peer_uid != uid or pid <= 0:
+            _refuse()
+        send_frame(connection, {"verb": verb, "arguments": arguments})
+        connection.shutdown(socket.SHUT_WR)
+        response = json.loads(read_frame(connection))
+    if (type(response) is not dict or response.get("ok") is not True
+            or type(response.get("result")) is not dict):
+        _refuse()
+    return response["result"]
+
+
+def run_interactive(reason: str) -> int:
+    """Guard human intent with fresh words on a TTY, not against malicious root.
+
+    A ROOT process can echo the socket challenge directly without this CLI.
+    """
+    import re
+    import sys
+
+    if reason not in REASONS:
+        print("Choose rotation, recovery or compromise.", file=sys.stderr)
+        return 2
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("Trust replacement requires a local interactive terminal.", file=sys.stderr)
+        return 1
+    try:
+        result = _exchange("trust.repin.challenge",
+                           {"reason": reason, "new_anchor_file": ANCHOR_FILENAME})
+        nonce = result.get("nonce")
+        words = result.get("confirmation_words")
+        digest = result.get("new_fingerprint")
+        # Validate every displayed daemon field; never render arbitrary text
+        # from a response, including exception or key parser output.
+        if (result.get("reason") != reason
+                or not isinstance(nonce, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", nonce) is None
+                or not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+                or not isinstance(words, str)
+                or re.fullmatch(r"REPIN-TRUST-[0-9a-f]{16}", words) is None):
+            _refuse()
+        print(f"Reason: {reason}\nNew anchor file fingerprint: {digest}")
+        print(f"Type {words} to replace the pinned trust anchors.")
+        echo = input("Confirmation: ")
+        if (not (sys.stdin.isatty() and sys.stdout.isatty())
+                or not hmac.compare_digest(echo, words)):
+            _refuse()
+        outcome = _exchange("trust.repin.confirm", {"nonce": nonce, "echo": echo})
+        if (outcome.get("promoted") is not True
+                or type(outcome.get("generation")) is not int
+                or outcome["generation"] < 0):
+            _refuse()
+        print(f"Trust anchors replaced; generation {outcome['generation']}.")
+        return 0
+    except (OSError, ValueError, TypeError, LookupError, RuntimeError,
+            RequestRefused, EOFError, KeyboardInterrupt, AttributeError):
+        print("Trust replacement refused or interrupted.", file=sys.stderr)
+        return 1
