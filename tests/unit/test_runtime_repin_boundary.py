@@ -14,7 +14,7 @@ LIBRARY = REPO / "src/azazel_nexus"
 
 
 def test_all_repin_wire_references_are_local_commissioning():
-    # Exact inventory, including dispatch branches and client calls. No
+    # Exact inventory, including library audit events, dispatch and client calls. No
     # egress, remote M.I.O., operator status or generic forwarding call site.
     sites = {}
     for directory in (RUNTIME, LIBRARY):
@@ -31,6 +31,8 @@ def test_all_repin_wire_references_are_local_commissioning():
             "trust.repin.confirm", "trust.repin.confirm"],
         "runtime/src/azazel_nexus_runtime/repin_confirmation.py": [
             "trust.repin.challenge", "trust.repin.confirm"],
+        "src/azazel_nexus/lite_trust.py": [
+            "trust.repin.authorized", "trust.repin.promoted"],
     }
     assert {verb.name for verb in REPIN_VERBS} <= set(REGISTRY.names())
 

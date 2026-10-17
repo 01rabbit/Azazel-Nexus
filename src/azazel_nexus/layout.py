@@ -52,9 +52,9 @@ class PathSpec:
                 f"{self.path!r} is not absolute; the layout describes where a "
                 "node keeps things on the host, which is not a relative question"
             )
-        # Set-group-ID is used only on the private per-service socket
-        # directories. Linux then assigns newly bound sockets the declared
-        # operator group without granting the daemon CAP_CHOWN. Other special
+        # Set-group-ID preserves the reviewed reader group on trust and socket
+        # directories. Linux assigns new children the declared reader/operator
+        # group without granting the daemon CAP_CHOWN. Other special
         # permission bits are deliberately not part of this layout language.
         if (
             not 0 <= self.mode <= 0o2777
@@ -155,7 +155,7 @@ LAYOUT = (
     PathSpec(
         "/var/lib/azazel/state/commission",
         0o700,
-        "commissiond refusal records",
+        "commissiond repin ledger, confirmation snapshots and refusal records",
         owner="azcommission",
         group="root",
     ),
@@ -218,6 +218,13 @@ LAYOUT = (
         "may push what this node observed is not the account that may pull a "
         "file, nor the one that may run a program",
         group="azremote",
+    ),
+    PathSpec(
+        "/var/lib/azazel/lite-trust",
+        0o2750,
+        "commissioner-promoted public trust generations; Lite consumer reads only",
+        owner="azcommission",
+        group="azknowledge",
     ),
     PathSpec(
         "/var/lib/azazel/secrets",

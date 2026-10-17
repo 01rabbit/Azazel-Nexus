@@ -230,9 +230,11 @@ def test_unreadable_peer_credentials_never_dispatch(setup, monkeypatch, error):
     assert not setup.calls
 
 
-def test_default_production_operation_fails_closed_until_integration(setup):
+def test_default_production_operation_refuses_without_commissioned_store(setup, monkeypatch):
+    from azazel_nexus_runtime import runtime_paths
     from azazel_nexus_runtime.repin_confirmation import production_repin
 
+    monkeypatch.setattr(runtime_paths, "ROOT", setup.snapshots)
     setup.service.repin_confirmation.repin = production_repin
     with pytest.raises(RequestRefused):
         confirm(setup, challenge(setup))

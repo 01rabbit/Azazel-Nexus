@@ -67,15 +67,19 @@ def _refuse() -> None:
 
 
 def production_repin(request: RepinRequestLike, confirmation: ConfirmationLike) -> OutcomeLike:
-    """INTEGRATION REQUIRED: bind TrustStore, ledger and commissioned context.
+    """Adapt confirmed runtime evidence to the library's fixed production store."""
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.lite_trust import RepinConfirmation as LibraryConfirmation
+    from azazel_nexus.lite_trust import RepinRequest, TrustStore
 
-    Lane B supplies RepinRequest/RepinConfirmation and the new TrustStore.repin
-    signature. Do not fall back to the pre-#86 method or infer a trust root.
-    """
-    from azazel_nexus import lite_trust
+    from .runtime_paths import commission_ledger_path, lite_trust_root
 
-    del lite_trust
-    raise RuntimeError("repin integration required")
+    return TrustStore(lite_trust_root()).repin(
+        RepinRequest(request.new_anchor_path, request.reason, request.principal),
+        confirmation=LibraryConfirmation(confirmation.nonce, confirmation.confirmed_at),
+        ledger=AuditLedger(commission_ledger_path()),
+        now=confirmation.confirmed_at,
+    )
 
 
 class RepinConfirmation:
