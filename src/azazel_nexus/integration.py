@@ -156,6 +156,7 @@ class Supplier(str, Enum):
     """Where a capability's content comes from, when it comes from anywhere."""
 
     KNOWLEDGE_LITE = "Knowledge Lite"
+    # Supplier vocabulary only: verified advisory context grants no Edge authority.
     KNOWLEDGE_PEER = "AZ-04 peer"
     DECEPTION_LITE = "Deception Lite"
     DECEPTION_PEER = "AZ-06 peer"

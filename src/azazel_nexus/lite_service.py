@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from .content_store import ContentRefused, ContentStore, digest_bytes
+from .knowledge_peer import PeerContext
 from .lite_cache import split_by_freshness
 from .lite_generation import LiteGeneration, LiteGenerationRefused, LiteGenerationStore
 from .lite_trust import TrustRefused, TrustStore
@@ -58,9 +59,11 @@ from .signature import SignatureRefused, verify_detached
 
 __all__ = [
     "KnowledgeLite",
+    "KnowledgeReading",
     "LiteReading",
     "LiteReasonCode",
     "LiteState",
+    "knowledge_context",
     "no_claim_reader",
 ]
 
@@ -420,3 +423,43 @@ def _with_admitted(reading: LiteReading) -> LiteReading:
         withheld=reading.withheld,
         admitted=True,
     )
+
+
+@dataclass(frozen=True)
+class KnowledgeReading:
+    """Advisory supply only. Contains no Edge action or authority field."""
+
+    source_class: str
+    correlation: str
+    reason: str
+    asset_version: str | None = None
+    freshness: str = "unavailable"
+    trust: str = "unavailable"
+    peer_context: PeerContext | None = None
+    embedded_claims: tuple[Mapping, ...] = ()
+
+    def blocks_core(self) -> bool:
+        return False
+
+    def as_event(self) -> dict:
+        return {"event_type": "knowledge.context", "source_class": self.source_class,
+                "correlation": self.correlation, "reason": self.reason,
+                "asset_version": self.asset_version, "freshness": self.freshness,
+                "trust": self.trust}
+
+
+def knowledge_context(local: LiteReading, *, correlation: str,
+                      peer: PeerContext | None = None, reason: str = "local-first embedded cache") -> KnowledgeReading:
+    """Full-node context -> usable embedded cache -> explicit no-context.
+
+    PeerContext is the pure signed-response reader's result, never raw bytes.
+    This selection does not change readiness, leases, actions or enforcement.
+    """
+    if isinstance(peer, PeerContext):
+        return KnowledgeReading("full-node context", correlation, "verified AZ-04 advisory",
+                                peer.bundle_version, peer.expires_at, peer.trust, peer)
+    if local.sources_capability and local.served:
+        return KnowledgeReading("embedded cache", correlation, reason,
+                                local.artifact_digest, "current", "verified",
+                                embedded_claims=local.served)
+    return KnowledgeReading("no-context", correlation, reason)
