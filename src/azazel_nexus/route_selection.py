@@ -442,6 +442,8 @@ class TerminalEvent(str, Enum):
     """What ended a request's use of a route."""
 
     ANSWERED = "answered"
+    #: No advisory was produced, without a route failure or a fallback.
+    NO_ANSWER = "no answer"
     FAILED = "failed"
     TIMED_OUT = "timed out"
     CANCELLED = "cancelled"
@@ -488,6 +490,7 @@ class RequestOutcome(str, Enum):
 
 #: Which terminal events may never be reported as the route having answered.
 NEVER_ANSWERED = (
+    TerminalEvent.NO_ANSWER,
     TerminalEvent.FAILED,
     TerminalEvent.TIMED_OUT,
     TerminalEvent.CANCELLED,
@@ -504,13 +507,16 @@ def outcome_for(
 ) -> RequestOutcome:
     """Map what happened to how the request ended. Never to `ANSWERED` but for one.
 
-    Only `TerminalEvent.ANSWERED` produces `RequestOutcome.ANSWERED`. The five
-    in `NEVER_ANSWERED` produce a fallback if one is left, and otherwise end
-    the request — they never report the route as having delivered.
+    Only `TerminalEvent.ANSWERED` produces `RequestOutcome.ANSWERED`.
+    No advisory without a failure ends the attempt as `REFUSED`, even when
+    a fallback is available. Other endings follow their refusal, cancellation
+    or fallback rules — they never report the route as having delivered.
     """
 
     if event is TerminalEvent.ANSWERED:
         return RequestOutcome.ANSWERED
+    if event is TerminalEvent.NO_ANSWER:
+        return RequestOutcome.REFUSED
     if event is TerminalEvent.SANITIZER_FAILED:
         # This node declined to send. Falling back to a *different remote*
         # would be this node trying again elsewhere with something it just

@@ -52,6 +52,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A test that blocks prints every thread's stack after five minutes instead
+# of hanging a CI job silently until the runner's own limit.
+faulthandler_timeout = 300
 # Two kinds of evidence, declared rather than incidental (Nexus#114).
 #
 # `real_process` starts an actual process and observes what it does.

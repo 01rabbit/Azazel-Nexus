@@ -90,6 +90,7 @@ def outcome_and_record(
     route: Route,
     terminal_event: TerminalEvent,
     fallback_available: bool,
+    reason: str | None = None,
 ) -> RequestOutcome:
     """Classify and record how one route attempt ended."""
 
@@ -102,6 +103,7 @@ def outcome_and_record(
                 "terminal_event": terminal_event.value,
                 "outcome": outcome.value,
                 "fallback_available": fallback_available,
+                **({"reason": reason} if reason is not None else {}),
             },
             occurred_at,
         )

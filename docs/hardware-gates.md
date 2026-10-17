@@ -1,5 +1,9 @@
 # Hardware-unverified gates
 
+**No green CI run satisfies SO-01 or SO-10.** Both are hardware-only; see
+[service objective records and field procedures](service-objectives.md) for the
+10 cold-boot samples and 3 independent-device capture runs required at R7.
+
 Some claims this repository makes cannot be established by anything CI runs.
 A green pipeline on a GitHub runner is evidence about Python, and about
 nothing else. This file is the register of what is still owed, so that a

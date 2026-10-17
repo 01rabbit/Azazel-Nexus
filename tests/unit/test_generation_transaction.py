@@ -301,3 +301,58 @@ def test_rollback_refuses_if_another_generation_advances_before_publication(stor
     assert store.read_tree(1) == {"config": b"generation one\n"}
     assert store.read_tree(2) == {"config": b"generation two\n"}
     assert store.read_tree(3) == {"config": b"concurrent generation three\n"}
+
+
+def test_explicit_latest_allows_rollback_from_an_earlier_active_generation(store):
+    files = _seed(store)
+    staged = store.create({"config": b"staged\n"}, created_at=T1, commissioning_digest=CD)
+
+    restored = store.create(
+        files, created_at=T1, commissioning_digest=CD,
+        rolled_back_from=1, rollback_reason="restore active selection", actor="operator",
+        expected_latest_generation=staged.number,
+    )
+
+    assert restored.number == 3
+    assert store.verify(3).rolled_back_from == 1
+    assert restored.supersedes == staged.number
+    assert store.read_tree(3) == files
+
+
+def test_explicit_latest_refuses_when_store_advances_before_publication(store):
+    files = _seed(store)
+    expected = store.current().number
+    concurrent = store.create({"config": b"concurrent\n"}, created_at=T1, commissioning_digest=CD)
+    before = set(store.root.iterdir())
+
+    with pytest.raises(GenerationRefused, match="current generation changed"):
+        store.create(
+            files, created_at=T1, commissioning_digest=CD,
+            rolled_back_from=1, rollback_reason="restore active selection", actor="operator",
+            expected_latest_generation=expected,
+        )
+
+    assert set(store.root.iterdir()) == before
+    assert store.numbers() == (1, 2)
+    assert store.verify(2) == concurrent
+    assert store.read_tree(1) == files
+
+
+def test_default_rollback_still_requires_latest_stored_generation(store):
+    files = _seed(store)
+    latest = store.create({"config": b"latest\n"}, created_at=T1, commissioning_digest=CD)
+
+    with pytest.raises(GenerationRefused, match="current generation changed"):
+        store.create(
+            files, created_at=T1, commissioning_digest=CD,
+            rolled_back_from=1, rollback_reason="stale source", actor="operator",
+        )
+    assert store.numbers() == (1, 2)
+
+    restored = store.create(
+        files, created_at=T1, commissioning_digest=CD,
+        rolled_back_from=latest.number, rollback_reason="restore previous tree", actor="operator",
+    )
+    assert store.verify(3).rolled_back_from == latest.number
+    assert restored.supersedes == latest.number
+    assert store.read_tree(3) == files
