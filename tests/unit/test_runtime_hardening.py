@@ -552,3 +552,32 @@ def test_the_generator_is_deterministic():
 def test_the_units_say_they_are_generated():
     for profile in PROFILES:
         assert _unit(profile.unit).startswith("# Generated from")
+
+
+@pytest.mark.parametrize(
+    ("unit", "account", "paths", "read_only"),
+    [
+        (
+            "azazel-mio-entryd.service", "azmioentry",
+            ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry"],
+            None,
+        ),
+        (
+            "azazel-knowledge-lited.service", "azknowledge",
+            ["/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
+             "/var/lib/azazel/state/knowledge"],
+            ["/var/lib/azazel/lite-trust"],
+        ),
+    ],
+)
+def test_entry_and_knowledge_profiles_have_exact_least_privilege_scope(
+    unit, account, paths, read_only
+):
+    settings = _settings(unit)
+    assert settings["User"] == [account]
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert settings["ReadWritePaths"] == paths
+    assert settings.get("ReadOnlyPaths") == read_only
+    assert settings["CapabilityBoundingSet"] == [""]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT]

@@ -227,6 +227,29 @@ LAYOUT = (
         group="azknowledge",
     ),
     PathSpec(
+        "/var/lib/azazel/state/mio", 0o700,
+        "M.I.O. entry route ledger and refusals", owner="azmioentry",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/knowledge", 0o700,
+        "Knowledge Lite daemon refusal records", owner="azknowledge",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/mio-entry", 0o2710,
+        "M.I.O. entry socket with operator group inheritance",
+        owner="azmioentry", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/knowledge", 0o2710,
+        "Knowledge Lite socket with operator group inheritance",
+        owner="azknowledge", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/knowledge", 0o2750,
+        "Knowledge Lite store with operator read access",
+        owner="azknowledge", group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/secrets",
         0o700,
         "root-only credential material; never readable by a daemon account",

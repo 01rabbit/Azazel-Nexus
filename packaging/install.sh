@@ -165,7 +165,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-remoted; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-remoted az-mio-entryd az-knowledge-lited; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -178,7 +178,7 @@ done
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azfetch azmio azremote azknowledge; do
+    for account in azcommission azaudit azwatch azprobe azfetch azmio azmioentry azremote azknowledge; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
         fi
@@ -242,6 +242,11 @@ make_owned_dir 2710 azfetch azazel-operator /var/lib/azazel/run/fetch
 make_dir 0750 azmio /var/lib/azazel/mio
 make_dir 0750 azremote /var/lib/azazel/remote
 make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
+make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
+make_owned_dir 0700 azknowledge root /var/lib/azazel/state/knowledge
+make_owned_dir 2710 azmioentry azazel-operator /var/lib/azazel/run/mio-entry
+make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge
+make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/knowledge
 make_dir 0700 root /var/lib/azazel/secrets
 
 install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
@@ -253,6 +258,8 @@ install -m 0644 "$HERE"/systemd/azazel-edge-probed.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-locald.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-remoted.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-mio-entryd.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-knowledge-lited.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
@@ -276,6 +283,8 @@ systemctl mask azazel-edge-probed.service
 systemctl mask azazel-model-fetchd.service
 systemctl mask azazel-mio-locald.service
 systemctl mask azazel-mio-remoted.service
+systemctl mask azazel-mio-entryd.service
+systemctl mask azazel-knowledge-lited.service
 
 # Resolve this fixed rule name through tmpfiles configuration precedence so
 # administrator overrides are not bypassed. The vendor rule preserves existing

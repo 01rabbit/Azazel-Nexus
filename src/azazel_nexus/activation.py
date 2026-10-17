@@ -299,6 +299,18 @@ CORE_UNITS = (
         # arrive as signed commissioning data, never as a change to this file.
         wiring=REMOTE_INFERENCE_TRANSPORT,
     ),
+    UnitDefinition(
+        "azazel-mio-entryd.service",
+        UnitTier.SUPPORTING,
+        "azmioentry",
+        "M.I.O. routing and handoff ledger; no provider or wiring requirement",
+    ),
+    UnitDefinition(
+        "azazel-knowledge-lited.service",
+        UnitTier.SUPPORTING,
+        "azknowledge",
+        "read-only Knowledge Lite service; import and repin use existing paths",
+    ),
 )
 
 

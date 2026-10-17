@@ -28,6 +28,8 @@ __all__ = [
     "fetch_dir",
     "fetch_partial_dir",
     "fetch_ready_dir",
+    "knowledge_state_dir",
+    "knowledge_store_root",
     "ledger_dir",
     "lite_trust_root",
     "mio_state_dir",
@@ -44,8 +46,14 @@ _SOCKET_LEAVES = {
     "commission": "commission",
     "watchdog": "watchdog",
     "fetch": "fetch",
+    "mio-entry": "mio-entry",
+    "mio": "mio",
+    "remote": "remote",
+    "knowledge": "knowledge",
 }
 _STATE_LEAVES = {
+    "mio-entry": "mio",
+    "knowledge": "knowledge",
     "mio": "mio",
     "audit": "auditd",
     "commission": "commission",
@@ -91,8 +99,18 @@ def watchdog_state_dir() -> Path:
 
 
 def mio_state_dir() -> Path:
-    """Return the in-process M.I.O. owner's separate chain directory."""
+    """Return the M.I.O. entry service's separate chain directory."""
     return state_dir() / _STATE_LEAVES["mio"]
+
+
+def knowledge_state_dir() -> Path:
+    """Return the Knowledge Lite daemon's private state directory."""
+    return state_dir() / _STATE_LEAVES["knowledge"]
+
+
+def knowledge_store_root() -> Path:
+    """Return the Lite store, readable by operators and owned by azknowledge."""
+    return _under("/var/lib/azazel/knowledge")
 
 
 def audit_sink(service: str) -> Callable[[dict], None]:

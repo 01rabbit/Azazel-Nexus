@@ -323,6 +323,8 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/fetch",
+        "/var/lib/azazel/run/mio-entry",
+        "/var/lib/azazel/run/knowledge",
     }
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode
@@ -342,6 +344,8 @@ def test_service_state_writers_have_private_installer_owned_leaves():
         "/var/lib/azazel/state/auditd": ("azaudit", "root"),
         "/var/lib/azazel/state/commission": ("azcommission", "root"),
         "/var/lib/azazel/state/watchdog": ("azwatch", "root"),
+        "/var/lib/azazel/state/mio": ("azmioentry", "root"),
+        "/var/lib/azazel/state/knowledge": ("azknowledge", "root"),
     }
     for path, (owner, group) in expected.items():
         spec = next(item for item in LAYOUT if item.path == path)
@@ -421,3 +425,19 @@ def test_every_hardware_gate_says_what_would_settle_it():
             f"{gate} names no measurement that would close it"
         )
         assert "hardware-unverified" in text
+
+
+def test_knowledge_store_is_service_owned_and_operator_readable():
+    spec = next(s for s in LAYOUT if s.path == "/var/lib/azazel/knowledge")
+    assert (spec.mode, spec.owner, spec.group) == (
+        0o2750, "azknowledge", "azazel-operator"
+    )
+
+
+def test_entry_and_knowledge_console_scripts_point_to_lane_modules():
+    import tomllib
+
+    runtime = tomllib.loads((REPO_ROOT / "runtime/pyproject.toml").read_text())
+    scripts = runtime["project"]["scripts"]
+    assert scripts["az-mio-entryd"] == "azazel_nexus_runtime.mio_entryd:main"
+    assert scripts["az-knowledge-lited"] == "azazel_nexus_runtime.knowledge_lited:main"

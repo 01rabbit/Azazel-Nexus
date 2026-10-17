@@ -1,0 +1,45 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Serves read-only Lite verbs with read-only public trust.
+# Imports and trust promotion remain on their existing paths.
+
+[Unit]
+Description=Azazel-Nexus Knowledge Lite read service
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-lite-consumer.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azknowledge
+ExecStart=/usr/libexec/azazel/az-knowledge-lited
+RuntimeDirectory=azazel
+RuntimeDirectoryMode=0750
+ReadOnlyPaths=/var/lib/azazel/lite-trust
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/knowledge
+ReadWritePaths=/var/lib/azazel/run/knowledge
+ReadWritePaths=/var/lib/azazel/state/knowledge
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
