@@ -5,10 +5,13 @@ check, and a failing check at each remaining position must stop the next
 irreversible step. Synthetic fakes only; this is not live systemd.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from azazel_nexus.operator_trust import ApprovalRefused
 from azazel_nexus_runtime import bootstrap_overlay_files
+from azazel_nexus_runtime import bootstrap_manager as manager_module
 from azazel_nexus_runtime.bootstrap import BootstrapSupervisor
 from azazel_nexus_runtime.bootstrap_manager import BootstrapNarrowingManager
 from azazel_nexus_runtime.units import UnitKey, UnitOperationFailed
@@ -122,7 +125,14 @@ class _EventedHarness:
     def __init__(self, evidence, monkeypatch, fail_at=None):
         self.events, self.checks, self.fail_at = [], 0, fail_at
         bus = ReadyThenStartBus()
-        self.real, _sessions = _manager(bus, monkeypatch, timeout=0.1)
+        # Ordering checks must reach their injected refusal on a slow runner.
+        # Freeze the READY ceiling and give the real inspector a generous job
+        # bound, rather than requiring its snapshots to complete within 0.1 s.
+        monkeypatch.setattr(
+            manager_module, "time", SimpleNamespace(monotonic=lambda: 1000.0),
+        )
+        self.real, _sessions = _manager(bus, monkeypatch, timeout=60.0)
+        self.error = None
         h = self.h = Harness(evidence)
         s = h.supervisor
         events = self.events
@@ -181,8 +191,8 @@ class _EventedHarness:
     def run(self):
         try:
             self.h.supervisor.run()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.error = exc
         return self.events
 
 
@@ -221,6 +231,8 @@ def test_supervisor_failed_check_stops_next_irreversible_step(
         failing = _EventedHarness(evidence, m, fail_at=position)
         events = failing.run()
     assert events.count("check") >= position
+    assert isinstance(failing.error, ApprovalRefused)
+    assert str(failing.error) == "synthetic admission loss"
     assert target not in events
 
 

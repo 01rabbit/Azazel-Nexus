@@ -266,6 +266,16 @@ def test_ready_retry_sleep_is_clamped_to_remaining_ceiling(monkeypatch):
     manager, _sessions, clock = _ready_manager(monkeypatch, ready_after=3)
     sleeps = []
     real_sleep = asyncio.sleep
+    real_inspector = manager_module.BootstrapControllerInspector
+
+    def inspector(**kwargs):
+        observer = real_inspector(**kwargs)
+        # The fake clock drives the READY ceiling. Do not require the real
+        # inspection to finish in the remaining fake-clock millisecond.
+        observer._reader._timeout = 60.0
+        return observer
+
+    monkeypatch.setattr(manager_module, "BootstrapControllerInspector", inspector)
 
     async def spy(delay, *args, **kwargs):
         sleeps.append(delay)
@@ -279,13 +289,15 @@ def test_ready_retry_sleep_is_clamped_to_remaining_ceiling(monkeypatch):
         if len(state) >= 4:
             clock.now = 1000.0 + manager_module.READY_TOTAL_SECONDS - 0.001
 
-    try:
-        manager.confirm_controller_ready(
-            _transaction(), check_ready=check_ready, notify=lambda: None,
-        )
-    except UnitOperationFailed:
-        pass
+    manager.confirm_controller_ready(
+        _transaction(), check_ready=check_ready, notify=lambda: None,
+    )
     assert all(0.0 <= delay <= 0.01 for delay in sleeps)
+    # Session cleanup also yields with sleep(0); require actual retry sleeps.
+    retries = [delay for delay in sleeps if delay > 0.0]
+    assert retries
+    assert retries == pytest.approx([0.001] * len(retries))
+    assert manager._controller_ready_confirmed is True
 
 
 def test_heartbeat_is_emitted_right_after_ready_confirmation_before_next_check():
