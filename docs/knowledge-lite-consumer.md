@@ -238,3 +238,60 @@ installer refuses below it **before writing anything**; there is no fallback
 parser and no partial mode. See [support matrix](support-matrix.md) §3.3,
 where it is recorded as a software support baseline rather than a hardware
 gate.
+
+## Milestone 1 daemon status
+
+`az-knowledge-lited` takes no command-line arguments and serves only
+`knowledge.status`, with no arguments, on
+`/var/lib/azazel/run/knowledge/knowledge.sock`. The verb admits OPERATOR and
+SERVICE; production service principals are limited to `azmioentry` and
+`azarbiter`. Kernel credentials and the shared `PrincipalPolicy`/transport
+perform admission. Protocol refusals go to this daemon's
+`/var/lib/azazel/state/knowledge/refusals.jsonl`.
+
+The installed store root is `/var/lib/azazel/knowledge`, replacing the
+historical `/data/azazel/knowledge-lite` example above. `LiteImport` still owns
+`inbox`, `admitted/current.tar.gz`, `quarantine` and `state/watermark`. The
+daemon never imports, repins, accepts revocations, promotes or repairs files.
+A successful status request writes neither store nor trust nor a read event.
+
+Trust is a separate commissioner-owned root, `/var/lib/azazel/lite-trust`,
+read-only to the daemon. Its `trust/anchors.toml` supplies the bundle's key IDs,
+threshold, signer-role, security-epoch and export-policy constraints. These
+keys are intersected with the current `TrustStore` pin (`trust.json` or the
+repinned `trust-current` generation). Store-local `knowledge/trust` anchors
+are deliberately ignored by daemon status. Existing import admission remains
+on its existing route; commissioning must provision compatible public anchor
+metadata and pins before daemon status can report availability. Missing or
+inconsistent metadata never causes a fallback to store-local trust.
+
+`KnowledgeLite`'s content-addressed generations (`live`, artifact/signature
+objects) are a different storage format from `LiteImport`'s tar store. The
+daemon does not point `KnowledgeLite.read` at the tar store or pretend that
+repinning imports a bundle. The read-only `lite_import.status_summary` adapter
+verifies the tar and uses `KnowledgeLite.revocations` at the trust root for
+the existing commissioned policy, role separation and continuity checks.
+The commissioning digest comes from the commissioner-written current trust
+record and must match its revocation policy; this is public trust-record
+consistency, not a fresh commissioning evidence/activation attestation.
+Signed revocations and their continuity record also reside at the trust root.
+The bundle version is checked against revoked generations; its archive digest
+and verified signing keys are checked against the cumulative revocation list.
+
+The result has exactly four keys:
+
+| key | values |
+| --- | --- |
+| `state` | `available`, `stale`, `unavailable`, `quarantined` |
+| `reason_code` | `available`, `stale`, `unavailable`, `no_bundle`, `quarantined`, `bundle_refused`, `revoked`, `unverified`, `trust_unreadable`, `store_unreadable` |
+| `generation` | verified bundle version (at most signed 64-bit maximum), otherwise null |
+| `freshness` | `current`, `stale`, `absent` (time-bound claims axis) |
+
+Static references can make the state `available` while freshness is `stale`
+or `absent`; the existing three-axis bundle rules still apply. No claim body,
+key, digest, filesystem path or exception text appears in the reply.
+Unreadable store/trust yields `unavailable`; missing, malformed or unverifiable
+revocation policy/list yields reason `unverified`. The daemon continues to
+answer diagnostics in these conditions. A refused admitted tar or a store
+holding only quarantined artifacts reports `quarantined`. None of these
+states changes Edge readiness, leases, enforcement or deterministic authority.
