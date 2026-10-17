@@ -1,17 +1,21 @@
-# Milestone 1 real systemd smoke — Debian 13 test VM
+# Milestone 1 isolated systemd smoke — Debian 13 test VM
 
 Run manually as root on a disposable Debian 13 VM with systemd as PID 1.
-Never run this in CI. This checks the installed service sandbox and bounded
-socket exchange; it does not close HG-05 or grant provider admission.
+Never run this in CI. This checks a **relocated transient**, not production
+activation, commissioned data, or HG-05 provider admission. No VM run has been
+performed by the unit tests.
 
 Install the reviewed build and its Python environment using the
 [Debian installation procedure](../debian-live-install.md). Record the build
-commit, package/artifact digest, OS release, kernel version and systemd version.
-Use the same build's checkout for the tool and installed daemon wrappers.
-Installation must have created the declared accounts, operator group and
-writable state/socket leaves. Keep the governed units masked and disabled;
-do not activate them for this smoke. If either target is already running,
-use a fresh VM. Investigate any pre-existing socket rather than deleting it.
+commit, package/artifact digest, OS release, kernel and systemd versions.
+Use the same build's checkout and canonical installed daemon wrappers.
+Installation must have created the service accounts and operator group.
+
+The installed units declare `ProtectSystem=strict` and `ProtectHome=yes`.
+The tool requires `ProtectSystem=strict` before starting; `full` does not make
+`/var` read-only and is refused. Isolation relies on systemd's enforced mount
+protection and effective write exceptions, so dormant absolute path constants
+in imported dependencies no longer prevent this smoke.
 
 From the reviewed checkout, with the installed Python environment available:
 
@@ -25,38 +29,92 @@ sudo env -u AZAZEL_ROOT -u CI PYTHONPATH=src:runtime/src \
 ```
 
 The tool reads `/etc/systemd/system` first, skipping `/dev/null` masks, then
-`/usr/lib/systemd/system` and `/lib/systemd/system`. It refuses drop-ins because
-a base file alone cannot reproduce their overrides. Every `[Service]` directive
-is parsed and passed to `systemd-run`; unsupported transient properties fail
-the run. `[Unit]` dependencies and `[Install]` activation are deliberately not
-applied. The transient names are `azazel-smoke-azazel-mio-entryd.service` and
-`azazel-smoke-azazel-knowledge-lited.service`.
+`/usr/lib/systemd/system` and `/lib/systemd/system`. Drop-ins are refused.
+Repeated `[Service]` assignments become separate, ordered `--property`
+arguments, including empty resets. Exec hooks other than the single
+`ExecStart` are refused. Percent specifiers in all values are refused.
+Unreviewed environment, bind mounts and other path directives are refused.
+Unsupported transient properties or an unrecognised show representation fail
+closed. `[Unit]` dependencies and `[Install]` activation are not applied:
+this scratch experiment does not claim to exercise `azazel-activated`.
 
-The client retains UID 0 and temporarily uses `azazel-operator` as its effective
-GID for the exchange, then restores it. The verbs admit OPERATOR; ROOT alone
-is insufficient. No account database membership is changed.
+Before starting, the tool parses the canonical installed wrapper to obtain its
+interpreter and import roots for the bounded client. There is no static
+import-closure source gate. Isolation works as follows:
 
-The only added property is `RuntimeDirectoryPreserve=yes`: the installed
-services share `/run/azazel`, which smoke cleanup must retain. Record this
-exception with the evidence. The smoke uses real installed state/store paths,
-so M.I.O. appends its normal metadata-only route ledger. It sends no prompt,
-provider request body, key or endpoint. It does not enable, unmask or change
-activation state for the governed units.
+- A fresh `/run/azsm-*` scratch root receives only the unit's declared leaves
+  and layout ancestors. Owners, groups and modes come from the installer's
+  `LAYOUT`, including setgid socket leaves. Real state is never copied.
+- `Environment=AZAZEL_ROOT=<scratch>` relocates daemon sockets, route/refusal
+  ledgers, Knowledge store and public trust. Local/remote M.I.O. probes target
+  absent scratch sockets, so they cannot reach real providers. The bounded
+  client uses the installed wrapper's interpreter/import roots and the same
+  scratch environment in a fresh process.
+- Every `ReadWritePaths`/`ReadOnlyPaths` occurrence is rewritten under scratch,
+  retaining reset assignments and path flags. Unknown layout paths refuse.
+- After start, `systemctl show` must report `ProtectSystem=strict`, the exact
+  private `RuntimeDirectory`, and effective `ReadWritePaths` contained only
+  within scratch or equal to that private `/run/azazel-smoke-<name>` directory.
+  Missing properties, real state paths, parent paths, relative paths and
+  symlink escapes fail. This assertion supplements full property comparison.
+  `RuntimeDirectory` is an implicit writable exception under strict protection;
+  it need not appear explicitly in `ReadWritePaths`.
+- `RuntimeDirectory` becomes `azazel-smoke-<name>`, never shared `azazel`.
+  Its mode and all other sandbox directives are retained verbatim. The scratch
+  root is outside `/tmp` and `/var/tmp`, which `PrivateTmp` can hide.
+- `Type=notify` becomes `Type=exec`: `AZAZEL_ROOT` deliberately suppresses
+  READY notification. This explicit startup-protocol exception is recorded;
+  it does not validate production notification. No hardening property is
+  weakened. User/Group, SupplementaryGroups, capability sets, address families,
+  protections, private namespaces, IP denial, syscall filter and UMask remain.
 
-Record exit status and each JSON summary. Successful evidence includes the
-source unit digest, parsed directive names, bounded reply, active transient
-state, main PID's UID from `/proc`, effective sandbox properties from
-`systemctl show`, and a successful stop. Compare the effective properties to
-the installed service declarations; retain empty capability sets, AF_UNIX,
-path restrictions and the explicit runtime directory preservation exception.
-Knowledge may validly report unavailable with a reason when no store/trust is
-commissioned. To test available status, prepare the store and separate trust
-using the [Knowledge trust procedure](../knowledge-lite-trust.md), then repeat.
-Use fixture public trust only on the disposable VM.
+The client retains UID 0 and sets its child process's effective GID to
+`azazel-operator`; no account membership changes. Knowledge normally reports
+unavailable because scratch has no commissioned store or trust. This smoke
+cannot validate a real store's available status; use the separate
+[Knowledge trust procedure](../knowledge-lite-trust.md) for that workflow.
 
-A failure emits only its exception type to avoid leaking configuration.
-Inspect the transient's journal locally and retain a redacted diagnostic;
-do not attach raw environment, trust documents or credentials. The tool always
-attempts `systemctl stop` after starting. If interrupted externally, stop only
-the named transient smoke unit. Confirm the real units' masks and disabled
-state are unchanged, and attach those observations to the evidence record.
+Record the exit status and JSON, including failures. Evidence includes original
+and relocated directives, the unit file digest, the relocation reason, effective
+properties, property mismatch keys, bounded reply and daemon UID from `/proc`.
+Every passed Service property except ExecStart is compared automatically with
+`systemctl show`, including unknown future hardening keys. Normalisation
+retains inverse lists and path flags, and handles set order, boolean encodings,
+empty capability sets, octal modes and IP-denial representations. Mixed
+positive/inverse repeated lists refuse rather than guess systemd's algebra.
+Any missing property or mismatch means FAIL.
+
+The two real daemons and `azazel-activated.service` may already be active:
+there is no shared socket or data use. Their `ActiveState` is recorded before
+and after and must be unchanged. Before start and after stop, recursive snapshots
+cover `/var/lib/azazel/state/mio`, `/var/lib/azazel/state/knowledge`,
+`/var/lib/azazel/run`, `/var/lib/azazel/knowledge`, `/var/lib/azazel/lite-trust`
+and `/run/azazel`, including absent roots. Each entry records path, inode, mode,
+UID, GID, size and nanosecond mtime. Regular files up to 8 MiB also receive
+SHA-256; larger files are compared by metadata only. Symlinks are recorded with
+their targets and never followed; special files, including sockets, are never
+read. Atime is excluded because hashing can update it. Concurrent traversal or
+hashing mutations fail closed. Run on a quiescent test VM: any observed change
+fails even if caused by another operator or active real daemon.
+
+JSON includes `real_paths_before`, `real_paths_after`, `snapshot_hash_limit`,
+`real_path_differences` (paths and changed fields) and
+`write_isolation_verified`. Any snapshot difference means FAIL, including on
+an otherwise successful daemon/client run. Snapshot read failures also fail.
+These bounded observations supplement the enforced write isolation; they do
+not detect transient writes reverted between snapshots or same-metadata
+content changes in files above the hash bound. No unit is enabled, unmasked or
+activated.
+
+`systemd-run --collect` is mandatory. Finally, even after start/client failure,
+the tool attempts both stop and reset-failed on only its named transient,
+then checks collection and leftovers. Cleanup errors never replace the primary
+error. A stopped-but-not-yet-collected unit is given a bounded collection wait.
+Scratch is removed after collection is confirmed (or if no start was attempted);
+an uncollected unit's tree is retained to avoid removing a running daemon's files. The JSON reports
+leftover unit, runtime directory, socket and scratch root, plus cleanup errors;
+a leftover or cleanup failure fails the run. A socket left by SIGTERM is
+recorded before scratch removal and is removed with scratch. Inspect failures
+locally and retain redacted diagnostics, never raw credentials. If interrupted
+externally, stop/reset-failed only `azazel-smoke-<name>.service`, verify it has
+been collected, and remove only the exact reported scratch root.
