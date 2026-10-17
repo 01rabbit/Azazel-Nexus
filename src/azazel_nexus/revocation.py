@@ -1,56 +1,43 @@
-"""Revocation for the Knowledge Lite cache (#6, E1).
+"""Domain-separated, role-separated cumulative revocation statements.
 
-An artifact that was admitted yesterday may be known-bad today. Verification
-at admission cannot express that, because the signature over a bad artifact is
-still a valid signature. Revocation is the separate statement: *this digest,
-this generation, or this signer is no longer to be served.*
-
-Four rules, each of which is a refusal.
-
-**Revocation is consulted at serve time, not only at admission.** A list
-accepted after a promotion must stop the current cache from being served
-without waiting for a restart. A design that only checked at admission would
-leave a revoked artifact live until the next artifact arrived -- which, on a
-node whose feed has been cut, is never.
-
-**A list that cannot be verified does not mean nothing is revoked.** The
-stored list is verified every time it is read. If it fails, `current()`
-raises, and the consumer takes the cache out of service. Falling back to an
-empty list would turn tampering with one file into the un-revocation of
-everything, which is exactly the move an adversary would make.
-
-**Sequence numbers only increase.** A correctly signed *older* list is a valid
-signature over a statement that used to be true. Replaying it is how a revoked
-artifact comes back, so a list whose sequence does not exceed the current one
-is refused.
-
-**A revoked signer cannot issue the next list.** The list in force is applied
-to the key that signed the incoming one, before the incoming one is believed.
-
-The signed file is `revocations.signed`: 64 bytes of detached signature
-followed by the payload bytes exactly as they were signed. One file, one
-atomic replace, and no canonicalisation step that the verifier and the signer
-could disagree about.
+Single-signature transport is 64 detached signature bytes followed by JSON.
+Multi-signature transport is an AZRV1 envelope containing the same exact JSON
+payload and detached signatures. Every signature covers REVOCATION_DOMAIN
+followed by the payload, never the transport envelope. The product only verifies;
+external signers use ``RevocationList.signature_target``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
-from .content_store import parse_digest
+from .content_store import ContentRefused, parse_digest
+from .revocation_policy import (
+    REVOCATION_SIGNING,
+    RevocationPolicy,
+    RevocationPolicyRefused,
+    policy_path,
+    read_policy_record,
+)
 from .signature import SIGNATURE_BYTES, SignatureRefused, verify_detached
 
 __all__ = [
+    "REVOCATION_DOMAIN",
     "REVOCATION_FILENAME",
     "RevocationList",
     "RevocationRefused",
     "RevocationStore",
+    "encode_signed",
 ]
+
+REVOCATION_DOMAIN = b"azazel-nexus/revocation/v1\0"
+_MULTISIG = b"AZRV1\n"
 
 REVOCATION_FILENAME = "revocations.signed"
 
@@ -65,15 +52,27 @@ class RevocationList:
 
     sequence: int
     issued_at: str
+    role: str = REVOCATION_SIGNING
+    generation: int = 1
     revoked_digests: frozenset[str] = frozenset()
     revoked_generations: frozenset[int] = frozenset()
     revoked_keys: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        if self.sequence < 0:
+        if self.role != REVOCATION_SIGNING:
+            raise RevocationRefused("payload role must be revocation-signing")
+        if type(self.generation) is not int or self.generation < 1:
+            raise RevocationRefused("payload generation must be positive")
+        if type(self.sequence) is not int or self.sequence < 0:
             raise RevocationRefused("a revocation sequence starts at 0")
+        for key in self.revoked_keys:
+            if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+                raise RevocationRefused("revoked_keys names full lowercase public-key hex")
         for digest in self.revoked_digests:
-            parse_digest(digest)
+            try:
+                parse_digest(digest)
+            except ContentRefused as exc:
+                raise RevocationRefused(f"invalid revoked digest: {exc}") from exc
 
     def revokes_digest(self, digest: str) -> bool:
         return digest in self.revoked_digests
@@ -101,10 +100,12 @@ class RevocationList:
         return None
 
     def as_payload(self) -> bytes:
-        """The bytes a signer signs. Sorted, so two writers agree."""
+        """The transport payload. Sign ``signature_target()``, including its domain."""
 
         return json.dumps(
             {
+                "role": self.role,
+                "generation": self.generation,
                 "sequence": self.sequence,
                 "issued_at": self.issued_at,
                 "revoked_digests": sorted(self.revoked_digests),
@@ -115,8 +116,11 @@ class RevocationList:
             separators=(",", ":"),
         ).encode("utf-8")
 
+    def signature_target(self) -> bytes:
+        return REVOCATION_DOMAIN + self.as_payload()
+
     @classmethod
-    def parse(cls, payload: bytes) -> "RevocationList":
+    def parse(cls, payload: bytes) -> RevocationList:
         try:
             raw = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -134,6 +138,8 @@ class RevocationList:
             raise RevocationRefused("a revocation list records when it was issued")
         return cls(
             sequence=sequence,
+            role=raw.get("role"),
+            generation=raw.get("generation"),
             issued_at=issued_at,
             revoked_digests=frozenset(_string_list(raw, "revoked_digests")),
             revoked_generations=frozenset(_int_list(raw, "revoked_generations")),
@@ -164,109 +170,201 @@ def _int_list(raw: dict, key: str) -> list[int]:
 
 @dataclass(frozen=True)
 class RevocationStore:
-    """The revocation list in force, and the rules for replacing it."""
+    """Cumulative revocations and a commissioned, independent authority."""
 
     root: Path
-    trusted_keys: Sequence[bytes]
+    policy: RevocationPolicy
+    continuity: Mapping | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy, RevocationPolicy):
+            raise RevocationRefused("unverified: an explicit revocation policy is required")
 
     @property
     def path(self) -> Path:
         return self.root / REVOCATION_FILENAME
 
-    def current(self) -> RevocationList:
-        """The list in force. Raises rather than assuming nothing is revoked."""
+    def _record(self, *, path: Path | None = None) -> Mapping | None:
+        if self.continuity is None:
+            return None
+        try:
+            record = read_policy_record(self.root, self.continuity["commissioning_digest"], path=path)
+            if record["policy"] != self.policy.as_record():
+                raise RevocationRefused("unverified: this store holds a superseded policy")
+            return record
+        except (RevocationPolicyRefused, KeyError) as exc:
+            raise RevocationRefused(f"unverified revocation continuity: {exc}") from exc
 
-        if not self.path.is_file():
+    def _policy_path(self) -> Path | None:
+        if self.continuity is None:
+            return None
+        try:
+            return policy_path(self.root)
+        except RevocationPolicyRefused as exc:
+            raise RevocationRefused(f"unverified revocation continuity: {exc}") from exc
+
+    def _check_policy_path(self, path: Path | None) -> None:
+        if self._policy_path() != path:
+            raise RevocationRefused("unverified: trust generation changed during acceptance")
+
+    def _floor(self, record: Mapping | None) -> RevocationList:
+        if record is None:
+            return EMPTY
+        try:
+            return RevocationList.parse(record["floor"].encode("utf-8"))
+        except (KeyError, AttributeError, TypeError) as exc:
+            raise RevocationRefused("unverified revocation continuity record") from exc
+
+    def current(self) -> RevocationList:
+        record = self._record()
+        floor = self._floor(record)
+        if not self.path.exists():
+            if floor.sequence:
+                raise RevocationRefused("unverified: persisted revocation list is missing")
             return EMPTY
         try:
             blob = self.path.read_bytes()
         except OSError as exc:
-            raise RevocationRefused(
-                f"the revocation list is present and unreadable: {exc}; the cache "
-                "is out of service rather than unrevoked"
-            ) from exc
-        signature, payload = _split(blob)
-        signer = self._signer_of(signature, payload)
-        if signer is None:
-            raise RevocationRefused(
-                "the stored revocation list does not verify under any trusted key; "
-                "the cache is out of service rather than unrevoked"
-            )
-        return RevocationList.parse(payload)
-
-    def accept(self, blob: bytes) -> RevocationList:
-        """Verify, compare sequences, and replace the list in force."""
-
-        signature, payload = _split(blob)
-        signer = self._signer_of(signature, payload)
-        if signer is None:
-            raise RevocationRefused(
-                "the revocation list does not verify under any trusted key; the "
-                "list in force is unchanged"
-            )
-
-        in_force = self.current()
-        if in_force.revokes_key(signer):
-            raise RevocationRefused(
-                f"the key {signer.hex()} that signed this list is itself revoked by "
-                f"sequence {in_force.sequence}; a revoked signer cannot lift its own "
-                "revocation"
-            )
-
+            raise RevocationRefused(f"unverified: revocations unreadable: {exc}") from exc
+        signatures, payload = _split(blob)
         incoming = RevocationList.parse(payload)
-        if incoming.sequence <= in_force.sequence:
-            raise RevocationRefused(
-                f"revocation sequence {incoming.sequence} does not exceed the "
-                f"{in_force.sequence} in force; a correctly signed older list is a "
-                "replay, and replaying it would un-revoke what it predates"
-            )
-
-        self.root.mkdir(parents=True, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(dir=str(self.root), prefix=".revocations-")
-        try:
-            with os.fdopen(handle, "wb") as stream:
-                stream.write(blob)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-        except BaseException:
-            Path(temporary).unlink(missing_ok=True)
-            raise
+        # A locally commissioned checkpoint authorizes only the exact old blob,
+        # never arbitrary new statements by an old authority.
+        checkpoint = (record or {}).get("previous_blob_sha256")
+        if incoming.generation == self.policy.generation or checkpoint != hashlib.sha256(blob).hexdigest():
+            self._verify(signatures, payload, incoming, floor)
+        _extends(incoming, floor, allow_equal=True)
         return incoming
 
+    def accept(self, blob: bytes) -> RevocationList:
+        signatures, payload = _split(blob)
+        incoming = RevocationList.parse(payload)
+        path = self._policy_path()
+        try:
+            in_force = self.current()
+        except RevocationRefused:
+            record = self._record(path=path)
+            if (
+                record is None
+                or record.get("previous_blob_sha256") != hashlib.sha256(blob).hexdigest()
+                or incoming.generation != self.policy.generation
+            ):
+                raise
+            # Retry an interrupted publication only with the exact statement
+            # already verified and durably checkpointed before the interruption.
+            self._verify(signatures, payload, incoming, self._floor(record))
+            self._check_policy_path(path)
+            _atomic_write(self.path, blob)
+            return incoming
+        self._verify(signatures, payload, incoming, in_force)
+        _extends(incoming, in_force)
+        record = self._record(path=path)
+        if record is not None:
+            updated = dict(record)
+            updated["floor"] = incoming.as_payload().decode("utf-8")
+            updated["previous_blob_sha256"] = hashlib.sha256(blob).hexdigest()
+            # Persist the high-water mark first: interruption before publishing
+            # the blob holds the cache closed rather than losing a revocation.
+            self._check_policy_path(path)
+            _atomic_write(path, json.dumps(updated, sort_keys=True).encode("utf-8"))
+        self._check_policy_path(path)
+        _atomic_write(self.path, blob)
+        return incoming
+
+    def _verify(
+        self, signatures: Sequence[bytes], payload: bytes,
+        incoming: RevocationList, in_force: RevocationList,
+    ) -> None:
+        if incoming.generation != self.policy.generation:
+            raise RevocationRefused("unverified: payload generation differs from commissioning policy")
+        signers = {
+            key for signature in signatures
+            if (key := self._signer_of(signature, payload)) is not None
+        }
+        if any(in_force.revokes_key(key) for key in signers):
+            raise RevocationRefused("unverified: a signing key is itself revoked")
+        if len(signers) < self.policy.threshold:
+            raise RevocationRefused(
+                "unverified: revocation threshold not met by distinct trusted keys; "
+                "the cache is out of service rather than unrevoked"
+            )
+        remaining = {
+            key for key in self.policy.revocation_keys
+            if key.hex() not in incoming.revoked_keys
+        }
+        if not remaining:
+            raise RevocationRefused("revoking the last revocation-signing key is refused")
+        newly_revoked = incoming.revoked_keys - in_force.revoked_keys
+        if any(key.hex() in newly_revoked for key in signers):
+            raise RevocationRefused("self-revocation is refused")
+
     def _signer_of(self, signature: bytes, payload: bytes) -> bytes | None:
-        """Which trusted key signed this, or `None`.
-
-        A key that is malformed in the trust store is skipped rather than
-        allowed to abort the check -- one unusable key must not make every
-        list unverifiable -- but it is skipped only after every other key has
-        had its chance, because the result must not depend on ordering.
-        """
-
-        for key in _unique(self.trusted_keys):
+        """Only a distinct commissioned revocation-signing key can count."""
+        for key in self.policy.revocation_keys:
             try:
-                verified = verify_detached(
-                    public_key=key, message=payload, signature=signature
-                )
+                if verify_detached(
+                    public_key=key, message=REVOCATION_DOMAIN + payload,
+                    signature=signature,
+                ):
+                    return key
             except SignatureRefused:
                 continue
-            if verified:
-                return key
         return None
 
 
-def _unique(keys: Iterable[bytes]) -> list[bytes]:
-    seen: list[bytes] = []
-    for key in keys:
-        if key not in seen:
-            seen.append(key)
-    return seen
+def _extends(incoming: RevocationList, old: RevocationList, *, allow_equal: bool = False) -> None:
+    if incoming.sequence < old.sequence or (incoming.sequence == old.sequence and not allow_equal):
+        raise RevocationRefused(
+            f"revocation sequence {incoming.sequence} does not exceed the "
+            f"{old.sequence} in force; replay refused"
+        )
+    if not (
+        incoming.revoked_keys >= old.revoked_keys
+        and incoming.revoked_digests >= old.revoked_digests
+        and incoming.revoked_generations >= old.revoked_generations
+    ):
+        raise RevocationRefused("revoked entries cannot be re-enabled")
 
 
-def _split(blob: bytes) -> tuple[bytes, bytes]:
+def encode_signed(payload: bytes, signatures: Sequence[bytes]) -> bytes:
+    """Package externally produced signatures; this function does not sign."""
+    if not signatures or any(len(sig) != SIGNATURE_BYTES for sig in signatures):
+        raise RevocationRefused("expected detached signatures")
+    if len(signatures) == 1:
+        return signatures[0] + payload
+    return _MULTISIG + json.dumps({
+        "payload": payload.hex(), "signatures": [sig.hex() for sig in signatures],
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _split(blob: bytes) -> tuple[tuple[bytes, ...], bytes]:
+    if blob.startswith(_MULTISIG):
+        try:
+            raw = json.loads(blob[len(_MULTISIG):])
+            signatures = tuple(bytes.fromhex(sig) for sig in raw["signatures"])
+            payload = bytes.fromhex(raw["payload"])
+            if not signatures or any(len(sig) != SIGNATURE_BYTES for sig in signatures) or not payload:
+                raise ValueError("expected detached signatures and payload")
+            return signatures, payload
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise RevocationRefused(f"unverified revocation envelope: {exc}") from exc
     if len(blob) <= SIGNATURE_BYTES:
         raise RevocationRefused(
             f"a signed revocation list is {SIGNATURE_BYTES} bytes of signature "
             f"followed by a payload; got {len(blob)} bytes in total"
         )
-    return blob[:SIGNATURE_BYTES], blob[SIGNATURE_BYTES:]
+    return (blob[:SIGNATURE_BYTES],), blob[SIGNATURE_BYTES:]
+
+
+def _atomic_write(path: Path, blob: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".revocations-")
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(blob)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise

@@ -335,20 +335,23 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         settings = _settings(profile.unit)
         assert settings["CapabilityBoundingSet"] == [""]
         assert settings["AmbientCapabilities"] == [""]
-        assert "SupplementaryGroups" not in settings
+        if profile.unit == "azazel-commissiond.service":
+            assert settings["SupplementaryGroups"] == ["azknowledge"]
+        else:
+            assert "SupplementaryGroups" not in settings
 
 
 def test_only_the_controller_holds_one_capability_and_one_group():
     """Owner-approved: root controller gets exactly CAP_DAC_READ_SEARCH and
-    SupplementaryGroups=azazel-operator; Ambient stays empty, no other unit
-    changes, NoNewPrivileges stays yes."""
+    SupplementaryGroups=azazel-operator; commissiond gets the read-only
+    trust consumer group to preserve its GID on published files."""
 
     widened = {
         profile.unit
         for profile in PROFILES
         if profile.capability_bounding_set or profile.supplementary_groups
     }
-    assert widened == {"azazel-activated.service"}
+    assert widened == {"azazel-activated.service", "azazel-commissiond.service"}
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
     assert settings["CapabilityBoundingSet"] == ["CAP_DAC_READ_SEARCH"]

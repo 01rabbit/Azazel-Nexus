@@ -178,7 +178,7 @@ done
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azfetch azmio azremote; do
+    for account in azcommission azaudit azwatch azprobe azfetch azmio azremote azknowledge; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
         fi
@@ -241,6 +241,7 @@ make_owned_dir 0750 azfetch azfetch /var/lib/azazel/fetch/ready
 make_owned_dir 2710 azfetch azazel-operator /var/lib/azazel/run/fetch
 make_dir 0750 azmio /var/lib/azazel/mio
 make_dir 0750 azremote /var/lib/azazel/remote
+make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
 make_dir 0700 root /var/lib/azazel/secrets
 
 install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"

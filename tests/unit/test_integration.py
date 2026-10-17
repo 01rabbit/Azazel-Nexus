@@ -49,7 +49,7 @@ from azazel_nexus.functional_readiness import (
     READINESS,
     Readiness,
 )
-from azazel_nexus.lite_service import LiteReading, LiteState
+from azazel_nexus.lite_service import LiteReading, LiteReasonCode, LiteState
 
 REFUSED = ProviderAdmission(
     provider="local-model",
@@ -647,3 +647,53 @@ def test_a_not_functional_declaration_without_an_issue_is_refused() -> None:
     with pytest.raises(ValueError) as caught:
         Readiness(feature="x", functional=False, missing="something", issue="")
     assert "nobody closes" in str(caught.value)
+
+
+def test_revocation_unverified_is_a_distinct_operator_word() -> None:
+    from azazel_nexus.integration import UNVERIFIED
+
+    assert UNVERIFIED not in {"absent", "unavailable", "stale", "quarantined", "missing"}
+    reading = LiteReading(
+        state=LiteState.QUARANTINED, reason="signature threshold not met",
+        reason_code=LiteReasonCode.UNVERIFIED,
+    )
+    row = a_view(knowledge=reading).row("freshness", "knowledge_lite")
+    assert row.value == UNVERIFIED
+    assert "Knowledge Lite advice" not in row.continues
+
+
+def test_below_threshold_revocation_reaches_status_through_lite_service(tmp_path) -> None:
+    from signing_oracle import sign_detached
+    from test_revocation_policy import (
+        COMMISSIONING,
+        KEYS,
+        NOW,
+        SEEDS,
+        commissioned,
+        policy,
+        signed,
+        statement,
+    )
+
+    from azazel_nexus.lite_service import KnowledgeLite
+    from azazel_nexus.lite_trust import TrustStore
+
+    commissioned(tmp_path, policy(threshold=2))
+    TrustStore(tmp_path).pin([KEYS[0].hex()], commissioning_digest=COMMISSIONING, pinned_at=NOW, actor="test")
+    lite = KnowledgeLite(tmp_path, COMMISSIONING, claims_of=lambda _: [{"expiry": "2027-01-01T00:00:00Z"}])
+    payload = b"live artifact"
+    assert lite.admit(artifact=payload, signature=sign_detached(seed=SEEDS[0], message=payload), admitted_at=NOW).admitted
+    lite.revocations().path.write_bytes(signed(statement()))
+    reading = lite.read(as_of=NOW)
+    assert reading.served == ()
+    assert reading.state is LiteState.QUARANTINED
+    assert reading.reason_code is LiteReasonCode.UNVERIFIED
+    view = a_view(knowledge=reading)
+    assert view.row("freshness", "knowledge_lite").value == "unverified"
+    assert view.row("knowledge_supplier", "knowledge").value == Supplier.NONE.value
+
+
+@pytest.mark.parametrize("reason", ["artifact corrupt", "claim reader says unverified"])
+def test_other_quarantines_keep_their_word_regardless_of_reason_text(reason):
+    reading = LiteReading(state=LiteState.QUARANTINED, reason=reason)
+    assert a_view(knowledge=reading).row("freshness", "knowledge_lite").value == "quarantined"

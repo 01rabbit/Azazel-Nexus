@@ -158,7 +158,7 @@ class ServiceProfile:
     default_dependencies: bool = True
     before: tuple[str, ...] = ()
     conflicts: tuple[str, ...] = ()
-    #: Supplementary groups the unit runs with; empty for every unit but one.
+    #: Explicit supplementary groups for the controller and trust publisher.
     supplementary_groups: tuple[str, ...] = ()
     #: Capability bounding set override; empty means the shared empty set.
     #: AmbientCapabilities stays empty for every unit (uid 0 gains the
@@ -282,6 +282,7 @@ SYSTEM_ACCOUNTS = (
     "azfetch",
     "azmio",
     "azremote",
+    "azknowledge",
 )
 
 
@@ -471,10 +472,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus commissioning daemon",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/commissioning.md",
         address_families=("AF_UNIX", "AF_NETLINK"),
+        supplementary_groups=("azknowledge",),
         read_write_paths=(
-            "/etc/azazel/commissioning",
-            "/var/lib/azazel/run",
+            "/var/lib/azazel/run/commission",
             "/var/lib/azazel/state/commission",
+            "/var/lib/azazel/lite-trust",
         ),
         after=(ACTIVATION_CONTROLLER_UNIT, "azazel-auditd.service", "sysinit.target", "basic.target"),
         requires=(ACTIVATION_CONTROLLER_UNIT, "azazel-auditd.service"),

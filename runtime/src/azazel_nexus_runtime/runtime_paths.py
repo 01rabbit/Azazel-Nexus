@@ -23,11 +23,13 @@ from azazel_nexus.audit import AuditUnavailable
 __all__ = [
     "ROOT",
     "audit_sink",
+    "commission_ledger_path",
     "fetch_commission_dir",
     "fetch_dir",
     "fetch_partial_dir",
     "fetch_ready_dir",
     "ledger_dir",
+    "lite_trust_root",
     "models_root",
     "socket_path",
     "state_dir",
@@ -139,3 +141,13 @@ def fetch_ready_dir() -> Path:
 
 def models_root() -> Path:
     return _under("/var/lib/azazel/models")
+
+
+def lite_trust_root() -> Path:
+    """Commissioner-written public trust records; Lite has group read access."""
+    return _under("/var/lib/azazel/lite-trust")
+
+
+def commission_ledger_path() -> Path:
+    """Commissiond's own append-only chain, separate from auditd and refusals."""
+    return state_dir() / "commission" / "commission.jsonl"

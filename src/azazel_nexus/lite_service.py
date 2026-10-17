@@ -49,11 +49,17 @@ from .lite_cache import split_by_freshness
 from .lite_generation import LiteGeneration, LiteGenerationRefused, LiteGenerationStore
 from .lite_trust import TrustRefused, TrustStore
 from .revocation import RevocationRefused, RevocationStore
+from .revocation_policy import (
+    RevocationPolicy,
+    RevocationPolicyRefused,
+    read_policy_record,
+)
 from .signature import SignatureRefused, verify_detached
 
 __all__ = [
     "KnowledgeLite",
     "LiteReading",
+    "LiteReasonCode",
     "LiteState",
     "no_claim_reader",
 ]
@@ -66,6 +72,12 @@ class LiteState(str, Enum):
     STALE = "stale"
     UNAVAILABLE = "unavailable"
     QUARANTINED = "quarantined"
+
+
+class LiteReasonCode(str, Enum):
+    """Machine-readable causes independent of human-readable explanations."""
+
+    UNVERIFIED = "unverified"
 
 
 def no_claim_reader(artifact: bytes) -> Sequence[Mapping]:
@@ -98,6 +110,7 @@ class LiteReading:
     #: refused -- so "nothing changed" and "something was admitted" cannot be
     #: read as the same outcome.
     admitted: bool = False
+    reason_code: LiteReasonCode | None = None
 
     def blocks_core(self) -> bool:
         """Always False, in every state, and asserted as such by the tests."""
@@ -122,6 +135,7 @@ class LiteReading:
             "event_type": "lite.read",
             "state": self.state.value,
             "reason": self.reason,
+            "reason_code": self.reason_code.value if self.reason_code else None,
             "generation": self.generation,
             "artifact_digest": self.artifact_digest,
             "signer_key": self.signer_key,
@@ -151,8 +165,26 @@ class KnowledgeLite:
     def generations(self) -> LiteGenerationStore:
         return LiteGenerationStore(root=self.root, content=self.content)
 
-    def revocations(self, keys: Sequence[bytes]) -> RevocationStore:
-        return RevocationStore(root=self.root, trusted_keys=keys)
+    def revocations(self, *, bundle_keys: Sequence[bytes] = ()) -> RevocationStore:
+        try:
+            record = read_policy_record(self.root, self.commissioning_digest)
+            policy = RevocationPolicy.from_record(record["policy"])
+            if policy.revocation_keys.intersection(bundle_keys):
+                raise RevocationPolicyRefused(
+                    "pinned bundle key material has the revocation-signing role"
+                )
+            anchors_path = self.root / "trust" / "anchors.toml"
+            if anchors_path.exists():
+                from .lite_bundle import BundleRefused, read_anchors
+
+                try:
+                    anchors = read_anchors(anchors_path)
+                except BundleRefused as exc:
+                    raise RevocationRefused(f"unverified revocation anchors: {exc}") from exc
+                policy.check_anchors(anchors.key_roles, anchors.keys)
+            return RevocationStore(root=self.root, policy=policy, continuity=record)
+        except RevocationPolicyRefused as exc:
+            raise RevocationRefused(f"unverified revocation policy: {exc}") from exc
 
     # -- admission ---------------------------------------------------------
 
@@ -180,9 +212,12 @@ class KnowledgeLite:
             )
 
         try:
-            revocations = self.revocations(keys).current()
+            revocations = self.revocations(bundle_keys=keys).current()
         except RevocationRefused as exc:
-            return self._unchanged(f"the revocation list could not be read: {exc}")
+            return self._unchanged(
+                f"unverified revocation list: {exc}",
+                reason_code=LiteReasonCode.UNVERIFIED,
+            )
 
         if revocations.revokes_key(signer):
             return self._unchanged(
@@ -237,9 +272,12 @@ class KnowledgeLite:
             return _quarantined(live, f"the admitted keys cannot be read: {exc}")
 
         try:
-            revocations = self.revocations(keys).current()
+            revocations = self.revocations(bundle_keys=keys).current()
         except RevocationRefused as exc:
-            return _quarantined(live, str(exc))
+            return _quarantined(
+                live, f"unverified revocation list: {exc}",
+                reason_code=LiteReasonCode.UNVERIFIED,
+            )
 
         withdrawn = revocations.reason_for(
             digest=live.artifact_digest, generation=live.number
@@ -308,12 +346,15 @@ class KnowledgeLite:
 
     # -- internals ---------------------------------------------------------
 
-    def _unchanged(self, reason: str) -> LiteReading:
+    def _unchanged(
+        self, reason: str, *, reason_code: LiteReasonCode | None = None,
+    ) -> LiteReading:
         """The state the node is still in, plus why an admission was refused."""
 
         current = self.read(as_of="1970-01-01T00:00:00Z")
         return LiteReading(
             state=current.state,
+            reason_code=reason_code or current.reason_code,
             reason=f"nothing was admitted: {reason}",
             generation=current.generation,
             artifact_digest=current.artifact_digest,
@@ -343,9 +384,11 @@ def _reading(
     *,
     served: Sequence[Mapping] = (),
     withheld: Sequence[Mapping] = (),
+    reason_code: LiteReasonCode | None = None,
 ) -> LiteReading:
     return LiteReading(
         state=state,
+        reason_code=reason_code,
         reason=reason,
         generation=live.number,
         artifact_digest=live.artifact_digest,
@@ -356,15 +399,18 @@ def _reading(
     )
 
 
-def _quarantined(live: LiteGeneration, reason: str) -> LiteReading:
+def _quarantined(
+    live: LiteGeneration, reason: str, *, reason_code: LiteReasonCode | None = None,
+) -> LiteReading:
     """Held, and named. A quarantined cache still reports what it was."""
 
-    return _reading(live, LiteState.QUARANTINED, reason)
+    return _reading(live, LiteState.QUARANTINED, reason, reason_code=reason_code)
 
 
 def _with_admitted(reading: LiteReading) -> LiteReading:
     return LiteReading(
         state=reading.state,
+        reason_code=reading.reason_code,
         reason=reading.reason,
         generation=reading.generation,
         artifact_digest=reading.artifact_digest,
