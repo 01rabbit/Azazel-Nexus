@@ -11,12 +11,15 @@ install → units masked → inventory → operator-confirmed commissioning
 
 The last stage is Nexus#56's and is not part of #43's sequence. It depends on
 nothing the others set up — it drives the library rather than the installed
-tree. The ordinary integration job runs the harness as non-root; the separate
-root job runs the 88-case CORE + Lite suite and the harness on a fresh hosted
-VM, requiring `install accounts` and `CORE + Lite configurations` to actually
-execute. When both modified jobs pass, they verify the privilege-dependent
-software path without treating either run as HIL evidence; neither result has
-been observed from the uncommitted workflow yet.
+tree. The installer accepts only the `debian-13-systemd-installer-v1` platform
+profile, so both CI paths run in a fresh `debian:trixie` container. The
+`installer-debian13` job runs the harness as an unprivileged user; the
+`integration-as-root` job runs the 88-case CORE + Lite suite and the harness as
+uid 0, requiring `install accounts` and `CORE + Lite configurations` to actually
+execute. Both passed on main at 62a61bc (CI run 39004140822). They verify the
+privilege-dependent software path and nothing more: the container runs no
+systemd, so `units masked and disabled` stays not executed, and neither run is
+HIL evidence.
 
 ## It establishes that the distribution does not contradict itself
 
@@ -97,4 +100,5 @@ python tools/e2e.py --root /tmp/az-e2e --require-all   # on a host with systemd
 ```
 
 The root must be short: a unix socket address holds 107 bytes and the longest
-declared socket path takes 35 of them.
+declared socket path (`/var/lib/azazel/run/commission/commission.sock`) takes
+46 of them.
