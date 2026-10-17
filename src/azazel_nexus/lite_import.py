@@ -55,10 +55,11 @@ read, and looking is not a transition.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
@@ -90,6 +91,7 @@ __all__ = [
     "MAX_INBOX_BYTES",
     "MAX_INBOX_ENTRIES",
     "Transition",
+    "status_summary",
 ]
 
 #: Members a bundle may not carry whatever its manifest says. A bundle does
@@ -468,3 +470,81 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
+    """Read the imported tar store using separate commissioner-owned trust.
+
+    The legacy import root's anchors are deliberately not consulted. Anchor
+    metadata (key IDs, threshold, role, epoch and export policy) lives under
+    ``trust_root/trust/anchors.toml``; its keys must also be currently pinned
+    by TrustStore. KnowledgeLite supplies the same revocation-policy reader
+    used by the content-generation cache, without treating a tar as that cache.
+    Only fixed symbols and the verified bundle version leave this adapter.
+    """
+    from .lite_service import KnowledgeLite
+    from .lite_trust import TrustRefused, TrustStore
+    from .model_paths import bounded_read
+    from .revocation import RevocationRefused
+    from .signature import SignatureRefused
+
+    def summary(state, reason, generation=None, freshness="absent"):
+        return {"state": state, "reason_code": reason,
+                "generation": generation, "freshness": freshness}
+
+    try:
+        trust = TrustStore(trust_root)
+        trust_path = trust.path
+        trust_bytes = bounded_read(trust_path, 65536)
+        digest = json.loads(trust_bytes)["commissioning_digest"]
+        if not isinstance(digest, str) or not digest.strip():
+            raise ValueError("commissioning binding required")
+        keys = trust.keys(commissioning_digest=digest)
+        anchors = CommissionedLite(trust_root).anchors()
+        anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
+                                         if key in keys})
+    except (OSError, ValueError, KeyError, TypeError, TrustRefused, BundleRefused, SignatureRefused):
+        return summary("unavailable", "trust_unreadable")
+
+    try:
+        revocations = KnowledgeLite(trust_root, digest).revocations(bundle_keys=keys).current()
+    except RevocationRefused:
+        return summary("unavailable", "unverified")
+
+    try:
+        # Enumerating distinguishes an unreadable/missing store from absence.
+        with os.scandir(root) as entries:
+            next(entries, None)
+        try:
+            raw = bounded_read(root / "admitted" / "current.tar.gz", MAX_INBOX_BYTES)
+        except FileNotFoundError:
+            try:
+                with os.scandir(root / "quarantine") as entries:
+                    held = any(entry.is_file() for entry in entries)
+            except FileNotFoundError:
+                held = False
+            return summary("quarantined" if held else "unavailable",
+                           "quarantined" if held else "no_bundle")
+    except (OSError, ValueError):
+        return summary("unavailable", "store_unreadable")
+
+    try:
+        accepted = verify_bundle(raw, anchors=anchors, last_imported_version=0)
+        _refuse_trust_shaped_members(accepted)
+        generation = accepted.bundle_version
+        if not 0 <= generation <= 2**63 - 1:
+            return summary("quarantined", "bundle_refused")
+        if (revocations.reason_for(digest=accepted.bundle_digest, generation=generation)
+                or any(revocations.revokes_key(anchors.keys[name])
+                       for name in accepted.signers)):
+            return summary("quarantined", "revoked", generation)
+        reading = reading_for(read_claims(accepted, query_as_of=query_as_of),
+                              query_as_of=query_as_of)
+        # A repin observed during the read cannot yield an available answer.
+        if trust.path != trust_path or bounded_read(trust_path, 65536) != trust_bytes:
+            return summary("unavailable", "trust_unreadable")
+        return summary(reading.overall, reading.overall, generation, reading.time_bound.value)
+    except BundleRefused:
+        return summary("quarantined", "bundle_refused")
+    except (OSError, ValueError, KeyError, TypeError, TrustRefused):
+        return summary("unavailable", "store_unreadable")

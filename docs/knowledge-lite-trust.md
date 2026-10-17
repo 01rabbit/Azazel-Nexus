@@ -333,3 +333,12 @@ And one *change* turned out not to be load-bearing: renaming `root/retired`
 alongside `root/admitted` survived its mutation, because nothing else uses
 that name. It was reverted rather than kept for symmetry — a change no test
 can miss is a change with no reason.
+
+### Milestone 1 split-root runtime
+
+The daemon consumes the imported tar store at `/var/lib/azazel/knowledge`
+and commissioner-owned trust at `/var/lib/azazel/lite-trust`. It reuses the
+revocation reader here, not this module's content-generation storage format.
+See [daemon status and root reconciliation](knowledge-lite-consumer.md#milestone-1-daemon-status)
+for the anchor/pin intersection, commissioning binding, reply vocabulary and
+read-only boundary. Import and repin remain separate existing operator routes.
