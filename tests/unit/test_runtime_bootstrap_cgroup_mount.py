@@ -154,8 +154,13 @@ def _ns_setup(tmp_path, monkeypatch, *, cgroup=GOOD_CGROUP, magic=None, swap=Non
         if swap is not None and path == "cgroup" and kwargs.get("follow_symlinks") is False:
             reads.append("stat")
             if len(reads) >= swap:
-                link.unlink()
-                link.symlink_to(other)
+                # Linux (ext4/tmpfs) immediately reuses a freed inode number, so
+                # unlink()+symlink_to() can yield the same (st_dev, st_ino).
+                # Create the replacement first (old inode still allocated, so the
+                # new one must differ) and atomically rename it over the link.
+                tmp = parent / "cgroup.new"
+                tmp.symlink_to(other)
+                os.replace(tmp, link)
         return result
 
     def fake_read(path, limit):
