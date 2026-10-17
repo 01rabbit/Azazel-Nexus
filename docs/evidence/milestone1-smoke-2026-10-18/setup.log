@@ -1,0 +1,31 @@
+== setup 2026-10-18T08:42:22+09:00 build=01f0909
+_yaml
+azazel_nexus
+azazel_nexus_runtime
+dbus_next
+dbus_next-0.2.3.dist-info
+pyyaml-6.0.3.dist-info
+yaml
+created account azmioentry
+created account azknowledge
+usage: stage_runtime_entrypoints.py [-h] --python PYTHON
+                                    [--platform-profile {debian-13-systemd-installer-v1}]
+stage_runtime_entrypoints.py: error: runtime entrypoint import check failed: ImportError: cannot import name '_bootstrap_deadline' from 'azazel_nexus_runtime' (/opt/azazel-nexus-m1smoke/venv/lib/python3.13/site-packages/azazel_nexus_runtime/__init__.py)
+== continue 2026-10-18T08:42:38+09:00
+reused prebuilt _bootstrap_deadline.so (C source unchanged since 5bb1a62)
+staged 10 fixed Nexus runtime entrypoints under /usr/libexec/azazel
+#!/opt/azazel-nexus-m1smoke/venv/bin/python -IS
+import sys
+#!/opt/azazel-nexus-m1smoke/venv/bin/python -IS
+import sys
+azazel-activated.service       enabled  enabled
+azazel-auditd.service          masked   disabled
+azazel-commissiond.service     masked   disabled
+azazel-edge-probed.service     masked   disabled
+azazel-knowledge-lited.service disabled enabled
+azazel-mio-entryd.service      disabled enabled
+azazel-mio-locald.service      masked   disabled
+azazel-mio-remoted.service     masked   disabled
+azazel-model-fetchd.service    masked   disabled
+azazel-watchdog.service        masked   disabled
+SETUP_OK

@@ -367,6 +367,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     entrypoints = (
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
         "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+        "az-mio-entryd", "az-knowledge-lited",
     )
     stager = tools / "stage_runtime_entrypoints.py"
     stager.write_text(
@@ -457,3 +458,20 @@ def test_stager_and_admission_agree_on_regular_file_import_path_shape(
     else:
         with pytest.raises(ValueError):
             staging._validated_import_paths((str(selected),))
+
+
+def test_new_daemon_entrypoints_import_in_isolated_staging_check():
+    from tools import stage_runtime_entrypoints as staging
+
+    daemons = declared_daemons()
+    targets = {
+        "az-mio-entryd": "azazel_nexus_runtime.mio_entryd:main",
+        "az-knowledge-lited": "azazel_nexus_runtime.knowledge_lited:main",
+    }
+    assert {name: daemons[name] for name in targets} == targets
+    # Explicit candidate roots, as with an installed environment. The child
+    # disables site startup and cannot inherit this runner's PYTHONPATH.
+    paths = tuple(dict.fromkeys(
+        str(Path(path).resolve()) for path in sys.path if path and Path(path).exists()
+    ))
+    staging._check_runtime_imports(Path(sys.executable), targets, import_paths=paths)

@@ -1,9 +1,84 @@
 # Field Operations Design
 
+## 0. Read-only operator setup guide
+
+Run these from the reviewed Nexus source directory when the guide needs to
+print the relative installer command:
+
+```sh
+azazel-nexus setup
+azazel-nexus setup --next
+azazel-nexus setup --json
+azazel-nexus setup --next --json
+```
+
+Every row contains a step name, `done`, `needed`, `blocked`, or
+`not-applicable`, a reason, and an exact next command. `--next` selects the
+first `needed` or `blocked` row. It only prints guidance: even commands naming
+`sudo`, publication, recovery, import, or `systemctl` are never executed.
+Setup creates no files, audit entries, directories, or service-manager jobs.
+Exit 0 means the guide was read, **not** that setup or activation succeeded;
+incomplete paired manifest arguments return 2. JSON uses schema
+`azazel-nexus/setup/1` with `steps`, `read_only`, `hg05`,
+`provider_admission`, and `enforcement_readiness` fields.
+
+The order is installed files → host preflight → commissioning presence →
+signed draft review → bootstrap deployment and current-boot selection →
+Knowledge Lite store and trust → Mission Pack selection → fetch commissioning
+presence → fetched model candidates → provider admission → activation/unit
+state. `done` applies only to the fact named in that row. It does not grant
+capabilities or certify later steps.
+
+The first pass checks for selected runtime entrypoints. Presence alone cannot
+complete installed-file verification. Supply an independently reviewed manifest
+and its independently obtained pin to reuse the existing selected-file reader:
+
+```sh
+azazel-nexus setup --installed-manifest /media/reviewed/installed.json --manifest-digest "$REVIEWED_MANIFEST_DIGEST"
+azazel-nexus setup --operator "$ENROLLED_OPERATOR"
+```
+
+The manifest options must be paired. Setup never derives a trusted pin from the
+installed node. Selected-file matching proves neither dependency closure nor
+runtime admission. Without necessary operator-specific inputs the printed
+command opens the existing command's help; use its documented commissioning or
+pack workflow. `--operator` reuses signed draft review against current assigned
+bindings; setup never remembers a prior review or treats a signature's presence
+as approval. Full commissioning evidence and authoritative promotion remain
+separate. Host preflight uses the existing inventory's A-1 through A-11 missing
+codes; operator HIL decisions and the full interactive campaign preflight remain
+with `hil-preflight`.
+
+Knowledge Lite is read at `/var/lib/azazel/knowledge` through the library
+`lite_import.status_summary`, as used by `knowledge-lited`. Both setup and
+status check the pin, revocation policy and revocation list under
+`/var/lib/azazel/lite-trust` (prefixed by `AZAZEL_ROOT` when set). Store-local
+anchors cannot grant availability. Status renders state, reason code, generation
+and freshness from this shared reader. Setup marks only `available` as done,
+`no_bundle` as needed, and other results as blocked. A commissioning draft
+without a commissioning record also remains needed.
+The separate daemon trust pin at `/var/lib/azazel/lite-trust` is read through
+`TrustStore`; a readable pin alone does not establish its commissioning binding
+or admitted bundle trust. Fetch commissioning is **presence only**: the runtime
+owns consent, registry, catalog, TLS and optional client-identity validation.
+Fetched model candidates come from the existing verified model catalog and the
+fetch ready directory. Their bytes remain unverified until the separately
+printed root import command succeeds; license acknowledgement remains explicit
+in that command's workflow. No import runs during setup.
+
+**HG-05 is always `unmeasured`; provider admission stays `blocked`.** Pack
+selection, downloaded bytes, imported models, and readable trust do not change
+that. Missing or stale Knowledge Lite does not block the deterministic path.
+Unit files and `/dev/null` masks are filesystem observations only. Live unit
+state is unobserved; the guide prints `systemctl status` for the operator.
+Setup never claims enforcement readiness. Edge retains decision and enforcement
+authority. See [Debian installation](debian-live-install.md) for installation
+prerequisites and [hardware gates](hardware-gates.md) for HG-05.
+
 ## 1. Resource envelopes
 
-Status: **target contract**. Nothing in this document is implemented in this
-repository.
+Status: the resource envelopes and field behavior below are a **target contract**.
+The read-only setup guide in §0 is implemented.
 
 A resource envelope states how much the host can carry. It never states what
 the host is permitted to do to the network. The full rule and its worked

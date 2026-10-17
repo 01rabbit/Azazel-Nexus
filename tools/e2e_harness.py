@@ -13,8 +13,8 @@ which is the sort of thing an integration harness is for.
 from __future__ import annotations
 
 import json
+import grp
 import socket
-import struct
 import subprocess
 import sys
 import time
@@ -34,8 +34,6 @@ STARTUP_DEADLINE_SECONDS = 10.0
 EXECUTED = "executed"
 NOT_EXECUTED = "not_executed"
 FAILED = "failed"
-
-_HEADER = struct.Struct("!I")
 
 
 @dataclass
@@ -196,22 +194,22 @@ class NotExecuted(Exception):
 
 
 def request(path: Path, document: dict) -> dict:
-    body = json.dumps(document).encode("utf-8")
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(5.0)
-    client.connect(str(path))
+    from azazel_nexus_runtime.transport import read_frame, send_frame
+
+    original_gid = os.getegid()
     try:
-        client.sendall(_HEADER.pack(len(body)) + body)
-        client.shutdown(socket.SHUT_WR)
-        reply = b""
-        while True:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            reply += chunk
+        if os.geteuid() == 0:
+            # These metadata verbs admit operators; root alone is not one.
+            os.setegid(grp.getgrnam("azazel-operator").gr_gid)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5.0)
+            client.connect(str(path))
+            send_frame(client, document)
+            client.shutdown(socket.SHUT_WR)
+            return json.loads(read_frame(client))
     finally:
-        client.close()
-    return json.loads(reply[_HEADER.size :])
+        if os.geteuid() == 0:
+            os.setegid(original_gid)
 
 
 class Daemon:
@@ -244,6 +242,7 @@ class Daemon:
                     f"{err.decode('utf-8', 'replace').strip()[:400]}"
                 )
             time.sleep(0.02)
+        self.__exit__()
         raise RuntimeError(
             f"{self.module} did not bind {self.path} within "
             f"{STARTUP_DEADLINE_SECONDS:.0f}s"

@@ -12,11 +12,11 @@ the Nexus-owned runtime control plane for M.I.O.
 | §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
 | §7 fallback | implemented (`routing.py`): all eight triggers, each with what it must never do. The invariant that a fallback never widens is checked over all 8 × 3 pairings |
 | §8 publishing state and reasons | implemented (`CognitionReading`, four independent reasons) |
-| §9 audit visibility | events are produced, including the route decision **and the inputs that produced it**; nothing writes them to the ledger yet — that is E4 ([#55](https://github.com/01rabbit/Azazel-Nexus/issues/55)) |
+| §9 audit visibility | route selection and terminal outcomes are written to the entry daemon’s own verified chain; the broader audit producers below remain incomplete |
 
-**Remote assistance is disabled by default and has no code path.** Not
-configured off — there is no client, no socket and no egress function, and
-`tests/unit/test_cognition.py` scans for their absence. Enabling it needs an
+**Remote assistance remains unadmitted.** The library has no network client;
+the runtime entry uses only local Unix socket clients. The separate remoted
+still has no commissioned provider or inference transport. Enabling it needs an
 enumerated privacy-class admission, a deterministic sanitizer, and explicit
 operator permission, plus Fabric `mio_contracts` for the wire shape (§10).
 
@@ -271,9 +271,60 @@ execution boundary. It calls `route_audit.select_and_record` before dispatching
 to `RemoteInferenceService.handle` or `LocalRuntimeService.handle`, with no new
 network code. Its own `AuditLedger` lives at
 `/var/lib/azazel/state/mio/route.jsonl` (under `AZAZEL_ROOT` in harnesses), separate
-from auditd's chain and watchdog's chain. A future M.I.O. entry must compose this
-owner and provision that leaf; this lane adds no daemon, unit or packaging and
-does not change remoted's main refusal when no provider is commissioned.
+from auditd's chain and watchdog's chain. `az-mio-entryd` now composes this
+owner with Unix socket adapters, retaining the separate provider accounts.
+The router’s direct service defaults remain available to existing in-process
+callers; the entry always supplies socket clients. Remoted and locald retain
+their startup refusals in this build.
+
+### Metadata-only entry daemon
+
+`az-mio-entryd` takes no command-line arguments. Its `mio.route` verb accepts
+only `privacy_class` (the existing PrivacyClass enumeration) and `deadline_ms`
+(an ordinal bounded at 60,000 ms; zero is refused). It admits OPERATOR and
+SERVICE; the entry’s service policy resolves only `azarbiter`. Prompt, body,
+payload, caller identity, model, provider and path arguments are undeclared
+and refused by the existing protocol.
+
+The contract names are account `azmioentry`, socket leaf `mio-entry` at
+`/var/lib/azazel/run/mio-entry/mio-entry.sock`, and state leaf `mio` at
+`/var/lib/azazel/state/mio/route.jsonl`. Startup verifies the chain and proves
+it can append a startup event before binding; it refuses a missing or
+unwritable installer-owned ledger leaf. The shared `serve_forever` accept
+loop, kernel-derived `PrincipalPolicy` and systemd readiness callback apply.
+
+Before selecting, the entry records bounded availability observations from
+locald (`mio`) and remoted (`remote`). The fixed probes use uncommissioned
+identifiers, carry no payload and never confer admission. They authenticate
+socket ownership/group and server peer UID, use the existing length-prefixed
+framing and EOF rule, and each have a 500 ms I/O budget. These probe budgets
+are separate from the route’s `deadline_ms`, which bounds selection inputs;
+this verb performs no inference. Absent accounts or sockets, refused
+connections, explicit refusals, invalid responses and deadlines become fixed
+unavailable/refusal reason codes. Provider reply text is discarded.
+
+Selection uses the existing `profile_in_force` reader. No persisted M.I.O.
+profile reader exists in this build, so the production input is an absent
+confirmed selection and therefore CORE. A trusted `profile_reader` composition
+point accepts a confirmed profile. Persisted profile commissioning is not
+implemented; the entry never infers a profile from RAM.
+Remote admission is computed by `remote_trust.remote_admission` with
+`unchecked_reading()`, no opt-in and no sanitised frame. Local admission is
+always false with the explicit HG-05 unmeasured Core reserve reason, and
+predictions are empty. Even reachable provider sockets cannot lift these
+gates. The router consequently records deterministic handoff and refusal,
+with each candidate’s reason, and replies with `route`, `outcome`, `reason`
+and `ledger_seq`. No handoff claims an advisory answer or changes Edge
+authority.
+
+The shared `runtime_paths` declares socket leaves `mio-entry`, `mio` and
+`remote`; unit/account/layout/script declarations use the same contract.
+Entry tests exercise those shared helpers under `AZAZEL_ROOT`. Entry routing
+does not consult `knowledge.status`; Knowledge availability is independent.
+Linux-only tests exercise a real entry socket exchange and a fake locald
+returning “not admitted”, then verify and read back the route chain. On macOS
+those SO_PEERCRED tests are skipped; they do not establish Linux runtime
+execution on that runner.
 
 The chain records candidate dispositions and reasons, verified envelope
 provenance/fingerprint, structured refusal reasons (including content, provider

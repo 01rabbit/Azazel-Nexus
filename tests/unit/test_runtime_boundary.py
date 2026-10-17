@@ -188,6 +188,8 @@ EXPECTED_SCRIPTS = (
     "az-auditd",
     "az-commissiond",
     "az-edge-probed",
+    "az-mio-entryd",
+    "az-knowledge-lited",
     "az-mio-locald",
     "az-mio-remoted",
     "az-model-fetchd",

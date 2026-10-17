@@ -897,3 +897,15 @@ def test_a_wiring_requirement_must_be_a_name(tmp_path):
         UnitDefinition(
             "azazel-blank.service", UnitTier.SUPPORTING, "az", "p", wiring="   "
         )
+
+
+def test_entry_and_knowledge_are_supporting_without_provider_wiring():
+    expected = {
+        "azazel-mio-entryd.service": "azmioentry",
+        "azazel-knowledge-lited.service": "azknowledge",
+    }
+    definitions = {d.name: d for d in CORE_UNITS}
+    for name, account in expected.items():
+        assert definitions[name].account == account
+        assert definitions[name].tier is UnitTier.SUPPORTING
+        assert definitions[name].wiring is None

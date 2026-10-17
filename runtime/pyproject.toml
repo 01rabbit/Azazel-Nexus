@@ -40,6 +40,8 @@ az-edge-probed = "azazel_nexus_runtime.edge_probed:main"
 az-model-fetchd = "azazel_nexus_runtime.model_fetchd:main"
 az-mio-locald = "azazel_nexus_runtime.mio_locald:main"
 az-mio-remoted = "azazel_nexus_runtime.mio_remoted:main"
+az-mio-entryd = "azazel_nexus_runtime.mio_entryd:main"
+az-knowledge-lited = "azazel_nexus_runtime.knowledge_lited:main"
 az-core-reserve-probe = "azazel_nexus_runtime.core_reserve_probe:main"
 
 [tool.setuptools.packages.find]

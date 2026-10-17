@@ -295,6 +295,30 @@ cd /path/to/verified/Azazel-Nexus-source
 sudo env PYTHON=/opt/azazel-nexus/venv/bin/python sh packaging/install.sh
 ```
 
+After installation, inspect the ordered read-only guide:
+
+```sh
+/opt/azazel-nexus/venv/bin/azazel-nexus setup
+/opt/azazel-nexus/venv/bin/azazel-nexus setup --next --json
+```
+
+The guide prints each step's current status, reason and next command. It does
+not run the installer, create a commissioning record, publish bootstrap state,
+import a model, or contact the service manager. Run it from the reviewed source
+directory if following its relative `packaging/install.sh` command, and ensure
+`azazel-nexus` is on PATH when following its other commands. The installed-file
+step requires `--installed-manifest` and `--manifest-digest` together for the
+existing independently pinned reader to complete. `--operator` enables the
+existing read-only signed draft review; presence alone is never a review.
+The Knowledge Lite store is `/var/lib/azazel/knowledge`; the separate daemon
+trust pin is `/var/lib/azazel/lite-trust`. Fetch commissioning checks presence
+only, model candidates require a separate root import, and unit masks/files do
+not prove a running service. **HG-05 remains unmeasured and provider admission
+blocked.** No enforcement readiness is asserted. Exit 0 means guidance was
+produced, not that commissioning or activation completed. See the
+[setup guide](operations.md#0-read-only-operator-setup-guide) for statuses,
+verification scope, and JSON fields.
+
 The generated wrappers keep the absolute interpreter path in their invocation.
 They invoke Python directly with a site-disabled (`-IS`) shebang, without an
 intermediate `/bin/sh`. The interpreter path must be canonical absolute ASCII

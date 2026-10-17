@@ -281,6 +281,7 @@ SYSTEM_ACCOUNTS = (
     "azprobe",
     "azfetch",
     "azmio",
+    "azmioentry",
     "azremote",
     "azknowledge",
 )
@@ -573,6 +574,43 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "into the operator plane's own directory, which already answers "
             "who may read what is there, and the result holds no secret: a "
             "version, a digest, two verdicts and their reasons."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-mio-entryd.service",
+        executable="/usr/libexec/azazel/az-mio-entryd",
+        account="azmioentry",
+        supplementary_groups=("azazel-operator",),
+        description="Azazel-Nexus M.I.O. routing entry service",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-runtime.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=(
+            "/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        rationale=(
+            "Routes and records handoffs over Unix sockets only. "
+            "Holds no provider, network family or capability."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-knowledge-lited.service",
+        executable="/usr/libexec/azazel/az-knowledge-lited",
+        account="azknowledge",
+        description="Azazel-Nexus Knowledge Lite read service",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-lite-consumer.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=(
+            "/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
+            "/var/lib/azazel/state/knowledge",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        extra=(("ReadOnlyPaths", "/var/lib/azazel/lite-trust"),),
+        rationale=(
+            "Serves read-only Lite verbs with read-only public trust. "
+            "Imports and trust promotion remain on their existing paths."
         ),
     ),
 )

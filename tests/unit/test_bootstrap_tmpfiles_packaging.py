@@ -17,6 +17,7 @@ EXPECTED_RULE = b"d /run/systemd/system.control :0755 :root :root - -\n"
 _ENTRYPOINTS = (
     "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
     "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+    "az-mio-entryd", "az-knowledge-lited",
 )
 
 

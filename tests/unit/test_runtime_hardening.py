@@ -337,21 +337,27 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         assert settings["AmbientCapabilities"] == [""]
         if profile.unit == "azazel-commissiond.service":
             assert settings["SupplementaryGroups"] == ["azknowledge"]
+        elif profile.unit == "azazel-mio-entryd.service":
+            assert settings["SupplementaryGroups"] == ["azazel-operator"]
         else:
             assert "SupplementaryGroups" not in settings
 
 
-def test_only_the_controller_holds_one_capability_and_one_group():
+def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     """Owner-approved: root controller gets exactly CAP_DAC_READ_SEARCH and
     SupplementaryGroups=azazel-operator; commissiond gets the read-only
-    trust consumer group to preserve its GID on published files."""
+    trust consumer group to preserve its GID on published files. Entryd
+    needs the operator group to connect to provider sockets."""
 
     widened = {
         profile.unit
         for profile in PROFILES
         if profile.capability_bounding_set or profile.supplementary_groups
     }
-    assert widened == {"azazel-activated.service", "azazel-commissiond.service"}
+    assert widened == {
+        "azazel-activated.service", "azazel-commissiond.service",
+        "azazel-mio-entryd.service",
+    }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
     assert settings["CapabilityBoundingSet"] == ["CAP_DAC_READ_SEARCH"]
@@ -552,3 +558,39 @@ def test_the_generator_is_deterministic():
 def test_the_units_say_they_are_generated():
     for profile in PROFILES:
         assert _unit(profile.unit).startswith("# Generated from")
+
+
+@pytest.mark.parametrize(
+    ("unit", "account", "paths", "read_only"),
+    [
+        (
+            "azazel-mio-entryd.service", "azmioentry",
+            ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry"],
+            None,
+        ),
+        (
+            "azazel-knowledge-lited.service", "azknowledge",
+            ["/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
+             "/var/lib/azazel/state/knowledge"],
+            ["/var/lib/azazel/lite-trust"],
+        ),
+    ],
+)
+def test_entry_and_knowledge_profiles_have_exact_least_privilege_scope(
+    unit, account, paths, read_only
+):
+    settings = _settings(unit)
+    assert settings["User"] == [account]
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert settings["ReadWritePaths"] == paths
+    assert settings.get("ReadOnlyPaths") == read_only
+    assert settings["CapabilityBoundingSet"] == [""]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT]
+
+
+def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
+    # Provider leaves are operator-group 2710 and their sockets are 0660.
+    assert _settings("azazel-mio-entryd.service")["SupplementaryGroups"] == [
+        "azazel-operator",
+    ]
