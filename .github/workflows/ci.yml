@@ -123,50 +123,55 @@ jobs:
           print(f"{match.group(1)} differential cases agreed with libsodium")
           PY
 
+  # The installer accepts only the debian-13-systemd-installer-v1 platform
+  # profile, so the root harness runs in a Debian 13 container (as root).
   integration-as-root:
-    name: Install-to-status integration as root
+    name: Install-to-status integration as root (Debian 13)
     runs-on: ubuntu-latest
+    container: debian:trixie
     steps:
+      - name: Install Debian packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 python3-venv python3-pip git ca-certificates \
+            coreutils findutils passwd util-linux \
+            build-essential python3-dev libffi-dev
+
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install test and runtime distributions
+      - name: Install test and runtime distributions into a venv
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
-          python -m pip install -e ./runtime
+          python3 -m venv /opt/venv
+          /opt/venv/bin/python -m pip install --upgrade pip
+          # Non-editable: the staged entrypoint check runs Python -IS and
+          # deliberately ignores .pth files, so an editable finder is invisible.
+          /opt/venv/bin/python -m pip install '.[dev]'
+          /opt/venv/bin/python -m pip install ./runtime
 
       - name: Run CORE + Lite integration suite as root
         run: |
-          python_bin="$(command -v python)"
-          sudo -- "$python_bin" -c \
-            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
-          sudo env \
-            PYTHONDONTWRITEBYTECODE=1 \
+          /opt/venv/bin/python -c \
+            'import os; assert os.geteuid() == 0, "the container is not root"'
+          PYTHONDONTWRITEBYTECODE=1 \
             PYTHONPATH="$PWD/src:$PWD/runtime/src" \
-            "$python_bin" -m pytest -p no:cacheprovider \
+            /opt/venv/bin/python -m pytest -p no:cacheprovider \
             tests/unit/test_core_lite_integration.py -q
 
       # The complete harness includes the real install-accounts stage, which
-      # creates system accounts in this disposable hosted VM. Keep generated
+      # creates system accounts in this disposable container. Keep generated
       # files outside the checkout and disable bytecode before running it.
       - name: Run install-to-status harness as root
         run: |
-          python_bin="$(command -v python)"
-          sudo -- "$python_bin" -c \
-            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
-          e2e_root="$(sudo mktemp -d /tmp/az-e2e-root.XXXXXX)"
-          report="$(sudo mktemp /tmp/az-e2e-root-report.XXXXXX)"
-          sudo env \
-            PYTHONDONTWRITEBYTECODE=1 \
+          /opt/venv/bin/python -c \
+            'import os; assert os.geteuid() == 0, "the container is not root"'
+          e2e_root="$(mktemp -d /tmp/az-e2e-root.XXXXXX)"
+          report="$(mktemp /tmp/az-e2e-root-report.XXXXXX)"
+          PYTHONDONTWRITEBYTECODE=1 \
             PYTHONPATH="$PWD/src:$PWD/runtime/src" \
-            "$python_bin" tools/e2e.py --root "$e2e_root" --report "$report"
-          sudo env REPORT_PATH="$report" "$python_bin" - <<'PY'
+            /opt/venv/bin/python tools/e2e.py --root "$e2e_root" --report "$report"
+          REPORT_PATH="$report" /opt/venv/bin/python - <<'PY'
           import os
           import pathlib
           import re
