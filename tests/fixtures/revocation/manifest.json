@@ -1,0 +1,5 @@
+{
+  "public_key": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+  "payload": "{\"bundle_format_version\":1,\"bundle_version\":7,\"files\":{},\"kind\":\"full\"}",
+  "signature": "28c619bf25f70b0dee96fa5a944c7c34b586ce8453c64fe0edb3b4d6130e95ee14b99fbc842f364688eda77b91bdfafb7c99f83ff22635888e9d6eec9dbc3209"
+}

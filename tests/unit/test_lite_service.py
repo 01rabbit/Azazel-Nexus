@@ -17,10 +17,18 @@ from signing_oracle import public_key_for, sign_detached
 from azazel_nexus.content_store import digest_bytes
 from azazel_nexus.lite_service import KnowledgeLite, LiteState, no_claim_reader
 from azazel_nexus.lite_trust import TrustStore
-from azazel_nexus.revocation import RevocationList, RevocationStore
+from azazel_nexus.revocation import RevocationList
+from azazel_nexus.revocation_policy import (
+    BUNDLE_SIGNING,
+    REVOCATION_SIGNING,
+    RevocationPolicy,
+    commission_policy,
+)
 
 SEED = bytes(range(32))
 OTHER_SEED = bytes(range(32, 64))
+REVOCATION_SEED = bytes(range(64, 96))
+REVOCATION_KEY = public_key_for(REVOCATION_SEED)
 KEY = public_key_for(SEED)
 OTHER_KEY = public_key_for(OTHER_SEED)
 
@@ -41,7 +49,22 @@ def artifact_of(*claims: Mapping) -> bytes:
     return json.dumps({"claims": list(claims)}, sort_keys=True).encode("utf-8")
 
 
+def commission_revocation_policy(root: Path) -> None:
+    commission_policy(
+        root,
+        RevocationPolicy(
+            keys={"bundle": KEY, "revocation": REVOCATION_KEY},
+            key_roles={"bundle": BUNDLE_SIGNING, "revocation": REVOCATION_SIGNING},
+            threshold=1,
+            generation=1,
+        ),
+        commissioning_digest=COMMISSIONING,
+        anchors_key_roles={},
+    )
+
+
 def build(root: Path) -> KnowledgeLite:
+    commission_revocation_policy(root)
     TrustStore(root=root).pin(
         [KEY.hex()],
         commissioning_digest=COMMISSIONING,
@@ -69,8 +92,8 @@ def revoke(lite: KnowledgeLite, sequence: int, **kwargs: object) -> None:
         sequence=sequence, issued_at="2026-09-20T00:00:00Z", **kwargs  # type: ignore[arg-type]
     )
     payload = revocations.as_payload()
-    RevocationStore(root=lite.root, trusted_keys=(KEY,)).accept(
-        sign_detached(seed=SEED, message=payload) + payload
+    lite.revocations().accept(
+        sign_detached(seed=REVOCATION_SEED, message=revocations.signature_target()) + payload
     )
 
 
@@ -164,6 +187,7 @@ def test_the_default_reader_refuses_rather_than_reporting_usable(
     """A caller that forgets a reader gets `quarantined`, never `available`."""
 
     root = tmp_path / "lite"
+    commission_revocation_policy(root)
     TrustStore(root=root).pin(
         [KEY.hex()], commissioning_digest=COMMISSIONING, pinned_at=NOW, actor="op"
     )
@@ -223,7 +247,7 @@ def test_an_unverifiable_revocation_list_quarantines_rather_than_unrevokes(
     revoke(lite, 1, revoked_generations=frozenset({1}))
     assert lite.read(as_of=NOW).state is LiteState.QUARANTINED
 
-    path = RevocationStore(root=lite.root, trusted_keys=(KEY,)).path
+    path = lite.revocations().path
     blob = bytearray(path.read_bytes())
     blob[0] ^= 0x01
     path.write_bytes(bytes(blob))
@@ -345,6 +369,7 @@ def test_an_artifact_signed_by_a_revoked_key_is_not_admitted(lite: KnowledgeLite
 
 
 def test_nothing_is_admitted_without_a_trust_store(tmp_path: Path) -> None:
+    commission_revocation_policy(tmp_path / "lite")
     lite = KnowledgeLite(
         root=tmp_path / "lite",
         commissioning_digest=COMMISSIONING,

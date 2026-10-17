@@ -127,9 +127,15 @@ Four rules, each a refusal:
 - **A revoked signer cannot issue the next list.** The list in force is applied
   to the key that signed the incoming one, before the incoming one is believed.
 
-The signed file is 64 bytes of detached signature followed by the payload
-exactly as it was signed. One file, one atomic replace, and no canonicalisation
-step that a signer and a verifier could disagree about.
+`revocations.signed` stores a detached signature and exact JSON payload, or an
+`AZRV1` envelope carrying multiple detached signatures over that payload.
+Signatures cover the fixed revocation domain prefix plus the payload. The
+commissioned `revocation-signing` authority and its explicit threshold are
+separate from bundle signing. Missing policy fails closed; a list below the
+threshold reports `unverified`. Lists are cumulative across policy generations,
+and a local commissioning checkpoint preserves revocations and sequence floors.
+See [revocation authority and wire format](revocation.md) for the role rules,
+transport details, migration and the repin integration seam.
 
 ## 6. The trust store
 

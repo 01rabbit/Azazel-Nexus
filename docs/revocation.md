@@ -1,0 +1,86 @@
+# Revocation authority and signed lists
+
+Revocations use a commissioning policy independent of bundle admission. The
+local `revocation-policy.json` records public keys by key ID, `key_roles`, an
+explicit positive `threshold`, a positive policy `generation`, and the
+commissioning digest. There is no inherited or default revocation threshold.
+Missing policy refuses verification, including on nodes with no stored list.
+
+Roles are exactly `bundle-signing` and `revocation-signing`. An unassigned key
+cannot revoke. Aliases for the same public key cannot assign both roles, and
+aliases never count as additional threshold signers. Conflicts with
+`trust/anchors.toml` key roles, including aliases of the same key material, are
+refused. Malformed keys are refused when the policy is commissioned.
+
+## Signed bytes and transport
+
+The single definition in `revocation.py` is:
+
+```python
+REVOCATION_DOMAIN = b"azazel-nexus/revocation/v1\0"
+```
+
+Every detached signature covers this fixed length prefix followed by the exact
+UTF-8 JSON payload bytes. `RevocationList.signature_target()` supplies those bytes
+for external signers; Nexus contains no signing implementation. A payload names
+`role: "revocation-signing"`, `generation`, `sequence`, `issued_at`, and the
+cumulative `revoked_digests`, `revoked_generations`, and `revoked_keys` arrays.
+Keys in the last array are complete lowercase public-key hex, rather than key
+IDs, so renaming an ID cannot restore a key.
+
+`revocations.signed` has either of two transport encodings:
+
+- One signature: 64 detached signature bytes followed by the exact payload.
+- Multiple signatures: ASCII `AZRV1` followed by newline, then a JSON object
+  with `payload` (hex of the exact payload bytes) and `signatures` (an array of
+  detached signature hex). `encode_signed` packages externally made signatures.
+
+Both encodings verify the same signing target. Duplicate signatures, aliases,
+bundle keys and unassigned keys cannot satisfy a revocation threshold. A stored
+list below threshold produces the distinct operator word **unverified**, serves
+no claims and supplies no Knowledge Lite capability. Absence, staleness and an
+unverified statement are separate conditions.
+
+The test vectors in `tests/fixtures/revocation/` use only a published test seed.
+They include a manifest, a revocation statement, and a valid manifest containing
+all required revocation metadata. Positive bundle and revocation controls prove
+that the cross-protocol refusals occur despite otherwise valid signatures and
+payloads. A changed separator byte is also refused.
+
+## Continuity and the repin integration seam
+
+`commission_policy(root, new_policy, commissioning_digest=..., anchors_key_roles=...,
+anchors_keys=...)` is the local commissioning/repin integration seam. Its caller
+must supply the independently read anchor roles and keys. It must run under the
+local authorization, confirmation and audit ceremony implemented by the repin
+lane; this library function does not authenticate a principal or expose a remote
+operation. The protected policy record must be retained across commissioning.
+
+Each accepted list first persists its cumulative payload as a floor, together
+with the SHA-256 of that exact signed blob, in the protected policy record.
+Before replacing a policy, the function verifies and preserves this state. Policy generations must increase. The exact checkpointed blob remains
+readable after switching authority; another statement from the old authority
+cannot pass that checkpoint. New lists must name the new policy generation,
+exceed the old sequence, and retain every revoked entry. New policy material
+cannot contain a revoked key under any ID or role. A missing checkpointed list
+is a refusal. Reopening the store or changing the commissioning digest does not
+clear this record.
+
+Lists cannot revoke any of their own verified signers or the last remaining
+revocation-signing key. Acceptance persists the protected high-water mark, then
+publishes the complete signed list. Each write uses a temporary file, fsync and
+atomic replacement. Interruption between these two writes holds the cache
+closed. Retrying the exact already checkpointed blob recovers publication;
+another statement cannot bypass the failed read or drop the revocations.
+Deletion or rollback of the signed list cannot erase the protected floor.
+Policy promotion uses the same atomic write pattern. The local policy record is trust material protected by commissioning
+filesystem permissions. This persisted record is fail-closed when missing or
+corrupt, but is not cryptographically tamper-evident: it uses a local-trust
+model. Replacing or rolling back that trust material is outside
+the signed-list threat model. Introducing/recovering authority through the repin
+runtime ceremony is an integration step, not an automatic list operation.
+
+Legacy untagged lists and role-less policies are refused immediately. Existing
+commissioning fixtures must explicitly provision the new policy; bundle keys
+are never silently promoted to revocation authority. A legacy stored list needs
+a local migration decision rather than a permissive fallback.

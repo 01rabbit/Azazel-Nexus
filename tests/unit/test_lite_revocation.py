@@ -14,13 +14,19 @@ from pathlib import Path
 import pytest
 from signing_oracle import public_key_for, sign_detached
 
-from azazel_nexus.content_store import ContentRefused, digest_bytes
+from azazel_nexus.content_store import digest_bytes
 from azazel_nexus.revocation import (
     EMPTY,
+    REVOCATION_DOMAIN,
     REVOCATION_FILENAME,
     RevocationList,
     RevocationRefused,
     RevocationStore,
+)
+from azazel_nexus.revocation_policy import (
+    REVOCATION_SIGNING,
+    RevocationPolicy,
+    RevocationPolicyRefused,
 )
 
 TRUSTED_SEED = bytes(range(32))
@@ -37,7 +43,17 @@ OTHER_ARTIFACT = digest_bytes(b"an artifact that is fine")
 
 def signed(revocations: RevocationList, *, seed: bytes = TRUSTED_SEED) -> bytes:
     payload = revocations.as_payload()
-    return sign_detached(seed=seed, message=payload) + payload
+    return sign_detached(seed=seed, message=revocations.signature_target()) + payload
+
+
+def policy(keys: tuple[bytes, ...] = (TRUSTED_KEY,)) -> RevocationPolicy:
+    named = {f"r{index}": key for index, key in enumerate(keys)}
+    return RevocationPolicy(
+        keys=named,
+        key_roles={name: REVOCATION_SIGNING for name in named},
+        threshold=1,
+        generation=1,
+    )
 
 
 def a_list(sequence: int, **kwargs: object) -> RevocationList:
@@ -48,7 +64,7 @@ def a_list(sequence: int, **kwargs: object) -> RevocationList:
 
 @pytest.fixture()
 def store(tmp_path: Path) -> RevocationStore:
-    return RevocationStore(root=tmp_path / "lite", trusted_keys=(TRUSTED_KEY,))
+    return RevocationStore(root=tmp_path / "lite", policy=policy())
 
 
 # -- the baseline ----------------------------------------------------------
@@ -74,10 +90,10 @@ def test_revocation_survives_being_read_by_a_fresh_store(tmp_path: Path) -> None
     """A restart does not forget. The statement lives on disk, not in memory."""
 
     root = tmp_path / "lite"
-    RevocationStore(root=root, trusted_keys=(TRUSTED_KEY,)).accept(
+    RevocationStore(root=root, policy=policy()).accept(
         signed(a_list(1, revoked_digests=frozenset({BAD_ARTIFACT})))
     )
-    reopened = RevocationStore(root=root, trusted_keys=(TRUSTED_KEY,))
+    reopened = RevocationStore(root=root, policy=policy())
     assert reopened.current().revokes_digest(BAD_ARTIFACT) is True
 
 
@@ -91,7 +107,7 @@ def test_a_list_signed_by_an_untrusted_key_is_refused_and_changes_nothing(
 
     with pytest.raises(RevocationRefused) as caught:
         store.accept(signed(a_list(2), seed=OTHER_SEED))
-    assert "trusted key" in str(caught.value)
+    assert "trusted keys" in str(caught.value)
 
     still = store.current()
     assert still.sequence == 1
@@ -165,7 +181,7 @@ def test_a_revoked_signer_cannot_issue_the_next_list(tmp_path: Path) -> None:
     """The key is revoked by the list in force, and applied before belief."""
 
     store = RevocationStore(
-        root=tmp_path / "lite", trusted_keys=(TRUSTED_KEY, SECOND_TRUSTED_KEY)
+        root=tmp_path / "lite", policy=policy((TRUSTED_KEY, SECOND_TRUSTED_KEY))
     )
     store.accept(
         signed(
@@ -178,13 +194,19 @@ def test_a_revoked_signer_cannot_issue_the_next_list(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RevocationRefused) as caught:
-        store.accept(signed(a_list(2), seed=SECOND_TRUSTED_SEED))
+        store.accept(signed(a_list(
+            2, revoked_digests=frozenset({BAD_ARTIFACT}),
+            revoked_keys=frozenset({SECOND_TRUSTED_KEY.hex()}),
+        ), seed=SECOND_TRUSTED_SEED))
     assert "itself revoked" in str(caught.value)
     assert store.current().revokes_digest(BAD_ARTIFACT) is True
 
     # The still-trusted key can, so the refusal above is about the revocation
     # and not about sequence 2 being unacceptable.
-    store.accept(signed(a_list(2), seed=TRUSTED_SEED))
+    store.accept(signed(a_list(
+        2, revoked_digests=frozenset({BAD_ARTIFACT}),
+        revoked_keys=frozenset({SECOND_TRUSTED_KEY.hex()}),
+    ), seed=TRUSTED_SEED))
     assert store.current().sequence == 2
 
 
@@ -197,7 +219,7 @@ def test_a_failed_write_leaves_the_previous_list_in_force(
     monkeypatch.setattr(os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
 
     with pytest.raises(OSError):
-        store.accept(signed(a_list(2)))
+        store.accept(signed(a_list(2, revoked_digests=frozenset({BAD_ARTIFACT}))))
 
     assert store.current().sequence == 1
     assert store.current().revokes_digest(BAD_ARTIFACT) is True
@@ -218,7 +240,7 @@ def test_a_blob_with_no_payload_is_refused(store: RevocationStore, length: int) 
 def test_a_payload_that_is_not_json_is_refused(store: RevocationStore) -> None:
     payload = b"not json at all"
     with pytest.raises(RevocationRefused) as caught:
-        store.accept(sign_detached(seed=TRUSTED_SEED, message=payload) + payload)
+        store.accept(sign_detached(seed=TRUSTED_SEED, message=REVOCATION_DOMAIN + payload) + payload)
     assert "not JSON" in str(caught.value)
 
 
@@ -239,31 +261,32 @@ def test_every_malformed_payload_is_refused_with_its_own_reason(
     store: RevocationStore, payload: bytes, expected: str
 ) -> None:
     with pytest.raises(RevocationRefused) as caught:
-        store.accept(sign_detached(seed=TRUSTED_SEED, message=payload) + payload)
+        store.accept(sign_detached(seed=TRUSTED_SEED, message=REVOCATION_DOMAIN + payload) + payload)
     assert expected in str(caught.value)
 
 
 def test_a_revoked_digest_that_is_not_a_digest_is_refused(store: RevocationStore) -> None:
     """A revocation list cannot smuggle a path in where a digest belongs."""
 
-    payload = b'{"sequence":1,"issued_at":"x","revoked_digests":["../../etc/passwd"]}'
-    with pytest.raises(ContentRefused):
-        store.accept(sign_detached(seed=TRUSTED_SEED, message=payload) + payload)
+    payload = (
+        b'{"role":"revocation-signing","generation":1,"sequence":1,'
+        b'"issued_at":"x","revoked_digests":["../../etc/passwd"]}'
+    )
+    with pytest.raises(RevocationRefused, match="invalid revoked digest"):
+        store.accept(sign_detached(seed=TRUSTED_SEED, message=REVOCATION_DOMAIN + payload) + payload)
 
 
 # -- trust store hygiene ---------------------------------------------------
 
 
-def test_one_unusable_trusted_key_does_not_make_every_list_unverifiable(
-    tmp_path: Path,
-) -> None:
-    """A truncated key in the trust store is an operator fault, not an outage."""
+def test_one_unusable_trusted_key_refuses_the_policy(tmp_path: Path) -> None:
+    """Malformed commissioning material now fails closed, even beside a good key."""
 
-    store = RevocationStore(
-        root=tmp_path / "lite", trusted_keys=(b"\x00" * 8, TRUSTED_KEY)
-    )
-    store.accept(signed(a_list(1, revoked_digests=frozenset({BAD_ARTIFACT}))))
-    assert store.current().revokes_digest(BAD_ARTIFACT) is True
+    with pytest.raises(RevocationPolicyRefused, match="unusable policy key"):
+        RevocationStore(
+            root=tmp_path / "lite", policy=policy((b"\x00" * 8, TRUSTED_KEY))
+        )
+    assert not (tmp_path / "lite").exists()
 
 
 def test_the_result_does_not_depend_on_the_order_of_trusted_keys(tmp_path: Path) -> None:
@@ -271,7 +294,7 @@ def test_the_result_does_not_depend_on_the_order_of_trusted_keys(tmp_path: Path)
     for index, keys in enumerate(
         ((OTHER_KEY, TRUSTED_KEY), (TRUSTED_KEY, OTHER_KEY))
     ):
-        store = RevocationStore(root=tmp_path / f"lite{index}", trusted_keys=keys)
+        store = RevocationStore(root=tmp_path / f"lite{index}", policy=policy(keys))
         store.accept(blob)
         assert store.current().revokes_digest(BAD_ARTIFACT) is True
 

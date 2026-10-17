@@ -1,0 +1,5 @@
+{
+  "public_key": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+  "payload": "{\"bundle_format_version\":1,\"bundle_version\":7,\"files\":{},\"generation\":1,\"issued_at\":\"2026-10-17T00:00:00Z\",\"kind\":\"full\",\"revoked_digests\":[],\"revoked_generations\":[],\"revoked_keys\":[],\"role\":\"revocation-signing\",\"sequence\":1}",
+  "signature": "785bd3cfa618e040475b140a060900605796b3a51bbf6d1bd15e96d0edea010fead93f642e172fd2a9ae5e3d76a09450bde3e7dfdc9d38c5769ba6f45da67c00"
+}
