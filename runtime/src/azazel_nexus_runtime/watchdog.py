@@ -52,7 +52,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus.degradation import DeadlineExceeded, call_with_deadline
 from azazel_nexus.generation import GenerationRefused, GenerationStore
 
@@ -74,6 +74,8 @@ class FenceReason(str, Enum):
 
     DEADLINE_EXCEEDED = "deadline_exceeded"
     UNHEALTHY = "unhealthy"
+    #: Fail-closed because stored fences could not be read; not a unit observation.
+    FENCE_STORE_UNREADABLE = "fence_store_unreadable"
     GENERATION_MISMATCH = "generation_mismatch"
     RESTART_INTERRUPTED = "restart_interrupted"
     #: A supervised provider used every restart its generation allowed (#114).
@@ -125,9 +127,9 @@ class FenceStore:
             # daemon governs stays fenced until somebody looks, because the
             # alternative is a corrupt file silently returning a node to
             # service.
-            return {unit: FenceReason.UNHEALTHY.value for unit in UNIT_NAMES.values()}
+            return {unit: FenceReason.FENCE_STORE_UNREADABLE.value for unit in UNIT_NAMES.values()}
         if not isinstance(raw, dict):
-            return {unit: FenceReason.UNHEALTHY.value for unit in UNIT_NAMES.values()}
+            return {unit: FenceReason.FENCE_STORE_UNREADABLE.value for unit in UNIT_NAMES.values()}
         return {
             str(unit): str(reason)
             for unit, reason in raw.items()
@@ -143,7 +145,11 @@ class FenceStore:
 
 @dataclass
 class WatchdogService:
-    """Detects, narrows, records. Never the other direction."""
+    """Detects, narrows, records. Never the other direction.
+
+    Startup re-masks stored fences without recording a transition. An
+    unreadable fence file likewise fails closed without creating a record.
+    """
 
     manager: UnitManager
     ledger: AuditLedger
@@ -154,6 +160,7 @@ class WatchdogService:
 
     def __post_init__(self) -> None:
         self._fenced = self.fences.load()
+        self._pending: dict[str, list[dict]] = {}
         self._reapply()
 
     def _reapply(self) -> None:
@@ -259,8 +266,20 @@ class WatchdogService:
         at the moment it fails -- and refusing to narrow because nobody can
         write down that the node narrowed would leave it wide *and*
         unrecorded.
+
+        Identical observations still mask and persist, but create no event.
+        Failed appends remain queued in memory, including their original
+        prior state, reason, timestamp and detail. A later observation of the
+        same unit retries them in order, even if the reason has since changed.
+        Each per-unit list can grow while the ledger stays down and the reason
+        keeps changing: each entry is a real observed transition, bounded by
+        observations. Successful appends remove them; these pending lists are
+        lost on restart.
+        Startup reapplication (including unreadable-file fail-closed fences)
+        creates no transition and therefore no record.
         """
 
+        previous_reason = self._fenced.get(unit)
         try:
             self.manager.mask(unit)
         except Exception:  # noqa: BLE001 - the fence is recorded regardless
@@ -273,20 +292,28 @@ class WatchdogService:
             self.fences.save(self._fenced)
         except OSError:
             pass
-        try:
-            self.ledger.append(
+        if previous_reason != reason.value:
+            self._pending.setdefault(unit, []).append(
                 {
                     "event_type": "watchdog.fenced",
                     "unit": unit,
                     "reason": reason.value,
                     "detail": detail,
                     "occurred_at": now,
+                    "previous_state": "in_service" if previous_reason is None else "fenced",
+                    "previous_reason": previous_reason,
+                    "state": "fenced",
                 }
             )
-        except AuditUnavailable:
-            # Refusing to narrow because nobody can write down that the node
-            # narrowed would leave it wide *and* unrecorded.
-            pass
+        pending = self._pending.get(unit, [])
+        while pending:
+            try:
+                self.ledger.append(pending[0])
+            except (AuditUnavailable, AuditChainBroken):
+                # Narrowing stands; retain the actual transition for retry.
+                return
+            pending.pop(0)
+        self._pending.pop(unit, None)
 
     # -- the socket -------------------------------------------------------
 
