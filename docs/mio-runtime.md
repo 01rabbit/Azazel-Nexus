@@ -306,8 +306,8 @@ unavailable/refusal reason codes. Provider reply text is discarded.
 Selection uses the existing `profile_in_force` reader. No persisted M.I.O.
 profile reader exists in this build, so the production input is an absent
 confirmed selection and therefore CORE. A trusted `profile_reader` composition
-point accepts a confirmed profile; connecting persisted commissioning inputs
-remains an integration TODO. The entry never infers a profile from RAM.
+point accepts a confirmed profile. Persisted profile commissioning is not
+implemented; the entry never infers a profile from RAM.
 Remote admission is computed by `remote_trust.remote_admission` with
 `unchecked_reading()`, no opt-in and no sanitised frame. Local admission is
 always false with the explicit HG-05 unmeasured Core reserve reason, and
@@ -317,10 +317,10 @@ with each candidate’s reason, and replies with `route`, `outcome`, `reason`
 and `ledger_seq`. No handoff claims an advisory answer or changes Edge
 authority.
 
-Integration TODO: Lane A must add socket leaves `mio-entry`, `mio` and
-`remote` to `runtime_paths`, plus the unit/account/layout/script declarations.
-There are no fallback path definitions in shared modules. Entry tests build
-these contract paths under `AZAZEL_ROOT` until that integration lands.
+The shared `runtime_paths` declares socket leaves `mio-entry`, `mio` and
+`remote`; unit/account/layout/script declarations use the same contract.
+Entry tests exercise those shared helpers under `AZAZEL_ROOT`. Entry routing
+does not consult `knowledge.status`; Knowledge availability is independent.
 Linux-only tests exercise a real entry socket exchange and a fake locald
 returning “not admitted”, then verify and read back the route chain. On macOS
 those SO_PEERCRED tests are skipped; they do not establish Linux runtime

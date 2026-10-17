@@ -23,13 +23,6 @@ from azazel_nexus.sanitizer import PrivacyClass
 def service(tmp_path, monkeypatch):
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
-    # TODO(Lane A): closed runtime_paths table lacks all three contract leaves.
-    def path(name):
-        assert name in {"mio-entry", "mio", "remote"}
-        return tmp_path / "var/lib/azazel/run" / name / f"{name}.sock"
-
-    monkeypatch.setattr(client, "socket_path", path)
-    monkeypatch.setattr(entry, "socket_path", path)
     monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
     monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
     runtime_paths.mio_state_dir().mkdir(parents=True)
@@ -172,3 +165,14 @@ def test_entry_has_no_network_or_edge_authority_imports():
             if isinstance(node, ast.Attribute):
                 assert node.attr not in {"AF_INET", "AF_INET6", "create_connection"}
         assert not roots & {"ssl", "http", "urllib", "subprocess", "edge_control"}
+
+
+def test_main_uses_shared_socket_and_only_contracted_service_principal(service, monkeypatch):
+    captured = {}
+    resolved = []
+    monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: resolved.append(kw) or "policy")
+    assert entry.main([], ready=lambda: None) == 0
+    assert captured["path"] == runtime_paths.socket_path("mio-entry")
+    assert captured["handler"].__self__.router.ledger.path == runtime_paths.mio_state_dir() / "route.jsonl"
+    assert resolved == [{"service_accounts": ("azarbiter",)}]

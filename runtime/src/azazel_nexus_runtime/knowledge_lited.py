@@ -41,7 +41,12 @@ def main(
     ready: Callable[[], None] | None = None,
 ) -> int:
     """Serve diagnostics even when store or commissioned trust is unreadable."""
-    from .runtime_paths import ROOT, audit_sink, lite_trust_root, socket_path
+    from .runtime_paths import (
+        audit_sink,
+        knowledge_store_root,
+        lite_trust_root,
+        socket_path,
+    )
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
 
@@ -49,7 +54,7 @@ def main(
         argv = sys.argv[1:]
     if argv:
         raise SystemExit("az-knowledge-lited takes no arguments")
-    service = KnowledgeLiteService(root=ROOT / "var/lib/azazel/knowledge",
+    service = KnowledgeLiteService(root=knowledge_store_root(),
                                    trust_root=lite_trust_root())
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,

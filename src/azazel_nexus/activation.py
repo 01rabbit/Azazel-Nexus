@@ -202,9 +202,9 @@ REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 #: the activation controller is, and isolating the privilege there is what
 #: leaves these unprivileged.
 #:
-#: The enforcement, M.I.O., Knowledge Lite, Deception Lite and module-manager
-#: units are absent because they belong to slices that are not built yet --
-#: **not** because they are optional to the product. `docs/roadmap.md` holds
+#: M.I.O. entry and Knowledge Lite status are SUPPORTING services; provider
+#: units remain separately wiring-gated. Enforcement, Deception Lite and
+#: module-manager units belong to slices that are not built yet. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
 #:
 #: `EDGE_BASELINE` still has no members. The Edge probe is `SUPPORTING`, and

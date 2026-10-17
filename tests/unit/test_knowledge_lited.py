@@ -152,7 +152,6 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     captured = {}
     monkeypatch.setattr(runtime_paths, "ROOT", root.parents[3])
     monkeypatch.setattr(runtime_paths, "lite_trust_root", lambda: trust)
-    monkeypatch.setattr(runtime_paths, "socket_path", lambda name: root.parent / f"run/{name}/{name}.sock")
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda name: ("sink", name))
     monkeypatch.setattr(serve, "serve_forever", lambda **kwargs: captured.update(kwargs) or 0)
     resolved = []
@@ -201,6 +200,8 @@ def test_socket_round_trip_and_refusals(node):
                 connection.settimeout(3)
                 connection.connect(str(path))
                 send_frame(connection, {"verb": "knowledge.status", "arguments": arguments})
+                # read_frame requires EOF after the body to reject trailing bytes.
+                connection.shutdown(socket.SHUT_WR)
                 reply = json.loads(read_frame(connection))
             assert reply["ok"] is (not arguments)
         assert events[0]["event_type"] == "runtime.request_refused"

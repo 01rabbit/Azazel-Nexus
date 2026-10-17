@@ -42,8 +42,7 @@ LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 def commissioned_profile() -> MioProfile:
     # The existing reader requires a confirmed selection. No persisted M.I.O.
     # commissioning reader exists in this build: absence must remain CORE.
-    # TODO(integration): supply confirmed profile inputs when commissioning
-    # exposes its persisted M.I.O. selection; never infer it from resources.
+    # Resource observations cannot substitute for a confirmed selection.
     return profile_in_force(commissioned=False, selected=None)
 
 
@@ -104,7 +103,6 @@ def main(
         service.router._record({"event_type": "mio.entry.started"})
     except OSError as error:
         raise AuditUnavailable("M.I.O. route ledger unavailable") from error
-    # TODO(Lane A integration): runtime_paths must declare mio-entry/mio/remote.
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=("azarbiter",)),

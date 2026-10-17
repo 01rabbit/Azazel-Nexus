@@ -5,6 +5,25 @@ an accepted new cross-product wire format, or authorization to start services.
 Existing [commissioning](commissioning.md) and
 [package boundaries](contract-ownership.md#5-released-package-boundary) apply.
 
+## Milestone 1 integration (2026-10-18)
+
+The M.I.O. entry and Knowledge Lite daemons now exist, with console scripts,
+fixed socket/state leaves, installer accounts and hardened SUPPORTING units.
+`az-mio-entryd` composes MioRouter with locald (`mio`) and remoted (`remote`)
+socket clients and records deterministic handoff when providers are unavailable
+or unadmitted. Its route ledger is `/var/lib/azazel/state/mio/route.jsonl`.
+No persisted M.I.O. profile reader exists yet, so production selects CORE.
+HG-05 remains unmeasured and provider admission remains fail-closed.
+
+`az-knowledge-lited` serves only `knowledge.status` from
+`/var/lib/azazel/knowledge`, with read-only commissioned `lite-trust`.
+Entry routing does not depend on Knowledge status. Both units are governed by
+the activation allowlist; their existence does not establish installed systemd
+lifecycle success. The read-only `azazel-nexus setup` command guides the operator
+through current state, next commands and reasons. Issues #93 and #5 remain open
+for the remaining flow/lifecycle evidence; see [M.I.O. runtime](mio-runtime.md)
+and [Knowledge Lite consumer](knowledge-lite-consumer.md).
+
 ## Current selected-bootstrap gate snapshot (2026-10-15)
 
 The adopted two-helper implementation is not operationally complete. The actual

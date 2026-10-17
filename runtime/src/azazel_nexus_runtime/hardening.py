@@ -580,6 +580,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         unit="azazel-mio-entryd.service",
         executable="/usr/libexec/azazel/az-mio-entryd",
         account="azmioentry",
+        supplementary_groups=("azazel-operator",),
         description="Azazel-Nexus M.I.O. routing entry service",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-runtime.md",
         address_families=("AF_UNIX",),

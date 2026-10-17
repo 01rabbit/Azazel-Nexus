@@ -14,6 +14,7 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azmioentry
+SupplementaryGroups=azazel-operator
 ExecStart=/usr/libexec/azazel/az-mio-entryd
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750

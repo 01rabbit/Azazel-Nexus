@@ -30,15 +30,11 @@ def root(monkeypatch):
         monkeypatch.setenv("AZAZEL_ROOT", directory)
         monkeypatch.setattr(runtime_paths, "ROOT", base)
 
-        def path(name):
-            # TODO(Lane A integration): use runtime_paths' added leaves.
-            return base / "var/lib/azazel/run" / name / f"{name}.sock"
+        path = runtime_paths.socket_path
 
         for leaf in ("mio-entry", "mio", "remote"):
             path(leaf).parent.mkdir(parents=True)
         runtime_paths.mio_state_dir().mkdir(parents=True)
-        monkeypatch.setattr(entry, "socket_path", path)
-        monkeypatch.setattr(client, "socket_path", path)
         monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
         monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
         policy = PrincipalPolicy(os.getgid(), frozenset())

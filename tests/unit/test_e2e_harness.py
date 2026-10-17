@@ -36,6 +36,7 @@ from tools.e2e_harness import (  # noqa: E402
     Report,
     StageResult,
 )
+from tools.stage_runtime_entrypoints import declared_daemons
 
 
 @pytest.fixture
@@ -53,10 +54,6 @@ def short_root():
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGES = (REPO_ROOT / "tools" / "e2e_stages.py").read_text(encoding="utf-8")
 INSTALLER = (REPO_ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
-_STAGED_ENTRYPOINTS = (
-    "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
-    "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
-)
 
 
 def _copy_installer_tree_for_layout_test(tmp_path: Path) -> Path:
@@ -74,7 +71,7 @@ def _copy_installer_tree_for_layout_test(tmp_path: Path) -> Path:
         "from pathlib import Path\n"
         "dest = Path(os.environ['DESTDIR']) / 'usr/libexec/azazel'\n"
         "dest.mkdir(parents=True, exist_ok=True)\n"
-        f"for name in {_STAGED_ENTRYPOINTS!r}:\n"
+        f"for name in {tuple(declared_daemons())!r}:\n"
         "    target = dest / name\n"
         "    target.write_text('#!/bin/sh\\nexit 0\\n', encoding='ascii')\n"
         "    target.chmod(0o755)\n",
