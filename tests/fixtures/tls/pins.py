@@ -9,6 +9,7 @@ itself after the extraction it is meant to verify had broken.
 PINS = {
     "client": "sha256:f30ba38178788bca0c9480109c15b85dd4154f79abb69c43384dd72eab6b9efb",
     "client-untrusted": "sha256:9b2f5b7e300b0658c260a7fc9208c416cbc90bf18b2d6d6ae2449e7eaa97890f",
+    "server-fetch": "sha256:1ece01f6b21c26b7252f06938bea9d2e38b317beb3a7264936aa2e261a5d29c3",
     "server": "sha256:dfab280088edda6866f6add882b58cc3c4403a25d001a07791fd08a0ff8e70b0",
     "server-expired": "sha256:cd8d1d137bc2d9db015a7148f27992ac10f3603b2eef817e48ff72d49808cfe2",
     "server-untrusted-ca": "sha256:ba10dc17567f3ebd10c4d129407f4e43a3e635f1d1a108c2acd00433d27a86b8",

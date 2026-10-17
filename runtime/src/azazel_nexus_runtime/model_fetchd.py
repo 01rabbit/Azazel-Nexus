@@ -35,13 +35,15 @@ guarantee in the registry advisory.
 
 ## What it does with them
 
-Resolve the symbol through the registry, open one connection under the
-commissioned CA and client identity, verify the peer's certificate *and* its
-pinned key, and write bytes into its own staging directory. It does not
-verify the artifact, does not promote it, does not admit anything and does
-not start anything: what lands in staging goes through the same
-`model_catalog.verify_artifact` an offline import goes through, run by the
-component that owns promotion.
+The explicitly composed service resolves the signed catalog and registry,
+binds the request to that plan, and delegates to `model_fetch.acquire`.
+That path makes one dedicated TLS transfer into a resumable fetch directory,
+then hands complete bytes to the #95 inbox importer. Only that importer
+verifies and promotes; the reply distinguishes promotion from fetching and
+always reports admission as false. Nothing here starts a model.
+
+The daemon still refuses to start: commissioning file formats and the
+cross-account inbox handoff remain owner decisions.
 
 ## What it never says
 
@@ -58,6 +60,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from azazel_nexus.model_acquisition import AcquisitionRefused
+from azazel_nexus.source_registry import RegistryRefused
+
+from .model_fetch import OFFLINE_IMPORT, AcquisitionResult
 from .principal import PrincipalClass
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 
@@ -145,27 +151,34 @@ class FetchService:
         try:
             plan = self._resolve(model_id, source_id)
         except Exception as exc:
-            # Not a `RequestRefused`. That word means "this request was not
-            # acceptable" -- a malformed frame, an undeclared argument, a
-            # principal denied -- and this request was perfectly acceptable.
-            # A symbol that does not resolve is a well-formed question with a
-            # negative answer, and reporting it as a protocol violation would
-            # send an operator to check their client instead of their
-            # registry.
-            #
-            # The registry's own message names symbols, never endpoints.
-            return FetchOutcomeReply(
-                model_id=model_id,
-                source_id=source_id,
-                outcome="source_unavailable",
-                received=0,
-                reason=f"{source_id} did not resolve: {exc}",
-            ).as_document()
+            # Only enumerated refusal codes may cross the service boundary.
+            reason = "source_unavailable"
+            if isinstance(exc, (AcquisitionRefused, RegistryRefused)):
+                reason = exc.cause.value
+            return {
+                **FetchOutcomeReply(
+                    model_id, source_id,
+                    "source_unavailable" if reason == "source_unavailable" else "refused",
+                    0, reason,
+                ).as_document(),
+                "admitted": False, "resumable": False, "retained": "none",
+                "offline_import": OFFLINE_IMPORT,
+            }
 
-        # The destination is derived from the digest the *registry-resolved*
-        # plan carries, not from anything in the request: a caller who could
-        # name a file would be a caller who could name any file.
-        destination = self._staging / (arguments["digest"].split(":", 1)[1] + ".part")
+        if (model_id, arguments["digest"], arguments["size_bytes"], source_id) != (
+            plan.model_id, plan.expected_digest, plan.expected_size_bytes, plan.source_id,
+        ):
+            return {
+                **FetchOutcomeReply(model_id, source_id, "refused", 0,
+                                    "plan_mismatch").as_document(),
+                "admitted": False, "resumable": False, "retained": "none",
+                "offline_import": OFFLINE_IMPORT,
+            }
+
+        # Only the legacy transfer seam uses this sink and destination.
+        # The composed acquire path owns its file lifecycle and ignores the sink.
+        # The legacy destination also comes from the resolved plan's digest.
+        destination = self._staging / (plan.expected_digest.split(":", 1)[1] + ".part")
         received = 0
 
         def sink(chunk: bytes) -> None:
@@ -176,11 +189,21 @@ class FetchService:
 
         result = self._transfer(
             plan=plan,
-            expected_digest=arguments["digest"],
-            expected_size=arguments["size_bytes"],
+            expected_digest=plan.expected_digest,
+            expected_size=plan.expected_size_bytes,
             resume_from=arguments["resume_from"],
             sink=sink,
         )
+        if isinstance(result, AcquisitionResult):
+            return {
+                **FetchOutcomeReply(
+                    model_id, source_id, result.state.value, result.received,
+                    result.reason,
+                ).as_document(),
+                "admitted": result.admitted, "resumable": result.resumable,
+                "retained": result.retained,
+                "offline_import": result.offline_import,
+            }
         return FetchOutcomeReply(
             model_id=model_id,
             source_id=source_id,
@@ -211,10 +234,9 @@ def main(
             "this node, not things a command line says"
         )
     raise SystemExit(
-        "az-model-fetchd has no transport wired in this build. The Source "
-        "Registry ships empty, so there is no endpoint to resolve a symbol "
-        "to, and a service that started anyway would be a service listening "
-        "for work it could not do"
+        "az-model-fetchd has no transport wired for unattended startup. "
+        "Commissioning formats for CA, client identity, address allowlist, "
+        "consent and the azfetch to importer inbox handoff are not defined"
     )
 
 

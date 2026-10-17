@@ -1,6 +1,7 @@
 # Explicit Online Acquisition
 
-Status: **path implemented, no fetcher exists**
+Status: **path composed and tested against a loopback TLS fixture; no daemon
+starts it and no endpoint is commissioned**
 (`src/azazel_nexus/model_acquisition.py`,
 `runtime/src/azazel_nexus_runtime/model_fetch.py`, Nexus#96).
 
@@ -77,27 +78,30 @@ for which number moves when is in [the catalog contract](model-catalog.md)
 canonical signing protocol, the schema names the **shape**, and `source_id`
 changed the shape alone.
 
-## 2. Not configured off. Absent.
+## 2. Not configured off. Absent on every node that has not been commissioned.
 
 "Default off" is a setting, and a setting is a thing that can be set.
 
-There is **no fetcher in this distribution**. `drive_fetch` takes one and has
-no default; nothing here constructs one; and neither module imports `socket`,
-`ssl`, `http` or `urllib`. `tests/unit/test_runtime_boundary.py` already
-refuses to find `AF_INET`, `AF_INET6`, `AF_PACKET` or `create_connection`
-anywhere in the runtime package, and **that scan passes with this module in
-it**.
+The code that opens a connection exists in exactly one module,
+`artifact_egress.py`, and §9 composes it with the plan, the Source Registry
+and the offline importer. What no node has is anything to point it at:
 
-A build shipped today could not fetch anything even if somebody confirmed
-it, because the code that would open the connection does not exist.
+- `ENDPOINT_FOR` is **empty**, and a test keeps it empty. Endpoints come from a
+  signed Source Registry ([source-registry.md](source-registry.md)), which the
+  build does not ship.
+- `az-model-fetchd`'s `main()` **refuses to start**. The commissioning formats
+  for the CA, the client identity, the address allowlist and the consent
+  record, and the hand-off from the `azfetch` account into the importer's
+  inbox, are not defined, and the daemon does not guess them.
+- Activation withholds `azazel-model-fetchd.service` as `wiring_absent`,
+  because the capability it derives from `ENDPOINT_FOR` is empty.
 
-### The endpoints cannot resolve either
+`drive_fetch` is the older iterator seam. It still takes a `fetcher` and has no
+default; the composed path does not go through it.
 
-Every entry in `ENDPOINT_FOR` is a host under `.invalid`, which RFC 2606
-reserves and guarantees will never resolve. That is not a placeholder to be
-tidied up later; it is the second lock. Naming a real host is a deliberate,
-reviewable change to that table, and the `Endpoint` constructor refuses any
-host that is not under `.invalid` — so it cannot happen by typo.
+`tests/unit/test_runtime_boundary.py` refuses `AF_INET`, `AF_INET6`,
+`AF_PACKET` and `create_connection` in every runtime module except the two
+named egress modules, and that scan passes with the composed path in it.
 
 ## 3. The operator confirms, and separately
 
@@ -175,3 +179,81 @@ expression is unchanged by this work:
 
 > M.I.O. routing and commissioning control plane implemented; provider
 > execution unavailable pending hardware evidence and provider integration
+
+## 9. The composed path ([#96](https://github.com/01rabbit/Azazel-Nexus/issues/96))
+
+`model_fetch.acquire` is the one path from a confirmed plan to an installed
+artifact. `model_fetch.compose_service` puts it behind `az-model-fetchd`'s
+`FetchService.handle`, which is how the tests drive it.
+
+```
+verified catalog entry + signed Source Registry (separate keys)
+  → plan_acquisition (consent, attempts, already installed, capacity)
+  → resolve_candidate, bound to the plan (source, digest, size)
+  → resume prefix check on fetch_dir/<digest>.part
+  → ONE artifact_egress.fetch_artifact call (pin, mTLS, allowlist, bounds)
+  → os.replace into the importer's inbox
+  → ModelImport.import_entry (#95: same digest/signature check, promotion)
+```
+
+**The request names symbols and numbers, and the plan decides.** A request
+whose digest, size or source differs from the plan resolved from the catalog
+and the registry is refused `plan_mismatch` before anything is dialled, and the
+partial's name comes from the plan's digest.
+
+**Each request is one attempt.** There is no loop and no retry. The composed
+service counts failed transport attempts per artifact and refuses
+`attempts_exhausted` without dialling once the budget is spent; a promotion
+clears it. The count is in memory and belongs to that service instance: it
+starts from the `attempts_used` the composer passes, and a new composition or a
+restarted daemon starts it again. A durable budget would have to be persisted
+by whoever composes the service; nothing does that yet.
+
+**Capacity, installed state and time are read per request**, not fixed when
+the service is composed. If either cannot be read, the request is refused
+(`capacity_unavailable`, `installed_state_unavailable`) without dialling.
+Capacity is measured on the filesystem that holds the partials; the importer
+checks its own room again before it stages (#95), and nothing here reserves
+space on the store's filesystem.
+
+**A complete partial that could not be handed off stays where it is**
+(`handoff_failed`, `retained: partial`). This path does not move it again: a
+request resuming at the full size is not a fetch, and a request from zero is
+refused because the partial is not empty. Its way forward is the offline
+import of §7.
+
+The result is a state, a reason from a fixed vocabulary, the bytes still held,
+whether the attempt can resume, and what is left where — never a host, path,
+pin, client identity or exception text:
+
+| state | what happened | `retained` |
+| --- | --- | --- |
+| `refused` | consent, source, disk, attempts, plan or resume refused before any connection | `none`, or `partial` when a regular partial of the wrong length is kept |
+| `fetch_incomplete` | timed out or interrupted; resumable | `partial` |
+| `fetch_refused` | the transport refused (pin, redirect, allowlist, overrun, status) | `none` |
+| `fetch_failed` | TLS or network failure | `none` |
+| `write_failed` | the partial could not be written or synced | `none` |
+| `import_failed` | `handoff_failed`: the complete file could not be moved, and is kept; `import_failed_inbox_retained`: the importer raised, and the complete, unverified file is in the inbox | `partial` / `inbox` |
+| `import_refused` | #95 refused the artifact (for example a digest mismatch: #95 quarantines its staged copy) | `inbox` — the received file is still in the inbox |
+| `promoted` | #95 verified and promoted it | `none` |
+
+Every state but `promoted` carries the offline-import guidance of §7, and
+every result reports `admitted: false`. **Promoted is not admitted** (§8):
+nothing on this path calls provider admission or activation, and the tests
+fail if anything does.
+
+### What the tests establish, and what they do not
+
+`tests/unit/test_model_acquire_e2e.py` drives the path through the service
+against a loopback TLS server with a test-only certificate for
+`fetch.azazel.test` (the resolver is replaced so that name means `127.0.0.1`
+and nothing else). It covers success and rollback, each refusal before
+connection, TLS failures (issuer, name, expiry, client certificate, pin),
+redirect, an address outside the allowlist, overrun, deadline, interruption
+and resume, a peer that ignores `Range`, a digest mismatch caught by #95,
+write, hand-off and promotion failures, and secret sentinels that must not
+reach the reply or the recorder.
+
+It establishes nothing about a real endpoint, a real credential, a real
+download or a real link: none was configured, and the fixture keys are
+test-only.

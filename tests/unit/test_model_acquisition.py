@@ -1,9 +1,9 @@
-"""Whether a model may be fetched, and the path that does not exist (#96).
+"""Acquisition planning and the legacy fetch seam (#96).
 
 The distinctions defended here:
 
 *no source declared* ≠ *unknown source* ≠ *not confirmed*, and none of the
-three is *there is no fetcher*. A node that cannot download is a node that
+three is *the legacy seam has no default fetcher*. A node that cannot download is a node that
 installs from a USB stick, not a node that cannot install.
 """
 
@@ -410,7 +410,7 @@ def test_a_plan_names_no_address() -> None:
     assert event["source_id"] in KNOWN_SOURCES
 
 
-# -- there is no acquisition path in this distribution ---------------------
+# -- the library has no network and the legacy seam has no default fetcher --
 
 
 def test_the_library_cannot_speak_to_a_network() -> None:
@@ -465,12 +465,12 @@ def test_the_runtime_holds_no_fetcher_either() -> None:
 
 
 def test_a_drive_with_no_fetcher_does_nothing_and_says_so() -> None:
-    """The ordinary result in this build, and the acceptance condition."""
+    """The legacy seam has no default fetcher; acquire is the composed path."""
 
     result = drive_fetch(a_plan())
     assert result.outcome is FetchOutcome.NO_FETCHER
     assert result.received == 0
-    assert "absent rather than disabled" in result.reason
+    assert "legacy seam has no default fetcher" in result.reason
 
 
 def test_a_drive_for_a_symbol_with_no_endpoint_refuses() -> None:

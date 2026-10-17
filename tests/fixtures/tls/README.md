@@ -20,6 +20,7 @@ standard library's `ssl` and a loopback server, and **run every time**.
 | --- | --- |
 | `trusted-ca.crt` / `.key` | the CA a test node is commissioned to trust |
 | `untrusted-ca.crt` / `.key` | a CA nothing trusts, for the untrusted-issuer case |
+| `server-fetch.crt` / `.key` | `SAN=DNS:fetch.azazel.test`, trusted CA, dedicated acquisition E2E leaf (serial 9601, 100-year validity) |
 | `server.crt` / `.key` | `SAN=DNS:localhost`, issued by the trusted CA |
 | `server-wrong-name.crt` / `.key` | `SAN=DNS:not-localhost.test.invalid`, for hostname mismatch |
 | `server-expired.crt` / `.key` | valid 2020-01-01 to 2020-01-02, long expired |

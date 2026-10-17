@@ -107,7 +107,7 @@ def test_a_request_argument_is_bounded() -> None:
         assert argument.maximum == MAX_ARTIFACT_BYTES > 0
 
 
-# -- the destination comes from the resolved plan, never from the request --
+# -- the legacy sink destination comes from the resolved plan -------------
 
 
 def test_the_service_derives_its_destination_from_the_digest(tmp_path) -> None:
@@ -126,8 +126,11 @@ def test_the_service_derives_its_destination_from_the_digest(tmp_path) -> None:
         kwargs["sink"](b"abc")
         return Result()
 
+    from azazel_nexus.model_acquisition import AcquisitionPlan
+
+    plan = AcquisitionPlan("small-advisor", "vendor-mirror", "sha256:" + "a" * 64, 3, 0)
     service = FetchService(
-        resolve=lambda model_id, source_id: {"resolved": source_id},
+        resolve=lambda model_id, source_id: plan,
         transfer=transfer,
         staging=tmp_path,
     )
@@ -143,7 +146,7 @@ def test_the_service_derives_its_destination_from_the_digest(tmp_path) -> None:
     written = sorted(p.name for p in tmp_path.iterdir())
     assert written == ["a" * 64 + ".part"]
     # And the plan the transport got came from `resolve`, not the request.
-    assert seen["plan"] == {"resolved": "vendor-mirror"}
+    assert seen["plan"] is plan
 
 
 def test_a_symbol_that_does_not_resolve_is_refused_without_naming_a_host(tmp_path) -> None:
@@ -165,7 +168,7 @@ def test_a_symbol_that_does_not_resolve_is_refused_without_naming_a_host(tmp_pat
     assert reply["outcome"] == "source_unavailable"
     assert reply["received"] == 0
     message = reply["reason"]
-    assert "vendor-mirror" in message
+    assert message == "source_unavailable"
     for leak in ("http", "://", ".example", ".com", "443"):
         assert leak not in message, leak
     assert list(tmp_path.iterdir()) == [], "a refused request left a file"
@@ -278,3 +281,20 @@ def test_it_is_not_the_inference_transport() -> None:
         "PrivacyClass", "sanitize", "sanitise", "SituationFrame",
     ):
         assert forbidden not in body, forbidden
+
+
+def test_legacy_result_with_state_attribute_uses_legacy_reply(tmp_path):
+    from types import SimpleNamespace
+
+    from azazel_nexus.model_acquisition import AcquisitionPlan
+
+    plan = AcquisitionPlan("m", "vendor-mirror", "sha256:" + "a" * 64, 3, 0)
+    result = SimpleNamespace(state="unrelated", outcome=SimpleNamespace(value="complete"),
+                             received=3, reason="legacy")
+    service = FetchService(resolve=lambda *args: plan, transfer=lambda **kwargs: result,
+                           staging=tmp_path)
+    reply = service.handle(SimpleNamespace(arguments={
+        "model_id": plan.model_id, "source_id": plan.source_id,
+        "digest": plan.expected_digest, "size_bytes": 3, "resume_from": 0,
+    }))
+    assert reply["outcome"] == "complete" and reply["reason"] == "legacy"
