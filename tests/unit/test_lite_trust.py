@@ -2,17 +2,35 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from signing_oracle import public_key_for
 
-from azazel_nexus.lite_trust import TRUST_FILENAME, TrustRefused, TrustStore
+from azazel_nexus.audit import AuditLedger
+from azazel_nexus.lite_trust import (
+    RepinConfirmation,
+    RepinRequest,
+    TrustRefused,
+    TrustStore,
+)
 
 KEY_A = public_key_for(bytes(range(32))).hex()
 KEY_B = public_key_for(bytes(range(32, 64))).hex()
 COMMISSIONING = "sha256:" + "a" * 64
 OTHER_COMMISSIONING = "sha256:" + "b" * 64
+
+
+def _repin(trust, keys, *, commissioning_digest, pinned_at, reason, actor):
+    source = trust.root.parent / "new-anchor.json"
+    source.write_text(json.dumps({"keys": keys}), encoding="utf-8")
+    return trust.repin(
+        RepinRequest(source, reason, actor),
+        confirmation=RepinConfirmation("test-nonce", pinned_at),
+        ledger=AuditLedger(trust.root.parent / "audit.jsonl"),
+        now=pinned_at,
+    )
 
 
 @pytest.fixture()
@@ -75,7 +93,7 @@ def test_repinning_records_why_and_who(trust: TrustStore) -> None:
     trust.pin(
         [KEY_A], commissioning_digest=COMMISSIONING, pinned_at="2026-09-01T00:00:00Z", actor="op"
     )
-    trust.repin(
+    _repin(trust,
         [KEY_B],
         commissioning_digest=COMMISSIONING,
         pinned_at="2026-09-02T00:00:00Z",
@@ -92,7 +110,7 @@ def test_a_repin_without_a_reason_is_refused(trust: TrustStore, reason: str) -> 
         [KEY_A], commissioning_digest=COMMISSIONING, pinned_at="2026-09-01T00:00:00Z", actor="op"
     )
     with pytest.raises(TrustRefused) as caught:
-        trust.repin(
+        _repin(trust,
             [KEY_B],
             commissioning_digest=COMMISSIONING,
             pinned_at="2026-09-02T00:00:00Z",
@@ -107,7 +125,7 @@ def test_repinning_when_nothing_is_pinned_is_refused(trust: TrustStore) -> None:
     """A first pinning is a commissioning step, not a correction."""
 
     with pytest.raises(TrustRefused) as caught:
-        trust.repin(
+        _repin(trust,
             [KEY_A],
             commissioning_digest=COMMISSIONING,
             pinned_at="2026-09-01T00:00:00Z",
@@ -207,8 +225,8 @@ def test_a_failed_write_leaves_the_previous_pinning_in_place(
     monkeypatch.setattr(
         os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full"))
     )
-    with pytest.raises(OSError):
-        trust.repin(
+    with pytest.raises(TrustRefused, match="generation refused"):
+        _repin(trust,
             [KEY_B],
             commissioning_digest=COMMISSIONING,
             pinned_at="2026-09-02T00:00:00Z",
@@ -216,4 +234,5 @@ def test_a_failed_write_leaves_the_previous_pinning_in_place(
             actor="op",
         )
     assert trust.keys(commissioning_digest=COMMISSIONING) == (bytes.fromhex(KEY_A),)
-    assert sorted(p.name for p in trust.root.iterdir()) == [TRUST_FILENAME]
+    assert trust.current_generation() == 0
+    assert not list((trust.root / "trust-staging").iterdir())

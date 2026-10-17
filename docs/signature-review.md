@@ -150,17 +150,20 @@ the revocation path does not implement it.
 **Not fixed here.** Which role may sign a revocation list is a contract
 question, and deciding it unilaterally would change published semantics.
 
-### 4b. `repin` records an actor but does not authenticate one
+### 4b. `repin` requires local commissioning confirmation (#86)
 
-`TrustStore.repin` requires a `reason` and an `actor` and refuses an
-unexplained change — but the `actor` is recorded, not verified. The authority
-to repin is **filesystem permission on the trust store**, not a cryptographic
-check.
+The library now takes a file-based `RepinRequest`, requires a
+`RepinConfirmation`, and stages and validates a distinct root before an atomic
+generation-pointer promotion. It records six audit fields containing
+fingerprints, provenance and generation, never keys or the confirmation nonce.
+See [the trust-store contract](knowledge-lite-trust.md#6-the-trust-store) for
+the input format, failure behavior and audit ordering.
 
-That may well be the right model: the store is owned by a dedicated account
-with a restricted mode, and a party who can write it has already won. It is
-recorded here because it is a load-bearing assumption that is nowhere written
-down, not because it is necessarily wrong.
+Authentication and interactive confirmation belong to the runtime local
+commissioning boundary; the library records the supplied principal and requires
+the confirmation object, but cannot authenticate the principal or verify the
+nonce. Filesystem permissions remain unchanged and are not the complete repin
+authorization boundary. Initial commissioning `pin` retains its existing API.
 
 ### What is sound
 
