@@ -54,6 +54,12 @@ def run_all(harness: Harness) -> None:
     harness.stage("loopback decoy runtime", lambda: _loopback_decoys(harness))
     harness.stage("Edge probe to status", lambda: _edge_probe(harness))
     harness.stage("Knowledge Lite offline import", lambda: _lite_import(harness))
+    harness.stage("M.I.O. entry handoff", lambda: _mio_entry(harness),
+                  requires=("install files", "install accounts"))
+    harness.stage("Knowledge Lite status", lambda: _knowledge_status(harness),
+                  requires=("Knowledge Lite offline import", "install accounts"))
+    harness.stage("Operator setup flow", lambda: _operator_setup(harness),
+                  requires=("install files", "Knowledge Lite offline import"))
     harness.stage("Core reserve input path", lambda: _core_reserve_path(harness))
 
 
@@ -64,6 +70,7 @@ def _install_files(harness: Harness) -> str:
     ownership is not, and the installer says so.
     """
 
+    _setup_snapshot(harness, "before-install")
     result = subprocess.run(
         [
             "sh",
@@ -102,6 +109,7 @@ def _install_files(harness: Harness) -> str:
     ]
     if wrong:
         raise RuntimeError(f"{wrong} were created with the wrong mode")
+    _setup_snapshot(harness, "after-install")
     return (
         f"{len(LAYOUT)} directories at their declared modes; executables in "
         "place. Ownership was not applied -- that is the account stage"
@@ -839,9 +847,11 @@ def _lite_import(harness: Harness) -> str:
         ("absent", None, False, "unavailable", "absent", "absent"),
     )
 
+    _setup_snapshot(harness, "before-knowledge")
     checked = 0
     for name, bundle, admitted, overall, time_bound, static in cases:
-        root = harness.root / f"knowledge-lite-{name}"
+        root = (harness.root / "var/lib/azazel/knowledge" if name == "valid"
+                else harness.root / f"knowledge-lite-{name}")
         (root / "inbox").mkdir(parents=True, exist_ok=True)
         (root / "trust").mkdir(parents=True, exist_ok=True)
         shutil.copy(contract / "anchors.toml", root / "trust" / "anchors.toml")
@@ -900,6 +910,33 @@ def _lite_import(harness: Harness) -> str:
             )
         checked += 1
 
+    # The daemon and operator views use the same separate commissioned pin.
+    from nacl.signing import SigningKey
+
+    from azazel_nexus.lite_bundle import read_anchors
+    from azazel_nexus.lite_trust import TrustStore
+    from azazel_nexus.revocation_policy import (
+        REVOCATION_SIGNING,
+        RevocationPolicy,
+        commission_policy,
+    )
+
+    trust = harness.root / "var/lib/azazel/lite-trust"
+    (trust / "trust").mkdir(parents=True, exist_ok=True)
+    shutil.copy(contract / "anchors.toml", trust / "trust/anchors.toml")
+    anchors = read_anchors(trust / "trust/anchors.toml")
+    TrustStore(trust).pin([key.hex() for key in anchors.keys.values()],
+                         commissioning_digest="sha256:" + "e" * 64,
+                         pinned_at=NOW, actor=ACTOR)
+    revoker = SigningKey.generate().verify_key.encode()
+    commission_policy(
+        trust, RevocationPolicy(keys={"fixture-revoker": revoker},
+                                key_roles={"fixture-revoker": REVOCATION_SIGNING},
+                                threshold=1, generation=1),
+        commissioning_digest="sha256:" + "e" * 64,
+        anchors_key_roles=anchors.key_roles, anchors_keys=anchors.keys,
+    )
+    _setup_snapshot(harness, "after-knowledge")
     if checked != len(cases):
         raise RuntimeError(f"{checked} of {len(cases)} cases were exercised")
     return (
@@ -1087,3 +1124,104 @@ def _reserve_provider(component: str, memory_need_mib: int = 1000):
         signature_verified=True,
         content_policy_passed=True,
     )
+
+
+def _cli(harness: Harness, arguments: list[str]) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from azazel_nexus.cli import main; raise SystemExit(main())", *arguments],
+        env=harness.env, capture_output=True, text=True, timeout=15, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f"operator CLI exited {result.returncode}: {result.stderr[:200]}")
+    return result.stdout
+
+
+def _setup_snapshot(harness: Harness, point: str) -> dict:
+    document = json.loads(_cli(harness, ["setup", "--json"]))
+    assert document["read_only"] is True
+    assert document["hg05"] == "unmeasured"
+    assert document["provider_admission"] == "blocked"
+    steps = {step["name"]: step for step in document["steps"]}
+    assert steps["provider-admission"]["status"] == "blocked"
+    assert "unmeasured" in steps["provider-admission"]["reason"]
+    if not hasattr(harness, "setup_snapshots"):
+        harness.setup_snapshots = {}
+    harness.setup_snapshots[point] = steps
+    return steps
+
+
+def _operator_setup(harness: Harness) -> str:
+    snapshots = harness.setup_snapshots
+    assert snapshots["before-install"]["installed-files"]["status"] == "needed"
+    assert "missing:" in snapshots["before-install"]["installed-files"]["reason"]
+    assert "entrypoints present" in snapshots["after-install"]["installed-files"]["reason"]
+    assert snapshots["before-knowledge"]["knowledge-trust"]["status"] == "needed"
+    after = _setup_snapshot(harness, "final")
+    assert after["knowledge-trust"]["status"] == "done"
+    assert after["knowledge-store"]["status"] == "done"
+    return "read-only setup snapshots; entrypoint and Knowledge steps advanced; HG-05 unmeasured, provider admission blocked"
+
+
+def _mio_entry(harness: Harness) -> str:
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.routing import Route
+
+    absent = [harness.root / "var/lib/azazel/run" / leaf / f"{leaf}.sock"
+              for leaf in ("mio", "remote")]
+    assert all(not path.exists() for path in absent)
+    with Daemon(harness, "mio_entryd", "mio-entry") as daemon:
+        replies = [request(daemon.path, {"verb": "mio.route", "arguments": {
+            "privacy_class": "P0-public", "deadline_ms": 1000,
+        }}) for _ in range(2)]
+    ledger = AuditLedger(harness.root / "var/lib/azazel/state/mio/route.jsonl")
+    ledger.verify()
+    events = [entry.event for entry in ledger]
+    for reply in replies:
+        assert reply["ok"] is True
+        assert reply["result"]["route"] == Route.DETERMINISTIC_HANDOFF.value
+        assert reply["result"]["outcome"] == "refused"
+        assert reply["result"]["reason"]
+    assert {k: v for k, v in replies[0]["result"].items() if k != "ledger_seq"} == {
+        k: v for k, v in replies[1]["result"].items() if k != "ledger_seq"}
+    assert replies[1]["result"]["ledger_seq"] == len(events)
+    selections = [e for e in events if e["event_type"] == "mio.route.selected"]
+    terminals = [e for e in events if e["event_type"] == "mio.route.terminal"]
+    assert len(selections) == len(terminals) == 2
+    for reply, selected, terminal in zip(replies, selections, terminals, strict=True):
+        assert selected["reason"] == reply["result"]["reason"]
+        assert selected["route"] == terminal["route"] == reply["result"]["route"]
+        assert terminal["outcome"] == reply["result"]["outcome"]
+    availability = [e for e in events if e["event_type"] == "mio.entry.availability"]
+    assert len(availability) == 2
+    assert all(e["local"] == "local_unavailable" and e["remote"] == "remote_unavailable"
+               and "unmeasured" in e["local_refusal"] for e in availability)
+    assert not any(e["event_type"] in {"mio.local.readiness", "mio.remote.response"}
+                   for e in events)
+    assert all(not path.exists() for path in absent)
+    return "two deterministic handoffs; reasons and route chain checked; absent local/remote sockets, no provider dispatch"
+
+
+def _knowledge_status(harness: Harness) -> str:
+    from datetime import UTC, datetime
+
+    from azazel_nexus.lite_import import status_summary
+
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    root = harness.root / "var/lib/azazel/knowledge"
+    expected = status_summary(root=root, trust_root=harness.root / "var/lib/azazel/lite-trust",
+                              query_as_of=now)
+    assert expected["state"] == "available"
+    assert expected["generation"] is not None
+    with Daemon(harness, "knowledge_lited", "knowledge") as daemon:
+        reply = request(daemon.path, {"verb": "knowledge.status", "arguments": {}})
+    assert reply == {"ok": True, "result": expected}
+    status = _cli(harness, ["--knowledge-lite", str(root), "--as-of", now, "status"])
+    for key, label in (("state", "state"), ("reason_code", "reason"),
+                       ("generation", "generation"), ("freshness", "freshness")):
+        assert f"    {label}: {expected[key]}" in status
+    setup = _setup_snapshot(harness, "daemon-knowledge")
+    assert setup["knowledge-store"]["status"] == "done"
+    assert f"reason: {expected['reason_code']}" in setup["knowledge-store"]["reason"]
+    assert f"freshness: {expected['freshness']}" in setup["knowledge-store"]["reason"]
+    return "real Knowledge daemon matches reconciled setup/status view with the offline import store and separate trust pin"

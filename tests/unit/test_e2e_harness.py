@@ -262,6 +262,9 @@ REQUIRED_STAGES = (
     # admission gate -- in the three states that matter. It takes no
     # measurement and needs no hardware, which is why it can be here at all:
     # what it drives is the machinery around a number that does not exist.
+    "M.I.O. entry handoff",
+    "Knowledge Lite status",
+    "Operator setup flow",
     "Core reserve input path",
 )
 
@@ -582,3 +585,99 @@ def test_the_refusal_happens_before_the_harness_writes_anything():
     assert not target.exists(), "a previous run left this behind"
     assert main(["--root", str(target)]) == 2
     assert not target.exists(), "the harness wrote to a root it refused"
+
+
+@pytest.mark.parametrize("root,expected", [(True, (19, 1)), (False, (15, 5))])
+def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
+    from tools import e2e_stages as stages
+
+    def accounts(harness):
+        if not root:
+            raise NotExecuted("root required")
+        return "accounts checked"
+
+    monkeypatch.setattr(stages, "_install_accounts", accounts)
+    monkeypatch.setattr(stages, "_masked", lambda h: (_ for _ in ()).throw(
+        NotExecuted("systemd enforcement is a separate host check")))
+    for name in ("_install_files", "_inventory", "_commission", "_generation",
+                 "_activation", "_health", "_failure", "_rollback", "_audit",
+                 "_lite_matrix", "_edge_package", "_loopback_decoys", "_edge_probe",
+                 "_lite_import", "_core_reserve_path", "_mio_entry", "_knowledge_status",
+                 "_operator_setup"):
+        monkeypatch.setattr(stages, name, lambda h: "executed")
+    harness = Harness(short_root)
+    stages.run_all(harness)
+    passed, skipped = expected
+    assert harness.report.summary() == {
+        "passed": passed, "not_executed": skipped, "failed": 0, "total": 20}
+
+
+def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):
+    from azazel_nexus.lite_import import status_summary
+    from tools.e2e_stages import _lite_import, _operator_setup, _setup_snapshot
+
+    harness = Harness(short_root)
+    before = _setup_snapshot(harness, "before-install")
+    assert "missing:" in before["installed-files"]["reason"]
+    wrappers = short_root / "usr/libexec/azazel"
+    wrappers.mkdir(parents=True)
+    for name in ("az-activated", "az-commissiond", "az-auditd", "az-mio-entryd", "az-knowledge-lited"):
+        (wrappers / name).touch()
+    _setup_snapshot(harness, "after-install")
+    _lite_import(harness)
+    summary = status_summary(root=short_root / "var/lib/azazel/knowledge",
+                             trust_root=short_root / "var/lib/azazel/lite-trust",
+                             query_as_of="2026-10-18T00:00:00Z")
+    assert summary["state"] == "available", summary
+    assert summary["generation"] is not None
+    assert "provider admission blocked" in _operator_setup(harness)
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_root_exchange_uses_operator_gid_and_restores_it(monkeypatch, refused):
+    import io
+    import json
+    import struct
+    from types import SimpleNamespace
+
+    from tools import e2e_harness as module
+
+    body = json.dumps({"ok": True, "result": {}}).encode()
+    reply = io.BytesIO(struct.pack("!I", len(body)) + body)
+    groups = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, value):
+            pass
+
+        def connect(self, path):
+            assert groups == [456]
+            if refused:
+                raise PermissionError("fixture connection refusal")
+
+        def sendall(self, body):
+            pass
+
+        def shutdown(self, mode):
+            pass
+
+        def recv(self, size):
+            return reply.read(size)
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(module.os, "getegid", lambda: 123)
+    monkeypatch.setattr(module.os, "setegid", groups.append)
+    monkeypatch.setattr(module.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=456))
+    monkeypatch.setattr(module.socket, "socket", lambda *args: Connection())
+    if refused:
+        with pytest.raises(PermissionError):
+            module.request(Path("/fixture.sock"), {})
+    else:
+        assert module.request(Path("/fixture.sock"), {}) == {"ok": True, "result": {}}
+    assert groups == [456, 123]
