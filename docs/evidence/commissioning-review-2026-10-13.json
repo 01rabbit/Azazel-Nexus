@@ -1,0 +1,58 @@
+{
+  "schema": "azazel-nexus/local-software-evidence/v1",
+  "date": "2026-10-13",
+  "source_base": "778d61bab79805288e136b2f6d0502146e4f3910",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "worktree": "uncommitted; pre-existing changes preserved",
+  "selected_source_listing_sha256": "f951b7e5397f644010b6f42e039e9ca10d1f46de8b28937649e77d380d6d4018",
+  "selected_source_matches_mac_and_vm": true,
+  "selected_source_files": [
+    "src/azazel_nexus/commissioning_approval.py",
+    "src/azazel_nexus/commissioning_draft.py",
+    "src/azazel_nexus/fabric_boundary.py",
+    "runtime/src/azazel_nexus_runtime/proposal_export.py",
+    "runtime/src/azazel_nexus_runtime/proposal_review.py",
+    "runtime/src/azazel_nexus_runtime/commission_cli.py",
+    "tests/unit/test_commissioning_retained_review.py",
+    "tests/unit/test_commissioning_retained_storage.py",
+    "tests/unit/test_runtime_proposal_export.py",
+    "tests/unit/test_runtime_proposal_review.py"
+  ],
+  "tests": {
+    "mac_related": {"passed": 203, "failed": 0, "seconds": 1.26},
+    "debian_arm64_full_unit": {
+      "passed": 3759,
+      "failed": 0,
+      "skipped": 1,
+      "seconds": 38.67,
+      "cwd": "/home/rabbit/nexus-lease-review-20261013",
+      "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests/unit -q --tb=short --basetemp=/home/rabbit/nxsf6"
+    },
+    "intermediate_full_unit": {
+      "passed": 3755,
+      "failed": 1,
+      "skipped": 1,
+      "cause": "runtime imported a private library retention helper",
+      "fix": "public explicit model-input API; boundary test unchanged"
+    }
+  },
+  "targeted_ruff": "pass",
+  "repository_wide_lint": "not rerun; existing findings not changed",
+  "review": "independent read-only source review; no material finding in bounded historical-review scope",
+  "verification_scope": "synthetic hardware, node, trust and encryption checks; real ordinary-file storage and real ephemeral Ed25519 signatures through CLI export/review",
+  "not_verified": [
+    "production encrypted-storage deployment and operator enrollment",
+    "privileged-owner tamper resistance or rollback protection",
+    "current hardware/resource freshness and trusted time",
+    "authoritative commissioning promotion and activation composition",
+    "policy/epoch/health evidence",
+    "installed systemd/D-Bus service flow",
+    "Debian Live or hardware HIL",
+    "CI and latest installed wheel artifacts"
+  ],
+  "production_key_created": false,
+  "service_activation_performed": false,
+  "provider_admission_performed": false,
+  "physical_media_or_firmware_operation": false,
+  "issue_93": "open"
+}

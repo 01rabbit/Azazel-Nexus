@@ -104,11 +104,12 @@ def resolve(key: str) -> str:
 
 
 class UnitManager:
-    """The four things a controller may ask of a service manager.
+    """The narrow operations a controller may ask of a service manager.
 
     Narrowing (`mask`) and widening (`unmask_and_enable`) are separate verbs
     because they carry different authority, and `is_active` is separate from
-    both because reading is not doing.
+    both because reading is not doing. Inactivity is a separate positive
+    observation: not-ready does not mean stopped.
     """
 
     def state(self, unit: str) -> UnitState:
@@ -121,6 +122,10 @@ class UnitManager:
         raise NotImplementedError
 
     def is_active(self, unit: str) -> bool:
+        raise NotImplementedError
+
+    def is_inactive(self, unit: str) -> bool:
+        """Positive inactivity evidence, never the negation of readiness."""
         raise NotImplementedError
 
 
@@ -164,6 +169,10 @@ class RecordingUnitManager(UnitManager):
     def is_active(self, unit: str) -> bool:
         return unit not in self._inactive and self.state(unit) is UnitState.ENABLED
 
+    def is_inactive(self, unit: str) -> bool:
+        # This model is synthetic; production checks systemd independently.
+        return not self.is_active(unit)
+
 
 @dataclass
 class DbusUnitManager(UnitManager):
@@ -189,6 +198,7 @@ class DbusUnitManager(UnitManager):
         "EnableUnitFiles",
         "GetUnitFileState",
         "GetActiveState",
+        "GetInactiveState",
     )
 
     def _known_unit(self, unit: str) -> str:
@@ -238,4 +248,10 @@ class DbusUnitManager(UnitManager):
         answer = self.call("GetActiveState", self._known_unit(unit))
         if not isinstance(answer, bool):
             raise UnitOperationFailed("systemd returned an invalid active-state result")
+        return answer
+
+    def is_inactive(self, unit: str) -> bool:
+        answer = self.call("GetInactiveState", self._known_unit(unit))
+        if type(answer) is not bool:
+            raise UnitOperationFailed("systemd returned an invalid inactivity result")
         return answer

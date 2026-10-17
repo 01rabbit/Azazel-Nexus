@@ -16,8 +16,10 @@ from __future__ import annotations
 import inspect
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -35,9 +37,50 @@ from tools.e2e_harness import (  # noqa: E402
     StageResult,
 )
 
+
+@pytest.fixture
+def short_root():
+    """A harness root short enough for the daemons' unix socket addresses.
+
+    pytest's tmp_path can exceed MAX_ROOT_BYTES on CI runners, and the
+    harness rightly refuses such a root.
+    """
+    root = Path(tempfile.mkdtemp(prefix="az-e2e-", dir="/tmp"))
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGES = (REPO_ROOT / "tools" / "e2e_stages.py").read_text(encoding="utf-8")
 INSTALLER = (REPO_ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+_STAGED_ENTRYPOINTS = (
+    "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
+    "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+)
+
+
+def _copy_installer_tree_for_layout_test(tmp_path: Path) -> Path:
+    """Copy actual installer inputs and substitute harmless wrapper files."""
+    root = tmp_path / "installer-tree"
+    shutil.copytree(REPO_ROOT / "packaging", root / "packaging")
+    (root / "tools").mkdir()
+    for name in ("install_profile_fields.py", "stage_runtime_entrypoints.py"):
+        shutil.copy2(REPO_ROOT / "tools" / name, root / "tools" / name)
+    shutil.copytree(REPO_ROOT / "src", root / "src")
+    shutil.copytree(REPO_ROOT / "runtime" / "src", root / "runtime" / "src")
+    fake_stager = root / "tools" / "stage_runtime_entrypoints.py"
+    fake_stager.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "dest = Path(os.environ['DESTDIR']) / 'usr/libexec/azazel'\n"
+        "dest.mkdir(parents=True, exist_ok=True)\n"
+        f"for name in {_STAGED_ENTRYPOINTS!r}:\n"
+        "    target = dest / name\n"
+        "    target.write_text('#!/bin/sh\\nexit 0\\n', encoding='ascii')\n"
+        "    target.chmod(0o755)\n",
+        encoding="utf-8",
+    )
+    return root
 
 
 # -- a skip is not a pass -------------------------------------------------
@@ -123,7 +166,7 @@ def test_a_skipped_stage_is_rendered_as_not_run_rather_than_as_a_tick():
 # -- the harness itself ---------------------------------------------------
 
 
-def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
+def test_a_stage_that_raises_not_executed_is_skipped_not_failed(short_root):
     """The bug the harness found on its first run, pinned.
 
     `NotExecuted` lived in the runner, which the stages imported again under
@@ -132,7 +175,7 @@ def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
     two modules.
     """
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
 
     def skip():
         raise NotExecuted("there is no service manager here")
@@ -142,8 +185,8 @@ def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
     assert "service manager" in harness.report.stages[0].detail
 
 
-def test_a_stage_that_raises_anything_else_is_a_failure(tmp_path):
-    harness = Harness(tmp_path)
+def test_a_stage_that_raises_anything_else_is_a_failure(short_root):
+    harness = Harness(short_root)
 
     def broken():
         raise RuntimeError("the digest did not match")
@@ -153,10 +196,10 @@ def test_a_stage_that_raises_anything_else_is_a_failure(tmp_path):
     assert "digest did not match" in harness.report.stages[0].detail
 
 
-def test_a_stage_that_overruns_its_deadline_is_a_failure_not_a_slow_pass(tmp_path):
+def test_a_stage_that_overruns_its_deadline_is_a_failure_not_a_slow_pass(short_root):
     import tools.e2e_harness as harness_module
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
     original = harness_module.STAGE_DEADLINE_SECONDS
     harness_module.STAGE_DEADLINE_SECONDS = 0.0
     try:
@@ -231,7 +274,7 @@ def test_every_stage_the_issue_lists_is_run_in_order():
     assert tuple(found) == REQUIRED_STAGES
 
 
-def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_path):
+def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(short_root):
     """Nothing about the product went wrong, so nothing may read as broken.
 
     Found on CI: the runner is not root, `useradd` failed, and five later
@@ -240,7 +283,7 @@ def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_pat
     explains them.
     """
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
 
     def skip():
         raise NotExecuted("not root here")
@@ -254,8 +297,8 @@ def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_pat
     assert harness.report.ok() is True
 
 
-def test_a_stage_whose_prerequisite_ran_is_not_skipped(tmp_path):
-    harness = Harness(tmp_path)
+def test_a_stage_whose_prerequisite_ran_is_not_skipped(short_root):
+    harness = Harness(short_root)
     harness.stage("install accounts", lambda: "created")
     harness.stage("inventory", lambda: "listed", requires=("install accounts",))
     assert harness.report.stages[1].status == EXECUTED
@@ -362,19 +405,24 @@ def test_the_without_accounts_mode_says_that_ownership_was_not_applied():
 
 
 def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
-    """The real script, against a prefix. Not a reimplementation of it.
+    """The real installer creates its declared layout against a prefix.
 
-    Accounts are the one thing it does to the host either way; the harness
-    runs on a throwaway container, and an installer that pretended to create
-    them would be testing a different script.
+    The copied installer/profile/package inputs remain real; only wrapper
+    staging is replaced with harmless executable placeholders. This covers
+    the layout path, not runtime-import qualification, native deadline
+    support, or installed-runtime readiness.
     """
 
     from azazel_nexus.layout import LAYOUT
 
+    if not Path("/etc/os-release").is_file():
+        pytest.skip("installer requires the host's os-release install profile")
+
+    installer_root = _copy_installer_tree_for_layout_test(tmp_path)
     result = subprocess.run(
         [
             "sh",
-            str(REPO_ROOT / "packaging" / "install.sh"),
+            str(installer_root / "packaging" / "install.sh"),
             "--without-service-manager",
             "--without-accounts",
         ],
@@ -382,7 +430,6 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
             "DESTDIR": str(tmp_path),
             "PATH": "/usr/sbin:/usr/bin:/bin:/sbin",
             "PYTHON": sys.executable,
-            "PYTHONPATH": f"{REPO_ROOT / 'src'}:{REPO_ROOT / 'runtime' / 'src'}",
         },
         capture_output=True,
         text=True,
@@ -395,7 +442,7 @@ def test_the_installer_runs_and_creates_the_declared_layout(tmp_path):
     for spec in LAYOUT:
         created = tmp_path / spec.path.lstrip("/")
         assert created.is_dir(), f"{spec.path} was not created"
-        assert created.stat().st_mode & 0o777 == spec.mode
+        assert stat.S_IMODE(created.stat().st_mode) == spec.mode
 
 
 def test_an_unknown_installer_option_is_refused():
@@ -409,7 +456,7 @@ def test_an_unknown_installer_option_is_refused():
     assert "unknown option" in result.stderr
 
 
-def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
+def test_the_lite_matrix_stage_actually_composes_nine_configurations(short_root):
     """The stage body, executed rather than read.
 
     `test_every_stage_the_issue_lists_is_run_in_order` checks the stage
@@ -426,7 +473,7 @@ def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
     from tools.e2e_harness import Harness
     from tools.e2e_stages import _lite_matrix
 
-    detail = _lite_matrix(Harness(tmp_path))
+    detail = _lite_matrix(Harness(short_root))
     assert detail.startswith("9 CORE + Lite configurations")
     assert "enforcement or baseline readiness" in detail
     assert "what continues" in detail

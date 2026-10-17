@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 pinned conventional venv metadata and base-byte binding on the real measurement path",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/python_profile.py": "28bfd005e35290fafd685e5033c46b2d1fa75e4682851dcb3467265843b7decc",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "3fee3ec87d85c381ebe0f8bc51fde04e7d882b1bf2536166864b54a341e85094",
+      "tests/unit/test_runtime_python_profile.py": "02f66db9177edf5ff6a1b55236dce7658a1ed3f6f7ee62de250b441200a5c09b",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "910478c943a97dbc02fa68bf45e8b6734aa32763ad3e75400249f252da95e16a",
+      "tests/unit/test_installed_link_measurement.py": "eb6faa4817bd3b557a1e956e9373e37ebc6943437d6f9b1af1d9438627a653dc",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "cf426b458bdf015c67cf0199a3c2c324cb253a3806aa8ac29210e21e23be95f9",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "3778a73b742a8860c0f18b22c81ad9dceba7ae604022ac694eeced62bec8b006"
+    }
+  },
+  "implementation": {
+    "integration": "measure_bootstrap_installed_files: canonical wrappers -> interpreter/import coverage -> pinned base/copy equivalence -> second fixed one-file protected cfg read -> pure metadata validation -> complete measurement -> protected manifest reread",
+    "metadata": "Lexical /opt/.../bin/{python,python3,python3.13} maps to /opt/.../pyvenv.cfg; require 0644 regular entry, 1..4096 bytes, unique known keys and fixed Debian CPython3.13 creation metadata",
+    "base": "Require independently pinned 0755 usr/bin/python3.13; resolved wrapper terminal already 0755 and must match base size/hash. Both subsequently fully measured",
+    "reader": "Reuses read_pinned_installed_files with paths=(cfg,), same manifest bytes and independent digest; existing max-three-files/64KiB reader limit unchanged",
+    "not_authority": "No new approval/token/manifest version/profile selector, no fallback and no public start gate change",
+    "architecture": "Pure mechanics are CPU-architecture independent. Debian CPython3.13 selected-bootstrap profile does not change general runtime Python>=3.11 support. Native ABI qualification remains separate"
+  },
+  "references": [
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Modules/getpath.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/venv/__init__.py"
+  ],
+  "tests": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/python-profile-macos.xml",
+    "macos": {"passed": 3078, "skipped": 6, "seconds": 17.54},
+    "linux_command": "cd /tmp/azv.hgwFV2 && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_runtime_bootstrap_protected_admission.py --basetemp=/tmp/azw.rEMerG --junitxml=/tmp/azv.hgwFV2/final-profile.xml --tb=short",
+    "linux": {"passed": 107, "failed": 0, "skipped": 0, "seconds": 0.34, "environment": "Existing Debian13 ARM64 Python3.13.5 test venv, no sudo/install/service operations"},
+    "causal": "Real protected regular-tree readers accept valid link/copy fixtures first; altering cfg afterward refuses retained bound audit start before any StartUnit. Missing/mode/size/semantic/base mismatch tests refuse before full measurement",
+    "development_failures": "First combined synthetic fixture run:92 passed/4 failed/11 errors due invalid top-level usr directory records; corrected fixtures only. Next run:106 passed/1 failed due old expected file count4 versus new cfg file5; corrected count. No production gate weakened",
+    "final_review_test_amendment": "After macOS related3078/6 and initial Linux focused107, Sol found a wrappers-only mock could produce a redacted KeyError false pass on unexpected cfg read. Replaced it with exact selection plus pytest.fail. Subsequent macOS test_installed_link_measurement.py:11 passed in0.38s, target Ruff pass; regenerated Linux snapshot and repeated107 focused tests:107 passed in0.34s. Source hashes and final Linux snapshot describe this amended test. MacOS broad report precedes test-only amendment",
+    "counts": "Overlapping runs/selections are not additive. Earlier full Linux suite remains 25 failures and was not rerun. Native timer tests remain unbuilt/skipped, not passed"
+  },
+  "existing_vm_config_observation": {
+    "read_only": true,
+    "bytes": 182,
+    "creation_version": "3.13.5",
+    "parser_accepted": true,
+    "meaning": "Only syntax/metadata observation; existing home-directory VM test venv was not measured or admitted as a supported /opt deployment"
+  },
+  "linux_snapshot_before_test_review": {
+    "path": "/tmp/azn-linux-check.I6YGHW/profile/source.tar.gz",
+    "sha256": "c30fde459b851a65ef83acfd333a66e8dfc07164a15d1086adf065e986027f6c",
+    "archive_bytes": 1264672,
+    "files": 502,
+    "input_bytes": 5095222,
+    "member_digest_algorithm": "SHA256 of archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "members_digest": "cf7f154d9791e8053d1a90154009cadfa6c343ac95a6e67a9929bcf6f28af34a",
+    "local_current_members_match": true,
+    "remote_archive_digest_match": true,
+    "remote_members_match_after_tests": true,
+    "scope": "Focused code/test inputs, not a complete release or full-suite snapshot; deleted tracked source omitted, dirty current files retained"
+  },
+  "linux_snapshot": {
+    "path": "/tmp/azn-linux-check.I6YGHW/profile/final-source.tar.gz",
+    "sha256": "a9b2eeb60da5b756402a59c52041515036737d7ae2ecfafcaaaf1cad2b7b862f",
+    "archive_bytes": 1264732,
+    "files": 502,
+    "input_bytes": 5095387,
+    "member_digest_algorithm": "SHA256 of archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "members_digest": "5fb87e3692731c7f275d1f50aaff47cf115c456c0c40889de1d1b34c6897f345",
+    "local_current_members_match": true,
+    "remote_archive_digest_match": true,
+    "remote_members_match_after_tests": true
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/python-profile-macos.xml", "sha256": "3972d823afd8fadf7720a53df554699d0465818eecdd11100d323a2b5ae01a0e"},
+    "linux_before_test_review": {"path": "/tmp/azn-linux-check.I6YGHW/profile/profile.xml", "sha256": "04779cb695c420c14574b99b05f735b0dc014e5b4c3a63114f12af54b357e05b"},
+    "linux": {"path": "/tmp/azn-linux-check.I6YGHW/profile/final-profile.xml", "sha256": "2a50e03a3754cfdd3fa1e8a8fcc65511e8e7d02fb41fea2905fc9761a1b944ce"}
+  },
+  "review": "Sol independently reviewed production integration and final fixtures. No production blocker; one test-only false-positive risk corrected and confirmed by Sol. Explicitly metadata/base-byte binding, not complete execution admission",
+  "cleanup": "Exact task-created remote /tmp/azp.FQs4w0 and /tmp/azq.30XaVV removed after ownership/non-symlink/source verification, 7.2MiB+420KiB. Final /tmp/azv.hgwFV2 and /tmp/azw.rEMerG likewise verified, 7.2MiB+420KiB, then removed. Small local archives/XML retained; user data and existing VM environments untouched",
+  "lint": "Seven changed Python files pass Ruff; no unrelated cleanup or repository-wide lint rerun",
+  "remaining": [
+    "Current kernel executable identity, CPython version/ABI and isolated startup state",
+    "Startup overrides, implicit files/zip/build markers, import-routing and native-loader constraints",
+    "Native kernel timer compilation and actual system-manager lifecycle qualification",
+    "Independently provisioned deployment records/pins; public opening/start/readiness still refuses",
+    "Previous agent-induced project .venv replacement remains unresolved; tests use --no-project --isolated and do not restore or modify it"
+  ],
+  "not_performed": ["CI", "native compilation", "real service installation/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "repository commit/push"]
+}

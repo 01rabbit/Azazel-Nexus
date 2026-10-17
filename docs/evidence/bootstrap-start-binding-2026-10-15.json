@@ -1,0 +1,36 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; hashes cover complete current files, not only this increment",
+  "scope": "supervisor phase-bound start handoff; production manager still refuses",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "923a28389070bd5282aa231cd5e94047a7f3e019b56726572d93b820ad73e3fb",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "73ae8b3a48350b2f5c905f1681c5439ec2c8ac2a81ae479679551c3fc2dea680",
+    "tests/unit/test_runtime_bootstrap.py": "0f38ec39c57fa7611a52e67c2fdffc2820de9e0a1240f54e7e76fa076c7a50e8",
+    "tests/unit/test_runtime_bootstrap_manager.py": "bd55be584e450b992d272d5a6b267a870365fce661b8da3042f26304c9a6ffe0",
+    "tests/unit/test_runtime_bootstrap_manager_loaded.py": "5c9a1c9e7f3e01403d6ab6fe1095b33997daea6f33751c7caf360ff84a9835c0",
+    "tests/unit/test_runtime_bootstrap_start_binding.py": "52b63e245d2fe106a46263d5698a1ab6064a39c4427e68ba296514ac86fa7687",
+    "docs/IMPLEMENTATION_SPEC.md": "f16895d4cc4e334424d1963dde2e4e2c2e537ed6b2bf1643f21965246f7e337f"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2008,
+    "skipped": 2,
+    "seconds": 7.33,
+    "environment": "local macOS; new handoff tests use in-memory supervisor fixtures, no real service",
+    "skip_reasons": ["installer requires Linux os-release", "requires Linux systemd-analyze"],
+    "earlier_run": "2007 passed / 1 failed / 2 skipped: loaded-manager refusal fixture used old required-argument API; fixture updated before final run"
+  },
+  "ruff": "six changed source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed phase/receipt and audit handoff semantics; strict extension checks retained without bypass. Luna added 19 targeted regressions; coordinator implemented and integrated source and checked final suite.",
+  "limits": [
+    "not a deployed start backend: production manager refuses without creating a session or invoking supplied checkpoint",
+    "full synchronous checkpoint cannot be called directly from BootstrapStartJobs running event loop",
+    "pre-live extension inspection may refuse concurrent writes; original stopped head remains the independent startup anchor",
+    "exact activation/process closure, controller lifetime and authenticated helper readiness remain incomplete",
+    "no full repository suite, CI, Linux VM, actual service, physical operation, source commit or push"
+  ]
+}

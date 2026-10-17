@@ -1,0 +1,23 @@
+{
+  "scope": "dirty review-source local regression; not CI or installed-runtime evidence",
+  "environment": "existing Debian 13 ARM64 review copy and unchanged Python 3.13 venv",
+  "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests --basetemp=<fresh private ordinary directory> -q",
+  "initial_result": {"passed": 4592, "failed": 1, "skipped": 1, "warnings": 2},
+  "initial_failure": "test_readme_status.py::test_the_subcommand_table_is_exactly_what_the_cli_accepts",
+  "fix": "document three actual commands in README; add two actual-store ordinary-file flow tests",
+  "final_result": {"passed": 4595, "failed": 0, "skipped": 1, "warnings": 2, "seconds": 41.11},
+  "warnings": "two Python 3.13 multiprocessing/fork deprecations in deadline crash tests",
+  "file_hash_scope": "Only these seven files independently compared equal on Mac and VM; not a full-tree identity claim",
+  "sha256": {
+    "src/azazel_nexus/bootstrap_deployment.py": "0df4f1aa5f89048916a837a69efda2b75f526cd4f1122d2a9bde907b3bb37f2d",
+    "src/azazel_nexus/bootstrap_deployment_store.py": "66d45dde9cbe260b6ba824fc107046fca49c9d9faa492460c22c9a82cc606832",
+    "src/azazel_nexus/bootstrap_deployment_cli.py": "ee6b4d1fdd966a35860e4961df4689587bd12788744850cd93c9a131c1aba942",
+    "src/azazel_nexus/cli.py": "b8f503d6dc438a903fc0cac95c9754b1c0f8bf4bd275dd17b2dc0f4efdd5034b",
+    "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "07abdaa7bcdc6c85954bbad3b2cf4bf86431f2ddf47d8af8ce706f6d370b1bde",
+    "tests/unit/test_bootstrap_deployment_flow.py": "ea9804215aa46d61369d5b285945bc1f8b031f686537643a443adc2bf1a4cee5",
+    "README.md": "d57d164454df82995ebc488e29591a2588371d51f945f8f264710f5be0b1d20e"
+  },
+  "live_provisioning_or_services": false,
+  "ci_run": false,
+  "runtime_goal_complete": false
+}

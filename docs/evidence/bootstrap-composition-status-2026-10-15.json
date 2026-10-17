@@ -1,0 +1,228 @@
+{
+  "date": "2026-10-15",
+  "issue": 93,
+  "scope": "Finite status of the supporting-only runtime composition acceptance conditions, the production-factory gate, and the owner-supplied inputs still required. Derived from Issue #93 (body and comments), docs/IMPLEMENTATION_SPEC.md, docs/runtime-activation-remaining.md, docs/debian-live-install.md and the 2026-10-15 evidence files, by three independent read-only investigations integrated by the coordinator. It records status; it confers no authority.",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head_at_analysis": "9d9f7bd"
+  },
+  "classification_legend": {
+    "implemented": "in code, with synthetic/unit evidence only",
+    "vm_verified": "observed on the real Debian ARM64 systemd VM with operator evidence",
+    "not_implemented": "no code path",
+    "external_input": "blocked on owner-supplied keys, records or decisions that must not be fabricated",
+    "additional_approval": "blocked on explicit user authorization (persistent enable, real unit install/start, reboot/suspend, push/close)"
+  },
+  "conditions": [
+    {
+      "id": "B1",
+      "name": "Exact two-unit scope (auditd + commissiond)",
+      "status": "implemented",
+      "source": "docs/runtime-activation-remaining.md; IMPLEMENTATION_SPEC.md:197-203",
+      "next": "keep exact-set tests"
+    },
+    {
+      "id": "B2",
+      "name": "Distinct bootstrap authorization type, not an ActivationLease",
+      "status": "implemented",
+      "source": "IMPLEMENTATION_SPEC.md:197-203",
+      "next": "none"
+    },
+    {
+      "id": "B3",
+      "name": "Domain-separated supporting-bootstrap approval purpose",
+      "status": "implemented",
+      "source": "src/azazel_nexus/bootstrap_approval.py:140-170",
+      "next": "real approval is F2"
+    },
+    {
+      "id": "B4",
+      "name": "Bootstrap-only generation variant rejected by normal readers",
+      "status": "implemented",
+      "source": "IMPLEMENTATION_SPEC.md:472-479",
+      "next": "real-host publication with genuine pins (H2)"
+    },
+    {
+      "id": "B5",
+      "name": "Protected fixed-path readers for policy/approval/context/generation/installed-files manifest",
+      "status": "implemented",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py:216-588",
+      "next": "deployment-time dry run with real pins (H1)"
+    },
+    {
+      "id": "B6",
+      "name": "Controller-owned pre-start health: capacity, audit continuity, trust/time/epoch",
+      "status": "implemented",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap.py:277-340",
+      "next": "real producers are F4"
+    },
+    {
+      "id": "B8",
+      "name": "Independent kernel deadline (CLOCK_BOOTTIME one-shot self-SIGKILL)",
+      "status": "vm_verified",
+      "source": "docs/evidence/bootstrap-deadline-sandbox-attempt2-2026-10-15.json",
+      "next": "suspend/reboot is G1"
+    },
+    {
+      "id": "B9",
+      "name": "Supervisor audit-first then commissioning; stop+remask on any exit",
+      "status": "implemented",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap.py:653-880; docs/evidence/bootstrap-prototype-manager-2026-10-15.json",
+      "next": "real manager requires C1/C2"
+    },
+    {
+      "id": "B11",
+      "name": "Once-per-boot controller marker refuses a re-run",
+      "status": "vm_verified (fixture)",
+      "source": "docs/evidence/bootstrap-ready-order-sandbox-2026-10-15.json now_qualified_on_real_host",
+      "next": "/run mount-view agreement: lifecycle containment case run_marker_mount_view"
+    },
+    {
+      "id": "B12",
+      "name": "Controller READY first; helpers held before READY; order controller->audit->commission",
+      "status": "vm_verified (fixture)",
+      "source": "docs/evidence/bootstrap-ready-order-sandbox-2026-10-15.json",
+      "next": "product units need C2"
+    },
+    {
+      "id": "B13",
+      "name": "Controller death follow-stops both helpers with cgroup and job drain",
+      "status": "vm_verified (fixture)",
+      "source": "docs/evidence/bootstrap-ready-order-sandbox-2026-10-15.json",
+      "next": "queued/late-start variant: lifecycle containment case queued_start_containment"
+    },
+    {
+      "id": "B13a",
+      "name": "Audit death follow-stops commission; controller unaffected",
+      "status": "implemented as fixture; VM run pending operator",
+      "source": "tools/qualify_lifecycle_containment_sandbox.py run_audit_death_follow_stop",
+      "next": "operator --execute"
+    },
+    {
+      "id": "B14",
+      "name": "Close/reload/loaded-mask/job-drain; owned mask with recovery; owned withdrawal",
+      "status": "implemented",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap.py:356-469; bootstrap_manager.py:963-1011",
+      "next": "installed lifecycle needs C2"
+    },
+    {
+      "id": "B15",
+      "name": "Positive stop and cgroup containment confirmation",
+      "status": "implemented",
+      "source": "bootstrap_manager stop_closed_pair / confirm_empty_pair",
+      "next": "real manager needs C2"
+    },
+    {
+      "id": "B16",
+      "name": "Persistent-mask and reboot fence with power-loss recovery",
+      "status": "implemented (file phase); reboot additional_approval",
+      "source": "docs/runtime-activation-remaining.md (overlay journal)",
+      "next": "G1"
+    },
+    {
+      "id": "B17",
+      "name": "Audit-first authenticated readiness against real endpoints",
+      "status": "implemented (synthetic peers); real endpoints not verified",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap_manager.py:627-654",
+      "next": "needs C1 + C2 + F inputs"
+    },
+    {
+      "id": "B18",
+      "name": "Commissioning-phase transition to separately admitted normal activation",
+      "status": "not_implemented",
+      "source": "docs/runtime-activation-remaining.md (contract only)",
+      "next": "design + implementation after normal-activation producers exist"
+    },
+    {
+      "id": "C1",
+      "name": "Production factory selects the implemented delegation",
+      "status": "not_implemented (deliberately refusing)",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap_manager.py:58-82, 665-669, 954-961, 1077-1087; docs/runtime-activation-remaining.md:85-130",
+      "next": "a reviewed code change, only after C2, F1-F4 and native qualification; never an approval boolean, environment variable or self-produced record"
+    },
+    {
+      "id": "C2",
+      "name": "Product-unit native lifecycle on the VM",
+      "status": "additional_approval + external_input",
+      "source": "docs/runtime-activation-remaining.md (VM recheck: product units not-found)",
+      "next": "install real units after installer side-effect review; needs root and F inputs"
+    },
+    {
+      "id": "F1",
+      "name": "Operator enrollment",
+      "status": "external_input",
+      "source": "src/azazel_nexus/operator_enrollment.py:80-98",
+      "next": "owner runs enrollment with own Ed25519 public key + out-of-band fingerprint"
+    },
+    {
+      "id": "F2",
+      "name": "Signed supporting-bootstrap approval per boot/node/generation",
+      "status": "external_input",
+      "source": "src/azazel_nexus/bootstrap_approval.py:124-170; bootstrap_store.py:168-199",
+      "next": "owner signs off-host; no signer exists in src by design"
+    },
+    {
+      "id": "F3",
+      "name": "Reviewed pins: admission.json, installed-files.json, policy.json, loaded-units.json",
+      "status": "external_input (readers exist; no protected writers)",
+      "source": "src/azazel_nexus/bootstrap_prestart_policy.py:67-104; installed_manifest.py:236-305; cli.py:741-756 (installed-files-check, installed-files-candidate)",
+      "next": "owner reviews and places canonical files. installed-files.json: existing `azazel-nexus installed-files-candidate` produces the context-free canonical candidate and `installed-files-check --manifest-digest` compares; admission.json / policy.json: read-only previews added this session; loaded-units.json: preview deferred (needs a v4 admission policy and a runtime-side entry)"
+    },
+    {
+      "id": "F4",
+      "name": "Independent producers: time anchor, epoch/revocation, audit genesis/head, deployment and selection records, initial deadline",
+      "status": "external_input (software now implemented for audit genesis and in-controller deadline first admission)",
+      "source": "runtime/src/azazel_nexus_runtime/bootstrap_cli.py:39-123 (time, generation wired); src/azazel_nexus/bootstrap_deadline_store.py:194-212 (no initial-deadline caller)",
+      "next": "owner supplies time anchor, deployment (declared-constant epoch/revocation chosen: B1), v5 genesis admission for the first boot, generation, selection and the signed approval; then a v3/v4 existing-history admission for later boots"
+    },
+    {
+      "id": "G1",
+      "name": "Reboot / suspend / power-loss qualification and persistent next-boot enable",
+      "status": "additional_approval",
+      "source": "docs/runtime-activation-remaining.md; docs/debian-live-install.md",
+      "next": "explicit owner authorization"
+    }
+  ],
+  "production_factory_gate": {
+    "finding": "bootstrap_narrowing_manager_in_transaction builds the base BootstrapNarrowingManager whose open_pair, start_and_wait, unmask and is_ready refuse unconditionally; no runtime input makes them succeed. The implemented delegations exist only on the private _PrototypeBootstrapManager, which nothing outside tests selects.",
+    "decision": "Refusal maintained. Required inputs and native evidence are not all present, so no factory change was made or proposed for merge.",
+    "legitimate_path": "After C2, F1-F4 and native qualification, a reviewed code change selects the already implemented delegation (open_pair -> _publish_and_inspect_pair, start_and_wait -> _start_bound_audit/_start_bound_commission, is_ready -> retained-publication-bracketed _bound_helper_ready)."
+  },
+  "missing_software_wiring_ranked": [
+    "Protected interactive publishers for admission.json, installed-files.json, loaded-units.json and policy.json (the next step after validation/preview in the selected sequence, docs/runtime-activation-remaining.md:1962-1964). A bootstrap-layout check on installed-files candidates would require refactoring the admission measurement and was not done; admission still enforces it.",
+    "Epoch/revocation semantic source (policy decision)."
+  ],
+  "owner_supplied_inputs_procedure": [
+    "1. Generate an Ed25519 keypair on an owner-controlled device; the private key never enters the repo, logs, Issues or the VM.",
+    "2. Compute the fingerprint sha256:<SHA-256 of the raw 32-byte public key> and convey it out of band.",
+    "3. On the VM as root on a tty: python -m azazel_nexus.operator_enrollment enroll <label> (paste key, fingerprint, type ENROLL <label>).",
+    "4. Place canonical root-owned /etc/azazel/bootstrap/policy.json (operators, max_seconds chosen by owner).",
+    "5. Place /etc/azazel/node.yaml (node_id).",
+    "6. Review and place admission.json (package digest from az-nexus-bootstrap observe-packages, installed-files manifest digest, systemd profile digest, floors/limits, audit head) and installed-files.json.",
+    "7. Publish deployment.json (6 fields; digests derived, epoch/revocation/operator chosen by owner): azazel-nexus bootstrap-deployment-preview < file, then azazel-nexus bootstrap-deployment-initialize on a root tty.",
+    "8. Publish the bootstrap generation (az-nexus-bootstrap generation-preview / generation-publish).",
+    "9. Per boot: publish selection.json for the current boot_id with a fresh approval_id (azazel-nexus bootstrap-selection-initialize); mint the time anchor (az-nexus-bootstrap time-initialize); print the exact canonical payload and signed-message digest with `az-nexus-bootstrap approval-request` (stdin: {\"expires_at\":...,\"granted_at\":...}); sign the message off-host with the enrolled operator key; place approval.json (payload bytes) and the 64-byte approval.sig."
+  ],
+  "corrections": [
+    "The same trace reported no installed-files manifest generator; `azazel-nexus installed-files-candidate` already provides a context-free canonical candidate (src/azazel_nexus/installed_candidate.py:146-165, cli.py:743-756).",
+    "An initial provisioning trace reported the deployment and selection publishers as unexposed; an independent check found them exposed as azazel-nexus bootstrap-deployment-{preview,initialize,recover} and bootstrap-selection-{initialize,recover} (src/azazel_nexus/cli.py:734-740, 804-807, 910-930; pyproject.toml:31). No CLI change is needed.",
+    "No tool previously produced the canonical approval payload for off-host signing (only the verifier called bootstrap_payload); az-nexus-bootstrap approval-request now prints it read-only from the declared context, signs nothing, and states that drift, trust changes, the time window or a reboot can still make admission refuse."
+  ],
+  "not_performed": [
+    "No key, signature, approval, enrollment, pin, time, epoch or generation record was created or promoted from test material",
+    "No production-factory change",
+    "No product unit install/start, persistent enable, reboot or suspend",
+    "No provider/fetch/Edge activation, capture/firewall, SSH/network change, CI, physical media or firmware operation",
+    "No push, PR, merge or Issue closure"
+  ],
+  "owner_decisions_2026_10_15": {
+    "audit_expectation": "A2 chosen and implemented: v5 prestart policy audit_mode first-install-genesis, approved through the existing signed approval via policy_digest; inspect_first_install_audit accepts only an existing, correctly owned, mode-0700, empty ledger and takes no expected head",
+    "epoch_revocation": "B1 chosen: declared constants in deployment.json with no anti-rollback claim; no code change",
+    "initial_deadline": "option 1 chosen and implemented: ProtectedBootstrapInitialAdmission inside the controller run after fresh verify, generation admission and prestart; create-only retain; kernel guard armed from the retained deadline before any grant, publication, READY or start"
+  },
+  "known_limitations": [
+    "Until cross-boot renewal exists a node bootstraps once; retry needs clean state (VM snapshot revert), never deletion of retained records",
+    "Prestart and generation admission run before the kernel guard is armed; bounded by the controller unit TimeoutStartSec=30s with TimeoutStartFailureMode=kill (pre-READY)",
+    "Genesis single use is enforced only by the non-empty-ledger refusal; a wiped ledger plus a fresh signed approval would be accepted again; assurance LOCAL_CONTINUITY_ONLY"
+  ]
+}

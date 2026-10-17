@@ -1,0 +1,66 @@
+{
+  "schema": "azazel-nexus/local-prototype-evidence/v1",
+  "date": "2026-10-15",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "retained dirty worktree; not committed or pushed",
+  "scope": "post-unlink restoration injected component; synthetic bus and ordinary files",
+  "sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_restore.py": "aaaf5a5e463f70758259824822cc5f0505c0cf5ff022d512dfa9b55a375e4e4b",
+    "runtime/src/azazel_nexus_runtime/bootstrap_restore_files.py": "f938b4456c6afa62da026f3b6208cf6f56914fd1c2ebca76ad93d8099bdc963b",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdraw_files.py": "4c5eedf12f56ce27be7a56cad52b9f4ddabff564cf92df9b991b76b7689421f4",
+    "tests/unit/test_runtime_bootstrap_restore_files.py": "9cf2e5331a72b8de3a571194c2e3b508b7ed8c9465d6d3d1c654771fdea9d451",
+    "tests/unit/test_runtime_bootstrap_restore_sequence.py": "e72f1be3a2e68da6facf2a6abae08163db1746c9525673301fa3205d110cba80"
+  },
+  "local_vm_hashes_match": true,
+  "tests": [
+    "tests/unit/test_runtime_bootstrap_restore_files.py",
+    "tests/unit/test_runtime_bootstrap_restore_sequence.py",
+    "tests/unit/test_runtime_bootstrap_overlay_withdraw.py",
+    "tests/unit/test_bootstrap_overlay_journal.py",
+    "tests/unit/test_runtime_bootstrap_close_sequence.py",
+    "tests/unit/test_runtime_bootstrap_manager_stopped.py"
+  ],
+  "mac": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_restore_files.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_overlay_withdraw.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_manager_stopped.py",
+    "passed": 138
+  },
+  "debian_arm64": {
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q --basetemp=\"$testroot/t\" tests/unit/test_runtime_bootstrap_restore_files.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_overlay_withdraw.py tests/unit/test_bootstrap_overlay_journal.py tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_manager_stopped.py",
+    "passed": 138,
+    "python": "3.13.5",
+    "isolated_source_and_fixture_directories": true,
+    "temporary_directories_removed": true
+  },
+  "lint": {
+    "target_ruff": "pass",
+    "git_diff_check": "pass",
+    "document_links": {
+      "status": "pass",
+      "markdown_files": 54
+    }
+  },
+  "reviews": {
+    "luna": "file contract limited static review; no concrete gap",
+    "astra": "sequence limited static review; no blocker; lifetime and cancellation limitations retained",
+    "main": "reviewed tests and reran combined selection"
+  },
+  "initial_failure": "Real-file integration fixture omitted inactive state; 137 passed/1 failed before fixture corrected. Final selection 138 passed on each host.",
+  "live_readonly_observation": {
+    "auditd": "not-found / inactive",
+    "commissiond": "not-found / inactive"
+  },
+  "not_run": [
+    "full suite",
+    "GitHub Actions",
+    "installed systemd lifecycle",
+    "physical hardware"
+  ],
+  "remaining": [
+    "grant/journal binding and phase-aware pre-unlink containment",
+    "production path and cgroup mount admission",
+    "external controller lifetime and session teardown composition",
+    "manager withdrawal integration and actual runtime composition"
+  ],
+  "authority": "No provider, fetch, Edge activation, hardware or live service operation"
+}

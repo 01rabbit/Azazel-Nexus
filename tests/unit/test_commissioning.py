@@ -1,4 +1,4 @@
-"""Roles come from the operator, ambiguity fails closed, and one record cannot be built.
+"""Roles come from the operator, ambiguity fails closed, and missing inputs refuse.
 
 Phase 0b's second row (`docs/roadmap.md`, `docs/commissioning.md` §4). The
 proposal reports what an operator would have to settle. It confirms nothing on
@@ -371,15 +371,15 @@ def test_an_uncommissionable_interface_cannot_be_confirmed_against():
 
 
 # --------------------------------------------------------------------------
-# The record that cannot be built, and why that is the honest answer
+# Missing linked inputs must not produce a commissioning record
 # --------------------------------------------------------------------------
 
 
 def test_a_commissioning_record_is_refused_and_names_what_is_missing():
-    """Measured: `CommissioningRecord` needs three digests and Nexus has one.
+    """`CommissioningRecord` needs three genuine, linked input digests.
 
-    There is no `ResourceProfile` and no `TopologyProfile` here -- Phase 0b's
-    first row covered interfaces only. A placeholder for the two missing
+    Production inventory and authenticated profile linkage are still missing -- Phase 0b's
+    first row covered interfaces only. A placeholder for missing
     digests would make the record claim to cover profiles that do not exist,
     and its own `record_digest` would then vouch for that claim.
     """
@@ -389,10 +389,10 @@ def test_a_commissioning_record_is_refused_and_names_what_is_missing():
 
 
 def test_the_three_digests_the_record_requires_are_still_three():
-    """Pinned so the refusal above stops being true when Fabric changes.
+    """Pin the required linked profiles separately from proposal assembly.
 
-    If `CommissioningRecord` ever stops requiring the two profiles Nexus lacks,
-    the refusal becomes wrong and this is what says so.
+    If `CommissioningRecord` ever stops requiring these linked profiles,
+    this test identifies the contract change for review.
     """
 
     from azazel_fabric.provisioning_contracts import CommissioningRecord

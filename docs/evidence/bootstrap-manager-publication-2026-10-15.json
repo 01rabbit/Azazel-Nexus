@@ -1,0 +1,41 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved; no commit/push",
+  "scope": "manager-owned ordinary-file publication and fake-systemd reload/pair inspection",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "7f277ae61eebaa72651e0fd6c0ee73a55f7b4ce708ad9e7779d458f78882ebdd",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "4186234de64327ee77b864ef292b5de61246b23ce5f59c9083b6f4c142439d51",
+    "tests/unit/test_runtime_bootstrap_directory_integration.py": "96f7ff370a46be233a3d27b49aca4c0843ecd86376af3a2d0867aff42890fcd2"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_boundary.py",
+    "passed": 1844,
+    "skipped": 2,
+    "seconds": 7.13,
+    "environment": "local macOS ordinary files and fake D-Bus",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ],
+    "post_review_subset": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_manager_publication.py",
+      "passed": 13,
+      "seconds": 0.31,
+      "note": "test-only strengthening: before-Reload faults assert zero reloads, success forbids start/enable operations, corrected second-inspector fault to commissiond with explicit GetUnit sequence; overlapping count, not additive"
+    }
+  },
+  "ruff": "three changed source/test files pass",
+  "diff_check": "pass",
+  "review": "Astra reviewed method and separation from successful open_pair; no concrete source defect. Luna wrote integration tests; coordinator strengthened fault/order assertions and updated factory-lifetime fixture.",
+  "limits": [
+    "directories.check is a recorder and check_publish is synthetic in integration tests; no live directory/admission guarantee",
+    "initial confirm_empty_pair and protected policy loading mocked in new integrated tests; actual algorithms have separate coverage",
+    "production open_pair/start still refuse; no production caller to private preparation method",
+    "publication/reload is widening even without StartUnit, not deployment authorization",
+    "complete process/dependency closure and controller lifetime remain unmet",
+    "no actual systemd, Linux VM, CI, service, hardware operations",
+    "filesystem IO byte-bounded not wall-clock bounded"
+  ]
+}

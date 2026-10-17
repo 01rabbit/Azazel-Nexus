@@ -248,6 +248,7 @@ def read_interfaces(
     sysfs_net: Path | None = None,
     *,
     permanent_mac_reader: Callable[[str], str | None] = no_permanent_mac,
+    strict_enumeration: bool = False,
 ) -> tuple[InterfaceReadout, ...]:
     """Read every interface the host exposes, in a stable order.
 
@@ -255,16 +256,20 @@ def read_interfaces(
     That is presentation order only -- the kernel name is not identity, and
     nothing downstream may match on it.
 
-    A missing or unreadable `/sys/class/net` yields an empty inventory rather
-    than an error: a host that exposes no interfaces is a host with nothing to
-    commission, which is a state, not a fault.
+    Legacy callers receive an empty tuple for unavailable enumeration.
+    Snapshot producers must pass strict_enumeration=True: unavailable or
+    disappearing entries then raise rather than claiming an empty inventory.
     """
 
     root = DEFAULT_SYSFS_NET if sysfs_net is None else sysfs_net
     try:
         entries = sorted(root.iterdir(), key=lambda p: p.name)
     except OSError:
+        if strict_enumeration:
+            raise OSError("interface enumeration unavailable") from None
         return ()
+    if strict_enumeration and any(not entry.is_dir() for entry in entries):
+        raise OSError("interface enumeration changed or invalid")
     return tuple(
         _observe(entry, permanent_mac_reader=permanent_mac_reader)
         for entry in entries

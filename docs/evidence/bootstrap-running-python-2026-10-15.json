@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 fixed current executable/Python-state observation around actual protected installed-file measurement",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/running_python.py": "d30e436c12d2099d8af095ada2d2d4291587fd1c342a0eed19d897e7ada7f532",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "154979bf3db374b0c3554edbcf5aed9e206d7d559a66a4df9fc30d731b6d9006",
+      "tests/unit/test_runtime_running_python.py": "ea7a80f4f79287d8e31be8f6979e610982f388db37681383d0ce0eefa39fc0da",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "2f7723b3b9662e8e4e52ac9d4c10cd2f3df5ceed7ae4ebaf5c64a7174de83313",
+      "tests/unit/test_installed_link_measurement.py": "04a15255fa13e3835a1266778e8a20bf908ce9f0f6f202ac198a3bdf62e172be",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "aee50bf9088f51c30dbc1947b9f13ffde110024b303fe4769c82309404a49f24",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "948686bea1868c286581da31e80a4df5ed775a0c58321bbe4f0d4c48d1642555"
+    }
+  },
+  "implementation": {
+    "observer": "Fixed own PID procfs directories verified with existing statfs adapter; intentionally follow only exe magic link. Protected root0755 regular singlelink, 1..64MiB. Two bounded hash passes on same fd with rewind, exact byte counts and identity checks; kernel named identity/PID/detached Python state bracketed",
+    "profile": "Linux CPython3.13 final with cfg-matched microversion, cpython-313 cache tag, no ABI flags, ordinary GIL enabled, -IS flags, /usr prefixes, exact /usr/bin/python3.13 base spelling, wrapper executable/import paths, dont_write_bytecode true, 64-bit little-endian",
+    "integration": "measure_bootstrap_installed_files validates fixed observation before full measurement and again after existing raw-manifest reread, requires observations equal and executable bytes match independently pinned terminal",
+    "cost_bound": "At most128MiB executable bytes per accepted fingerprint, twice per measurement admission",
+    "compatibility": "Existing procfs statfs adapter admits Linux LP64 amd64/arm64; no new CPU restriction in pure profile logic. Some copied venvs reporting /usr/bin/python3 as base are intentionally refused, no alias fallback",
+    "not_authority": "No new approval, token, manifest version, runtime opt-in or public start gate"
+  },
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_running_python.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/running/final-macos.xml",
+    "macos": {"passed": 3136, "skipped": 6, "seconds": 18.37},
+    "linux_command": "cd /tmp/azr.niqb3B && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_runtime_bootstrap_protected_admission.py --basetemp=/tmp/azs.A45SWn --junitxml=/tmp/azr.niqb3B/final-running.xml --tb=short",
+    "linux": {"passed": 165, "failed": 0, "skipped": 0, "seconds": 0.42},
+    "development_results": [
+      "Initial macOS focused113 passed/2 failed: list-version fixture inadvertently normalized its invalid value and mutation used read-only fd; corrected tests only",
+      "Corrected macOS focused116 passed; broader3135 passed/6 skipped before double-pass change",
+      "Initial actual Linux focused163 passed/1 failed: same-size pwrite within one timestamp quantum escaped single-hash metadata checks",
+      "Strengthened production to double content observation, added forced-same-stat causal case with specific content-mismatch refusal; final focused macOS117 passed before final broader run"
+    ],
+    "causal": "Forced unchanged fstat identity with one-byte mutation after first read refuses specifically for differing content observations. Retained bound-audit fixture first passes true protected file measurement/publication, then changes observed executable hash and refuses before StartUnit. Observation identity change across full measurement also refuses",
+    "counts": "Overlapping runs are not added. Previous repository-wide Linux25 failures remain, full suite not rerun. Native timer tests remain unbuilt/skipped, zero native passes",
+    "lint": "Seven changed Python files pass host Ruff; no repository-wide lint cleanup/rerun",
+    "review": "Sol independently reviewed fixed observer/integration and double-pass hardening; no blocking scoped finding. No self-review represented as independent review"
+  },
+  "actual_linux_readonly_probe": {
+    "python_invocation": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python -IS -c <python_code below>",
+    "python_code": "import sys,os,json;sys.path.extend([\"/tmp/azr.niqb3B/src\",\"/tmp/azr.niqb3B/runtime/src\"]);sys.dont_write_bytecode=True;from azazel_nexus_runtime.running_python import observe_running_python,_fingerprint_fd;observed=observe_running_python();fd=os.open(\"/usr/bin/python3.13\",os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)\ntry:named=_fingerprint_fd(fd)\nfinally:os.close(fd)\nassert observed.executable==named\nprint(json.dumps({\"proc_observer_matches_named_base\":True,\"sha256\":observed.executable.sha256,\"bytes\":observed.executable.identity[6],\"version\":list(observed.state.version),\"flags\":list(observed.state.flags),\"deployed_or_admitted\":False}))",
+    "version": "3.13.5 final",
+    "flags": [1, 1, 1, true, 1],
+    "proc_executable_matches_named_base": true,
+    "executable_bytes": 6673712,
+    "executable_sha256": "273cb29e073b748379ba546affa562283ed795f84ff230349e12ce610e60975c",
+    "meaning": "Actual kernel observer exercised with final source, not a synthetic proc mock. No protected /opt deployment, enrolled pin/admission, helper readiness or system-manager lifecycle proven"
+  },
+  "input": {
+    "path": "/tmp/azn-linux-check.I6YGHW/running/final-source.tar.gz",
+    "sha256": "265058543d76b4061ba7b01b6c47d5c36d23dc025a0079a1fd57ccf527c92c71",
+    "archive_bytes": 1271515,
+    "files": 504,
+    "input_bytes": 5120219,
+    "member_digest_algorithm": "SHA256 of archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "members_digest": "537577826663a1dd0b19427e881d2fd74de7a72f4240a1bff829e2cfcf9ff0d5",
+    "local_current_members_match": true,
+    "remote_archive_hash_match": true,
+    "remote_members_match_after_tests_and_probe": true,
+    "initial_archive_sha256": "fd429134d90492912d377fe609e984e275d909b8c2e35b960c3f69ac96b17eff",
+    "scope": "Focused source/test snapshot, not release image or complete full-suite input"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/running/final-macos.xml", "sha256": "164d1edd87610794227945d36e4afbaa79262428b41299911fe02af07a7c20e6"},
+    "linux_initial": {"path": "/tmp/azn-linux-check.I6YGHW/running/initial-linux.xml", "sha256": "3c820c5fcad52983ec4cbe0109b35b656ce39f498f3e0437b633ed13353341e6"},
+    "linux": {"path": "/tmp/azn-linux-check.I6YGHW/running/final-running.xml", "sha256": "373852f0c15dd985a89886f141936e86e1562e74ec9d7735add8489900e05301"}
+  },
+  "cleanup": "Verified ownership, non-symlink directories and504 source members before removing exact task-created /tmp/azr.niqb3B(8.5MiB) and /tmp/azs.A45SWn(480KiB); absence confirmed. Small local archives/XML retained. No user or Boot data removed",
+  "remaining": [
+    "Initial startup overrides/implicit files/build markers/import routing/native-library trust constraints",
+    "Historical mapped-page integrity, arbitrary in-process/privileged modification and filesystem freeze are not claimed",
+    "Compiled native deadline ABI tests and real system-manager lifecycle/suspend qualification",
+    "Independently provisioned records/pins; public opening/start/readiness remains refusing",
+    "Prior project .venv tooling incident remains unresolved; all tests use no-project isolated environments without changing it"
+  ],
+  "not_performed": ["CI", "native compilation", "service deployment/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "repository commit/push"]
+}

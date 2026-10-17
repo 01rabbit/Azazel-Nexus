@@ -81,6 +81,9 @@ __all__ = [
     "project_capability",
     "project_interface_identity",
     "project_inventory",
+    "project_resource_profile",
+    "project_reviewed_topology",
+    "project_hardware_inventory",
 ]
 
 
@@ -526,28 +529,377 @@ def confirm_role(
     return assignment
 
 
-def build_commissioning_record(**_fields: Any) -> Any:
-    """Refused. Nexus cannot produce this record honestly yet.
+def project_hardware_inventory(*, readouts: Sequence[InterfaceReadout], platform: dict,
+                               storage_devices: Sequence[dict], limitations: Sequence[str],
+                               node_id: str, inventory_id: str, collected_at: str) -> Any:
+    """Project collected metadata; caller owns independent node identity.
 
-    `CommissioningRecord` requires three digests -- `hardware_inventory_digest`,
-    `resource_profile_digest` and `topology_profile_digest` -- and Nexus
-    produces one of them. There is no `ResourceProfile` and no
-    `TopologyProfile` in this repository: Phase 0b's first row covered
-    interfaces only.
-
-    A placeholder for the two missing digests would make the record claim to
-    cover profiles that do not exist, and the record's own `record_digest`
-    would then vouch for that claim. A commissioning record is the artifact an
-    operator and an auditor read to decide what this node was commissioned as;
-    a digest over a fiction is worse than no record.
-
-    So this refuses and names what is missing. It becomes possible when the two
-    profiles do.
+    Raw content/digests belong only in protected commissioning storage. No
+    identity is minted, signed or authenticated by this serialization step.
+    Refused interfaces prevent a claim that the complete set was projected.
     """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
-    raise CommissioningRecordUnavailable(
-        "a CommissioningRecord requires resource_profile_digest and "
-        "topology_profile_digest; Nexus produces neither yet (no ResourceProfile, "
-        "no TopologyProfile). A placeholder would make the record's own digest "
-        "vouch for profiles that do not exist"
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            HardwareInventory, PlatformIdentity, StorageDeviceIdentity, content_digest,
+        )
+        _utc_lease_time(collected_at)
+        projected = project_inventory(readouts)
+        if not projected.available or projected.refused:
+            raise ValueError
+        allowed = {"read-only-snapshot-not-authenticated", "snapshot-not-atomic",
+                   "kernel-loopback-excluded",
+                   "platform-fields-unavailable", "virtual-storage-and-partitions-excluded",
+                   "storage-optional-identity-unavailable"}
+        if (any(type(item) is not str for item in limitations)
+                or not set(limitations).issubset(allowed)
+                or not {"read-only-snapshot-not-authenticated", "snapshot-not-atomic"}.issubset(limitations)
+                or len(set(limitations)) != len(limitations)):
+            raise ValueError
+        devices, paths = [], set()
+        for source in storage_devices:
+            if type(source) is not dict or set(source) != {
+                "bus_path", "size_bytes", "rotational", "removable", "model_name", "serial"
+            }:
+                raise ValueError
+            if (type(source["size_bytes"]) is not int or source["size_bytes"] <= 0
+                    or type(source["rotational"]) is not bool or type(source["removable"]) is not bool
+                    or source["bus_path"] in paths):
+                raise ValueError
+            paths.add(source["bus_path"])
+            devices.append(StorageDeviceIdentity(device_key=f"storage-{len(devices) + 1}", **source))
+        checked_platform = PlatformIdentity(**platform)
+        if (any(getattr(checked_platform, name) is None for name in
+                ("vendor", "product_name", "board_serial", "firmware_vendor", "firmware_version"))
+                and "platform-fields-unavailable" not in limitations):
+            raise ValueError
+        if (any(item.model_name is None or item.serial is None for item in devices)
+                and "storage-optional-identity-unavailable" not in limitations):
+            raise ValueError
+        draft = HardwareInventory(inventory_id=inventory_id, product="azazel-nexus",
+            node_id=node_id, collected_at=collected_at, platform=checked_platform,
+            interfaces=projected.identities, storage_devices=tuple(devices),
+            limitations=tuple(limitations), inventory_digest="sha256:" + "0" * 64)
+        return draft.model_copy(update={"inventory_digest": content_digest(draft, digest_field="inventory_digest")})
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, ActivationRefused):
+        raise CommissioningRecordUnavailable("hardware inventory inputs unavailable or inconsistent") from None
+
+
+def project_resource_profile(*, observation: dict, inventory: Any, profile_id: str) -> Any:
+    """Project actual observations onto Fabric's descriptive resource record.
+
+    Requires a complete, internally digest-consistent HardwareInventory, not
+    the interface-only digest returned by inventory_digest(). This verifies
+    structural consistency, not inventory authenticity, recency or admission.
+    Missing storage is not zero and memory is never adjusted a second time.
+    """
+    fabric, failure = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
+
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            HardwareInventory, ResourceProfile, assert_content_digest,
+        )
+
+        if type(inventory) is not HardwareInventory:
+            raise ValueError
+        # Revalidate even model_copy/model_construct inputs, which may bypass
+        # the model's constructor. A supplied digest alone is not evidence.
+        checked = HardwareInventory.model_validate(inventory.model_dump(mode="json"))
+        assert_content_digest(checked, digest_field="inventory_digest")
+        if type(observation) is not dict or set(observation) != {
+            "schema", "observed_at", "architecture", "measurements", "unavailable", "limitations", "admission"
+        }:
+            raise ValueError
+        if (observation["schema"] != "azazel-nexus/resource-observation/v1"
+                or observation["admission"] != "not-evaluated"
+                or observation["unavailable"] != []):
+            raise ValueError
+        _utc_lease_time(observation["observed_at"])
+        readings = observation["measurements"]
+        names = {"usable_memory_mib", "online_logical_cpus", "mission_available_mib"}
+        if type(readings) is not dict or set(readings) != names:
+            raise ValueError
+        for name, value in readings.items():
+            if type(value) is not int or value < 0 or (name != "mission_available_mib" and value == 0):
+                raise ValueError
+        limitations = observation["limitations"]
+        if type(limitations) is not list or any(type(item) is not str for item in limitations):
+            raise ValueError
+        required = {"gpu-unmeasured", "throughput-unmeasured", "thermal-power-unmeasured",
+                    "cgroup-limits-unmeasured", "storage-trust-unverified"}
+        if set(limitations) != required or len(limitations) != len(required):
+            raise ValueError
+        return ResourceProfile(
+            profile_id=profile_id, node_id=checked.node_id,
+            hardware_inventory_digest=checked.inventory_digest,
+            measured_at=observation["observed_at"],
+            measurement_method="measured_usable_after_firmware_reservation",
+            cpu_architecture=observation["architecture"],
+            cpu_logical_cores=readings["online_logical_cpus"],
+            usable_memory_mib=readings["usable_memory_mib"],
+            usable_storage_mib=readings["mission_available_mib"],
+            limitations=tuple(dict.fromkeys((*limitations,
+                "storage-is-caller-available-filesystem-space", "cpu-is-online-logical-count",
+                "unsigned-observation-not-admission"))),
+        )
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, ActivationRefused):
+        raise CommissioningRecordUnavailable("resource profile inputs unavailable or inconsistent") from None
+
+
+def project_reviewed_topology(*, payload: bytes, signature: bytes, operator: str,
+                             trust: Any, current: Any, inventory: Any,
+                             profile_id: str, observed_at: str) -> Any:
+    """Project reviewed roles, not a signed topology or activation permission.
+
+    The signature covers the original draft only. Node/snapshot/profile fields
+    added here are not signed. Returned raw identities belong only in protected
+    commissioning storage, never terminal output or general audit logs.
+    """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
+    from .commissioning_draft import (  # noqa: PLC0415
+        DraftRefused, _decode_draft, verify_draft_review,
     )
+
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            HardwareInventory, TopologyProfile, assert_content_digest,
+        )
+        _utc_lease_time(observed_at)
+        if type(inventory) is not HardwareInventory:
+            raise ValueError
+        checked = HardwareInventory.model_validate(inventory.model_dump(mode="json"))
+        assert_content_digest(checked, digest_field="inventory_digest")
+        verify_draft_review(payload=payload, signature=signature, operator=operator,
+                            trust=trust, current=current)
+        record = _decode_draft(payload)
+        if current.refused:
+            raise ValueError
+        projected = project_inventory(current.commissionable)
+        if not projected.available or projected.refused:
+            raise ValueError
+        observed = {item.interface_key: item.model_dump(mode="json") for item in projected.identities}
+        expected = {item.interface_key: item.model_dump(mode="json") for item in checked.interfaces}
+        if len(observed) != len(projected.identities) or observed != expected:
+            raise ValueError
+        assignments, assigned_keys = [], set()
+        for role in record.roles:
+            matches = [readout for readout in current.commissionable
+                       if tuple(sorted(readout.fields.items())) == role.composite]
+            if len(matches) != 1:
+                raise ValueError
+            assignment = confirm_role(
+                matches[0], role=role.role, node_id=checked.node_id,
+                operator_ref=operator, method="signed_site_approval",
+                confirmed_at=role.confirmed_at, inventory_digest=checked.inventory_digest,
+            )
+            resolved = identify_interface(checked.interfaces, assignment.selector)
+            if resolved.interface_key in assigned_keys:
+                raise ValueError
+            assigned_keys.add(resolved.interface_key)
+            assignments.append(assignment)
+        return TopologyProfile(
+            profile_id=profile_id, node_id=checked.node_id,
+            hardware_inventory_digest=checked.inventory_digest, observed_at=observed_at,
+            commissioned_assignments=tuple(assignments),
+            unassigned_interface_keys=tuple(sorted(set(expected) - assigned_keys)),
+            management_reachability="unknown", capture_support=(), isolation_properties=(),
+            limitations=("management-reachability-unmeasured", "capture-support-unmeasured",
+                         "isolation-unmeasured", "signature-covers-draft-only-not-this-profile",
+                         "platform-storage-freshness-unverified", "not-activation-admission"),
+        )
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError,
+            ActivationRefused, DraftRefused, IdentityUnavailable):
+        raise CommissioningRecordUnavailable("reviewed topology inputs unavailable or inconsistent") from None
+
+
+def assert_current_inventory_matches(*, retained: Any, current: Any) -> None:
+    """Compare complete hardware contents without rewriting signed metadata.
+
+    The current observation keeps its own inventory ID, collection time and
+    digest. Those three snapshot metadata fields are excluded only from this
+    comparison; every other schema field, identity, limitation and ordering
+    must match. This is not resource freshness, policy admission or proof of a
+    trusted clock. Caller must authenticate the retained snapshot separately.
+    """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    from .activation import ActivationRefused, _utc_lease_time
+
+    try:
+        from azazel_fabric.provisioning_contracts import HardwareInventory, assert_content_digest
+
+        checked = []
+        for value in (retained, current):
+            if type(value) is not HardwareInventory:
+                raise ValueError
+            item = HardwareInventory.model_validate(value.model_dump(mode="json"))
+            assert_content_digest(item, digest_field="inventory_digest")
+            checked.append(item)
+        if _utc_lease_time(checked[1].collected_at.isoformat().replace("+00:00", "Z")) < _utc_lease_time(
+                checked[0].collected_at.isoformat().replace("+00:00", "Z")):
+            raise ValueError
+        documents = [item.model_dump(mode="json") for item in checked]
+        for document in documents:
+            for name in ("inventory_id", "collected_at", "inventory_digest"):
+                document.pop(name)
+        if documents[0] != documents[1]:
+            raise ValueError
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, ActivationRefused):
+        raise CommissioningRecordUnavailable("current hardware inventory does not match retained evidence") from None
+
+
+def assert_local_record_matches_full_proposal(*, document: dict, record: Any) -> None:
+    """Refuse a lossy compatibility view used for unrelated role bindings.
+
+    This checks correspondence only. The caller must retain and authenticate
+    the full proposal, including limitations; matching does not grant readiness.
+    """
+    from .commissioning import CommissioningRecord, REQUIRED_PROFILES
+    from .inventory import IDENTITY_FIELDS
+
+    try:
+        context = restore_commissioning_inputs(document)
+        if (type(record) is not CommissioningRecord
+                or record.created_at != document["record"]["created_at"]
+                or len(record.profiles_present) != len(REQUIRED_PROFILES)
+                or set(record.profiles_present) != set(REQUIRED_PROFILES)):
+            raise ValueError
+        assignments = context["topology_profile"].commissioned_assignments
+        if len(record.roles) != len(assignments):
+            raise ValueError
+        remaining = list(assignments)
+        for role in record.roles:
+            fields = dict(role.composite)
+            if len(fields) != len(role.composite) or not set(fields).issubset(IDENTITY_FIELDS):
+                raise ValueError
+            matches = []
+            for index, assignment in enumerate(remaining):
+                identity = identify_interface(context["inventory"].interfaces, assignment.selector)
+                confirmation = assignment.confirmation.model_dump(mode="json")
+                if (role.role == assignment.role
+                        and role.confirmed_by == confirmation["operator_ref"]
+                        and role.confirmed_at == confirmation["confirmed_at"]
+                        and all(fields.get(name) == getattr(identity, name) for name in IDENTITY_FIELDS)):
+                    matches.append(index)
+            if len(matches) != 1:
+                raise ValueError
+            remaining.pop(matches[0])
+    except (ValueError, TypeError, KeyError, AttributeError, IdentityUnavailable):
+        raise CommissioningRecordUnavailable("local commissioning view does not match full evidence") from None
+
+
+def restore_commissioning_inputs(document: dict) -> dict:
+    """Decode retained local expectations, not an imported candidate's authority.
+
+    Caller must enforce provenance/bounds and compare canonical reconstruction.
+    No filesystem, signature or admission decision belongs in this decoder.
+    """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            HardwareInventory, ResourceProfile, TopologyProfile,
+        )
+        return dict(inventory=HardwareInventory.model_validate(document["inventory"]),
+                    resource_profile=ResourceProfile.model_validate(document["resource"]),
+                    topology_profile=TopologyProfile.model_validate(document["topology"]),
+                    record_id=document["record"]["record_id"], operator=document["operator"],
+                    confirmed_at=document["record"]["created_at"])
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError):
+        raise CommissioningRecordUnavailable("retained commissioning inputs unavailable") from None
+
+
+def build_commissioning_record(*, inventory=None, resource_profile=None,
+                               topology_profile=None, record_id=None,
+                               operator_ref=None, confirmed_at=None) -> dict:
+    """Assemble an explicitly unsigned proposal, never completed commissioning.
+
+    All full constituent records are retained for external operator review.
+    The proposed confirmation becomes attributable only after a NEW signature
+    covers this entire wrapper. A role-draft signature does not suffice.
+    Raw content is confidential; this function neither prints nor persists it.
+    """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
+
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            HardwareInventory, ResourceProfile, TopologyProfile, CommissioningRecord,
+            OperatorConfirmation, assert_content_digest, content_digest,
+        )
+        models = []
+        for value, expected_type in ((inventory, HardwareInventory),
+                                     (resource_profile, ResourceProfile),
+                                     (topology_profile, TopologyProfile)):
+            if type(value) is not expected_type:
+                raise ValueError
+            models.append(expected_type.model_validate(value.model_dump(mode="json")))
+        inventory, resource, topology = models
+        instant = _utc_lease_time(confirmed_at)
+        assert_content_digest(inventory, digest_field="inventory_digest")
+        if inventory.product != "azazel-nexus":
+            raise ValueError
+        for profile in (resource, topology):
+            if (profile.node_id != inventory.node_id
+                    or profile.hardware_inventory_digest != inventory.inventory_digest):
+                raise ValueError
+        times = [inventory.collected_at, resource.measured_at, topology.observed_at]
+        assigned = set()
+        for assignment in topology.commissioned_assignments:
+            if assignment.node_id != inventory.node_id:
+                raise ValueError
+            resolved = identify_interface(inventory.interfaces, assignment.selector)
+            if resolved.interface_key in assigned:
+                raise ValueError
+            assigned.add(resolved.interface_key)
+            times.extend((assignment.assigned_at, assignment.confirmation.confirmed_at))
+        all_keys = {item.interface_key for item in inventory.interfaces}
+        capture_keys = [item.interface_key for item in topology.capture_support]
+        property_ids = [item.property_id for item in topology.isolation_properties]
+        if (len(set(capture_keys)) != len(capture_keys) or not set(capture_keys).issubset(all_keys)
+                or len(set(property_ids)) != len(property_ids)):
+            raise ValueError
+        times.extend(item.observed_at for item in topology.capture_support)
+        times.extend(item.observed_at for item in topology.isolation_properties)
+        unassigned = topology.unassigned_interface_keys
+        if (len(set(unassigned)) != len(unassigned)
+                or set(unassigned) != all_keys - assigned):
+            raise ValueError
+        if any(time.tzinfo is None or time.utcoffset().total_seconds() != 0 or time > instant for time in times):
+            raise ValueError
+        limitations = tuple(dict.fromkeys((*inventory.limitations, *resource.limitations,
+            *topology.limitations, "unsigned-proposal-pending-full-operator-signature",
+            "not-activation-admission")))
+        record = CommissioningRecord(record_id=record_id, product="azazel-nexus",
+            node_id=inventory.node_id, created_at=confirmed_at,
+            hardware_inventory_digest=inventory.inventory_digest,
+            resource_profile_digest=content_digest(resource), topology_profile_digest=content_digest(topology),
+            assignments=topology.commissioned_assignments,
+            operator_confirmation=OperatorConfirmation(operator_ref=operator_ref,
+                method="signed_site_approval", confirmed_at=confirmed_at),
+            limitations=limitations, record_digest="sha256:" + "0" * 64)
+        record = record.model_copy(update={"record_digest": content_digest(record, digest_field="record_digest")})
+        assert_content_digest(record, digest_field="record_digest")
+        return {"schema": "azazel-nexus/commissioning-proposal/v1", "status": "unsigned-proposal",
+                "confirmation_is": "proposed-until-full-signature-verified", "operator": operator_ref,
+                "inventory": inventory.model_dump(mode="json"), "resource": resource.model_dump(mode="json"),
+                "topology": topology.model_dump(mode="json"), "record": record.model_dump(mode="json")}
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError,
+            ActivationRefused, IdentityUnavailable):
+        raise CommissioningRecordUnavailable(
+            "complete consistent inventory, resource_profile_digest and topology_profile_digest inputs required"
+        ) from None

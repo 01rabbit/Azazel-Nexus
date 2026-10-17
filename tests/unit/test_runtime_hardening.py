@@ -29,6 +29,7 @@ from azazel_nexus_runtime.hardening import (
     ServiceProfile,
     render_unit,
 )
+from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT_DIR = REPO_ROOT / "packaging" / "systemd"
@@ -275,11 +276,11 @@ def test_a_fetcher_that_would_use_no_internet_family_cannot_be_built():
         )
 
 
-def test_only_the_commissioning_daemon_is_allowed_netlink():
-    """It reads `IFLA_PERM_ADDRESS`. Nothing else has a reason to.
+def test_only_commissioning_and_activation_readers_are_allowed_netlink():
+    """Both collect IFLA_PERM_ADDRESS; neither can administer networking.
 
-    A second daemon with netlink would be a second place a link write could
-    be sent from, whatever its code happens to do today.
+    Activation's full-evidence loader requires current hardware, not a cached
+    commissioning result. Keep this explicit expansion bounded to two units.
     """
 
     with_netlink = [
@@ -287,7 +288,16 @@ def test_only_the_commissioning_daemon_is_allowed_netlink():
         for profile in PROFILES
         if "AF_NETLINK" in _settings(profile.unit)["RestrictAddressFamilies"][0]
     ]
-    assert with_netlink == ["azazel-commissiond.service"]
+    assert with_netlink == ["azazel-activated.service", "azazel-commissiond.service"]
+    for unit in with_netlink:
+        settings = _settings(unit)
+        assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK"]
+        assert settings["CapabilityBoundingSet"] == (
+            ["CAP_DAC_READ_SEARCH"]
+            if unit == "azazel-activated.service" else [""]
+        )
+        assert settings["AmbientCapabilities"] == [""]
+        assert settings["IPAddressDeny"] == ["any"]
 
 
 def test_a_profile_asking_for_an_internet_family_cannot_be_built():
@@ -311,7 +321,7 @@ def test_every_unit_denies_ip_addresses():
 # -- capabilities ---------------------------------------------------------
 
 
-def test_every_unit_has_an_empty_capability_bounding_set():
+def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
     """Not "a small set". Empty.
 
     A bounding set is what a daemon may ever acquire, and none of these needs
@@ -320,9 +330,50 @@ def test_every_unit_has_an_empty_capability_bounding_set():
     """
 
     for profile in PROFILES:
+        if profile.unit == "azazel-activated.service":
+            continue
         settings = _settings(profile.unit)
         assert settings["CapabilityBoundingSet"] == [""]
         assert settings["AmbientCapabilities"] == [""]
+        assert "SupplementaryGroups" not in settings
+
+
+def test_only_the_controller_holds_one_capability_and_one_group():
+    """Owner-approved: root controller gets exactly CAP_DAC_READ_SEARCH and
+    SupplementaryGroups=azazel-operator; Ambient stays empty, no other unit
+    changes, NoNewPrivileges stays yes."""
+
+    widened = {
+        profile.unit
+        for profile in PROFILES
+        if profile.capability_bounding_set or profile.supplementary_groups
+    }
+    assert widened == {"azazel-activated.service"}
+    settings = _settings("azazel-activated.service")
+    assert settings["User"] == ["root"]
+    assert settings["CapabilityBoundingSet"] == ["CAP_DAC_READ_SEARCH"]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["SupplementaryGroups"] == ["azazel-operator"]
+    assert settings["NoNewPrivileges"] == ["yes"]
+
+
+@pytest.mark.parametrize("bounding,groups", [
+    (("CAP_DAC_READ_SEARCH", "CAP_DAC_OVERRIDE"), ("azazel-operator",)),
+    (("CAP_DAC_OVERRIDE",), ("azazel-operator",)),
+    (("CAP_DAC_READ_SEARCH",), ("azazel-operator", "wheel")),
+    (("CAP_DAC_READ_SEARCH",), ()),
+    ((), ("azazel-operator",)),
+])
+def test_a_wider_or_different_controller_declaration_does_not_render_the_unit(
+    bounding, groups,
+):
+    from dataclasses import replace
+
+    controller = next(p for p in PROFILES if p.unit == "azazel-activated.service")
+    changed = replace(
+        controller, capability_bounding_set=bounding, supplementary_groups=groups,
+    )
+    assert render_unit(changed) != _unit("azazel-activated.service")
 
 
 def test_every_unit_refuses_new_privileges():
@@ -336,7 +387,10 @@ def test_every_unit_refuses_new_privileges():
 def test_every_writable_path_is_one_the_layout_declares():
     """A writable path nobody declared is one nobody set the owner of."""
 
-    declared = {spec.path for spec in LAYOUT} | {"/etc/systemd/system"}
+    declared = {spec.path for spec in LAYOUT} | {
+        "/etc/systemd/system", "/run/systemd/system.control",
+        "/run/azazel-nexus-bootstrap",
+    }
     for profile in PROFILES:
         for path in _settings(profile.unit).get("ReadWritePaths", []):
             assert path in declared, f"{profile.unit} writes to undeclared {path}"
@@ -349,6 +403,89 @@ def test_only_the_activation_controller_may_write_unit_files():
         if "/etc/systemd/system" in _settings(profile.unit).get("ReadWritePaths", [])
     ]
     assert writers == [ACTIVATION_CONTROLLER_UNIT]
+
+
+def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
+    writers = [profile.unit for profile in PROFILES
+               if "/run/systemd/system.control" in profile.read_write_paths]
+    assert writers == [ACTIVATION_CONTROLLER_UNIT]
+    controller = next(profile for profile in PROFILES if profile.unit == ACTIVATION_CONTROLLER_UNIT)
+    assert "systemd-tmpfiles-setup.service" in controller.after
+    assert not {"/run", "/run/systemd"} & set(controller.read_write_paths)
+    claim_writers = [profile.unit for profile in PROFILES
+                     if "/run/azazel-nexus-bootstrap" in profile.read_write_paths]
+    assert claim_writers == [ACTIVATION_CONTROLLER_UNIT]
+    assert controller.conditions == (
+        ("ConditionPathExists", "!/run/azazel-nexus-bootstrap/controller-used"),
+    )
+    assert all(
+        not any(key == "ConditionPathExists" for key, _ in profile.conditions)
+        for profile in PROFILES
+        if profile.unit != ACTIVATION_CONTROLLER_UNIT
+    )
+    from dataclasses import replace
+    with pytest.raises(ValueError, match="only by the activation controller"):
+        replace(controller, unit="azazel-other.service")
+
+
+def test_only_the_three_lifetime_units_override_default_shutdown_dependencies():
+    restricted = {
+        "azazel-activated.service",
+        "azazel-auditd.service",
+        "azazel-commissiond.service",
+    }
+    assert {profile.unit for profile in PROFILES if not profile.default_dependencies} == restricted
+    for profile in PROFILES:
+        if profile.unit in restricted:
+            assert profile.default_dependencies is False
+            assert profile.before == ("shutdown.target",)
+            assert profile.conflicts == ("shutdown.target",)
+            settings = _settings(profile.unit)
+            assert settings["DefaultDependencies"] == ["no"]
+            assert settings["Before"] == ["shutdown.target"]
+            assert settings["Conflicts"] == ["shutdown.target"]
+        else:
+            assert profile.default_dependencies is True
+            assert profile.before == ()
+            assert profile.conflicts == ()
+
+
+def test_only_bootstrap_lifetime_units_clear_launcher_environment():
+    expected_units = {
+        "azazel-activated.service",
+        "azazel-auditd.service",
+        "azazel-commissiond.service",
+    }
+    actual_units = {
+        profile.unit for profile in PROFILES
+        if {key for key, _ in profile.extra}
+        & {"SetLoginEnvironment", "UnsetEnvironment"}
+    }
+    assert actual_units == expected_units
+
+    expected_unset = " ".join(BOOTSTRAP_UNSET_ENVIRONMENT)
+    for profile in PROFILES:
+        extras = dict(profile.extra)
+        if profile.unit in expected_units:
+            assert extras["SetLoginEnvironment"] == "no"
+            assert extras["UnsetEnvironment"] == expected_unset
+            assert profile.default_dependencies is False
+            assert profile.before == ("shutdown.target",)
+            assert profile.conflicts == ("shutdown.target",)
+        else:
+            assert "SetLoginEnvironment" not in extras
+            assert "UnsetEnvironment" not in extras
+        assert not {"Environment", "EnvironmentFile", "DefaultDependencies"} & extras.keys()
+
+    authority = {
+        profile.unit: (profile.account, profile.address_families)
+        for profile in PROFILES if profile.unit in expected_units
+    }
+    assert authority == {
+        "azazel-activated.service": ("root", ("AF_UNIX", "AF_NETLINK")),
+        "azazel-auditd.service": ("azaudit", ("AF_UNIX",)),
+        "azazel-commissiond.service": ("azcommission", ("AF_UNIX", "AF_NETLINK")),
+    }
 
 
 def test_a_profile_writing_outside_the_layout_cannot_be_built():
@@ -364,17 +501,12 @@ def test_a_profile_writing_outside_the_layout_cannot_be_built():
         )
 
 
-def test_the_runtime_directory_mode_matches_the_layouts_socket_directory():
-    """`/var/lib/azazel/run` is `0750` and so is what systemd creates.
+def test_systemd_runtime_directory_is_separate_from_persistent_socket_tree():
+    """systemd's `/run/azazel` is distinct from `/var/lib/azazel/run`."""
 
-    Socket ACLs are the first authorization boundary (§4); two declarations
-    of that boundary disagreeing means one of them is not the boundary.
-    """
-
-    run = next(spec for spec in LAYOUT if spec.path.endswith("/run"))
     for profile in PROFILES:
         mode = _settings(profile.unit)["RuntimeDirectoryMode"][0]
-        assert int(mode, 8) == run.mode
+        assert int(mode, 8) == 0o750
 
 
 # -- the installer agrees with all of it ----------------------------------
@@ -398,6 +530,9 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
     for profile in PROFILES:
         settings = _settings(profile.unit)
         for key, value in SHARED_HARDENING:
+            if (key == "CapabilityBoundingSet"
+                    and profile.unit == "azazel-activated.service"):
+                value = "CAP_DAC_READ_SEARCH"
             assert settings.get(key) == [value], (
                 f"{profile.unit} sets {key} to {settings.get(key)} and the "
                 f"shared declaration says {value!r}"

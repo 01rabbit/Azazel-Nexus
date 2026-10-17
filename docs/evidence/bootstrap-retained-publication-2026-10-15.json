@@ -1,0 +1,39 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree",
+  "scope": "retained publication validation wired to bound audit/commission start checkpoints",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "d5d73ab53ff15b68f5088758458dcac72d324e63d66317065390e09c10c2912a",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "6cd5a0c5e18ed8913f164f7cbf548455d70968670b285d937f41fc66df5992ae",
+    "tests/unit/test_runtime_bootstrap_bound_audit.py": "363708d26fbd493d638ab0707c1863b55415b6c2832e6df67df70efc0c1c1bb6",
+    "tests/unit/test_runtime_bootstrap_bound_commission.py": "2b93a7083f5b9a30cb402022ef9435e3271daf711cba92a86bd47a23fe0f084e",
+    "tests/unit/test_runtime_bootstrap_audit_handoff.py": "2d225269e943abda232c698f5ac29fe0ea7a3851d5c2816244a249ecf183b721"
+  },
+  "tests": {
+    "expanded": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py",
+      "passed": 2396,
+      "skipped": 2,
+      "seconds": 9.03,
+      "note": "before final additional owner read after final profile observation"
+    },
+    "final": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_manager_publication.py tests/unit/test_runtime_bootstrap_bound_audit.py tests/unit/test_runtime_bootstrap_bound_commission.py tests/unit/test_runtime_bootstrap_audit_handoff.py",
+      "passed": 47,
+      "skipped": 0,
+      "seconds": 1.31
+    }
+  },
+  "ruff": "five changed source/test files pass; source rechecked after final owner read",
+  "diff_check": "pass",
+  "review": "Astra found no blocking defect; final owner-after-profile check added to resolve noted ordering uncertainty. Luna supplied disjoint publication/bound-start tests; coordinator implemented source and late-submission/journal/mask regressions.",
+  "limits": [
+    "public opening/start gates still refuse",
+    "no complete executable/import closure or atomic transitive service-start exclusion",
+    "controller DBus READY not freshly confirmed here; retained READY context and local identity checked",
+    "prerequisites stable within fresh observation, not proof of uninterrupted continuity",
+    "no CI, VM, deployment, physical operation, commit/push"
+  ]
+}

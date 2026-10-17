@@ -1,0 +1,63 @@
+{
+  "schema": "azazel-nexus/local-development-evidence/v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "source_state": "uncommitted; existing dirty work preserved",
+  "source_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_cgroup.py": "936ec4d34ef2786e6ea91d9324ae1399cd550a1722507c93f50ca20c9a9814e1",
+    "runtime/src/azazel_nexus_runtime/bootstrap_stopped.py": "6c182c06e4276e42ae2af24da1aa51f9ba09bd5ceefbb79ad2772932beb5fde9",
+    "runtime/src/azazel_nexus_runtime/bootstrap_stop.py": "82b379a2cbb82b90ae910c9434ad6970ce42213dfd93bc61674d949a272be031",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "5015d08f59db6913805e3d128a8d68cd2fce5ebda4d0c1ce7f8cd14a9d746921",
+    "tests/unit/test_runtime_bootstrap_cgroup.py": "47e2fd1622d3f9c5368e5b6bf8bb0855a1c008f7d48d0cdc5e704f83c8171f27",
+    "tests/unit/test_runtime_bootstrap_stopped.py": "e21d462dad06c4e9e0ef4b40ef99c2c21dd25dcb17d288dae3a0c30d640484b7",
+    "tests/unit/test_runtime_bootstrap_manager_stopped.py": "0c4226f5118bf14919c97564cf5c615767c63226a75f110904ab012ff3c61428",
+    "tests/unit/test_runtime_bootstrap_stop.py": "a1637a9854bf052d5cb18072da16d9aaee720a753f3968ddba172f47deaffffe"
+  },
+  "test_files": [
+    "tests/unit/test_runtime_bootstrap_cgroup.py",
+    "tests/unit/test_runtime_bootstrap_stopped.py",
+    "tests/unit/test_runtime_bootstrap_manager_stopped.py",
+    "tests/unit/test_runtime_bootstrap_close_sequence.py",
+    "tests/unit/test_runtime_bootstrap_close_files.py",
+    "tests/unit/test_runtime_bootstrap_overlay_close.py",
+    "tests/unit/test_runtime_bootstrap_overlay_files.py",
+    "tests/unit/test_runtime_bootstrap_masked.py",
+    "tests/unit/test_runtime_bootstrap_manager.py",
+    "tests/unit/test_runtime_bootstrap_manager_masked.py",
+    "tests/unit/test_runtime_bootstrap_job_drain.py",
+    "tests/unit/test_runtime_bootstrap_owner_binding.py",
+    "tests/unit/test_runtime_bootstrap_stop.py",
+    "tests/unit/test_runtime_bootstrap.py",
+    "tests/unit/test_bootstrap_overlay_journal.py"
+  ],
+  "local": {
+    "command_prefix": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q",
+    "arguments": "test_files in listed order",
+    "passed": 451,
+    "skipped": 1,
+    "seconds": 1.33
+  },
+  "debian_arm64": {
+    "command_prefix": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q --basetemp=<separate-private-fixture-root>/t",
+    "arguments": "test_files in listed order",
+    "passed": 452,
+    "skipped": 0,
+    "seconds": 1.11,
+    "source_hashes_match_local": true,
+    "environment": "existing interpreter; no package or service change; disposable source and separate fixture roots removed"
+  },
+  "lint": "Ruff passed on the eight hashed code/test files; diff check passed; repository-wide lint not rerun",
+  "review": "Independent read-only review identified late root validation. Fixed by preflight before bus or file changes, duplicated descriptor identity check and owned lifetime; reviewer confirmed fix.",
+  "scope": "Fake D-Bus plus ordinary-file fixtures, with Linux-only offline systemd-analyze retained in related selection; not live service/cgroup validation",
+  "remaining": [
+    "production cgroup-v2 root/mount admission and protected descriptor opener",
+    "independent no-escape unit hardening admission",
+    "supervisor containment-evidence and withdrawal integration",
+    "journaled owned-file withdrawal and final loaded-mask verification",
+    "independent controller lifetime for non-preemptible filesystem IO",
+    "production composition and installed lifecycle validation"
+  ],
+  "full_suite": "not rerun for this increment; preceding 5552 passed belongs to previous source snapshot",
+  "safety": "No live cgroup/systemd operation, provider/fetch/Edge activation, CI, physical media, firmware, source-branch commit or push. Widening remains refused."
+}

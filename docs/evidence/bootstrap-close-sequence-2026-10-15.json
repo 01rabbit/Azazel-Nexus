@@ -1,0 +1,57 @@
+{
+  "schema": "azazel-nexus/local-development-evidence/v1",
+  "date": "2026-10-15",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty and uncommitted; file hashes below identify tested increment, not the entire tree",
+  "source_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_close.py": "b577439ce617c9c63dd1e6a4a75e9d73851f473eb1c3de120aed035749bc0398",
+    "runtime/src/azazel_nexus_runtime/bootstrap_close_files.py": "8bcd99cb1d99c05e634964ea1e9e600a0ce67d2be3dcfbc25fadf2f97989f188",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "0bf000e5a89bc296b7095f24bd245d1b1b21ea1a02c2830fc8da71c43eee818a",
+    "runtime/src/azazel_nexus_runtime/bootstrap_masked.py": "bc23509a8eeef45df65db13610f609729733dad9e72511dc02237683f4329ea3",
+    "tests/unit/test_runtime_bootstrap_close_sequence.py": "6aaacff33a377824eed19ef9602f0c7c52502bcbc447592ba4bef6171acb613e",
+    "tests/unit/test_runtime_bootstrap_close_files.py": "11eb7f09f50456486961facac53d184c863d2c730c4837e30eacb8832e158dfc",
+    "tools/e2e_stages.py": "46d9ca59cd6bf438b2202473a8b05f514285ad659fc8b115ed02f363eee34fda",
+    "tests/unit/test_e2e_harness.py": "0281a8e2940a130e1104d26b321fdb342a0dd6e06a2467a3b8199d974f91ad49"
+  },
+  "local_related_tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_close_sequence.py tests/unit/test_runtime_bootstrap_close_files.py tests/unit/test_runtime_bootstrap_overlay_close.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_manager_masked.py tests/unit/test_runtime_bootstrap_job_drain.py tests/unit/test_runtime_bootstrap_owner_binding.py tests/unit/test_runtime_bootstrap_stop.py tests/unit/test_runtime_bootstrap.py tests/unit/test_bootstrap_overlay_journal.py",
+    "passed": 407,
+    "skipped": 1,
+    "skip_scope": "Linux-only offline analyzer"
+  },
+  "linux_full_unit_suite": {
+    "architecture": "aarch64",
+    "environment": "existing Debian VM and existing conformance Python environment; no packages installed",
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit --basetemp=<private-home-test-root>/t --tb=short",
+    "source_transfer": "current source copied to private home scratch; git initialized and synthetic snapshot committed only in disposable copy for git-dependent tests; no remote or upstream commit",
+    "passed": 5552,
+    "failed": 0,
+    "skipped": 3,
+    "warnings": 2,
+    "warning_scope": "Python 3.13 multithreaded fork DeprecationWarning in two bootstrap deadline crash tests",
+    "seconds": 75.56,
+    "source_hashes_match_local": true,
+    "cleanup": "private source and test trees removed by validated-path exit traps",
+    "not_evidence_of": ["installed service lifecycle", "production activation", "hardware", "CI"]
+  },
+  "diagnostic_runs": [
+    {"result": "interrupted", "passed_before_interrupt": 1292, "reason": "VM process observed waiting for FIFO partner while test temp tree was inside copied source; interrupted that verified process and separated roots"},
+    {"result": "failed", "passed": 5522, "failed": 30, "skipped": 3, "causes": ["copied source lacked Git identity required by tests", "tmpfs below 2 GiB model-import headroom", "installer harness compared setgid layout modes after stripping special bits"]}
+  ],
+  "lint": {
+    "runtime_and_new_tests_and_e2e_test": "pass",
+    "tools/e2e_stages.py": "one pre-existing F401: unused local Path as _Path import; present in HEAD, not changed",
+    "repository_wide": "not rerun",
+    "git_diff_check": "pass",
+    "document_links": "54 documents pass"
+  },
+  "remaining": [
+    "synchronous filesystem IO is not preemptible by bus deadline; independently supervised controller lifetime still required",
+    "production descriptor opener and admitted composition root not connected",
+    "positive stopped/cgroup-empty proof and journaled withdrawal",
+    "installed reload and mask fragment observations, including partial publication",
+    "independent admission producers and full approved bootstrap lifecycle"
+  ],
+  "safety": "No live systemd operation, provider/fetch/Edge activation, physical media or firmware operation. Widening remains refused; default close_starts remains refused without trusted backend. No source-branch commit, push or CI."
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved; no commit/push",
+  "scope": "one monotonic deadline for bootstrap audit socket exchanges",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_audit_client.py": "7b95bc3349ffd82b7b023bbdfe7c960393be5a48ef8809137f41ba40585c3a9a",
+    "tests/unit/test_runtime_bootstrap_audit_client.py": "98f9833e17a5fe64d0c1c0e156167f171ad68808dc2fa12a3cbb1558ee3cd303"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_audit_client.py tests/unit/test_runtime_bootstrap_audit_live.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_auditd.py tests/unit/test_runtime_boundary.py",
+    "passed": 188,
+    "seconds": 0.86,
+    "environment": "local macOS socketpairs and deterministic fake sockets/clocks; no service connections"
+  },
+  "ruff": "two changed files pass",
+  "diff_check": "pass",
+  "review": "Astra source review found no concrete deadline defect; parsing is checked after completion, not preempted. Peer identity remains missing. Luna added tests; coordinator added send/EOF/decode cases and ran integrated selection.",
+  "coverage": [
+    "nonfinite timeout refused",
+    "timeout set before fixed-path connect; close on failed connect",
+    "shared budget across slow-drip reads",
+    "expired send/EOF/JSON parse refused",
+    "late injected factory result closed without I/O"
+  ],
+  "limits": [
+    "injected synchronous socket factory cannot be interrupted; production uses fixed socket connector",
+    "socket I/O budget and expiry checks are not hard real-time preemption of Python/kernel execution",
+    "peer identity, authenticated readiness and real service start admission remain incomplete",
+    "no Linux VM, CI, physical operation, production service change or full-suite rerun"
+  ]
+}

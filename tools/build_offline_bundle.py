@@ -68,11 +68,21 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
         (root / "LICENSE", "LICENSE"),
         (root / "runtime" / "pyproject.toml", "runtime/pyproject.toml"),
         (root / "runtime" / "README.md", "runtime/README.md"),
+        (root / "runtime" / "setup.py", "runtime/setup.py"),
+        (root / "runtime" / "MANIFEST.in", "runtime/MANIFEST.in"),
+        (root / "runtime" / "src" / "azazel_nexus_runtime" / "_bootstrap_deadline.c",
+         "runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c"),
         (root / "packaging" / "install.sh", "packaging/install.sh"),
         (root / "packaging" / "azazel-nexus.preset", "packaging/azazel-nexus.preset"),
+        (root / "packaging" / "tmpfiles.d" / "azazel-nexus-bootstrap.conf",
+         "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf"),
         (
             root / "tools" / "stage_runtime_entrypoints.py",
             "tools/stage_runtime_entrypoints.py",
+        ),
+        (
+            root / "tools" / "install_profile_fields.py",
+            "tools/install_profile_fields.py",
         ),
     )
     for source, archive_name in fixed:

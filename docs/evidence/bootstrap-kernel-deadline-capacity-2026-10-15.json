@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-15",
+  "topic": "independent BOOTTIME self-deadline and continuing capacity admission",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c": "9962eb0719fc17572f3f0adf0525c133124daba17c3dc916def626e5bdd64cdc",
+      "runtime/setup.py": "55987e5b749bca074bd7bc2bd0bdbdf1d994bf50ac5f26ef4c911acf3c5b6ecb",
+      "runtime/MANIFEST.in": "852c16bf7ae5bd23dfd1d8be359711834f92488979ff6061d25431881099c03d",
+      "runtime/src/azazel_nexus_runtime/bootstrap_kernel_deadline.py": "24e7b48dd21a70543a0d84bec3c225d4ecaa12650fae58a6b5acd69e133341a6",
+      "runtime/src/azazel_nexus_runtime/bootstrap_lifetime.py": "38b53d907589526034b01b842bdb3772551590cf42f1a2af9644e4d1ba060863",
+      "runtime/src/azazel_nexus_runtime/bootstrap.py": "152f05e61928183b952c459e8add9d905fd47b9d5f97bddcdd64f3b41ad381b3",
+      "runtime/src/azazel_nexus_runtime/bootstrap_entrypoint.py": "55705bac51ea4a101ed8d388e54fd260003a85490d435618ef67459685cc98da",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "df1d76f9a30f3925660ed96a82786c934abc79cddd0ba5335f19b0db7394ecda",
+      "tools/build_offline_bundle.py": "34748558a1cb5c2fa5bb4806134596ba3914968a55f23791ca28270beafeb64e",
+      "tools/stage_runtime_entrypoints.py": "5b0062856fd27224e2ffcedbd755e62708958f1e5e42d6895c1897efba9ab365",
+      "tests/unit/test_runtime_bootstrap_kernel_deadline.py": "089f4e31e374626e1b42efe0b6f8027812de2fb83e6d786ec55e0d6128a54ed4",
+      "tests/unit/test_runtime_bootstrap_native_deadline.py": "779754856e15cf8b95d3a807140539077e18e18490d299d7513833b049e7f9eb",
+      "tests/unit/test_runtime_native_build.py": "f7cde2ee7af5d9830110685f1b644dd117fd65fa6770e6a54338ed2f494879c4",
+      "tests/unit/test_runtime_bootstrap.py": "cd9e7e7834e7cea24cb16e1d744b0cd20333e35d4d7dff48f52520e6972e4c85",
+      "tests/unit/test_runtime_bootstrap_manager.py": "c4c7996dc99c78fe09d037a82c080bb622be494f0e36ae89b8003d25a7fb64b9",
+      "tests/unit/test_runtime_bootstrap_manager_audit_peer.py": "2163b3212555b03c3fb76eb21faba9a89bbd96fa6fe8ee7ccd8f964e9431fd74",
+      "tests/unit/test_runtime_bootstrap_entrypoint.py": "a88100edf11de92e82c41637bef8a8c6c77668230410ec0bb25e08b401bff2a1",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "1fa2fd8334a36702ea5558651a7ef0e5f7476d2b5aa2e1f85c5249a9ea2b05b1",
+      "tests/unit/test_offline_bundle.py": "d1d174a060fed6033e1e43ed859fde05902f85f14fde5b0c1cccbbc22ce397ca",
+      "tests/unit/test_stage_runtime_isolation.py": "f043f7a66c801d3160aa3140f053dd456c0a08762f8a71f9af97175521449d15"
+    }
+  },
+  "changes": [
+    "Required supervisor deadline guard bound before blocking semantic admission/publication/READY/start",
+    "Linux native absolute CLOCK_BOOTTIME SIGEV_SIGNAL/SIGKILL self-timer, once-only no caller PID/clock/signal",
+    "No refresh extension or GC/context-exit disarm; explicit release only after successful confirmed transaction cleanup",
+    "Native checks owner PID, integer/time_t bounds and armed state; no timer inheritance across fork or survival across exec claimed",
+    "Required Linux target-ABI extension; no portable backendless runtime wheel; sdist and offline bundle include C/setup/manifest",
+    "Production loader requires ExtensionFileLoader; installer imports only, never arms timer",
+    "Repeated generation admission reuses policy-bound capacity checks and rereads policy; stopped-writer audit preflight is not replayed"
+  ],
+  "tests": {
+    "environment": "macOS arm64 / CPython3.11.15, fake kernel backend and ordinary synthetic files/temporary venvs",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+    "passed": 2973,
+    "skipped": 6,
+    "failed": 0,
+    "seconds": 16.85,
+    "native_tests": {
+      "passed": 0,
+      "skipped": 4,
+      "reason": "No compiled Linux backend on local macOS host"
+    },
+    "not_full_suite": true,
+    "overlapping_runs_not_added": true,
+    "preliminary": "One command named a nonexistent optional test file and collected zero tests (exit4); corrected selection above. Fixture-import Ruff F811 findings were fixed before final lint."
+  },
+  "checks": {
+    "ruff": "18 changed Python source/test files pass; C is not Ruff-checked",
+    "diff": "pass",
+    "docs_links": "54 Markdown files pass",
+    "native_build": "Not compiled, linked, loaded or executed on Linux",
+    "full_suite": "Earlier full macOS suite red remains separately recorded; not rerun",
+    "CI": "Not executed"
+  },
+  "review": {
+    "Sol": "End-state audit identified missing independent expiry and continuing capacity; native C arithmetic/lifecycle and packaging/wiring reviewed. Portable-wheel fallback and exact-None guard result findings fixed; final loader/staging review no blocker.",
+    "Luna": "Disjoint supervisor/entrypoint/tests and continuing capacity admission/tests",
+    "coordinator": "C backend, Python guard, lifecycle ownership, source-bundle integration, isolated native-test definitions and guard/build/staging regressions"
+  },
+  "references": [
+    "https://man7.org/linux/man-pages/man2/timer_create.2.html",
+    "https://man7.org/linux/man-pages/man2/timer_settime.2.html"
+  ],
+  "remaining": [
+    "Public open_pair/start_and_wait/unmask remain refusing; is_ready remains false",
+    "Initial interpreter/pyvenv/native-loading execution admission remains incomplete",
+    "Linux native compilation, kernel timers, syscall-filter compatibility, suspend and death-to-helper behavior unverified",
+    "Marker/mount-view agreement, queued/late jobs, reboot recovery and native lifetime qualification remain open",
+    "Independent real protected provisioning records are not self-created by these tests",
+    "No VM/service deployment, physical/block/loop device operation, commit or push"
+  ],
+  "limitations": [
+    "No wake from suspend or instantaneous helper containment claim",
+    "Selected supervision must not exec because POSIX timers are deleted on exec",
+    "C backend source review/fake tests do not establish native kernel behavior",
+    "No new approval/widening authority, service, runtime opt-in or provider/Edge activation"
+  ]
+}

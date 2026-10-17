@@ -1,0 +1,56 @@
+{
+  "schema": "azazel-nexus/prototype-evidence/v1",
+  "date": "2026-10-15",
+  "topic": "site-disabled startup with explicit initial import paths",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "hashes": {
+      "tools/stage_runtime_entrypoints.py": "7c42e9a4bc02545c007fb68638094adebf028b6d105558929af281513c092edc",
+      "packaging/install.sh": "ba858ad7ffa4d11330e029bbf80b24e399fb94526fc9a1073651bc4753c4d87e",
+      "tests/unit/test_stage_runtime_entrypoints.py": "f1b3e6c2ab11d8c8f1215e37f9eeced0e9514cba4a29c7137ce2603a3940077e",
+      "tests/unit/test_stage_runtime_isolation.py": "e9ca8fbd3b2b4a6027babd4ab6cd473baa922d5a6bb891b4081c818dbfe2931b"
+    }
+  },
+  "environment": "macOS arm64 / CPython 3.11.15 / local synthetic data and temporary regular-file venvs",
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+    "passed": 2693,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 14.96,
+    "note": "Final overlapping selection; earlier 82-test run and delegated file runs are not added to this count. Not the full unit suite."
+  },
+  "checks": {
+    "ruff": {
+      "command": "ruff check tools/stage_runtime_entrypoints.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py",
+      "result": "pass"
+    },
+    "shell_syntax": "sh -n packaging/install.sh: pass",
+    "diff": "git diff --check: pass",
+    "links": "54 Markdown files: pass"
+  },
+  "review": {
+    "reviewer": "separate Sol subagent",
+    "scope": "stager/install path only; no additional actionable source defects",
+    "coordinator": "caught vacuous dependency mocks and in-process sys.path mutation; tests repaired before final selection"
+  },
+  "observed": [
+    "Probe, import validation and wrappers use -IS",
+    "Wrapper and validation share literal initial import paths",
+    "Lexical venv prefix and explicit sysconfig venv scheme avoid -S prefix difference",
+    "Temporary executable .pth and sitecustomize markers remain absent",
+    "CWD/PYTHONPATH decoys ignored; missing module refuses; argv preserved",
+    "Dependency refusal tests reach intended import/version errors; installer invocation checks covered"
+  ],
+  "limitations": [
+    "Installation candidate paths are not independent integrity approval",
+    "No complete interpreter/import/native-library/bytecode/directory-membership closure",
+    "Initial CPython startup paths precede wrapper sys.path replacement",
+    "Accepted probe JSON length is bounded after subprocess capture; no bounded-output process sandbox is claimed",
+    "Public bootstrap opening/start gates remain refusing",
+    "No Linux system-manager, VM service start, CI, physical device operation, commit or push",
+    "Earlier recorded full macOS unit suite remains red; not rerun for this increment"
+  ]
+}

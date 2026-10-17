@@ -1,0 +1,43 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "existing dirty worktree preserved; hashes identify current complete files, not exclusively this increment",
+  "scope": "semantic activation-channel refusal and read-only prerequisite observations integrated around loaded-pair preparation",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_prerequisites.py": "976aedd352eb64b9f35c81c6608a0d3dc747f35ac1f41230052584bc847af6fe",
+    "runtime/src/azazel_nexus_runtime/bootstrap_loaded_policy.py": "681ee89feb4451c126bff4f597c78c1e05f3fe246965e8dd1eeb219e525a8543",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "168f8f0d4ddab7b6f16d1cafcc654a34fabdfca262882292c71de09df7ef67d9",
+    "runtime/src/azazel_nexus_runtime/systemd_bus.py": "f854c30443e81de441472ea7218fea98f8b30bc8154fc920490b7822cecda565",
+    "tests/unit/test_runtime_bootstrap_prerequisites.py": "f5713c4e95c9dbad54089a8b384464a9fd26d6ad49b3d63ab278511d433153e0",
+    "tests/unit/test_runtime_bootstrap_loaded_policy.py": "14319039070069e0e398c7cd9d1f63fae759699d49e6366d2fdba9e1985aabf6",
+    "tests/unit/test_runtime_bootstrap_manager_publication.py": "ab7b67a7cce015b371fb191eaf108f04019997e6623344a7e18765776751f1dc",
+    "tests/unit/test_runtime_bootstrap_loaded.py": "fb9d70ccaa7e7d502e6b918806562f4896da0f4c978840bc1b657f3ecc848c45",
+    "tests/unit/test_runtime_systemd_bus.py": "6d228554b322393da8819bee07a6fe288180609f4770da95ea14979cadbda52e"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 1925,
+    "skipped": 2,
+    "seconds": 7.75,
+    "environment": "local macOS synthetic D-Bus, ordinary files/socketpairs; no live service",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "nine changed source/test files pass",
+  "diff_check": "pass",
+  "review": "Astra reviewed semantic rules/observer/integration and found bus-label encoding defect. Coordinator corrected shared encoder and test fixture, added literal independent vectors and integrated alias drift test. Luna implemented observer/tests.",
+  "sources": [
+    "https://raw.githubusercontent.com/systemd/systemd/v257/src/core/dbus-unit.c",
+    "https://raw.githubusercontent.com/systemd/systemd/v257/src/basic/bus-label.c"
+  ],
+  "limits": [
+    "only the eight specified activation relationships on the pair are excluded, not all asynchronous activation elsewhere",
+    "prerequisite observations are bounded repeated state samples, not atomic no-new-service enforcement or transitive process closure",
+    "controller phase/PID/invocation/lifetime observation remains separate and incomplete",
+    "private manager preparation remains uncalled by production open_pair; starts still refuse",
+    "no full repository suite, Linux VM, CI, real service/hardware operations or commit/push"
+  ]
+}

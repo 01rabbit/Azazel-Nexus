@@ -44,6 +44,7 @@ from .principal import (
     PrincipalPolicy,
     REQUIRED_SOCKET_MODE,
     peer_credentials,
+    peer_supplementary_groups,
     verify_socket,
 )
 from .protocol import Refusal, RequestRefused, Verb, VerbRegistry, fingerprint
@@ -91,7 +92,13 @@ class Request:
     payload: dict = field(default_factory=dict)
 
 
-def bind_socket(path: Path, *, mode: int = REQUIRED_SOCKET_MODE, backlog: int = 16):
+def bind_socket(
+    path: Path,
+    *,
+    mode: int = REQUIRED_SOCKET_MODE,
+    backlog: int = 16,
+    expected_gid: int | None = None,
+):
     """Bind, set the mode, then verify that what exists is what we made.
 
     `chmod` after `bind` is what makes the mode independent of the process
@@ -116,7 +123,7 @@ def bind_socket(path: Path, *, mode: int = REQUIRED_SOCKET_MODE, backlog: int = 
     try:
         server.bind(str(path))
         path.chmod(mode)
-        verify_socket(path, expected_mode=mode)
+        verify_socket(path, expected_mode=mode, expected_gid=expected_gid)
         server.listen(backlog)
     except BaseException:
         server.close()
@@ -198,7 +205,8 @@ class SocketServer:
         raw = b""
         try:
             pid, uid, gid = peer_credentials(connection)
-            principal = self.policy.classify(uid, gid, pid)
+            groups = peer_supplementary_groups(connection)
+            principal = self.policy.classify(uid, gid, pid, groups)
             raw = read_frame(connection)
             request = self._parse(raw, principal)
         except RequestRefused as refused:

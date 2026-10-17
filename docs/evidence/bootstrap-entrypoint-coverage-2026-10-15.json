@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-15",
+  "topic": "mandatory bootstrap entrypoint coverage in protected installed-file admission",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "b7b239251b58fef37d2e871057a91b6d40a115e3f03b47cf114cbb7fdb038562",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "d9039128d01b869ca3e7cd28d95c80be1ca63c7b84d30281184d872e89e55d87",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "9dff87dfd4151b06554febe04be401437bcd34af70f97cf21624c02260a6a6a4"
+    }
+  },
+  "contract": [
+    "Decode exact canonical manifest against independent context pin before measurement",
+    "Derive controller/auditd/commissiond executable paths from compiled service profiles; require all three with mode 0755",
+    "Measure same raw bytes with existing protected regular-file verifier",
+    "Reread protected manifest after measurement and refuse changed bytes",
+    "Existing production context and generation-admission readers use this function; no new authority or public caller paths"
+  ],
+  "review": {
+    "Sol": "No blocking defect in bounded source change",
+    "Luna": "Disjoint tests; separate causal review confirmed profile mapping",
+    "coordinator": "Restored original protected-read replacement regression with canonical input; added independent-pin negative test"
+  },
+  "local_tests": {
+    "environment": "macOS arm64 / CPython 3.11.15, synthetic and temporary regular files only",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_installed_files.py tests/unit/test_installed_manifest.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py",
+    "passed": 2717,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 13.25,
+    "nonadditive": true,
+    "coverage": [
+      "each missing required entrypoint",
+      "each nonexecutable required entrypoint",
+      "unrelated manifest refuses before measurement",
+      "valid additional selected files",
+      "manifest change during protected read",
+      "manifest change during measurement",
+      "presence does not replace independent hash pin",
+      "real protected factory composition with synthetic installed wrappers"
+    ]
+  },
+  "checks": {
+    "ruff": "Three changed source/test files pass",
+    "diff_check": "pass",
+    "docs_links": "54 Markdown files pass"
+  },
+  "remaining": [
+    "Mandatory entrypoint floor is not complete executable/import closure",
+    "v1 does not cover interpreter links, directory membership, unlisted imports, bytecode or native loader dependencies",
+    "Public bootstrap opening/start remains refusing",
+    "Linux systemd/D-Bus deployment, suspend-inclusive expiry and native scheduling qualification not performed",
+    "Earlier full macOS suite red as separately recorded; no new full-suite or CI success claimed"
+  ],
+  "operations_not_performed": [
+    "CI",
+    "VM/service deployment",
+    "physical/block/loop device operations",
+    "commit",
+    "push",
+    "PR",
+    "issue closure"
+  ]
+}

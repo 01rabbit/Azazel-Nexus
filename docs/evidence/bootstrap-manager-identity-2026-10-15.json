@@ -1,0 +1,93 @@
+{
+  "schema": "azazel-nexus/local-prototype-evidence/v1",
+  "date": "2026-10-15",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "retained dirty worktree; no source branch commit/push",
+  "sha256": {
+    "runtime/src/azazel_nexus_runtime/systemd_socket.py": "17e8e72234763edf1902c642423e2fec7e3bc20f4ad341d1af0604ef86005328",
+    "runtime/src/azazel_nexus_runtime/systemd_bus.py": "4202d0217d6b36c84b7890c46eff3ed01875a85db362115042c10fa55c2aa572",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager_identity.py": "e006ed35c4ddeebe8b63a1d9f48820b2393cedb63ee58462eb4c6b83724f51c1",
+    "runtime/src/azazel_nexus_runtime/bootstrap_stop.py": "2cbec680833309c62fb4dc793c00cc06dea23c55ce78c8a7abf26ff930f8d474",
+    "tests/unit/test_runtime_systemd_socket.py": "cf7cc8abe8f1d7232e6d4d320846a04709fed64f58e556539a2ba16b6b13c563",
+    "tests/unit/test_runtime_systemd_bus.py": "8b620d1e161a1cd4de678629cc6df4f291d88340c2ebf9eebb31c406f18a6d7b",
+    "tests/unit/test_runtime_bus_timeouts.py": "fff2d11becd692dda5608f36f7add93c6d6089724ae6a872433afe167e0e3fff",
+    "tests/unit/test_runtime_bootstrap_manager_identity.py": "14d75e5125ba678110b63f28d343fb26f707aa4d26be0e46e56edcf94c11b82c"
+  },
+  "local_vm_hashes_match": true,
+  "mac": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_systemd_socket.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_bus_timeouts.py tests/unit/test_runtime_bootstrap_manager_identity.py tests/unit/test_runtime_bootstrap_owner_binding.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_manager_stopped.py tests/unit/test_runtime_bootstrap_masked.py tests/unit/test_runtime_bootstrap_loaded.py",
+    "passed": 305,
+    "elapsed_seconds": 1.9
+  },
+  "debian_arm64": {
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit --basetemp=\"$testroot/t\" --tb=short",
+    "passed": 5764,
+    "skipped": 3,
+    "warnings": 2,
+    "elapsed_seconds": 44.09,
+    "warning": "multiprocessing fork in multithreaded process in two existing deadline crash tests",
+    "fixture": "separate private source/fixture trees with test-only Git snapshot and existing interpreter",
+    "temporary_trees_removed": true
+  },
+  "initial_full_run": {
+    "passed": 5762,
+    "failed": 1,
+    "skipped": 3,
+    "warnings": 2,
+    "reason": "Linux full AF_UNIX listen queue returned BlockingIOError EAGAIN; test originally expected TimeoutError or ConnectionRefusedError. Test now accepts only those refusal forms, confirms configured timeout and closed fd, and has independent test ceiling."
+  },
+  "live_readonly_probe": {
+    "code": "import json\nfrom azazel_nexus_runtime.systemd_bus import SystemdBusSession\nwith SystemdBusSession.connect() as session:\n    profile=session.bootstrap_profile()\n    print(json.dumps({'socket_setup':'bounded-fixed-unix','dependency':'dbus-next-0.2.3','manager_credentials':'uid0-pid1-admitted','unique_owner_pinned':bool(session._admitted_owner),'manager_profile':profile.name,'operations':'read-only'}))\nprint(json.dumps({'stream_closed':session._bus._stream.closed,'socket_closed':session._bus._sock.fileno()==-1,'loop_closed':session._loop.is_closed()}))\n",
+    "fixed_unix_socket": "accepted",
+    "dependency": "dbus-next==0.2.3",
+    "systemd_owner_credentials": "PID1/UID0 admitted by daemon-reported typed replies",
+    "owner_pin": true,
+    "profile": "systemd-257.13-deb13-path-v1",
+    "stream_closed": true,
+    "socket_closed": true,
+    "loop_closed": true,
+    "service_mutations": false
+  },
+  "review": {
+    "luna": "disjoint identity and connect/socket regression tests",
+    "astra": "found unbounded constructor socket connect; per-socket timeout and exact dependency guard added and re-reviewed",
+    "main": "reviewed test fixtures, added real-socket independent test bound and explicit session resource closure verified on VM"
+  },
+  "lint": {
+    "target_ruff": {
+      "files": [
+        "runtime/src/azazel_nexus_runtime/systemd_socket.py",
+        "runtime/src/azazel_nexus_runtime/systemd_bus.py",
+        "runtime/src/azazel_nexus_runtime/bootstrap_manager_identity.py",
+        "runtime/src/azazel_nexus_runtime/bootstrap_stop.py",
+        "tests/unit/test_runtime_systemd_socket.py",
+        "tests/unit/test_runtime_systemd_bus.py",
+        "tests/unit/test_runtime_bus_timeouts.py",
+        "tests/unit/test_runtime_bootstrap_manager_identity.py"
+      ],
+      "result": "pass"
+    },
+    "git_diff_check": "pass",
+    "document_links": {
+      "result": "pass",
+      "markdown_files": 54
+    }
+  },
+  "remaining": [
+    "SSH account PID1 namespace access still EACCES; hardened service context unverified",
+    "canonical overlay path composition and unit no-escape admission",
+    "external controller lifetime",
+    "grant publication/start/readiness and final runtime composition"
+  ],
+  "not_run": [
+    "GitHub Actions",
+    "service lifecycle mutations",
+    "hardware"
+  ],
+  "references": [
+    "https://dbus.freedesktop.org/doc/dbus-specification.html#bus-messages-get-connection-unix-process-id",
+    "https://github.com/altdesktop/python-dbus-next/blob/v0.2.3/dbus_next/message_bus.py"
+  ],
+  "authority": "No provider/fetch/Edge activation; OS/package provenance or cross-PID-namespace deployment not attested"
+}

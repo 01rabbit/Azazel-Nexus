@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-15",
+  "scope": "Nexus #93 first bounded unpacked source-prototype module/cache profile",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "runtime/src/azazel_nexus_runtime/loaded_modules.py": "ddaca18d537117d8b000620ed4906b03d975a73ee85af2584a8e01b9639b6b90",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "ba420795789f5d82c8fc2b4d219fd60170e261d111ee169a113ce3934fab49a1",
+      "tests/unit/test_runtime_loaded_modules.py": "1d77128a0cd5cdb27d9c4afdf83639d14de5492551ee81e72553125ae945f359",
+      "tests/unit/test_runtime_bootstrap_installed_files.py": "b27c34b1ee9c151f3fb6584162751f22c5ffce39971d80e3e95d616b7f9e0c00",
+      "tests/unit/test_installed_link_measurement.py": "f9ebebe1666119f113dff1dfdbcde923e2684ab778b185dc3dbc846562bd872a",
+      "tests/unit/test_runtime_bootstrap_startup_admission.py": "e15255dc123a505f4f09064920fde32cd047e8905431405a01805abfee00996a",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "53229deee589a4ae3d6acf7a45e1b431a9dcaf302fbd55d64cf128d59dd927b7"
+    }
+  },
+  "profile": {
+    "supported": "Conventional protected CPython3.13 venv; unpacked directory roots, ordinary source/native packages, exact controller wrapper main, genuine interpreter-known builtin/frozen labels with registry alias identities",
+    "origins": "Standard source/native loader exact type and name/path state; pinned origin/v3 leaf resolution beneath approved roots; ordinary single package search directory must be declared",
+    "bytecode": "Canonical source cache name with optimize exact-int0 and pycache_prefix None. Cache file/link must be independently pinned or derived path observed absent through protected no-follow ancestry. -B/dont_write_bytecode is not treated as disabling reads",
+    "filesystem": "Negative cache locations plus fixed /etc/ld.so.preload absence, repeated named/fd ancestry snapshots. Complete manifest measurement remains central; module observer does not independently measure file bytes",
+    "bounds": "2048 modules,4096 keys per module namespace,65536 aggregate attributes; plain bounded metadata, no configured loader callbacks",
+    "unsupported": "ZIP execution, namespace packages, sourceless-only modules, in-flight initialization, optimization or pycache redirection. Generic ZIP candidate schema/rendering remains supported but no longer implies selected source-profile admission",
+    "trust": "Explicit Debian kernel/glibc/native-loader substrate; no universal OS/ELF hermeticity, historical executed-byte, source/cache-equivalence or hostile privileged/in-process claim",
+    "integration": "Actual measure_bootstrap_installed_files requires unpacked roots and same loaded-module/cache observation before/after full measurement. No new approval source, shared record, manifest version or public-start widening"
+  },
+  "references": [
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/importlib/_bootstrap_external.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/importlib/__init__.py",
+    "https://raw.githubusercontent.com/python/cpython/v3.13.5/Lib/collections/__init__.py"
+  ],
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_runtime_native_build.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_import_routing.py tests/unit/test_runtime_loaded_modules.py --tb=short --junitxml=/tmp/azn-linux-check.I6YGHW/loaded-modules-macos.xml",
+    "macos": {"passed": 3216, "skipped": 7, "seconds": 19.32},
+    "type_test_amendment": "After broad run Sol noted optimize=True fails nonzero check anyway. Replaced with False to specifically prove exact-int guard despite equality to0; final module follow-up21 passed in0.09s. Production unchanged; final Linux snapshot contains amended test",
+    "linux_command": "cd /tmp/azl.jwxEyW && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_runtime_loaded_modules.py tests/unit/test_runtime_import_routing.py tests/unit/test_runtime_python_startup.py tests/unit/test_runtime_running_python.py tests/unit/test_runtime_python_profile.py tests/unit/test_runtime_bootstrap_installed_files.py tests/unit/test_installed_link_measurement.py tests/unit/test_runtime_bootstrap_startup_admission.py tests/unit/test_runtime_bootstrap_protected_admission.py --basetemp=/tmp/azk.uKokLb --junitxml=/tmp/azl.jwxEyW/final-loaded-modules.xml --tb=short",
+    "linux": {"passed": 245, "failed": 0, "skipped": 0, "seconds": 0.54},
+    "causal": "Positive protected ordinary-tree cache absence followed by an actual unpinned cache file refuses specifically for existing leaf. Preload-file appearance refuses. Retained bound-audit baseline admits/publishes then both loaded-module observations are reached and drift refuses before StartUnit. ZIP candidate tests explicitly distinguish generic representation from unsupported unpacked runtime admission",
+    "review": "Sol independent source/test review found no production blocker; optimize0 precision and False type-test fixed. Finite scope audited: production wheel/universal hermeticity not source-prototype prerequisites",
+    "lint": "Seven changed Python files pass host Ruff. No unrelated repository-wide lint cleanup/rerun",
+    "counts": "Overlapping focused97/100, broad and initial/final Linux245 selections not summed. Prior full Linux25 failures remain, full suite not rerun. Native timer five previous passes remain separate; reused native artifact not rebuilt or timer-tested here"
+  },
+  "debian_metadata_probe": {
+    "command": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python -IS /tmp/azl.jwxEyW/loaded-modules-probe.py /tmp/azl.jwxEyW",
+    "script": {"local_path": "/tmp/azn-linux-check.I6YGHW/loaded-modules-probe.py", "sha256": "8c04bc14f4b92726a6753ca6a8374bf217bd98190b16b6beaa5a8356c2e7058d"},
+    "python": "3.13.5",
+    "selected_actual_stdlib_metadata_modules": 83,
+    "declared_source_and_cache_files": 78,
+    "negative_paths": 1,
+    "unapproved_cache_refused": true,
+    "actual_native_metadata_compatible": true,
+    "reused_native_sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "meaning": "Selected actual stdlib module objects with synthetic controller main/file declarations; native extension loader/name metadata inspected only. Application modules outside /usr omitted. No actual protected file measurement/admission, executed-byte proof or installed runtime established"
+  },
+  "input": {
+    "path": "/tmp/azn-linux-check.I6YGHW/loaded-modules/final-source.tar.gz",
+    "sha256": "b2e8bd4b0ba2c1f7762247d93ab1a59ea51389f0e53b6b0a6a6e4e102260c0cb",
+    "archive_bytes": 1287929,
+    "files": 510,
+    "input_bytes": 5194380,
+    "members_digest": "104323343e31dfe49e2ba6d82666b1773a4b83d37f47ef905a399f0586401611",
+    "member_digest_algorithm": "SHA256 archive-order name + NUL + file SHA256 hex + LF, UTF-8",
+    "local_current_members_match": true,
+    "remote_archive_hash_match": true,
+    "remote_members_match_after_tests": true,
+    "scope": "Focused source/test snapshot, reused native artifact separate; not release/full-suite input"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/loaded-modules-macos.xml", "sha256": "9369de582b6ee6c78a26ca490146c77be09d16e7a75152e4a7f498a3097aaff6"},
+    "linux_initial": {"path": "/tmp/azn-linux-check.I6YGHW/loaded-modules/initial-linux.xml", "sha256": "96be991d93dbbc30bde5c837cac3b382b05832797be38cdcf9cd6a3f9ca826d2"},
+    "linux_final": {"path": "/tmp/azn-linux-check.I6YGHW/loaded-modules/final-loaded-modules.xml", "sha256": "24c86800395bf55cf35ca294162a9c44a732325d9328d649c8886b81a3432484"}
+  },
+  "cleanup": "Exact owned non-symlink remote /tmp/azl.jwxEyW(8.8MiB) and /tmp/azk.uKokLb(616KiB) removed after510 source-member checks; absence confirmed. Small local source/XML/probe retained; user/Boot data untouched",
+  "finite_next_work": [
+    "Thin private prototype manager protocol delegation to existing retained publication/bound starts/authenticated readiness",
+    "Causal selected-entrypoint/supervisor composition tests with fake transport/protected ordinary files",
+    "Fixed production factory remains refusing under current contract until authorized native system-manager qualification; final reviewed switch is separate, not a new approval boolean",
+    "Actual sandbox/mount-view/queued-job/controller-death/reboot/suspend evidence and genuine deployment provisioning are distinct operator qualification, not new verifier projects"
+  ],
+  "remaining_limits": [
+    "Source profile is current metadata plus file measurement, not historical loaded bytes, source/cache equivalence or arbitrary in-process/privileged integrity",
+    "ZIP/namespace/sourceless execution unsupported in first subset; generic candidate support does not grant execution",
+    "Public opening/start/readiness still refusing, no provider/fetch/Edge activation",
+    "Prior project .venv incident unresolved; isolated tests do not restore or modify it"
+  ],
+  "not_performed": ["CI", "native rebuild or timer reexecution", "real service deployment/start", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "repository commit/push"]
+}

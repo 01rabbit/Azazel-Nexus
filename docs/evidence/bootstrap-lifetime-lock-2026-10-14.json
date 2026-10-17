@@ -1,0 +1,41 @@
+{
+  "schema": "azazel-nexus/local-review-evidence/v1",
+  "scope": "bootstrap supervisor lifetime transaction lock",
+  "source": {
+    "base_revision": "778d61bab79805288e136b2f6d0502146e4f3910",
+    "dirty_worktree": true,
+    "local_vm_sha256_match": true,
+    "files": {
+      "src/azazel_nexus/bootstrap_lock.py": "c20950ac1584767e3a21029953691174213097547f94aa94f0bb8643fe199834",
+      "runtime/src/azazel_nexus_runtime/bootstrap.py": "2cccfb98e6d5cbcda53b805e2542ff5657a7be540a059af9d0c54b8a67f1d374",
+      "tests/unit/test_bootstrap_lock.py": "aa1eadd631e12e9444e33deccc70d635169cfe27441643e538688b40aa6bacf0",
+      "tests/unit/test_runtime_bootstrap.py": "2e46407179d51d620d38e7f33da72a3355afea62cc3d28cbff1b7fab3892ec2c"
+    }
+  },
+  "runs": [
+    {
+      "environment": "existing Mac venv",
+      "command": "PYTHONPATH=src:runtime/src ./.venv/bin/python -m pytest tests/unit/test_bootstrap_lock.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_inputs.py tests/unit/test_runtime_boundary.py -q",
+      "passed": 79,
+      "failed": 0,
+      "seconds": 0.40
+    },
+    {
+      "environment": "existing Debian 13 ARM64 rc2 venv; isolated source copy",
+      "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests/unit/test_bootstrap_*.py tests/unit/test_runtime_*.py --basetemp=<fresh-/home/rabbit/nbl-directory> -q",
+      "passed": 688,
+      "failed": 0,
+      "seconds": 2.21
+    }
+  ],
+  "target_ruff": "pass",
+  "diff_check": "pass",
+  "review": "separate read-only agent review; final exception preservation and runtime validator integration reviewed",
+  "evidence_kinds": ["ordinary temporary files", "recording service manager", "spawned lock contender process"],
+  "limitations": [
+    "Test subsets overlap and counts must not be added.",
+    "No actual systemd start/stop, protected host-path provisioning, production entrypoint wiring or deployment occurred.",
+    "Cooperative flock and identity rechecks are not hostile-root resistance or process lifetime/reboot fencing.",
+    "Full unit suite, repository-wide lint, CI and hardware validation were not executed for this increment."
+  ]
+}

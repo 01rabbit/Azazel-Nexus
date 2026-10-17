@@ -57,8 +57,15 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python -m pytest \
             -p no:cacheprovider tests/unit/test_core_lite_integration.py -q
 
+      # Two tests execute packaging/install.sh on the host. The installer
+      # deliberately refuses any host that is not a reviewed install profile
+      # (Debian 13 only), so they cannot pass on ubuntu-latest. They run in
+      # the `installer-debian13` job instead.
       - name: Run unit tests
-        run: python -m pytest tests/unit -q
+        run: |
+          python -m pytest tests/unit -q \
+            --deselect tests/unit/test_bootstrap_tmpfiles_packaging.py::test_staged_install_copies_rule_without_running_tmpfiles \
+            --deselect tests/unit/test_e2e_harness.py::test_the_installer_runs_and_creates_the_declared_layout
 
       # The TLS, mTLS and pinning tests are the ones most worth running and
       # the ones that used to be most likely not to: an earlier version
@@ -116,50 +123,55 @@ jobs:
           print(f"{match.group(1)} differential cases agreed with libsodium")
           PY
 
+  # The installer accepts only the debian-13-systemd-installer-v1 platform
+  # profile, so the root harness runs in a Debian 13 container (as root).
   integration-as-root:
-    name: Install-to-status integration as root
+    name: Install-to-status integration as root (Debian 13)
     runs-on: ubuntu-latest
+    container: debian:trixie
     steps:
+      - name: Install Debian packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 python3-venv python3-pip git ca-certificates \
+            coreutils findutils passwd util-linux \
+            build-essential python3-dev libffi-dev
+
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install test and runtime distributions
+      - name: Install test and runtime distributions into a venv
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
-          python -m pip install -e ./runtime
+          python3 -m venv /opt/venv
+          /opt/venv/bin/python -m pip install --upgrade pip
+          # Non-editable: the staged entrypoint check runs Python -IS and
+          # deliberately ignores .pth files, so an editable finder is invisible.
+          /opt/venv/bin/python -m pip install '.[dev]'
+          /opt/venv/bin/python -m pip install ./runtime
 
       - name: Run CORE + Lite integration suite as root
         run: |
-          python_bin="$(command -v python)"
-          sudo -- "$python_bin" -c \
-            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
-          sudo env \
-            PYTHONDONTWRITEBYTECODE=1 \
+          /opt/venv/bin/python -c \
+            'import os; assert os.geteuid() == 0, "the container is not root"'
+          PYTHONDONTWRITEBYTECODE=1 \
             PYTHONPATH="$PWD/src:$PWD/runtime/src" \
-            "$python_bin" -m pytest -p no:cacheprovider \
+            /opt/venv/bin/python -m pytest -p no:cacheprovider \
             tests/unit/test_core_lite_integration.py -q
 
       # The complete harness includes the real install-accounts stage, which
-      # creates system accounts in this disposable hosted VM. Keep generated
+      # creates system accounts in this disposable container. Keep generated
       # files outside the checkout and disable bytecode before running it.
       - name: Run install-to-status harness as root
         run: |
-          python_bin="$(command -v python)"
-          sudo -- "$python_bin" -c \
-            'import os; assert os.geteuid() == 0, "sudo did not switch to root"'
-          e2e_root="$(sudo mktemp -d /tmp/az-e2e-root.XXXXXX)"
-          report="$(sudo mktemp /tmp/az-e2e-root-report.XXXXXX)"
-          sudo env \
-            PYTHONDONTWRITEBYTECODE=1 \
+          /opt/venv/bin/python -c \
+            'import os; assert os.geteuid() == 0, "the container is not root"'
+          e2e_root="$(mktemp -d /tmp/az-e2e-root.XXXXXX)"
+          report="$(mktemp /tmp/az-e2e-root-report.XXXXXX)"
+          PYTHONDONTWRITEBYTECODE=1 \
             PYTHONPATH="$PWD/src:$PWD/runtime/src" \
-            "$python_bin" tools/e2e.py --root "$e2e_root" --report "$report"
-          sudo env REPORT_PATH="$report" "$python_bin" - <<'PY'
+            /opt/venv/bin/python tools/e2e.py --root "$e2e_root" --report "$report"
+          REPORT_PATH="$report" /opt/venv/bin/python - <<'PY'
           import os
           import pathlib
           import re
@@ -952,49 +964,63 @@ jobs:
           print("CORE path is standard library only")
           PY
 
-  integration:
-    name: Install-to-status integration
+  # The product installer refuses every host that is not a reviewed install
+  # profile, and the only profile is Debian 13. The installer-executing checks
+  # therefore run in a Debian 13 container rather than on ubuntu-latest; the
+  # refusal is not weakened for CI.
+  installer-debian13:
+    name: Installer on Debian 13 (unit + integration)
     runs-on: ubuntu-latest
+    container: debian:trixie
     steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3 python3-venv python3-pip git ca-certificates \
+            coreutils findutils passwd util-linux \
+            build-essential python3-dev libffi-dev
+
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install both distributions
+      - name: Install both distributions into a venv
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . -e ./runtime
+          python3 -m venv /opt/venv
+          /opt/venv/bin/python -m pip install --upgrade pip
+          # Non-editable: the staged entrypoint check runs Python -IS and
+          # deliberately ignores .pth files, so an editable finder is invisible.
+          /opt/venv/bin/python -m pip install '.[dev]'
+          /opt/venv/bin/python -m pip install ./runtime
 
-      # This runner is neither root nor running systemd, so three stages
-      # report themselves not executed: the accounts, the units being masked,
-      # and the inventory that needs a principal the accounts would create.
-      # That is the honest outcome and the harness refuses to count any of
-      # them as a pass -- `--require-all` is what a host with both would add,
-      # and this job deliberately does not.
-      #
-      # The first version of this job installed as root in a container and so
-      # never saw the non-root path. The harness reported five cascading
-      # failures for one missing privilege; it now reports one skip and names
-      # it as the reason for the rest.
-      - name: Run the integration harness
+      - name: Run the installer-executing unit tests
         run: |
-          python - <<'PY'
-          import os
-          if os.geteuid() == 0:
-              raise SystemExit("the integration runner unexpectedly executes as root")
-          PY
-          e2e_root="$(mktemp -d /tmp/az-e2e.XXXXXX)"
-          python tools/e2e.py --root "$e2e_root" --report "$RUNNER_TEMP/az-e2e-report.md"
+          PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python -m pytest \
+            -p no:cacheprovider -q \
+            tests/unit/test_bootstrap_tmpfiles_packaging.py::test_staged_install_copies_rule_without_running_tmpfiles \
+            tests/unit/test_e2e_harness.py::test_the_installer_runs_and_creates_the_declared_layout
+
+      # This container runs as root, so create an unprivileged user and run
+      # the harness as that user. Without root or a service manager three
+      # stages report themselves not executed; the harness refuses to count
+      # them as a pass.
+      - name: Run the integration harness as a non-root user
+        run: |
+          useradd -m azci
+          chown -R azci:azci "$GITHUB_WORKSPACE"
+          install -d -o azci -g azci -m 0700 /tmp/az-e2e-out
+          runuser -u azci -- /opt/venv/bin/python -c \
+            'import os; assert os.geteuid() != 0, "the integration runner executes as root"'
+          cd "$GITHUB_WORKSPACE"
+          runuser -u azci -- env PYTHONDONTWRITEBYTECODE=1 sh -c \
+            'e2e_root="$(mktemp -d /tmp/az-e2e-out/root.XXXXXX)" && \
+             /opt/venv/bin/python tools/e2e.py --root "$e2e_root" --report /tmp/az-e2e-out/report.md'
 
       - name: Refuse a report whose stages all skipped
         env:
-          REPORT_PATH: ${{ runner.temp }}/az-e2e-report.md
+          REPORT_PATH: /tmp/az-e2e-out/report.md
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import pathlib, re, sys
           import os
           text = pathlib.Path(os.environ["REPORT_PATH"]).read_text()
@@ -1007,16 +1033,9 @@ jobs:
               sys.exit(f"{failed} stages failed")
           if passed < total - skipped:
               sys.exit("the summary does not add up")
-          # A run where nothing executed is a run that proved nothing, and a
-          # green job for it would be the worst kind of green.
           # A run where almost nothing executed is a run that proved almost
-          # nothing, and a green job for it would be the worst kind of green.
-          # The floor rises with every stage that needs neither root nor a
-          # service manager, because a floor that does not is a floor that has
-          # stopped meaning anything. It was eight until Nexus#56 added the
-          # CORE + Lite matrix, nine until Nexus#68 added the Core reserve
-          # input path -- which needs no hardware, takes no measurement, and
-          # so runs everywhere this job does.
+          # nothing. The floor rises with every stage that needs neither root
+          # nor a service manager (ten since Nexus#68).
           if passed < 10:
               sys.exit(f"only {passed} of {total} stages executed; expected 10")
           if not re.search(r"^ok\s+CORE \+ Lite configurations\s+\(", text, re.M):
@@ -1040,10 +1059,17 @@ jobs:
       # contributor without network access and useless as a gate, so this job
       # is where they are not allowed to skip.
       - name: Install with the Fabric extra
-        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,fabric]'
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,fabric]' -e ./runtime
 
+      # Two tests execute packaging/install.sh on the host. The installer
+      # deliberately refuses any host that is not a reviewed install profile
+      # (Debian 13 only), so they cannot pass on ubuntu-latest. They run in
+      # the `installer-debian13` job instead.
       - name: Run unit tests
-        run: python -m pytest tests/unit -q
+        run: |
+          python -m pytest tests/unit -q \
+            --deselect tests/unit/test_bootstrap_tmpfiles_packaging.py::test_staged_install_copies_rule_without_running_tmpfiles \
+            --deselect tests/unit/test_e2e_harness.py::test_the_installer_runs_and_creates_the_declared_layout
 
       # test_status_claims.py is listed alongside it for the same reason:
       # its check that no document calls a pinned Fabric module unreleased

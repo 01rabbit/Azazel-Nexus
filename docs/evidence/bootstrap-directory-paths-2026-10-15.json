@@ -1,0 +1,56 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved",
+  "scope": "fixed overlay path ownership, retained optional absence and narrowing composition",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_directory_paths.py": "2e6622c4072dc87972387f14cf7314bf788c7efc327b049fbd4c601e64e8a39f",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "2e2dc7187dd44895efee4fd52eb4cdae8e0b22923f8818301a791e9cc6a2105a",
+    "runtime/src/azazel_nexus_runtime/bootstrap_overlay_files.py": "fe81885ec8f356f677a01982f5e818dd1d3d1f2b66609764ab9142cc4d435bf4",
+    "runtime/src/azazel_nexus_runtime/bootstrap_close_files.py": "f49b346a29a6acba3f0b7151726c88397f4502facde2bac15ed36587085303b0",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdraw_files.py": "24c22ecfc997f669cc406626dbb0f49ca7b13cac317307ba0e5604ba0c2f689b",
+    "runtime/src/azazel_nexus_runtime/bootstrap_withdrawal.py": "7687ec0c06ef828f4d15bfa1a4c2582bd275d749a80d73828f4dae3e0fd9f6fa",
+    "runtime/src/azazel_nexus_runtime/bootstrap_restore_files.py": "432b535c56184e4907b564ac992ca2b1b1a0d4b4eb74fe2c7308703f7ecf8538",
+    "tests/unit/test_runtime_bootstrap_directory_paths.py": "951d1aa8d5a3f120ff7fd056337632c0160c7d9bc1e47421aa2e790c562fd0eb",
+    "tests/unit/test_runtime_bootstrap_directory_integration.py": "2404b30ee9423860294a55482086caa070ae70413cc12c0a6fd987aea964df1f"
+  },
+  "command": "PYTHONPATH=.:src:runtime/src <interpreter> -m pytest -q tests/unit/test_runtime_bootstrap_directory_paths.py tests/unit/test_runtime_bootstrap_directory_integration.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_runtime_bootstrap_overlay_close.py tests/unit/test_runtime_bootstrap_overlay_withdraw.py tests/unit/test_runtime_bootstrap_close_files.py tests/unit/test_runtime_bootstrap_withdrawal_binding.py tests/unit/test_runtime_bootstrap_restore_files.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_close_sequence.py",
+  "local": {
+    "interpreter": ".venv/bin/python",
+    "passed": 212,
+    "skipped": 1,
+    "seconds": 3.63
+  },
+  "debian_arm64": {
+    "interpreter": "/home/rabbit/nexus-rc2-conformance-20261013/bin/python",
+    "passed": 213,
+    "seconds": 1.45,
+    "source_hashes_match": true,
+    "temporary_source_and_test_roots": "Separate mktemp directories /home/rabbit/nx-dirpaths-{src,test}-XXXXXX, removed by EXIT traps",
+    "first_run": {
+      "passed": 194,
+      "failed": 19,
+      "cause": "Synthetic intermediate directories inherited group-writable mode under host umask; test fixtures now explicitly create protected ancestors. Runtime policy unchanged."
+    }
+  },
+  "initial_local_integration_failure": "9 failed/6 passed: fsync requires fileno rather than only __index__; validated fileno added and all composition cases rerun.",
+  "ruff": "nine changed source/test files pass",
+  "diff_check": "pass",
+  "review": "Astra reviewed path lifetimes, absent-final-leaf handling, grouped checkpoints, fd conversion and handoff; Luna authored path tests; coordinator integrated file adapters and lifecycle tests.",
+  "coverage": [
+    "all eight optional-presence combinations with real regular-file publication, close, withdrawal and restored observations",
+    "optional directory appearance after durable intent refuses before next file mutation",
+    "all five path observations revalidated at fd conversion, including during partial close",
+    "owner/mode/symlink/ancestor replacement and borrowed lifetime refusal",
+    "fixed narrowing factory cleanup on store/mount/constructor/body failure; no service methods called"
+  ],
+  "limits": [
+    "not external enforcement against arbitrary concurrent privileged changes",
+    "required mutable overlay directory must already exist; no mkdir or deployment permission added",
+    "present-leaf alias rejection remains in withdrawal checks, not opener admission",
+    "initial overlay-journal state, production publication/start/readiness and activated entrypoint still incomplete",
+    "PID1 namespace service-context access and external controller lifetime still unverified",
+    "no CI, systemd control, provider/fetch/Edge, hardware or physical media operation"
+  ]
+}

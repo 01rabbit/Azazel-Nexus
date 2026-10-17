@@ -41,12 +41,16 @@ verified once and not since describes whatever its tree has become.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Iterable, Optional, Sequence
 
 from .audit import AuditLedger, AuditUnavailable
 from .commissioning import CommissioningRecord
+from .commissioning_evidence import CommissioningEvidence
 from .generation import GenerationRefused, GenerationStore
 
 __all__ = [
@@ -298,6 +302,19 @@ CORE_UNITS = (
 )
 
 
+def _utc_lease_time(value: str) -> datetime:
+    """Canonical whole-second UTC for the authenticated-input path."""
+    if type(value) is not str or len(value) != 20:
+        raise ActivationRefused("lease time must be canonical UTC")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ActivationRefused("invalid lease time") from exc
+    if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != value:
+        raise ActivationRefused("lease time must be canonical UTC")
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 @dataclass(frozen=True)
 class ActivationLease:
     """Time-bounded permission to activate one generation.
@@ -315,8 +332,27 @@ class ActivationLease:
     granted_at: str
     expires_at: str
     generation_digest: str
+    # Signed approval inputs additionally pin the exact generation and its
+    # commissioning metadata. Legacy injected/library leases leave both absent.
+    generation_number: Optional[int] = None
+    commissioning_digest: Optional[str] = None
+    commissioning_evidence_binding: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if self.commissioning_evidence_binding is not None and (
+            self.generation_number is None or type(self.commissioning_evidence_binding) is not str
+            or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", self.commissioning_evidence_binding)
+        ):
+            raise ActivationRefused("invalid lease evidence binding")
+        if (self.generation_number is None) != (self.commissioning_digest is None):
+            raise ActivationRefused("generation number and commissioning binding must be supplied together")
+        if self.generation_number is not None:
+            if type(self.generation_number) is not int or self.generation_number < 1:
+                raise ActivationRefused("invalid lease generation number")
+            if type(self.commissioning_digest) is not str or not self.commissioning_digest:
+                raise ActivationRefused("invalid lease commissioning binding")
+            _utc_lease_time(self.granted_at)
+            _utc_lease_time(self.expires_at)
         for field_name in ("granted_by", "granted_at", "expires_at", "generation_digest"):
             if not str(getattr(self, field_name)).strip():
                 raise ActivationRefused(
@@ -338,6 +374,11 @@ class ActivationLease:
         is a component whose permission depends on its own clock.
         """
 
+        if self.generation_number is not None:
+            try:
+                return _utc_lease_time(self.granted_at) <= _utc_lease_time(now) < _utc_lease_time(self.expires_at)
+            except ActivationRefused:
+                return False
         return self.granted_at <= now < self.expires_at
 
 
@@ -650,6 +691,8 @@ class ActivationController:
         self._lease: Optional[ActivationLease] = None
         self._edge: Optional[EdgeBaselineState] = None
         self._healthy = False
+        self._commissioning_evidence: Optional[CommissioningEvidence] = None
+        self._require_commissioning_evidence = False
         #: What this build has wired. Empty is the refusing value and the
         #: shipped one: a controller asked to decide without being told what
         #: exists withholds every unit that needs something.
@@ -665,6 +708,8 @@ class ActivationController:
         edge: Optional[EdgeBaselineState] = None,
         healthy: bool = True,
         wired: Iterable[str] = (),
+        commissioning_evidence: Optional[CommissioningEvidence] = None,
+        require_commissioning_evidence: bool = False,
     ) -> ActivationOutcome:
         """Run one activation pass. Called on every boot.
 
@@ -686,13 +731,28 @@ class ActivationController:
         self._lease = lease
         self._edge = edge
         self._healthy = healthy
+        if type(require_commissioning_evidence) is not bool:
+            raise ActivationRefused("explicit commissioning evidence policy required")
+        self._commissioning_evidence = commissioning_evidence
+        self._require_commissioning_evidence = require_commissioning_evidence
         # Default empty, and the library cannot discover this for itself: what
         # is wired is a fact about the installed distribution, which is the
         # half the library is forbidden to import. It arrives as evidence, and
         # absent evidence withholds -- the same rule every other gate here
         # follows.
         self._wired = frozenset(wired)
-        current = self.generations.current()
+        if lease is not None and type(lease) is not ActivationLease:
+            return self._withhold_everything(
+                None, "invalid_lease_type: ordinary activation requires an ActivationLease",
+                now=now, actor=actor,
+            )
+        try:
+            current = self.generations.current()
+        except GenerationRefused:
+            return self._withhold_everything(
+                None, "generation_unverified: current generation metadata refused",
+                now=now, actor=actor,
+            )
         if current is None:
             return self._withhold_everything(
                 None,
@@ -710,6 +770,16 @@ class ActivationController:
                 f"generation_unverified: {exc}",
                 now=now,
                 actor=actor,
+            )
+
+        if lease is not None and lease.generation_number is not None and (
+            lease.generation_number != generation.number
+            or lease.commissioning_digest != generation.commissioning_digest
+        ):
+            return self._withhold_everything(
+                generation.number,
+                "lease_generation_binding_mismatch: approval names another generation or commissioning record",
+                now=now, actor=actor,
             )
 
         verdicts: list[UnitVerdict] = []
@@ -741,7 +811,10 @@ class ActivationController:
         now: str,
         actor: str,
     ) -> UnitVerdict:
-        withheld_because = self._withholding_reason(definition, record)
+        withheld_because = self._withholding_reason(
+            definition, record, generation.digest, generation.commissioning_digest,
+            generation.commissioning_evidence_binding,
+        )
         if withheld_because is not None:
             self.units.mask(definition.name, reason=withheld_because)
             self._record(
@@ -795,7 +868,10 @@ class ActivationController:
         return UnitVerdict(definition.name, True, "granted")
 
     def _withholding_reason(
-        self, definition: UnitDefinition, record: Optional[CommissioningRecord]
+        self, definition: UnitDefinition, record: Optional[CommissioningRecord],
+        generation_digest: str,
+        commissioning_digest: str,
+        commissioning_evidence_binding: Optional[str] = None,
     ) -> Optional[str]:
         """Per tier, in order of what each one adds to the one before it.
 
@@ -821,7 +897,7 @@ class ActivationController:
                 "health_not_established: this node did not confirm its own "
                 "health, and an unchecked node is not a healthy one"
             )
-        lease_refusal = self._lease_refusal()
+        lease_refusal = self._lease_refusal(generation_digest)
         if lease_refusal is not None:
             return lease_refusal
 
@@ -840,11 +916,25 @@ class ActivationController:
             return None
 
         # ENFORCEMENT adds a complete commissioning record to all of the above.
+        if (self._require_commissioning_evidence or commissioning_evidence_binding is not None
+                or self._lease.commissioning_evidence_binding is not None
+                or self._commissioning_evidence is not None):
+            evidence = self._commissioning_evidence
+            if type(evidence) is not CommissioningEvidence:
+                return "commissioning_evidence_absent: full authenticated evidence is required"
+            if (commissioning_evidence_binding is None
+                    or evidence.binding != commissioning_evidence_binding
+                    or self._lease.commissioning_evidence_binding != commissioning_evidence_binding):
+                return "commissioning_evidence_binding_mismatch: evidence, generation and approval differ"
+        # Full evidence is an additional prerequisite, not a conversion into
+        # the legacy record or a replacement for its independent admission.
         if record is None:
             return (
                 "commissioning_absent: no operator has confirmed what this node "
                 "is attached to"
             )
+        if self._commissioning_evidence is not None and not self._commissioning_evidence.matches_record(record):
+            return "commissioning_evidence_record_mismatch: compatibility view differs from signed evidence"
         missing = record.missing_profiles
         if missing:
             return "commissioning_incomplete: missing profiles " + ",".join(missing)
@@ -853,9 +943,14 @@ class ActivationController:
                 "commissioning_observe_only: every profile is present and no "
                 "interface carries a confirmed role"
             )
+        if record.digest() != commissioning_digest:
+            return (
+                "commissioning_generation_mismatch: this record is not the "
+                "commissioning from which the verified generation was rendered"
+            )
         return None
 
-    def _lease_refusal(self) -> Optional[str]:
+    def _lease_refusal(self, generation_digest: str) -> Optional[str]:
         if self._lease is None:
             return (
                 "lease_absent: no operator has granted permission to activate "
@@ -865,6 +960,11 @@ class ActivationController:
             return (
                 f"lease_expired: the lease ran from {self._lease.granted_at} to "
                 f"{self._lease.expires_at} and it is now {self._now}"
+            )
+        if self._lease.generation_digest != generation_digest:
+            return (
+                "lease_generation_mismatch: permission was granted for another "
+                "configuration, not the verified current generation"
             )
         return None
 

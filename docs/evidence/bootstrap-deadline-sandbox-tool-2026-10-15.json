@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-15",
+  "scope": "Operator-authorized preparation for real system-manager native timer sandbox qualification; actual privileged execution not yet performed",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "tools/qualify_bootstrap_deadline_sandbox.py": "7f548dce31b4ed6428399c32a27590bb0d36931161bb353c39a85f6024b7ad8e",
+      "tests/unit/test_bootstrap_deadline_sandbox_tool.py": "c61d144c3ea2f0a2bad7de34c0dcaf0b9b20c02a21773f7973cf4673d9f3203a"
+    }
+  },
+  "authority": "Owner explicitly authorized VM trial service installation/start/stop. No provider/fetch/Edge activation, CI, physical media or firmware operation authorized by this increment",
+  "current_blocker": "sudo -n true returned password required. Tool never invokes sudo or stores/passes credentials. Operator terminal invocation with interactive sudo is documented",
+  "staging": {
+    "vm_directory": "/tmp/azn-sandbox-handoff.SNurJL",
+    "runner_sha256": "7f548dce31b4ed6428399c32a27590bb0d36931161bb353c39a85f6024b7ad8e",
+    "native_name": "_bootstrap_deadline.cpython-313-aarch64-linux-gnu.so",
+    "native_bytes": 71048,
+    "native_sha256": "1444d49bcc1f73f9818f93729de79ab1481e9ef3d3cd5571446889489910c3f9",
+    "native_origin": "Previously authenticated ARM64 CPython3.13.5 disposable build; not rebuilt or rearmed here",
+    "vm_checks": "Runner and native digests match local; /usr/bin/python3.13 version3.13.5; default plan succeeded; checked_native verified71048bytes without loading extension or starting services"
+  },
+  "design": {
+    "default": "Plan-only, no native file read or systemd action",
+    "execute": "Explicit --execute plus root required before reads/staging; no automatic sudo or factory switch",
+    "fixture": "Unique fixed-prefix UUID transient services only, no product unit operations or persistent enable; fixed Python3.13 -IS probe and sandbox subset",
+    "expiry": "Two-second absolute CLOCK_BOOTTIME native arm/check; expect exact ARMED marker plus Result=signal, ExecMainCode=2, ExecMainStatus=9; manager RuntimeMaxSec10 timeout is refused",
+    "release": "Separate service/process arms then releases, survives2.5seconds; expect exact ARMED/RELEASE_SURVIVED and successful exit",
+    "cleanup": "Attempted unit tracking, bounded stop plus inactive observation; retain directory/results/exact unit names on uncertainty or removal failure; overall success requires both cases and all cleanup confirmed",
+    "trust": "Reviewed operator utility, not a public privileged broker, approval source or hostile root/in-process integrity mechanism"
+  },
+  "review": "Sol independent source review found unconfirmed-stop deletion and removal-error reporting gaps; coordinator fixed both with causal mock regressions. Bounded journal retry avoids delayed delivery false negatives. Luna wrote disjoint tests; coordinator ran final selections",
+  "validation": {
+    "macos_command": "env PYTHONPATH=.:src:runtime/src uv run --no-project --isolated --offline --python /Users/mao/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11 --with pytest --with pynacl --with PyYAML==6.0.3 --with dbus-next==0.2.3 python -m pytest -q tests/unit/test_bootstrap_deadline_sandbox_tool.py tests/unit/test_runtime_hardening.py --junitxml=/tmp/azn-linux-check.I6YGHW/sandbox-tool-macos.xml --tb=short",
+    "macos": {"passed": 47, "failed": 0, "skipped": 0, "seconds": 0.08},
+    "linux_command": "cd /tmp/azn-sandbox-handoff.SNurJL/source && env PYTHONPATH=.:src:runtime/src PYTHONDONTWRITEBYTECODE=1 /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q tests/unit/test_bootstrap_deadline_sandbox_tool.py tests/unit/test_runtime_hardening.py --junitxml=/tmp/azn-sandbox-handoff.SNurJL/linux.xml --tb=short",
+    "linux": {"passed": 47, "failed": 0, "skipped": 0, "seconds": 0.07},
+    "test_scope": "14 tool cases plus33 existing hardening cases; ordinary files and mocked subprocesses, no real systemd operation. Not additive to earlier results or a full-suite result",
+    "ruff_command": "ruff check tools/qualify_bootstrap_deadline_sandbox.py tests/unit/test_bootstrap_deadline_sandbox_tool.py",
+    "ruff": "pass",
+    "diff_check": "pass"
+  },
+  "reports": {
+    "macos": {"path": "/tmp/azn-linux-check.I6YGHW/sandbox-tool-macos.xml", "sha256": "e3dadd7d333cecdcf29cb389765d593fd9cca8b29ecb76595aee8bd65b666f5b"},
+    "linux": {"path": "/tmp/azn-linux-check.I6YGHW/sandbox-tool-linux.xml", "sha256": "e0c282a616337aec62f1d99c49ef1ba9987ee540546734c1adc2505bc9f323b2"}
+  },
+  "snapshot": {
+    "base_archive_sha256": "67849e4860f684181fa0a95034913d781229c5176c4cc1517b39f9130a32d21f",
+    "overlay_archive_sha256": "b90c98bc2cea38e843e9a7214d0f9309136e815b14b66a7b173b95ffb11f1a51",
+    "overlay_path": "/tmp/azn-linux-check.I6YGHW/sandbox-tool-tests.tar.gz",
+    "runner_test_and_overlay_hashes_match_vm_after_tests": true,
+    "cleanup": "Owner-verified source directory5.9MiB and two newly copied archives removed from VM after report/hash checks. Reviewed runner/native and small XML remain for operator handoff; existing environments untouched"
+  },
+  "remaining": ["Interactive root authentication and actual sandbox fixture results", "Actual notify/READY, dependency containment, marker/mount-view, queued jobs, controller death, reboot/suspend qualification", "Genuine deployment inputs and separately reviewed final factory switch"],
+  "not_performed": ["actual systemd fixture or product service installation/start/enable", "production factory opening", "CI", "provider/fetch/Edge activation", "physical/block/loop/firmware operations", "native timer reexecution", "commit/push"]
+}

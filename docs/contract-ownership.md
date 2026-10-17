@@ -140,18 +140,17 @@ checks against the installed distribution rather than against this sentence.
 This section said it was unreleased while the table below already described
 `InterfaceIdentity` as consumed from it (#23).
 
-What is still true is narrower: Nexus consumes two of these records and has
-adopted none of the rest, and it MUST NOT restate a record it does not
-consume.
+Consumption below distinguishes tested projection from installed production
+collection. Nexus MUST NOT restate Fabric records locally.
 
 | Record | Owner | Status |
 | --- | --- | --- |
 | `InterfaceIdentity`, `InterfaceIdentitySelector` | Fabric | **consumed** — `src/azazel_nexus/fabric_boundary.py` projects a read-only interface inventory into `InterfaceIdentity` and resolves a selector with Fabric's own `resolve_interface_assignment`. Nexus defines no record for either, and does not restate the fail-closed matching rule |
-| `HardwareInventory` | Fabric | target, R1 |
-| `ResourceProfile` | Fabric | target, R1 |
-| `TopologyProfile` | Fabric | target, R1 |
-| `InterfaceAssignment` | Fabric | target, R1 |
-| `CommissioningRecord` | Fabric | target, R1 |
+| `HardwareInventory` | Fabric | sysfs observations and in-memory Fabric projection implemented; protected node binding/bootstrap, completeness and authenticated persistence remain incomplete |
+| `ResourceProfile` | Fabric | measured observation projection implemented in `fabric_boundary.py`; descriptive only, requires complete inventory and available measurements; production pipeline remains incomplete |
+| `TopologyProfile` | Fabric | reviewed-draft projection implemented against a complete matching interface snapshot; management/capture/isolation unverified, not a signed profile or admission |
+| `InterfaceAssignment` | Fabric | consumed by `fabric_boundary.confirm_role` and reviewed-draft topology projection; production collection and persistence remain incomplete |
+| `CommissioningRecord` | Fabric | assembled by `fabric_boundary.build_commissioning_record` as a linked unsigned proposal; a separate `commissioning_approval.verify_commissioning_proposal` verifies a new full-proposal signature under the `commissioning-proposal` purpose against independently supplied snapshots; verification grants no activation authority; production loaders, protected trust/bootstrap composition, freshness/state checks and persistence remain incomplete |
 | `ProductManifest`, `AssetManifest`, `ModelManifest` | Fabric | target, R1 |
 | `ProposedGenerationDescriptor` (observation-only) | Fabric | target, R1 |
 | `ActivationReceipt` (observation-only projection) | Fabric | target, R1 |

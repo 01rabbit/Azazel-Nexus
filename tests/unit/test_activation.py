@@ -41,7 +41,7 @@ from azazel_nexus.activation import (
 )
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
-from azazel_nexus.generation import GenerationStore
+from azazel_nexus.generation import GenerationStore, tree_digest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "azazel_nexus"
 
@@ -49,7 +49,7 @@ NOW = "2026-09-20T00:00:00Z"
 ACTOR = "operator@console"
 
 
-def _lease(digest: str = "sha256:" + "0" * 64) -> ActivationLease:
+def _lease(digest: str = tree_digest({"suricata.yaml": b"role: observation\n"})) -> ActivationLease:
     """A lease covering `NOW`. Every activation needs one (#39)."""
 
     return ActivationLease(
@@ -87,7 +87,7 @@ def _store_with_generation(tmp_path: Path, contents=b"role: observation\n"):
     store.create(
         {"suricata.yaml": contents},
         created_at=NOW,
-        commissioning_digest="sha256:" + "0" * 64,
+        commissioning_digest=_record(roles=(_confirmed_role(),)).digest(),
     )
     return store
 
@@ -104,6 +104,32 @@ def _controller(tmp_path: Path, definitions=CORE_UNITS, **kwargs):
 
 def _event_types(ledger: AuditLedger):
     return [entry.event["event_type"] for entry in ledger]
+
+
+def test_lease_for_another_generation_never_grants_a_unit(tmp_path):
+    controller, units, ledger, _ = _controller(tmp_path)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease("sha256:" + "f" * 64))
+    assert outcome.granted == ()
+    assert all(operation == "mask" for operation, _ in units.calls)
+    assert any(v.reason.startswith("lease_generation_mismatch") for v in outcome.verdicts)
+    assert "activation.unit_granted" not in _event_types(ledger)
+
+
+def test_old_lease_cannot_follow_a_changed_generation(tmp_path):
+    controller, units, ledger, store = _controller(tmp_path)
+    lease = _lease(store.current().digest)
+    assert controller.activate(now=NOW, actor=ACTOR, lease=lease).granted
+    store.create(
+        {"suricata.yaml": b"role: different-configuration\n"},
+        created_at=NOW, commissioning_digest="sha256:" + "0" * 64,
+    )
+    units.calls.clear()
+    previous_events = len(_event_types(ledger))
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=lease)
+    assert outcome.granted == ()
+    assert all(operation == "mask" for operation, _ in units.calls)
+    assert "activation.unit_granted" not in _event_types(ledger)[previous_events:]
+    assert controller.activate(now=NOW, actor=ACTOR, lease=_lease(store.current().digest)).granted
 
 
 # -- the token ----------------------------------------------------------
@@ -371,6 +397,33 @@ def test_an_operational_unit_is_granted_once_commissioning_is_complete(tmp_path)
 
     assert ENFORCING.name in outcome.granted
     assert units.state(ENFORCING.name) is UnitState.ENABLED
+
+
+def test_another_complete_record_remasks_enforcement_without_a_grant(tmp_path):
+    controller, units, ledger, _ = _controller(tmp_path, CORE_UNITS + (ENFORCING,))
+    matching = _record(roles=(_confirmed_role(),))
+    assert ENFORCING.name in controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(), record=matching
+    ).granted
+    different = CommissioningRecord(
+        roles=matching.roles, profiles_present=matching.profiles_present,
+        created_at="2026-09-19T00:00:00Z",
+    )
+    assert different.enforcement_ready
+    units.calls.clear()
+    event_count = len(list(ledger))
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), record=different)
+    verdict = next(v for v in outcome.verdicts if v.unit == ENFORCING.name)
+    assert not verdict.granted
+    assert verdict.reason.startswith("commissioning_generation_mismatch")
+    assert units.state(ENFORCING.name) is UnitState.MASKED
+    assert [op for op, unit in units.calls if unit == ENFORCING.name] == ["mask"]
+    assert not any(
+        e.event["event_type"] == "activation.unit_granted"
+        and e.event.get("unit") == ENFORCING.name
+        for e in list(ledger)[event_count:]
+    )
+    assert set(outcome.granted) == _wired_units()
 
 
 def test_a_bootstrap_unit_runs_before_anyone_has_commissioned_anything(tmp_path):

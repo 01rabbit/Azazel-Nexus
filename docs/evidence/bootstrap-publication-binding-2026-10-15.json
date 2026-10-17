@@ -1,0 +1,35 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "dirty worktree preserved",
+  "scope": "publication consumes retained grant identity instead of generating an incompatible second grant id",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_overlay_files.py": "4db788d4dddc2a35218afb7cebe89313b38c632343131b14a324dc931823da1c",
+    "tests/unit/test_runtime_bootstrap_overlay_files.py": "4549fa7da22627a945f33a1da4af4c390475dce2d10b5fe13787ea2c6b40f9ab",
+    "tests/unit/test_runtime_bootstrap_publication_binding.py": "f48404edab64f9da16629fa414c3e1d850824c6ff17b638ddf1c695fe2ef1d60"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_publication_binding.py tests/unit/test_runtime_bootstrap_overlay_files.py tests/unit/test_runtime_bootstrap.py tests/unit/test_runtime_bootstrap_directory_integration.py tests/unit/test_runtime_bootstrap_withdrawal_binding.py tests/unit/test_bootstrap_grant_transaction.py tests/unit/test_bootstrap_grant_store.py",
+    "passed": 175,
+    "seconds": 1.75,
+    "environment": "local macOS; ordinary files, synthetic approvals/fake manager"
+  },
+  "ruff": "three changed source/test files pass",
+  "diff_check": "pass",
+  "coverage": [
+    "boot/context/approval/generation/payload identity mismatch and non-intent phase refuse before writes",
+    "retained ordinary-file grant record read by test checkpoint, same id through publish/close/actual withdrawal binding",
+    "missing/noncallable or non-None-success checkpoint refuses",
+    "admission loss before files, after unjournaled first inode, after first recorded inode, after pair publication preserves phase and files; no inferred cleanup"
+  ],
+  "review": "Astra confirmed identity binding and guarded private scope; Luna added tests, coordinator fixed malformed closed-phase fixture and added persisted-grant/withdrawal integration plus partial checkpoints.",
+  "limits": [
+    "callback remains trusted composition seam; production durable-store/admission/deadline/controller producer not wired",
+    "loss after file creation but before ownership persistence leaves a retained intent plus unrecorded inode; requires explicit recovery, never adoption by matching bytes",
+    "independent exact loaded dependency/service expectations and phase-aware same-owner/lifetime fence still required",
+    "manager open_pair/start still refuse, no production factory admits publication",
+    "no Linux/full-suite rerun or CI this increment",
+    "no service, provider/fetch/Edge, hardware operation or source commit/push"
+  ]
+}

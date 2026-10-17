@@ -1,0 +1,39 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; hashes cover current complete files, not exclusively this increment",
+  "scope": "private owned-loop start checkpoint bridge and bounded descendant teardown",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_start_bridge.py": "23479ef2f8ee0b33dbd2c974e49581cde2c2eb5db8b4da57d755212ed2739f8f",
+    "runtime/src/azazel_nexus_runtime/bootstrap_stop.py": "397733cf1be4726687a74e427b5df751f6763e9048f13516e647a474a574e499",
+    "runtime/src/azazel_nexus_runtime/bootstrap_start.py": "bfcf9652ec3b9fbe081f216ce20afbe112753e571584886711590e4b2460b085",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "574e4c37723018b96e72fed601f968d25c59e07e3d419c3cc5b34371dc6952a4",
+    "tests/unit/test_runtime_bootstrap_start.py": "355f2dc40659899703a6aaf509a3bba362a9bbebac780a99dcc8b3d148d749d3",
+    "tests/unit/test_runtime_bootstrap_start_bridge.py": "0a8aeff3a3b2a2d49f758c4268b2b8e2a240cb56b0297985270c7bd1e089278b",
+    "tests/unit/test_runtime_bootstrap_start_bridge_protocol.py": "404d06ead07790b24ad9786398ea46c9fe1e9520111a4871ccbe50269f4754b7"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2038,
+    "skipped": 2,
+    "seconds": 8.32,
+    "environment": "local macOS; synthetic D-Bus and real local asyncio loops, no live systemd",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "seven named source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed bridge/owner/deadline and found single-snapshot cleanup gap. Coordinator implemented bounded descendant rescan and strict empty-set deadline check; Astra confirmed fix. Two Luna workers supplied separate integration/protocol tests; coordinator added pinned-deadline and primary-error regressions.",
+  "limits": [
+    "private runner has no production start caller; public start remains refusing",
+    "synchronous checkpoint must itself be bounded; driver cannot preempt arbitrary Python blocking calls",
+    "submitted jobs may still take effect after failure; disconnect/cleanup are not cancellation or containment evidence",
+    "unquiesced cleanup is failure; test-only final cleanup is distinguished from production quiescence",
+    "exact activation/process scope, controller lifetime, authenticated readiness and real entrypoint remain incomplete",
+    "no full repository suite, Linux VM, CI, live service/hardware operation, source commit or push"
+  ]
+}

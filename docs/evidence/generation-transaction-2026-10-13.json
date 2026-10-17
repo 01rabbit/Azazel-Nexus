@@ -1,0 +1,69 @@
+{
+  "schema": "azazel-nexus/local-software-evidence/v1",
+  "date": "2026-10-13",
+  "source_base": "778d61bab79805288e136b2f6d0502146e4f3910",
+  "worktree": "uncommitted; existing changes preserved",
+  "scope": "generation publication transaction; no active.record promotion, semantic admission or operational role renderer",
+  "selected_source_files": [
+    "src/azazel_nexus/generation.py",
+    "tests/unit/test_generation_transaction.py"
+  ],
+  "selected_source_listing_sha256": "fdf497c3247636bd489b70410529349efe99e7e8f481d59aaee2c8510af9bba0",
+  "selected_source_matches_mac_and_vm": true,
+  "selected_source_digest_definition": "SHA-256 of ordered SHA-256/file-name lines, not entire worktree or installed package",
+  "related_mac": {
+    "passed": 84,
+    "failed": 0,
+    "seconds": 0.69,
+    "command": "PYTHONPATH=src:runtime/src .venv/bin/python -m pytest tests/unit/test_generation.py tests/unit/test_generation_evidence_binding.py tests/unit/test_generation_transaction.py tests/unit/test_activation_evidence_binding.py tests/unit/test_boundary_static.py -q"
+  },
+  "debian_arm64_full_unit": {
+    "passed": 3875,
+    "failed": 0,
+    "skipped": 1,
+    "seconds": 39.61,
+    "cwd": "/home/rabbit/nexus-lease-review-20261013",
+    "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests/unit -q --tb=short --basetemp=/home/rabbit/nxsfb"
+  },
+  "targeted_ruff": "pass: generation.py and test_generation_transaction.py",
+  "repository_wide_lint": "not run; previous unrelated findings unchanged",
+  "documentation_links": {
+    "checked_markdown_files": 53,
+    "result": "pass"
+  },
+  "diff_check": "pass",
+  "new_test_cases": 18,
+  "verified_cases": [
+    "precommit tree write failure remains hidden",
+    "metadata failure remains hidden",
+    "rename failure remains hidden",
+    "postcommit sync failure reports published generation uncertainty",
+    "success preserves bytes, metadata, binding, private permissions",
+    "nonblocking directory flock contention refuses",
+    "noncanonical file paths and mutable contents refused",
+    "new root directory parent entries synced",
+    "numeric generation aliases, symlinks and files refused",
+    "concurrent advance before rollback publication refused"
+  ],
+  "independent_review": {
+    "read_only": true,
+    "findings_fixed": [
+      "new store parent directory entry durability",
+      "numeric generation discovery aliases/symlinks"
+    ],
+    "unresolved_in_bounded_fixes": []
+  },
+  "limits": [
+    "cooperating writers on trusted local filesystem, not privileged-owner tamper resistance",
+    "fault injection is not physical power-loss recovery evidence",
+    "hidden failed staging retained for explicit inspection, no automatic deletion/reuse",
+    "post-publication durability uncertainty requires inspection, no automatic retry",
+    "generation integrity is not content admission or an activation grant",
+    "operational role renderer and authoritative commissioning promotion remain absent"
+  ],
+  "ci_executed": false,
+  "production_activation": false,
+  "provider_admission": false,
+  "physical_media_or_firmware_operation": false,
+  "issue_93": "open"
+}

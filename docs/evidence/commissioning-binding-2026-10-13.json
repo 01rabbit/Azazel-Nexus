@@ -1,0 +1,115 @@
+{
+  "schema": "azazel-nexus/local-software-evidence/v1",
+  "date": "2026-10-13",
+  "source_base": "778d61bab79805288e136b2f6d0502146e4f3910",
+  "worktree": "uncommitted; existing changes preserved",
+  "selected_source_listing_sha256": "e5375a6d8fbbe0c403d65d4bd0265c5ea2f183944b3ea8cdae9cf3effa61a7ac",
+  "selected_source_matches_mac_and_vm": true,
+  "selected_source_digest_definition": "SHA-256 of ordered sha256/file-name lines, not entire worktree or installed distribution",
+  "selected_source_files": [
+    "src/azazel_nexus/commissioning_evidence.py",
+    "src/azazel_nexus/fabric_boundary.py",
+    "src/azazel_nexus/generation.py",
+    "src/azazel_nexus/activation.py",
+    "src/azazel_nexus/activation_approval.py",
+    "runtime/src/azazel_nexus_runtime/commissioning_input.py",
+    "runtime/src/azazel_nexus_runtime/activated.py",
+    "runtime/src/azazel_nexus_runtime/hardening.py",
+    "packaging/systemd/azazel-activated.service",
+    "tests/unit/test_commissioning_evidence.py",
+    "tests/unit/test_generation_evidence_binding.py",
+    "tests/unit/test_activation_evidence_binding.py",
+    "tests/unit/test_runtime_commissioning_input.py",
+    "tests/unit/test_runtime_hardening.py",
+    "tests/unit/test_runtime_systemd_bus.py"
+  ],
+  "mac_related_tests": {
+    "passed": 241,
+    "failed": 0,
+    "seconds": 1.61,
+    "command": "PYTHONPATH=src:runtime/src .venv/bin/python -m pytest tests/unit/test_commissioning_evidence.py tests/unit/test_generation_evidence_binding.py tests/unit/test_activation_evidence_binding.py tests/unit/test_runtime_commissioning_input.py tests/unit/test_activation_approval.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_activated.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_activation_inputs.py tests/unit/test_runtime_boundary.py tests/unit/test_boundary_static.py tests/unit/test_runtime_systemd_bus.py -q"
+  },
+  "debian_arm64_full_unit": {
+    "passed": 3857,
+    "failed": 0,
+    "skipped": 1,
+    "seconds": 39.67,
+    "cwd": "/home/rabbit/nexus-lease-review-20261013",
+    "command": "PYTHONPATH=src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest tests/unit -q --tb=short --basetemp=/home/rabbit/nxsfa"
+  },
+  "earlier_attempts": [
+    {
+      "context": "rsync unavailable on VM; mistakenly started pre-transfer suite stopped explicitly",
+      "result": "interrupted: 2062 passed / 1 skipped",
+      "accepted_as_current_evidence": false
+    },
+    {
+      "context": "transferred source before final review fix and D-Bus expectation correction",
+      "result": "3853 passed / 1 failed / 1 skipped",
+      "failure": "test_runtime_systemd_bus expected one mask sweep, now preflight and refusing-decision sweeps",
+      "accepted_as_final_evidence": false
+    }
+  ],
+  "tools": {
+    "mac_python": "3.12.13",
+    "vm_python": "3.13.5",
+    "ruff": "0.9.4",
+    "vm_systemd": "257.13-1~deb13u1"
+  },
+  "lint": {
+    "targeted": "pass excluding hardening.py existing F401 findings",
+    "hardening_existing_findings": [
+      "dataclasses.field F401",
+      "typing.Mapping F401",
+      "typing.Sequence F401"
+    ],
+    "baseline_confirmed": "same findings in HEAD hardening.py via Ruff stdin",
+    "repository_wide": "not rerun; no unrelated cleanup"
+  },
+  "docs_links": {
+    "markdown_files": 53,
+    "result": "pass"
+  },
+  "diff_check": "pass",
+  "review": {
+    "independent_read_only": true,
+    "findings_addressed": [
+      "AF_NETLINK in activation declaration/generated unit without capabilities or internet family",
+      "evidence gate scoped to enforcement, not supporting/baseline",
+      "mask preflight failure invokes existing retry/escalation",
+      "lease-only evidence binding cannot fall back to legacy enforcement"
+    ]
+  },
+  "runtime_scope": "actual activation entrypoint exercised with synthetic fixed-input seams and recording/fake D-Bus manager; ordinary temporary files and ephemeral signing keys",
+  "systemd_analyze_verify": {
+    "exit_code": 1,
+    "reason": "/usr/libexec/azazel/az-activated not executable: No such file or directory",
+    "sandbox_execution": "not performed; no claim of deployed service success"
+  },
+  "binding": {
+    "algorithm": "HMAC-SHA-256",
+    "transcript": "azazel-nexus/commissioning-evidence/v1\\0 + canonical full payload bytes",
+    "key_source": "existing fixed protected commissioning.key; not generated",
+    "retains": [
+      "payload",
+      "signature",
+      "current inventory"
+    ],
+    "legacy_digest_redefined": false,
+    "bound_rollback": "refuses; requires validated forward render and approval"
+  },
+  "remaining": [
+    "authoritative commissioning admission/promotion",
+    "production activation approval loader",
+    "role-config renderer and bound generation production",
+    "node identity binding, policy, renderer measurement, epoch/high-water, trusted clock, health and authenticated Edge producers",
+    "production trust/key/encrypted storage provisioning and installed systemd sandbox test",
+    "Debian Live/HIL gates"
+  ],
+  "ci_executed": false,
+  "provider_admission": false,
+  "production_activation": false,
+  "production_key_created": false,
+  "physical_media_or_firmware_operation": false,
+  "issue_93": "open"
+}

@@ -1,0 +1,257 @@
+{
+  "keyring_sha256": "506b815cbb32d9b6066b4a2aa524071e071761e7e7f68c3ac74f3061ba852017",
+  "sources": [
+    {
+      "release": "deb.debian.org_debian_dists_trixie-updates_InRelease",
+      "release_sha256": "3f133e315db73a927017f158cf942e478351104765f0913d43c4a402d90e0722",
+      "index_sha256": "860a644dcb3ccd96a058f6c7717488f3d88ed42b0a53a6eac3ced6adf88e853b",
+      "index_bytes": 15274,
+      "date": "Wed, 14 Oct 2026 20:52:12 UTC",
+      "valid_until": "Wed, 21 Oct 2026 20:52:12 UTC"
+    },
+    {
+      "release": "deb.debian.org_debian_dists_trixie_InRelease",
+      "release_sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+      "index_sha256": "f97011263173eaccb1a215a28a6ec7ba1f6e5cebd8bb68e8fa0475b1d4021161",
+      "index_bytes": 56162922,
+      "date": "Sat, 12 Sep 2026 07:55:41 UTC",
+      "valid_until": null
+    },
+    {
+      "release": "security.debian.org_debian-security_dists_trixie-security_InRelease",
+      "release_sha256": "dd6212c3419c79350a24419b5d9f522d173ef024fe6716a82da8c44af3acfa97",
+      "index_sha256": "9e8ee8b577aa1f36bfa44b4c671d98c4cd61f19c19c9b1bd930495db1abdc070",
+      "index_bytes": 1861701,
+      "date": "Wed, 14 Oct 2026 17:22:59 UTC",
+      "valid_until": "Wed, 21 Oct 2026 17:22:59 UTC"
+    }
+  ],
+  "packages": [
+    {
+      "Package": "binutils",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/binutils_2.44-3_arm64.deb",
+      "SHA256": "7228716cad15e78d1571f1cd4ec7141f64608790d0fbcba23a07f2eda6298272",
+      "Size": "261580"
+    },
+    {
+      "Package": "binutils-aarch64-linux-gnu",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/binutils-aarch64-linux-gnu_2.44-3_arm64.deb",
+      "SHA256": "79cbf1459118bce3535133ffbf1fd2adbd57af65271f95c829af5cfa7f474168",
+      "Size": "820124"
+    },
+    {
+      "Package": "binutils-common",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/binutils-common_2.44-3_arm64.deb",
+      "SHA256": "f2d6b7d0b5521c4c90fc105e32819cd5268c1aa69104173b3fb856595f898249",
+      "Size": "2508772"
+    },
+    {
+      "Package": "gcc",
+      "Version": "4:14.2.0-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-defaults/gcc_14.2.0-1_arm64.deb",
+      "SHA256": "f543b52e29a6780a78c73cf08e551e8e524d623c1092c477cfd8beb5285a86f5",
+      "Size": "5136"
+    },
+    {
+      "Package": "gcc-14",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/gcc-14_14.2.0-19_arm64.deb",
+      "SHA256": "f4ba77903d7efc3c64c69a8a98c7efa8ea1ae4331521bb74abd76bcc43f1b576",
+      "Size": "529264"
+    },
+    {
+      "Package": "gcc-14-aarch64-linux-gnu",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/gcc-14-aarch64-linux-gnu_14.2.0-19_arm64.deb",
+      "SHA256": "5ff736a332ba5d60ad463355ed25c8c39da1281acf9155cc2f8a55fc1d478be8",
+      "Size": "17686496"
+    },
+    {
+      "Package": "gcc-aarch64-linux-gnu",
+      "Version": "4:14.2.0-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-defaults/gcc-aarch64-linux-gnu_14.2.0-1_arm64.deb",
+      "SHA256": "c8390408ed90cc96d4fead68e313ed5ce147f1654807c23235818d535d2d7d7e",
+      "Size": "1440"
+    },
+    {
+      "Package": "libasan8",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libasan8_14.2.0-19_arm64.deb",
+      "SHA256": "5621bd583a3390b45726a8eebe23601f7fad86a25193e5349976cbf17e2bc9ad",
+      "Size": "2577836"
+    },
+    {
+      "Package": "libbinutils",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/libbinutils_2.44-3_arm64.deb",
+      "SHA256": "c51c0cc0272202d00fc3e6da8b96bfed2a428c239b689363abddd3bac6bd7a02",
+      "Size": "660392"
+    },
+    {
+      "Package": "libc-dev-bin",
+      "Version": "2.41-12+deb13u4",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/glibc/libc-dev-bin_2.41-12+deb13u4_arm64.deb",
+      "SHA256": "cd4b3bdf404a01792003f4ca400bc602252ab24e0a8c53e45d474d1818dc02e3",
+      "Size": "59092"
+    },
+    {
+      "Package": "libc6-dev",
+      "Version": "2.41-12+deb13u4",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/glibc/libc6-dev_2.41-12+deb13u4_arm64.deb",
+      "SHA256": "71e373cb5e9da975b02fb4af555929cb1977560e2dd8245de4eb8a7b03677a08",
+      "Size": "1624488"
+    },
+    {
+      "Package": "libcc1-0",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libcc1-0_14.2.0-19_arm64.deb",
+      "SHA256": "f5e390b5fd65432b820afa403a61ab4d6286948fc07ca3aacb4d230a81f5c9a5",
+      "Size": "42164"
+    },
+    {
+      "Package": "libcrypt-dev",
+      "Version": "1:4.4.38-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libxcrypt/libcrypt-dev_4.4.38-1_arm64.deb",
+      "SHA256": "eec6d4658495cdb8ce505cad91e0918edb8086677f280f3851c07ccd70543054",
+      "Size": "123160"
+    },
+    {
+      "Package": "libctf-nobfd0",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/libctf-nobfd0_2.44-3_arm64.deb",
+      "SHA256": "7b1894cbd09bd59507af259ba680a1f5d3b68c6ba9e5d69508ea2d75b3f01be6",
+      "Size": "152088"
+    },
+    {
+      "Package": "libctf0",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/libctf0_2.44-3_arm64.deb",
+      "SHA256": "12cb7df9eafd965c00c38a8720c5b78e7b0106390f69fe180a3b3589f407d550",
+      "Size": "84232"
+    },
+    {
+      "Package": "libexpat1-dev",
+      "Version": "2.8.3-1~deb13u1",
+      "Architecture": "arm64",
+      "Filename": "pool/updates/main/e/expat/libexpat1-dev_2.8.3-1~deb13u1_arm64.deb",
+      "SHA256": "a9b760a2291295ab70d45123926d800f5333bbdf7da0f132fb72268a377f8c6d",
+      "Size": "163280"
+    },
+    {
+      "Package": "libgcc-14-dev",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libgcc-14-dev_14.2.0-19_arm64.deb",
+      "SHA256": "64b8ebc7182a69aa9525df6eab5e7eb849b947e350d821549f8a8a3e9b19e5ba",
+      "Size": "2358568"
+    },
+    {
+      "Package": "libgprofng0",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/libgprofng0_2.44-3_arm64.deb",
+      "SHA256": "4642014c84f3d070d889725900fbd23165189597d45deddc7bdcf9928de9e32e",
+      "Size": "667648"
+    },
+    {
+      "Package": "libhwasan0",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libhwasan0_14.2.0-19_arm64.deb",
+      "SHA256": "5a758db399fafd354b6488c4f250b7670fb1f61c31b4e4f329d0fbb750a17084",
+      "Size": "1442000"
+    },
+    {
+      "Package": "libitm1",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libitm1_14.2.0-19_arm64.deb",
+      "SHA256": "d6f0255b498af876ab7bf4420672e43cbe58dcd577f0711131cbfbcbee283cdb",
+      "Size": "24192"
+    },
+    {
+      "Package": "liblsan0",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/liblsan0_14.2.0-19_arm64.deb",
+      "SHA256": "488a54a5fe01a926ae16d73dc7ea9f530f1bf63fae73640f741695eec2541a38",
+      "Size": "1161132"
+    },
+    {
+      "Package": "libpython3.13-dev",
+      "Version": "3.13.5-2+deb13u5",
+      "Architecture": "arm64",
+      "Filename": "pool/main/p/python3.13/libpython3.13-dev_3.13.5-2+deb13u5_arm64.deb",
+      "SHA256": "cd8e73644d319576d8cf02ab63ccd6b1fb8eb12637b5f59114b520a9b3d4741e",
+      "Size": "4932808"
+    },
+    {
+      "Package": "libsframe1",
+      "Version": "2.44-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/b/binutils/libsframe1_2.44-3_arm64.deb",
+      "SHA256": "d4a90764fa79858347aaa3197bc4489404f005d9cdbea9b2ec75a607ea5ff518",
+      "Size": "77772"
+    },
+    {
+      "Package": "libtsan2",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libtsan2_14.2.0-19_arm64.deb",
+      "SHA256": "c767c05f3dade13b5780478366029f2ff32e44bea852c6a4d7a1f93f1363d3e3",
+      "Size": "2383440"
+    },
+    {
+      "Package": "libubsan1",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libubsan1_14.2.0-19_arm64.deb",
+      "SHA256": "b5539003465ea1e60f66b9e3a1019da182e826c82d480944f3656b12351c74c8",
+      "Size": "1038924"
+    },
+    {
+      "Package": "linux-libc-dev",
+      "Version": "6.12.111-1",
+      "Architecture": "all",
+      "Filename": "pool/updates/main/l/linux/linux-libc-dev_6.12.111-1_all.deb",
+      "SHA256": "b9055566f71a6fa2e818174dcc3622aa0fb5d16cdff1bc5346e52492ba27b57c",
+      "Size": "2988444"
+    },
+    {
+      "Package": "rpcsvc-proto",
+      "Version": "1.4.3-1+b1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/r/rpcsvc-proto/rpcsvc-proto_1.4.3-1+b1_arm64.deb",
+      "SHA256": "6ae3c216e6c7d8e042ad3f122b8aa89aff56b2b5174b1c5780a7841b3becd61c",
+      "Size": "60468"
+    },
+    {
+      "Package": "zlib1g-dev",
+      "Version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/z/zlib/zlib1g-dev_1.3.dfsg+really1.3.1-1+b1_arm64.deb",
+      "SHA256": "745ebcf1fa115e230af76216355d7290a24f1790fe3780249b519c0e4d30534f",
+      "Size": "916612"
+    }
+  ],
+  "download_bytes": 45351552,
+  "dpkg_status_sha256": "f860ca7b3da9a1786bb5bc58318f823908199d272bf935775851063048e497dd"
+}

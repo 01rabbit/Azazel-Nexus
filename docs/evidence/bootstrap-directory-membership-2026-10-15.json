@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-15",
+  "topic": "explicit selected-directory membership in pinned installed manifests",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "src/azazel_nexus/installed_manifest.py": "0011309a8dd921db567d213937b9718d51f0464dddc842479f035ac2c7905254",
+      "src/azazel_nexus/installed_files.py": "3d4f9585f8ed7810b7544ad379e85e6f56607216af5a2b0c87a990683d8e277a",
+      "src/azazel_nexus/installed_candidate.py": "c57533a13a74a71750ff82578991f81552620d93c117dc91943b70687505a1c9",
+      "src/azazel_nexus/cli.py": "aa9bef8f8a9e7e1b8fef0d4309bf83660d069a3cd7a5fd9035a5ecf14b103015",
+      "tests/unit/test_installed_manifest_directories.py": "9d779862e8fefb8ca7db395c17dcf828faa91b5c4a01862fb20e3374801a5d06",
+      "tests/unit/test_installed_directory_measurement.py": "099fd0f4b2354cab4f4e8e7c2d52c5922d0dd3dd5bd44a92f1e68c4ed9112385",
+      "tests/unit/test_installed_candidate.py": "1be6c520d96310940151c128e146a529b342d93d3679150243b0be494f4f08d8",
+      "tests/unit/test_installed_files_cli.py": "20c1554d1d1922dc3b980d50e7c47c8227ed7e64c4f51f1332f2e7b443f44254",
+      "tests/unit/test_runtime_bootstrap_protected_admission.py": "fc6071dd3466afbd3ff70b7e0417df230dc968e1157bf6d63b83e824a2c481e5"
+    }
+  },
+  "semantics": [
+    "V1 canonical encoding and selection semantics unchanged",
+    "V2 explicit schema identity, files plus sorted unique protected directories, including empty directories",
+    "Expected immediate children derived from entry union; all intermediate directories below declared roots explicit",
+    "No file-directory collision or file-as-ancestor; component-aware ancestry",
+    "No-follow root-owned directories exact0755; bounded scandir stops at unknown or duplicate entry",
+    "Named and descriptor identity plus membership bracket file hashing in two full observations",
+    "Same existing independent manifest pin, production context/generation admission and diagnostic verifier",
+    "Candidate CLI explicit sorted --directory flags, no discovery or approval; canonical bytes stdout and warning stderr"
+  ],
+  "review": {
+    "Sol": "Scoped design and implementation review found no blocking defect; reviewer 145-test selection overlaps final selection",
+    "Luna": "Disjoint schema/tests and candidate/CLI/tests implementation",
+    "coordinator": "Implemented verifier, membership causal tests and real protected-factory v1/v2 coverage; corrected initial overbroad parent requirement"
+  },
+  "tests": {
+    "environment": "macOS arm64 / CPython3.11.15; synthetic data and ordinary temporary trees only",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py",
+    "passed": 2798,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 13.87,
+    "nonadditive": true,
+    "post_docs_check": {
+      "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_readme_status.py",
+      "passed": 18,
+      "seconds": 0.05,
+      "overlaps_main_selection": true
+    }
+  },
+  "lint": {
+    "eight_changed_source_test_files": "pass",
+    "cli_py": "F401 tpm_present imported but unused; same finding independently reproduced from git show HEAD:src/azazel_nexus/cli.py; not fixed",
+    "diff_check": "pass",
+    "docs_links": "54 Markdown files pass"
+  },
+  "limits": [
+    "Declared-directory membership is not proof that all import roots were declared",
+    "No symlink/interpreter-link or native-loader admission",
+    "No filesystem freeze, hostile-root defense or atomic protection after observation",
+    "Bootstrap public opening/start still refuse",
+    "No Linux system-manager, VM service deployment, CI, physical/block/loop operation, commit or push",
+    "Earlier full macOS unit suite red; not rerun or claimed passing"
+  ]
+}

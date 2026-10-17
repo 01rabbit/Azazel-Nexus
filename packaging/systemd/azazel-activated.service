@@ -3,23 +3,48 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # The one daemon that runs as root, and the reason the other three do not: unmasking a unit means writing under /etc/systemd/system, and isolating that here is what leaves the rest unprivileged.
+# Read-only route netlink rechecks full commissioning evidence; no network-admin capability or internet address family is granted.
 
 [Unit]
 Description=Azazel-Nexus activation controller
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md
+DefaultDependencies=no
+After=systemd-tmpfiles-setup.service
+After=sysinit.target
+After=basic.target
+ConditionPathExists=!/run/azazel-nexus-bootstrap/controller-used
+Before=shutdown.target
+Conflicts=shutdown.target
 
 [Service]
-Type=oneshot
+Type=notify
 User=root
+SupplementaryGroups=azazel-operator
 ExecStart=/usr/libexec/azazel/az-activated
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750
-RemainAfterExit=yes
-RestrictAddressFamilies=AF_UNIX
+Restart=no
+KillMode=control-group
+NotifyAccess=main
+WatchdogSec=30s
+WatchdogSignal=SIGKILL
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+TimeoutStartFailureMode=kill
+TimeoutStopFailureMode=kill
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+SetLoginEnvironment=no
+MemoryPressureWatch=off
+UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT LD_BIND_NOW LD_DEBUG LD_DEBUG_OUTPUT LD_DYNAMIC_WEAK LD_HWCAP_MASK LD_LIBRARY_PATH LD_ORIGIN_PATH LD_POINTER_GUARD LD_PREFER_MAP_32BIT_EXEC LD_PRELOAD LD_PROFILE LD_PROFILE_OUTPUT LD_SHOW_AUXV LD_TRACE_LOADED_OBJECTS LD_TRACE_PRELINKING LD_USE_LOAD_BIAS LD_VERBOSE LD_WARN LOCPATH MALLOC_TRACE NLSPATH PYTHONEXECUTABLE PYTHONHOME PYTHONPATH TZDIR __PYVENV_LAUNCHER__
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 ReadWritePaths=/var/lib/azazel
 ReadWritePaths=/var/lib/azazel/generations
 ReadWritePaths=/var/lib/azazel/state
 ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/run/systemd/system.control
+ReadWritePaths=/run/azazel-nexus-bootstrap
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -34,7 +59,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=
 IPAddressDeny=any
 UMask=0027

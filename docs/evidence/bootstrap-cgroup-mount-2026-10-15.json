@@ -1,0 +1,71 @@
+{
+  "schema": "azazel-nexus/local-prototype-evidence/v1",
+  "date": "2026-10-15",
+  "branch": "work/debian-live-installer-readiness-20260928",
+  "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "retained dirty worktree; uncommitted/unpushed",
+  "scope": "fixed read-only cgroup2 mount admission and manager revalidation; not service-context success",
+  "sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_cgroup_mount.py": "991abe54d7966045e2bc274bc1f23ab6f7bddae9256869f354d305befa2e83cd",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "a84d8b666b4876673cbb245ebe57bbfaea7c80adf9e328c4b2e6f2483587ed94",
+    "runtime/src/azazel_nexus_runtime/bootstrap_restore.py": "a00d0c683e8e4eaae517fc3d378ad4830f2970f71601c5b18f28a777cb4c742d",
+    "tests/unit/test_runtime_bootstrap_cgroup_mount.py": "2fd9edb8fa3e60459260e04349965e808fae9cc8758f9f352586418d20cd568d",
+    "tests/unit/test_runtime_bootstrap_cgroup_mount_lifetime.py": "d98538c852c2e1d896b93f8177c156465b3a41a46dab284e7f800daa41206d16",
+    "tests/unit/test_runtime_bootstrap_restore_sequence.py": "4f57f4b749f973e65d4d12c6d0e4102bad3fb98223b8e76f23e9b7a3a257bfc6"
+  },
+  "local_vm_hashes_match": true,
+  "mac": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_runtime_bootstrap_cgroup_mount.py tests/unit/test_runtime_bootstrap_cgroup_mount_lifetime.py tests/unit/test_runtime_bootstrap_cgroup.py tests/unit/test_runtime_bootstrap_stopped.py tests/unit/test_runtime_bootstrap_manager_stopped.py tests/unit/test_runtime_bootstrap_empty_gate.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap.py",
+    "passed": 234,
+    "elapsed_seconds": 2.22
+  },
+  "debian_arm64": {
+    "command": "PYTHONPATH=.:src:runtime/src /home/rabbit/nexus-rc2-conformance-20261013/bin/python -m pytest -q --basetemp=\"$testroot/t\" tests/unit/test_runtime_bootstrap_cgroup_mount.py tests/unit/test_runtime_bootstrap_cgroup_mount_lifetime.py tests/unit/test_runtime_bootstrap_cgroup.py tests/unit/test_runtime_bootstrap_stopped.py tests/unit/test_runtime_bootstrap_manager_stopped.py tests/unit/test_runtime_bootstrap_empty_gate.py tests/unit/test_runtime_bootstrap_manager_withdrawal.py tests/unit/test_runtime_bootstrap_restore_sequence.py tests/unit/test_runtime_bootstrap_manager.py tests/unit/test_runtime_bootstrap.py",
+    "passed": 234,
+    "elapsed_seconds": 1.17,
+    "temporary_source_and_fixture_trees_removed": true
+  },
+  "live_readonly_probe": {
+    "fixed_cgroup2_filesystem_and_mount_binding": "accepted",
+    "self_namespace_nsfs_type": "matched",
+    "pid1_namespace_comparison": "refused EACCES errno13",
+    "full_opener": "refused",
+    "service_context": "unverified",
+    "privilege_escalation": "sudo -n true required password; no password supplied"
+  },
+  "review": {
+    "astra": [
+      "admitted descriptor duplicated instead of caller mount alias",
+      "mount rechecks added after awaited observations and before finalization",
+      "namespace targets validated as nsfs under procfs; device/inode comparison"
+    ],
+    "resolution": "all three findings patched and bounded rereview found no remaining blocker",
+    "initial_survey_correction": "Agent reported both namespace links matched; exact output contained only self namespace. Main direct probe established EACCES. Earlier matching claim retracted."
+  },
+  "lint": {
+    "target_ruff": "pass",
+    "git_diff_check": "pass",
+    "document_links": {
+      "status": "pass",
+      "markdown_files": 54
+    }
+  },
+  "not_run": [
+    "full suite on this increment",
+    "GitHub Actions",
+    "installed systemd service lifecycle",
+    "hardware"
+  ],
+  "remaining": [
+    "service-context PID1 namespace access and D-Bus manager identity binding",
+    "production overlay directory composition",
+    "unit no-escape hardening admission",
+    "external controller lifetime",
+    "grant publication/start/readiness and runtime root"
+  ],
+  "references": [
+    "https://www.kernel.org/doc/html/latest/filesystems/proc.html",
+    "https://github.com/torvalds/linux/blob/v6.12/include/uapi/asm-generic/statfs.h"
+  ],
+  "authority": "No mount/namespace/cgroup mutation, no service control, no provider/fetch/Edge activation, no source-branch commit/push"
+}

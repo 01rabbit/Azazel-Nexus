@@ -1,0 +1,98 @@
+{
+  "date": "2026-10-15",
+  "issue": 93,
+  "scope": "First real selected-bootstrap attempt on the Debian 13 ARM64 test VM with owner-provisioned inputs. Test node only; not hardware evidence, not a product deployment approval. The production factory selection is unchanged.",
+  "host": {
+    "target": "rabbit@192.168.40.100 (Debian 13, aarch64, systemd 257.13-1~deb13u1)",
+    "boot_id": "8c3dd0e1-89fd-4abc-8427-e1d3c304277f",
+    "installed_code": "17d34e6 (root-owned /opt/azazel-nexus/venv, Phase 2b-3)",
+    "data_mount": "512 MiB tmpfs at /data for this boot only (not in fstab)"
+  },
+  "owner_inputs": {
+    "operator_enrollment": "owner enrolled interactively by the owner (public key 6fe43e96...a5a, fingerprint sha256:357d4287...e28c). /etc/azazel/operator-trust/operators.json 141 bytes root 0600. Two earlier attempts were refused before any write: the fingerprint was entered without the required 'sha256:' prefix.",
+    "decisions": "D1-D21 accepted by the owner as proposed for a test node (D8 = 256 MiB for the 512 MiB tmpfs).",
+    "private_key": "Owner seed stays on the owner's Mac; it was never read, copied or logged by the agent."
+  },
+  "measurements_before_placement": {
+    "package_digest": "sha256:397e686b07d53c19f80e9fb0ddc61616121c1d3eee8ea4aeebcdc0973776b04c (observe-packages, 1672 records, unchanged)",
+    "unit_closure_digest": "sha256:ed3f6f71c951e62b33dead61d154493061451b933f51dbad04a36065f40901cd (regenerated after removing root-written __pycache__; 1494 files / 113 dirs / 6 links; real-filesystem measurement ok)",
+    "systemd_profile_digest": "sha256:999a07245eb55a402ae0b74870a459764d410680d297019a464ad76fc22daf37 (systemd-257.13-deb13-path-v1, unchanged)",
+    "loaded_policy_digest": "sha256:d1e17e97d52b5c8dadcf475cf0966f317f055692dc64d583a84d9b6f2a1f1af3 (rebuilt with installed code: byte-identical)"
+  },
+  "records": {
+    "policy.json": "sha256:a10e870b4bfa07955269559385841b28aef422c1fe6d1029481a50c4f6f13be8",
+    "admission.json": "sha256:b35561c6f67d7890c88246de8d3bfe2058c1cbeca9b42a5dc01cb99b7dfe6681 (v5 first-install-genesis)",
+    "installed-files.json": "sha256:ed3f6f71c951e62b33dead61d154493061451b933f51dbad04a36065f40901cd",
+    "loaded-units.json": "sha256:d1e17e97d52b5c8dadcf475cf0966f317f055692dc64d583a84d9b6f2a1f1af3",
+    "node.yaml": "sha256:b578f468d6b6b8a6bffc62ad2fcc1babf120099cb265f01da4e539df665c452a",
+    "deployment.json": "sha256:af763b469bdd3b33c4fcf47ba1239a606791608025606300e2f7804e45012bb0",
+    "selection.json": "sha256:83d310e59b44a6dddebfc9d449cb64af49f9da48cbe0289e7e239b0bdf3116a8 (approval_id 4fd765bb-b7df-496f-8c03-0995ab29bca8)",
+    "generation_digest": "sha256:807138f1ef46e7ca409b14376806342c14f2e667b67be0a6d081e9921655e725 (selected publication digest sha256:e6449aefabf90c97ea62d304f973c6f444c4a64178416f100614642c5a682e79)",
+    "time_anchor": "earliest 2026-10-15T13:30:36Z latest 13:30:37Z, boottime_ns 5485439620145, expires +3500 s; bracketed by two reads of the owner's NTP-synced Mac clock (offset +0.14 s vs time.apple.com); selected time digest sha256:abff359f474ae502adcf274506056dd479a42ca412c065f994b04ee5a7be087b",
+    "approval": "granted 2026-10-15T13:36:30Z expires 14:21:30Z; payload sha256:d5490326197f1a63840029824459e1a74bb578db0f5e96535d3b54b6dfcaf07d; message sha256:8d71a3a523a7bf29e5035be81571f6872d5a344b17b1eef772be6c1802a4a5cb; signed off-host by the owner on the Mac; approval.sig sha256:003ca91c7ac1a0bfeeb935b9ee78d137c7eb16df17b8cf583b35adcd89e0ec60, signature verified locally before placement"
+  },
+  "privilege": "Placement and deployment/selection initialization were run by the owner. Generation publish, time-initialize, approval placement, start and read-only root inspection were run by the agent under a temporary owner-created /etc/sudoers.d/90-azn-temp (NOPASSWD), which the agent removed afterwards (sudo -n then refused again). No password was handled by the agent.",
+  "start": {
+    "command": "sudo systemctl start azazel-activated.service at 13:38:16Z",
+    "result": "failed in ~0.25 s: journal 'az-activated failed before completing a safe pass: UnitOperationFailed'; Result=exit-code, status 1",
+    "fail_closed_state": "azazel-auditd and azazel-commissiond stayed masked and inactive; audit ledger stayed empty; no retained deadline; /run/systemd/system.control stayed empty (no overlay published); only /var/lib/azazel/state/bootstrap/supervisor.lock and the one-use /run/azazel-nexus-bootstrap/controller-used marker were created. The marker consumes this boot's attempt by design.",
+    "incident": "While preparing the publish input the agent once launched generation-publish with an empty terminal input by mistake; it was waiting at its first prompt, was killed, and nothing was published (verified)."
+  },
+  "root_cause": {
+    "method": "Read-only probe replaying bootstrap_cgroup_mount admission inside a transient systemd-run unit with the controller's sandbox properties (CapabilityBoundingSet= empty, NoNewPrivileges, ProtectControlGroups, RestrictNamespaces, SystemCallFilter=@system-service, ...); probe file removed and unit collected afterwards.",
+    "finding_1": "open('/proc/1/ns/cgroup') -> PermissionError(13): a capability-less root process cannot follow PID 1's namespace link (ptrace access check). bootstrap_cgroup_mount._namespaces() therefore always fails; open_bootstrap_cgroup_mount() maps it to UnitOperationFailed('fixed cgroup mount admission unavailable'). The same helper is used by the audit peer, commission peer and controller identity checks.",
+    "finding_2": "systemd 257 adds a writable bind mount of the unit's own memory.pressure below the read-only /sys/fs/cgroup (MemoryPressureWatch=auto). _mount_record refuses any mount below /sys/fs/cgroup/, so admission would fail next even with finding 1 fixed.",
+    "probe_mountinfo": [
+      "560 558 0:30 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime shared:447 master:8 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot",
+      "556 560 0:30 /system.slice/azn-cgprobe.service/memory.pressure /sys/fs/cgroup/system.slice/azn-cgprobe.service/memory.pressure rw,nosuid,nodev,noexec,relatime shared:448 master:8 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot"
+    ]
+  },
+  "verified": [
+    "owner enrollment, record finalization with production decoders (all four previews accepted), root placement with hash check, deployment/selection initialization, generation publication, administrator time record and approval request on the real host",
+    "off-host owner signature accepted for placement (local Ed25519 verification)",
+    "fail-closed behaviour of the real selected start: a pre-admission refusal left both helpers masked/inactive with no deadline, audit record or overlay"
+  ],
+  "not_verified": [
+    "confirmed containment after the production open_pair refusal (BootstrapContainmentFailed on the host)",
+    "any admitted helper start, READY order, authenticated readiness, heartbeat, operator stop, deadline expiry (unreachable with the production manager by design)",
+    "anything beyond this VM (no hardware evidence)"
+  ],
+  "retry_requirements": "A retry needs the fixed code reinstalled and a fresh boot or snapshot revert: the controller-used marker is retained for this boot and selection/time/deployment records are create-only (stale-boot selection replacement is not implemented).",
+  "second_attempt": {
+    "preparation": "Owner reverted the VM to the pre-placement memory snapshot (same boot 8c3dd0e1, /data tmpfs present, operator enrollment retained) and re-created the temporary sudoers entry. Phase 2c (root) replaced the venv packages and the controller unit with commit 669875c and ran daemon-reload only; systemd then reported CapabilityBoundingSet=cap_dac_read_search, SupplementaryGroups=azazel-operator, MemoryPressureWatch=no.",
+    "sandbox_probe_before_start": "Transient unit with the new controller sandbox: CapBnd/CapEff 0x4, CapAmb 0, Groups 979; exactly one /sys/fs/cgroup mount (no memory.pressure bind); /proc/self/ns/cgroup opens; audit ledger lists and statvfs works; run/audit and run/commission traverse; write into the ledger refused.",
+    "records": {
+      "unit_closure_digest": "sha256:e3b44884012ef4a2951dfe7925864fe3eb98a2e3bad2764c213e6d602c485a66",
+      "admission.json": "sha256:5faea63bd7c9afca37ea8f5fa9ca2988425c819773cbc819308d26b9cefa7d79",
+      "deployment.json": "sha256:e129bc222d6619bcef453105e5f54dfcaa338f4284af225cbab34488df6e7bfc",
+      "selection.json": "sha256:ba2c9367ecf048f305a0d84e9ff63544f5ca85600d06fab6424171c27d9395ed (approval_id 420f0b6a-e01e-497d-bc16-0da4d0723fd5)",
+      "generation_digest": "sha256:c91f4d0f9fe6a89f772392a413891c40abc29db5b334ef788438cee154bd7625",
+      "time_digest": "sha256:efd616d8dfb0bb8e8b34d65ac294f2ca552739969b05ba04cbb53cc14db3e41f",
+      "approval": "granted 14:04:19Z expires 14:49:19Z, payload sha256:fc5f25c68325696bf4bca1f2a52c27f38e91ea3245f051a16b7791c966438e5f, owner-signed on the Mac, verified before placement"
+    },
+    "start": "14:06:07Z: the controller passed cgroup admission and initial containment (two daemon-reloads requested by az-activated), then failed closed: 'az-activated failed before completing a safe pass: ApprovalRefused'. Helpers stayed masked/inactive; no deadline, audit record or overlay; only supervisor.lock and controller-used were created.",
+    "diagnosis": "Sandboxed read-only replays (no files created, verified by find before/after) with the wrapper's exact interpreter flags (-IS), sys.path and dont_write_bytecode: approval at both time bounds, deployment binding, time window, generation, policy-bound capacity and the first-install audit genesis (sequence 0, empty ledger) all pass under the new privileges. Installed-files measurement refuses with 'uncovered negative Python importer cache': CPython caches the executed script path as a None importer entry (probe: '/run/<probe>.py'; controller: '/usr/libexec/azazel/az-activated'), and import_routing accepts None only for /usr/lib/python313.zip or covered directories. An earlier probe's capacity refusal was an artifact of a read-only probe sandbox, and its 'fixed controller main module required' refusal is an artifact of the probe's own __main__.",
+    "privilege": "Temporary sudoers removed again after diagnosis (sudo -n refused)."
+  },
+  "third_attempt": {
+    "preparation": "Snapshot revert, temporary sudoers re-created by the owner, Phase 2e installed e17ed16 (packages + controller unit). Records re-finalized (unit_closure sha256:52f6a478989469df0e60add636fb050c260b6729984f6ae9a608727eb68e63cc, admission sha256:7dfccb20aa6ddd237f48b644dccaacb5f76ebc2deea55cacff0623e13e01f803), placed, deployment/selection/generation/time initialized, approval (granted 14:36:17Z, expires 15:21:17Z, payload sha256:0c232890c05c7e18d50f8528c133f0973512277b27ea13b070fae318ce52cab9) owner-signed on the Mac and verified before placement.",
+    "intermediate_finding_before_e17ed16": "With c943ca4 a controller-faithful replay (wrapper __main__ and importer-cache emulation) found spec-less extension-registered modules (cython_runtime, _cython_3_1_4 from the pinned PyYAML extension; pyexpat.errors/model from built-in pyexpat). That build was not started; e17ed16 admits exactly those.",
+    "pre_start_replay": "Without any diagnostic removal, the controller-faithful sandboxed replay passed installed files, initial admission verify, generation admission, capacity and first-install audit; no files were created.",
+    "start": "14:40:00Z: the controller passed containment (one daemon-reload) and was then SIGKILLed by systemd at 14:40:30Z: 'start operation timed out' (TimeoutStartSec=30s), 29.8 s CPU. Helpers stayed masked/inactive; no deadline, audit record or overlay; supervisor.lock and controller-used only.",
+    "diagnosis": "Timed sandbox replay: installed files 2.9 s, initial admission verify 43.7 s, generation admission 11.7 s (CPU-bound). cProfile: 97% in loaded_modules._project_modules -> resolve_installed_link -> _validate_manifest, re-validating the whole manifest for every loaded module (~12k calls, 18M _validate_file calls).",
+    "privilege": "Temporary sudoers removed after diagnosis."
+  },
+  "fourth_attempt": {
+    "build": "6c8edbf (manifest validated once per projection), installed by Phase 2f after snapshot revert; records re-finalized (unit_closure sha256:95dab07aabed0a9de2b4f14649bcc688b2aa5f4a6c7c5d1c029d3d0fe7d1b551, admission sha256:f1bb704830e1dd87b6c89cd0a7387011e42eb76d9752fb9d9d5f19cd3a907f6e), deployment/selection/generation/time initialized, approval (payload sha256:00adda8de258c1cf03f47477fb99aa58d76d448687b528aea6b126e8cda85416) owner-signed and verified.",
+    "pre_start_replay": "Controller-faithful timed replay, no diagnostic removal: installed files 0.2 s, initial admission verify 1.8 s, generation admission 0.4 s, capacity and first-install audit pass; no files created.",
+    "known_design_limit_declared_before_start": "The production BootstrapNarrowingManager refuses open_pair/start_and_wait (bootstrap_manager.py:963-969, 1088-1091) and is_ready is False, so READY/helper start were not reachable. With the owner's agreement this run was declared a designed-refusal verification: expected admission -> retained deadline -> grant intent -> open_pair refusal -> confirmed containment.",
+    "start": "15:02:59Z: two controller-requested daemon-reloads (~9.5 s apart), then 'az-activated failed before completing a safe pass: BootstrapContainmentFailed' at 15:03:10Z, 9.6 s CPU. This is NOT the expected outcome: containment was not confirmed.",
+    "post_state": "initial.json and checkpoint.json (retained deadline, deadline_boottime_ns 7115686956966) and grant-<boot>.json phase recovery_required (recovery_evidence_digest set; audit/close digests null) were created; bootstrap-overlay and /run/systemd/system.control empty; azazel-auditd/commissiond still masked (/etc -> /dev/null) and inactive; audit ledger empty; controller-used marker present.",
+    "verified_on_host": [
+      "first admission passes end-to-end in the real controller (deadline retained, grant intent recorded)",
+      "production open_pair refusal (grant moved to recovery_required)",
+      "helpers never started; audit ledger untouched"
+    ],
+    "operator_rule": "The owner stated that a further failure stops the work. Work on the VM stopped after this run; temporary sudoers removed."
+  }
+}

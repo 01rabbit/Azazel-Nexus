@@ -33,7 +33,6 @@ from .commissioning import (
     CommissioningRecord,
     CommissioningRefused,
     Proposal,
-    describe_for_operator,
 )
 from .inventory import InterfaceReadout
 from .commissioning import confirm_roles
@@ -50,6 +49,14 @@ __all__ = [
 #: Re-ask. Not "treat as skip", which would turn a typo into an interface
 #: silently left unassigned, and not "treat as yes", which needs no comment.
 _MAX_REASKS = 3
+
+
+def _screen_description(readout: InterfaceReadout) -> dict[str, str]:
+    # hil_preflight also consumes Answer; defer the shared policy helper until
+    # both modules are initialized instead of introducing an import cycle.
+    from .hil_preflight import describe_for_screen
+
+    return describe_for_screen(readout)
 
 
 class WizardAbandoned(Exception):
@@ -78,7 +85,7 @@ def render_rows(proposal: Proposal) -> tuple[dict[str, object], ...]:
         rows.append(
             {
                 "handle": f"if-{index}",
-                "description": describe_for_operator(readout),
+                "description": _screen_description(readout),
                 "commissionable": True,
                 "blocked_by": (),
             }
@@ -106,11 +113,13 @@ def commission(
     at: str,
     profiles_present: Sequence[str],
 ) -> CommissioningRecord:
-    """Ask, then ask again about the set, then write the record.
+    """Ask, confirm the whole set, then return an unsigned in-memory draft.
 
     Returns an observe-only record when the operator assigns no role. That is
-    a completed commissioning, not an abandoned one: somebody looked and
+    a completed choice, not an abandoned one: somebody looked and
     confirmed nothing, which is different from nobody having looked.
+    This function neither persists nor signs the draft and does not establish
+    measured profiles, service readiness, or activation approval.
     """
 
     if proposal.commissioning_required:
@@ -154,7 +163,7 @@ def _ask_until_understood(
     readout: InterfaceReadout,
     choices: Sequence[str],
 ) -> str:
-    description = describe_for_operator(readout)
+    description = _screen_description(readout)
     facts = ", ".join(f"{k}={v}" for k, v in sorted(description.items())) or (
         "no physically checkable identifier was readable"
     )

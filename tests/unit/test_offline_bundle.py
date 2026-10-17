@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -19,13 +20,19 @@ def _repo(root: Path) -> Path:
         "LICENSE": b"Nexus license\n",
         "runtime/pyproject.toml": b"[project]\nname='azazel-nexus-runtime'\n",
         "runtime/README.md": b"Nexus runtime package readme\n",
+        "runtime/setup.py": b"# fixed native extension build recipe\n",
+        "runtime/MANIFEST.in": b"include src/azazel_nexus_runtime/_bootstrap_deadline.c\n",
+        "runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c": b"/* native source */\n",
         "src/azazel_nexus/__init__.py": b"VERSION = 1\n",
         "src/azazel_nexus/module.py": b"def run(): return 1\n",
         "runtime/src/azazel_nexus_runtime/__init__.py": b"\n",
         "runtime/src/azazel_nexus_runtime/daemon.py": b"def main(): pass\n",
+        "runtime/src/azazel_nexus_runtime/install_platform.py": b"def install(): pass\n",
         "packaging/install.sh": b"#!/bin/sh\nexit 0\n",
         "packaging/azazel-nexus.preset": b"enable azazel-activated.service\n",
+        "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf": b"d /run/systemd/system.control :0755 :root :root - -\n",
         "tools/stage_runtime_entrypoints.py": b"def stage(): return 0\n",
+        "tools/install_profile_fields.py": b"def install_profile(): return 0\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
@@ -98,10 +105,18 @@ def test_manifest_matches_bundle_contents_and_normalized_metadata(tmp_path: Path
     assert set(members) == {item["path"] for item in manifest["files"]}
     assert not any("tests" in name or "__pycache__" in name or "egg-info" in name for name in members)
     assert members["packaging/install.sh"][1].mode == 0o755
+    assert members["packaging/tmpfiles.d/azazel-nexus-bootstrap.conf"][0] == (
+        b"d /run/systemd/system.control :0755 :root :root - -\n"
+    )
     assert members["README.md"][0] == b"Nexus package readme\n"
     assert members["LICENSE"][0] == b"Nexus license\n"
     assert members["runtime/README.md"][0] == b"Nexus runtime package readme\n"
+    assert members["runtime/setup.py"][0] == b"# fixed native extension build recipe\n"
+    assert members["runtime/MANIFEST.in"][0] == b"include src/azazel_nexus_runtime/_bootstrap_deadline.c\n"
+    assert members["runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c"][0] == b"/* native source */\n"
     assert members["tools/stage_runtime_entrypoints.py"][0] == b"def stage(): return 0\n"
+    assert members["tools/install_profile_fields.py"][0] == b"def install_profile(): return 0\n"
+    assert members["runtime/src/azazel_nexus_runtime/install_platform.py"][0] == b"def install(): pass\n"
     for item in manifest["files"]:
         data, info = members[item["path"]]
         assert item["sha256"] == hashlib.sha256(data).hexdigest()
@@ -187,3 +202,39 @@ def test_special_file_input_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="non-regular file is not allowed"):
         build_bundle(root, tmp_path / "unsafe.tar.gz")
+
+
+def test_missing_profile_install_helper_is_rejected(tmp_path: Path) -> None:
+    root = _repo(tmp_path / "repo")
+    (root / "tools/install_profile_fields.py").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        build_bundle(root, tmp_path / "incomplete.tar.gz")
+
+
+def test_real_bundle_profile_resolver_runs_without_checkout_or_installed_packages(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    output = tmp_path / "source.tar.gz"
+    build_bundle(root, output)
+    extracted = tmp_path / "extracted"
+    for name, (data, _info) in _members(output).items():
+        relative = Path(name)
+        assert not relative.is_absolute() and ".." not in relative.parts
+        destination = extracted / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+
+    release = tmp_path / "os-release"
+    release.write_text('ID=debian\nVERSION_ID="13"\n', encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable, "-I", "-S", "-c",
+            "import runpy, sys; from pathlib import Path; "
+            "resolve = runpy.run_path(sys.argv[1])['resolve']; "
+            "print(resolve(field='profile_id', os_release_path=Path(sys.argv[2])))",
+            str(extracted / "tools/install_profile_fields.py"), str(release),
+        ],
+        cwd=tmp_path, capture_output=True, text=True, check=False, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "debian-13-systemd-installer-v1"

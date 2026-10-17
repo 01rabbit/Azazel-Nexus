@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-15",
+  "topic": "explicitly pinned interpreter leaf-link chains",
+  "source": {
+    "branch": "work/debian-live-installer-readiness-20260928",
+    "head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+    "dirty": true,
+    "sha256": {
+      "src/azazel_nexus/installed_manifest.py": "5eaa1cbbf596da3073e1a77566d27dc889e49ec86da3c3f1e4c92bcd001d06ac",
+      "src/azazel_nexus/installed_files.py": "cbb8a137f86eecda77ab5abd506eec06c33ab9653e223b8e66975c54037b4f76",
+      "src/azazel_nexus/installed_candidate.py": "ae863096201057edc0d1e2f90582996174e7c99c039fca2651cf9aabbab9f41a",
+      "src/azazel_nexus/cli.py": "61da75f4281359a6b6dc1c4decccd9a383fb29641241d6d632a048002abf9d0f",
+      "runtime/src/azazel_nexus_runtime/bootstrap_inputs.py": "8862f15ac4d6ba491f1c5d9461afd1e583c45cf56392aaaf9afc9109949fd81e",
+      "tests/unit/test_installed_manifest_links.py": "e1a8e93dac73568c82295a2c9f08b3cabd2799870b526a34ba7d5a853539dba2",
+      "tests/unit/test_installed_link_measurement.py": "6379f1f14e3aa2ea4461dbbf66a66eec29e428ff41f0ee5bcbe2e65b08423ae8",
+      "tests/unit/test_installed_candidate.py": "bf11b2ec3b19faa1afe1be275a77cc42e72039d49bbd42dcd972b2c1b065b96a",
+      "tests/unit/test_installed_files_cli.py": "ab8e944d242b9ab039c3773059fd42c42b6ea111579ff4f276eb394c9a400759"
+    }
+  },
+  "semantics": [
+    "V1/V2 canonical encoding and existing behavior retained",
+    "V3 explicit links records plus files/directories; same independently supplied manifest pin",
+    "Canonical absolute usr/opt targets or one sibling basename, no relative slash/dot fallback",
+    "All used/unused link chains terminate at listed regular file within8hops;1024link bound; collisions/cycles/missingtargets/linkancestors refuse",
+    "Protected no-follow parents and leaf lstat/readlink/exact target/named identity checks bracket regular-file hashing in both observations",
+    "Links never opened/followed; directory membership includes declared links",
+    "Bootstrap resolves manifest data only and requires terminal mode0755; full filesystem measurement follows",
+    "Candidate CLI --link explicitly selected; no automatic inclusion of targets or pin approval"
+  ],
+  "review": {
+    "Sol": "Design, schema/measurement/bootstrap, and completed candidate/CLI scopes reviewed; no blocking defects. Stale blanket-symlink-refusal docstring corrected.",
+    "Luna": "Disjoint schema/resolver and candidate/CLI implementation/tests",
+    "coordinator": "Core measurement/runtime wiring and causal link/target bound-start tests; hoisted repeated path-set union out of schema ancestor loop"
+  },
+  "tests": {
+    "environment": "macOS arm64 / CPython3.11.15; synthetic ordinary trees only; no target execution",
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_installed*.py tests/unit/test_runtime_startup_wrapper.py tests/unit/test_stage_runtime_entrypoints.py tests/unit/test_stage_runtime_isolation.py tests/unit/test_offline_bundle.py tests/unit/test_install_platform.py tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_runtime_boundary.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_activated_entrypoint.py tests/unit/test_runtime_node_config.py tests/unit/test_readme_status.py",
+    "passed": 2949,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 15.85,
+    "overlapping_runs_not_added": true,
+    "not_full_suite": true,
+    "note": "Final hashes include a later candidate docstring-only clarification, lint checked; no functional changes after selection.",
+    "causal": [
+      "8vs9hop/schema malformed input tests",
+      "No link leaf open during real selected measurement",
+      "Exact text change/same-text replacement/hardlinked symlink refusal",
+      "Changes during terminal-file hashing refuse",
+      "Real protected bootstrap measurement accepts pinned chain and rejects drift",
+      "Actual private bound audit start refuses link-text or terminal-byte drift before StartUnit",
+      "Nonexecutable pinned terminal refuses",
+      "Candidate explicit chain/target/cycle/invalid leaf and CLI forwarding/reporting tests"
+    ]
+  },
+  "checks": {
+    "ruff": "Eight changed source/test files pass; candidate docstring-only fix rechecked",
+    "cli_ruff": "Existing F401 tpm_present, previously reproduced from HEAD, remains and was not fixed",
+    "diff": "pass",
+    "links": "54 Markdown files pass"
+  },
+  "remaining": [
+    "Only leaf-link chains under canonical usr/opt paths, not arbitrary aliases or directory symlinks",
+    "Initial interpreter/pyvenv configuration and native startup remain unadmitted",
+    "No full import resolution or filesystem freeze/hostile-root claim",
+    "Public bootstrap opening/start remains refusing",
+    "No native Linux service deployment, VM runtime, CI, physical/block/loop operation, commit or push",
+    "Earlier full macOS unit suite red remains separately recorded"
+  ]
+}

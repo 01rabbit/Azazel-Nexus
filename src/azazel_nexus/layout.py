@@ -13,10 +13,10 @@ same declaration that describes `/var/lib/azazel` can be materialised under a
 temporary directory in a test. A layout that can only be exercised on the
 target host is a layout that is exercised for the first time in production.
 
-*Modes are part of the declaration, not of the installer.* `run/` is `0750`
-because a socket directory readable by everything on the host is the first
-authorization boundary given away (§4). The installer copies these numbers; it
-does not choose them.
+*Modes are part of the declaration, not of the installer.* `run/` is
+traversal-only (`0711`), and each daemon socket directory uses setgid so Linux
+assigns the reviewed operator group without granting daemons `CAP_CHOWN`. The
+installer copies these numbers; it does not choose them.
 """
 
 from __future__ import annotations
@@ -52,7 +52,15 @@ class PathSpec:
                 f"{self.path!r} is not absolute; the layout describes where a "
                 "node keeps things on the host, which is not a relative question"
             )
-        if not 0 <= self.mode <= 0o777:
+        # Set-group-ID is used only on the private per-service socket
+        # directories. Linux then assigns newly bound sockets the declared
+        # operator group without granting the daemon CAP_CHOWN. Other special
+        # permission bits are deliberately not part of this layout language.
+        if (
+            not 0 <= self.mode <= 0o2777
+            or self.mode & ~0o2777
+            or self.mode & 0o1000
+        ):
             raise ValueError(f"{self.mode:o} is not a directory mode")
         if not self.purpose.strip():
             raise ValueError(
@@ -89,27 +97,93 @@ LAYOUT = (
         group="azcommission",
     ),
     PathSpec(
+        "/etc/azazel/bootstrap",
+        0o700,
+        "root-private administrator declarations, approvals and selected-file manifest",
+    ),
+    PathSpec(
         "/etc/azazel/systemd",
         0o755,
         "unit drop-ins installed by packages",
     ),
-    PathSpec("/var/lib/azazel", 0o750, "small mutable state; not world-readable"),
+    PathSpec("/var/lib/azazel", 0o711, "small mutable state; private traversal only"),
     PathSpec(
         "/var/lib/azazel/run",
-        0o750,
-        "unix domain sockets; socket ACLs are the first authorization boundary",
+        0o711,
+        "socket traversal only; daemon-specific leaves enforce socket access",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/audit",
+        0o2710,
+        "audit socket leaf; daemon-owned with operator-group socket inheritance",
+        owner="azaudit",
+        group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/commission",
+        0o2710,
+        "commission socket leaf; daemon-owned with operator-group socket inheritance",
+        owner="azcommission",
+        group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/watchdog",
+        0o2710,
+        "watchdog socket leaf; daemon-owned with operator-group socket inheritance",
+        owner="azwatch",
         group="azazel-operator",
     ),
     PathSpec(
         "/var/lib/azazel/state",
-        0o750,
-        "durable state machines, the audit chain and the watchdog's fences",
-        group="azaudit",
+        0o711,
+        "service-state traversal only; each writer owns a private leaf",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/audit",
+        0o700,
+        "auditd segmented hash chain",
+        owner="azaudit",
+        group="root",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/auditd",
+        0o700,
+        "auditd refusal records, isolated from segmented chain inputs",
+        owner="azaudit",
+        group="root",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/commission",
+        0o700,
+        "commissiond refusal records",
+        owner="azcommission",
+        group="root",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/watchdog",
+        0o700,
+        "watchdog fence and refusal records",
+        owner="azwatch",
+        group="root",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/bootstrap",
+        0o700,
+        "root-private bootstrap deadlines, per-boot grant transactions and shared lock",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/bootstrap-overlay",
+        0o700,
+        "isolated root-private journal for volatile helper unit overlays",
     ),
     PathSpec(
         "/var/lib/azazel/generations",
         0o700,
         "private staging trees; promoted, never edited in place",
+    ),
+    PathSpec(
+        "/var/lib/azazel/bootstrap-generations", 0o700,
+        "bootstrap-only trees, isolated from operational generation selection",
     ),
     PathSpec(
         "/var/lib/azazel/fetch",
@@ -162,7 +236,7 @@ def create_layout(root: Path) -> tuple[Path, ...]:
 
     Parents are created before children so that a child's mode is never
     inherited from an implicitly created parent -- `/var/lib/azazel/run` at
-    `0750` under a `/var/lib/azazel` that `mkdir(parents=True)` created at the
+    `0711` under a `/var/lib/azazel` that `mkdir(parents=True)` created at the
     process umask would be a boundary set by whatever the shell happened to
     have configured.
     """

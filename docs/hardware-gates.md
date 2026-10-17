@@ -56,7 +56,7 @@ that the preset disables the rest. `tests/unit/test_runtime_hardening.py`
 checks the unit files against the declaration they are generated from, by
 value rather than by the presence of a word: the account each runs as, its
 allowed address families, its writable paths against the filesystem layout,
-an empty capability bounding set, `IPAddressDeny=any`, and the runtime
+an empty capability bounding set (except the root controller, whose bounding set is exactly `CAP_DAC_READ_SEARCH` with `SupplementaryGroups=azazel-operator` and empty `AmbientCapabilities`), `IPAddressDeny=any`, and the runtime
 directory's mode against the socket directory's.
 
 **Why that is not the claim.** The installer was never run. A `systemctl mask`

@@ -3,9 +3,10 @@
 Status: **partially implemented contract**. Read-only inventory, commissioning
 records, generation verification, and the activation decision model exist.
 The production activation composition connects the one-shot controller to
-systemd over D-Bus, but this repository does not yet provide authenticated
-lease/commissioning evidence loaders or the bootstrap path required to reach
-the commissioning service from a fresh install. This document remains the
+systemd over D-Bus and revalidates protected full commissioning evidence.
+Authenticated lease loading, authoritative commissioning admission and the
+bootstrap path required to reach the commissioning service from a fresh
+install remain incomplete. This document remains the
 target contract; the implementation does not satisfy all of it.
 
 Related: [Capability model](capability-model.md) ·
@@ -38,6 +39,19 @@ See [contract ownership](contract-ownership.md) §5.
 
 Inventory runs before any role exists. It reads hardware and interface facts
 and writes nothing to the network.
+
+Runtime hardware-snapshot scope clarification (2026-10-13): kernel loopback
+may be excluded only when both its observed ARPHRD type is exactly 772 and its
+resolved sysfs location is beneath `/sys/devices/virtual/net`. The collector
+records `kernel-loopback-excluded` and its count, and checks the excluded set
+on both reads. Names such as `lo`, or virtual placement alone, never justify
+exclusion. Other interfaces—including virtual Ethernet, bridges and tunnels—
+remain in scope and incomplete identities still refuse complete projection.
+The fresh commissioning proposal must come from the same scoped observations
+(`HardwareObservation.commissioning_proposal()`); an independently collected
+unscoped proposal is not interchangeable. General library inventory output is
+unchanged and still retains all exposed entries. This is a declared collection
+scope, not proof of interface silence, trust or activation eligibility.
 
 During inventory and until activation completes, the node MUST NOT:
 
@@ -149,14 +163,42 @@ into a Fabric `InterfaceAssignment`. Every argument is required and none has a
 default: a confirmation Nexus could produce without being told who confirmed,
 how, and when is a confirmation Nexus made on the operator's behalf.
 
-**The signed record itself is not yet producible, and the reason is worth
-stating rather than deferring.** Fabric's `CommissioningRecord` requires
-`hardware_inventory_digest`, `resource_profile_digest` and
-`topology_profile_digest`; Nexus produces the first and has neither
-`ResourceProfile` nor `TopologyProfile`. A placeholder for the other two would
-make the record claim to cover profiles that do not exist, and its own
-`record_digest` would then vouch for that claim. The boundary refuses and names
-what is missing.
+`fabric_boundary.build_commissioning_record` can assemble a complete linked
+Fabric `CommissioningRecord` when supplied a complete, digest-consistent
+`HardwareInventory`, a matching `ResourceProfile`, and a matching
+`TopologyProfile`. Resource observations can be projected to the Fabric profile
+when complete measurements and inventory are available. Reviewed draft roles
+can be projected into a descriptive topology profile against that same
+snapshot; management, capture, and isolation remain explicitly unverified.
+Assembly returns the constituent records and Fabric record in an
+**unsigned proposal**. The draft signature alone does not cover the new
+resource/topology profiles or the full record wrapper.
+
+`commissioning_approval.verify_commissioning_proposal` is a separate check: it
+requires a new signature under the `commissioning-proposal` approval purpose,
+rebuilds the expected proposal from independently supplied snapshots, and
+requires exact canonical payload equality. Successful verification attributes
+operator approval of that proposal only. It returns no activation grant and
+does not establish freshness, trusted time, high-water state, health, product
+admission, or durable storage. The activation-time full evidence loader is
+implemented, but authoritative admission, authenticated lease loading,
+bootstrap admission, those state and freshness checks, and promotion into signed
+record persistence remain incomplete. Inconsistent or incomplete inputs still
+make proposal assembly unavailable; the remaining gap is the production path,
+not an unconditional inability to assemble the record.
+
+The runtime now exposes `az-nexus-commission proposal-export --operator LABEL`:
+it connects the protected signed role draft, declared node and current
+inventory/resource collectors to those projections, then exports a complete
+unsigned proposal after explicit confirmation and input rechecks. It first
+retains an independent protected expected copy, then creates the signing view
+`commissioning-proposal.json`; existing proposal state is never overwritten.
+`proposal-review --operator LABEL` validates a detached signature against those
+retained expectations and current node/trust, then rereads the protected inputs
+before reporting historical approval. There is no authoritative-record import
+or activation and no raw identity output. Old exports without retained context
+are refused, not migrated. See the [runtime adapter](../runtime/README.md) for
+prerequisites and the local privileged-owner/rollback limitations.
 
 ## 5. Zero-transmit observation
 
@@ -189,9 +231,81 @@ never grants a capability.
 
 ## 7. Verified generations and the activation controller
 
+Implementation boundary (2026-10-13): activation currently consumes Nexus's
+local `CommissioningRecord`, whose digest covers role composites, profile
+names and confirmation metadata. The retained Fabric proposal binds full
+inventory/profile contents and limitations. These are not interchangeable:
+copying three profile names into a local record would discard the newly
+verified bindings and must not confer enforcement readiness. The current
+`Generation.commissioning_digest` meaning remains unchanged. The controller
+now accepts a separate `CommissioningEvidence` containing the complete signed
+payload, signature and current inventory. An additional
+`commissioning_evidence_binding` must agree across that evidence, generation
+and signed activation approval for enforcement. A bound lease alone cannot
+fall back to legacy enforcement. Local roles, identities and confirmation
+provenance must also match the full proposal; three profile names alone do not
+provide this evidence. Supporting/Edge-baseline tiers retain their existing gates.
+HIL `commissioning.json` is not the specified production
+`commissioning/active.record` promotion path.
+
+The binding is HMAC-SHA-256 of
+`b"azazel-nexus/commissioning-evidence/v1\x00" + payload`, using the existing
+fixed `/var/lib/azazel/secrets/commissioning.key` (32–4096 bytes, private
+root-owned directory and single-link ordinary file). No key is generated.
+Signature and present hardware are independently reverified on each pass;
+the binding is not a cached verification flag or rollback anchor. Key rotation
+requires new bound state and approval; existing metadata is not rewritten.
+Absent binding fields are omitted from legacy generation metadata and approval
+bytes. Bound-state rollback currently refuses when either latest or target
+generation has a binding: a new validated forward render and approval are
+required, and that production workflow remains incomplete.
+
+The actual activation entrypoint first attempts to mask every governed unit,
+then loads fixed protected evidence and passes it to the controller. A masking
+failure follows the existing retry/escalation path before evidence collection.
+Missing or changed evidence never grants a service. Lease, authoritative record
+and measured health are still absent in this composition; it cannot activate
+services merely because the full evidence loader succeeds.
+
+The runtime review's optional `--check-current-hardware` now compares all
+retained/current inventory content apart from the three snapshot metadata
+fields (ID, collection time, digest), without rewriting either snapshot.
+This supplies a tested hardware-content comparison rule, not current resource
+admission or an activation grant. Renderer, policy/epoch/high-water, trusted
+clock and node-health producers remain incomplete. Generation directory
+numbering and local audit chains are not independent rollback anchors. The
+existing Edge probe carries an unsigned-manifest caveat and must not be
+silently repurposed as authenticated package admission.
+
 A **generation** is a complete, validated, rendered configuration state. The
 activation controller is the only component permitted to unmask operational
 services and issue generation-scoped systemd credentials.
+
+Generation publication now stages ordinary files and metadata in a private
+hidden directory, reads them back, syncs them, and renames the complete
+directory into its generation number under a nonblocking directory writer
+lock. No numbered partial tree is exposed by `create()`. Staging failures leave
+hidden private files for explicit inspection, not automatic reuse or deletion.
+New store directories also sync their entries in their respective parents.
+Numeric directory aliases, numeric symlinks and numeric non-directory entries
+are refused for inspection rather than silently selected as a generation.
+If the final parent-directory sync fails after publication,
+`GenerationCommitUncertain` reports the published number; inspect the complete
+visible state before any retry. This is not a successful activation or proof
+of power-loss recovery. Locks coordinate cooperating writers on trusted local
+storage, not a privileged owner or a distributed filesystem. A rollback also
+rechecks its source generation under that lock and refuses a concurrent advance.
+Content integrity/publication do not replace semantic admission, authoritative
+commissioning promotion, or the still-missing operational role renderer.
+
+The fixed-file activation approval reader is separate from those producers.
+It verifies `/etc/azazel/activation/approval.json` and `approval.sig` with
+current enrolled trust only against an independently supplied expected context,
+operator, time and local lease limit. It has no path override or signing/key
+operation. The production entrypoint must not call it with an expected context
+copied from the candidate approval. See the
+[remaining runtime connections](runtime-activation-remaining.md) for input
+ownership, package-consumer gaps and the conditions for wiring this reader.
 
 On every boot and before every activation it validates:
 

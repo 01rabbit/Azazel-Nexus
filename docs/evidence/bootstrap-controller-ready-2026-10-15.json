@@ -1,0 +1,38 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; hashes cover full current files, not a standalone committed increment",
+  "scope": "controller READY barrier in supervisor and private start bridge ordering",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap.py": "ecb49e6c2782714665c07040926f379d346cf5cd305b71bf343ac7e492960831",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "163ddcac9208c38f0c3b67223eea88fd777e4027ce2ba0dd22758e7e71b352ab",
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "b0d72f46c0c389871d1064aa8175afce118014e9e80cd7454a5478653645b1cd",
+    "tests/unit/test_runtime_bootstrap.py": "7013e95997a31e77278c40528007005ad155ff9dadd979090d691fc7736f9b1a",
+    "tests/unit/test_runtime_bootstrap_start_bridge.py": "aef797ae3c37d3eaceca21301401c0e05c6f8c31b8aea2dd21b5f5f643d32ff5",
+    "tests/unit/test_runtime_bootstrap_controller_ready.py": "a490813fbf7808f9b6e15a3bca9afec174ebb354c0c629fa0c8f88ec75db23a9",
+    "tests/unit/test_runtime_bootstrap_ready_handoff.py": "22e5e2a4874cfa069956dc934724971f1561fe463aaaee9d0e80ad2366ef11a4"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2133,
+    "skipped": 2,
+    "seconds": 8.08,
+    "environment": "macOS; synthetic D-Bus/admission/publication/containment; real local asyncio bridge and supervisor algorithm",
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ]
+  },
+  "ruff": "seven listed source/test files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed source and supervisor-to-barrier-to-first-start test; no concrete fail-open defect found. Luna added focused regressions; coordinator corrected active/running pending-job coverage and integrated supervisor tests.",
+  "limits": [
+    "public open_pair/start_and_wait still refuse",
+    "synthetic publication/admission/containment; reused fake bus does not prove real reconnect",
+    "audit capture/readiness and commission exchange not yet integrated into production startup",
+    "dependency/conflict semantics, executable/import closure, lifetime containment and entrypoint remain unfinished",
+    "no CI, VM, live service, physical operation, source commit or push"
+  ]
+}

@@ -36,7 +36,7 @@ from azazel_nexus.activation import (
 )
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
-from azazel_nexus.generation import GenerationStore
+from azazel_nexus.generation import GenerationStore, tree_digest
 from azazel_nexus_runtime.activated import (
     ActivationDaemon,
     RollbackFailed,
@@ -70,7 +70,7 @@ def _lease(**kwargs) -> ActivationLease:
     kwargs.setdefault("granted_by", ACTOR)
     kwargs.setdefault("granted_at", "2026-09-19T00:00:00Z")
     kwargs.setdefault("expires_at", "2026-09-21T00:00:00Z")
-    kwargs.setdefault("generation_digest", DIGEST)
+    kwargs.setdefault("generation_digest", tree_digest({"suricata.yaml": b"role: observation\n"}))
     return ActivationLease(**kwargs)
 
 
@@ -79,7 +79,7 @@ def _store(tmp_path: Path) -> GenerationStore:
     store.create(
         {"suricata.yaml": b"role: observation\n"},
         created_at=NOW,
-        commissioning_digest=DIGEST,
+        commissioning_digest=_record(roles=(_role(),)).digest(),
     )
     return store
 
@@ -228,6 +228,21 @@ def test_enforcement_is_ready_when_both_halves_hold(tmp_path):
     assert outcome.enforcement_ready is True
 
 
+def test_daemon_withholds_enforcement_for_a_different_complete_record(tmp_path):
+    daemon, manager = _daemon(tmp_path, CORE_UNITS + (ENFORCING,))
+    record = CommissioningRecord(
+        roles=(_role(),), profiles_present=("hardware", "resource", "topology"),
+        created_at="2026-09-19T00:00:00Z",
+    )
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(), record=record)
+    assert not outcome.enforcement_ready
+    assert ENFORCING.name in outcome.withheld
+    assert manager.state(ENFORCING.name) is UnitState.MASKED
+    assert next(v for v in outcome.verdicts if v.unit == ENFORCING.name).reason.startswith(
+        "commissioning_generation_mismatch"
+    )
+
+
 def test_an_outcome_built_by_hand_is_not_enforcement_ready():
     """The safe direction for a field nobody supplied."""
 
@@ -271,6 +286,15 @@ def test_nothing_is_widened_without_a_lease(tmp_path):
     node_level = _reason_for(outcome, "lease_absent")
     assert node_level, "no unit reached the lease check"
     assert all(v.reason.startswith("lease_absent") for v in node_level)
+
+
+def test_runtime_rejects_lease_for_a_different_configuration(tmp_path):
+    daemon, manager = _daemon(tmp_path)
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(generation_digest="sha256:" + "f" * 64))
+    assert outcome.granted == ()
+    assert all(call[0] == "mask" for call in manager.calls)
+    assert _reason_for(outcome, "lease_generation_mismatch")
+    assert "activation.unit_granted" not in _events(tmp_path)
 
 
 def test_an_expired_lease_widens_nothing(tmp_path):
@@ -389,6 +413,7 @@ def test_a_rollback_whose_own_masking_fails_narrows_further_and_raises(tmp_path)
             if unit in self._masked_once:
                 raise UnitOperationFailed(f"{unit} will not mask a second time")
             self._masked_once.add(unit)
+            self._states[unit] = UnitState.MASKED
 
     manager = FailsOnSecondMask(
         (d.name for d in CORE_UNITS), fail_on="azazel-watchdog.service"
@@ -474,7 +499,7 @@ def test_audit_failure_does_not_skip_escalation_after_a_mask_failure(tmp_path):
     assert len(manager.calls) == len(CORE_UNITS) * 2
 
 
-def test_unexpected_generation_read_failure_remasks_all_governed_units(tmp_path):
+def test_malformed_generation_metadata_withholds_and_masks_all_governed_units(tmp_path):
     generations = tmp_path / "generations"
     broken = generations / "1"
     broken.mkdir(parents=True)
@@ -488,10 +513,24 @@ def test_unexpected_generation_read_failure_remasks_all_governed_units(tmp_path)
         manager=manager,
     )
 
-    with pytest.raises(ValueError):
-        daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert outcome.granted == ()
+    assert all(verdict.reason.startswith("generation_unverified") for verdict in outcome.verdicts)
 
     assert all(manager.state(definition.name) is UnitState.MASKED for definition in CORE_UNITS)
+    assert _events(tmp_path) == ["activation.refused"]
+
+
+def test_unexpected_generation_reader_error_still_escalates(tmp_path, monkeypatch):
+    daemon, manager = _daemon(tmp_path)
+
+    def broken_reader():
+        raise RuntimeError("unexpected reader defect")
+
+    monkeypatch.setattr(daemon.generations, "current", broken_reader)
+    with pytest.raises(RuntimeError, match="unexpected reader defect"):
+        daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert all(manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert _events(tmp_path) == ["activation.composition_failed"]
 
 
@@ -604,17 +643,19 @@ def test_a_mask_reply_that_did_not_take_effect_is_a_manager_failure():
 #: property this scan exists for -- that you can name the places that execute
 #: -- instead of trading it away. `tests/unit/test_edge_probed.py` holds the
 #: narrower rules that apply inside it.
-EXECUTING_MODULES = {"edge_probed.py", "mio_supervisor.py"}
+EXECUTING_MODULES = {"edge_probed.py", "mio_supervisor.py", "debian_packages.py"}
 
 #: Kept as the old name so that a reader of the history sees the boundary
 #: move rather than a rename.
 EXECUTING_MODULE = "edge_probed.py"
 
 
-def test_exactly_the_two_named_modules_may_execute():
-    """A third would be a diff a reviewer sees, not a set that grew."""
+def test_only_three_named_modules_may_execute():
+    """A new executor requires a deliberate change to this exact allowlist."""
 
-    assert EXECUTING_MODULES == {"edge_probed.py", "mio_supervisor.py"}
+    assert EXECUTING_MODULES == {
+        "edge_probed.py", "mio_supervisor.py", "debian_packages.py"
+    }
     for name in sorted(EXECUTING_MODULES):
         path = RUNTIME / name
         assert path.exists(), f"{name} is exempt and does not exist"
@@ -625,12 +666,12 @@ def test_exactly_the_two_named_modules_may_execute():
 
 
 def test_the_runtime_builds_no_command_line_anywhere_but_the_probe():
-    """No `subprocess`, no shell, no argument list assembled from input.
+    """Only the probe/supervisor and fixed dpkg observer may start processes.
 
-    The D-Bus route takes a unit name as a typed parameter to a typed method,
-    so there is no `PATH` lookup, no argument splitting and no environment to
-    inherit. That holds for every module here except `edge_probed.py`, and
-    the exemption is by name: a new module cannot acquire it by accident.
+    The systemd D-Bus route takes a unit name as a typed parameter. The package
+    observer is separately reviewed and tested against one absolute executable,
+    fixed argv/environment, bounded stdout/time, and no shell. The exemption is
+    by exact module name, so a new module cannot acquire it accidentally.
     """
 
     offenders: dict[str, list[str]] = {}

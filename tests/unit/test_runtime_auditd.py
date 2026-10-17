@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from azazel_nexus.audit import GENESIS_HASH, AuditChainBroken, AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus_runtime.auditd import (
     ASSIGNED_BY_THE_DAEMON,
     EVENT_SCHEMAS,
@@ -33,6 +33,7 @@ from azazel_nexus_runtime.protocol import RequestRefused
 from azazel_nexus_runtime.transport import Request
 
 SERVICE = Principal(uid=900, gid=900, pid=7, classes=frozenset({PrincipalClass.SERVICE}))
+ROOT = Principal(uid=0, gid=0, pid=1, classes=frozenset({PrincipalClass.ROOT}))
 #: Reading is the operator's; writing is a daemon's. Neither holds both.
 OPERATOR = Principal(uid=1000, gid=1000, pid=8, classes=frozenset({PrincipalClass.OPERATOR}))
 DIGEST = "sha256:" + "ab" * 32
@@ -150,6 +151,54 @@ def test_a_new_day_starts_a_new_file_and_continues_the_chain(tmp_path):
     service.ledger.verify()
 
 
+def test_restart_refuses_backward_day_without_mutating_segments_or_head(tmp_path):
+    service = _service(tmp_path)
+    _append(service, day="2026-09-20")
+    _append(service, day="2026-09-21")
+
+    restarted = AuditService(SegmentedLedger(service.ledger.root))
+    restarted.start()
+    assert restarted.verified
+    before_files = {
+        segment.name: segment.read_bytes()
+        for segment in restarted.ledger.segments()
+    }
+    before_head = restarted.ledger.head()
+    assert (restarted.head_sequence, restarted.head_hash) == before_head
+
+    with pytest.raises(AuditUnavailable, match="precedes the latest audit segment"):
+        _append(restarted, day="2026-09-20")
+
+    assert {
+        segment.name: segment.read_bytes()
+        for segment in restarted.ledger.segments()
+    } == before_files
+    assert restarted.ledger.head() == before_head
+    assert (restarted.head_sequence, restarted.head_hash) == before_head
+    restarted.ledger.verify()
+
+
+def test_older_timestamp_within_current_day_keeps_append_contract(tmp_path):
+    service = _service(tmp_path)
+    _append(service, day="2026-09-20")
+    older = _event(day="2026-09-20")
+    older["occurred_at"] = "2026-09-20T01:00:00Z"
+
+    result = service.handle(
+        _request(
+            "audit.append",
+            {"event_type": "activation.unit_granted"},
+            older,
+        )
+    )
+
+    assert result["sequence"] == 2
+    assert [segment.name for segment in service.ledger.segments()] == [
+        "2026-09-20.jsonl"
+    ]
+    service.ledger.verify()
+
+
 def test_the_first_entry_of_a_segment_chains_onto_the_previous_one(tmp_path):
     service = _service(tmp_path)
     _append(service, day="2026-09-20")
@@ -179,10 +228,10 @@ def test_a_reordered_segment_name_is_refused(tmp_path):
 
 
 def test_segments_are_walked_in_chronological_order(tmp_path):
-    """Sorted by name, not by whatever the filesystem returns."""
+    """Valid appends leave segments in the order the chain traverses."""
 
     service = _service(tmp_path)
-    for day in ("2026-09-22", "2026-09-20", "2026-09-21"):
+    for day in ("2026-09-20", "2026-09-21", "2026-09-22"):
         _append(service, day=day)
     assert [s.name for s in service.ledger.segments()] == [
         "2026-09-20.jsonl",
@@ -302,6 +351,44 @@ def test_verify_reports_the_checkpoints_and_says_they_are_unsigned(tmp_path):
     assert all(mark["signed"] is False for mark in answer["checkpoints"])
 
 
+def test_bootstrap_observation_returns_only_auditd_verified_head(tmp_path):
+    service = _service(tmp_path)
+    first = _append(service)
+    assert service.handle(_request(
+        "audit.bootstrap.observe", {}, principal=ROOT
+    )) == {
+        "verified": True,
+        "head_sequence": first["sequence"],
+        "head_hash": first["event_hash"],
+    }
+
+    second = _append(service)
+    observed = service.handle(_request(
+        "audit.bootstrap.observe", {}, principal=ROOT
+    ))
+    assert (observed["head_sequence"], observed["head_hash"]) == (
+        second["sequence"], second["event_hash"]
+    )
+
+
+def test_bootstrap_observation_is_root_only_and_refuses_unverified_chain(tmp_path):
+    with pytest.raises(RequestRefused):
+        _request("audit.bootstrap.observe", {}, principal=OPERATOR)
+    with pytest.raises(RequestRefused):
+        _request("audit.bootstrap.observe", {}, principal=SERVICE)
+
+    service = _service(tmp_path)
+    _append(service)
+    segment = service.ledger.root / "2026-09-20.jsonl"
+    record = json.loads(segment.read_text(encoding="utf-8"))
+    record["event_hash"] = "f" * 64
+    segment.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    service = AuditService(SegmentedLedger(service.ledger.root))
+    service.start()
+    with pytest.raises(RequestRefused):
+        service.handle(_request("audit.bootstrap.observe", {}, principal=ROOT))
+
+
 def test_a_checkpoint_is_not_a_trust_anchor():
     assert Checkpoint("2026-09-20.jsonl", 3, "a" * 64, 3).signed is False
 
@@ -328,8 +415,98 @@ def test_the_append_verbs_event_types_are_exactly_the_declared_schemas():
     """
 
     append = next(verb for verb in VERBS if verb.name == "audit.append")
-    (event_type,) = append.arguments
-    assert set(event_type.choices) == set(EVENT_SCHEMAS)
+    bootstrap = next(verb for verb in VERBS if verb.name == "audit.bootstrap.append")
+    (regular_type,) = append.arguments
+    (bootstrap_type,) = bootstrap.arguments
+    assert set(regular_type.choices) == {
+        name for name in EVENT_SCHEMAS if not name.startswith("bootstrap.")
+    }
+    assert set(bootstrap_type.choices) == {
+        name for name in EVENT_SCHEMAS if name.startswith("bootstrap.")
+    }
+
+
+def test_bootstrap_lifecycle_schemas_match_emitted_event_shapes():
+    lifecycle = {
+        "bootstrap.controller_ready_intent": None,
+        "bootstrap.grant_intent": None,
+        "bootstrap.start_intent": ("auditd", "commissiond"),
+        "bootstrap.ready": ("auditd", "commissiond"),
+        "bootstrap.stopping": None,
+        "bootstrap.stopped": None,
+    }
+    base_fields = {"approval_digest", "generation", "occurred_at"}
+    for event_type, unit_keys in lifecycle.items():
+        schema = EVENT_SCHEMAS[event_type]
+        names = {argument.name for argument in schema}
+        assert names == base_fields | ({"unit_key"} if unit_keys else set())
+        if unit_keys:
+            unit_key = next(arg for arg in schema if arg.name == "unit_key")
+            assert unit_key.kind.value == "enum"
+            assert set(unit_key.choices) == set(unit_keys)
+
+
+def test_bootstrap_lifecycle_events_append_with_top_level_and_unit_keys(tmp_path):
+    service = _service(tmp_path)
+    lifecycle = (
+        ("bootstrap.controller_ready_intent", None),
+        ("bootstrap.grant_intent", None),
+        ("bootstrap.start_intent", "auditd"),
+        ("bootstrap.ready", "auditd"),
+        ("bootstrap.start_intent", "commissiond"),
+        ("bootstrap.ready", "commissiond"),
+        ("bootstrap.stopping", None),
+        ("bootstrap.stopped", None),
+    )
+    for event_type, unit_key in lifecycle:
+        payload = {
+            "approval_digest": DIGEST,
+            "generation": 1,
+            "occurred_at": "2026-09-20T12:00:00Z",
+        }
+        if event_type in {"bootstrap.start_intent", "bootstrap.ready"}:
+            payload["unit_key"] = unit_key
+        answer = service.handle(
+            _request("audit.bootstrap.append", {"event_type": event_type}, payload,
+                     principal=ROOT)
+        )
+        assert answer["sequence"] >= 1
+        assert len(answer["event_hash"]) == 64
+
+
+def test_undeclared_bootstrap_lifecycle_event_is_refused_before_append(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(RequestRefused):
+        service.handle(
+            _request(
+                "audit.bootstrap.append",
+                {"event_type": "bootstrap.not_a_lifecycle_event"},
+                {
+                    "approval_digest": DIGEST,
+                    "generation": 1,
+                    "occurred_at": "2026-09-20T12:00:00Z",
+                },
+                principal=ROOT,
+            )
+        )
+
+
+def test_service_cannot_write_bootstrap_events_via_either_verb(tmp_path):
+    service = _service(tmp_path)
+    payload = {
+        "approval_digest": DIGEST,
+        "generation": 1,
+        "occurred_at": "2026-09-20T12:00:00Z",
+    }
+    with pytest.raises(RequestRefused):
+        service.handle(
+            _request("audit.append", {"event_type": "bootstrap.grant_intent"}, payload)
+        )
+    with pytest.raises(RequestRefused):
+        service.handle(
+            _request("audit.bootstrap.append", {"event_type": "bootstrap.grant_intent"},
+                     payload)
+        )
 
 
 def test_an_undeclared_field_is_refused_rather_than_stored(tmp_path):
@@ -396,9 +573,20 @@ def test_every_declared_field_uses_a_bounded_kind():
             }, f"{event_type}.{argument.name} is not bounded"
 
 
-def test_only_the_append_verb_accepts_a_payload():
-    accepting = [verb.name for verb in VERBS if verb.accepts_payload]
-    assert accepting == ["audit.append"]
+def test_only_audit_append_verbs_accept_payloads():
+    accepting = {verb.name for verb in VERBS if verb.accepts_payload}
+    assert accepting == {"audit.append", "audit.bootstrap.append"}
+    regular = next(verb for verb in VERBS if verb.name == "audit.append")
+    bootstrap = next(verb for verb in VERBS if verb.name == "audit.bootstrap.append")
+    regular_types, = regular.arguments
+    bootstrap_types, = bootstrap.arguments
+    assert all(not name.startswith("bootstrap.") for name in regular_types.choices)
+    assert all(name.startswith("bootstrap.") for name in bootstrap_types.choices)
+    assert bootstrap.admits == frozenset({PrincipalClass.ROOT})
+    observe = next(verb for verb in VERBS if verb.name == "audit.bootstrap.observe")
+    assert not observe.accepts_payload
+    assert not observe.arguments
+    assert observe.admits == frozenset({PrincipalClass.ROOT})
 
 
 def test_an_operator_may_read_the_chain_but_not_write_to_it(tmp_path):

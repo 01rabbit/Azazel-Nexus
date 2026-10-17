@@ -1,0 +1,42 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; full-file hashes, not a standalone committed change",
+  "scope": "fixed authenticated commission inventory and both-helper private start/readiness composition",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_commission_client.py": "5da36a01d15f213c411a2e5afcddfca1b7b29c02c7bcfcef9799f4a2b2c8721e",
+    "runtime/src/azazel_nexus_runtime/bootstrap_commission_identity.py": "f879745cc07fa07c3356619f78082090a498d795053057cd2bcf245560efe027",
+    "runtime/src/azazel_nexus_runtime/bootstrap_commission_inventory.py": "e0e4860c0f78a624568ca9921172e58888a13285d307f133596c6ba99c3f184b",
+    "runtime/src/azazel_nexus_runtime/bootstrap_commission_peer.py": "65e7f681c1f37369264f69d397cb555894d08cad7c992b3139ed277dca579b2f",
+    "runtime/src/azazel_nexus_runtime/bootstrap_manager.py": "0dee4e9991aa30977b966d957dee168152db22171df626bdf5afdfb79fa2690b",
+    "tests/unit/test_runtime_bootstrap_commission_client.py": "2a8ea4f8da48020ae028568bbf95d61a1e3d51a7f6b6360fb6aea56647b8cc06",
+    "tests/unit/test_runtime_bootstrap_commission_identity.py": "1707307b06be81a5fc296e2d7d1cbd635c326d10c8d9f9849c3b49d5c67b4290",
+    "tests/unit/test_runtime_bootstrap_commission_inventory.py": "3acff8a879e12668b0e12892e7a997995d0cd11e541293347736da4b2f6331bf",
+    "tests/unit/test_runtime_bootstrap_commission_peer.py": "d102b03c22b8c3e5dc00ba9e4dd539fe34d4e6260835bfe77236e980daec5d55",
+    "tests/unit/test_runtime_bootstrap_audit_handoff.py": "eae39226e65213eac3bda24e03a3d91f81fdb0039f18de0521f0893446e23e9c",
+    "tests/unit/test_runtime_bootstrap_manager_audit_peer.py": "674d224707a43dc5fd9a728ec970c478d0a7f01ba2ba2aa21776ec9637e863ec"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_systemd_bus.py tests/unit/test_runtime_boundary.py",
+    "passed": 2196,
+    "skipped": 2,
+    "seconds": 8.82,
+    "skip_reasons": [
+      "installer requires Linux os-release",
+      "requires Linux systemd-analyze"
+    ],
+    "environment": "macOS synthetic systemd/host peers and ledger; real algorithms, local asyncio and socketpairs"
+  },
+  "ruff": "eleven listed files pass",
+  "diff_check": "pass",
+  "documentation_links": "54 Markdown files pass",
+  "review": "Astra reviewed fixed client, identity binding and supervisor receipt provenance; coordinator added valid-format receipt-only store substitution refusal and exact audit-then-commission StartUnit ordering assertions. Luna implemented fixed identity/peer/shape checks and focused tests.",
+  "limits": [
+    "publication/admission/containment and host evidence remain synthetic",
+    "no live systemd transport, Linux VM, CI, deployment, hardware, source commit or push",
+    "public widening remains refusing pending process/import closure, dependency/conflict semantics, lifetime containment and production entrypoint",
+    "receipt provenance belongs to supervisor; trusted adapter must forward exact transaction with its matching check_start closure",
+    "inventory digest is opaque producer reference, not reconstructed host truth or role/provider admission"
+  ]
+}

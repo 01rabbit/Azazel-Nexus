@@ -1,25 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
-
-from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus_runtime.activated import _run_once, main
+from azazel_nexus_runtime.bootstrap_systemd_profile import (
+    _DEBIAN13_V257_UNIT_PATH,
+)
 from azazel_nexus_runtime.systemd_bus import (
     MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
     UNIT_INTERFACE,
     SystemdBusSession,
     SystemdUnitCalls,
+    _unit_object_path,
 )
 from azazel_nexus_runtime.units import (
     DbusUnitManager,
     UnitOperationFailed,
     UnitState,
 )
+
+from azazel_nexus.activation import CORE_UNITS
+
+
+@pytest.mark.parametrize("name,label", [
+    ("foo_bar.service", "foo_5fbar_2eservice"),
+    ("1example.service", "_31example_2eservice"),
+    ("a1.service", "a1_2eservice"),
+    ("_.mount", "_5f_2emount"),
+    ("", "_"),
+    ("é.service", "_c3_a9_2eservice"),
+])
+def test_unit_bus_label_matches_independent_systemd_vectors(name, label):
+    assert _unit_object_path(name) == "/org/freedesktop/systemd1/unit/" + label
 
 
 @dataclass
@@ -102,7 +119,7 @@ def test_active_state_resolves_only_the_expected_unit_object_and_property():
 
     assert SystemdUnitCalls(exchange)("GetActiveState", unit) is True
     assert calls == [
-        (MANAGER_INTERFACE, "GetUnit", "s", [unit], {}),
+        (MANAGER_INTERFACE, "GetUnit", "s", [unit], {"allow_no_such_unit": True}),
         (
             PROPERTIES_INTERFACE,
             "Get",
@@ -111,6 +128,40 @@ def test_active_state_resolves_only_the_expected_unit_object_and_property():
             {"path": object_path},
         ),
     ]
+
+
+def test_bootstrap_profile_reads_only_pinned_manager_properties():
+    calls = []
+
+    def exchange(interface, member, signature, body, **kwargs):
+        calls.append((interface, member, signature, body, kwargs))
+        if body == ["org.freedesktop.systemd1.Manager", "Version"]:
+            return Reply("v", [SimpleNamespace(signature="s", value="257.13-1~deb13u1")])
+        if body == ["org.freedesktop.systemd1.Manager", "UnitPath"]:
+            return Reply("v", [SimpleNamespace(signature="as", value=list(_DEBIAN13_V257_UNIT_PATH))])
+        raise AssertionError(body)
+
+    observed = SystemdUnitCalls(exchange).bootstrap_profile()
+
+    assert observed.name == "systemd-257.13-deb13-path-v1"
+    assert calls == [
+        (PROPERTIES_INTERFACE, "Get", "ss",
+         ["org.freedesktop.systemd1.Manager", "Version"],
+         {"path": "/org/freedesktop/systemd1"}),
+        (PROPERTIES_INTERFACE, "Get", "ss",
+         ["org.freedesktop.systemd1.Manager", "UnitPath"],
+         {"path": "/org/freedesktop/systemd1"}),
+    ]
+
+
+def test_bootstrap_profile_refuses_unknown_manager_path():
+    def exchange(_interface, _member, _signature, body, **_kwargs):
+        if body[1] == "Version":
+            return Reply("v", [SimpleNamespace(signature="s", value="257.13-1~deb13u1")])
+        return Reply("v", [SimpleNamespace(signature="as", value=["/tmp/systemd"] )])
+
+    with pytest.raises(UnitOperationFailed):
+        SystemdUnitCalls(exchange).bootstrap_profile()
 
 
 @pytest.mark.parametrize("state", ["maintenance", "refreshing"])
@@ -156,8 +207,10 @@ def test_unknown_unit_and_manager_method_never_reach_the_bus():
 
 
 def test_bus_session_constructs_only_a_fixed_system_manager_message():
-    reply = SimpleNamespace(message_type=1, signature="s", body=["masked"])
+    owner = ":1.42"
+    reply = SimpleNamespace(message_type=1, signature="s", body=["masked"], sender=owner)
     bus = _BusStub(reply)
+    bus._azazel_systemd_owner = owner
     session = SystemdBusSession(
         bus=bus,
         loop=_LoopStub(),
@@ -167,12 +220,62 @@ def test_bus_session_constructs_only_a_fixed_system_manager_message():
     )
     assert session("GetUnitFileState", "azazel-auditd.service") == "masked"
     message = bus.messages[0]
-    assert message.destination == "org.freedesktop.systemd1"
+    assert message.destination == owner
     assert message.path == "/org/freedesktop/systemd1"
     assert message.interface == MANAGER_INTERFACE
     assert message.member == "GetUnitFileState"
     assert message.signature == "s"
     assert message.body == ["azazel-auditd.service"]
+
+
+def test_bus_session_allows_only_manager_version_and_unitpath_reads():
+    messages = []
+
+    class ReadProfileBus:
+        def __init__(self):
+            self.replies = [
+                SimpleNamespace(message_type=1, signature="v", body=[SimpleNamespace(
+                    signature="s", value="257.13-1~deb13u1")]),
+                SimpleNamespace(message_type=1, signature="v", body=[SimpleNamespace(
+                    signature="as", value=list(_DEBIAN13_V257_UNIT_PATH))]),
+            ]
+
+        async def call(self, message):
+            messages.append(message)
+            return self.replies.pop(0)
+
+        def disconnect(self):
+            pass
+
+    session = SystemdBusSession(
+        bus=ReadProfileBus(), loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    assert session.bootstrap_profile().name == "systemd-257.13-deb13-path-v1"
+    assert [(message.interface, message.member, message.signature, message.body, message.path)
+            for message in messages] == [
+        (PROPERTIES_INTERFACE, "Get", "ss",
+         ["org.freedesktop.systemd1.Manager", "Version"], "/org/freedesktop/systemd1"),
+        (PROPERTIES_INTERFACE, "Get", "ss",
+         ["org.freedesktop.systemd1.Manager", "UnitPath"], "/org/freedesktop/systemd1"),
+    ]
+
+
+def test_bus_session_rejects_unhashable_manager_property_before_bus_call():
+    bus = _BusStub(SimpleNamespace(message_type=1, signature="v", body=[]))
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    with pytest.raises(UnitOperationFailed):
+        session._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss",
+            ["org.freedesktop.systemd1.Manager", []],
+            path="/org/freedesktop/systemd1",
+        )
+    assert bus.messages == []
 
 
 def test_bus_session_translates_dbus_errors_without_accepting_the_reply():
@@ -189,17 +292,30 @@ def test_bus_session_translates_dbus_errors_without_accepting_the_reply():
 
 
 def test_connect_constructs_and_runs_dbus_next_on_the_same_loop(monkeypatch):
-    import dbus_next.aio
-
+    monkeypatch.setattr("azazel_nexus_runtime.systemd_bus.require_supported_dbus_next", lambda: None)
     observed = {}
+    owner = ":1.42"
+    message_type = SimpleNamespace(ERROR=3, METHOD_RETURN=1)
 
     class LoopBoundBus:
-        def __init__(self, *, bus_type):
+        def __init__(self, *, bus_address):
             observed["constructed_loop"] = asyncio.get_event_loop()
-            observed["bus_type"] = bus_type
+            observed["bus_address"] = bus_address
 
         async def connect(self):
             observed["connected_loop"] = asyncio.get_running_loop()
+
+        async def call(self, message):
+            observed.setdefault("identity_messages", []).append(message)
+            if message.member == "GetNameOwner":
+                return SimpleNamespace(
+                    message_type=1, signature="s", body=[owner], sender="org.freedesktop.DBus"
+                )
+            credential = {"GetConnectionUnixProcessID": 1, "GetConnectionUnixUser": 0}
+            return SimpleNamespace(
+                message_type=1, signature="u", body=[credential[message.member]],
+                sender="org.freedesktop.DBus",
+            )
 
         def disconnect(self):
             observed["disconnected"] = True
@@ -208,13 +324,25 @@ def test_connect_constructs_and_runs_dbus_next_on_the_same_loop(monkeypatch):
         previous_loop = asyncio.get_event_loop()
     except RuntimeError:
         previous_loop = None
-    monkeypatch.setattr(dbus_next.aio, "MessageBus", LoopBoundBus)
+    monkeypatch.setitem(
+        sys.modules, "dbus_next",
+        SimpleNamespace(Message=_MessageStub, MessageType=message_type),
+    )
+    monkeypatch.setitem(sys.modules, "dbus_next.aio", SimpleNamespace(MessageBus=LoopBoundBus))
+    monkeypatch.setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/hostile-bus")
 
     session = SystemdBusSession.connect()
     owned_loop = observed["constructed_loop"]
     assert owned_loop is observed["connected_loop"]
     assert session._loop is owned_loop
-    assert observed["bus_type"].name == "SYSTEM"
+    assert observed["bus_address"] == "unix:path=/run/dbus/system_bus_socket"
+    assert session._bus._azazel_systemd_owner == owner
+    assert [message.member for message in observed["identity_messages"]] == [
+        "GetNameOwner", "GetConnectionUnixProcessID", "GetNameOwner",
+        "GetConnectionUnixUser", "GetNameOwner",
+    ]
+    assert all(message.destination == "org.freedesktop.DBus"
+               for message in observed["identity_messages"])
 
     session.close()
     assert observed["disconnected"] is True
@@ -224,6 +352,22 @@ def test_connect_constructs_and_runs_dbus_next_on_the_same_loop(monkeypatch):
     except RuntimeError:
         restored_loop = None
     assert restored_loop is previous_loop
+
+
+def test_bus_session_pins_manager_destination_and_refuses_foreign_sender():
+    owner = ":1.42"
+    bus = _BusStub(SimpleNamespace(
+        message_type=1, signature="s", body=["masked"], sender=":1.99"
+    ))
+    bus._azazel_systemd_owner = owner
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    with pytest.raises(UnitOperationFailed, match="owner refused"):
+        session("GetUnitFileState", "azazel-auditd.service")
+    assert bus.messages[0].destination == owner
 
 
 def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
@@ -236,6 +380,8 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
             states[unit] = "masked"
         elif method == "GetUnitFileState":
             return states[unit]
+        elif method == "GetInactiveState":
+            return True  # Explicit process observation, separate from masks.
         else:
             raise AssertionError(f"unexpected widening or start operation: {method}")
 
@@ -248,10 +394,13 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
     )
     assert outcome.granted == ()
     assert len(outcome.withheld) == len(CORE_UNITS)
-    assert [method for method, _unit in calls] == [
-        method
-        for _definition in CORE_UNITS
-        for method in ("MaskUnitFiles", "GetUnitFileState")
+    # Preflight narrows before evidence collection; the refusing decision then
+    # independently verifies every mask. Neither pass may unmask/start a unit.
+    assert calls == [
+        (method, definition.name)
+        for _pass in range(2)
+        for definition in CORE_UNITS
+        for method in ("MaskUnitFiles", "GetUnitFileState", "GetInactiveState")
     ]
     assert all(states[definition.name] == "masked" for definition in CORE_UNITS)
 
@@ -261,8 +410,10 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
         entry.event
         for entry in AuditLedger(tmp_path / "var/lib/azazel/state/activation.jsonl")
     ]
-    assert events[0]["event_type"] == "activation.refused"
-    assert events[0]["reason"].startswith("no_generation:")
+    assert events[0]["event_type"] == "activation.evidence_preflight_masked"
+    assert events[0]["remask_failures"] == []
+    assert events[1]["event_type"] == "activation.refused"
+    assert events[1]["reason"].startswith("no_generation:")
 
 
 def test_entrypoint_rejects_arguments_instead_of_accepting_runtime_overrides():

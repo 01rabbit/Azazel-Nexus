@@ -1,0 +1,39 @@
+{
+  "schema": "azazel.bootstrap.local-evidence.v1",
+  "date": "2026-10-15",
+  "base_head": "1f84193463297fc11fc23c3cc9f3a22c6b731809",
+  "source_state": "preserved dirty worktree; complete-file hashes",
+  "scope": "native start/stop configuration admission, not native termination proof",
+  "files_sha256": {
+    "runtime/src/azazel_nexus_runtime/bootstrap_controller.py": "921721f9d257d9f9e2b80b2119cbbbdb2a2a9dac44348eabf2fddcff128d7627",
+    "runtime/src/azazel_nexus_runtime/bootstrap_loaded.py": "e22b1e77cc6581af697934fea58e545f7702617da3226fb3627e4b48bfc48505",
+    "runtime/src/azazel_nexus_runtime/hardening.py": "b447a456c56e5857723db59926a2a89fc25c67e27587aa2f076b51cfc116cbce",
+    "packaging/systemd/azazel-activated.service": "109bf31ae71a549e18d885e4c5f4fab8cb8116e5620f36e089e7f9c371043f77",
+    "packaging/systemd/azazel-auditd.service": "06e52a1fa4bebdcda7170b17207eb863df00271bb2ac81571c9d59bdbc599d89",
+    "packaging/systemd/azazel-commissiond.service": "135ab89b56d04f00780493b873422e9e3795e2bebae1ff4cd6c7ab1e30433473",
+    "tests/unit/test_runtime_bootstrap_controller.py": "d47d7a1707a85bd82ba1aa690b0c5ff4906585baff4f97612f4a7bd1aed31241",
+    "tests/unit/test_runtime_bootstrap_loaded.py": "0d20fcfec17eae21a7d2daee5b4dc15057263ceac361d59f37e9ae907891875a",
+    "tests/unit/test_runtime_bootstrap_loaded_policy.py": "781094d856a9613e5c711bcb6d8198d8f2774118ced84bd17bde3cc9a1170de4"
+  },
+  "tests": {
+    "command": "PYTHONPATH=.:src:runtime/src .venv/bin/python -m pytest -q tests/unit/test_bootstrap*.py tests/unit/test_runtime_bootstrap*.py tests/unit/test_runtime_hardening.py tests/unit/test_packaging.py tests/unit/test_runtime_activated_entrypoint.py",
+    "passed": 2398,
+    "skipped": 2,
+    "seconds": 8.71,
+    "environment": "local synthetic tests",
+    "earlier_run": "19 failed / 2357 passed / 2 skipped while shared fixture updates were incomplete; final run after worker completion passed"
+  },
+  "ruff": {
+    "passed": "bootstrap_controller.py/bootstrap_loaded.py and three changed test files",
+    "baseline": "hardening.py retains three F401 confirmed in HEAD: field, Mapping, Sequence"
+  },
+  "diff_check": "pass",
+  "review": "Astra independently reviewed configuration and exact admission; no concrete defect found. Luna updated packaging and regression fixtures in disjoint scopes; coordinator implemented admission and pinned-policy regressions.",
+  "limits": [
+    "public opening/start still refuse",
+    "10-second job observer may expire before native 30-second startup or stop escalation completion; timeout remains refusal",
+    "no change to exact JobRemoved, inactive-state or empty-cgroup requirements",
+    "no BOOTTIME expiry, notify unextendability or kernel kill completion proof",
+    "no CI, VM, deployment, physical operation, source commit or push"
+  ]
+}
