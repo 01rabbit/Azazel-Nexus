@@ -1,6 +1,7 @@
 """Read-only local observations for setup; no service-manager or runtime imports."""
 
 import json
+import os
 import shlex
 from dataclasses import asdict
 from pathlib import Path
@@ -13,7 +14,7 @@ from .commissioning_draft import read_draft_review_inputs, verify_draft_review
 from .hil_preflight import collect_readonly_inventory
 from .installed_files import measure_installed_files
 from .inventory import read_interfaces
-from .lite_import import CommissionedLite, LiteImport
+from .lite_import import status_summary
 from .lite_trust import TrustStore
 from .mission_pack import MissionPack
 from .mission_pack_cli import _context
@@ -35,12 +36,13 @@ def add_parser(sub):
     parser.add_argument("--operator", help="enrolled label for read-only signed draft review")
 
 
-def collect(args, *, now, root=Path("/")):
+def collect(args, *, now, root=None):
     """Read fixed paths. root is a fixture seam, not a CLI trust override.
 
     Strict protected readers retain their own fixed paths and ownership rules.
     Exceptions are deliberately redacted: identity, keys and config stay local.
     """
+    root = Path(os.environ.get("AZAZEL_ROOT", "/")) if root is None else root
     observations = {}
 
     def path(absolute):
@@ -94,7 +96,11 @@ def collect(args, *, now, root=Path("/")):
     record = directory / "commissioning.json"
     draft = directory / "commissioning-draft.json"
     def commissioning():
-        presence("commissioning", [record if record.is_file() else draft],
+        if not record.is_file() and draft.is_file():
+            return Observation(
+                State.MISSING, "commissioning draft only; commissioning record still required",
+                "azazel-nexus commission --help")
+        presence("commissioning", [record],
                  "azazel-nexus commission --help", "local commissioning record/draft presence only")
         return observations["commissioning"]
     _observation(observations, "commissioning", commissioning, "azazel-nexus commission --help")
@@ -132,12 +138,13 @@ def collect(args, *, now, root=Path("/")):
     lite_root = path(str(KNOWLEDGE_ROOT))
 
     def lite():
-        reading = LiteImport(CommissionedLite(lite_root)).read(query_as_of=now)
+        reading = status_summary(root=lite_root, trust_root=path("/var/lib/azazel/lite-trust"),
+                                 query_as_of=now)
         return Observation(
-            State.COMPLETE if reading.overall == "available" else
-            State.REFUSED if reading.overall == "quarantined" else State.MISSING,
-            "Knowledge Lite: " + reading.overall + "; integrity: " + reading.integrity.value
-            + "; freshness: " + reading.time_bound.value + "; deterministic path continues",
+            State.COMPLETE if reading["state"] == "available" else
+            State.MISSING if reading["reason_code"] == "no_bundle" else State.REFUSED,
+            "Knowledge Lite: " + reading["state"] + "; reason: " + reading["reason_code"]
+            + "; freshness: " + reading["freshness"] + "; deterministic path continues",
             "azazel-nexus status")
     _observation(observations, "knowledge-store", lite, "azazel-nexus status")
 

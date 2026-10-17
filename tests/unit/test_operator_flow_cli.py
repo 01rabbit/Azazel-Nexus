@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_knowledge_lited import DIGEST, admit
+from test_knowledge_lited import node as commissioned_node  # noqa: F401 - shared pytest fixture
 from test_model_import import COMMISSIONING, _write_catalog, an_entry, trusted
 
 from azazel_nexus import operator_flow_cli as flow
@@ -72,6 +74,12 @@ def test_progressive_fixture_delegates_installed_review_and_bootstrap(tmp_path, 
     assert next_step(evaluate(flow.collect(options, now=NOW, root=tmp_path))).name == "commissioning"
     assert measured[-1] == (manifest.read_bytes(), options.manifest_digest)
     put(tmp_path, "/etc/azazel/commissioning/commissioning-draft.json")
+    draft_facts = flow.collect(options, now=NOW, root=tmp_path)
+    assert next_step(evaluate(draft_facts)).name == "commissioning"
+    step = next(step for step in evaluate(draft_facts) if step.name == "commissioning")
+    assert step.status == "needed"
+    assert "draft only" in step.reason
+    put(tmp_path, "/etc/azazel/commissioning/commissioning.json")
     assert next_step(evaluate(flow.collect(options, now=NOW, root=tmp_path))).name == "commission-review"
     options.operator = "fixture-operator"
     monkeypatch.setattr(flow, "read_draft_review_inputs", lambda: (b"payload", b"signature"))
@@ -216,28 +224,65 @@ def test_pack_status_delegation(tmp_path, fixture_host, monkeypatch, state, expe
     assert "no provider admission" in observed.reason
 
 
-def test_verified_knowledge_read_and_trust_pin_write_nothing(tmp_path, fixture_host):
-    from test_lite_import import CONTRACT, FRESH
-
-    from azazel_nexus.lite_import import CommissionedLite, LiteImport
-    from azazel_nexus.lite_trust import TrustStore
-    lite_root = tmp_path / "var/lib/azazel/knowledge"
-    put(lite_root, "trust/anchors.toml", (CONTRACT / "anchors.toml").read_bytes())
-    put(lite_root, "inbox/lite.tar.gz", (CONTRACT / "lite.tar.gz").read_bytes())
-    service = LiteImport(CommissionedLite(lite_root))
-    assert service.import_entry(service.list_inbox()[0].entry_id, now=FRESH).admitted
+@pytest.mark.parametrize("condition,expected,reason", [
+    ("available", State.COMPLETE, "available"),
+    ("unpinned", State.REFUSED, "trust_unreadable"),
+    ("revocation-role", State.REFUSED, "unverified"),
+    ("revoked", State.REFUSED, "revoked"),
+    ("no-bundle", State.MISSING, "no_bundle"),
+])
+def test_setup_and_status_share_daemon_trust(commissioned_node, fixture_host, condition, expected, reason):  # noqa: F811
     from nacl.signing import SigningKey
-    key = SigningKey.generate()
-    TrustStore(tmp_path / "var/lib/azazel/lite-trust").pin(
-        [bytes(key.verify_key).hex()], commissioning_digest=COMMISSIONING, pinned_at=FRESH, actor="fixture")
-    before = snapshot(tmp_path)
-    facts = flow.collect(args(), now=FRESH, root=tmp_path)
-    assert snapshot(tmp_path) == before
-    assert facts["knowledge-store"].state is State.COMPLETE
-    assert "integrity: admitted" in facts["knowledge-store"].reason
+    from test_lite_bundle import SEED
+
+    from azazel_nexus.cli import _knowledge_reading, _render_knowledge
+    from azazel_nexus.lite_trust import TrustStore
+    from azazel_nexus.revocation import RevocationList
+    from azazel_nexus.revocation_policy import (
+        REVOCATION_SIGNING,
+        RevocationPolicy,
+        commission_policy,
+    )
+
+    service, root, trust, revoker = commissioned_node
+    if condition != "no-bundle":
+        admit(commissioned_node)
+    if condition == "unpinned":
+        TrustStore(trust).path.unlink()
+        TrustStore(trust).pin([SigningKey.generate().verify_key.encode().hex()],
+                             commissioning_digest=DIGEST, pinned_at=NOW, actor="fixture")
+    elif condition == "revocation-role":
+        # A key pinned for bundles must not also act as revocation authority.
+        key = SigningKey(SEED).verify_key.encode()
+        commission_policy(trust, RevocationPolicy(
+            keys={"r": key}, key_roles={"r": REVOCATION_SIGNING}, threshold=1, generation=2),
+            commissioning_digest=DIGEST, anchors_key_roles={}, anchors_keys={})
+    elif condition == "revoked":
+        statement = RevocationList(sequence=1, issued_at=NOW, revoked_generations=frozenset({5}))
+        (trust / "revocations.signed").write_bytes(
+            revoker.sign(statement.signature_target()).signature + statement.as_payload())
+    before = snapshot(root.parent.parent.parent.parent)
+    # collect also exercises its AZAZEL_ROOT default; no runtime import in library.
+    facts = flow.collect(args(), now=NOW)
+    reading = _knowledge_reading(root, as_of=NOW)
+    assert reading == service.handle(None)
+    assert reading["reason_code"] == reason
+    assert facts["knowledge-store"].state is expected
+    assert "reason: " + reason in facts["knowledge-store"].reason
+    out = StringIO()
+    _render_knowledge(reading, out)
+    assert "state: " + reading["state"] in out.getvalue()
+    assert "reason: " + reason in out.getvalue()
+    status = StringIO()
+    assert main(["--sysfs", str(root / "nosysfs"), "--edge-root", str(root / "noedge"),
+                 "--knowledge-lite", str(root), "--as-of", NOW, "status"], out=status) == 0
+    assert "freshness [knowledge_lite]: " + reading["state"] in status.getvalue()
+    assert "reason: " + reason in status.getvalue()
+    if expected is not State.COMPLETE:
+        assert reading["state"] != "available"
+        assert "state: available" not in out.getvalue()
+    assert snapshot(root.parent.parent.parent.parent) == before
     assert facts["knowledge-trust"].state is State.COMPLETE
-    assert "binding" in facts["knowledge-trust"].reason
-    assert next(step for step in evaluate(facts) if step.name == "provider-admission").status == "blocked"
 
 
 def test_unit_mask_is_observed_without_claiming_active(tmp_path, fixture_host):

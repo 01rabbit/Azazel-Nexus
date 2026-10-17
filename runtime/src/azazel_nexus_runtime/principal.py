@@ -114,7 +114,6 @@ SERVICE_ACCOUNTS = (
     "azarbiter",
     "azenforce",
     "azmio",
-    "azmioentry",
     "azknowledge",
     "azdecoy",
     "azmodule",

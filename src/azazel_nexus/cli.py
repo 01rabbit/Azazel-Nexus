@@ -16,6 +16,7 @@ here instead, every other caller of the report would be outside it.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Callable, Optional, Sequence, TextIO
 
@@ -63,8 +64,7 @@ from .hil_preflight import (
 from .integration import IntegrationView, build_view
 from .inventory import DEFAULT_SYSFS_NET, no_permanent_mac, read_interfaces
 from .functional_readiness import readiness_for
-from .lite_bundle import KnowledgeReading
-from .lite_import import CommissionedLite, LiteImport
+from .lite_import import status_summary
 from .lite_service import LiteReading, LiteState
 from .operator import (
     CapabilityReport,
@@ -185,7 +185,7 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
     return tuple(checks)
 
 
-def _knowledge_reading(root: Path, *, as_of: str) -> KnowledgeReading:
+def _knowledge_reading(root: Path, *, as_of: str) -> dict:
     """What Knowledge Lite currently is. **Reads; never imports.**
 
     `status` does not admit, quarantine, retry or fetch. It reads what a
@@ -193,24 +193,16 @@ def _knowledge_reading(root: Path, *, as_of: str) -> KnowledgeReading:
     looked at a screen.
     """
 
-    return LiteImport(CommissionedLite(root=root)).read(query_as_of=as_of)
+    trust_root = Path(os.environ.get("AZAZEL_ROOT", "/")) / "var/lib/azazel/lite-trust"
+    return status_summary(root=root, trust_root=trust_root, query_as_of=as_of)
 
 
-def _as_lite_reading(reading: KnowledgeReading) -> LiteReading:
-    """The four-axis reading, as the one word the six-axis view takes.
-
-    The three axes are not lost: `_render_knowledge` prints them, and the
-    reason carried here names them too. This conversion exists because the
-    integration view has a fixed set of axes, not because one word is enough.
-    """
-
+def _as_lite_reading(reading: dict) -> LiteReading:
+    """Carry the daemon's bounded status into the integration view."""
     return LiteReading(
-        state=LiteState(reading.overall),
-        reason=(
-            f"{reading.reason} | bundle integrity: {reading.integrity.value}"
-            f" | time-bound intelligence: {reading.time_bound.value}"
-            f" | static reference: {reading.static_reference.value}"
-        ),
+        state=LiteState(reading["state"]),
+        reason=f"{reading['reason_code']} | freshness: {reading['freshness']}",
+        generation=reading["generation"],
     )
 
 
@@ -219,7 +211,7 @@ def _integration_view(
     *,
     as_of: str,
     knowledge_root: Path,
-    knowledge: KnowledgeReading,
+    knowledge: dict,
     edge: EdgeInspection,
 ) -> IntegrationView:
     """The six axes, from what this node has actually established.
@@ -325,7 +317,7 @@ def _render_status(
     out: TextIO,
     view: Optional[IntegrationView] = None,
     edge: Optional[EdgeInspection] = None,
-    knowledge: Optional[KnowledgeReading] = None,
+    knowledge: Optional[dict] = None,
 ) -> None:
     _render_profile(report, out)
     print(file=out)
@@ -401,14 +393,8 @@ def _probe_result(path: Path, out: TextIO):
         return None
 
 
-def _render_knowledge(reading: KnowledgeReading, out: TextIO) -> None:
-    """Knowledge Lite on four lines, plus what `functional` does not mean.
-
-    One word per axis. `functional` is a statement about **this feature**,
-    and the limits travel with it on the screen rather than in a document an
-    operator does not have open -- a capability word grows claims it was
-    never given the moment it is printed alone.
-    """
+def _render_knowledge(reading: dict, out: TextIO) -> None:
+    """Render only facts returned by the commissioned trust status reader."""
 
     readiness = readiness_for("knowledge_lite")
     print(
@@ -416,9 +402,10 @@ def _render_knowledge(reading: KnowledgeReading, out: TextIO) -> None:
         + ("functional" if readiness.functional else readiness.value),
         file=out,
     )
-    print(f"    bundle integrity: {reading.integrity.value}", file=out)
-    print(f"    time-bound intelligence: {reading.time_bound.value}", file=out)
-    print(f"    static reference: {reading.static_reference.value}", file=out)
+    print(f"    state: {reading['state']}", file=out)
+    print(f"    reason: {reading['reason_code']}", file=out)
+    print(f"    generation: {reading['generation']}", file=out)
+    print(f"    freshness: {reading['freshness']}", file=out)
     print(
         "    cryptographic implementation: not supported (Nexus#70 review pending)",
         file=out,
@@ -426,7 +413,6 @@ def _render_knowledge(reading: KnowledgeReading, out: TextIO) -> None:
     print(f"    functional means: {readiness.means}", file=out)
     for limit in readiness.does_not_mean:
         print(f"    it does not mean: {limit}", file=out)
-    print(f"    {reading.reason}", file=out)
 
 
 def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:

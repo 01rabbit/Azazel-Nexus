@@ -49,7 +49,14 @@ separate. Host preflight uses the existing inventory's A-1 through A-11 missing
 codes; operator HIL decisions and the full interactive campaign preflight remain
 with `hil-preflight`.
 
-Knowledge Lite is read at `/var/lib/azazel/knowledge` through `LiteImport.read`.
+Knowledge Lite is read at `/var/lib/azazel/knowledge` through the library
+`lite_import.status_summary`, as used by `knowledge-lited`. Both setup and
+status check the pin, revocation policy and revocation list under
+`/var/lib/azazel/lite-trust` (prefixed by `AZAZEL_ROOT` when set). Store-local
+anchors cannot grant availability. Status renders state, reason code, generation
+and freshness from this shared reader. Setup marks only `available` as done,
+`no_bundle` as needed, and other results as blocked. A commissioning draft
+without a commissioning record also remains needed.
 The separate daemon trust pin at `/var/lib/azazel/lite-trust` is read through
 `TrustStore`; a readable pin alone does not establish its commissioning binding
 or admitted bundle trust. Fetch commissioning is **presence only**: the runtime

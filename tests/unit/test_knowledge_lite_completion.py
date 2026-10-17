@@ -234,11 +234,13 @@ def test_the_screen_bounds_what_functional_means(tmp_path) -> None:
         assert limit in text, "a limit of the capability word did not reach the screen"
 
 
-def test_the_four_axes_each_get_their_own_line(tmp_path) -> None:
+def test_status_requires_commissioned_trust_even_after_local_import(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     service, _, root = _node(tmp_path, "negative/expired.tar.gz")
     service.import_entry(service.list_inbox()[0].entry_id, now=AS_OF)
     text = _status(tmp_path, root)
-    assert "bundle integrity: admitted" in text
-    assert "time-bound intelligence: stale" in text
-    assert "static reference: available" in text
+    assert "state: unavailable" in text
+    assert "reason: trust_unreadable" in text
+    assert "generation: None" in text
+    assert "freshness: absent" in text
     assert "Knowledge Lite: functional" in text
