@@ -973,7 +973,8 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             python3 python3-venv python3-pip git ca-certificates \
-            coreutils findutils passwd util-linux
+            coreutils findutils passwd util-linux \
+            build-essential python3-dev libffi-dev
 
       - name: Check out repository
         uses: actions/checkout@v4
@@ -1051,7 +1052,7 @@ jobs:
       # contributor without network access and useless as a gate, so this job
       # is where they are not allowed to skip.
       - name: Install with the Fabric extra
-        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,fabric]'
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,fabric]' -e ./runtime
 
       # Two tests execute packaging/install.sh on the host. The installer
       # deliberately refuses any host that is not a reviewed install profile
