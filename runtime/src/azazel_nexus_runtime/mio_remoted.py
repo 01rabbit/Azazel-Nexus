@@ -246,12 +246,20 @@ class RemoteInferenceService:
         self._transport = transport
         self._clock = clock
 
-    def handle(self, request: Any) -> dict:
+    def handle(
+        self, request: Any, *, audit: Callable[[dict], None] | None = None
+    ) -> dict:
         arguments = request.arguments
         provider_id = arguments["provider_id"]
         request_id = arguments["request_id"]
 
         def refuse(refusal: str, reason: str) -> dict:
+            if audit is not None:
+                audit({
+                    "event_type": "mio.remote.refused",
+                    "refusal": refusal,
+                    "reason": reason,
+                })
             return InferenceReply(
                 provider_id=provider_id,
                 request_id=request_id,
@@ -262,8 +270,8 @@ class RemoteInferenceService:
 
         try:
             frame, envelope = read_payload(getattr(request, "payload", None) or {})
-        except PayloadRefused as exc:
-            return refuse("malformed_payload", str(exc))
+        except PayloadRefused:
+            return refuse("malformed_payload", "malformed_payload")
 
         # 1. The envelope, first and on its own evidence. Nothing about the
         #    frame is believed until something signed says what it is.
@@ -279,6 +287,9 @@ class RemoteInferenceService:
             )
         except EnvelopeRefused as exc:
             return refuse(exc.refusal.value, exc.reason)
+
+        if audit is not None:
+            audit(opened.as_event())
 
         # 2. The fourth refusal of P2 / P3, on this service's own reading of
         #    the signed class. `open_envelope` refuses these too; both
@@ -319,6 +330,8 @@ class RemoteInferenceService:
         report, body = self._transport(
             record=record, frame=frame, path=record.path_for()
         )
+        if audit is not None:
+            audit(report.as_event())
         if report.outcome.value != "received":
             return InferenceReply(
                 provider_id=provider_id,
@@ -332,6 +345,12 @@ class RemoteInferenceService:
         try:
             advisory = read_advisory(body, max_bytes=record.max_response_bytes)
         except AdvisoryRefused as exc:
+            if audit is not None:
+                audit({
+                    "event_type": "mio.remote.refused",
+                    "refusal": exc.refusal.value,
+                    "reason": exc.reason,
+                })
             return InferenceReply(
                 provider_id=provider_id,
                 request_id=request_id,

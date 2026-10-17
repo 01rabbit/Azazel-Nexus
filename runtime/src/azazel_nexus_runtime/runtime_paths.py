@@ -30,6 +30,7 @@ __all__ = [
     "fetch_ready_dir",
     "ledger_dir",
     "lite_trust_root",
+    "mio_state_dir",
     "models_root",
     "socket_path",
     "state_dir",
@@ -45,6 +46,7 @@ _SOCKET_LEAVES = {
     "fetch": "fetch",
 }
 _STATE_LEAVES = {
+    "mio": "mio",
     "audit": "auditd",
     "commission": "commission",
     "watchdog": "watchdog",
@@ -86,6 +88,11 @@ def ledger_dir() -> Path:
 def watchdog_state_dir() -> Path:
     """Return the watchdog-only installer-owned state directory."""
     return state_dir() / _STATE_LEAVES["watchdog"]
+
+
+def mio_state_dir() -> Path:
+    """Return the in-process M.I.O. owner's separate chain directory."""
+    return state_dir() / _STATE_LEAVES["mio"]
 
 
 def audit_sink(service: str) -> Callable[[dict], None]:
