@@ -257,12 +257,17 @@ class GenerationStore:
         rollback_reason: Optional[str] = None,
         actor: Optional[str] = None,
         commissioning_evidence_binding: str | None = None,
+        expected_latest_generation: int | None = None,
     ) -> Generation:
         """Stage privately, read back, then publish once under a writer lock.
 
         Hidden partial staging stays for explicit inspection; it is never a
         numbered/current generation. The root must be trusted local storage;
         advisory locking is not protection against its privileged owner.
+        A selection store with a separate active pointer may supply the latest
+        stored generation explicitly, separating publication concurrency from
+        rolled_back_from (the actual active selection). Other callers retain
+        the requirement that rollback starts at the latest stored generation.
         """
 
         # Freeze caller-owned mappings before deriving the digest or writing.
@@ -280,16 +285,22 @@ class GenerationStore:
             return self._create_locked(snapshot, digest=digest, root_fd=root_fd,
                 created_at=created_at, commissioning_digest=commissioning_digest,
                 rolled_back_from=rolled_back_from, rollback_reason=rollback_reason,
-                actor=actor, commissioning_evidence_binding=commissioning_evidence_binding)
+                actor=actor, commissioning_evidence_binding=commissioning_evidence_binding,
+                expected_latest_generation=expected_latest_generation)
         finally:
             os.close(root_fd)
 
     def _create_locked(self, files, *, digest, root_fd, created_at, commissioning_digest,
-                       rolled_back_from, rollback_reason, actor, commissioning_evidence_binding):
+                       rolled_back_from, rollback_reason, actor, commissioning_evidence_binding,
+                       expected_latest_generation=None):
 
         numbers = self.numbers()
         number = (numbers[-1] + 1) if numbers else 1
-        if rolled_back_from is not None and (not numbers or rolled_back_from != numbers[-1]):
+        latest = numbers[-1] if numbers else None
+        if expected_latest_generation is not None:
+            if type(expected_latest_generation) is not int or expected_latest_generation != latest:
+                raise GenerationRefused("current generation changed before rollback publication")
+        elif rolled_back_from is not None and rolled_back_from != latest:
             raise GenerationRefused("current generation changed before rollback publication")
         if rolled_back_from is not None and self.read(rolled_back_from).commissioning_evidence_binding is not None:
             raise GenerationRefused("bound rollback requires a validated forward render and approval")
