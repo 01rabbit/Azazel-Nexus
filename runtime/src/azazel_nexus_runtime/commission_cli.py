@@ -2,6 +2,9 @@
 
 No service is started, no interface is configured, and no role is inferred.
 The library retains all commissioning, protected storage and signature rules.
+Trust-repin interactive confirmation guards human intent against accidental or
+non-root use, not against a malicious root process: a ROOT socket caller can
+read and echo the challenge without this CLI or a TTY.
 """
 
 import io
@@ -10,9 +13,9 @@ import sys
 
 from azazel_nexus.cli import main as library_main
 
+from .hardware_inventory import HardwareUnavailable, collect_hardware_observations
 from .netlink import NetlinkMalformed, NetlinkUnavailable, read_links
 from .resource_assessment import assess_resources
-from .hardware_inventory import HardwareUnavailable, collect_hardware_observations
 
 
 class _PermanentAddresses:
@@ -45,9 +48,16 @@ class _PermanentAddresses:
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args in (["--help"], ["-h"]):
-        print("az-nexus-commission {hardware-assess|resources|inventory|commission|commission-review|proposal-export|proposal-review} [command options]")
+        print("az-nexus-commission {hardware-assess|resources|inventory|commission|commission-review|proposal-export|proposal-review|trust-repin} [command options]")
         print("Uses the existing wizard with read-only kernel permanent-address evidence; never activates.")
         return 0
+    if args and args[0] == "trust-repin":
+        if len(args) != 3 or args[1] != "--reason":
+            print("Use trust-repin --reason {rotation|recovery|compromise}; no path overrides are accepted.", file=sys.stderr)
+            return 2
+        from .repin_confirmation import run_interactive
+
+        return run_interactive(args[2])
     if args and args[0] == "proposal-export":
         if len(args) != 3 or args[1] != "--operator":
             print("Use proposal-export --operator LABEL; no path overrides are accepted.", file=sys.stderr)
