@@ -237,16 +237,166 @@ def test_cleanup_preserves_primary_failure_and_reports_leftovers(tmp_path, short
     assert json.loads(json.dumps(evidence))["error_type"] == "RuntimeError"
 
 
-def test_systemd_syscall_group_expansion_and_set_order(monkeypatch):
-    definitions = {"@system-service": "# description\n@default\nread\nwrite\n",
-                   "@default": "@default\n# baseline\nexit\n"}
-    monkeypatch.setattr(smoke, "run", lambda argv: definitions[argv[-1]])
-    props = [("SystemCallFilter", "@system-service")]
-    observed = {"SystemCallFilter": "write exit read"}
-    groups = smoke.expand_syscall_groups(props, observed)
-    assert smoke.compare_properties(props, observed, groups) == []
-    assert smoke.compare_properties(props, {"SystemCallFilter": "read exit"}, groups) == ["SystemCallFilter"]
-    assert smoke.compare_properties([( "SystemCallFilter", "~@system-service")], observed, groups) == ["SystemCallFilter"]
+@pytest.fixture
+def syscall_host(monkeypatch):
+    # Representative systemd-analyze output: headers, comments, nested groups,
+    # and names from other ABIs (the real commands are never executed).
+    definitions = {group: f"{group}\n# dangerous\n{group[1:].replace('-', '_')}_call\n"
+                   for group in smoke.DANGEROUS_SYSCALL_GROUPS}
+    definitions.update({
+        "@system-service": "@system-service\n# service calls\n  @default\n  read\n  write\n  _llseek\n",
+        "@default": "@default\n# baseline\n  exit\n",
+        "@known": "@known\n@system-service\nextra\n" + "\n".join(smoke.DANGEROUS_SYSCALL_GROUPS),
+    })
+    calls = []
+
+    def run(argv):
+        assert argv[:3] == ["systemd-analyze", "syscall-filter", "--no-pager"]
+        calls.append(argv[-1])
+        return definitions[argv[-1]]
+
+    monkeypatch.setattr(smoke, "run", run)
+    monkeypatch.setattr(smoke, "native_unknown_syscalls", lambda names: names & {"_llseek"})
+    return definitions, calls
+
+
+def syscall_compare(values, shown):
+    evidence = {}
+    mismatches = smoke.compare_properties([("SystemCallFilter", value) for value in values],
+                                         {"SystemCallFilter": shown}, evidence=evidence)
+    return mismatches, evidence["system_call_filter"]
+
+
+def test_systemd_syscall_group_expansion_and_set_order(syscall_host):
+    mismatches, detail = syscall_compare(["@system-service"], "write exit read write")
+    assert mismatches == []
+    assert detail["expanded_count"] == 4 and detail["observed_count"] == 3
+    assert detail["omitted_native_unknown"] == ["_llseek"]
+    assert detail["missing_native"] == []
+    assert set(smoke.DANGEROUS_SYSCALL_GROUPS) <= set(syscall_host[1])
+    assert syscall_host[1].count("@default") == 1
+
+
+@pytest.mark.parametrize("shown,label,names", [
+    ("read exit", "missing_native", ["write"]),
+    ("read write exit extra", "unexpected", ["extra"]),
+    ("read write exit mount_call", "dangerous", ["mount_call"]),
+    ("", "missing_native", ["exit", "read", "write"]),
+])
+def test_syscall_differences_fail_with_evidence(syscall_host, shown, label, names):
+    mismatches, detail = syscall_compare(["@system-service"], shown)
+    assert mismatches == ["SystemCallFilter"]
+    assert detail[label] == names
+    assert not detail["ok"]
+
+
+@pytest.mark.parametrize("group", smoke.DANGEROUS_SYSCALL_GROUPS)
+def test_dangerous_names_are_judged_against_the_declared_filter(syscall_host, group):
+    """The smoke verifies enforcement of the declared filter, not its policy.
+
+    A dangerous member the unit declares (explicitly, by group, or through a
+    nested group such as @system-service's own @chown) is the unit's stated
+    policy: it is reported as declared_dangerous and passes. One the unit did
+    not declare is enforcement drift and fails.
+    """
+    name = group[1:].replace("-", "_") + "_call"
+    shown = "read write exit " + name
+    assert syscall_compare(["@system-service"], shown)[0] == ["SystemCallFilter"]
+    assert syscall_compare(["@system-service " + name], shown)[0] == []
+    assert syscall_compare(["@system-service " + group], shown)[0] == []
+    syscall_host[0]["@system-service"] += group + "\n"
+    assert syscall_compare(["@system-service"], shown)[0] == []
+
+
+def test_syscall_group_permission_handles_overlaps(syscall_host):
+    syscall_host[0]["@privileged"] += "@mount\n"
+    assert syscall_compare(["@system-service @mount"], "read write exit mount_call")[0] == []
+
+
+def test_syscall_ordered_denials_explicit_names_and_resets(syscall_host):
+    assert syscall_compare(["@system-service", "~write"], "read exit")[0] == []
+    assert syscall_compare(["@system-service", "~write", "write"], "read write exit")[0] == []
+    assert syscall_compare(["@mount", "", "@system-service"], "read write exit")[0] == []
+    # The reset drops @mount; mount_call is then declared explicitly, so allowed.
+    assert syscall_compare(["@mount", "", "@system-service mount_call"],
+                           "read write exit mount_call")[0] == []
+    # Observed but no longer declared after the reset: drift.
+    assert syscall_compare(["@mount", "", "@system-service"],
+                           "read write exit mount_call")[0] == ["SystemCallFilter"]
+    assert syscall_compare(["read write"], "read write exit")[0] == []  # implicit @default
+
+
+def test_syscall_deny_lists_use_known_universe(syscall_host):
+    denied = "~" + " ".join(smoke.DANGEROUS_SYSCALL_GROUPS)
+    assert syscall_compare([denied], "read write exit extra")[0] == []
+    assert syscall_compare([denied], denied)[0] == []
+    assert syscall_compare([denied, "~extra"], "read write exit")[0] == []
+    assert syscall_compare(["~@system-service"], "read write exit")[0] == ["SystemCallFilter"]
+    assert syscall_compare([""], "")[0] == ["SystemCallFilter"]
+    assert syscall_compare(["@system-service"], "~@mount")[0] == ["SystemCallFilter"]
+
+
+@pytest.mark.parametrize("output", ["", "@system-service\n", "read write\n", "~read\n",
+                                   "read:EPERM\n", "@system-service\n@loop\n"])
+def test_bad_group_expansions_refused(syscall_host, output):
+    syscall_host[0]["@system-service"] = output
+    syscall_host[0]["@loop"] = "@loop\n@system-service\n"
+    with pytest.raises(ValueError):
+        syscall_compare(["@system-service"], "read")
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, smoke.subprocess.CalledProcessError])
+def test_syscall_expander_unavailable_refuses(monkeypatch, error):
+    def fail(argv):
+        if error is FileNotFoundError:
+            raise error("unavailable")
+        raise error(1, argv)
+
+    monkeypatch.setattr(smoke, "run", fail)
+    with pytest.raises(error):
+        syscall_compare(["@system-service"], "read")
+
+
+def test_native_resolver_uses_host_libseccomp_without_installing_filter(monkeypatch):
+    calls = []
+
+    def resolve(name):
+        calls.append(name)
+        return {b"read": 63, b"_llseek": -10009, b"unknown": -1}[name]
+
+    def library(name):
+        assert name == "libseccomp.so.2"
+        return SimpleNamespace(seccomp_syscall_resolve_name=resolve)
+
+    monkeypatch.setattr(smoke.ctypes, "CDLL", library)
+    assert smoke.native_unknown_syscalls({"read", "_llseek", "unknown"}) == {"_llseek", "unknown"}
+    assert set(calls) == {b"read", b"_llseek", b"unknown"}
+    assert resolve.restype is smoke.ctypes.c_int
+
+
+def test_native_resolver_unavailable_refuses(monkeypatch):
+    def fail(name):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(smoke.ctypes, "CDLL", fail)
+    with pytest.raises(OSError):
+        smoke.native_unknown_syscalls({"read"})
+
+
+def test_syscall_evidence_difference_names_are_bounded(syscall_host):
+    names = {f"extra_{i}" for i in range(100)}
+    _, detail = syscall_compare(["@system-service"], "read write exit " + " ".join(names))
+    assert detail["unexpected_count"] == 100
+    assert len(detail["unexpected"]) == smoke.SYSCALL_DIFFERENCE_LIMIT
+    assert detail["unexpected"] == sorted(names)[:smoke.SYSCALL_DIFFERENCE_LIMIT]
+
+
+def test_syscall_special_comparison_does_not_weaken_other_properties(syscall_host):
+    props = [("SystemCallFilter", "@system-service"), ("ProtectSystem", "strict"),
+             ("CapabilityBoundingSet", "")]
+    assert smoke.compare_properties(props, {"SystemCallFilter": "read write exit",
+                                           "ProtectSystem": "full", "CapabilityBoundingSet": "cap_chown"}) == [
+        "ProtectSystem", "CapabilityBoundingSet"]
 
 
 def test_native_architecture_normalisation(monkeypatch):
