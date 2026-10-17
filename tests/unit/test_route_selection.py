@@ -463,8 +463,8 @@ def test_every_terminal_event_is_accounted_for() -> None:
 def test_a_sanitisation_that_did_not_hold_does_not_fall_back_to_another_remote() -> None:
     """Found by mutation: the branch was written and never driven (#98).
 
-    Every other non-answering ending falls back when a fallback is left,
-    because the *route* failed and another might work. This one did not: this
+    A failed route can fall back when a fallback is left, because another
+    might work. This sanitizer refusal did not fail a route: this
     node decided the thing must not leave. Trying a different remote with it
     is the same disclosure to a different party.
     """
@@ -681,3 +681,11 @@ def test_a_route_withdrawn_between_the_decision_and_the_failure_is_not_used() ->
     )
     assert withdrawn.route is not Route.REMOTE
     assert withdrawn.route is Route.DETERMINISTIC_HANDOFF
+
+
+@pytest.mark.parametrize("fallback_available", [False, True])
+def test_no_answer_is_not_a_failure_and_never_falls_back(fallback_available) -> None:
+    assert TerminalEvent.NO_ANSWER is not TerminalEvent.FAILED
+    assert outcome_for(
+        TerminalEvent.NO_ANSWER, fallback_available=fallback_available
+    ) is RequestOutcome.REFUSED

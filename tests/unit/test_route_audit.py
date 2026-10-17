@@ -12,7 +12,8 @@ from azazel_nexus.route_audit import (
     outcome_and_record,
     select_and_record,
 )
-from azazel_nexus.route_selection import RequestOutcome, TerminalEvent
+from azazel_nexus.route_selection import RequestOutcome, TerminalEvent, outcome_for
+from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
 NOW = "2026-10-08T00:00:00Z"
@@ -100,3 +101,45 @@ def test_an_audit_event_without_an_instant_is_refused_before_append(tmp_path) ->
             deadline_ms=1000,
         )
     assert not ledger.path.exists()
+
+
+@pytest.mark.parametrize("terminal_event", list(TerminalEvent))
+@pytest.mark.parametrize("fallback_available", [False, True])
+def test_terminal_records_follow_pure_outcome_invariants(
+    tmp_path, terminal_event, fallback_available,
+) -> None:
+    ledger = AuditLedger(tmp_path / "audit.jsonl")
+    outcome = outcome_and_record(
+        ledger=ledger,
+        occurred_at=NOW,
+        route=Route.LOCAL,
+        terminal_event=terminal_event,
+        fallback_available=fallback_available,
+        reason="local_ready_no_answer" if terminal_event is TerminalEvent.NO_ANSWER else None,
+    )
+    assert outcome is outcome_for(terminal_event, fallback_available=fallback_available)
+    ledger.verify()
+    event = next(iter(ledger)).event
+    assert TerminalEvent(event["terminal_event"]) is terminal_event
+    assert event["outcome"] == outcome.value
+    assert event["fallback_available"] is fallback_available
+    assert event["occurred_at"] == NOW
+    if terminal_event is TerminalEvent.NO_ANSWER:
+        assert outcome is RequestOutcome.REFUSED
+        assert event["reason"] == "local_ready_no_answer"
+    else:
+        assert "reason" not in event
+
+
+def test_no_answer_is_not_returned_when_audit_is_unavailable(tmp_path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(AuditUnavailable):
+        outcome_and_record(
+            ledger=AuditLedger(blocked / "audit.jsonl"),
+            occurred_at=NOW,
+            route=Route.LOCAL,
+            terminal_event=TerminalEvent.NO_ANSWER,
+            fallback_available=True,
+            reason="local_ready_no_answer",
+        )

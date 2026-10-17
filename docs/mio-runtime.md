@@ -245,6 +245,10 @@ authority boundary**, and no downgrade or restoration grants a new authority.
 Restoration above the current state requires a passing health window and
 re-admission; a restart alone never restores a provider.
 
+The in-process route owner described below records supplied admission reasons;
+it does not publish new capability transitions or infer admission from a local
+readiness reply. HG-05 and the existing independent gates still apply.
+
 ## 9. Audit visibility
 
 Each of the following is individually audit-visible, with its correlation ID:
@@ -261,6 +265,47 @@ The merger freezes a structured claim set — source, model, generation, input,
 freshness, confidence, limitations — **before** any narrative text is produced.
 Contradictions remain separate and replayable. A merged narrative is a
 rendering of that claim set, never a substitute for it.
+
+`azazel_nexus_runtime.mio_router.MioRouter` now owns the in-process route
+execution boundary. It calls `route_audit.select_and_record` before dispatching
+to `RemoteInferenceService.handle` or `LocalRuntimeService.handle`, with no new
+network code. Its own `AuditLedger` lives at
+`/var/lib/azazel/state/mio/route.jsonl` (under `AZAZEL_ROOT` in harnesses), separate
+from auditd's chain and watchdog's chain. A future M.I.O. entry must compose this
+owner and provision that leaf; this lane adds no daemon, unit or packaging and
+does not change remoted's main refusal when no provider is commissioned.
+
+The chain records candidate dispositions and reasons, verified envelope
+provenance/fingerprint, structured refusal reasons (including content, provider
+and policy revision mismatch), transport counts/reasons, response digest and
+terminal outcomes. The optional `audit` callback on remote `handle` defaults to
+`None`, preserving direct callers' behavior. The router supplies its ledger
+callback; audit exceptions propagate and stop further dispatch. In particular,
+a selection append failure dispatches nothing, and an envelope audit failure
+prevents transport. Transport outcomes are appended before reply classification.
+No prompt, request body, response text or credential is copied into these events.
+
+Timeout maps to `TIMED_OUT`, TLS failure to `TLS_FAILED`, envelope refusals to
+`SANITIZER_FAILED`, rejected advice to `NOT_ADVICE`, and validated advisory to
+`ANSWERED`. Other failures map to `FAILED`. Exact mismatch/refusal reasons remain
+separate records. Only a `FELL_BACK` outcome records a `fallback_once` decision, once,
+before dispatching its target from the original permitted set. A sanitizer
+refusal ends the attempt without fallback, as required by `outcome_for`.
+Local replies currently report readiness only: `ready` ends with
+`local_ready_no_answer` / `REFUSED`, `fallback_available=False`, and no remote
+call. An unassessed local route also ends without fallback. Only a real local
+readiness refusal permits one fallback within the original permitted set; its
+audit reason includes the local refusal that caused it. Malformed remote payloads
+record only the fixed `malformed_payload` reason, never parser exception text.
+A second failure ends without retry. Deterministic handoff invokes no
+provider and reports no advisory answer (`FAILED` / `REFUSED`); Edge continues.
+
+This is software evidence for route audit production, not evidence of deployed
+M.I.O. inference or the whole audit list above. Per-claim response provenance,
+material source disagreement, redaction references, request-wide correlation
+IDs and capability transitions still require their respective producers. The
+current chain preserves envelope provenance and exact mismatch reasons; it does
+not claim to implement a claim merger.
 
 Remote text renders as inert content: no tool calls, no automatically followed
 links, no instruction treated as a command.
