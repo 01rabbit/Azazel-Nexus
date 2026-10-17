@@ -64,9 +64,13 @@ The repin ledger is the commissioning daemon's own append-only hash chain at
 `runtime_paths.commission_ledger_path`. It is separate from `refusals.jsonl`
 and auditd's single-writer chain, following watchdog's `watchdog.jsonl` pattern.
 The real library appends `trust.repin.authorized` before swapping the pointer,
-and `trust.repin.promoted` after the durable swap. Each has exactly the six
-provenance fields: generation, old/new fingerprints, principal, `at`, and reason
-(plus the event type). Nonces and key bytes are excluded. An authorization audit
+and `trust.repin.promoted` after the durable swap. Each has the six original
+provenance fields: generation, old/new bundle fingerprints, principal, `at`, and
+reason, plus `old_revocation_policy_fingerprint` and
+`new_revocation_policy_fingerprint` (and the event type). Policy fingerprints
+are SHA-256 over `azazel-nexus/revocation-policy/v1\0` followed by canonical
+JSON of the policy alone (sorted keys, compact separators); absence is JSON
+`null`. Continuity floors and signed blobs are excluded from this fingerprint. Nonces and key bytes are excluded. An authorization audit
 failure or failed pointer replacement keeps the old active root. A failure
 after pointer replacement (directory fsync or promotion audit) may leave the new
 root active and must be investigated using the pointer and ledger; it does not
@@ -88,10 +92,57 @@ Verification
 [Runtime integration tests](../tests/unit/test_runtime_repin_integration.py)
 exercise challenge → confirm with the production adapter and real library on a
 temporary root using generated test keys. They verify promotion, the two audit
-records and all six fields, new-key bundle verification and old-key rejection,
+records and all eight provenance fields, new-key bundle verification and old-key rejection,
 and retention of the old root/bundle on injected audit or pointer failure.
 [Boundary scans](../tests/unit/test_runtime_repin_boundary.py) continue to pin
 local commissioning reachability. Their exact string inventory now includes
 the library audit event names introduced in lane B; these are events, not wire
 verbs. No library socket/subprocess/runtime import or repin reachability
 exception was added.
+
+
+Combined authority replacement
+------------------------------
+
+The fixed anchor JSON may also include `revocation_policy`, using the explicit
+[revocation policy](revocation.md) schema:
+
+```json
+{
+  "keys": ["<bundle public key hex>"],
+  "revocation_policy": {
+    "keys": {"revoker": "<revocation public key hex>"},
+    "key_roles": {"revoker": "revocation-signing"},
+    "threshold": 1,
+    "generation": 1
+  }
+}
+```
+
+The threshold has no default. Policy generations must increase on replacement;
+they are independent of the trust-store generation reservation. Omitting the
+section retains existing policy and continuity; it never removes revocation
+authority. A policy-only change with unchanged bundle keys is accepted, allowing
+recovery after loss of the old revocation private keys. Both roles cannot use the
+same public key, including aliases. Previously revoked keys cannot return in
+either role. Existing revocations and the sequence floor survive recovery.
+
+`TrustStore.repin` composes lane A's continuity validation inside the library:
+`prepare_policy_record` performs the same checks as `commission_policy` without
+publishing. Repin stages `trust-generations/N.revocation.json` and `N.json`,
+preserving commissioned permissions, before audit and the single `trust-current`
+swap. Policy reads and continuity updates resolve through this same pointer.
+Staging failure between the two records leaves both old authorities selected;
+orphan records are inactive and generation reservations prevent reuse. After
+pointer replacement both authorities are selected together, including when a
+later fsync or promotion audit reports an indeterminate completion. There is no
+two-pointer rollback window. The initial `trust.json` and legacy policy file
+remain untouched. Once a generation names a policy, a missing policy record
+fails closed instead of falling back to the legacy file.
+
+The existing local ROOT challenge/confirm path snapshots the entire anchor JSON;
+no runtime verb, network path, operator-plane route or key argument was added.
+The [production integration tests](../tests/unit/test_runtime_repin_integration.py)
+exercise introduction, recovery, invalid policy refusal, floor continuity,
+new-key verification, old-key `unverified` refusal and failures between staging
+parts, authorization audit and pointer promotion.

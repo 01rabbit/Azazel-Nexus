@@ -35,6 +35,15 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
+from .lite_bundle import BundleRefused, read_anchors
+from .revocation import RevocationList, RevocationRefused
+from .revocation_policy import (
+    BUNDLE_SIGNING,
+    RevocationPolicy,
+    policy_path,
+    prepare_policy_record,
+    read_policy_record,
+)
 from .signature import SignatureRefused, parse_public_key
 
 __all__ = [
@@ -194,16 +203,46 @@ class TrustStore:
             metadata = (self.root / TRUST_FILENAME).stat()
             staged = self._stage_anchor(request.new_anchor_path)
             stage = "validation"
-            proposed = _validated_keys(json.loads(staged.read_bytes()))
+            document = json.loads(staged.read_bytes())
+            proposed = _validated_keys(document)
+            old_policy = None
+            if old.get("revocation_policy") is True or policy_path(self.root).exists():
+                old_policy = read_policy_record(self.root, old["commissioning_digest"])
+            new_policy = old_policy
+            if "revocation_policy" in document:
+                authority = RevocationPolicy.from_record(document["revocation_policy"])
+                new_policy = prepare_policy_record(
+                    self.root, authority, commissioning_digest=old["commissioning_digest"],
+                    anchors_key_roles={key: BUNDLE_SIGNING for key in proposed},
+                    anchors_keys={key: bytes.fromhex(key) for key in proposed},
+                )
+            if new_policy is not None:
+                authority = RevocationPolicy.from_record(new_policy["policy"])
+                anchors_path = self.root / "trust" / "anchors.toml"
+                if anchors_path.exists():
+                    anchors = read_anchors(anchors_path)
+                    authority.check_anchors(anchors.key_roles, anchors.keys)
+                if authority.revocation_keys.intersection(bytes.fromhex(key) for key in proposed):
+                    raise TrustRefused("the same key cannot hold both roles")
+                floor = RevocationList.parse(new_policy["floor"].encode("utf-8"))
+                if set(proposed).intersection(floor.revoked_keys):
+                    raise TrustRefused("repin cannot re-enable a revoked bundle key")
+            old_policy_fingerprint = _policy_fingerprint(old_policy)
+            new_policy_fingerprint = _policy_fingerprint(new_policy)
             new_fingerprint = _fingerprint(proposed)
-            if new_fingerprint == old_fingerprint:
+            if (new_fingerprint == old_fingerprint
+                    and new_policy_fingerprint == old_policy_fingerprint):
                 raise TrustRefused("the proposed trust root is unchanged")
             # Human-entered provenance must not become a key-material side
             # channel to the ledger. The nonce and its timestamp are not read.
+            policy_keys = tuple(
+                key for policy in (old_policy, new_policy) if policy is not None
+                for key in policy["policy"]["keys"].values()
+            )
             for text in (request.reason, request.principal, now):
                 if any(
                     key.lower()[offset:offset + 16] in text.lower()
-                    for key in (*old_keys, *proposed)
+                    for key in (*old_keys, *proposed, *policy_keys)
                     for offset in range(len(key) - 15)
                 ):
                     raise TrustRefused("repin provenance must not contain key material")
@@ -231,16 +270,22 @@ class TrustStore:
                 raise TrustRefused("the trust reservation is invalid")
             number = max(highest, int(reserved), self.current_generation()) + 1
             record["generation"] = number
+            record["revocation_policy"] = new_policy is not None
             # Persist the high-water mark before authorization. Even removal
             # of an orphaned generation must never make its number reusable.
             _atomic_write(reservation, str(number).encode("ascii"), metadata=metadata)
             destination = generations / f"{number}.json"
+            if new_policy is not None:
+                _atomic_write(destination.with_suffix(".revocation.json"),
+                              _document_bytes(new_policy), metadata=metadata)
             _atomic_write(destination, _document_bytes(record), metadata=metadata)
             stage = "audit"
             event = {
                 "generation": number,
                 "old_fingerprint": old_fingerprint,
                 "new_fingerprint": new_fingerprint,
+                "old_revocation_policy_fingerprint": old_policy_fingerprint,
+                "new_revocation_policy_fingerprint": new_policy_fingerprint,
                 "principal": request.principal,
                 "at": now,
                 "reason": request.reason,
@@ -253,7 +298,7 @@ class TrustStore:
             ledger.append({"event_type": "trust.repin.promoted", **event})
         except (
             AuditChainBroken, AuditUnavailable, OSError, ValueError, TypeError,
-            KeyError, SignatureRefused, TrustRefused,
+            KeyError, SignatureRefused, TrustRefused, RevocationRefused, BundleRefused,
         ):
             # Do not interpolate file names, parser diagnostics or exception
             # chains: an untrusted input can put key bytes in any of them.
@@ -408,9 +453,7 @@ def _validated_keys(document: object) -> tuple[str, ...]:
     keys = document["keys"]
     if not keys:
         raise TrustRefused("an empty trust root is refused")
-    for key in keys:
-        parse_public_key(key)
-    return tuple(sorted(set(keys)))
+    return tuple(sorted({parse_public_key(key).hex() for key in keys}))
 
 
 def _document_bytes(document: dict) -> bytes:
@@ -420,3 +463,10 @@ def _document_bytes(document: dict) -> bytes:
 def _fingerprint(keys: tuple[str, ...]) -> str:
     payload = b"".join(bytes.fromhex(key) for key in keys)
     return "sha256:" + hashlib.sha256(_FINGERPRINT_DOMAIN + payload).hexdigest()
+
+
+def _policy_fingerprint(record: dict | None) -> str | None:
+    if record is None:
+        return None
+    payload = json.dumps(record["policy"], sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(b"azazel-nexus/revocation-policy/v1\x00" + payload).hexdigest()

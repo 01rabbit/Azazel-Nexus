@@ -50,6 +50,15 @@ def promote(node, *, confirmation=CONFIRMATION):
 
 
 def old_bundle(trust):
+    from azazel_nexus.revocation_policy import RevocationPolicy, commission_policy
+
+    # This consumer now requires the explicit role policy introduced by lane A.
+    commission_policy(
+        trust.root, RevocationPolicy(
+            {"revoker": public_key_for(bytes(range(64, 96)))},
+            {"revoker": "revocation-signing"}, 1, 1,
+        ), commissioning_digest=COMMISSIONING, anchors_key_roles={},
+    )
     lite = KnowledgeLite(
         trust.root, COMMISSIONING,
         claims_of=lambda payload: json.loads(payload)["claims"],
@@ -96,6 +105,8 @@ def test_success_has_exact_audit_fields_and_no_confirmation_or_keys(node):
         "generation": 1,
         "old_fingerprint": result.old_fingerprint,
         "new_fingerprint": result.new_fingerprint,
+        "old_revocation_policy_fingerprint": None,
+        "new_revocation_policy_fingerprint": None,
         "principal": request.principal,
         "at": NOW,
         "reason": request.reason,
@@ -103,6 +114,7 @@ def test_success_has_exact_audit_fields_and_no_confirmation_or_keys(node):
     assert entries[1].event == {**entries[0].event, "event_type": "trust.repin.promoted"}
     assert set(entries[0].event) == {
         "event_type", "generation", "old_fingerprint", "new_fingerprint", "principal", "at", "reason",
+        "old_revocation_policy_fingerprint", "new_revocation_policy_fingerprint",
     }
     assert result.old_fingerprint != result.new_fingerprint
     assert result.old_fingerprint == "sha256:" + hashlib.sha256(

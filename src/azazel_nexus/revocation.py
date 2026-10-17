@@ -19,10 +19,10 @@ from pathlib import Path
 
 from .content_store import ContentRefused, parse_digest
 from .revocation_policy import (
-    POLICY_FILENAME,
     REVOCATION_SIGNING,
     RevocationPolicy,
     RevocationPolicyRefused,
+    policy_path,
     read_policy_record,
 )
 from .signature import SIGNATURE_BYTES, SignatureRefused, verify_detached
@@ -251,7 +251,7 @@ class RevocationStore:
             updated["previous_blob_sha256"] = hashlib.sha256(blob).hexdigest()
             # Persist the high-water mark first: interruption before publishing
             # the blob holds the cache closed rather than losing a revocation.
-            _atomic_write(self.root / POLICY_FILENAME, json.dumps(updated, sort_keys=True).encode("utf-8"))
+            _atomic_write(policy_path(self.root), json.dumps(updated, sort_keys=True).encode("utf-8"))
         _atomic_write(self.path, blob)
         return incoming
 

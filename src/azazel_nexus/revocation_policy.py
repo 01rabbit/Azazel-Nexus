@@ -1,7 +1,7 @@
 """Commissioned revocation authority, separate from bundle signing authority.
 
-This is local trust material. The later repin integration must call
-``commission_policy`` only after its local authorization and audit ceremony.
+This is local trust material. Repin stages ``prepare_policy_record`` only
+after the local authorization and confirmation ceremony, then audits promotion.
 """
 
 from __future__ import annotations
@@ -106,9 +106,25 @@ class RevocationPolicy:
             raise RevocationPolicyRefused("missing or malformed revocation commissioning policy") from exc
 
 
+def policy_path(root: Path) -> Path:
+    """Resolve mutable continuity through the same pointer as bundle trust."""
+    from .lite_trust import TrustRefused, TrustStore
+
+    try:
+        trust = TrustStore(root)
+        path = trust.path
+        if path != root / "trust.json":
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if "revocation_policy" in record:
+                return path.with_suffix(".revocation.json")
+    except (TrustRefused, OSError, ValueError) as exc:
+        raise RevocationPolicyRefused("unreadable trust generation") from exc
+    return root / POLICY_FILENAME
+
+
 def read_policy_record(root: Path, commissioning_digest: str) -> dict:
     try:
-        raw = json.loads((root / POLICY_FILENAME).read_text(encoding="utf-8"))
+        raw = json.loads(policy_path(root).read_text(encoding="utf-8"))
         if not isinstance(raw, dict) or raw["commissioning_digest"] != commissioning_digest:
             raise RevocationPolicyRefused("revocation policy commissioning mismatch")
         RevocationPolicy.from_record(raw["policy"])
@@ -127,12 +143,26 @@ def commission_policy(
     This lets a new authority read old revocations without granting old keys
     authority to issue another list. Never remove this record on re-commission.
     """
-    from .revocation import EMPTY, RevocationRefused, RevocationStore, _atomic_write
+    from .revocation import _atomic_write
+
+    record = prepare_policy_record(
+        root, new_policy, commissioning_digest=commissioning_digest,
+        anchors_key_roles=anchors_key_roles, anchors_keys=anchors_keys,
+    )
+    _atomic_write(policy_path(root), json.dumps(record, sort_keys=True).encode("utf-8"))
+
+
+def prepare_policy_record(
+    root: Path, new_policy: RevocationPolicy, *, commissioning_digest: str,
+    anchors_key_roles: Mapping[str, str], anchors_keys: Mapping[str, bytes] | None = None,
+) -> dict:
+    """Validate continuity without publishing; repin stages the returned record."""
+    from .revocation import EMPTY, RevocationRefused, RevocationStore
 
     if not isinstance(commissioning_digest, str) or not commissioning_digest.strip():
         raise RevocationPolicyRefused("a commissioning digest is required")
     new_policy.check_anchors(anchors_key_roles, anchors_keys)
-    path = root / POLICY_FILENAME
+    path = policy_path(root)
     floor = EMPTY
     previous_blob = None
     if path.exists():
@@ -157,4 +187,4 @@ def commission_policy(
         "floor": floor.as_payload().decode("utf-8"),
         "previous_blob_sha256": previous_blob,
     }
-    _atomic_write(path, json.dumps(record, sort_keys=True).encode("utf-8"))
+    return record

@@ -1,7 +1,7 @@
 # Revocation authority and signed lists
 
 Revocations use a commissioning policy independent of bundle admission. The
-local `revocation-policy.json` records public keys by key ID, `key_roles`, an
+local policy record (initially `revocation-policy.json`) records public keys by key ID, `key_roles`, an
 explicit positive `threshold`, a positive policy `generation`, and the
 commissioning digest. There is no inherited or default revocation threshold.
 Missing policy refuses verification, including on nodes with no stored list.
@@ -47,7 +47,7 @@ all required revocation metadata. Positive bundle and revocation controls prove
 that the cross-protocol refusals occur despite otherwise valid signatures and
 payloads. A changed separator byte is also refused.
 
-## Continuity and the repin integration seam
+## Continuity and local repin recovery
 
 `commission_policy(root, new_policy, commissioning_digest=..., anchors_key_roles=...,
 anchors_keys=...)` is the local commissioning/repin integration seam. Its caller
@@ -73,14 +73,36 @@ atomic replacement. Interruption between these two writes holds the cache
 closed. Retrying the exact already checkpointed blob recovers publication;
 another statement cannot bypass the failed read or drop the revocations.
 Deletion or rollback of the signed list cannot erase the protected floor.
-Policy promotion uses the same atomic write pattern. The local policy record is trust material protected by commissioning
+Policy promotion uses the shared trust-generation pointer described below. The local policy record is trust material protected by commissioning
 filesystem permissions. This persisted record is fail-closed when missing or
 corrupt, but is not cryptographically tamper-evident: it uses a local-trust
 model. Replacing or rolling back that trust material is outside
-the signed-list threat model. Introducing/recovering authority through the repin
-runtime ceremony is an integration step, not an automatic list operation.
+the signed-list threat model. Introducing or recovering authority requires the local ROOT challenge/confirm
+ceremony documented in [trust repin](trust-repin.md); signed lists cannot add
+authority.
 
 Legacy untagged lists and role-less policies are refused immediately. Existing
 commissioning fixtures must explicitly provision the new policy; bundle keys
 are never silently promoted to revocation authority. A legacy stored list needs
 a local migration decision rather than a permissive fallback.
+
+
+The fixed repin anchor document may supply `revocation_policy` with the same
+`keys`, `key_roles`, explicit `threshold` and increasing `generation` fields.
+`TrustStore.repin` validates and stages both bundle and revocation authority,
+then promotes them through one atomic generation pointer. A policy-only change
+is sufficient to recover a lost revocation role. No signature by the lost key
+is required; ROOT peer credentials, challenge/confirm and append-only audit
+provide the local authorization. Recovery preserves every revoked entry and the
+sequence floor. An old signed blob remains readable only as the exact preserved
+checkpoint; new statements must verify with the new keys and generation.
+
+After repin, `read_policy_record` and `RevocationStore` continuity writes use
+`trust-generations/N.revocation.json`, selected by `trust-current`, rather than
+the original policy file. Knowledge Lite uses this resolver on subsequent
+operations. Retained store instances refuse a superseded policy. Repin audit
+adds old/new revocation-policy fingerprints to the original six provenance
+fields; absent policy is `null`. See [trust repin](trust-repin.md) for the exact
+fingerprint encoding and failure semantics. The low-level `commission_policy`
+helper remains a trusted provisioning primitive, with no runtime exposure;
+production introduction and recovery use repin exclusively.
