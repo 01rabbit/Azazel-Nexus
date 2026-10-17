@@ -62,6 +62,8 @@ from .protocol import (
     Verb,
     VerbRegistry,
 )
+from .units import UNIT_NAMES
+from .watchdog import DETAIL_MAX_LENGTH, FenceReason
 
 __all__ = [
     "EVENT_SCHEMAS",
@@ -77,6 +79,24 @@ __all__ = [
 #: A writer that could claim its own position in the chain could claim one
 #: that is already taken, or one that has not been reached.
 ASSIGNED_BY_THE_DAEMON = ("sequence", "previous_hash", "event_hash")
+
+
+class _WatchdogDetail(Argument):
+    """Bounded printable ASCII for watchdog diagnostics, never a verb argument."""
+
+    def coerce(self, value):
+        if not isinstance(value, str):
+            raise RequestRefused(Refusal.ARGUMENT_TYPE, self.name)
+        if len(value) > DETAIL_MAX_LENGTH or any(not 32 <= ord(c) <= 126 for c in value):
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, self.name)
+        return value
+
+
+class _PreviousFenceReason(Argument):
+    """The initial transition has no previous reason; subsequent ones enumerate it."""
+
+    def coerce(self, value):
+        return None if value is None else super().coerce(value)
 
 
 #: Every event type this chain accepts, and the fields each one carries.
@@ -118,13 +138,13 @@ EVENT_SCHEMAS: Mapping[str, tuple[Argument, ...]] = {
         Argument("actor", ArgumentKind.IDENTIFIER),
     ),
     "watchdog.fenced": (
-        Argument("unit", ArgumentKind.ENUM, choices=("commissiond", "auditd", "watchdog")),
-        Argument("reason", ArgumentKind.ENUM, choices=(
-            "deadline_exceeded",
-            "unhealthy",
-            "generation_mismatch",
-            "restart_interrupted",
-        )),
+        Argument("unit", ArgumentKind.ENUM, choices=tuple(UNIT_NAMES.values())),
+        Argument("reason", ArgumentKind.ENUM, choices=tuple(reason.value for reason in FenceReason)),
+        _WatchdogDetail("detail", ArgumentKind.IDENTIFIER),
+        Argument("previous_state", ArgumentKind.ENUM, choices=("in_service", "fenced")),
+        _PreviousFenceReason("previous_reason", ArgumentKind.ENUM,
+                             choices=tuple(reason.value for reason in FenceReason)),
+        Argument("state", ArgumentKind.ENUM, choices=("fenced",)),
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
     "bootstrap.controller_ready_intent": (

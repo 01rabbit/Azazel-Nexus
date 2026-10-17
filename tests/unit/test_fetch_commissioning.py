@@ -292,3 +292,78 @@ def test_consent_requires_rfc3339(commissioned, at):
     path.write_text(json.dumps(doc))
     with pytest.raises(model_fetch.FetchNotCommissioned, match="consent.json"):
         model_fetch.load_fetch_commissioning(directory)
+
+
+@pytest.mark.parametrize("change", ["size", "mtime", "inode", "optional", "dangling"])
+def test_activation_caches_validation_and_notices_changes(commissioned, monkeypatch, change):
+    import os
+
+    directory, _ = commissioned
+    monkeypatch.setattr(runtime_paths, "fetch_commission_dir", lambda: directory)
+    monkeypatch.setattr(activated, "_fetch_validation_cache", None)
+    if change in ("optional", "dangling"):
+        (directory / "client.pem").unlink()
+        (directory / "client.key").unlink()
+    original = model_fetch.load_fetch_commissioning
+    calls = []
+
+    def load(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(model_fetch, "load_fetch_commissioning", load)
+    assert ARTIFACT_TRANSPORT in activated.wired_capabilities()
+    assert ARTIFACT_TRANSPORT in activated.wired_capabilities()
+    assert len(calls) == 1
+    path = directory / "consent.json"
+    info = path.stat()
+    if change == "size":
+        path.write_text("invalid-longer-document")
+    elif change == "mtime":
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000))
+    elif change == "inode":
+        replacement = directory / "replacement"
+        replacement.write_bytes(path.read_bytes())
+        os.utime(replacement, ns=(info.st_atime_ns, info.st_mtime_ns))
+        replacement.replace(path)
+    elif change == "optional":
+        (directory / "client.key").write_text("invalid")
+    else:
+        (directory / "client.key").symlink_to(directory / "missing-key")
+    wired = ARTIFACT_TRANSPORT in activated.wired_capabilities()
+    assert wired == (change in ("mtime", "inode"))
+    assert len(calls) == 2
+    assert (ARTIFACT_TRANSPORT in activated.wired_capabilities()) == wired
+    assert len(calls) == 2
+
+
+def test_activation_fails_closed_on_stat_error(commissioned, monkeypatch):
+    directory, _ = commissioned
+    monkeypatch.setattr(runtime_paths, "fetch_commission_dir", lambda: directory)
+    assert ARTIFACT_TRANSPORT in activated.wired_capabilities()
+    original = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == directory / "consent.json":
+            raise PermissionError("sentinel")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    assert ARTIFACT_TRANSPORT not in activated.wired_capabilities()
+    assert activated._fetch_validation_cache is None
+
+
+def test_activation_refuses_files_changed_during_validation(commissioned, monkeypatch):
+    directory, _ = commissioned
+    monkeypatch.setattr(runtime_paths, "fetch_commission_dir", lambda: directory)
+    monkeypatch.setattr(activated, "_fetch_validation_cache", None)
+    original = model_fetch.load_fetch_commissioning
+
+    def load(path):
+        result = original(path)
+        (path / "consent.json").write_text("invalid-after-validation")
+        return result
+
+    monkeypatch.setattr(model_fetch, "load_fetch_commissioning", load)
+    assert ARTIFACT_TRANSPORT not in activated.wired_capabilities()
+    assert activated._fetch_validation_cache is None

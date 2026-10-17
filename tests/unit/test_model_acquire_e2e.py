@@ -768,7 +768,7 @@ def test_default_disk_measurement_and_now_per_request(setup, monkeypatch):
 
     def usage(path):
         calls.append(path)
-        return SimpleNamespace(free=10**12 if len(calls) == 1 else 0)
+        return SimpleNamespace(free=0 if len(calls) == 3 else 10**12)
 
     def now():
         times.append(NOW)
@@ -781,7 +781,8 @@ def test_default_disk_measurement_and_now_per_request(setup, monkeypatch):
     service = case.service(free_bytes=None, now=now, transport=failed)
     assert service.handle(case.request())["outcome"] == "fetch_failed"
     assert service.handle(case.request())["reason"] == "insufficient_disk"
-    assert len(calls) == len(times) == 2
+    assert len(calls) == 4
+    assert len(times) == 2
     assert all(path.exists() for path in calls)
 
 
@@ -837,3 +838,31 @@ def test_discard_reports_zero_after_transport_wrote(setup):
     reply = case.call()
     case.check(reply, AcquisitionState.FETCH_FAILED)
     assert reply["received"] == 0 and reply["retained"] == "none"
+
+
+@pytest.mark.injected
+@pytest.mark.parametrize("failure,reason", [("full", "insufficient_disk"), ("unreadable", "capacity_unavailable")])
+@pytest.mark.parametrize("resume", [False, True])
+def test_import_checks_models_filesystem_before_transport(setup, monkeypatch, boundaries, failure, reason, resume):
+    from azazel_nexus.model_acquisition import MIN_FREE_HEADROOM_BYTES
+
+    case = setup()
+    calls = []
+    if resume:
+        case.part.parent.mkdir(parents=True, exist_ok=True)
+        case.part.write_bytes(WEIGHTS[:1])
+
+    def usage(path):
+        calls.append(path)
+        if path == case.models.root:
+            if failure == "unreadable":
+                raise OSError(SENTINEL)
+            return SimpleNamespace(free=case.entry.size_bytes + MIN_FREE_HEADROOM_BYTES - 1)
+        return SimpleNamespace(free=10**12)
+
+    monkeypatch.setattr(model_fetch.shutil, "disk_usage", usage)
+    reply = case.service(free_bytes=None).handle(case.request(resume_from=1 if resume else 0))
+    assert reply["outcome"] == "refused" and reply["reason"] == reason
+    assert case.models.root in calls
+    assert not boundaries.dials
+    assert SENTINEL not in repr(reply)

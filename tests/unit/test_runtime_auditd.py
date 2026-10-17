@@ -617,3 +617,51 @@ def test_the_append_verb_is_not_open_to_an_operator():
 
     append = next(verb for verb in VERBS if verb.name == "audit.append")
     assert PrincipalClass.OPERATOR not in append.admits
+
+
+def test_watchdog_schema_tracks_producer_tables():
+    from azazel_nexus_runtime.units import UNIT_NAMES
+    from azazel_nexus_runtime.watchdog import FenceReason
+
+    fields = {field.name: field for field in EVENT_SCHEMAS["watchdog.fenced"]}
+    assert set(fields["unit"].choices) == set(UNIT_NAMES.values())
+    assert set(fields["reason"].choices) == {reason.value for reason in FenceReason}
+    assert fields["previous_reason"].choices == fields["reason"].choices
+
+
+@pytest.mark.parametrize("previous_reason", [None, "fence_store_unreadable", "restart_budget_spent"])
+def test_audit_accepts_actual_watchdog_transitions(tmp_path, previous_reason):
+    from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+    from azazel_nexus_runtime.watchdog import FenceReason, FenceStore, WatchdogService
+
+    store = FenceStore(tmp_path / "fences.json")
+    if previous_reason:
+        store.save({unit: previous_reason for unit in UNIT_NAMES.values()})
+    ledger = AuditLedger(tmp_path / "watchdog.jsonl")
+    watchdog = WatchdogService(RecordingUnitManager(UNIT_NAMES.values()), ledger, store)
+    for unit in UNIT_NAMES.values():
+        for reason in FenceReason:
+            watchdog._fence(unit, reason, now="2026-09-20T12:00:00Z", detail="bounded diagnostic")
+    service = _service(tmp_path)
+    for entry in ledger:
+        event = dict(entry.event)
+        event_type = event.pop("event_type")
+        service.handle(_request("audit.append", {"event_type": event_type}, event))
+    service.ledger.verify()
+    assert service.head_sequence == len(list(ledger))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("detail", "x" * 257), ("detail", "line\nbreak"), ("detail", 1),
+    ("previous_reason", "invented"), ("previous_state", "running"),
+    ("state", "in_service"), ("unit", "auditd"),
+])
+def test_watchdog_schema_refuses_invalid_fields(tmp_path, field, value):
+    payload = {
+        "unit": "azazel-auditd.service", "reason": "unhealthy",
+        "detail": "", "previous_state": "in_service", "previous_reason": None,
+        "state": "fenced", "occurred_at": "2026-09-20T12:00:00Z",
+    }
+    payload[field] = value
+    with pytest.raises(RequestRefused):
+        _service(tmp_path).handle(_request("audit.append", {"event_type": "watchdog.fenced"}, payload))

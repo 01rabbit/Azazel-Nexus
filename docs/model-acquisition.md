@@ -94,6 +94,10 @@ and the offline importer. What no node has is anything to point it at:
   file/reason labels, without parser diagnostics or keys.
 - Activation withholds `azazel-model-fetchd.service` as `wiring_absent` until
   fetch commissioning loads (or the legacy endpoint table is nonempty).
+  Validation is cached per process against each commissioning file's path,
+  size, nanosecond modification time and inode, including optional client
+  identity files. Changes invalidate the result; failed reads or changes during
+  validation withhold the capability.
   Commissioning alone does not grant activation or network firewall access.
 
 `drive_fetch` is the older iterator seam. It still takes a `fetcher` and has no
@@ -217,9 +221,12 @@ reads installed state per request. The daemon supplies an empty installed map
 because azfetch cannot read the models root; the root importer independently
 handles duplicates through #95. If either cannot be read, the request is refused
 (`capacity_unavailable`, `installed_state_unavailable`) without dialling.
-Capacity is measured on the filesystem that holds the partials; the importer
-checks its own room again before it stages (#95), and nothing here reserves
-space on the store's filesystem.
+Capacity is measured on the filesystem that holds the partials. Import mode
+also checks the models root filesystem before dialling, requiring room for the
+full artifact plus the existing headroom even when resuming a partial. An
+unreadable measurement refuses `capacity_unavailable`; inadequate room refuses
+`insufficient_disk`. Ready mode checks only the fetch filesystem. The importer
+checks its own room again before it stages (#95); these checks reserve no space.
 
 **A complete partial that could not be handed off stays where it is**
 (`handoff_failed`, `retained: partial`). This path does not move it again: a

@@ -69,6 +69,9 @@ __all__ = [
 ]
 
 
+DETAIL_MAX_LENGTH = 256
+
+
 class FenceReason(str, Enum):
     """Why a unit was fenced. One value per condition, never merged."""
 
@@ -198,8 +201,8 @@ class WatchdogService:
         unit = resolve(key)
         try:
             healthy = call_with_deadline(call, budget_ms=budget_ms, clock=self.clock)
-        except DeadlineExceeded as exc:
-            self._fence(unit, FenceReason.DEADLINE_EXCEEDED, now=now, detail=str(exc))
+        except DeadlineExceeded:
+            self._fence(unit, FenceReason.DEADLINE_EXCEEDED, now=now, detail="probe_deadline_exceeded")
             return False
         if not healthy:
             self._fence(unit, FenceReason.UNHEALTHY, now=now, detail="the daemon reported itself unwell")
@@ -221,10 +224,10 @@ class WatchdogService:
             return True
         try:
             self.generations.verify(current.number)
-        except GenerationRefused as exc:
+        except GenerationRefused:
             for unit in sorted(UNIT_NAMES.values()):
                 self._fence(
-                    unit, FenceReason.GENERATION_MISMATCH, now=now, detail=str(exc)
+                    unit, FenceReason.GENERATION_MISMATCH, now=now, detail="generation_verification_refused"
                 )
             return False
         return True
@@ -298,7 +301,10 @@ class WatchdogService:
                     "event_type": "watchdog.fenced",
                     "unit": unit,
                     "reason": reason.value,
-                    "detail": detail,
+                    "detail": "".join(
+                        char if 32 <= ord(char) <= 126 else " "
+                        for char in detail[:DETAIL_MAX_LENGTH]
+                    ),
                     "occurred_at": now,
                     "previous_state": "in_service" if previous_reason is None else "fenced",
                     "previous_reason": previous_reason,
