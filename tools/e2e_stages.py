@@ -119,7 +119,7 @@ def _install_accounts(harness: Harness) -> str:
         )
     result = subprocess.run(
         ["sh", str(ROOT / "packaging" / "install.sh"), "--without-service-manager"],
-        env={**harness.env, "DESTDIR": str(harness.root)},
+        env={**harness.env, "DESTDIR": str(harness.root), "PYTHON": sys.executable},
         capture_output=True,
         text=True,
     )
