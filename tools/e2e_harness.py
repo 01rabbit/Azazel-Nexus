@@ -100,11 +100,11 @@ class Report:
 
 #: The longest root that still leaves the declared socket paths bindable.
 #:
-#: `/var/lib/azazel/run/commission.sock` is 36 bytes and a unix address holds
+#: `/var/lib/azazel/run/commission/commission.sock` is 47 bytes and a unix address holds
 #: 107, so a root beyond this pushes the daemons over -- which the kernel
 #: reports as `AF_UNIX path too long` from inside a subprocess, where it is a
 #: puzzle. Refused here instead, with the arithmetic in the message.
-LONGEST_DECLARED_SOCKET = len("/var/lib/azazel/run/commission.sock")
+LONGEST_DECLARED_SOCKET = len("/var/lib/azazel/run/commission/commission.sock")
 MAX_ROOT_BYTES = 107 - LONGEST_DECLARED_SOCKET
 
 
@@ -220,7 +220,10 @@ class Daemon:
     def __init__(self, harness: Harness, module: str, socket_name: str) -> None:
         self.harness = harness
         self.module = module
-        self.path = harness.root / "var/lib/azazel/run" / f"{socket_name}.sock"
+        # Each daemon binds inside its own leaf directory (runtime_paths).
+        self.path = (
+            harness.root / "var/lib/azazel/run" / socket_name / f"{socket_name}.sock"
+        )
         self.process: Optional[subprocess.Popen] = None
 
     def __enter__(self) -> "Daemon":
