@@ -89,12 +89,12 @@ and the offline importer. What no node has is anything to point it at:
 - `ENDPOINT_FOR` is **empty**, and a test keeps it empty. Endpoints come from a
   signed Source Registry ([source-registry.md](source-registry.md)), which the
   build does not ship.
-- `az-model-fetchd`'s `main()` **refuses to start**. The commissioning formats
-  for the CA, the client identity, the address allowlist and the consent
-  record, and the hand-off from the `azfetch` account into the importer's
-  inbox, are not defined, and the daemon does not guess them.
-- Activation withholds `azazel-model-fetchd.service` as `wiring_absent`,
-  because the capability it derives from `ENDPOINT_FOR` is empty.
+- `az-model-fetchd` starts only when `load_fetch_commissioning` loads every
+  required file. Otherwise it exits with "no transport wired" and fixed
+  file/reason labels, without parser diagnostics or keys.
+- Activation withholds `azazel-model-fetchd.service` as `wiring_absent` until
+  fetch commissioning loads (or the legacy endpoint table is nonempty).
+  Commissioning alone does not grant activation or network firewall access.
 
 `drive_fetch` is the older iterator seam. It still takes a `fetcher` and has no
 default; the composed path does not go through it.
@@ -182,8 +182,8 @@ expression is unchanged by this work:
 
 ## 9. The composed path ([#96](https://github.com/01rabbit/Azazel-Nexus/issues/96))
 
-`model_fetch.acquire` is the one path from a confirmed plan to an installed
-artifact. `model_fetch.compose_service` puts it behind `az-model-fetchd`'s
+`model_fetch.acquire` has an import mode for explicitly composed callers and
+a fetch-only ready mode used by the daemon. `model_fetch.compose_service` puts it behind `az-model-fetchd`'s
 `FetchService.handle`, which is how the tests drive it.
 
 ```
@@ -192,8 +192,11 @@ verified catalog entry + signed Source Registry (separate keys)
   → resolve_candidate, bound to the plan (source, digest, size)
   → resume prefix check on fetch_dir/<digest>.part
   → ONE artifact_egress.fetch_artifact call (pin, mTLS, allowlist, bounds)
-  → os.replace into the importer's inbox
+  → daemon: os.replace into fetch/ready/<artifact filename> → FETCHED
+  → root: azazel-nexus model-import-fetched MODEL_ID [--acknowledge-license]
+  → copy and fsync into models/inbox (ready file retained until promotion)
   → ModelImport.import_entry (#95: same digest/signature check, promotion)
+  → on promotion, remove ready file
 ```
 
 **The request names symbols and numbers, and the plan decides.** A request
@@ -204,13 +207,15 @@ partial's name comes from the plan's digest.
 **Each request is one attempt.** There is no loop and no retry. The composed
 service counts failed transport attempts per artifact and refuses
 `attempts_exhausted` without dialling once the budget is spent; a promotion
-clears it. The count is in memory and belongs to that service instance: it
+or completed ready handoff clears it. The count is in memory and belongs to that service instance: it
 starts from the `attempts_used` the composer passes, and a new composition or a
 restarted daemon starts it again. A durable budget would have to be persisted
 by whoever composes the service; nothing does that yet.
 
-**Capacity, installed state and time are read per request**, not fixed when
-the service is composed. If either cannot be read, the request is refused
+**Capacity and UTC time are read per request**. Import-mode composition also
+reads installed state per request. The daemon supplies an empty installed map
+because azfetch cannot read the models root; the root importer independently
+handles duplicates through #95. If either cannot be read, the request is refused
 (`capacity_unavailable`, `installed_state_unavailable`) without dialling.
 Capacity is measured on the filesystem that holds the partials; the importer
 checks its own room again before it stages (#95), and nothing here reserves
@@ -235,12 +240,44 @@ pin, client identity or exception text:
 | `write_failed` | the partial could not be written or synced | `none` |
 | `import_failed` | `handoff_failed`: the complete file could not be moved, and is kept; `import_failed_inbox_retained`: the importer raised, and the complete, unverified file is in the inbox | `partial` / `inbox` |
 | `import_refused` | #95 refused the artifact (for example a digest mismatch: #95 quarantines its staged copy) | `inbox` — the received file is still in the inbox |
+| `fetched` | all declared bytes arrived, unverified and unpromoted; root must import | `ready` |
 | `promoted` | #95 verified and promoted it | `none` |
 
-Every state but `promoted` carries the offline-import guidance of §7, and
+`fetched` carries the root CLI command; other states except `promoted` carry
+the offline-import guidance of §7, and
 every result reports `admitted: false`. **Promoted is not admitted** (§8):
 nothing on this path calls provider admission or activation, and the tests
 fail if anything does.
+
+### Fetch commissioning files
+
+Root writes `/var/lib/azazel/fetch/commission/` as 0750 root:azfetch and its
+files as 0640 root:azfetch. No endpoints or credentials ship with the build.
+All files are bounded; malformed or missing data refuses the whole composition.
+
+| file | contents |
+| --- | --- |
+| `trust.json` | `catalog_keys` and `registry_keys` maps of key id to 32-byte public key hex; `commissioning_digest` (`sha256:` plus 64 hex). Shared ids or key material are refused. |
+| `sources.signed` | signed Source Registry under the separate registry keys |
+| `catalog.signed` | signed model catalog under catalog keys, bound to the same commissioning digest |
+| `ca.pem` | required PEM CA trust anchor; no system-store fallback |
+| `client.pem`, `client.key` | optional PEM client identity; both or neither, matching and loadable |
+| `addresses.json` | `{"allowed_addresses":["127.0.0.1"]}` shape; 1–256 literal IPs, deployment values supplied by root |
+| `consent.json` | `sources` list of known symbols, nonempty `operator`, RFC3339 `at`; explicit fetch consent |
+
+Trust, addresses, consent and PEM files are limited to 64 KiB each; signed
+files to 4 MiB at the loader and the readers' own format bounds. Trust maps
+have at most 64 keys each; consent has at most 256 source items.
+
+`partial/` and `ready/` are 0750 azfetch:azfetch. The parent and commissioning
+directory remain root-owned. Fetch refusal records live in
+`partial/refusals.jsonl`. The socket follows the runtime's fixed layout at
+`/var/lib/azazel/run/fetch/fetch.sock`, in an azfetch-owned setgid leaf.
+The models root is `/var/lib/azazel/models`, 0750 root:azmio; azfetch has no
+access. Root separately commissions its `trust/trust.json` (catalog keys and
+commissioning digest) and `trust/catalog.signed`. The fetch catalog cannot
+replace root's independent catalog verification. A fetched artifact is complete,
+not verified, promoted, admitted or running.
 
 ### What the tests establish, and what they do not
 

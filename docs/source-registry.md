@@ -116,24 +116,20 @@ UnitDefinition("azazel-model-fetchd.service", SUPPORTING, "azfetch", …,
                wiring=ARTIFACT_TRANSPORT)
 ```
 
-A unit naming a capability this build does not wire is withheld —
-`wiring_absent: this build has no artifact_transport, so
-azazel-model-fetchd.service would start and exit` — ahead of every other
-reason, because every other reason here is something an operator can go and
-fix on the node, and this one is a property of what they installed. Telling
-them to establish health first, and about the missing transport afterwards,
-sends them round twice for an answer the build had already decided.
+The unit is withheld as `wiring_absent` until fetch commissioning loads
+successfully (or the legacy `ENDPOINT_FOR` table is nonempty). A fresh node
+still has no artifact transport. `activated.wired_capabilities()` uses the same
+`load_fetch_commissioning` reader as the daemon; an invalid file leaves it
+unwired. This requires the full trust, registry, catalog, TLS, address and
+consent set described in [model-acquisition.md §9](model-acquisition.md#9-the-composed-path-96).
+The daemon fetches only; root promotes with `azazel-nexus model-import-fetched`.
 
-What is wired is **read from the distribution, never declared**:
-`activated.wired_capabilities()` reports the transport as wired exactly when
-`ENDPOINT_FOR` is non-empty. A flag would be a second place the truth is
-written down, and the one that is wrong is always the one nobody looked at.
-Commission a Source Registry and the unit is granted with no line of code
-changing.
+Complete fetch commissioning makes the transport wired without a code change;
+activation still requires its other commissioning, tier and health gates.
 
 The unit, its account, its directory, its socket and its hardening ship
 either way. The service boundary is part of the product whether or not
-anything is behind it yet; what it does not do is start.
+anything is commissioned yet; an uncommissioned daemon refuses startup.
 
 ### A caller cannot say where the bytes come from
 

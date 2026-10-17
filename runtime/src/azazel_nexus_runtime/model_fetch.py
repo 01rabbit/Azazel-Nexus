@@ -10,8 +10,8 @@ same reason.
 `acquire` composes explicit consent, the signed Source Registry, the dedicated
 TLS transport and the existing #95 importer. `compose_service` exposes that
 path through the symbolic fetch service. Commissioning is supplied by the
-caller; the daemon still refuses to start without defined commissioning
-formats. `drive_fetch` remains the legacy iterator seam.
+caller; the daemon starts only when all fetch commissioning loads.
+`drive_fetch` remains the legacy iterator seam.
 
 ## The endpoint table ships empty, and going to production does not loosen it
 
@@ -42,6 +42,8 @@ the library.
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import os
 import re
 import shutil
@@ -61,11 +63,19 @@ from azazel_nexus.model_acquisition import (
     SourceConsent,
     plan_acquisition,
 )
-from azazel_nexus.model_catalog import CatalogRefused, ModelEntry, artifact_filename
+from azazel_nexus.model_catalog import (
+    CatalogRefused,
+    ModelCatalog,
+    ModelEntry,
+    artifact_filename,
+    read_catalog,
+)
 from azazel_nexus.model_import import CommissionedModels, ModelImport, entry_id_for
 from azazel_nexus.source_registry import (
+    CommissionedSources,
     RegistryRefused,
     SourceRegistry,
+    read_registry,
     resolve_candidate,
 )
 from azazel_nexus_runtime.artifact_egress import EgressRefused, Outcome, fetch_artifact
@@ -78,6 +88,8 @@ __all__ = [
     "AcquisitionResult",
     "AcquisitionState",
     "Endpoint",
+    "FetchCommissioning",
+    "FetchNotCommissioned",
     "FetchOutcome",
     "FetchRefused",
     "FetchResult",
@@ -85,6 +97,7 @@ __all__ = [
     "compose_service",
     "drive_fetch",
     "endpoint_for",
+    "load_fetch_commissioning",
 ]
 
 
@@ -218,7 +231,7 @@ def drive_fetch(
     """Drive one attempt at `plan`, bounded by everything the plan carries.
 
     This legacy seam has no default `fetcher`; `acquire` is the composed
-    acquisition path. The daemon still refuses unattended startup.
+    acquisition path. The daemon requires fetch commissioning.
 
     The bounds are the plan's and cannot be widened from here: the deadline,
     the declared size, and the chunk the resume offset is counted in. A
@@ -233,7 +246,7 @@ def drive_fetch(
             received=plan.resume_from,
             reason=(
                 "drive_fetch's legacy seam has no default fetcher; acquire is "
-                "the composed path. The daemon still refuses to start; "
+                "the composed path. This seam made no transfer; "
                 f"no transfer to {endpoint.host} was attempted"
             ),
         )
@@ -293,7 +306,7 @@ def drive_fetch(
 
 
 class AcquisitionState(str, Enum):
-    """Acquisition stops at presence in the store; it never grants admission."""
+    """Fetch completion and import promotion never grant admission."""
 
     REFUSED = "refused"
     FETCH_INCOMPLETE = "fetch_incomplete"
@@ -303,6 +316,7 @@ class AcquisitionState(str, Enum):
     IMPORT_REFUSED = "import_refused"
     IMPORT_FAILED = "import_failed"
     PROMOTED = "promoted"
+    FETCHED = "fetched"
 
 
 OFFLINE_IMPORT = "Use the #95 offline import: place a complete artifact in the commissioned inbox and import its entry id."
@@ -321,11 +335,14 @@ class AcquisitionResult:
     received: int
     resumable: bool = False
 
-    retained: Literal["none", "partial", "inbox"] = "none"
+    retained: Literal["none", "partial", "inbox", "ready"] = "none"
+    guidance: str = ""
     admitted: bool = field(default=False, init=False)
 
     @property
     def offline_import(self) -> str:
+        if self.retained == "ready":
+            return self.guidance
         if self.state is AcquisitionState.PROMOTED:
             return ""
         if self.retained == "inbox":
@@ -342,7 +359,9 @@ def acquire(
     entry: ModelEntry,
     consent: SourceConsent,
     registry: SourceRegistry,
-    models: CommissionedModels,
+    models: CommissionedModels | None,
+    handoff: Literal["import", "ready"] = "import",
+    ready_dir: Path | None = None,
     context,
     allowed_addresses: Sequence[str],
     fetch_dir: Path,
@@ -359,12 +378,14 @@ def acquire(
     sleeper=None,
     transport=fetch_artifact,
 ) -> AcquisitionResult:
-    """Plan, resolve, then hand complete bytes to the #95 importer.
+    """Plan, resolve, then hand complete bytes to root or the #95 importer.
 
     One transport call per invocation; repeated invocations are separate
     attempts counted by the composed service.
     """
 
+    if handoff not in ("import", "ready") or (handoff == "import" and models is None) or (handoff == "ready" and ready_dir is None):
+        raise ValueError("invalid handoff configuration")
     part = fetch_dir / (entry.digest.split(":", 1)[1] + ".part")
     try:
         status = part.lstat()
@@ -408,7 +429,7 @@ def acquire(
 
     # Partials belong outside every importer-owned handoff and state directory.
     protected = (models.staging, models.inbox, models.store, models.quarantine,
-                 models.root / "trust", models.root / "state")
+                 models.root / "trust", models.root / "state") if models else ()
     if any(fetch_dir.resolve().is_relative_to(path.resolve()) for path in protected):
         return finish(AcquisitionState.REFUSED, "unsafe_fetch_dir")
 
@@ -476,6 +497,19 @@ def acquire(
         return finish(AcquisitionState.FETCH_REFUSED, "egress_refused")
     event("fetch", "fetched_complete", "complete")
 
+    if handoff == "ready":
+        try:
+            ready_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(part, ready_dir / artifact_filename(entry))
+        except OSError:
+            return finish(AcquisitionState.WRITE_FAILED, "handoff_failed")
+        retained = "ready"
+        event("outcome", "fetched", "complete")
+        return AcquisitionResult(
+            AcquisitionState.FETCHED, "complete", received, retained="ready",
+            guidance=f"Root must run azazel-nexus model-import-fetched {entry.model_id}",
+        )
+
     # Importer events include paths and actor data; expose only our bounded schema.
     def import_event(transition, payload):
         event("import", "importing", "importing")
@@ -504,7 +538,9 @@ def compose_service(
     *,
     consent: SourceConsent,
     registry: SourceRegistry,
-    models: CommissionedModels,
+    models: CommissionedModels | None,
+    handoff: Literal["import", "ready"] = "import",
+    ready_dir: Path | None = None,
     context,
     allowed_addresses: Sequence[str],
     fetch_dir: Path,
@@ -514,6 +550,7 @@ def compose_service(
     now: Callable[[], str] = lambda: datetime.now(timezone.utc).isoformat(),
     actor: str,
     deadline_seconds: int,
+    catalog: ModelCatalog | None = None,
     attempts_used: int = 0,
     recorder: Callable[[str, Mapping], None] | None = None,
     clock=None,
@@ -522,14 +559,22 @@ def compose_service(
 ) -> FetchService:
     """Compose a service with live preflight inputs and bounded artifact counters.
 
-    Each explicit request can spend one attempt. Promotion resets that artifact's
-    counter; refusals before transport leave it untouched. This starts no daemon.
+    Each explicit request can spend one attempt. Promotion or a ready handoff
+    resets that artifact's counter; refusals before transport leave it untouched. This starts no daemon.
     The attempt counter is in-memory, per composed service instance, seeded by
     attempts_used, and reset by recomposition or process restart. A durable budget
     would have to be persisted by whoever composes it.
     """
 
     from .model_fetchd import FetchService
+
+    if handoff not in ("import", "ready") or (handoff == "import" and models is None) or (handoff == "ready" and ready_dir is None):
+        raise ValueError("invalid handoff configuration")
+    if models is None and catalog is None:
+        raise ValueError("verified catalog required")
+
+    def current_catalog():
+        return catalog if catalog is not None else models.catalog()
 
     attempts: dict[tuple[str, str], int] = {}
 
@@ -540,11 +585,13 @@ def compose_service(
         return shutil.disk_usage(ancestor).free
 
     def installed_now():
+        if handoff == "ready":
+            return {}
         current = ModelImport(models).current_generation()
         return current.installed if current else {}
 
     def resolve(model_id, source_id):
-        entry = models.catalog().entry(model_id)
+        entry = current_catalog().entry(model_id)
         if entry is None:
             raise LookupError()
         try:
@@ -566,7 +613,7 @@ def compose_service(
 
     def transfer(*, plan, resume_from, **unused):
         try:
-            entry = models.catalog().entry(plan.model_id)
+            entry = current_catalog().entry(plan.model_id)
         except (CatalogRefused, OSError):
             return AcquisitionResult(AcquisitionState.REFUSED, "catalog_unavailable", 0)
         if entry is None or (entry.source_id, entry.digest, entry.size_bytes) != (
@@ -591,6 +638,7 @@ def compose_service(
 
         result = acquire(
             entry=entry, consent=consent, registry=registry, models=models,
+            handoff=handoff, ready_dir=ready_dir,
             context=context, allowed_addresses=allowed_addresses, fetch_dir=fetch_dir,
             free_bytes=available_bytes, resume_from=resume_from,
             attempts_used=attempts.get(key, min(MAX_ATTEMPTS, attempts_used)),
@@ -599,10 +647,108 @@ def compose_service(
             clock=clock, sleeper=sleeper, transport=counted_transport,
         )
 
-        if result.state is AcquisitionState.PROMOTED:
+        if result.state in (AcquisitionState.PROMOTED, AcquisitionState.FETCHED):
             attempts[key] = 0
         elif reached_transport:
             attempts[key] = min(MAX_ATTEMPTS, attempts.get(key, attempts_used) + 1)
         return result
 
     return FetchService(resolve=resolve, transfer=transfer, staging=fetch_dir)
+
+
+class FetchNotCommissioned(Exception):
+    """Only fixed file names and reason words cross the startup boundary."""
+
+    def __init__(self, *, missing: tuple[str, ...]):
+        self.missing = missing
+        super().__init__(", ".join(missing))
+
+
+@dataclass(frozen=True)
+class FetchCommissioning:
+    sources: CommissionedSources
+    registry: SourceRegistry
+    catalog: ModelCatalog
+    consent: SourceConsent
+    allowed_addresses: tuple[str, ...]
+    ca_certificate: Path
+    client_certificate: Path | None
+    client_key: Path | None
+
+
+def load_fetch_commissioning(directory: Path) -> FetchCommissioning:
+    """Load all commissioning or refuse. No parser diagnostics or key material escape."""
+    from azazel_nexus.model_paths import bounded_read, load_model_trust
+
+    from .artifact_egress import tls_context
+
+    def checked(name, reader):
+        try:
+            return reader(directory / name)
+        except Exception:  # noqa: BLE001 - any failure is a closed refusal with no exception text
+            raise FetchNotCommissioned(missing=(name + ":invalid",)) from None
+
+    required = ("trust.json", "sources.signed", "catalog.signed", "ca.pem",
+                "addresses.json", "consent.json")
+    missing_items = []
+    for name in required:
+        try:
+            if not (directory / name).is_file():
+                missing_items.append(name)
+        except OSError:
+            missing_items.append(name + ":invalid")
+    missing = tuple(missing_items)
+    if missing:
+        raise FetchNotCommissioned(missing=missing)
+    keys, digest, registry_keys = checked("trust.json", lambda p: load_model_trust(p, registry=True))
+    sources = checked("trust.json", lambda p: CommissionedSources(keys, registry_keys, digest))
+    # Give existing readers an immutable, bounded snapshot instead of reopening.
+    @dataclass(frozen=True)
+    class Document:
+        raw: bytes
+
+        def read_bytes(self):
+            return self.raw
+
+    def registry(p):
+        return read_registry(Document(bounded_read(p, 4 * 1024 * 1024)), commissioned=sources)
+
+    def catalog(p):
+        return read_catalog(Document(bounded_read(p, 4 * 1024 * 1024)), trusted_keys=keys, commissioning_digest=digest)
+    signed_registry = checked("sources.signed", registry)
+    signed_catalog = checked("catalog.signed", catalog)
+    def addresses(p):
+        doc = json.loads(bounded_read(p, 65536))
+        values = doc["allowed_addresses"]
+        if type(values) is not list or not 0 < len(values) <= 256 or not all(type(v) is str for v in values):
+            raise ValueError()
+        return tuple(str(ipaddress.ip_address(value)) for value in values)
+    allowed = checked("addresses.json", addresses)
+    def consent(p):
+        doc = json.loads(bounded_read(p, 65536))
+        if type(doc["sources"]) is not list or not 0 < len(doc["sources"]) <= 256:
+            raise ValueError()
+        if not all(type(v) is str for v in doc["sources"]) or type(doc["operator"]) is not str or type(doc["at"]) is not str:
+            raise ValueError()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", doc["at"]):
+            raise ValueError()
+        datetime.fromisoformat(doc["at"])
+        return SourceConsent(frozenset(doc["sources"]), doc["operator"], doc["at"])
+    confirmed = checked("consent.json", consent)
+    ca = directory / "ca.pem"
+    checked("ca.pem", lambda p: bounded_read(p, 65536))
+    checked("ca.pem", lambda p: tls_context(ca_certificate=str(p)))
+    cert, key = directory / "client.pem", directory / "client.key"
+    cert_present = checked("client.pem", lambda p: p.is_symlink() or p.exists())
+    key_present = checked("client.key", lambda p: p.is_symlink() or p.exists())
+    if cert_present != key_present:
+        raise FetchNotCommissioned(missing=("client.pem:pair", "client.key:pair"))
+    if cert_present:
+        checked("client.pem", lambda p: bounded_read(p, 65536))
+        checked("client.key", lambda p: bounded_read(p, 65536))
+        try:
+            tls_context(ca_certificate=str(ca), client_certificate=str(cert), client_key=str(key))
+        except Exception:  # noqa: BLE001 - any failure is a closed refusal with no exception text
+            raise FetchNotCommissioned(missing=("client.pem:invalid", "client.key:invalid")) from None
+    return FetchCommissioning(sources, signed_registry, signed_catalog, confirmed, allowed,
+                              ca, cert if cert_present else None, key if key_present else None)

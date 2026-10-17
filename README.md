@@ -53,6 +53,7 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | `bootstrap-selection-recover` | complete exact pending selection in the same boot/deployment; no replacement or deadline reset |
 | `installed-files-check` | compare selected files, declared-directory membership and v3 leaf links with a separately pinned manifest from stdin (`--manifest-digest sha256:…`); read-only, not dependency closure or admission |
 | `installed-files-candidate` | prepare a candidate from explicit sorted installed-file JSON on stdin; optional sorted `--directory` / `--link` arguments add membership / leaf-link records; read-only, requires independent review and pin admission |
+| `model-import-fetched` | root copies a completed fetch into the #95 verifier and promotes it with `MODEL_ID [--acknowledge-license]`; no network or admission |
 | `status` | everything above, as it currently stands |
 | `health` | units and the audit chain |
 | `hil-preflight` | whether the 8 GiB HG-05 campaign may start on this node. It takes **no arguments**, no sample, and reboots or activates nothing |

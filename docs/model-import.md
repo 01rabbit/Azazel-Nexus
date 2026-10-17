@@ -181,3 +181,16 @@ The M.I.O. status expression is unchanged by this work:
 
 > M.I.O. routing and commissioning control plane implemented; provider
 > execution unavailable pending hardware evidence and provider integration
+
+## Importing completed fetches
+
+Root can run `azazel-nexus model-import-fetched MODEL_ID [--acknowledge-license]`.
+It reads the independently commissioned catalog and `trust/trust.json`
+(`catalog_keys` and `commissioning_digest`) under `/var/lib/azazel/models`,
+copies the matching file from `/var/lib/azazel/fetch/ready/` into the inbox,
+fsyncs it, and invokes the same #95 verifier and importer. It removes the ready
+file only after promotion. A refused digest leaves a quarantined staged copy;
+the ready file remains available for inspection. No ready file or a non-root
+caller is refused. Existing identical installed digests are refused by #95;
+a changed digest follows its normal generation promotion rules. Promotion
+never grants admission. `AZAZEL_ROOT` relocates both fixed roots for tests.

@@ -194,6 +194,11 @@ LAYOUT = (
         "fetcher whose output nothing else had to agree about",
         group="azfetch",
     ),
+    PathSpec("/var/lib/azazel/models", 0o750, "root importer model trees", group="azmio"),
+    PathSpec("/var/lib/azazel/fetch/commission", 0o750, "root-written fetch commissioning", group="azfetch"),
+    PathSpec("/var/lib/azazel/fetch/partial", 0o750, "fetch partials and refusal records", owner="azfetch", group="azfetch"),
+    PathSpec("/var/lib/azazel/fetch/ready", 0o750, "complete unverified fetch handoffs", owner="azfetch", group="azfetch"),
+    PathSpec("/var/lib/azazel/run/fetch", 0o2710, "fetch socket leaf with operator group inheritance", owner="azfetch", group="azazel-operator"),
     PathSpec(
         "/var/lib/azazel/mio",
         0o750,
