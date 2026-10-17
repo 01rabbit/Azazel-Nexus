@@ -85,6 +85,50 @@ __all__ = [
 ]
 
 
+# One process-local entry: retain only metadata and a boolean, never key material.
+_fetch_validation_cache: tuple[tuple, bool] | None = None
+
+
+def _fetch_commissioned(directory: Path) -> bool:
+    from .model_fetch import FETCH_COMMISSIONING_FILES, load_fetch_commissioning
+
+    global _fetch_validation_cache
+
+    def snapshot():
+        result = []
+        for name in FETCH_COMMISSIONING_FILES:
+            path = directory.absolute() / name
+            # Include the link itself as well as its target: a dangling optional
+            # client identity must not look like an absent one on a cache hit.
+            for reader in (path.lstat, path.stat):
+                try:
+                    info = reader()
+                    result.append((str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+                except FileNotFoundError:
+                    result.append((str(path), None, None, None))
+        return tuple(result)
+
+    try:
+        before = snapshot()
+        cached = _fetch_validation_cache
+        if cached is not None and cached[0] == before:
+            return cached[1]
+        valid = False
+        try:
+            load_fetch_commissioning(directory)
+            valid = True
+        except Exception:  # noqa: BLE001 - incomplete validation is not wiring evidence
+            valid = False
+        if snapshot() != before:
+            _fetch_validation_cache = None
+            return False
+        _fetch_validation_cache = (before, valid)
+        return valid
+    except OSError:
+        _fetch_validation_cache = None
+        return False
+
+
 def wired_capabilities() -> frozenset:
     """What this **installed distribution** can actually serve.
 
@@ -99,15 +143,9 @@ def wired_capabilities() -> frozenset:
     """
 
     wired = set()
-    from .model_fetch import load_fetch_commissioning
     from .runtime_paths import fetch_commission_dir
 
-    commissioned = False
-    try:
-        load_fetch_commissioning(fetch_commission_dir())
-        commissioned = True
-    except Exception:  # noqa: BLE001, S110 - anything short of a full load is "not wired"
-        pass
+    commissioned = _fetch_commissioned(fetch_commission_dir())
     if ENDPOINT_FOR or commissioned:
         wired.add(ARTIFACT_TRANSPORT)
     if RUNTIMES:

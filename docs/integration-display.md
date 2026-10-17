@@ -206,7 +206,8 @@ reached:
 | `previous_state` | `in_service`, or `fenced` |
 | `previous_reason` | the earlier `FenceReason`, or `null` |
 | `state` | `fenced` |
-| `detail`, `occurred_at` | as before |
+| `detail` | printable ASCII, at most 256 characters |
+| `occurred_at` | transition timestamp |
 
 - **An identical observation is not a transition.** The unit is masked again,
   and nothing is appended; a periodic probe of a fenced unit does not grow the
@@ -222,18 +223,19 @@ reached:
   does not retry it). A corrupt ledger is treated like an unwritable one. That
   retry queue does not survive a restart: a transition whose record failed and
   whose daemon then restarted is not in the ledger.
-- **`detail` is not sanitised.** It carries the text of the deadline or
-  generation refusal, which can include file paths. No secret reaches it
-  today; nothing bounds or redacts it either.
+- **`detail` is bounded and exception text is excluded.** Deadline and
+  generation exceptions record `probe_deadline_exceeded` and
+  `generation_verification_refused`, respectively. Restart diagnostics retain
+  at most 256 characters, with non-printable/non-ASCII characters replaced by
+  spaces. The separate `reason` carries the operator's condition code.
 
 **Still not done: the view itself is not written.** `IntegrationView.as_event()`
 and the rows' `as_event()` have no caller on the operator path, deliberately:
 `status` is read-only and must work on a node whose ledger cannot be written.
 The watchdog's ledger is its own leaf, not the `az-auditd` chain. `az-auditd`
-declares a `watchdog.fenced` schema, but nothing submits to it and it does not
-match this event: its unit choices are short names, it lists four of the six
-reasons, and it has no `detail` or `previous_*` fields. Reconciling the two is
-not done here.
+declares a matching `watchdog.fenced` schema derived from `UNIT_NAMES` and
+`FenceReason`, including bounded detail and the previous/current state fields.
+Nothing yet submits watchdog records to that central chain.
 
 ## 8. The edge axis carries eight words, not two
 

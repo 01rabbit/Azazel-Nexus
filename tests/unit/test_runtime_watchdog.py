@@ -606,3 +606,33 @@ def test_the_status_verb_answers_with_what_is_fenced(tmp_path):
         Request(verb=verb, arguments={}, principal=OPERATOR)
     )
     assert answer == {"fenced": {"azazel-auditd.service": "unhealthy"}}
+
+
+@pytest.mark.parametrize("exception,operation,expected", [
+    (watchdog_module.DeadlineExceeded, "probe", "probe_deadline_exceeded"),
+    (watchdog_module.GenerationRefused, "generation", "generation_verification_refused"),
+])
+def test_exception_details_use_fixed_codes(tmp_path, monkeypatch, exception, operation, expected):
+    from types import SimpleNamespace
+
+    def refused(*args, **kwargs):
+        raise exception("private-path-secret-sentinel" * 1000)
+
+    if operation == "probe":
+        service = _service(tmp_path)
+        monkeypatch.setattr(watchdog_module, "call_with_deadline", refused)
+        assert not service.probe("auditd", budget_ms=1, now=NOW, call=lambda: True)
+    else:
+        generations = SimpleNamespace(current=lambda: SimpleNamespace(number=1), verify=refused)
+        service = _service(tmp_path, generations=generations)
+        assert not service.check_generation(now=NOW)
+    assert all(event["detail"] == expected for event in _events(tmp_path))
+    assert "sentinel" not in repr(_events(tmp_path))
+
+
+@pytest.mark.parametrize("method", ["note_interrupted_restart", "note_restart_budget_spent"])
+def test_restart_details_are_bounded_and_printable(tmp_path, method):
+    service = _service(tmp_path)
+    getattr(service, method)("auditd", now=NOW, detail="restart\n\x00\t\u2603" + "x" * 1000)
+    [event] = _events(tmp_path)
+    assert event["detail"] == "restart    " + "x" * (watchdog_module.DETAIL_MAX_LENGTH - 11)

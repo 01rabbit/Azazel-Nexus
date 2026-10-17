@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Literal
 from azazel_nexus.model_acquisition import (
     KNOWN_SOURCES,
     MAX_ATTEMPTS,
+    MIN_FREE_HEADROOM_BYTES,
     AcquisitionPlan,
     AcquisitionRefused,
     SourceConsent,
@@ -578,8 +579,8 @@ def compose_service(
 
     attempts: dict[tuple[str, str], int] = {}
 
-    def disk_free():
-        ancestor = fetch_dir
+    def disk_free(path):
+        ancestor = path
         while not ancestor.exists():
             ancestor = ancestor.parent
         return shutil.disk_usage(ancestor).free
@@ -625,7 +626,9 @@ def compose_service(
         except (CatalogRefused, OSError):
             return AcquisitionResult(AcquisitionState.REFUSED, "installed_state_unavailable", 0)
         try:
-            available_bytes = (free_bytes or disk_free)()
+            available_bytes = free_bytes() if free_bytes is not None else disk_free(fetch_dir)
+            if handoff == "import" and disk_free(models.root) < entry.size_bytes + MIN_FREE_HEADROOM_BYTES:
+                return AcquisitionResult(AcquisitionState.REFUSED, "insufficient_disk", 0)
         except OSError:
             return AcquisitionResult(AcquisitionState.REFUSED, "capacity_unavailable", 0)
         key = (entry.model_id, entry.digest)
@@ -676,6 +679,14 @@ class FetchCommissioning:
     client_key: Path | None
 
 
+FETCH_COMMISSIONING_REQUIRED = (
+    "trust.json", "sources.signed", "catalog.signed", "ca.pem",
+    "addresses.json", "consent.json",
+)
+FETCH_COMMISSIONING_OPTIONAL = ("client.pem", "client.key")
+FETCH_COMMISSIONING_FILES = FETCH_COMMISSIONING_REQUIRED + FETCH_COMMISSIONING_OPTIONAL
+
+
 def load_fetch_commissioning(directory: Path) -> FetchCommissioning:
     """Load all commissioning or refuse. No parser diagnostics or key material escape."""
     from azazel_nexus.model_paths import bounded_read, load_model_trust
@@ -688,8 +699,7 @@ def load_fetch_commissioning(directory: Path) -> FetchCommissioning:
         except Exception:  # noqa: BLE001 - any failure is a closed refusal with no exception text
             raise FetchNotCommissioned(missing=(name + ":invalid",)) from None
 
-    required = ("trust.json", "sources.signed", "catalog.signed", "ca.pem",
-                "addresses.json", "consent.json")
+    required = FETCH_COMMISSIONING_REQUIRED
     missing_items = []
     for name in required:
         try:
