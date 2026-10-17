@@ -98,7 +98,7 @@ EXTERNAL_MODULES = (
 #: because **both services read an absent root correctly** -- Knowledge Lite
 #: reports `unavailable` and the decoy runtime reports `disabled` -- so a node
 #: without the tier gets the truth rather than an error.
-KNOWLEDGE_LITE_ROOT = Path("/data/azazel/knowledge-lite")
+KNOWLEDGE_LITE_ROOT = Path("/var/lib/azazel/knowledge")
 DECEPTION_LITE_ROOT = Path("/data/azazel/deception-lite")
 
 
@@ -729,6 +729,9 @@ def main(
     from .mission_pack_cli import add_parser as add_pack_parser
     add_pack_parser(sub)
 
+    from .operator_flow_cli import add_parser as add_setup_parser
+    add_setup_parser(sub)
+
     sub.add_parser("inventory", help="read-only hardware and interface list")
     sub.add_parser("profile", help="measured RAM and the profile it selects")
     sub.add_parser("status", help="everything above, as it currently stands")
@@ -815,6 +818,10 @@ def main(
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command == "setup":
+        from .operator_flow_cli import run as run_setup
+        return run_setup(args, now=_now(), out=stream)
 
     if args.command == "pack":
         from .mission_pack_cli import run as run_pack
