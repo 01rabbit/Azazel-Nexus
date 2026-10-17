@@ -148,6 +148,64 @@ argument for trusting them now.
 `repin`, which records why and who — the rule `lite_generation.py` applies to a
 rollback, for the same reason.
 
+`TrustStore.repin(request, *, confirmation, ledger, now)` takes immutable
+`RepinRequest(new_anchor_path: Path, reason: str, principal: str)` and
+`RepinConfirmation(nonce: str, confirmed_at: str)` objects. Runtime authenticates
+the local commissioning principal and obtains interactive confirmation; the
+library requires the confirmation object but neither creates nor verifies its
+nonce, and never records either confirmation field. A missing confirmation
+object, blank reason/principal/time, or unpinned store is refused with
+`TrustRefused`; omitting the required confirmation keyword raises `TypeError`.
+Success returns `RepinOutcome(promoted, generation, old_fingerprint,
+new_fingerprint, reason_code)`, with `promoted=True` and `reason_code="promoted"`.
+
+The proposed anchor is a JSON object with a non-empty `keys` array of
+lower-case Ed25519 public-key hex strings, for example `{"keys": ["<test public
+key hex>"]}`. Other input metadata is not adopted: repin retains the existing
+commissioning digest and derives provenance from the request. The daemon reads
+the file path, never a CLI argument containing keys. Reads use `O_NOFOLLOW`
+and require a regular file of at most 64 KiB, including a bounded read in case
+the file grows. Parsing and key validation operate on the staged copy. The
+canonical sorted, deduplicated key set must differ from the current set.
+
+The commissioning pin remains `trust.json` (generation zero). Repin writes a
+private copy in `trust-staging/`, validates it, writes
+`trust-generations/<number>.json`, then atomically replaces `trust-current`.
+Readers use the pointer to find the active root; a malformed pointer fails
+closed. The previous root and generations remain available on disk. Failures
+before the pointer swap leave the old root and generation active, including
+for bundle verification. Generation files and the pointer preserve `trust.json`'s
+owner, group and mode, applied before replacement. Newly created
+`trust-generations/` and `trust-staging/` use that owner/group and mode with
+search permission added for each readable class (0640 becomes 0750). Staged
+anchor files remain private. Replaced files and their parent directories are
+fsynced. The trust root directory's metadata is unchanged.
+Runtime must serialize commissioning requests, as for other generation writers.
+
+Generation allocation uses one more than the maximum of existing generation
+filenames, the active pointer, and the durable `trust-reserved` high-water mark.
+The reservation is atomically replaced and its parent directory fsynced before
+authorization. Reservations are never lowered or removed, including after a
+failed attempt; deleting an orphaned generation therefore cannot reuse an
+authorized number. A corrupt reservation fails closed. Gaps are intentional.
+
+Before the pointer swap, the append-only `AuditLedger` records exactly six
+fields plus `event_type="trust.repin.authorized"`: `generation`,
+`old_fingerprint`, `new_fingerprint`, `principal`, `at`, and `reason`.
+Only after pointer replacement and parent-directory fsync succeed does it
+append `trust.repin.promoted` with the same six fields. Fingerprints are SHA-256
+of `azazel-nexus/trust-root/v1\0` followed by the sorted distinct binary keys.
+No key bytes or confirmation fields enter the ledger or refusal messages;
+provenance containing any consecutive 16 hexadecimal characters of an old or
+proposed key is refused case-insensitively. Reasons are limited to 512 characters.
+Authorization audit failure prevents promotion. Because the ledger and pointer
+are separate files, interruption, pointer fsync failure, or a final audit failure
+can leave authorization without a promotion event, even if the pointer moved.
+The pointer is authoritative for activation; those failures require inspecting
+it. Refusals after pointer replacement do not claim the active root is unchanged.
+No audit entry is removed to hide an attempt. Repin changes no Edge readiness,
+activation lease, authority, or enforcement state.
+
 **An empty trust set is refused at pin time.** A node with no admitted keys
 admits nothing, which is correct as a *consequence* and almost always a
 mistake as a *configuration* — one that presents as "Knowledge Lite never
