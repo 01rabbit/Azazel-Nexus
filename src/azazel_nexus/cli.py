@@ -726,6 +726,9 @@ def main(
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    from .mission_pack_cli import add_parser as add_pack_parser
+    add_pack_parser(sub)
+
     sub.add_parser("inventory", help="read-only hardware and interface list")
     sub.add_parser("profile", help="measured RAM and the profile it selects")
     sub.add_parser("status", help="everything above, as it currently stands")
@@ -812,6 +815,10 @@ def main(
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command == "pack":
+        from .mission_pack_cli import run as run_pack
+        return run_pack(args, now=_now(), out=stream)
 
     if args.command == "model-import-fetched":
         from .model_fetched_cli import import_fetched

@@ -53,6 +53,7 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | `bootstrap-selection-recover` | complete exact pending selection in the same boot/deployment; no replacement or deadline reset |
 | `installed-files-check` | compare selected files, declared-directory membership and v3 leaf links with a separately pinned manifest from stdin (`--manifest-digest sha256:…`); read-only, not dependency closure or admission |
 | `installed-files-candidate` | prepare a candidate from explicit sorted installed-file JSON on stdin; optional sorted `--directory` / `--link` arguments add membership / leaf-link records; read-only, requires independent review and pin admission |
+| `pack` | offline signed selection inspect/verify/stage/activate/rollback, with dry-run; [Mission Pack lifecycle](docs/mission-pack.md) |
 | `model-import-fetched` | root copies a completed fetch into the #95 verifier and promotes it with `MODEL_ID [--acknowledge-license]`; no network or admission |
 | `status` | everything above, as it currently stands |
 | `health` | units and the audit chain |
@@ -126,6 +127,7 @@ This division is intentional. It keeps the authority to change the field boundar
 
 **What the node does on a host**
 
+- [Signed offline Mission Packs](docs/mission-pack.md) — installed asset selection, admission, atomic activation and rollback.
 - [Commissioning and activation](docs/commissioning.md) — composite interface identity, operator-confirmed roles, verified generations, and the management failsafe.
 - [User-prepared Debian Live install notes](docs/debian-live-install.md) — current package/entrypoint prerequisites, host paths, persistence considerations, and the unverified service-composition limit.
 - [HIL preflight](docs/hil-preflight.md) — one command on the target that answers whether the 8 GiB campaign may begin, and what it refuses to print.
