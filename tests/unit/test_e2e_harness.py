@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,19 @@ from tools.e2e_harness import (  # noqa: E402
     Report,
     StageResult,
 )
+
+
+@pytest.fixture
+def short_root():
+    """A harness root short enough for the daemons' unix socket addresses.
+
+    pytest's tmp_path can exceed MAX_ROOT_BYTES on CI runners, and the
+    harness rightly refuses such a root.
+    """
+    root = Path(tempfile.mkdtemp(prefix="az-e2e-", dir="/tmp"))
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGES = (REPO_ROOT / "tools" / "e2e_stages.py").read_text(encoding="utf-8")
@@ -152,7 +166,7 @@ def test_a_skipped_stage_is_rendered_as_not_run_rather_than_as_a_tick():
 # -- the harness itself ---------------------------------------------------
 
 
-def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
+def test_a_stage_that_raises_not_executed_is_skipped_not_failed(short_root):
     """The bug the harness found on its first run, pinned.
 
     `NotExecuted` lived in the runner, which the stages imported again under
@@ -161,7 +175,7 @@ def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
     two modules.
     """
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
 
     def skip():
         raise NotExecuted("there is no service manager here")
@@ -171,8 +185,8 @@ def test_a_stage_that_raises_not_executed_is_skipped_not_failed(tmp_path):
     assert "service manager" in harness.report.stages[0].detail
 
 
-def test_a_stage_that_raises_anything_else_is_a_failure(tmp_path):
-    harness = Harness(tmp_path)
+def test_a_stage_that_raises_anything_else_is_a_failure(short_root):
+    harness = Harness(short_root)
 
     def broken():
         raise RuntimeError("the digest did not match")
@@ -182,10 +196,10 @@ def test_a_stage_that_raises_anything_else_is_a_failure(tmp_path):
     assert "digest did not match" in harness.report.stages[0].detail
 
 
-def test_a_stage_that_overruns_its_deadline_is_a_failure_not_a_slow_pass(tmp_path):
+def test_a_stage_that_overruns_its_deadline_is_a_failure_not_a_slow_pass(short_root):
     import tools.e2e_harness as harness_module
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
     original = harness_module.STAGE_DEADLINE_SECONDS
     harness_module.STAGE_DEADLINE_SECONDS = 0.0
     try:
@@ -260,7 +274,7 @@ def test_every_stage_the_issue_lists_is_run_in_order():
     assert tuple(found) == REQUIRED_STAGES
 
 
-def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_path):
+def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(short_root):
     """Nothing about the product went wrong, so nothing may read as broken.
 
     Found on CI: the runner is not root, `useradd` failed, and five later
@@ -269,7 +283,7 @@ def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_pat
     explains them.
     """
 
-    harness = Harness(tmp_path)
+    harness = Harness(short_root)
 
     def skip():
         raise NotExecuted("not root here")
@@ -283,8 +297,8 @@ def test_a_stage_blocked_by_a_skipped_prerequisite_is_skipped_not_failed(tmp_pat
     assert harness.report.ok() is True
 
 
-def test_a_stage_whose_prerequisite_ran_is_not_skipped(tmp_path):
-    harness = Harness(tmp_path)
+def test_a_stage_whose_prerequisite_ran_is_not_skipped(short_root):
+    harness = Harness(short_root)
     harness.stage("install accounts", lambda: "created")
     harness.stage("inventory", lambda: "listed", requires=("install accounts",))
     assert harness.report.stages[1].status == EXECUTED
@@ -442,7 +456,7 @@ def test_an_unknown_installer_option_is_refused():
     assert "unknown option" in result.stderr
 
 
-def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
+def test_the_lite_matrix_stage_actually_composes_nine_configurations(short_root):
     """The stage body, executed rather than read.
 
     `test_every_stage_the_issue_lists_is_run_in_order` checks the stage
@@ -459,7 +473,7 @@ def test_the_lite_matrix_stage_actually_composes_nine_configurations(tmp_path):
     from tools.e2e_harness import Harness
     from tools.e2e_stages import _lite_matrix
 
-    detail = _lite_matrix(Harness(tmp_path))
+    detail = _lite_matrix(Harness(short_root))
     assert detail.startswith("9 CORE + Lite configurations")
     assert "enforcement or baseline readiness" in detail
     assert "what continues" in detail
