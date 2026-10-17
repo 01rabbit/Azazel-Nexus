@@ -93,7 +93,7 @@ come from the callers. It does:
 | --- | --- |
 | `lite_bundle._check_signatures` | `MAX_MANIFEST_BYTES` (8 MiB), enforced **before** verification, and `MAX_SIGNATURE_LINES` (32) |
 | `lite_service._first_key_that_verifies` | the trust store's key count |
-| `revocation._signer_of` | the trust store's key count |
+| `revocation._signer_of` | the policy's distinct revocation-signing key count |
 
 Worst case per bundle, measured: a manifest at the 8 MiB ceiling with all 32
 signature lines used, each failing as late as possible — **0.75 s of CPU**. A
@@ -132,23 +132,17 @@ cofactored equation is required, and checking the cofactorless one instead is
 "sufficient, but not required". Cofactorless is the stricter of the two and is
 the correct choice here, where one artifact must have one admitted signature.
 
-## 4. Trust root — **two items escalated, open**
+## 4. Trust root — **4a implemented; 4b tracked separately**
 
-### 4a. The revocation list and the bundle share one key set
+### 4a. Revocation role and signing domain — implemented (#85)
 
-`revocation._signer_of` accepts a signature from **any** key in
-`self.trusted_keys`. `lite_bundle` has `key_roles` and
-`required_signer_role` and consults them for bundles; `revocation` consults
-neither.
-
-So a key authorised to sign bundles can also sign a revocation list. The
-consequence is not forgery — it is that a single compromised bundle-signing
-key can revoke, which is a denial of service against the node's own trust
-chain. `contract-ownership.md` §4.2's delegated roles express the separation;
-the revocation path does not implement it.
-
-**Not fixed here.** Which role may sign a revocation list is a contract
-question, and deciding it unilaterally would change published semantics.
+The former shared-key path has been replaced by a commissioned policy with
+mutually exclusive `bundle-signing` / `revocation-signing` roles and an explicit
+independent revocation threshold. `_signer_of` considers only the latter role.
+All revocation signatures use a single fixed domain constant. Cross-protocol
+fixtures include a valid manifest with revocation metadata; signature checks
+refuse interpretation in either direction. Recommissioning preserves the
+cumulative revocation and sequence floor. See [revocation](revocation.md).
 
 ### 4b. `repin` records an actor but does not authenticate one
 
@@ -169,9 +163,8 @@ down, not because it is necessarily wrong.
   pin is bound to the commissioning for the whole lifecycle.
 - `repin` refuses when nothing is pinned: a first pinning is a commissioning
   step, not a correction.
-- A malformed key in the store is skipped, and only after every other key has
-  had its chance — so one unusable key cannot make every list unverifiable,
-  and the result does not depend on ordering.
+- Revocation policy keys are validated at commissioning; signature checks
+  count distinct authorized public keys independently of ordering.
 
 ## 5. Differential testing against an established implementation — **done**
 
@@ -213,8 +206,8 @@ written to a file, a fixture, a log or an assertion message, and
 
 Not this document alone.
 
-1. **4a decided and implemented or recorded as accepted** — the revocation
-   signer's role.
+1. **4a implemented** — independent revocation role, threshold and domain;
+   review and runtime repin integration remain separate acceptance steps.
 2. **4b decided** — whether filesystem permission is the intended authority
    for `repin`, written down either way.
 3. A review of this record by someone who did not write the implementation.

@@ -10,7 +10,7 @@ before it is lost on a screen.
 | axis | values |
 | --- | --- |
 | `capability` | `CORE` / `LITE` / `FULL` |
-| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `missing` / `control-plane-only` / `loopback-only` |
+| `freshness` | `available` / `stale` / `unavailable` / `quarantined` / `unverified` / `missing` / `control-plane-only` / `loopback-only` |
 | `cognition_route` | `CORE ONLY` / `LOCAL` / `HYBRID`, and remote `disabled` / `unavailable` |
 | `knowledge_supplier` | `Knowledge Lite` / `AZ-04 peer` / `none` |
 | `deception_supplier` | `Deception Lite` / `AZ-06 peer` / `none` |
@@ -21,11 +21,12 @@ Independent means an input that moves one axis moves **only** that one, and
 not follow. A summary that collapses two axes hides which one failed, which is
 the whole reason §8 of `docs/mio-runtime.md` demands per-dimension reasons.
 
-## Seven words that are not four
+## Eight words that are not four
 
 `disabled` is a decision -- somebody chose not to connect. `unavailable` is an
 attempt that did not arrive. `stale` is having something too old to serve.
-`quarantined` is having something that cannot be trusted. `missing` is an
+`quarantined` is having something that cannot be trusted. `unverified` means
+a revocation list lacks its commissioned signature threshold. `missing` is an
 **embedded** feature that is not there at all. **`control-plane-only`** is an
 embedded feature whose code is here, whose control plane works, and whose
 functional layer does not exist yet. **`loopback-only`** is an embedded
@@ -88,7 +89,7 @@ from .capability import CapabilityState
 from .cognition import CognitionReading, CognitionState, RemoteState
 from .decoy import DecoyState, DecoyStatus
 from .functional_readiness import CONTROL_PLANE_ONLY, LOOPBACK_ONLY, readiness_for
-from .lite_service import LiteReading, LiteState
+from .lite_service import LiteReading, LiteReasonCode, LiteState
 
 __all__ = [
     "AXES",
@@ -115,6 +116,9 @@ AXES = (
 #: An embedded feature that is not there. Distinct from `unavailable`, which
 #: is a peer that did not answer, and from `stale`, which is having something.
 MISSING = "missing"
+
+#: A revocation statement lacks the commissioned signature threshold.
+UNVERIFIED = "unverified"
 
 
 class IntegrationRefused(Exception):
@@ -345,7 +349,12 @@ def _knowledge_freshness_row(knowledge: Optional[LiteReading]) -> Axis:
     return Axis(
         axis="freshness",
         subject="knowledge_lite",
-        value=knowledge.state.value,
+        value=(
+            UNVERIFIED
+            if knowledge.state is LiteState.QUARANTINED
+            and knowledge.reason_code is LiteReasonCode.UNVERIFIED
+            else knowledge.state.value
+        ),
         reason=knowledge.reason,
         continues=NEXUS_ALWAYS
         + (("Knowledge Lite advice",) if knowledge.state is LiteState.AVAILABLE else ()),
