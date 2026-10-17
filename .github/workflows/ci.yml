@@ -983,8 +983,10 @@ jobs:
         run: |
           python3 -m venv /opt/venv
           /opt/venv/bin/python -m pip install --upgrade pip
-          /opt/venv/bin/python -m pip install -e '.[dev]'
-          /opt/venv/bin/python -m pip install -e ./runtime
+          # Non-editable: the staged entrypoint check runs Python -IS and
+          # deliberately ignores .pth files, so an editable finder is invisible.
+          /opt/venv/bin/python -m pip install '.[dev]'
+          /opt/venv/bin/python -m pip install ./runtime
 
       - name: Run the installer-executing unit tests
         run: |
