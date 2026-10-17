@@ -122,9 +122,11 @@ def policy_path(root: Path) -> Path:
     return root / POLICY_FILENAME
 
 
-def read_policy_record(root: Path, commissioning_digest: str) -> dict:
+def read_policy_record(
+    root: Path, commissioning_digest: str, *, path: Path | None = None,
+) -> dict:
     try:
-        raw = json.loads(policy_path(root).read_text(encoding="utf-8"))
+        raw = json.loads((path if path is not None else policy_path(root)).read_text(encoding="utf-8"))
         if not isinstance(raw, dict) or raw["commissioning_digest"] != commissioning_digest:
             raise RevocationPolicyRefused("revocation policy commissioning mismatch")
         RevocationPolicy.from_record(raw["policy"])

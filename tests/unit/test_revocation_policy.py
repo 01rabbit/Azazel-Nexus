@@ -63,6 +63,59 @@ def reopen(root, digest=COMMISSIONING):
     return RevocationStore(root, RevocationPolicy.from_record(record["policy"]), record)
 
 
+@pytest.mark.parametrize("already_promoted", [False, True])
+def test_revocation_accept_refuses_repin_between_record_read_and_write(
+    tmp_path, monkeypatch, already_promoted,
+):
+    from azazel_nexus import revocation
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.lite_trust import RepinConfirmation, RepinRequest
+    from azazel_nexus.revocation_policy import policy_path
+
+    trust = TrustStore(tmp_path / "lite")
+    trust.pin([KEYS[0].hex()], commissioning_digest=COMMISSIONING, pinned_at=NOW, actor="root")
+    store = commissioned(trust.root)
+    store.accept(signed(statement()))
+    anchor = tmp_path / "anchor.json"
+    ledger = AuditLedger(tmp_path / "audit.jsonl")
+    confirmation = RepinConfirmation("test-only", NOW)
+    request = RepinRequest(anchor, "recover authority", "root")
+    if already_promoted:
+        anchor.write_text(json.dumps({"keys": [KEYS[0].hex(), KEYS[3].hex()]}))
+        trust.repin(request, confirmation=confirmation, ledger=ledger, now=NOW)
+        store = reopen(trust.root)
+    old_path = policy_path(trust.root)
+    old_record = old_path.read_bytes()
+    old_blob = store.path.read_bytes()
+    replacement = policy(generation=2, keys={"new": KEYS[3]}, roles={"new": REVOCATION_SIGNING})
+    anchor.write_text(json.dumps({
+        "keys": [KEYS[0].hex()], "revocation_policy": replacement.as_record(),
+    }))
+    read = revocation.read_policy_record
+    reads = 0
+    promoted = {}
+
+    def read_then_repin(*args, **kwargs):
+        nonlocal reads
+        record = read(*args, **kwargs)
+        reads += 1
+        # current() reads first; flip after accept() reads its write checkpoint.
+        if reads == 2:
+            trust.repin(request, confirmation=confirmation, ledger=ledger, now=NOW)
+            promoted["path"] = policy_path(trust.root)
+            promoted["record"] = promoted["path"].read_bytes()
+        return record
+
+    monkeypatch.setattr(revocation, "read_policy_record", read_then_repin)
+    with pytest.raises(RevocationRefused, match="trust generation changed"):
+        store.accept(signed(statement(2)))
+    assert promoted["path"].read_bytes() == promoted["record"]
+    assert old_path.read_bytes() == old_record
+    assert store.path.read_bytes() == old_blob
+    assert reopen(trust.root).policy == replacement
+    assert reopen(trust.root).current() == statement()
+
+
 @pytest.mark.parametrize("threshold", [None, 0, -1, True, "1", 3])
 def test_threshold_is_explicit_positive_and_feasible(threshold):
     with pytest.raises(RevocationPolicyRefused):

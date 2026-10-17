@@ -96,6 +96,7 @@ is required; ROOT peer credentials, challenge/confirm and append-only audit
 provide the local authorization. Recovery preserves every revoked entry and the
 sequence floor. An old signed blob remains readable only as the exact preserved
 checkpoint; new statements must verify with the new keys and generation.
+A missing or corrupt persisted list with a non-zero floor blocks recovery repin (fail-closed) and requires a local migration step.
 
 After repin, `read_policy_record` and `RevocationStore` continuity writes use
 `trust-generations/N.revocation.json`, selected by `trust-current`, rather than

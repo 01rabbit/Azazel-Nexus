@@ -98,6 +98,7 @@ def test_success_has_exact_audit_fields_and_no_confirmation_or_keys(node):
     assert trust.keys(commissioning_digest=COMMISSIONING) == (bytes.fromhex(NEW),)
     assert (trust.root / "trust.json").read_bytes() == original
     assert TrustStore(trust.root).path == trust.path  # Works after a restart too.
+    assert "revocation_policy" not in json.loads(trust.path.read_bytes())
     entries = list(ledger)
     assert len(entries) == 2
     assert entries[0].event == {
@@ -127,6 +128,18 @@ def test_success_has_exact_audit_fields_and_no_confirmation_or_keys(node):
     for secret in (OLD, NEW, CONFIRMATION.nonce, "confirmed_at", "nonce"):
         assert secret not in text
     ledger.verify()
+
+
+def test_repin_reads_legacy_false_revocation_policy_marker(node):
+    trust, request, _ = node
+    promote(node)
+    record = json.loads(trust.path.read_bytes())
+    record["revocation_policy"] = False
+    trust.path.write_text(json.dumps(record))
+    assert trust.keys(commissioning_digest=COMMISSIONING) == (bytes.fromhex(NEW),)
+    request.new_anchor_path.write_text(json.dumps({"keys": [OLD]}))
+    assert promote(node).promoted
+    assert "revocation_policy" not in json.loads(trust.path.read_bytes())
 
 
 @pytest.mark.parametrize("previous_promotion", [False, True])

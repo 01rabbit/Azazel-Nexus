@@ -184,16 +184,28 @@ class RevocationStore:
     def path(self) -> Path:
         return self.root / REVOCATION_FILENAME
 
-    def _record(self) -> Mapping | None:
+    def _record(self, *, path: Path | None = None) -> Mapping | None:
         if self.continuity is None:
             return None
         try:
-            record = read_policy_record(self.root, self.continuity["commissioning_digest"])
+            record = read_policy_record(self.root, self.continuity["commissioning_digest"], path=path)
             if record["policy"] != self.policy.as_record():
                 raise RevocationRefused("unverified: this store holds a superseded policy")
             return record
         except (RevocationPolicyRefused, KeyError) as exc:
             raise RevocationRefused(f"unverified revocation continuity: {exc}") from exc
+
+    def _policy_path(self) -> Path | None:
+        if self.continuity is None:
+            return None
+        try:
+            return policy_path(self.root)
+        except RevocationPolicyRefused as exc:
+            raise RevocationRefused(f"unverified revocation continuity: {exc}") from exc
+
+    def _check_policy_path(self, path: Path | None) -> None:
+        if self._policy_path() != path:
+            raise RevocationRefused("unverified: trust generation changed during acceptance")
 
     def _floor(self, record: Mapping | None) -> RevocationList:
         if record is None:
@@ -227,10 +239,11 @@ class RevocationStore:
     def accept(self, blob: bytes) -> RevocationList:
         signatures, payload = _split(blob)
         incoming = RevocationList.parse(payload)
+        path = self._policy_path()
         try:
             in_force = self.current()
         except RevocationRefused:
-            record = self._record()
+            record = self._record(path=path)
             if (
                 record is None
                 or record.get("previous_blob_sha256") != hashlib.sha256(blob).hexdigest()
@@ -240,18 +253,21 @@ class RevocationStore:
             # Retry an interrupted publication only with the exact statement
             # already verified and durably checkpointed before the interruption.
             self._verify(signatures, payload, incoming, self._floor(record))
+            self._check_policy_path(path)
             _atomic_write(self.path, blob)
             return incoming
         self._verify(signatures, payload, incoming, in_force)
         _extends(incoming, in_force)
-        record = self._record()
+        record = self._record(path=path)
         if record is not None:
             updated = dict(record)
             updated["floor"] = incoming.as_payload().decode("utf-8")
             updated["previous_blob_sha256"] = hashlib.sha256(blob).hexdigest()
             # Persist the high-water mark first: interruption before publishing
             # the blob holds the cache closed rather than losing a revocation.
-            _atomic_write(policy_path(self.root), json.dumps(updated, sort_keys=True).encode("utf-8"))
+            self._check_policy_path(path)
+            _atomic_write(path, json.dumps(updated, sort_keys=True).encode("utf-8"))
+        self._check_policy_path(path)
         _atomic_write(self.path, blob)
         return incoming
 

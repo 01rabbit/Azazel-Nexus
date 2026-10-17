@@ -270,7 +270,8 @@ class TrustStore:
                 raise TrustRefused("the trust reservation is invalid")
             number = max(highest, int(reserved), self.current_generation()) + 1
             record["generation"] = number
-            record["revocation_policy"] = new_policy is not None
+            if new_policy is not None:
+                record["revocation_policy"] = True
             # Persist the high-water mark before authorization. Even removal
             # of an orphaned generation must never make its number reusable.
             _atomic_write(reservation, str(number).encode("ascii"), metadata=metadata)
