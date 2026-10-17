@@ -322,6 +322,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/audit",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
+        "/var/lib/azazel/run/fetch",
     }
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode

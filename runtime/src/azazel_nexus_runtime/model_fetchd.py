@@ -38,12 +38,12 @@ guarantee in the registry advisory.
 The explicitly composed service resolves the signed catalog and registry,
 binds the request to that plan, and delegates to `model_fetch.acquire`.
 That path makes one dedicated TLS transfer into a resumable fetch directory,
-then hands complete bytes to the #95 inbox importer. Only that importer
-verifies and promotes; the reply distinguishes promotion from fetching and
+then hands complete bytes to the fetch ready directory. Root copies them
+through the #95 inbox importer; only that importer verifies and promotes; the reply distinguishes promotion from fetching and
 always reports admission as false. Nothing here starts a model.
 
-The daemon still refuses to start: commissioning file formats and the
-cross-account inbox handoff remain owner decisions.
+The daemon starts only with valid fetch commissioning. It cannot read the
+models root or promote; root runs model-import-fetched for that step.
 
 ## What it never says
 
@@ -55,10 +55,10 @@ at all.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Optional
 
 from azazel_nexus.model_acquisition import AcquisitionRefused
 from azazel_nexus.source_registry import RegistryRefused
@@ -69,10 +69,10 @@ from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 
 __all__ = [
     "FETCH_VERB",
-    "FetchService",
     "MAX_ARTIFACT_BYTES",
     "REGISTRY",
     "SOCKET_NAME",
+    "FetchService",
     "main",
 ]
 
@@ -233,12 +233,48 @@ def main(
             "presents as, and what it may write are commissioned state on "
             "this node, not things a command line says"
         )
-    raise SystemExit(
-        "az-model-fetchd has no transport wired for unattended startup. "
-        "Commissioning formats for CA, client identity, address allowlist, "
-        "consent and the azfetch to importer inbox handoff are not defined"
+    import shutil
+
+    from .artifact_egress import tls_context
+    from .model_fetch import (
+        FetchNotCommissioned,
+        compose_service,
+        load_fetch_commissioning,
     )
+    from .principal import PrincipalPolicy
+    from .runtime_paths import (
+        audit_sink,
+        fetch_commission_dir,
+        fetch_dir,
+        fetch_partial_dir,
+        fetch_ready_dir,
+        socket_path,
+    )
+    from .serve import serve_forever
+
+    try:
+        commissioned = load_fetch_commissioning(fetch_commission_dir())
+        context = tls_context(
+            ca_certificate=str(commissioned.ca_certificate),
+            client_certificate=str(commissioned.client_certificate) if commissioned.client_certificate else None,
+            client_key=str(commissioned.client_key) if commissioned.client_key else None,
+        )
+    except FetchNotCommissioned as exc:
+        raise SystemExit("az-model-fetchd has no transport wired: " + ", ".join(exc.missing)) from None
+    except Exception:  # noqa: BLE001 - any failure is a closed refusal with no exception text
+        raise SystemExit("az-model-fetchd has no transport wired: tls:invalid") from None
+    service = compose_service(
+        consent=commissioned.consent, registry=commissioned.registry,
+        catalog=commissioned.catalog, models=None, context=context,
+        allowed_addresses=commissioned.allowed_addresses, handoff="ready",
+        fetch_dir=fetch_partial_dir(), ready_dir=fetch_ready_dir(),
+        free_bytes=lambda: shutil.disk_usage(fetch_dir()).free, installed=dict,
+        license_acknowledged=False, actor="azfetch", deadline_seconds=3600,
+    )
+    return serve_forever(path=socket_path("fetch"), registry=REGISTRY,
+                         policy=PrincipalPolicy.resolve(), audit=audit_sink("fetch"),
+                         handler=service.handle, stop=stop, ready=ready)
 
 
-if __name__ == "__main__":  # pragma: no cover - the entry point
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

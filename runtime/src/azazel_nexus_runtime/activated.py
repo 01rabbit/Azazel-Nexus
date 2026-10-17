@@ -93,19 +93,22 @@ def wired_capabilities() -> frozenset:
     is forbidden to import. So it is read here, from the thing itself, and
     passed in as evidence.
 
-    Read from `ENDPOINT_FOR`, `RUNTIMES` and `TRANSPORT` rather than from a
-    flag, a setting or a version string. A flag is a second place the truth is written down, and the one
-    that is wrong is always the one nobody looked at. An empty table is not a
-    disabled feature: it is a build in which no source symbol resolves to an
-    endpoint, so `az-model-fetchd` would start and exit.
-
-    A commissioned Source Registry fills the table. That is signed deployment
-    data, and this function then reports the transport as wired without a line
-    of code changing -- which is the point of deriving it.
+    Artifact transport requires a nonempty legacy endpoint table or fully
+    loadable fetch commissioning. Merely having a signed registry is insufficient.
+    A fresh node has neither and keeps the unit withheld.
     """
 
     wired = set()
-    if ENDPOINT_FOR:
+    from .model_fetch import load_fetch_commissioning
+    from .runtime_paths import fetch_commission_dir
+
+    commissioned = False
+    try:
+        load_fetch_commissioning(fetch_commission_dir())
+        commissioned = True
+    except Exception:  # noqa: BLE001, S110 - anything short of a full load is "not wired"
+        pass
+    if ENDPOINT_FOR or commissioned:
         wired.add(ARTIFACT_TRANSPORT)
     if RUNTIMES:
         wired.add(LOCAL_MODEL_PROVIDER)

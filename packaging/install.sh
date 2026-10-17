@@ -234,6 +234,11 @@ make_dir 0700 root /var/lib/azazel/state/bootstrap-overlay
 make_dir 0700 root /var/lib/azazel/generations
 make_dir 0700 root /var/lib/azazel/bootstrap-generations
 make_dir 0750 azfetch /var/lib/azazel/fetch
+make_dir 0750 azmio /var/lib/azazel/models
+make_dir 0750 azfetch /var/lib/azazel/fetch/commission
+make_owned_dir 0750 azfetch azfetch /var/lib/azazel/fetch/partial
+make_owned_dir 0750 azfetch azfetch /var/lib/azazel/fetch/ready
+make_owned_dir 2710 azfetch azazel-operator /var/lib/azazel/run/fetch
 make_dir 0750 azmio /var/lib/azazel/mio
 make_dir 0750 azremote /var/lib/azazel/remote
 make_dir 0700 root /var/lib/azazel/secrets

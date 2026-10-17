@@ -763,6 +763,10 @@ def main(
               "does not discover links)"),
     )
 
+    fetched = sub.add_parser("model-import-fetched", help="root verifies and promotes a completed fetch")
+    fetched.add_argument("model_id")
+    fetched.add_argument("--acknowledge-license", action="store_true")
+
     wizard = sub.add_parser("commission", help="assign roles, with confirmation")
     wizard.add_argument("--operator", required=True)
     wizard.add_argument("--at", required=True, help="RFC3339 timestamp")
@@ -808,6 +812,11 @@ def main(
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command == "model-import-fetched":
+        from .model_fetched_cli import import_fetched
+        return import_fetched(args.model_id, license_acknowledged=args.acknowledge_license,
+                              now=_now(), out=stream)
 
     if args.command in {"bootstrap-selection-initialize", "bootstrap-selection-recover"}:
         from .bootstrap_selection_cli import run_publication

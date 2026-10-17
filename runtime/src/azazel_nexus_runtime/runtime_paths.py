@@ -15,15 +15,20 @@ systemd uses the declared absolute paths and nothing else.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from azazel_nexus.audit import AuditUnavailable
 
 __all__ = [
     "ROOT",
     "audit_sink",
+    "fetch_commission_dir",
+    "fetch_dir",
+    "fetch_partial_dir",
+    "fetch_ready_dir",
     "ledger_dir",
+    "models_root",
     "socket_path",
     "state_dir",
     "watchdog_state_dir",
@@ -35,11 +40,13 @@ _SOCKET_LEAVES = {
     "audit": "audit",
     "commission": "commission",
     "watchdog": "watchdog",
+    "fetch": "fetch",
 }
 _STATE_LEAVES = {
     "audit": "auditd",
     "commission": "commission",
     "watchdog": "watchdog",
+    "fetch": "fetch",
 }
 
 
@@ -96,7 +103,9 @@ def audit_sink(service: str) -> Callable[[dict], None]:
         leaf = _STATE_LEAVES[service]
     except (KeyError, TypeError):
         raise ValueError("service state name is not declared by this runtime") from None
-    path = state_dir() / leaf / "refusals.jsonl"
+    # Fetch has no writable state tree; keep its refusals alongside partials.
+    directory = fetch_partial_dir() if service == "fetch" else state_dir() / leaf
+    path = directory / "refusals.jsonl"
 
     def record(event: dict) -> None:
         import json
@@ -110,3 +119,23 @@ def audit_sink(service: str) -> Callable[[dict], None]:
             raise AuditUnavailable(f"{path} could not be appended to: {exc}") from exc
 
     return record
+
+
+def fetch_dir() -> Path:
+    return _under("/var/lib/azazel/fetch")
+
+
+def fetch_commission_dir() -> Path:
+    return fetch_dir() / "commission"
+
+
+def fetch_partial_dir() -> Path:
+    return fetch_dir() / "partial"
+
+
+def fetch_ready_dir() -> Path:
+    return fetch_dir() / "ready"
+
+
+def models_root() -> Path:
+    return _under("/var/lib/azazel/models")
