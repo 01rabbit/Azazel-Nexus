@@ -1,0 +1,128 @@
+"""Linux SO_PEERCRED round trips, using short AZAZEL_ROOT contract paths."""
+
+import json
+import os
+import socket
+import sys
+import tempfile
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from azazel_nexus_runtime import mio_entryd as entry
+from azazel_nexus_runtime import mio_socket_client as client
+from azazel_nexus_runtime import runtime_paths
+from azazel_nexus_runtime.principal import PrincipalPolicy
+from azazel_nexus_runtime.transport import bind_socket, read_frame, send_frame
+
+from azazel_nexus.audit import AuditLedger
+from azazel_nexus.routing import Route
+from azazel_nexus.sanitizer import PrivacyClass
+
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux SO_PEERCRED required")
+
+
+@pytest.fixture
+def root(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="azmio-", dir="/tmp") as directory:
+        base = Path(directory)
+        monkeypatch.setenv("AZAZEL_ROOT", directory)
+        monkeypatch.setattr(runtime_paths, "ROOT", base)
+
+        def path(name):
+            # TODO(Lane A integration): use runtime_paths' added leaves.
+            return base / "var/lib/azazel/run" / name / f"{name}.sock"
+
+        for leaf in ("mio-entry", "mio", "remote"):
+            path(leaf).parent.mkdir(parents=True)
+        runtime_paths.mio_state_dir().mkdir(parents=True)
+        monkeypatch.setattr(entry, "socket_path", path)
+        monkeypatch.setattr(client, "socket_path", path)
+        monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+        monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
+        policy = PrincipalPolicy(os.getgid(), frozenset())
+        monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: policy)
+        yield path
+
+
+def test_main_real_round_trip_records_handoff(root):
+    ready = threading.Event()
+    stop = threading.Event()
+    errors = []
+
+    def run():
+        try:
+            entry.main([], ready=ready.set, stop=stop.is_set)
+        except (OSError, ValueError, RuntimeError) as error:
+            errors.append(error)
+            ready.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert ready.wait(5)
+        if errors:
+            raise errors[0]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(str(root("mio-entry")))
+            send_frame(connection, {"verb": "mio.route", "arguments": {
+                "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000,
+            }})
+            connection.shutdown(socket.SHUT_WR)
+            response = json.loads(read_frame(connection))
+        assert response["ok"] is True
+        assert response["result"]["route"] == Route.DETERMINISTIC_HANDOFF.value
+        ledger = AuditLedger(runtime_paths.mio_state_dir() / "route.jsonl")
+        ledger.verify()
+        events = [item.event for item in ledger]
+        assert response["result"]["ledger_seq"] == len(events)
+        availability = next(e for e in events if e["event_type"] == "mio.entry.availability")
+        assert availability["local"] == "local_unavailable"
+        assert availability["remote"] == "remote_unavailable"
+        assert response["result"]["reason"]
+    finally:
+        stop.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert not root("mio-entry").exists()
+
+
+def test_fake_locald_not_admitted_is_recorded(root):
+    listener = bind_socket(root("mio"), expected_gid=os.getgid())
+    listener.settimeout(2)
+    errors = []
+    requests = []
+
+    def serve():
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(2)
+                requests.append(json.loads(read_frame(connection)))
+                send_frame(connection, {"ok": True, "result": {
+                    "readiness": "refused", "reason": "not admitted",
+                }})
+        except (OSError, ValueError, RuntimeError) as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        service = entry.MioEntryService()
+        reply = service.handle(SimpleNamespace(arguments={
+            "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000,
+        }))
+        assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+        ledger = AuditLedger(service.router.ledger.path)
+        ledger.verify()
+        assert next(iter(ledger)).event["local"] == "local_not_admitted"
+    finally:
+        thread.join(5)
+        listener.close()
+    assert not errors
+    assert not thread.is_alive()
+    assert requests == [{"verb": "model.activate", "arguments": {
+        "model_id": "uncommissioned", "runtime_id": "uncommissioned",
+    }}]
