@@ -147,7 +147,7 @@ def test_a_record_larger_than_the_ceiling_is_refused() -> None:
 @pytest.mark.parametrize(
     "mutation, expected",
     [
-        ({"schema": "azazel-nexus/core-reserve/2"}, "knows"),
+        ({"schema": "azazel-nexus/core-reserve/999"}, "knows"),
         ({"provenance": "guessed"}, "unknown provenance"),
         ({"profile": "enormous"}, "unknown profile"),
         ({"host_digest": "  "}, "host_digest"),
@@ -410,3 +410,22 @@ def test_the_record_does_not_call_it_a_disclosure():
     text = _procedure()
     assert "not a disclosure one" in text
     assert "nothing about it involved real data, a credential or a secret" in text
+
+
+@pytest.mark.parametrize("field,value", [
+    ("boot_fingerprint", "raw-boot-id"), ("run_sequence", True),
+    ("run_sequence", 0), ("build_commit", "unknown"), ("kernel_release", ""),
+])
+def test_v2_metadata_cannot_be_missing_or_malformed(field, value):
+    document = dict(record_as_document(a_record()))
+    document.update(schema="azazel-nexus/core-reserve/2",
+                    boot_fingerprint="hmac-sha256:" + "b" * 64,
+                    host_digest="hmac-sha256:" + "c" * 64,
+                    run_sequence=1, build_commit="a" * 40, kernel_release="test-kernel")
+    assert parse_record(json.dumps(document)).schema.endswith("/2")
+    document[field] = value
+    with pytest.raises(ReserveRefused, match=field):
+        parse_record(json.dumps(document))
+    del document[field]
+    with pytest.raises(ReserveRefused, match=field):
+        parse_record(json.dumps(document))

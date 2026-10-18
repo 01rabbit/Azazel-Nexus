@@ -13,19 +13,9 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+from dataclasses import replace
 
 import pytest
-
-from azazel_nexus.core_reserve import (
-    MIN_DURATION_SECONDS,
-    MIN_SAMPLES,
-    REQUIRED_SUBSYSTEMS,
-    Provenance,
-    parse_record,
-    validate,
-)
-from azazel_nexus.activation import CORE_UNITS
-from azazel_nexus.resource_profile import ResourceProfile
 from azazel_nexus_runtime import core_reserve_probe as probe
 from azazel_nexus_runtime.core_reserve_probe import (
     HARNESS_VERSION,
@@ -37,6 +27,17 @@ from azazel_nexus_runtime.core_reserve_probe import (
     measure,
     write_record,
 )
+
+from azazel_nexus.activation import CORE_UNITS
+from azazel_nexus.core_reserve import (
+    MIN_DURATION_SECONDS,
+    MIN_SAMPLES,
+    REQUIRED_SUBSYSTEMS,
+    Provenance,
+    parse_record,
+    validate,
+)
+from azazel_nexus.resource_profile import ResourceProfile
 
 #: Enough usable memory to classify as `lite`, so `select_profile` has a real
 #: input rather than a profile handed to it.
@@ -88,6 +89,13 @@ def readers(*, inactive=(), inactive_after=(), residents=None, usable=LITE_MIB, 
         return usable
 
     return Readers(
+        identity=lambda: {
+            "host_digest": "hmac-sha256:" + "a" * 64,
+            "boot_fingerprint": "hmac-sha256:" + "b" * 64,
+            "build_commit": "c" * 40,
+            "kernel_release": "test-kernel",
+        },
+        run_sequence=lambda: 1,
         call=call,
         cgroup_current=cgroup_current,
         usable_mib=usable_mib,
@@ -123,7 +131,7 @@ def test_the_harness_constants_clear_the_validator_s_floors() -> None:
 
 
 def test_the_record_round_trips_through_the_file_it_writes(tmp_path) -> None:
-    record = measure(readers())
+    record = replace(measure(readers()), provenance=Provenance.FIXTURE)
     path = write_record(record, tmp_path / "core-reserve.json")
     assert parse_record(path.read_text(encoding="utf-8")) == record
 
@@ -136,11 +144,12 @@ def test_the_host_digest_carries_no_inventory() -> None:
     """
 
     record = measure(readers())
-    assert record.host_digest.startswith("sha256:")
-    assert len(record.host_digest) == len("sha256:") + 64
-    # Two hosts of different classes do not share a digest.
-    other = measure(readers(usable=8000, usable_after=8000))
-    assert other.host_digest != record.host_digest
+    assert record.host_digest.startswith("hmac-sha256:")
+    assert len(record.host_digest) == len("hmac-sha256:") + 64
+    assert record.boot_fingerprint.startswith("hmac-sha256:")
+    assert record.run_sequence == 1
+    assert record.build_commit == "c" * 40
+    assert record.kernel_release == "test-kernel"
 
 
 # -- what it refuses ------------------------------------------------------
@@ -325,3 +334,32 @@ def test_the_harness_refuses_a_run_its_own_validator_would_reject(monkeypatch) -
     message = str(caught.value)
     assert "does not validate" in message
     assert str(MIN_SAMPLES) in message
+
+
+def test_runs_never_overwrite_and_sequence_survives_restart(tmp_path):
+    record = replace(measure(readers()), provenance=Provenance.FIXTURE)
+    first = write_record(record, tmp_path / "core-reserve.json")
+    payload = first.read_bytes()
+    with pytest.raises(FileExistsError):
+        write_record(record, tmp_path / "core-reserve.json")
+    assert first.read_bytes() == payload
+    assert probe.next_sequence(tmp_path) == 2
+    second = write_record(replace(record, run_sequence=2), tmp_path / "core-reserve.json")
+    assert first != second
+    assert not (tmp_path / "core-reserve.json").exists()
+
+
+def test_identity_failure_refuses_before_sampling():
+    supplied = readers()
+    def refused():
+        raise ValueError("private detail")
+    with pytest.raises(MeasurementRefused, match="metadata unavailable"):
+        measure(replace(supplied, identity=refused))
+
+
+def test_boot_change_refuses_entire_run():
+    supplied = readers()
+    identity = supplied.identity()
+    count = iter([identity, dict(identity, boot_fingerprint="hmac-sha256:" + "d" * 64)])
+    with pytest.raises(MeasurementRefused, match="identity changed"):
+        measure(replace(supplied, identity=lambda: next(count)))

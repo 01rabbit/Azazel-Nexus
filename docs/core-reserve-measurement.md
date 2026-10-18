@@ -226,3 +226,90 @@ Closing `HG-05` produces a number. It does not produce:
   refusing for having no implementation
 - **any claim about the model itself** — the reserve says a provider fits in
   memory, which is not a claim that it is useful, correct, or safe to consult
+
+## 12. On-device readiness and capture commands
+
+Run `az-hil-readiness` before the campaign. This separate, read-only command
+reports installed/active status for the five required subsystem units and
+`azazel.slice`, whether the commissioning key is usable, and whether usable
+RAM selects the pilot's Core class. Missing Edge Core prerequisites are
+reported explicitly. Nexus installation alone does not supply those Edge
+Core units. Readiness does not replace the hardware/operator preflight.
+
+The probe's v2 records include a domain-separated HMAC of the boot ID, a run
+sequence, the full build commit, and kernel release. Provision the full source
+commit used to build the installed distributions in the root-owned file
+`/usr/share/azazel/build-commit` during installation. Missing build identity or
+commissioning key refuses the run. Raw boot ID and machine ID are never
+included. Boot/build identity is checked again after sampling.
+
+Each run is published without replacement as
+`/var/lib/azazel/run/core-reserve-run-<sequence>.json`. Keep all run files;
+sequence allocation reads this archive and publication refuses a concurrent
+collision. Run only one probe at a time. The sampler does not promote a run to
+`core-reserve.json`; the campaign validator and attestation must precede any
+operator promotion to that admission input. The reader retains v1 support.
+
+`az-hil-capture hg-01` emits the governed unit-file list, per-unit active/sub
+states, and systemd version over the system bus. An unloaded unit is reported
+as unobserved rather than guessed inactive. The list covers Nexus Core units,
+Edge Core prerequisites, and the slice; unrelated unit paths are omitted to
+avoid exposing local identity.
+
+`az-hil-capture hg-04` reads the existing `RTM_GETLINK` implementation. Each
+NIC has an anonymous HMAC label, permanent-address presence and, when present,
+a domain-separated HMAC of the permanent address. Neither NIC names nor raw
+addresses are printed. Both capture commands emit JSON to stdout with host
+and boot HMACs, build commit and kernel release. Redirect output only to the
+campaign directory outside version control. These are automatic acquisition
+records (`azazel-nexus/hil-capture/hg-01/1` and `hg-04/1`); they assert no
+hardware qualification and need reconciliation into the campaign schemas and
+operator attestation before validators may accept them. HG-02 remains an
+operator runbook because unmasking changes system state.
+
+### Commissioning key initialization (root only)
+
+Generate the key on the target device once, before preflight. Run the following
+as root on the device; it prints no key material and refuses to replace an
+existing key. Keep the key on that device, outside campaign records and bundles.
+The root-only secrets directory must already be on the commissioned storage.
+Do not paste keys into commands, tickets or shell history.
+
+```sh
+sudo python3 - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+if os.geteuid() != 0:
+    raise SystemExit("root required")
+directory = Path("/var/lib/azazel/secrets")
+# The installation supplies /var/lib/azazel; do not follow a secrets symlink.
+directory.mkdir(mode=0o700, exist_ok=True)
+info = directory.lstat()
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit("secrets directory must be root-owned mode 0700")
+parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    fd = os.open("commissioning.key", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=parent)
+    try:
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(os.urandom(32))
+            stream.flush()
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.fsync(parent)
+finally:
+    os.close(parent)
+PY
+```
+
+The tools require a root-owned regular 32-byte key at
+`/var/lib/azazel/secrets/commissioning.key`, mode `0600`, inside a root-owned
+`0700` directory. Run them with the required local privilege to read that key.
+If initialization is interrupted, investigate locally; do not overwrite or
+rotate a key used by commissioning or existing fingerprints automatically.
