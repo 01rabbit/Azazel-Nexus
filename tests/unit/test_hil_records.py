@@ -317,7 +317,7 @@ def test_no_committed_json_validates_as_attested():
 )
 def test_nested_capture_cannot_hide_fixture_or_shape_only(marker):
     record = fixture_record()
-    record["capture"] = marker
+    record["acquisition"] = marker
     assert "nested fixture/synthetic/shape_only evidence refused" in refused(record)
 
 

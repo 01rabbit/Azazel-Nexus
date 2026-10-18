@@ -193,13 +193,13 @@ def _gate(record: dict, reasons: list[str]) -> None:
     if gate not in GATES or not isinstance(observations, dict):
         reasons.append("known gate_id and observations object required")
         return
-    if "capture" in record:
-        capture = record["capture"]
-        if validate_acquisition(capture).status is Status.REFUSED:
-            reasons.append("capture: invalid acquisition shape")
-        elif any(capture.get(key) != record.get(key) for key in
+    if "acquisition" in record:
+        acquisition = record["acquisition"]
+        if validate_acquisition(acquisition).status is Status.REFUSED:
+            reasons.append("acquisition: invalid acquisition shape")
+        elif any(acquisition.get(key) != record.get(key) for key in
                  ("gate_id", "dut_id", "dut_fingerprint")):
-            reasons.append("capture: gate/DUT identity mismatch")
+            reasons.append("acquisition: gate/DUT identity mismatch")
     if gate == "HG-01":
         _descriptions(
             observations,
