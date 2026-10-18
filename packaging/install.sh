@@ -269,6 +269,8 @@ make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
 make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
 make_owned_dir 0700 azknowledge root /var/lib/azazel/state/knowledge
 make_owned_dir 2710 azmioentry azazel-operator /var/lib/azazel/run/mio-entry
+make_owned_dir 2710 azmio azazel-operator /var/lib/azazel/run/mio
+make_owned_dir 2710 azremote azazel-operator /var/lib/azazel/run/remote
 make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge
 make_owned_dir 2710 azknowledge azknowledge-read /var/lib/azazel/run/knowledge-read
 make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/knowledge

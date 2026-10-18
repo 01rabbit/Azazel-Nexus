@@ -325,6 +325,8 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/fetch",
         "/var/lib/azazel/run/mio-entry",
+        "/var/lib/azazel/run/mio",
+        "/var/lib/azazel/run/remote",
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
     }
@@ -333,6 +335,29 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         assert spec.group == ("azknowledge-read" if spec.path.endswith("knowledge-read")
                               else "azazel-operator")
         assert spec.mode & 0o007 == 0
+
+
+def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
+    """A socket name the runtime binds must have its leaf in the layout.
+
+    `runtime_paths.socket_path` deliberately never creates a missing parent,
+    so a leaf absent from the layout is a daemon that fails to bind at start
+    (found by the container M.I.O. rehearsal: locald and remoted had none).
+    """
+
+    from azazel_nexus_runtime import runtime_paths
+
+    expected_owner = {
+        "audit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
+        "fetch": "azfetch", "mio-entry": "azmioentry", "mio": "azmio",
+        "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge",
+    }
+    owners = {spec.path: spec.owner for spec in LAYOUT}
+    assert set(runtime_paths._SOCKET_LEAVES) == set(expected_owner)
+    for name, leaf in runtime_paths._SOCKET_LEAVES.items():
+        parent = f"/var/lib/azazel/run/{leaf}"
+        assert parent in owners, f"socket {name!r} has no installed leaf {parent}"
+        assert owners[parent] == expected_owner[name], parent
 
 
 def test_service_accounts_are_not_added_to_the_operator_socket_group():
