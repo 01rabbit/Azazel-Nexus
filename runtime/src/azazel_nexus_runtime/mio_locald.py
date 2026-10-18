@@ -34,6 +34,7 @@ from azazel_nexus.model_runtime import (
 from azazel_nexus.playbook_selection import (
     PlaybookSelection,
     active_playbooks,
+    retained_paths,
     selection_context,
 )
 from azazel_nexus.reasoning_playbook import Library, match, technique_ids
@@ -140,6 +141,9 @@ class LocalRuntimeService:
         self._playbooks = playbooks
         # The injected runtime client owns its socket deadline.
         self._knowledge_lookup = knowledge_lookup
+
+    def set_playbooks(self, library: Library | None) -> None:
+        self._playbooks = library
 
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
@@ -260,8 +264,8 @@ class PlaybookSelectionHolder:
     """Cache verified layers; inspect only file metadata until state changes.
 
     Trust/config, pointer, retained bytes and selected assets invalidate the
-    cache. Expiry removes references even if no files change. Failures retry
-    on the next request, so restored access needs no daemon restart.
+    cache, including failures. Expiry removes references even if no files
+    change; restored files or permissions invalidate failed selections.
     """
 
     def __init__(self, *, config: Path, root: Path, clock=None):
@@ -270,43 +274,55 @@ class PlaybookSelectionHolder:
         self.clock = clock or (lambda: datetime.now(UTC).isoformat().replace('+00:00', 'Z'))
         self.selection = PlaybookSelection(None, 'no_pack')
         self._revision = None
+        self._watch_paths = ()
         self._audited = False
 
-    def _fingerprint(self):
+    def _fingerprint(self, watch_paths):
         result = []
-        for path in (self.config, self.root / 'current', *self.selection.watch_paths):
+        for path in (self.config, self.root, self.root / 'generations',
+                     self.root / 'current', *watch_paths):
             try:
                 info = path.lstat()
                 result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
                                info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid))
-            except OSError:
-                result.append(None)
+            except OSError as error:
+                result.append((type(error).__name__, error.errno))
         return tuple(result)
 
     def refresh(self, *, audit: Callable[[dict], None]) -> Library | None:
         now = self.clock()
-        revision = self._fingerprint()
+        revision = self._fingerprint(self._watch_paths)
         expired = (self.selection.expires_at is not None
                    and datetime.fromisoformat(now) >= datetime.fromisoformat(self.selection.expires_at))
-        if (self._revision == revision and self.selection.library is not None and not expired):
+        if (self._revision == revision and not expired):
             return self.selection.library
+        watch_paths = ()
+        before = None
         try:
-            # An absent store is ordinary CORE, even before commissioning.
-            try:
-                (self.root / 'current').lstat()
-            except FileNotFoundError:
+            watch_paths = retained_paths(self.root)
+            if not watch_paths:
                 selection = PlaybookSelection(None, 'no_pack')
             else:
-                selection = active_playbooks(selection_context(self.config, self.root), now=now)
+                context = selection_context(self.config, self.root)
+                watch_paths += tuple(asset.path for key, asset in context.assets.items()
+                                     if key[0] == 'reasoning_playbook')
+                before = self._fingerprint(watch_paths)
+                selection = active_playbooks(context, now=now)
+        except PermissionError:
+            selection = PlaybookSelection(None, 'store_unreadable')
         except Exception as error:
             if isinstance(error, AuditUnavailable):
                 raise
             selection = PlaybookSelection(None, 'pack_degraded')
-        # Never retain the old library on a failed refresh.
         previous = self.selection
-        stable = revision == self._fingerprint()
+        after = self._fingerprint(watch_paths)
+        # Compare the NEW paths on both sides of verification. The old paths
+        # also cover config/pointer changes during discovery or config reads.
+        stable = (revision == self._fingerprint(self._watch_paths)
+                  and (before is None or before == after))
         self.selection = selection
-        self._revision = self._fingerprint() if stable else None
+        self._watch_paths = watch_paths
+        self._revision = after if stable else None
         if not self._audited or selection != previous or self._revision is None:
             audit(selection.as_event())
             self._audited = True
@@ -347,7 +363,7 @@ def main(
     service = LocalRuntimeService(playbooks=library, knowledge_lookup=lookup_context)
 
     def handle(request):
-        service._playbooks = selection.refresh(audit=ledger.append)
+        service.set_playbooks(selection.refresh(audit=ledger.append))
         return service.handle(request, audit=ledger.append)
 
     return serve_forever(

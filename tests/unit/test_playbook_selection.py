@@ -168,12 +168,16 @@ def test_holder_generation_reload_cache_damage_and_expiry(selection_node, monkey
     second = holder.refresh(audit=events.append)
     assert second.entries == () and second != first
     assert events[-1]['ids'][-1] == 'disable-all'
+    event_count = len(events)
+    assert holder.refresh(audit=events.append) is second
+    assert len(events) == event_count
     # A changed inventory/trust config rechecks current trust with no pointer change.
     monkeypatch.setattr(mio_locald, 'selection_context', lambda *args: replace(ctx, signing_epoch=99))
     config.write_text('{"changed":true}')
     assert holder.refresh(audit=events.append) is None
     assert events[-1]['reason'] == 'pack_degraded'
     monkeypatch.setattr(mio_locald, 'selection_context', lambda *args: ctx)
+    config.write_text('{}')
     assert holder.refresh(audit=events.append) is not None
     asset = next(v for k, v in ctx.assets.items() if k[1] == 'disable-all')
     original = asset.path.read_bytes()
@@ -214,3 +218,103 @@ def test_retained_integrity_alone_does_not_replace_signature_check(selection_nod
     before = {str(p): p.read_bytes() for p in ctx.root.rglob('*') if p.is_file()}
     assert active_playbooks(ctx, now=NOW).reason == 'pack_degraded'
     assert {str(p): p.read_bytes() for p in ctx.root.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('failure', ['missing', 'degraded', 'tree', 'no_pack', 'expired'])
+def test_holder_caches_failures_and_recovers_on_metadata_change(selection_node, monkeypatch, failure):
+    from azazel_nexus_runtime import mio_locald
+
+    ctx = activate(selection_node)
+    config = ctx.root.parent / 'config.json'
+    config.write_text('{}')
+    asset = next(v for k, v in ctx.assets.items() if k[:2] == ('reasoning_playbook', 'baseline'))
+    target = asset.path
+    if failure == 'tree':
+        generation = mp.MissionPack(ctx).current()
+        target = ctx.root / 'generations' / str(generation.number) / 'tree' / 'mission-pack.signed'
+    elif failure == 'no_pack':
+        target = ctx.root / 'current'
+    original = target.read_bytes()
+    if failure in ('missing', 'no_pack'):
+        target.unlink()
+    elif failure == 'tree':
+        target.write_bytes(original + b' ')
+    reads = []
+    active_context = [replace(ctx, signing_epoch=99) if failure == 'degraded' else ctx]
+    monkeypatch.setattr(mio_locald, 'selection_context',
+                        lambda *args: reads.append(args) or active_context[0])
+    clock = ['2026-11-01T00:00:00Z' if failure == 'expired' else NOW]
+    holder = mio_locald.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: clock[0])
+    events = []
+    assert holder.refresh(audit=events.append) is None
+    count = len(reads)
+    for _ in range(3):
+        assert holder.refresh(audit=events.append) is None
+    assert len(reads) == count
+    assert len(events) == 1
+    if failure == 'degraded':
+        active_context[0] = ctx
+        config.write_text('{"restored":true}')
+    else:
+        target.write_bytes(original)
+    clock[0] = NOW
+    assert holder.refresh(audit=events.append) is not None
+    assert len(events) == 2
+
+
+@pytest.mark.parametrize('location', ['current', 'generation', 'pack', 'config'])
+def test_permission_failures_are_store_unreadable(selection_node, monkeypatch, location):
+    from azazel_nexus_runtime import mio_locald
+
+    ctx = activate(selection_node)
+    generation = mp.MissionPack(ctx).current()
+    tree = ctx.root / 'generations' / str(generation.number)
+    config = ctx.root.parent / 'config.json'
+    config.write_text('{}')
+    denied = {'current': ctx.root / 'current', 'generation': tree / 'generation.json',
+              'pack': tree / 'tree' / 'mission-pack.signed', 'config': config}[location]
+    from azazel_nexus import playbook_selection
+
+    original = playbook_selection._regular
+
+    def read(path, limit):
+        if path == denied:
+            raise PermissionError('test denial')
+        return original(path, limit)
+
+    monkeypatch.setattr(playbook_selection, '_regular', read)
+    if location != 'config':
+        assert active_playbooks(ctx, now=NOW).reason == 'store_unreadable'
+    def context(*args):
+        if location == 'config':
+            raise PermissionError('test denial')
+        return ctx
+
+    monkeypatch.setattr(mio_locald, 'selection_context', context)
+    holder = mio_locald.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
+    events = []
+    assert holder.refresh(audit=events.append) is None
+    assert events[-1]['reason'] == 'store_unreadable'
+    assert holder.refresh(audit=events.append) is None
+    assert len(events) == 1
+
+
+def test_no_playbook_components_is_none_selected(selection_node, monkeypatch):
+    ctx = activate(selection_node)
+    original = mp.MissionPack._retained
+
+    def retained(service, generation):
+        pack = original(service, generation)
+        manifest = dict(pack.manifest, components=[c for c in pack.manifest['components']
+                                                  if c['kind'] != 'reasoning_playbook'])
+        return replace(pack, manifest=manifest)
+
+    monkeypatch.setattr(mp.MissionPack, '_retained', retained)
+    result = active_playbooks(ctx, now=NOW)
+    assert (result.library, result.reason) == (None, 'none_selected')
+
+
+def test_generation_commissioning_digest_mismatch(selection_node):
+    ctx = activate(selection_node)
+    assert active_playbooks(replace(ctx, commissioning_digest='sha256:' + '0' * 64),
+                            now=NOW).reason == 'pack_degraded'

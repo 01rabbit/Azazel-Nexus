@@ -678,6 +678,9 @@ def test_main_refreshes_optional_selection_before_each_request(tmp_path, monkeyp
             self._playbooks = playbooks
             observed.append(playbooks)
 
+        def set_playbooks(self, library):
+            self._playbooks = library
+
         def handle(self, request, *, audit):
             observed.append(self._playbooks)
             return {'outcome': 'failed'}

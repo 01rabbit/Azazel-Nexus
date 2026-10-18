@@ -79,6 +79,20 @@ class PlaybookSelection:
                 'ids': list(self.ids), 'versions': list(self.versions), 'digests': list(self.digests)}
 
 
+def retained_paths(root: Path) -> tuple[Path, ...]:
+    """Discover retained files without verifying or composing their contents."""
+    try:
+        raw = _regular(root / 'current', 256)
+    except FileNotFoundError:
+        return ()
+    if not (raw.endswith(b'\n') and raw[:-1].isdigit()
+            and raw == str(int(raw)).encode() + b'\n' and int(raw) > 0):
+        raise PackRefused('invalid active pointer')
+    tree = root / 'generations' / str(int(raw))
+    return (tree, tree / 'tree', tree / 'generation.json',
+            tree / 'tree' / 'mission-pack.signed', tree / 'tree' / 'admission.json')
+
+
 def active_playbooks(context: PackContext | SelectionContext, *, now: str) -> PlaybookSelection:
     """Resolve only ACTIVE retained selections, with current trust and exact pins.
 
@@ -87,6 +101,10 @@ def active_playbooks(context: PackContext | SelectionContext, *, now: str) -> Pl
     checks, so this consumer additionally checks them before using any prose.
     """
     try:
+        # GenerationStore wraps metadata OSErrors as GenerationRefused. Read the
+        # retained files first so permission failures keep their fixed reason.
+        for path in retained_paths(context.root)[2:]:
+            _regular(path, 16 * 1024 * 1024)
         service = MissionPack(context)
         status = service.status(now=now)
         if status['state'] == 'core':
@@ -123,6 +141,8 @@ def active_playbooks(context: PackContext | SelectionContext, *, now: str) -> Pl
             paths.append(asset.path)
             if layers[-1].version != component['version']:
                 return PlaybookSelection(None, 'invalid_library')
+        if not layers:
+            return PlaybookSelection(None, 'none_selected')
         baselines = [layer for layer in layers if layer.layer == 'baseline']
         if len(baselines) > 1:
             return PlaybookSelection(None, 'multiple_baselines')
@@ -139,6 +159,8 @@ def active_playbooks(context: PackContext | SelectionContext, *, now: str) -> Pl
                                  tuple(layer.digest for layer in library.layers), doc['expires_at'],
                                  (*paths, tree / 'generation.json', tree / 'tree' / 'mission-pack.signed',
                                   tree / 'tree' / 'admission.json'))
+    except PermissionError:
+        return PlaybookSelection(None, 'store_unreadable')
     except PlaybookRefused as error:
         reason = 'digest_mismatch' if str(error) == 'digest_mismatch' else 'invalid_library'
         return PlaybookSelection(None, reason)

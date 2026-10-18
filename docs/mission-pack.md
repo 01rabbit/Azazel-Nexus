@@ -213,9 +213,9 @@ installed inventory paths and loads the exact selected digest, size and version.
 It composes one baseline followed by site layers in manifest order; no baseline,
 multiple baselines, missing assets or verification failures remove all playbooks.
 
-Locald caches successful composition, checks pointer/configuration/retained-file/
+Locald caches successful composition and stable failures, checks pointer/configuration/retained-file/
 asset metadata on each request and reloads on changes or expiry. Failures discard
-the cached library and retry on subsequent requests. Audits report fixed reason
+the cached library; verification retries when watched metadata changes. Audits report fixed reason
 and ordered library IDs/versions/digests only. This consumer never writes pack
 state or promotes a generation; existing model admission remains closed.
 
@@ -223,7 +223,7 @@ Packaging must provision `azmio` read/traverse access to the configuration,
 private generation files and selected assets, preserving commissioned root-only
 write authority and encrypted storage. This change adds no users/groups,
 permission changes or unit-hardening exceptions. Unreadable state gives an
-audited `pack_degraded` fallback with no playbooks; an absent current pointer is
+audited `store_unreadable` fallback with no playbooks; an absent current pointer is
 `no_pack`. See [Reasoning playbooks](reasoning-playbooks.md) for cache behavior
 and the complete reason vocabulary. The existing runtime root convention applies;
 there is no new path override or environment variable.

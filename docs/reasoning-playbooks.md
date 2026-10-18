@@ -164,14 +164,18 @@ interval, and selected asset version/size/digest pins. It loads each library wit
 the selected component digest. Exactly one baseline is required; baseline comes
 first, followed by site layers in manifest component order. Site-only selections
 are refused as `invalid_library`; two baselines produce `multiple_baselines`.
-The shipped baseline is not automatically loaded.
+A pack with no playbook components produces `none_selected`. Permission failures
+reading commissioned state produce `store_unreadable`. The shipped baseline is
+not automatically loaded.
 
 A small locald holder resolves at startup and checks metadata for the `current`
 pointer, commissioned configuration, retained generation files and selected asset
 files per request. Changes trigger verification and recomposition; expiry also
 invalidates the cache without a file change. Failed resolution immediately drops
-the old library and retries on the next request. The fixed reasons are `no_pack`,
-`pack_degraded`, `asset_missing`, `digest_mismatch`, `invalid_library` and
+the old library. Stable failures are cached until watched metadata changes;
+expiry is still checked on every request. The fixed reasons are `no_pack`,
+`pack_degraded`, `store_unreadable`, `none_selected`, `asset_missing`,
+`digest_mismatch`, `invalid_library` and
 `multiple_baselines`; success is `active`. Selection audits contain only the
 reason and ordered library IDs, versions and raw digests, never paths or prose.
 Advice continues through its existing admission gates without optional references.
