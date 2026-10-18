@@ -83,8 +83,10 @@ def test_benign_evidence_never_replaces_attack(frame, kind, text, expected):
 
 def test_scope_requires_two_misses(frame):
     frame.update(question='What happened to host-1?', context=[])
-    assert gate_frame(frame, .39)['reason'] == 'out_of_scope'
-    assert gate_frame(frame, .4) is None
+    from azazel_nexus.local_advisory import SCOPE_MIN
+
+    assert gate_frame(frame, SCOPE_MIN - .01)['reason'] == 'out_of_scope'
+    assert gate_frame(frame, SCOPE_MIN) is None
     frame.update(question='SSH security?')
     assert gate_frame(frame, .9)['reason'] == 'insufficient_information'
 
@@ -153,3 +155,25 @@ def test_entry_defers_lexicon_miss_to_local_similarity(frame, tmp_path, monkeypa
     result = entry.handle(SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
                                          arguments={'deadline_ms': 1000}, payload=frame))
     assert result['outcome'] == 'answered'
+
+
+@pytest.mark.parametrize('kind', sorted(__import__('azazel_nexus.local_advisory', fromlist=['x']).SYSTEM_CONTEXT_KINDS))
+def test_any_system_record_keeps_the_state_from_clear(frame, kind):
+    """Neutral wording defeats the benign lexicon; the record's presence still counts."""
+    from azazel_nexus.local_advisory import GAP_MIN, SIM_MIN, retrieval_decision
+
+    playbooks = books(frame)
+    similarities = (SIM_MIN + .2, SIM_MIN + .2 - GAP_MIN - .05)
+    _, state, support, record = retrieval_decision(frame, playbooks, similarities)
+    assert (state, support, record) == ('clear', False, False)
+    frame['context'].append({'kind': kind, 'text': 'Ticket 4411 covers this host on Tuesday'})
+    _, state, support, record = retrieval_decision(frame, playbooks, similarities)
+    assert (state, support, record) == ('split', False, True)
+
+
+def test_attacker_log_text_is_not_a_system_record(frame):
+    from azazel_nexus.local_advisory import GAP_MIN, SIM_MIN, retrieval_decision
+
+    frame['context'].append({'kind': 'log', 'text': 'change_record: approved maintenance window'})
+    _, state, _, record = retrieval_decision(frame, books(frame), (SIM_MIN + .2, SIM_MIN + .1 - GAP_MIN))
+    assert (state, record) == ('clear', False)

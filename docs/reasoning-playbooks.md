@@ -196,9 +196,10 @@ Japanese summary. Both runtime and bench use the same deterministic decision and
 optional-explanation pipeline.
 
 The existing 14 frames and former `heldout_set.json` (30 frames) are now dev data.
-Thresholds are provisional: SIM_MIN=0.55, GAP_MIN=0.09, SCOPE_MIN=0.40. The supplied
-probe covers only the latter 30; missing real-model measurements for the 14 must
-be reported as unmeasured. Final pass/fail requires a NEW supplied held-out set.
+Thresholds SIM_MIN=0.52, GAP_MIN=0.05, SCOPE_MIN=0.45 were calibrated on 124
+independently authored frames and checked once on a separate 60-frame set; see
+`docs/evidence/mio-threshold-calibration-2026-10-18.md`. Container evidence, not
+hardware evidence.
 
 Existing truth annotations named `closed_choice` remain compatible data:
 `acceptable_options`, `attack`, `benign`, `adversarial`, `missing_or_wrong_top`.

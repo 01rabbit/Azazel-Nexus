@@ -371,10 +371,12 @@ def advisory_response_format() -> dict:
     }
 
 
-# Provisional dev-only threshold: no precision/admission claim is attached to it.
-SIM_MIN = 0.55
-GAP_MIN = 0.09
-SCOPE_MIN = 0.40
+# Calibrated on 124 independently authored frames (bge-m3 Q8_0, baseline library
+# 1.0.0) and checked once on a separate 60-frame set; see
+# docs/evidence/mio-threshold-calibration-2026-10-18.md. Not hardware evidence.
+SIM_MIN = 0.52    # every calibration frame with a correct top-1 stays a candidate
+GAP_MIN = 0.05    # "clear" was right 19/20 (calibration) and 14/14 (validation)
+SCOPE_MIN = 0.45  # below the lowest security-question top-1 seen (0.468)
 SYSTEM_CONTEXT_KINDS = frozenset({
     'change_record', 'change_ticket', 'maintenance_window', 'asset_inventory',
     'baseline', 'schedule', 'approval_record',
@@ -429,15 +431,25 @@ def benign_supported(frame):
         and not _NEGATED_SUPPORT.search(item['text']) for item in frame['context'])
 
 
+def has_system_record(frame):
+    """A collector-attached system record (change, schedule, inventory...).
+
+    Wording-independent: the benign lexicon misses neutral records, so the mere
+    presence of one keeps the state from being shown as clear.
+    """
+    return any(item['kind'] in SYSTEM_CONTEXT_KINDS for item in frame['context'])
+
+
 def retrieval_decision(frame, playbooks, similarities):
     support = benign_supported(frame)
+    record = has_system_record(frame)
     top = similarities[0] if similarities else (SIM_MIN if playbooks else -1.0)
     gap = top - similarities[1] if len(similarities) > 1 else 0.0
     state = ('none' if not playbooks or top < SIM_MIN else
-             'clear' if gap >= GAP_MIN and not support else 'split')
+             'clear' if gap >= GAP_MIN and not support and not record else 'split')
     candidate = ({'option_id': playbooks[0].id, 'kind': 'playbook'} if state != 'none'
                  else {'option_id': 'other_suspicious', 'kind': 'other_suspicious'})
-    return candidate, state, support
+    return candidate, state, support, record
 
 
 def explanation_prompt(frame, option, playbooks=(), knowledge=()):
@@ -496,7 +508,8 @@ def read_explanation(text, frame, candidate, reference_text=''):
         raise ValueError('explanation_schema') from None
 
 
-def delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation=None, *, similarities=(), state='none', retrieval='keyword', benign_evidence=False):
+def delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation=None, *, similarities=(), state='none', retrieval='keyword', benign_evidence=False,
+                       system_record=False):
     """System labels and trusted guidance are never concatenated with model prose."""
     ja = bool(_JAPANESE.search(frame['question']))
     title = next((o['title'] for o in options if o['option_id'] == candidate['option_id']),
@@ -522,6 +535,9 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
                   {'clear': 'Clear candidate', 'split': 'Candidates close', 'none': 'No matching class'}[state])
                  + (('。正当な活動の根拠あり（要確認）' if ja else '. Legitimate activity evidence (verify)')
                     if benign_evidence else '')
+                 + (('。変更記録などシステム由来の記録あり：正当な活動か記録で確認してください' if ja else
+                     '. A system record (change, schedule, inventory) is attached: check it for legitimate activity')
+                    if system_record and not benign_evidence else '')
                  + (('。照合は簡易方式' if ja else '. Simplified keyword matching') if retrieval == 'keyword' else ''),
         'match_evidence': ('照合の根拠: ' if ja else 'Match evidence: ') + json.dumps(evidence, ensure_ascii=False)[:1000],
     }
@@ -563,7 +579,8 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
             'match_evidence': evidence,
             'provenance': {'route': 'local', 'model_id': model_id, 'mode': 'embedding_retrieval',
                            'playbooks_reviewed': reviewed, 'state': state, 'guard': None, 'retrieval': retrieval,
-                           'similarities': list(similarities), 'benign_evidence': benign_evidence},
+                           'similarities': list(similarities), 'benign_evidence': benign_evidence,
+                           'system_record': system_record},
             'explanation_source': 'model' if explanation else 'trusted'}
 
 
@@ -637,7 +654,7 @@ def read_delivered(reply):
     provenance = reply['provenance']
     require(type(provenance) is dict and set(provenance) == {
         'route', 'model_id', 'mode', 'playbooks_reviewed', 'state', 'guard',
-        'retrieval', 'similarities', 'benign_evidence'})
+        'retrieval', 'similarities', 'benign_evidence', 'system_record'})
     require(provenance['route'] == 'local' and provenance['mode'] == 'embedding_retrieval')
     require(type(provenance['playbooks_reviewed']) is bool)
     require(type(provenance['model_id']) is str
@@ -653,6 +670,8 @@ def read_delivered(reply):
     require(scores == sorted(scores, reverse=True))
     require(type(provenance['benign_evidence']) is bool)
     require(not provenance['benign_evidence'] or provenance['state'] != 'clear')
+    require(type(provenance['system_record']) is bool)
+    require(not provenance['system_record'] or provenance['state'] != 'clear')
     require((candidate['kind'] == 'other_suspicious') == (provenance['state'] == 'none'))
     if provenance['state'] != 'none':
         require(evidence and candidate['option_id'] == evidence[0]['option_id'])
@@ -662,7 +681,8 @@ def read_delivered(reply):
         top = scores[0] if scores else -1
         gap = scores[0] - scores[1] if len(scores) > 1 else 0
         expected_state = ('none' if top < SIM_MIN else 'clear'
-                          if gap >= GAP_MIN and not provenance['benign_evidence'] else 'split')
+                          if gap >= GAP_MIN and not provenance['benign_evidence']
+                          and not provenance['system_record'] else 'split')
         require(provenance['state'] == expected_state)
     if provenance['benign_evidence']:
         require(alternatives[0]['kind'] == 'benign')

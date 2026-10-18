@@ -1,0 +1,1643 @@
+{
+ "schema": "azazel-nexus/mio-heldout/1",
+ "cases": [
+  {
+   "frame": {
+    "request_id": "v01-ssh-brute-en",
+    "privacy_class": "P2-mission",
+    "question": "What is this alert and what should I check first?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "sshd: 412 Failed password for root from 198.51.100.23 in 240s, gw-branch1 port 22 forwarded to nas01"
+     },
+     {
+      "kind": "log",
+      "text": "No Accepted entries from this source in last 24h"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "auth-ssh-brute-force",
+    "acceptable": [
+     "auth-ssh-brute-force"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Classic SSH guessing",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v02-rdp-brute-ja",
+    "privacy_class": "P2-mission",
+    "question": "工場の事務PCにRDPで大量にログイン失敗が出ています。何をすべきですか?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "EventID 4625 x 380 from 203.0.113.77 -> pc-fac-02 (TCP/3389) in 10 min"
+     },
+     {
+      "kind": "ticket",
+      "text": "事務員より: PCの動作が少し遅い"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "auth-rdp-brute-force",
+    "acceptable": [
+     "auth-rdp-brute-force"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "RDP guessing from external",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v03-mfa-fatigue-ja",
+    "privacy_class": "P2-mission",
+    "question": "社員から『承認していないのにMFAの通知が何度も来る』と連絡がありました。",
+    "context": [
+     {
+      "kind": "ticket",
+      "text": "クリニック受付 佐藤さん: 夜22時台に認証アプリの通知が約25回、止まらない"
+     },
+     {
+      "kind": "log",
+      "text": "Entra sign-in: 25 MFA prompts denied/no response, user=sato@clinic.example.test, IP 198.51.100.88"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "auth-mfa-fatigue",
+    "acceptable": [
+     "auth-mfa-fatigue"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Push bombing",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v04-impossible-travel-en",
+    "privacy_class": "P2-mission",
+    "question": "User says they have not travelled. Is this a concern?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Sign-in tenant: m.rossi from Osaka JP 09:02, then from Frankfurt DE 09:21 (IP 203.0.113.140), both successful"
+     },
+     {
+      "kind": "note",
+      "text": "User is a branch-office clerk, no VPN configured"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "auth-impossible-travel",
+    "acceptable": [
+     "auth-impossible-travel"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Two distant logins within 19 min",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v05-dns-tunnel-ja",
+    "privacy_class": "P2-mission",
+    "question": "DNSログに変な長い名前が並んでいます。",
+    "context": [
+     {
+      "kind": "dns",
+      "text": "pc-br2-11 -> ns: 7f3a9c1e0b2d4455aa81c0de.t.exfil-lab.example.test TXT, 640 queries/10min, 全て異なるサブドメイン"
+     },
+     {
+      "kind": "alert",
+      "text": "IDS: SID 2xxxx DNS long label anomaly"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "network-dns-tunneling",
+    "acceptable": [
+     "network-dns-tunneling"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Long random labels TXT",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v06-c2-beacon-en",
+    "privacy_class": "P2-mission",
+    "question": "Is this host talking to something it should not?",
+    "context": [
+     {
+      "kind": "flow",
+      "text": "10.20.5.14 -> 192.0.2.99:443 every 60s +/-2s for 6h, 310 bytes each, SNI none"
+     },
+     {
+      "kind": "dns",
+      "text": "192.0.2.99 resolves from updt-cdn.example.test registered 3 days ago"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "network-c2-beacon",
+    "acceptable": [
+     "network-c2-beacon"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Fixed interval small sessions to new domain",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v07-portscan-en",
+    "privacy_class": "P2-mission",
+    "question": "IDS fired on the guest VLAN. Triage?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "ET SCAN Nmap SYN: 10.30.0.57 -> 10.10.0.0/24, 1,024 ports on 12 hosts in 90s"
+     },
+     {
+      "kind": "dhcp",
+      "text": "10.30.0.57 leased to unknown-laptop, MAC 02:00:5e:00:53:21"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "network-recon-port-scan",
+    "acceptable": [
+     "network-recon-port-scan"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Internal scan from guest device",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v08-smb-lateral-ja",
+    "privacy_class": "P2-mission",
+    "question": "複数サーバーに管理共有経由でファイルが置かれています。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "pc-adm-03 -> srv-file01, srv-pos01, srv-lab02 \\\\IPC$ / ADMIN$ writes svc*.exe within 4 min"
+     },
+     {
+      "kind": "log",
+      "text": "4624 type3 account=helpdesk2 from pc-adm-03"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "network-lateral-smb",
+    "acceptable": [
+     "network-lateral-smb"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "ADMIN$ copy to many hosts",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v09-encps-en",
+    "privacy_class": "P2-mission",
+    "question": "EDR flagged powershell on a reception PC.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "powershell.exe -nop -w hidden -enc SQBFAFgAIAAo... parent=winword.exe host=pc-rcpt-01"
+     },
+     {
+      "kind": "log",
+      "text": "Sysmon 1: user=reception, 10:41"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "endpoint-encoded-powershell",
+    "acceptable": [
+     "endpoint-encoded-powershell"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Encoded PS from Word",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v10-task-persist-ja",
+    "privacy_class": "P2-mission",
+    "question": "新しいタスクスケジューラ登録が見つかりました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "schtasks /create /tn 'WinUpdateChk' /tr 'C:\\Users\\Public\\x.exe' /sc onlogon host=pc-fac-05"
+     },
+     {
+      "kind": "note",
+      "text": "保守担当は未登録のタスクだと言っている"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "endpoint-persistence-task",
+    "acceptable": [
+     "endpoint-persistence-task"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Unknown logon task in Public dir",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v11-auditclear-en",
+    "privacy_class": "P2-mission",
+    "question": "Event logs on a server look empty.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "EventID 1102 Security log cleared by CORP\\admin2 on srv-ad02 at 03:12"
+     },
+     {
+      "kind": "note",
+      "text": "no change ticket found for tonight"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "endpoint-audit-clearing",
+    "acceptable": [
+     "endpoint-audit-clearing"
+    ],
+    "dangerous": [
+     "benign",
+     "edge-misconfiguration"
+    ],
+    "note": "Log cleared off-hours; no ticket",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v12-ransom-note-ja",
+    "privacy_class": "P2-mission",
+    "question": "共有フォルダに見知らぬテキストファイルが大量にあり、ファイルが開けません。",
+    "context": [
+     {
+      "kind": "ticket",
+      "text": "診療所の電子カルテ共有: 『README_RESTORE.txt』が全フォルダに作成、拡張子 .locked に変化"
+     },
+     {
+      "kind": "alert",
+      "text": "srv-file01: 4,800 files renamed in 6 min"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "endpoint-ransom-note",
+    "acceptable": [
+     "endpoint-ransom-note",
+     "endpoint-ransomware-encryption"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Ransom note present (ransomware-encryption also plausible)",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v13-sqli-en",
+    "privacy_class": "P2-mission",
+    "question": "WAF log for the booking site, anything real?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "GET /search?q=1' UNION SELECT username,password FROM users-- 200 OK 14KB src=203.0.113.9"
+     },
+     {
+      "kind": "log",
+      "text": "same source 60 similar requests in 2 min"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "web-sql-injection",
+    "acceptable": [
+     "web-sql-injection"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "UNION SQLi, 200 response",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v14-webshell-ja",
+    "privacy_class": "P2-mission",
+    "question": "公開Webサーバに身に覚えのないファイルがあります。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "POST /uploads/img_01.php (uploaded 1h ago via /upload.php as .jpg.php) from 198.51.100.61, cmd= param"
+     },
+     {
+      "kind": "log",
+      "text": "www-data spawned /bin/sh"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "web-webshell-upload",
+    "acceptable": [
+     "web-webshell-upload"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "PHP webshell",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v15-bec-en",
+    "privacy_class": "P2-mission",
+    "question": "Finance forwarded this email. Should I act on it?",
+    "context": [
+     {
+      "kind": "email",
+      "text": "From: cfo-office@vendor-pay.example.test (display name 'Vendor Corp AR'): 'Our bank has changed. Please wire the next invoice to the new account below, urgent today.'"
+     },
+     {
+      "kind": "note",
+      "text": "Real vendor domain is vendor.example.test; reply-to differs"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "email-bec-payment-change",
+    "acceptable": [
+     "email-bec-payment-change"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Payment change lookalike domain",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v16-cloudkey-ja",
+    "privacy_class": "P2-mission",
+    "question": "GitHubの公開リポジトリに鍵らしき文字列があると指摘されました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Secret scanning: AWS access key AKIAEXAMPLE0000000 committed to public repo branch-tools by contractor"
+     },
+     {
+      "kind": "log",
+      "text": "CloudTrail: key used from 203.0.113.200 (unknown) 10 min ago, ListBuckets"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "cloud-access-key-leak",
+    "acceptable": [
+     "cloud-access-key-leak"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Leaked cloud key already used",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v17-pubstorage-en",
+    "privacy_class": "P2-mission",
+    "question": "Someone changed a storage setting in the tenant.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Azure storage acct clinicbackup01: container 'scans' set to anonymous blob read access by it-temp@clinic.example.test"
+     },
+     {
+      "kind": "note",
+      "text": "container holds patient intake PDFs"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "cloud-public-storage",
+    "acceptable": [
+     "cloud-public-storage"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Public container with sensitive data",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v18-kev-ja",
+    "privacy_class": "P2-mission",
+    "question": "脆弱性情報で当社VPN機器の名前が出ていました。",
+    "context": [
+     {
+      "kind": "vuln",
+      "text": "Gateway SSL-VPN appliance fw-br3 firmware 7.2.1: CVE-2026-0001 listed in CISA KEV, exploited in the wild"
+     },
+     {
+      "kind": "asset",
+      "text": "fw-br3 管理画面とVPNは外部公開"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "vuln-kev-listed",
+    "acceptable": [
+     "vuln-kev-listed",
+     "vuln-critical-exposed-service"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "KEV on exposed VPN",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v19-usb-en",
+    "privacy_class": "P2-mission",
+    "question": "DLP says a lot of data went to a USB stick.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "pc-acc-04: 2.3GB copied to removable drive E: (SanDisk, serial TST0001), 1,900 files from \\\\srv-fin\\payroll"
+     },
+     {
+      "kind": "time",
+      "text": "Sat 19:40, user is not on shift"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "exfil-removable-media",
+    "acceptable": [
+     "exfil-removable-media"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Bulk to USB off-hours",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v20-personalcloud-ja",
+    "privacy_class": "P2-mission",
+    "question": "退職予定の社員が大量のファイルを個人のクラウドにアップしているようです。",
+    "context": [
+     {
+      "kind": "proxy",
+      "text": "user=tanaka, POST to personal-drive.example.test 1.1GB over 15 min from pc-sales-07"
+     },
+     {
+      "kind": "note",
+      "text": "本人は今月末で退職予定との人事メモあり"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "exfil-personal-cloud",
+    "acceptable": [
+     "exfil-personal-cloud",
+     "insider-predeparture-export"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Upload to personal cloud; also insider-predeparture plausible",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v21-rogue-dhcp-en",
+    "privacy_class": "P2-mission",
+    "question": "Several PCs in branch 2 got a strange gateway.",
+    "context": [
+     {
+      "kind": "dhcp",
+      "text": "Offers seen from 10.40.0.250 (not the gateway 10.40.0.1) with router=10.40.0.250, dns=198.51.100.5"
+     },
+     {
+      "kind": "ticket",
+      "text": "Users report web pages show certificate warnings"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "edge-rogue-dhcp",
+    "acceptable": [
+     "edge-rogue-dhcp"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Second DHCP server",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v22-arp-ja",
+    "privacy_class": "P2-mission",
+    "question": "同じセグメントでMACアドレスの重複警告が出ました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "gw-branch1: IP 10.10.0.1 now claimed by MAC 02:00:5e:00:53:99 (was 02:00:5e:00:53:01), gratuitous ARP x 40/min"
+     },
+     {
+      "kind": "log",
+      "text": "通信が一部遅い"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "edge-arp-spoofing",
+    "acceptable": [
+     "edge-arp-spoofing"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Gateway IP MAC flip",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v23-rogueap-en",
+    "privacy_class": "P2-mission",
+    "question": "A new wifi name appeared in the clinic waiting room.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Wireless scan: SSID 'Clinic-Guest-Free' BSSID 02:00:5e:00:53:aa on channel 6, not in the AP inventory, wired-side port sw2/12"
+     },
+     {
+      "kind": "asset",
+      "text": "Authorized SSIDs: Clinic-Staff, Clinic-Guest"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "edge-rogue-access-point",
+    "acceptable": [
+     "edge-rogue-access-point"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Unlisted AP on wired port",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v24-canary-ja",
+    "privacy_class": "P2-mission",
+    "question": "サーバーの偽の管理者アカウントでログインがありました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Canary credential 'svc_backup_old' used for login on pc-fac-09 from 10.20.5.31, honey account never assigned to any person"
+     },
+     {
+      "kind": "log",
+      "text": "4624 at 02:17"
+     }
+    ]
+   },
+   "labels": {
+    "group": "attack_in_options",
+    "expected": "deception-canary-credential",
+    "acceptable": [
+     "deception-canary-credential"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Canary account used",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v25-ben-scan-en",
+    "privacy_class": "P2-mission",
+    "question": "Our IDS flagged a scan, is it a problem?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Nmap-like sweep 10.10.0.20 -> 10.10.0.0/24, 800 ports"
+     },
+     {
+      "kind": "change_ticket",
+      "text": "CHG-2210: quarterly vulnerability scan from scanner01 (10.10.0.20), Sat 02:00-04:00, signed off by IT manager"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "network-recon-port-scan"
+    ],
+    "note": "Approved scan from known scanner",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v26-ben-fw-ja",
+    "privacy_class": "P2-mission",
+    "question": "ファームウェア更新後に再起動が繰り返されたとのアラートです。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "fw-br2 reboot x3 and DHCP lease table reset at 01:10"
+     },
+     {
+      "kind": "maintenance_window",
+      "text": "ファームウェア更新 10/17 01:00-02:00 拠点2ゲートウェイ、作業者: 委託保守会社"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "edge-misconfiguration",
+     "edge-rogue-dhcp"
+    ],
+    "note": "Maintenance window explains reboot",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v27-ben-newdev-en",
+    "privacy_class": "P2-mission",
+    "question": "A new device showed up on the factory VLAN.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "New MAC 02:00:5e:00:53:c4 on VLAN 30, DHCP name 'cnc-lathe-new'"
+     },
+     {
+      "kind": "asset_inventory",
+      "text": "cnc-lathe-new: CNC lathe, MAC 02:00:5e:00:53:c4, VLAN 30, owner Production Eng, registered 10/10"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "edge-unknown-device"
+    ],
+    "note": "Registered in inventory",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v28-ben-admin-ja",
+    "privacy_class": "P2-mission",
+    "question": "夜間に管理者アカウントでログインがありました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "admin-it ログイン成功 srv-ad02 23:40 RDP from 10.10.0.15"
+     },
+     {
+      "kind": "schedule",
+      "text": "IT保守シフト表: 10/16 夜 23:30-01:00 admin-it 担当 (AD修正対応)"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "auth-off-hours-account"
+    ],
+    "note": "On the shift roster",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v29-ben-usb-en",
+    "privacy_class": "P2-mission",
+    "question": "DLP shows a large USB copy.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "pc-it-01: 40GB copied to USB (serial TST0002)"
+     },
+     {
+      "kind": "approval_record",
+      "text": "AR-118: IT Ops to export offline backup copy to encrypted USB TST0002 for off-site storage, signed by branch manager"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "exfil-removable-media"
+    ],
+    "note": "Approval record for backup",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v30-ben-region-ja",
+    "privacy_class": "P2-mission",
+    "question": "クラウドで普段と違う地域の操作が出ました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "CloudTrail: RunInstances in ap-southeast-1 by devops-ci"
+     },
+     {
+      "kind": "change_record",
+      "text": "検証用に ap-southeast-1 で一時インスタンス作成。終了予定 10/20。申請者: 開発チーム"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "cloud-unusual-region"
+    ],
+    "note": "Change record for test",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v31-ben-iam-en",
+    "privacy_class": "P2-mission",
+    "question": "A policy was attached to a role, check?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "IAM: AttachRolePolicy ReadOnlyAccess to role audit-reader by it-admin"
+     },
+     {
+      "kind": "change_ticket",
+      "text": "CHG-2231: external auditors need read-only access to the tenant for the October review; role audit-reader"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "cloud-iam-policy-change"
+    ],
+    "note": "Ticket describes the change, no approval wording",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v32-ben-dnsch-ja",
+    "privacy_class": "P2-mission",
+    "question": "DNSサーバーの設定が変わっています。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "gw-branch3 DHCPが配布するDNSが 10.10.0.2 から 10.10.0.5 に変更"
+     },
+     {
+      "kind": "change_ticket",
+      "text": "CHG-2240: 旧DNS(10.10.0.2)を10/18にサーバー入替、新DNS 10.10.0.5。拠点3のDHCP設定変更を含む"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "edge-dns-resolver-change"
+    ],
+    "note": "Ticket explains DNS move",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v33-ben-task-en",
+    "privacy_class": "P2-mission",
+    "question": "New scheduled task on a server.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "schtasks created 'NightlyBackupCopy' on srv-file01 by admin-it"
+     },
+     {
+      "kind": "asset_inventory",
+      "text": "srv-file01: backup agent v4 deployed 10/15; tasks NightlyBackupCopy at 01:30 listed in runbook"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "endpoint-persistence-task"
+    ],
+    "note": "Inventory/runbook lists it",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v34-ben-dl-ja",
+    "privacy_class": "P2-mission",
+    "question": "大量ダウンロードの警告が出ています。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "user=kobayashi 1.8GB downloaded from SharePoint in 20 min"
+     },
+     {
+      "kind": "baseline",
+      "text": "小林さん(経理)は毎月第2週に月次レポートのため同程度 (1.5-2GB) をダウンロードする。過去6か月同様"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "exfil-bulk-download"
+    ],
+    "note": "Baseline matches",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v35-ben-vpn-en",
+    "privacy_class": "P2-mission",
+    "question": "Login from a different country, worried.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Sign-in for j.tanaka from Singapore SG, MFA passed"
+     },
+     {
+      "kind": "schedule",
+      "text": "Travel calendar: J. Tanaka on business trip to Singapore 10/14-10/20"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "auth-impossible-travel"
+    ],
+    "note": "Calendar explains location",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v36-ben-flood-ja",
+    "privacy_class": "P2-mission",
+    "question": "外向きの通信量が急に増えました。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "pc-design-02 outbound 12GB in 1h to cdn.example.test"
+     },
+     {
+      "kind": "maintenance_window",
+      "text": "デザイン部の大容量動画を拠点間クラウドへ初回同期中(10/18 終日)。業務用のため帯域制限なし"
+     }
+    ]
+   },
+   "labels": {
+    "group": "benign",
+    "expected": "benign",
+    "acceptable": [
+     "benign"
+    ],
+    "dangerous": [
+     "network-outbound-volume",
+     "exfil-personal-cloud"
+    ],
+    "note": "Window explains volume",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v37-miner-en",
+    "privacy_class": "P2-mission",
+    "question": "Server is slow and the fans are loud; IDS shows brute-force like alerts?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "srv-app03 CPU 98% for 2 days, process 'kworker-x' connecting to pool.minexmr.example.test:4444"
+     },
+     {
+      "kind": "alert",
+      "text": "IDS label: 'Stratum mining protocol' (not an auth event)"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "auth-ssh-brute-force",
+     "benign"
+    ],
+    "note": "Cryptomining; wording hints brute force",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v38-vishing-ja",
+    "privacy_class": "P2-mission",
+    "question": "受付に『銀行です、確認コードを教えて』という電話が複数ありました。",
+    "context": [
+     {
+      "kind": "ticket",
+      "text": "クリニック受付: 午前中に3回、相手は口座のセキュリティ確認と言ってSMSコードを聞いてきた"
+     },
+     {
+      "kind": "note",
+      "text": "1回目で1名がコードを伝えたと言っている"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "benign",
+     "email-phishing-report"
+    ],
+    "note": "Vishing / phone social engineering not in list",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v39-badusb-en",
+    "privacy_class": "P2-mission",
+    "question": "An unknown USB device was plugged in and the PC started typing by itself.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "pc-fac-01: new HID keyboard VID_1234 PID_5678 inserted, 200 keystrokes in 3s, cmd.exe opened"
+     },
+     {
+      "kind": "note",
+      "text": "Device was found in the car park"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Rogue HID USB (BadUSB), no playbook",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v40-tailgate-ja",
+    "privacy_class": "P2-mission",
+    "question": "夜間に倉庫の入退室ログで不審な記録があります。",
+    "context": [
+     {
+      "kind": "log",
+      "text": "バッジ(退職者 ID 0452)で倉庫ドア 02:10 解錠、同時刻に別バッジの記録なし"
+     },
+     {
+      "kind": "log",
+      "text": "倉庫内カメラのスナップショットに未知の人物"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "benign"
+    ],
+    "note": "Physical intrusion with deactivated badge",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v41-dnsspoof-en",
+    "privacy_class": "P2-mission",
+    "question": "Users reach the supplier portal but see the wrong login page. DNS?",
+    "context": [
+     {
+      "kind": "dns",
+      "text": "portal.supplier.example.test resolves to 198.51.100.150 on branch DNS cache, public DNS shows 203.0.113.30"
+     },
+     {
+      "kind": "note",
+      "text": "resolver settings unchanged, dhcp normal"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "benign",
+     "edge-dns-resolver-change"
+    ],
+    "note": "DNS cache poisoning; misleading edge-dns-resolver-change",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v42-sim-ja",
+    "privacy_class": "P2-mission",
+    "question": "社長のスマホが突然圏外になり、その後アカウント回復メールが届いています。",
+    "context": [
+     {
+      "kind": "ticket",
+      "text": "社長秘書: 昨日15時から電話がつながらない。メールに『パスワード再設定』通知が6通"
+     },
+     {
+      "kind": "log",
+      "text": "tenant: password reset requested for ceo@corp.example.test via SMS, 15:20"
+     }
+    ]
+   },
+   "labels": {
+    "group": "missing_or_wrong_top",
+    "expected": "other_suspicious",
+    "acceptable": [
+     "other_suspicious",
+     "undetermined"
+    ],
+    "dangerous": [
+     "benign",
+     "auth-mfa-fatigue"
+    ],
+    "note": "SIM swap suspected; not covered",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v43-amb-spike-en",
+    "privacy_class": "P2-mission",
+    "question": "Is this an attack?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Web server 203.0.113.0/24 sources: 5,000 req/min to /login for 5 min"
+     },
+     {
+      "kind": "note",
+      "text": "Marketing newsletter was sent at same time"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "web-login-brute-force",
+    "acceptable": [
+     "web-login-brute-force",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "Could be campaign traffic or brute force",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v44-amb-dns-ja",
+    "privacy_class": "P2-mission",
+    "question": "このDNSの動きは問題ですか?",
+    "context": [
+     {
+      "kind": "dns",
+      "text": "pc-br1-08 が 20分で 900件のユニークなサブドメインを問い合わせ (cdn-sync.example.test 配下)"
+     },
+     {
+      "kind": "note",
+      "text": "同PCで新しい同期ソフトを試用中との話もあるが未確認"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "network-dns-tunneling",
+    "acceptable": [
+     "network-dns-tunneling",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "Tunnel vs sync software",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v45-amb-ps-en",
+    "privacy_class": "P2-mission",
+    "question": "EDR alert, not sure what to do.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "powershell -enc ... run by svc-deploy on srv-app02 at 14:05"
+     },
+     {
+      "kind": "note",
+      "text": "svc-deploy normally runs deployment scripts; no ticket found"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "endpoint-encoded-powershell",
+    "acceptable": [
+     "endpoint-encoded-powershell",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "Service account, plausible deployment",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v46-amb-login-ja",
+    "privacy_class": "P2-mission",
+    "question": "夜中のログインは不正ですか?",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "tanaka が 03:10 にVPN接続、ファイルサーバー閲覧のみ"
+     },
+     {
+      "kind": "note",
+      "text": "本人は連絡不通、先週から繁忙期とのこと"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "auth-off-hours-account",
+    "acceptable": [
+     "auth-off-hours-account",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "No evidence either way",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v47-amb-dev-en",
+    "privacy_class": "P2-mission",
+    "question": "New device on the clinic network.",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "Unknown MAC 02:00:5e:00:53:d0 got lease 10.50.0.88, name 'android-9f3'"
+     },
+     {
+      "kind": "note",
+      "text": "A visitor may be there today; guest wifi not separated"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "edge-unknown-device",
+    "acceptable": [
+     "edge-unknown-device",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "Visitor phone or intruder",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v48-amb-up-ja",
+    "privacy_class": "P2-mission",
+    "question": "クラウドの設定が変わったようですが判断できません。",
+    "context": [
+     {
+      "kind": "alert",
+      "text": "bucket 'branch-share' ACL changed to include AllUsers read at 11:05 by it-ops"
+     },
+     {
+      "kind": "note",
+      "text": "同時刻に拠点向けにファイル共有リンクを作る作業をしていた可能性"
+     }
+    ]
+   },
+   "labels": {
+    "group": "ambiguous",
+    "expected": "cloud-public-storage",
+    "acceptable": [
+     "cloud-public-storage",
+     "undetermined"
+    ],
+    "dangerous": [],
+    "note": "Maybe intentional share",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v49-oos-label-en",
+    "privacy_class": "P0-public",
+    "question": "The label printer in shipping keeps jamming. Any tips?",
+    "context": [
+     {
+      "kind": "ticket",
+      "text": "Zebra-type thermal printer on pack line, jams every ~20 labels after new roll"
+     }
+    ]
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "IT/OT hardware",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v50-oos-plc-ja",
+    "privacy_class": "P0-public",
+    "question": "来月の保守計画のために、ライン3のPLCのファームウェアのバージョンを教えてほしいです。",
+    "context": [
+     {
+      "kind": "asset_inventory",
+      "text": "Line3 PLC: model name only, firmware field blank"
+     }
+    ]
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "PLC inventory question",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v51-oos-wifi-en",
+    "privacy_class": "P0-public",
+    "question": "We are adding a new meeting room. How should we plan Wi-Fi coverage?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Wi-Fi planning",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v52-oos-nas-ja",
+    "privacy_class": "P0-public",
+    "question": "NASの容量が足りなくなりそうです。増設の目安は?",
+    "context": [
+     {
+      "kind": "note",
+      "text": "現在 8TB 中 6.9TB 使用、月間増加約150GB"
+     }
+    ]
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Capacity planning",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v53-oos-toner-en",
+    "privacy_class": "P0-public",
+    "question": "How do I order toner for the clinic's laser printers?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Consumables",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v54-oos-ups-ja",
+    "privacy_class": "P0-public",
+    "question": "UPSのバッテリー交換は何年ごとが目安ですか?予定を立てたいです。",
+    "context": [
+     {
+      "kind": "asset_inventory",
+      "text": "UPS 3台、設置 2022年4月"
+     }
+    ]
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "UPS replacement schedule",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v55-oos-lunch-en",
+    "privacy_class": "P0-public",
+    "question": "Can you suggest a lunch place near the Osaka office for 8 people?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Everyday",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v56-oos-mail-ja",
+    "privacy_class": "P0-public",
+    "question": "取引先への挨拶メールの文面を丁寧にしてほしいです。",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Business writing",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v57-oos-expense-en",
+    "privacy_class": "P0-public",
+    "question": "How do I submit a travel expense report?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Business process",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v58-oos-holiday-ja",
+    "privacy_class": "P0-public",
+    "question": "年末年始の休業日はいつですか?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "HR everyday",
+    "language": "ja"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v59-oos-translate-en",
+    "privacy_class": "P0-public",
+    "question": "Please translate this meeting summary into Japanese: 'We will review the quarterly budget next week.'",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Everyday translation",
+    "language": "en"
+   }
+  },
+  {
+   "frame": {
+    "request_id": "v60-oos-excel-ja",
+    "privacy_class": "P0-public",
+    "question": "Excelで売上表の合計が合いません。SUMの範囲の直し方は?",
+    "context": []
+   },
+   "labels": {
+    "group": "out_of_scope",
+    "expected": "out_of_scope",
+    "acceptable": [
+     "out_of_scope"
+    ],
+    "dangerous": [],
+    "note": "Spreadsheet help",
+    "language": "ja"
+   }
+  }
+ ]
+}
