@@ -93,7 +93,14 @@ def advisory_response_format() -> dict:
             "type": "object",
             "properties": {
                 "advice": {"type": "string"},
-                "fields": {"type": "object", "additionalProperties": {"type": "string"}},
+                # Field names must already satisfy the advisory reader's
+                # identifier rule; an unconstrained key ("weak credentials")
+                # was the most common reason a local answer was refused.
+                "fields": {
+                    "type": "object",
+                    "patternProperties": {"^[a-z0-9_]{1,64}$": {"type": "string"}},
+                    "additionalProperties": False,
+                },
             },
             "required": ["advice"],
             "additionalProperties": False,

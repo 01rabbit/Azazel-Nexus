@@ -35,7 +35,6 @@ export PYTHONDONTWRITEBYTECODE=1
 /out/venv/bin/python -m bench.mio_local.runner \
   --model /models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
   --model /models/hf.co_XpressAI_shisa-v2.1-llama3.2-3b-GGUF_Q4_K_M.gguf \
-  --model /models/Phi-3.5-mini-instruct-Q4_K_M.gguf \
   --requests 20 --threads 2 --context 2048 --max-tokens 512 \
   --deadline-s 120 --start-deadline-s 120 \
   --load-workers 1 --load-cpu 0.25 --load-memory-mib 256 \

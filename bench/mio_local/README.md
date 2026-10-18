@@ -25,6 +25,11 @@ files before execution):
 | `hf.co_XpressAI_shisa-v2.1-llama3.2-3b-GGUF_Q4_K_M.gguf` | Llama 3.2 Community License | `b5aed3ff090e2dba9587a211dc75a350ac1f501048829f140df90763f908c555` |
 | `Phi-3.5-mini-instruct-Q4_K_M.gguf` | MIT | `e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5` |
 
+`Phi-3.5-mini-instruct-Q4_K_M.gguf` is excluded from the default run: with
+llama.cpp b11716, any `response_format` constraint (json_schema or json_object)
+on this GGUF fails with HTTP 400 "Failed to initialize samplers", so it cannot
+produce schema-constrained advice. It loads and generates unconstrained.
+
 Ollama's Qwen3.5 GGUFs fail upstream llama.cpp loading with
 `rope.dimension_sections`; they are excluded from both E2E selection and the
 benchmark matrix. These licenses and digests describe the supplied artifacts.

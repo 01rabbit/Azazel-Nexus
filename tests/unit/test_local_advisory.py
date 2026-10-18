@@ -424,6 +424,8 @@ def test_e2e_composition_uses_real_local_server_contract(tmp_path, monkeypatch, 
     ]
     schema = sent[0]['response_format']['json_schema']['schema']
     assert schema['required'] == ['advice']
-    assert schema['properties']['fields']['additionalProperties'] == {'type': 'string'}
+    fields = schema['properties']['fields']
+    assert fields['additionalProperties'] is False
+    assert fields['patternProperties'] == {'^[a-z0-9_]{1,64}$': {'type': 'string'}}
     assert observed.results[0].timings['predicted_per_second'] == 6000
     harness.assert_no_content(tmp_path, observed)
