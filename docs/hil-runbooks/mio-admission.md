@@ -633,5 +633,10 @@ a throwaway installed copy does it reach `NODE_IDENTITY_UNAVAILABLE` and then
 `RESERVE_VIRTUALIZATION_OBSERVED`. Never change the architecture or the kill
 switch in the repository for a rehearsal.
 
+Rehearsing the operator path (entryd `mio.advise`) shows `deterministic handoff`
+/ `refused` for every frame while admission is closed; that is the documented
+behaviour (see [M.I.O. runtime](../mio-runtime.md#what-an-operator-receives-today)),
+not a rehearsal failure.
+
 A VM that happens to report no virtualization signal is still a VM:
 `virtualization_not_observed` is a negative filter, not proof of hardware.

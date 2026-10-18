@@ -385,6 +385,27 @@ This document specifies the control plane so that implementation has something
 to be measured against. It is not evidence that the control plane exists.
 
 
+### What an operator receives today
+
+While local model admission is closed (`LOCAL_MODEL_ADMISSION_ENABLED = False`,
+and no admitted evidence), entryd's routing never selects LOCAL. Every
+`mio.advise` frame that passes the entry checks returns `route: deterministic
+handoff`, `outcome: refused`, with no advice, banner or playbook procedures; only
+the insufficient-information gate returns its fixed text. Out-of-scope frames
+are also returned as `refused`, because the combined scope decision lives in
+locald. The keyword-fallback candidates described in
+[local runtime](mio-local-runtime.md) are produced by locald itself and do not
+reach an operator through entryd in this state; a container rehearsal confirmed
+this (the in-process library path renders them as documented).
+
+No operator-facing client for `mio.advise` ships yet: the verb is reachable over
+the entry socket with the runtime's length-prefixed protocol. An operator Unix
+account needs `azazel-operator` as its primary group, or as a supplementary
+group (`usermod -aG azazel-operator <user>`) once the runtime reads Linux
+supplementary groups from the peer (a fix found by the same rehearsal). Daemon
+accounts that carry the group for socket access are never classified as
+operators.
+
 ### Local advisory payload path (Milestone 3)
 
 `mio.route` remains metadata only. `mio.advise` accepts a separate JSON
