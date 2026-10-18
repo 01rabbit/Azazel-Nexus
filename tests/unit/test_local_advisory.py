@@ -775,6 +775,60 @@ def test_unknown_fact_in_any_field_refused(field):
     assert exc.value.refusal.value == 'ungrounded_facts'
 
 
+@pytest.mark.parametrize(('source', 'token'), [
+    ('mx2 1', 'mx1'), ('web02 01', 'web01'),
+    ('web-02 01', 'ｗｅｂ-０１'), ('mx1', '1'), ('web01', '01'),
+    ('2001:db8::1 99', '2001:db8::99'),
+    ('2001:db8::99', '99'), ('2001:db8::99', '2001:db8'),
+    ('host1.example', 'host1'), ('a1_b2-c3.d4', 'b2'),
+])
+@pytest.mark.parametrize('field', ['advice', *FIELD_NAMES])
+def test_whole_identifiers_and_addresses_cannot_use_fragments(source, token, field):
+    item = {**japanese_frame(), 'context': [{'kind': 'log', 'text': source}]}
+    document = json.loads(japanese_response('確認します'))
+    target = document if field == 'advice' else document['fields']
+    target[field] = token + 'を確認します'
+    with pytest.raises(AdvisoryRefused) as exc:
+        read_local_advisory(json.dumps(document), item)
+    assert exc.value.refusal.value == 'ungrounded_facts'
+
+
+@pytest.mark.parametrize(('source', 'token', 'citation'), [
+    ('mx1', 'mx1', 'mx1'), ('web01.', 'web01', 'web01'),
+    ('web-01', 'ｗｅｂ-０１', 'web-01'), ('ｗｅｂ-０１', 'web-01', 'web-01'),
+    ('a1_b2-c3.d4', 'a1_b2-c3.d4', 'a1_b2-c3.d4'),
+    ('2001:db8::99', '2001:db8::99', '2001:db8::99'),
+    ('::ffff:192.0.2.1', '::ffff:192.0.2.1', '::ffff:192.0.2.1'),
+    ('host=webserver.', 'host=webserver', 'webserver'),
+    ('user=alice.', 'user=alice.', 'alice'),
+])
+def test_normalized_whole_facts_ground_and_render(source, token, citation):
+    item = {**japanese_frame(), 'context': [{'kind': 'log', 'text': source}]}
+    advisory = read_local_advisory(japanese_response(token + 'を確認します'), item)
+    assert advisory.data.fields['cited_facts'] == citation
+
+
+@pytest.mark.parametrize('token', ['3', '5', '10', 'mx1', 'web-01', '2001:db8::99', '1110'])
+def test_reference_does_not_substantiate_situation_counts_or_hosts(token):
+    document = json.loads(japanese_response('確認します'))
+    document['fields']['interpretation'] = token + ' failed loginsを確認します'
+    with pytest.raises(AdvisoryRefused) as exc:
+        read_local_advisory(json.dumps(document), japanese_frame(),
+                            'reference\n3 5 10 mx1 web-01 2001:db8::99 T1110')
+    assert exc.value.refusal.value == 'ungrounded_facts'
+
+
+@pytest.mark.parametrize('reference', [
+    'T1110', 'T1110.003', 'TA0006', 'D3-NTA', 'CVE-2026-12345',
+    'Event ID 4625', 'イベントID 4625', '4625', 'Ｔ１１１０',
+])
+def test_reference_only_allowance_is_limited_to_whole_ids(reference):
+    token = reference.split()[-1]
+    advisory = read_local_advisory(japanese_response(token + 'を確認します'),
+                                   japanese_frame(), 'reference\n' + reference)
+    assert advisory.data.fields['cited_facts'] == '状況から引用できる具体的な事実はありません'
+
+
 def test_paraphrased_citation_replaced_and_digest_matches_delivered_document():
     from azazel_nexus.advisory_response import read_advisory
 

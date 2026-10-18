@@ -282,7 +282,15 @@ It additionally refuses malformed local fields as `local_schema`, unknown numeri
 or structured identifier tokens in advice or any field as `ungrounded_facts`,
 and language mismatches as `language_mismatch`. Facts must occur in the question,
 retained non-injection context, or the exact trusted reference actually sent in
-the prompt. Matching is exact, including numeric formatting. Model-written
+the prompt. Model text and source are NFKC-normalized before exact token matching,
+including numeric formatting. ASCII identifiers containing both letters and digits
+(with internal `.`, `_`, or `-`) and IPv6 literals must match as whole tokens;
+numeric fragments of identifiers or addresses cannot ground separate claims.
+Reference-only allowances are limited to ATT&CK `Tdddd[.ddd]` / `TAdddd`, `D3-...`,
+`CVE-yyyy-nnnn...`, and standalone four-digit Windows event IDs (including
+`Event ID NNNN` / `イベントID NNNN`). Small reference numbers such as `3`, `5`,
+and `10` cannot substantiate situation counts. Unlabelled plain lowercase words
+without digits remain unchecked, a known limit of lexical grounding. Model-written
 `cited_facts` prose overlap is no longer a refusal criterion. After validation,
 that field is replaced with source fact tokens used in the answer, deduplicated
 in source order and joined with `、` (Japanese) or `, ` (English), capped at 512

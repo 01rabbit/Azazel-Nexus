@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
+from ipaddress import IPv6Address
 
 from .advisory_response import Advisory, AdvisoryRefusal, AdvisoryRefused, read_advisory
 from .sanitizer import PrivacyClass
@@ -53,7 +55,13 @@ _FACT = re.compile(
     r'[A-Za-z_]+[-_][A-Za-z0-9_-]+|\d+(?:[.,]\d+)*)(?![A-Za-z0-9_])'
 )
 _LABEL = re.compile(r'[A-Za-z0-9_.:-]{1,64}')
-_NUMBER = re.compile(r'\d+(?:[.,]\d+)*')
+_NUMBER = re.compile(r'(?<![A-Za-z0-9_.-])\d+(?:[.,]\d+)*(?![A-Za-z0-9_.-])')
+_IDENTIFIER = re.compile(r'(?<![A-Za-z0-9_])[A-Za-z0-9_]+(?:[._-][A-Za-z0-9_]+)*(?![A-Za-z0-9_])')
+_IPV6 = re.compile(r'(?<![A-Za-z0-9_:.])[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]+(?![A-Za-z0-9_:.])')
+_REFERENCE_ID = re.compile(
+    r'(?:T\d{4}(?:\.\d{3})?|TA\d{4}|D3-[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*|'
+    r'CVE-\d{4}-\d{4,}|[0-9]{4})'
+)
 _LABELLED_FACT = re.compile(
     r'(?:host|hostname|account|user|src|source)\s*[=:]\s*([A-Za-z0-9_.@-]+)',
     re.IGNORECASE,
@@ -169,10 +177,33 @@ def reference_message(playbooks=(), knowledge=()) -> str:
 
 
 def _fact_tokens(text: str) -> list[tuple[int, int, str]]:
+    # Positions refer to normalized text. Pure unlabelled words without digits
+    # remain outside lexical grounding; this does not verify prose semantics.
+    text = unicodedata.normalize('NFKC', text)
     tokens = [(m.start(), m.end(), m.group()) for m in _FACT.finditer(text)]
-    tokens += [(m.start(1), m.end(1), m.group(1)) for m in _LABELLED_FACT.finditer(text)]
+    for match in _LABELLED_FACT.finditer(text):
+        token = match.group(1).rstrip('.')
+        if token:
+            tokens.append((match.start(1), match.start(1) + len(token), token))
+    tokens += [(m.start(), m.end(), m.group()) for m in _IDENTIFIER.finditer(text)
+               if re.search(r'[A-Za-z]', m.group()) and re.search(r'[0-9]', m.group())]
+    for match in _IPV6.finditer(text):
+        token = match.group().rstrip('.')
+        try:
+            IPv6Address(token)
+        except ValueError:
+            continue
+        tokens.append((match.start(), match.start() + len(token), token))
     tokens += [(m.start(), m.end(), m.group()) for m in _NUMBER.finditer(text)]
-    return sorted(set(tokens), key=lambda token: (token[0], -token[1]))
+    # A containing identifier/address owns its entire span. Its numeric (or
+    # structured) fragments must never substantiate separate model assertions.
+    whole = []
+    end = -1
+    for token in sorted(set(tokens), key=lambda token: (token[0], -token[1])):
+        if token[0] >= end:
+            whole.append(token)
+            end = token[1]
+    return whole
 
 
 def read_local_advisory(text: str, frame: Mapping | None = None,
@@ -207,7 +238,9 @@ def read_local_advisory(text: str, frame: Mapping | None = None,
         # Validate all delivered prose and the original model citation before
         # replacing it. A category label in advice is replaced before this check.
         model_text = ' '.join([advice, *fields.values()])
-        allowed = {token for _, _, token in _fact_tokens(source + ' ' + reference_text)}
+        allowed = {token for _, _, token in _fact_tokens(source)}
+        allowed.update(token for _, _, token in _fact_tokens(reference_text)
+                       if _REFERENCE_ID.fullmatch(token))
         model_tokens = {token for _, _, token in _fact_tokens(model_text)}
         if not model_tokens <= allowed:
             raise AdvisoryRefused(AdvisoryRefusal.UNGROUNDED_FACTS, 'ungrounded_facts')
