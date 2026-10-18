@@ -21,7 +21,7 @@ remain to be assigned. HG-03 shares the SO-10 experiment owned by
 [#17](https://github.com/01rabbit/Azazel-Nexus/issues/17).
 [#68](https://github.com/01rabbit/Azazel-Nexus/issues/68) remains a consumer
 waiting for HG-05; it does not own or bypass the campaign. These are the fixed
-campaign ownership decisions; issue relationship comments are integration work.
+campaign ownership decisions; issue relationship comments are reserved for the campaign owner after integration; this preparation makes no GitHub changes.
 
 | Gate / exercise | Procedure | Retained record | Validator | Owner issue |
 | --- | --- | --- | --- | --- |
@@ -36,10 +36,10 @@ campaign ownership decisions; issue relationship comments are integration work.
 | Admission and six behaviours | Procedure below | admission and six E2E behaviour records | HIL E2E validator | #100 |
 | Degraded-mode drills | Procedure below; [recovery](recovery.md) | per-fault degradation records | HIL degradation validator | #4 |
 
-All HIL validators in this table mean the schemas/validators **added in this
-change** under [the planned HIL records package](hil-evidence-records.md#tools-and-trust).
-Every exported run also uses the evidence bundle tool **added in this change**,
-as described there. Validation is necessary, never physical proof by itself.
+All HIL validators in this table use `azazel_nexus.hil_records.validate_record`
+with the corresponding schema discriminator and external attestation, as listed
+in [tools and trust](hil-evidence-records.md#tools-and-trust). Every exported run
+uses `python -m tools.hil_evidence` for bundling, lint, signing and verification. Validation is necessary, never physical proof by itself.
 
 ## Equipment and prerequisites
 
@@ -62,12 +62,11 @@ Install both Nexus distributions **and the Edge Core deployment supplying
 azazel-arbiter, azazel-evidence, azazel-leasejournal, azazel-operator and
 azazel.slice**. Nexus alone does not supply those; its azazel-auditd is also
 required.
-Use the read-only readiness command **added in this change**, linked in
+Use the read-only `az-hil-readiness` command, linked in
 [tools and trust](hil-evidence-records.md#tools-and-trust), to identify missing
 units, slice, commissioning key or class. Missing prerequisites block HG-05;
 never remove a required subsystem to make the probe run. Initialize the
-commissioning key only through the root-only, on-device procedure **added in
-this change** with that command; never print or export key material.
+commissioning key only through the root-only, on-device [procedure](core-reserve-measurement.md#commissioning-key-initialization-root-only); never print or export key material.
 
 ## A and B remain separate
 

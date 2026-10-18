@@ -32,7 +32,7 @@ def evidence(tmp_path):
     source.write_text("SYNTHETIC TEST ONLY; no measurements\n")
     root = tmp_path / "bundle"
     bundle(root, run_id="test-only", gate_ids=["HG-01", "SO-01"],
-           dut_id="dut-" + "a" * 16, artifacts={"capture": source},
+           dut_id="dut-" + "a" * 32, artifacts={"capture": source},
            operator_input={"notes": "SYNTHETIC TEST ONLY"})
     return root
 
@@ -83,8 +83,8 @@ def test_lint_refuses_without_echoing_confidential_content(text):
 
 
 def test_lint_accepts_anonymous_and_fingerprint_text():
-    lint_text(json.dumps({"dut_id": "dut-" + "a" * 16,
-                          "boot_fingerprint": "b" * 64,
+    lint_text(json.dumps({"dut_id": "dut-" + "a" * 32,
+                          "boot_fingerprint": "hmac-sha256:" + "b" * 64,
                           "notes": "SYNTHETIC TEST ONLY"}).encode())
     lint_text(b"capture.json azazel-arbiter.service azazel.slice")
 
@@ -149,7 +149,7 @@ def test_lint_applies_to_all_inputs_and_failed_bundle_is_not_promoted(tmp_path, 
     destination = tmp_path / "bundle"
     with pytest.raises(RecordRefused):
         bundle(destination, run_id="192.0.2.1" if location == "run_id" else "test-only",
-               gate_ids=["HG-01"], dut_id="dut-" + "a" * 16,
+               gate_ids=["HG-01"], dut_id="dut-" + "a" * 32,
                artifacts={"test.local" if location == "name" else "capture": source},
                operator_input={"notes": "192.0.2.1"} if location == "B" else {})
     assert not destination.exists()
@@ -160,7 +160,7 @@ def test_bundle_never_overwrites_or_traverses(evidence, tmp_path):
     for destination, name in [(evidence, "capture"), (tmp_path / "new", "../escape")]:
         with pytest.raises(RecordRefused):
             bundle(destination, run_id="test-only", gate_ids=["HG-01"],
-                   dut_id="dut-" + "a" * 16, artifacts={name: tmp_path / "synthetic-input"},
+                   dut_id="dut-" + "a" * 32, artifacts={name: tmp_path / "synthetic-input"},
                    operator_input={})
     assert not (tmp_path / "escape").exists()
 
@@ -185,7 +185,7 @@ def test_cli_all_commands_and_no_hardware_verdict(tmp_path, keys, capsys):
     operator.write_text('{"notes":"SYNTHETIC TEST ONLY"}')
     root = tmp_path / "bundle"
     assert main(["bundle", str(root), "--run-id", "test-only", "--gate-id", "HG-01",
-                 "--dut-id", "dut-" + "a" * 16, "--artifact", f"capture={source}",
+                 "--dut-id", "dut-" + "a" * 32, "--artifact", f"capture={source}",
                  "--operator-input", str(operator)]) == 0
     assert main(["lint", str(root)]) == 0
     assert main(["sign", str(root), "--key-file", str(keys[1])]) == 0
@@ -195,7 +195,7 @@ def test_cli_all_commands_and_no_hardware_verdict(tmp_path, keys, capsys):
     source.write_text("192.0.2.1")
     with pytest.raises(SystemExit) as failure:
         main(["bundle", str(tmp_path / "refused"), "--run-id", "test-only",
-              "--gate-id", "HG-01", "--dut-id", "dut-" + "a" * 16,
+              "--gate-id", "HG-01", "--dut-id", "dut-" + "a" * 32,
               "--artifact", f"capture={source}", "--operator-input", str(operator)])
     assert failure.value.code == 2
     assert "192.0.2.1" not in capsys.readouterr().err
@@ -221,7 +221,7 @@ def test_manifest_key_order_does_not_change_signature(evidence, keys):
 def test_multiple_artifacts_are_checked(evidence, keys, tmp_path):
     root = tmp_path / "multiple"
     source = evidence / "artifacts/capture"
-    bundle(root, run_id="test-only", gate_ids=["HG-01"], dut_id="dut-" + "a" * 16,
+    bundle(root, run_id="test-only", gate_ids=["HG-01"], dut_id="dut-" + "a" * 32,
            artifacts={"capture.json": source, "other": source}, operator_input={})
     sign(root, key_file=keys[1])
     for capture in (root / "artifacts").iterdir():

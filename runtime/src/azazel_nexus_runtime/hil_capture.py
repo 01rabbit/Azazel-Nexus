@@ -10,6 +10,9 @@ import argparse
 import json
 import sys
 
+from azazel_nexus.hil_records.confidentiality import lint_text
+from azazel_nexus.hil_records.contracts import anonymous_dut
+
 from .hil_readiness import (
     CAPTURE_UNITS,
     ReadOnlySystemd,
@@ -34,8 +37,8 @@ def capture_hg01(manager):
             # a missing object does not prove an inactive unit on its own.
             states[unit] = {"active_state": "unobserved", "sub_state": "unobserved"}
     return {
-        "schema": "azazel-nexus/hil-capture/hg-01/1", "gate": "HG-01",
-        "acquisition_method": "systemd-system-bus-read-only",
+        "schema": "azazel-nexus/hil-capture/hg-01/1", "gate_id": "HG-01",
+        "capture_method": "systemd-system-bus-read-only",
         "systemd_version": manager.version(), "unit_files": files, "units": states,
     }
 
@@ -64,8 +67,8 @@ def capture_hg04(*, links_reader=read_links, key_reader=protection_key):
             ),
         })
     return {
-        "schema": "azazel-nexus/hil-capture/hg-04/1", "gate": "HG-04",
-        "acquisition_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": interfaces,
+        "schema": "azazel-nexus/hil-capture/hg-04/1", "gate_id": "HG-04",
+        "capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": interfaces,
     }
 
 
@@ -83,9 +86,13 @@ def main(argv=None):
         if run_identity() != identity:
             raise ValueError("run identity changed")
         report.update(identity)
+        report["dut_fingerprint"] = report.pop("host_digest")
+        report["dut_id"] = anonymous_dut(report["dut_fingerprint"])
+        payload = json.dumps(report, sort_keys=True)
+        lint_text(payload.encode("utf-8"))
     except Exception:  # noqa: BLE001 - observation refusal must not expose identifiers
         # Neither parser exceptions nor kernel/manager replies may leak raw identity.
         print("refused: read-only capture or protected run identity unavailable", file=sys.stderr)
         return 2
-    print(json.dumps(report, sort_keys=True))
+    print(payload)
     return 0

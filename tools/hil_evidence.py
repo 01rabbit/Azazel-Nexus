@@ -6,7 +6,7 @@ FQDNs with alphabetic suffixes, and labelled bare hostnames.
 Known artifact extensions and systemd unit suffixes are treated as filenames,
 not hostnames; use anonymous names for those files too. Opaque binary
 artifacts are refused: only UTF-8 text can be inspected. Anonymous DUT IDs use
-``dut-`` plus 16..64 lowercase hex digits; HMAC fingerprints may be supplied.
+``dut-`` plus 32 lowercase hex digits; fingerprints use hmac-sha256:<64 lowercase hex>.
 This conservative pattern lint is not proof that arbitrary prose is anonymous:
 operators must review it, especially unlabelled bare hostnames/identifiers.
 Refusals never echo offending content. No redaction or private-range exemption.
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import ipaddress
 import json
 import re
 import tempfile
@@ -32,73 +31,21 @@ from pathlib import Path
 from typing import Literal
 
 from azazel_nexus.audit import canonical_event_bytes
+from azazel_nexus.hil_records.confidentiality import ConfidentialityRefused
+from azazel_nexus.hil_records.confidentiality import lint_text as lint_export
+from azazel_nexus.hil_records.contracts import ANONYMOUS_ID
 from azazel_nexus.signature import SignatureRefused, parse_public_key, verify_detached
 from tools.service_objectives import RecordRefused, artifact, require
 
 SCHEMA = "azazel-nexus/hil-evidence/v1"
 DOMAIN = b"azazel-nexus/hil-evidence/v1\0"
 SAFE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
-MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
-DOTTED_MAC = re.compile(r"(?i)\b[0-9a-f]{4}(?:\.[0-9a-f]{4}){2}\b")
-LABEL = re.compile(
-    r"(?i)\b(?:serial(?:[ _-]?(?:number|no))?|s/n|asset(?:[ _-]?(?:tag|id|number))?"
-    r"|host(?:[ _-]?name)|fqdn)\b[\s\"']*[:=]"
-)
-SERIAL = re.compile(
-    r"\b(?i:SN|SNA|SERIAL|ASSET)[-_]?[A-Za-z0-9]{4,}\b"
-    r"|\b(?=[A-Z0-9]{10,32}\b)(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]+\b"
-)
-HOST = re.compile(r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}\b")
-
-FILE_SUFFIXES = {
-    "json", "jsonl", "txt", "log", "csv", "yaml", "yml", "md",
-    "service", "slice", "target", "socket", "timer", "path", "mount", "scope",
-}
-
-
-def _hostname(text: str) -> bool:
-    return any(match.group().rsplit(".", 1)[1].lower() not in FILE_SUFFIXES
-               for match in HOST.finditer(text))
-
-
 def lint_text(payload: bytes) -> None:
-    """Refuse uninspectable or identifier-bearing text without echoing it."""
+    """Use the same export boundary as on-device capture."""
     try:
-        text = payload.decode("utf-8")
-    except UnicodeError as exc:
-        raise RecordRefused("confidentiality: UTF-8 text required") from exc
-    require("\0" not in text, "confidentiality: binary text refused")
-    for pattern, reason in (
-        (MAC, "MAC"), (DOTTED_MAC, "MAC"), (LABEL, "identifier label"),
-        (SERIAL, "serial-like token"),
-    ):
-        require(not pattern.search(text), f"confidentiality: {reason} refused")
-    require(not _hostname(text), "confidentiality: hostname refused")
-    # Escaped JSON strings are inspected after decoding too (e.g. \\u003a).
-    try:
-        value = json.loads(text)
-    except ValueError:
-        value = None
-    if isinstance(value, (dict, list)):
-        normalized = json.dumps(value, ensure_ascii=False)
-        if normalized != text:
-            for pattern in (MAC, DOTTED_MAC, LABEL, SERIAL):
-                require(not pattern.search(normalized), "confidentiality: identifier refused")
-        require(not _hostname(normalized), "confidentiality: hostname refused")
-        text += "\n" + normalized
-    candidates = re.findall(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])", text)
-    for token in re.findall(r"[0-9A-Za-z_.:%-]+", text):
-        if ":" in token:
-            # Also inspect suffixes: a log label may touch an address directly.
-            candidates.append(token)
-            candidates.extend(token[index + 1:] for index, char in enumerate(token)
-                              if char == ":")
-    for candidate in candidates:
-        try:
-            ipaddress.ip_address(candidate.rstrip(".").split("%", 1)[0])
-        except ValueError:
-            continue
-        raise RecordRefused("confidentiality: raw IP address refused")
+        lint_export(payload)
+    except ConfidentialityRefused as exc:
+        raise RecordRefused(str(exc)) from exc
 
 
 def attestation_bytes(manifest: dict) -> bytes:
@@ -126,18 +73,20 @@ def _json(payload: bytes) -> dict:
 
 
 def _shape(manifest: dict) -> None:
-    require(set(manifest) == {"schema", "run_id", "gate_ids", "dut_id", "A", "B"},
+    require(set(manifest) == {"schema", "run_id", "attestation_ref", "gate_ids", "dut_id", "A", "B"},
             "unsupported manifest fields")
     require(manifest["schema"] == SCHEMA, "unsupported manifest schema")
     require(isinstance(manifest["run_id"], str)
             and SAFE_NAME.fullmatch(manifest["run_id"]) is not None, "invalid run id")
+    require(manifest["attestation_ref"] == "hil-evidence:" + manifest["run_id"],
+            "attestation reference must identify the signed run")
     gates = manifest["gate_ids"]
     require(isinstance(gates, list) and bool(gates)
             and all(isinstance(g, str) and re.fullmatch(r"(?:HG|SO)-[0-9]{2}", g)
                     for g in gates), "gate ids required")
     require(len(set(gates)) == len(gates), "duplicate gate id")
     require(isinstance(manifest["dut_id"], str)
-            and re.fullmatch(r"dut-[0-9a-f]{16,64}", manifest["dut_id"]) is not None,
+            and ANONYMOUS_ID.fullmatch(manifest["dut_id"]) is not None,
             "anonymous dut id required")
     require(isinstance(manifest["B"], dict), "operator block B must be an object")
     automatic = manifest["A"]
@@ -195,7 +144,7 @@ def bundle(destination: Path, *, run_id: str, gate_ids: list[str], dut_id: str,
     """Stage inspected copies, then promote into a new directory; never overwrite."""
     require(not destination.exists(), "destination already exists")
     manifest = {"schema": SCHEMA, "run_id": run_id, "gate_ids": gate_ids,
-                "dut_id": dut_id, "A": {"artifacts": {}}, "B": operator_input}
+                "attestation_ref": "hil-evidence:" + run_id, "dut_id": dut_id, "A": {"artifacts": {}}, "B": operator_input}
     # Validate names before using them as filesystem paths.
     for name in artifacts:
         require(SAFE_NAME.fullmatch(name) is not None and name not in {".", ".."},
@@ -248,6 +197,30 @@ def verify(root: Path, *, operator_key: Path | None = None) -> Literal["shape_on
     except (SignatureRefused, ValueError, OSError) as exc:
         raise RecordRefused("operator attestation refused") from exc
     return "attested"
+
+
+def record_attestation(root: Path, record: dict, *, operator_key: Path | None = None):
+    """Bind C's external verification to an exact signed artifact, never a claim.
+
+    Use a closure for validate_record's attestation callback. Each run and the
+    aggregate must be present as a complete JSON artifact. Reference and DUT
+    checks alone do not authenticate a record. No key means SHAPE_ONLY.
+    """
+    from azazel_nexus.hil_records import Status
+
+    manifest = lint(root)
+    if (record.get("operator_attestation_ref") != manifest["attestation_ref"]
+            or record.get("dut_id") != manifest["dut_id"]):
+        return Status.REFUSED
+    expected = canonical_event_bytes(record)
+    for reference in manifest["A"]["artifacts"].values():
+        try:
+            candidate = _json((root / reference["path"]).read_bytes())
+        except ValueError:
+            continue
+        if canonical_event_bytes(candidate) == expected:
+            return Status(verify(root, operator_key=operator_key))
+    return Status.REFUSED
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -92,8 +92,8 @@ the samples is a measurement of a shorter run that does not say so.
    deployment path.** `azazel-arbiter`, `azazel-evidence`,
    `azazel-leasejournal`, `azazel-operator` and `azazel.slice` are supplied by
    the Edge Core deployment; installing Nexus alone does not provide them.
-   The Nexus `azazel-auditd` unit is also mandatory. Use the read-only readiness command **added in this change**
-   ([integration references](hil-evidence-records.md#tools-and-trust)) to identify
+   The Nexus `azazel-auditd` unit is also mandatory. Use the read-only `az-hil-readiness` command
+   ([tools and trust](hil-evidence-records.md#tools-and-trust)) to identify
    missing units, slice, commissioning key or target class. A ready result
    establishes presence/readiness only, not load or a reserve. Do not remove a
    required unit, create dummy units or bypass activation to make the probe run.
@@ -155,7 +155,7 @@ of policy, and it changes no number this build has.
 ## 8. Where an admissible record goes
 
 The existing consumer path is `/var/lib/azazel/run/core-reserve.json`.
-Probe v2 **added in this change** retains a distinct file for each run rather
+Probe v2 retains a distinct file for each run rather
 than overwriting previous observations, with boot HMAC fingerprint, sequence,
 commit and protected kernel context. See [HIL evidence records](hil-evidence-records.md)
 for archive, confidentiality, attestation and campaign validation. Do not copy
@@ -244,7 +244,7 @@ commissioning key refuses the run. Raw boot ID and machine ID are never
 included. Boot/build identity is checked again after sampling.
 
 Each run is published without replacement as
-`/var/lib/azazel/run/core-reserve-run-<sequence>.json`. Keep all run files;
+`/var/lib/azazel/run/core-reserve-run-<eight-digit-sequence>.json`. Keep all run files;
 sequence allocation reads this archive and publication refuses a concurrent
 collision. Run only one probe at a time. The sampler does not promote a run to
 `core-reserve.json`; the campaign validator and attestation must precede any
@@ -259,12 +259,13 @@ avoid exposing local identity.
 `az-hil-capture hg-04` reads the existing `RTM_GETLINK` implementation. Each
 NIC has an anonymous HMAC label, permanent-address presence and, when present,
 a domain-separated HMAC of the permanent address. Neither NIC names nor raw
-addresses are printed. Both capture commands emit JSON to stdout with host
-and boot HMACs, build commit and kernel release. Redirect output only to the
+addresses are printed. Both capture commands emit JSON to stdout with `dut_id`, `dut_fingerprint`
+and `boot_fingerprint` HMACs, build commit and kernel release. Redirect output only to the
 campaign directory outside version control. These are automatic acquisition
 records (`azazel-nexus/hil-capture/hg-01/1` and `hg-04/1`); they assert no
-hardware qualification and need reconciliation into the campaign schemas and
-operator attestation before validators may accept them. HG-02 remains an
+hardware qualification. `hil_records.validate_acquisition` checks their shape;
+`hil_records.validate_record` requires complete gate observations and external
+operator attestation. See the [field mapping and attestation binding](hil-evidence-records.md#acquisition-and-attestation-binding). HG-02 remains an
 operator runbook because unmasking changes system state.
 
 ### Commissioning key initialization (root only)

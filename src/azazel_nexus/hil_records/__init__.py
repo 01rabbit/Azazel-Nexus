@@ -25,6 +25,8 @@ from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.core_reserve import ReserveRefused, parse_record
 from azazel_nexus.core_reserve import validate as validate_reserve
 
+from .contracts import ANONYMOUS_ID, HMAC
+
 CAMPAIGN_SCHEMA = "azazel-nexus/core-reserve-campaign/v1"
 GATE_SCHEMA = "azazel-nexus/hil-gate/v1"
 BEHAVIOUR_SCHEMA = "azazel-nexus/hil-on-host/v1"
@@ -64,8 +66,6 @@ CLASS_PROFILES = {
     "32GiB": "standard",
     "64GiB": "standard",
 }
-HMAC = re.compile(r"hmac-sha256:[0-9a-f]{64}\Z")
-ANONYMOUS_ID = re.compile(r"dut-[0-9a-f]{32}\Z")
 MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
 CISCO_MAC = re.compile(r"(?i)\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b")
 SERIAL = re.compile(
@@ -211,6 +211,13 @@ def _gate(record: dict, reasons: list[str]) -> None:
     if gate not in GATES or not isinstance(observations, dict):
         reasons.append("known gate_id and observations object required")
         return
+    if "capture" in record:
+        capture = record["capture"]
+        if validate_acquisition(capture).status is Status.REFUSED:
+            reasons.append("capture: invalid acquisition shape")
+        elif any(capture.get(key) != record.get(key) for key in
+                 ("gate_id", "dut_id", "dut_fingerprint")):
+            reasons.append("capture: gate/DUT identity mismatch")
     if gate == "HG-01":
         _descriptions(
             observations,
@@ -455,6 +462,97 @@ def _drill(record: dict, reasons: list[str]) -> None:
         _expected(observations, {"observe_only": True}, reasons)
 
 
+CAPTURE_SCHEMAS = {
+    "HG-01": "azazel-nexus/hil-capture/hg-01/1",
+    "HG-04": "azazel-nexus/hil-capture/hg-04/1",
+}
+
+
+def validate_acquisition(record: object) -> Validation:
+    """Check automatic capture/probe syntax, never hardware or attestation.
+
+    These are inputs to gate/campaign envelopes, not alternative admission
+    contracts. Even a complete acquisition can return only SHAPE_ONLY.
+    Probe v2 is embedded unchanged as a campaign run's ``measurement``.
+    """
+    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2
+
+    from .confidentiality import lint_text
+    from .contracts import anonymous_dut
+
+    reasons: list[str] = []
+    try:
+        if not isinstance(record, dict):
+            raise TypeError("acquisition object required")
+        encoded = json.dumps(record, allow_nan=False).encode("utf-8")
+        if len(encoded) > 4 * 1024 * 1024:
+            raise ValueError("acquisition exceeds 4 MiB")
+        lint_text(encoded)
+        if record.get("schema") == RESERVE_SCHEMA_V2:
+            # parse_record checks sample types, profile and all v2 metadata.
+            # Provenance, duration, count and workload checks remain mandatory
+            # in _campaign/validate_reserve, independently of this shape check.
+            parse_record(encoded.decode("utf-8"))
+        else:
+            gate = record.get("gate_id")
+            if not isinstance(gate, str) or record.get("schema") != CAPTURE_SCHEMAS.get(gate):
+                raise ValueError("unsupported gate acquisition schema")
+            if gate not in CAPTURE_SCHEMAS:
+                raise ValueError("unsupported gate acquisition")
+            if not _matches(HMAC, record.get("dut_fingerprint")):
+                raise ValueError("dut_fingerprint: protected HMAC required")
+            if record.get("dut_id") != anonymous_dut(record["dut_fingerprint"]):
+                raise ValueError("dut_id: must match protected host fingerprint")
+            if not _matches(HMAC, record.get("boot_fingerprint")):
+                raise ValueError("boot_fingerprint: protected HMAC required")
+            if not _matches(re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})"), record.get("build_commit")):
+                raise ValueError("build_commit: full commit required")
+            if not _text(record.get("kernel_release")):
+                raise ValueError("kernel_release required")
+            if gate == "HG-01":
+                if record.get("capture_method") != "systemd-system-bus-read-only":
+                    raise ValueError("capture_method mismatch")
+                if not _text(record.get("systemd_version")):
+                    raise ValueError("systemd_version required")
+                files, units = record.get("unit_files"), record.get("units")
+                if not isinstance(files, dict) or not isinstance(units, dict) or not units:
+                    raise ValueError("unit_files and units objects required")
+                if any(not _text(name) or not _text(state) for name, state in files.items()):
+                    raise ValueError("unit file state required")
+                for state in units.values():
+                    if not isinstance(state, dict) or any(
+                        not _text(state.get(key)) for key in ("active_state", "sub_state")
+                    ):
+                        raise ValueError("unit active/sub state required")
+            else:
+                if record.get("capture_method") != "RTM_GETLINK/IFLA_PERM_ADDRESS":
+                    raise ValueError("capture_method mismatch")
+                interfaces = record.get("interfaces")
+                if not isinstance(interfaces, list):
+                    raise ValueError("interfaces list required")
+                for interface in interfaces:
+                    if not isinstance(interface, dict):
+                        raise TypeError("interface object required")
+                    if not _matches(HMAC, interface.get("nic_fingerprint")):
+                        raise ValueError("nic_fingerprint: protected HMAC required")
+                    present = interface.get("ifla_perm_address_present")
+                    usable = interface.get("permanent_address_usable")
+                    fingerprint = interface.get("permanent_address_fingerprint")
+                    if present is not None and type(present) is not bool:
+                        raise ValueError("permanent address presence must be bool or null")
+                    if type(usable) is not bool:
+                        raise ValueError("permanent address usability must be bool")
+                    if usable:
+                        if present is not True or not _matches(HMAC, fingerprint):
+                            raise ValueError("usable address requires presence and protected HMAC")
+                    elif fingerprint is not None:
+                        raise ValueError("unusable address cannot carry a fingerprint")
+    except (ValueError, TypeError, RecursionError):
+        # No field values or platform replies in diagnostics.
+        reasons.append("acquisition: malformed, confidential or unsupported fields")
+    return Validation(Status.REFUSED, tuple(reasons)) if reasons else Validation(Status.SHAPE_ONLY)
+
+
 def _campaign(
     record: dict, attestation: Attestation | None, reasons: list[str]
 ) -> int | None:
@@ -479,6 +577,9 @@ def _campaign(
         else:
             boots.add(boot)
         measurement = run.get("measurement")
+        if (isinstance(measurement, dict) and "boot_fingerprint" in measurement
+                and validate_acquisition(measurement).status is Status.REFUSED):
+            errors.append("measurement: invalid v2 acquisition shape")
         try:
             parsed = parse_record(json.dumps(measurement, allow_nan=False))
             errors.extend(validate_reserve(parsed).refusals)

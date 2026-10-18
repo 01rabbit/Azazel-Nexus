@@ -292,6 +292,9 @@ def write_record(record, path: Path = RESERVE_RECORD_PATH) -> Path:
     payload = (json.dumps(record_as_document(record), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
+    from azazel_nexus.hil_records.confidentiality import lint_text
+
+    lint_text(payload)
     handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".core-reserve.")
     try:
         with os.fdopen(handle, "wb") as stream:
