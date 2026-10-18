@@ -84,6 +84,20 @@ access refuses. The loader uses held directory descriptors, bounded reads and
 no writes. The directory and operator trust/models are ReadOnlyPaths for locald.
 No payload revocation-list file or separate runtime-evidence directory is used.
 
+locald (User=azmio, SupplementaryGroups=azmission-read) must also read the
+operator trust store to verify the attester. On hosts where the
+`azmission-read` group exists, `/etc/azazel/operator-trust/` is therefore
+root:azmission-read 0750 and `operators.json` root:azmission-read 0640. The
+store contains only operator public keys and revoked labels, never private
+keys, so group read exposes no secret; it stays root-owned, single-link and
+never group/other-writable, and the readers keep refusing anything else.
+`operator_enrollment` applies these modes by descriptor on every update, and
+`tools/provision_mission_read.py` (run by `packaging/install.sh`) migrates an
+existing 0700/0600 store, refusing symlinks, extra links, non-root owners,
+writable modes or a foreign non-root group without changing anything. The
+installer never creates the store. Without the group (development hosts) the
+store stays 0700/0600, and admission would refuse there.
+
 `policy.json` is canonical ASCII JSON with exactly `schema`, `operators`,
 `max_seconds` and `roles`. Schema is `azazel-nexus/model-admission-policy/v1`;
 roles must be `["embedding"]`; operators must be a nonempty explicit set of

@@ -2,10 +2,14 @@
 
 Run with ``python -m azazel_nexus.operator_enrollment enroll|revoke LABEL``.
 No production key is generated. The protected directory must already exist.
+When the ``azmission-read`` group exists, the directory is kept
+root:azmission-read 0750 and the store written root:azmission-read 0640 so
+azazel-mio-locald can read public keys for admission; otherwise 0600 is kept.
 """
 
 import argparse
 import fcntl
+import grp
 import hashlib
 import json
 import os
@@ -45,6 +49,20 @@ def _updated(current, *, action, operator, public_key_hex, confirmation):
     return OperatorTrust(keys, frozenset(revoked))
 
 
+# Mission/locald readers (azazel-mio-locald runs as azmio with this supplementary
+# group) need the public keys and revocations for local model admission. The
+# store holds no secrets; it stays root-owned and never group/other-writable.
+READER_GROUP = "azmission-read"
+
+
+def _reader_gid():
+    """Reader group id when provisioned on this host; None on dev/test hosts."""
+    try:
+        return grp.getgrnam(READER_GROUP).gr_gid
+    except KeyError:
+        return None
+
+
 def _encoded(trust, *, reserve_revocations=False):
     revoked = trust.revoked | frozenset(trust.public_keys) if reserve_revocations else trust.revoked
     return (json.dumps({
@@ -77,11 +95,26 @@ def _update_at(fd, *, owner, action, operator, public_key_hex, confirmation):
             raise ApprovalRefused("operator trust capacity must reserve every key's revocation")
         if len(raw) > _MAX_STORE_BYTES:
             raise ApprovalRefused("operator trust store capacity exceeded")
+        gid = _reader_gid()
+        if gid is not None and os.fstat(fd).st_gid not in (0, gid):
+            # Same rule as provisioning: never hand a store that an operator
+            # deliberately gave another group to the reader group. It stays
+            # private (0600) and admission refuses visibly instead.
+            gid = None
+        if gid is not None:
+            # Descriptor-based only: the locked, already-checked directory inode.
+            os.fchown(fd, owner, gid)
+            os.fchmod(fd, 0o750)
+            _protected(fd, owner=owner, directory=True)
         candidate = ".operators-" + uuid.uuid4().hex
         target = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
         temporary = candidate
         try:
+            if gid is not None:
+                # Group-readable before any content is written; never writable.
+                os.fchown(target, owner, gid)
+                os.fchmod(target, 0o640)
             _protected(target, owner=owner, directory=False)
             offset = 0
             while offset < len(raw):

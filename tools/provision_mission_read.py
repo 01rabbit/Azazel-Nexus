@@ -14,6 +14,58 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from azazel_nexus.hil_preflight import luks_backed
 
 
+def migrate_operator_trust(root: Path, gid: int | None, *, accounts: bool = True,
+                           owner: int = 0) -> bool:
+    """Give an EXISTING operator trust store to the reader group; never create it.
+
+    The store holds operator public keys and revocations only. azazel-mio-locald
+    (azmio, supplementary azmission-read) must read it for model admission, so
+    the directory becomes root:azmission-read 0750 and operators.json 0640. Every
+    descriptor is checked before anything changes; any unsafe object refuses the
+    whole migration. ``owner`` is a test seam for unprivileged temp trees.
+    """
+    directory = root / "etc/azazel/operator-trust"
+    if not directory.exists() and not directory.is_symlink():
+        return False
+    refused = ("refusing to migrate operator trust store "
+               "(requires root-owned, non-symlink, single-link, non-writable objects): ")
+    descriptors = []
+    try:
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                             | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError as exc:
+            raise ValueError(refused + str(directory)) from exc
+        descriptors.append((dir_fd, 0o750, directory))
+        try:
+            file_fd = os.open("operators.json", os.O_RDONLY | os.O_NOFOLLOW
+                              | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
+        except FileNotFoundError:
+            file_fd = None
+        except OSError as exc:
+            raise ValueError(refused + str(directory / "operators.json")) from exc
+        if file_fd is not None:
+            descriptors.append((file_fd, 0o640, directory / "operators.json"))
+        for fd, _, path in descriptors:
+            info = os.fstat(fd)
+            is_dir = fd == dir_fd
+            kind = stat.S_ISDIR if is_dir else stat.S_ISREG
+            if (not kind(info.st_mode) or info.st_mode & 0o022
+                    or accounts and info.st_uid != owner
+                    or not is_dir and info.st_nlink != 1):
+                raise ValueError(refused + str(path))
+            if gid is not None and info.st_gid not in (0, gid):
+                raise ValueError(f"refusing to replace operator trust group: {path}")
+        for fd, mode, _ in descriptors:
+            if gid is not None:
+                os.fchown(fd, -1, gid)
+            os.fchmod(fd, mode)
+    finally:
+        for fd, _, _ in descriptors:
+            os.close(fd)
+    return True
+
+
 def provision(root: Path, *, accounts: bool = True, staging: bool = False,
               encrypted=luks_backed) -> None:
     gid = grp.getgrnam("azmission-read").gr_gid if accounts else None
@@ -89,6 +141,11 @@ def provision(root: Path, *, accounts: bool = True, staging: bool = False,
     parents(assets_root, create=True)
     assets_root.mkdir(mode=0o2750, exist_ok=True)
     access(assets_root, True, exact=True)
+
+    trust = root / "etc/azazel/operator-trust"
+    if trust.exists() or trust.is_symlink():
+        parents(trust)  # Same ancestor checks as config; absent store untouched.
+        migrate_operator_trust(root, gid, accounts=accounts)
 
     config = root / "etc/azazel/mission-pack.json"
     if not config.exists() and not config.is_symlink():
