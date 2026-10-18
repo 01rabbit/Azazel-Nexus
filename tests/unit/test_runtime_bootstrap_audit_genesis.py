@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import time
+
 import pytest
 
 from azazel_nexus.audit import GENESIS_HASH
@@ -240,6 +242,12 @@ def test_genesis_refuses_stamp_change_between_scans_without_lasting_entry(tmp_pa
         result = real(fd)
         calls.append(1)
         if len(calls) == 1:  # entry created and removed after the first scan
+            # Directory stamps advance on the kernel's coarse clock (a few ms on
+            # Linux): a create+unlink inside the same tick as the stamps the first
+            # scan saw is invisible to any stamp comparison. Step past one tick so
+            # this exercises the refusal logic; the granularity limit itself is a
+            # documented residual of stamp-based change detection.
+            time.sleep(0.05)
             (root / "transient").write_bytes(b"")
             (root / "transient").unlink()
         return result
