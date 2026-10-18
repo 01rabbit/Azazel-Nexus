@@ -160,7 +160,7 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     assert captured["path"] == root.parent / "run/knowledge/knowledge.sock"
     assert captured["audit"] == ("sink", "knowledge")
     assert captured["handler"].__self__.root == root
-    assert resolved == [{"service_accounts": ("azmioentry", "azarbiter")}]
+    assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio")}]
     monkeypatch.setattr(sys, "argv", ["az-knowledge-lited", "--path"])
     with pytest.raises(SystemExit, match="takes no arguments"):
         daemon.main()
@@ -211,3 +211,68 @@ def test_socket_round_trip_and_refusals(node):
         thread.join(3)
     assert not thread.is_alive()
     assert not path.exists()
+
+
+@pytest.mark.parametrize("value", [None, "T1110", {}, ["T1110"] * 9,
+                                   ["TA0001"], ["T1110\n"], [1], ["T１１１０"]])
+def test_lookup_argument_refusals(value):
+    with pytest.raises(RequestRefused):
+        daemon.LOOKUP_VERB.bind({"technique_ids": value})
+
+
+def test_lookup_service_only_and_no_payload():
+    from azazel_nexus_runtime.transport import SocketServer
+
+    policy = PrincipalPolicy(operator_gid=100, service_uids=frozenset({200}))
+    operator = policy.classify(101, 100, 1)
+    service = policy.classify(200, 300, 1)
+    with pytest.raises(RequestRefused):
+        daemon.REGISTRY.resolve("knowledge.lookup", operator)
+    assert daemon.REGISTRY.resolve("knowledge.lookup", service) is daemon.LOOKUP_VERB
+    engine = SocketServer(registry=daemon.REGISTRY, policy=policy, audit=lambda e: None)
+    for arguments, payload in [({}, {}), ({"technique_ids": [], "path": "/secret"}, {}),
+                               ({"technique_ids": []}, {"text": "secret"})]:
+        with pytest.raises(RequestRefused):
+            engine._parse(json.dumps({"verb": "knowledge.lookup", "arguments": arguments,
+                                      "event": payload}).encode(), service)
+
+
+def test_lookup_response_and_audit(node):
+    from types import SimpleNamespace
+
+    from test_knowledge_lookup import admit_rows
+
+    service, root, trust, _ = node
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force",
+                       "description": "Private context"}])
+    events = []
+    service.audit = events.append
+    request = SimpleNamespace(verb=daemon.LOOKUP_VERB,
+                              arguments={"technique_ids": ["T1110"]}, payload={})
+    before = snapshot(root, trust)
+    result = service.handle(request)
+    assert result["refs"][0]["claim_id"] == "T1110"
+    assert result["reason_code"] == "available"
+    assert events == [{"event_type": "knowledge.lookup", "technique_ids": ["T1110"], "count": 1}]
+    assert "Private context" not in repr(events)
+    assert snapshot(root, trust) == before
+    (trust / "trust.json").unlink()
+    assert service.handle(request) == {"refs": [], "reason_code": "trust_unreadable"}
+
+
+def test_lookup_json_escape_bound(node):
+    from types import SimpleNamespace
+
+    from test_knowledge_lookup import admit_rows
+
+    service = node[0]
+    admit_rows(node, [{"technique_id": "T1110", "name": "😀" * 120,
+                       "description": "😀" * 240}] * 16)
+    events = []
+    service.audit = events.append
+    request = SimpleNamespace(verb=daemon.LOOKUP_VERB,
+                              arguments={"technique_ids": ["T1110"]}, payload={})
+    result = service.handle(request)
+    assert 0 < len(result["refs"]) < 16
+    assert len(json.dumps({"ok": True, "result": result}).encode()) <= 60 * 1024
+    assert events[0]["count"] == len(result["refs"])

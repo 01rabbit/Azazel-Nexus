@@ -241,11 +241,11 @@ gate.
 
 ## Milestone 1 daemon status
 
-`az-knowledge-lited` takes no command-line arguments and serves only
-`knowledge.status`, with no arguments, on
+`az-knowledge-lited` takes no command-line arguments and serves
+`knowledge.status`, with no arguments, and `knowledge.lookup` on
 `/var/lib/azazel/run/knowledge/knowledge.sock`. The verb admits OPERATOR and
-SERVICE; production service principals are limited to `azmioentry` and
-`azarbiter`. Kernel credentials and the shared `PrincipalPolicy`/transport
+SERVICE; production service principals are limited to `azmioentry`,
+`azarbiter` and `azmio` (the locald systemd User). Lookup admits SERVICE only. Kernel credentials and the shared `PrincipalPolicy`/transport
 perform admission. Protocol refusals go to this daemon's
 `/var/lib/azazel/state/knowledge/refusals.jsonl`.
 
@@ -295,3 +295,62 @@ revocation policy/list yields reason `unverified`. The daemon continues to
 answer diagnostics in these conditions. A refused admitted tar or a store
 holding only quarantined artifacts reports `quarantined`. None of these
 states changes Edge readiness, leases, enforcement or deterministic authority.
+
+
+## Bounded advisory context lookup
+
+`knowledge.lookup` accepts exactly `{"technique_ids": ["T1110", "T1110.001"]}`
+as its arguments, no payload. The list has at most eight items, each matching
+`T[0-9]{4}(\.[0-9]{3})?`. Empty lists return no context. Unknown arguments,
+invalid IDs and OPERATOR-only principals are refused by the existing transport
+and `PrincipalPolicy`. `azmio` is included in the daemon's resolved service
+accounts; `knowledge.status` retains its existing admission and response shape.
+No import, trust, revocation or promotion authority is added.
+
+The response has `refs` (at most sixteen items) and `reason_code`. The daemon
+retains a deterministic prefix fitting a 60 KiB JSON envelope, including ASCII
+escaping overhead, below the existing 64 KiB transport limit. Each frozen
+library `KnowledgeRef` carries `technique_id`, `name` (120 characters maximum),
+`summary` (240 maximum), `claim_id`, `bundle_digest`, and `freshness` (`current`
+or `static`). `attack_stix.flatten` obtains technique IDs from MITRE external
+references and preserves the technique name and description; Knowledge's native
+ATT&CK table uses `technique_id` as the stable primary key. That key is both
+`technique_id` and `claim_id` here, qualified by the authenticated bundle digest.
+A STIX object UUID is not invented. Descriptions become plain text summaries
+with HTML, Markdown formatting and links removed, whitespace collapsed, then
+truncated. Missing descriptions produce an empty summary, as in the pinned
+producer fixture. A missing or empty name is not served.
+
+`lite_import.lookup_context` returns a tuple; `lookup_context_reading` exposes
+the same tuple plus a fixed `reason_code`. `available` means at least one
+reference. `no_context` means an empty query or no matching usable row (including
+expired rows). Trust, revocation and storage failures use the existing status
+reason codes. None raises merely because context is absent. Selection follows
+`iter_served` in sorted member and row order, retains only sixteen references,
+and ignores repeated query IDs. Current claims pass the existing expiry check;
+rows without `agg_next_expiry` are static references. Authentication still reads
+and verifies the bounded archive in full; streaming selection does not imply
+constant-memory archive verification or a new admission path.
+
+Each lookup rechecks the same separate commissioned trust, signatures
+and cumulative revocations as status; a repin observed during the read withholds
+the result. Only the admitted tar is read. Lookup audit events contain requested
+technique IDs and the result count, never names or descriptions. Status remains
+free of read events. Existing protocol refusal auditing remains in place.
+
+`azazel_nexus_runtime.knowledge_client.lookup_context` uses the existing
+AF_UNIX exchange with a default 0.5-second monotonic deadline, verifies the
+`azknowledge` socket owner and peer credentials, and validates the bounded
+response. Missing context returns an empty tuple; transport, deadline, invalid
+response and unavailable trust/store conditions raise only
+`KnowledgeUnavailable("knowledge unavailable")`. Locald main wires this client and maps
+that exception to its unavailable audit path, continuing without knowledge.
+No network request or retry occurs.
+
+Deployment must allow `azmio` to traverse the existing Knowledge socket directory
+and connect to its `azazel-operator` group socket, in addition to SERVICE
+admission. The current installer and generated locald unit do not provision that
+group access. Filesystem access remains a deployment prerequisite before locald can use the
+client. This integration adds no group membership or packaging permissions.
+The client otherwise fails closed to unavailable. This lookup is human advisory
+context only and adds no decision or enforcement authority.

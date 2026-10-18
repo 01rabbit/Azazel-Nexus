@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from azazel_nexus.advisory_response import AdvisoryRefused
+from azazel_nexus.reasoning_playbook import compose, load_library, match, technique_ids
 from bench.mio_local.runner import digest, runtime_server
 
 from .scoring import aggregate, score
@@ -24,10 +27,12 @@ def advisory_document(advisory):
 class LocalContract:
     """Lane A public API adapter. No fallback to the unguarded old reader."""
 
-    def __init__(self):
+    def __init__(self, playbooks=None, knowledge=()):
         from azazel_nexus import local_advisory
 
         self.api = local_advisory
+        self.playbooks = playbooks
+        self.knowledge = knowledge
         if not hasattr(self.api, 'gate_frame'):
             raise RuntimeError('Lane A gate_frame API is required')
 
@@ -37,8 +42,13 @@ class LocalContract:
             return frame, None, None
         return frame, {'advice': result['advice'], 'fields': result['fields']}, result['reason']
 
+    def matches(self, frame):
+        return match(frame, self.playbooks) if self.playbooks is not None else ()
+
     def prompt(self, frame):
-        return self.api.build_prompt(frame)
+        ids = technique_ids(frame)
+        knowledge = tuple(ref for ref in self.knowledge if ref.technique_id in ids)[:16]
+        return self.api.build_prompt(frame, playbooks=self.matches(frame), knowledge=knowledge)
 
     def read(self, text, frame):
         return self.api.read_local_advisory(text, frame=frame)
@@ -67,7 +77,9 @@ def evaluate(server, cases, *, contract, max_tokens=512, deadline_s=120):
         for case, (frame, fixed_advisory, reason) in prepared:
             row = {'frame_id': case['frame']['request_id'], 'gate_reason': reason,
                    'outcome': 'error', 'error': None, 'refusal': None,
-                   'raw_text': None, 'raw_document': None, 'delivered': None}
+                   'raw_text': None, 'raw_document': None, 'delivered': None, 'playbook_ids': []}
+            if reason is None and hasattr(contract, 'matches'):
+                row['playbook_ids'] = [entry.id for entry in contract.matches(frame)]
             if fixed_advisory is not None:
                 row.update(outcome='gated', delivered=fixed_advisory)
             elif startup_error:
@@ -122,6 +134,28 @@ def load_cases(path):
     return cases
 
 
+def load_knowledge_fixture(path):
+    """Offline evaluation input only, never a production admission path."""
+    with Path(path).open('rb') as stream:
+        raw = stream.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError('invalid knowledge fixture')
+    document = json.loads(raw)
+    fields = {'technique_id': 9, 'name': 120, 'summary': 240, 'claim_id': 256,
+              'bundle_digest': 71, 'freshness': 7}
+    if type(document) is not list or len(document) > 16:
+        raise ValueError('invalid knowledge fixture')
+    for ref in document:
+        if (type(ref) is not dict or set(ref) != set(fields)
+                or any(type(ref[key]) is not str or not ref[key]
+                       or len(ref[key]) > bound for key, bound in fields.items())
+                or not re.fullmatch(r'T[0-9]{4}(?:\.[0-9]{3})?', ref['technique_id'])
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', ref['bundle_digest'])
+                or ref['freshness'] not in ('current', 'static')):
+            raise ValueError('invalid knowledge fixture')
+    return tuple(SimpleNamespace(**ref) for ref in document)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True, type=Path)
@@ -129,6 +163,8 @@ def main(argv=None):
     parser.add_argument('--eval-set', type=Path, default=EVAL_SET)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--summary', required=True, type=Path)
+    parser.add_argument('--playbooks', help='comma-separated baseline then site layer paths')
+    parser.add_argument('--knowledge-fixture', type=Path)
     parser.add_argument('--max-tokens', type=int, default=512)
     parser.add_argument('--context', type=int, default=4096)
     parser.add_argument('--threads', type=int, default=2)
@@ -141,7 +177,13 @@ def main(argv=None):
     if args.output.resolve() == args.summary.resolve():
         parser.error('output and summary must differ')
     cases = load_cases(args.eval_set)
-    contract = LocalContract()
+    library = None
+    if args.playbooks:
+        paths = [Path(path) for path in args.playbooks.split(',')]
+        layers = [load_library(path, digest(path)) for path in paths]
+        library = compose(layers[0], *layers[1:])
+    knowledge = load_knowledge_fixture(args.knowledge_fixture) if args.knowledge_fixture else ()
+    contract = LocalContract(library, knowledge)
     # Exclusive outputs protect previous campaigns from accidental overwrite.
     with args.output.open('x', encoding='utf-8') as output, args.summary.open('x', encoding='utf-8') as summary:
         with tempfile.TemporaryDirectory(prefix='mq-', dir='/tmp') as directory:
@@ -173,6 +215,10 @@ def summarize(result):
         metric = result['metrics'][key]
         percent = f"{metric['rate']:.1%}" if metric['rate'] is not None else '対象なし'
         lines.append(f"| {label} | {metric['numerator']}/{metric['denominator']} | {percent} |")
+    matched = sum(bool(row.get('playbook_ids')) for row in result['rows'])
+    total = len(result['rows'])
+    lines += ['', f'プレイブック一致率: {matched}/{total}' +
+              (f' ({matched / total:.1%})' if total else ' (対象なし)')]
     zero = 'はい' if result['metrics']['command_output_zero'] else 'いいえ'
     lines += ['', f'提示時の命令出力ゼロ: {zero}', '',
               'キーワード・引用・言語は機械的な代理指標です。正確性や否定表現の意味は採点しません。', '',

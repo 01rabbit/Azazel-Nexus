@@ -197,3 +197,6 @@ and Activation Controller state. The Mission Pack modules import no network,
 process or runtime-egress implementation; the existing boundary scans remain
 unchanged. Injected interruption tests exercise filesystem ordering; they do
 not claim physical power-cut or hardware measurement evidence.
+
+See [Reasoning playbooks](reasoning-playbooks.md) for baseline/site data layers
+and the signed component digest required when loading their installed bytes.

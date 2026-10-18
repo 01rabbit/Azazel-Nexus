@@ -284,3 +284,16 @@ characters. This is a deterministic language heuristic, not language detection.
 These failures become NOT_ADVICE with fixed refusal codes. The frame-less reader
 form exists for re-reading validated socket replies and checks shape/safety only;
 inference and quality evaluation must supply the original frame.
+
+## Reasoning reference injection
+
+The service supports optional signed-pack playbook data and a deadline-bound
+Knowledge lookup callable. Matching occurs after the existing frame gate and
+admission checks, before inference. Accepted replies attach deterministic
+reference metadata from trusted inputs; gated replies are unchanged. Lookup
+failures proceed without Knowledge and audit a fixed unavailable state.
+
+Production `main()` leaves both dependencies unset because it has no active
+Mission Pack / commissioned installed-inventory resolver. The exact injection
+and trust-refresh requirements, schema, matcher and offline benchmark options
+are documented in [Reasoning playbooks](reasoning-playbooks.md).

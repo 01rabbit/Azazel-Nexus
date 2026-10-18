@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
     build_prompt,
@@ -29,7 +30,9 @@ from azazel_nexus.model_runtime import (
     readiness,
     resolve_runtime,
 )
+from azazel_nexus.reasoning_playbook import Library, match, technique_ids
 
+from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import mio_state_dir, socket_path
@@ -109,6 +112,8 @@ class LocalRuntimeService:
         runtime_id: str = "uncommissioned",
         server: Any = None,
         runtime: Callable = resolve_runtime,
+        playbooks: Library | None = None,
+        knowledge_lookup: Callable[[tuple[str, ...]], Sequence[KnowledgeRef]] | None = None,
     ) -> None:
         self._staging = staging
         # Supplied, never discovered. The library reads the record; this
@@ -121,6 +126,9 @@ class LocalRuntimeService:
         self._runtime_id = runtime_id
         self._server = server
         self._runtime = runtime
+        self._playbooks = playbooks
+        # The injected runtime client owns its socket deadline.
+        self._knowledge_lookup = knowledge_lookup
 
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
@@ -182,13 +190,29 @@ class LocalRuntimeService:
         artifact = inspect_artifact(self._staging / f"{self._model_id}.model")
         if not artifact.is_data or self._server is None:
             return refuse("provider_unavailable")
+        playbooks = match(frame, self._playbooks) if self._playbooks is not None else ()
+        knowledge = ()
+        knowledge_state = "unused"
+        ids = technique_ids(frame)
+        if self._knowledge_lookup is not None and ids:
+            try:
+                knowledge = tuple(self._knowledge_lookup(ids)[:16])
+                knowledge_state = "available"
+            except Exception as error:
+                # Optional client failures are fixed metadata, as for inference.
+                if isinstance(error, AuditUnavailable):
+                    raise
+                knowledge_state = "unavailable"
+        audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
+               "playbook_count": len(playbooks), "knowledge": knowledge_state,
+               "knowledge_count": len(knowledge)})
         # Runtime dependency stays in the runtime distribution. Tests inject a
         # fake server; the request contract is shared with the serving lane.
         try:
             from .mio_serve import LocalInferenceRequest
 
             inference = LocalInferenceRequest(
-                prompt_messages=build_prompt(frame), max_tokens=512, temperature=0.0,
+                prompt_messages=build_prompt(frame, playbooks=playbooks, knowledge=knowledge), max_tokens=512, temperature=0.0,
             )
             result = self._server.infer(inference, deadline_s=deadline_ms / 1000)
         except TimeoutError:
@@ -204,12 +228,21 @@ class LocalRuntimeService:
         except AdvisoryRefused as exc:
             return refuse(exc.refusal.value, "not_advice")
         audit(advisory.as_event(local=True))
-        return {
+        reply = {
             "outcome": "advisory", "refusal": None,
             "response_digest": advisory.digest,
             "advice": advisory.text.text if advisory.text else None,
             "fields": dict(advisory.data.fields) if advisory.data else {},
+            "playbook": {
+                "ids": [p.id for p in playbooks],
+                "status": [p.status for p in playbooks],
+                "references": [dict(ref) for p in playbooks for ref in p.references],
+                "first_response": [text for p in playbooks for text in p.guidance["first_response"]],
+            } if playbooks else None,
         }
+        if knowledge:
+            reply["knowledge"] = {"claim_ids": [ref.claim_id for ref in knowledge]}
+        return reply
 
 
 def main(
@@ -241,7 +274,7 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
-    service = LocalRuntimeService()
+    service = LocalRuntimeService(playbooks=None, knowledge_lookup=lookup_context)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
