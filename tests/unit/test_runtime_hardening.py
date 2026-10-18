@@ -605,3 +605,14 @@ def test_locald_optional_selection_reads_have_no_write_grant():
     assert settings["ReadOnlyPaths"] == ["-/etc/azazel/mission-pack.json", "-/data/azazel/mission-packs"]
     assert settings["ProtectSystem"] == ["strict"]
     assert settings["CapabilityBoundingSet"] == [""]
+
+
+def test_locald_aggregate_safety_ceiling_allows_packaged_server_exec():
+    settings = _settings("azazel-mio-locald.service")
+    assert settings["MemoryMax"] == ["4G"]
+    assert settings["MemorySwapMax"] == ["0"]
+    assert settings["CPUQuota"] == ["40%"]
+    assert settings["PrivateNetwork"] == ["yes"]
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert "NoExecPaths" not in settings
+    assert "ExecPaths" not in settings

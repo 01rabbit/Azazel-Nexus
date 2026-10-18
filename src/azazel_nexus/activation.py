@@ -177,8 +177,9 @@ ACTIVATION_CONTROLLER_UNIT = "azazel-activated.service"
 #: its requirement by satisfying this one.
 ARTIFACT_TRANSPORT = "artifact_transport"
 
-#: The capability `azazel-mio-locald.service` needs wired: a runtime allowlist
-#: with at least one entry, so that a `runtime_id` resolves to a binary.
+#: The capability `azazel-mio-locald.service` needs wired: an admitted local
+#: model provider, including verified runtime and production admission evidence.
+#: This build has no admission-evidence loader, so the unit is not granted.
 #:
 #: Separate from `ARTIFACT_TRANSPORT` and not implied by it. Fetching weights
 #: and running them are different capabilities held by different accounts, and
@@ -279,11 +280,8 @@ CORE_UNITS = (
         "azmio",
         "local model runtime host; the only unit that could start a model, "
         "and it starts none",
-        # `model_runtime.RUNTIMES` is empty, so no runtime_id resolves to a
-        # binary and the service exits rather than listen for work it cannot
-        # do. A runtime arrives by a reviewed change to that table -- it is
-        # code, not commissioned data, because a binary is not a fact about a
-        # deployment.
+        # A pinned runtime alone is insufficient. The unit is not granted
+        # until a model is admitted; HG-05 and operator approval remain closed.
         wiring=LOCAL_MODEL_PROVIDER,
     ),
     UnitDefinition(

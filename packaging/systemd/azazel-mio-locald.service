@@ -2,7 +2,8 @@
 # tests/unit/test_runtime_hardening.py compares this file against what
 # the declaration renders, and a hand edit is a difference.
 #
-# The only unit that could ever start a model process, and it starts none: the runtime allowlist in model_runtime.py is empty, so no runtime_id resolves.
+# The only unit that could ever start a model process, and it starts none until HG-05 and operator approval pass.
+# Exactly one runtime is pinned in model_runtime.py.
 # It is not root, it writes one directory, it has no network namespace at all, and it runs under its own account -- never the fetcher's.
 # azfetch may reach the network and may not run a program; azmio may run one program from a fixed list and may reach nothing.
 # Adding a runtime is a reviewed change to this package, never commissioned data: an endpoint is a fact about a deployment, and a binary is a thing that executes.
@@ -22,6 +23,9 @@ RuntimeDirectory=azazel/mio
 RuntimeDirectoryMode=0750
 ReadOnlyPaths=-/etc/azazel/mission-pack.json
 ReadOnlyPaths=-/data/azazel/mission-packs
+TimeoutStartSec=300s
+MemoryMax=4G
+MemorySwapMax=0
 CPUQuota=40%
 TasksMax=64
 LimitFSIZE=16777216

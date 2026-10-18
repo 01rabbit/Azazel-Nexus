@@ -1,7 +1,7 @@
 # M.I.O. local inference — functional E2E and bench, 2026-10-18
 
 **Bench record, not HG-05 evidence and not admission evidence.** Production
-stays not-admitted (`RUNTIMES` empty, admission gate closed, HG-05 unmeasured).
+stays not-admitted (`RUNTIMES` pins exactly one runtime, admission gate closed, HG-05 unmeasured).
 Raw files: [`mio-local-bench-2026-10-18/`](mio-local-bench-2026-10-18/)
 (`summary.md`, `run.jsonl` — no model text is recorded — and `e2e.log`).
 

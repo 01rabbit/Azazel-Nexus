@@ -781,6 +781,9 @@ class ModelImport:
         """One rename into the store, then one rename of the pointer."""
 
         destination = self.commissioned.store / artifact_filename(declared)
+        # Installer staging/store are root-owned setgid azmio directories.
+        # Only verified data becomes group-readable; locald gains no write bit.
+        staged.chmod(0o640)
         os.replace(staged, destination)
 
         current = self.current_generation()

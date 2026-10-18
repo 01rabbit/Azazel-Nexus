@@ -133,7 +133,7 @@ class ServiceProfile:
     #: Same containment discipline as `is_artifact_fetcher`, for the opposite
     #: hazard. The fetcher may reach the network and may not run a program;
     #: this one may run a program -- from `model_runtime.RUNTIMES`, which is
-    #: empty -- and may reach nothing.
+    #: pinned -- and may reach nothing.
     #:
     #: Setting it **requires** the resource ceilings below, because a process
     #: this node did not write is a process whose appetite this node did not
@@ -230,16 +230,8 @@ class ServiceProfile:
                     "private network namespace. A model that can open a "
                     "connection is a model that can carry what it was shown"
                 )
-            # And what it cannot. Both of these are per-provider or
-            # per-request quantities, and a static value in a shipped unit
-            # would be a number somebody liked wearing a measurement's
-            # clothes.
-            #
-            # `MemoryMax` is derived from the measured Core reserve and the
-            # provider's declared need (`model_runtime.containment_for`), and
-            # no node this build runs on has a reserve. A figure here would be
-            # an invented envelope in the one file an operator trusts.
-            #
+            # MemoryMax is an aggregate safety ceiling, never evidence of
+            # fit. Admission still derives qualified provider needs from HG-05.
             # `RuntimeMaxSec` bounds how long the **unit** runs. The deadline
             # this product needs bounds one inference. Putting the inference
             # deadline on the host would terminate a healthy long-running
@@ -247,7 +239,7 @@ class ServiceProfile:
             # indistinguishable, from the journal, from a provider that keeps
             # dying.
             forbidden = [
-                key for key in ("MemoryMax", "RuntimeMaxSec") if key in settings
+                key for key in ("RuntimeMaxSec",) if key in settings
             ]
             if forbidden:
                 raise ValueError(
@@ -435,14 +427,14 @@ PROFILES: tuple[ServiceProfile, ...] = (
         runtime_directory="azazel/mio",
         runtime_directory_mode="0750",
         extra=(
-            # The ceilings a unit file can state without a measurement,
-            # mirroring `model_runtime.CPU_QUOTA_PERCENT`, `TASKS_MAX` and
-            # `FILE_SIZE_MAX_BYTES`. `MemoryMax` and `RuntimeMaxSec` are
-            # deliberately absent and refused above: both are derived from
-            # the measured Core reserve and the provider's declared need, and
-            # no node this build runs on has a reserve to derive them from.
+            # Fixed host safety limits; measured admission remains independent.
             ("ReadOnlyPaths", "-/etc/azazel/mission-pack.json"),
             ("ReadOnlyPaths", "-/data/azazel/mission-packs"),
+            # Two bounded 120s startups plus verification; not an inference deadline.
+            ("TimeoutStartSec", "300s"),
+            # Aggregate safety ceiling for daemon + both children, not HG-05 evidence.
+            ("MemoryMax", "4G"),
+            ("MemorySwapMax", "0"),
             ("CPUQuota", "40%"),
             ("TasksMax", "64"),
             ("LimitFSIZE", "16777216"),
@@ -458,8 +450,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         rationale=(
             "The only unit that could ever start a model process, and it "
-            "starts none: the runtime allowlist in model_runtime.py is empty, "
-            "so no runtime_id resolves. It is not root, it writes one "
+            "starts none until HG-05 and operator approval pass. Exactly one "
+            "runtime is pinned in model_runtime.py. It is not root, it writes one "
             "directory, it has no network namespace at all, and it runs under "
             "its own account -- never the fetcher's. azfetch may reach the "
             "network and may not run a program; azmio may run one program "

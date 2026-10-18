@@ -298,7 +298,7 @@ def test_the_schema_names_the_shape_it_actually_has() -> None:
     which is unchanged, while the schema says what shape it is.
     """
 
-    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/2"
+    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/3"
     assert CATALOG_DOMAIN == b"azazel-nexus/model-catalog/v1\x00"
     assert "source_id" in an_entry().as_document()
 
@@ -368,7 +368,7 @@ def test_the_domain_moves_for_a_kind_or_a_protocol_never_for_a_field() -> None:
     """
 
     assert CATALOG_DOMAIN == b"azazel-nexus/model-catalog/v1\x00"
-    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/2"
+    assert CATALOG_SCHEMA == "azazel-nexus/model-catalog/3"
     # The kind is in the domain; the shape number is not.
     assert b"model-catalog" in CATALOG_DOMAIN
     assert b"/2" not in CATALOG_DOMAIN
@@ -693,7 +693,7 @@ def test_an_entry_declares_no_licence_text_and_no_location() -> None:
         "model_id", "format", "digest", "size_bytes", "provenance",
         "license_acknowledgement_required", "runtime_abi", "purpose",
         "context_limit", "declared_min_ram_mib", "declared_min_disk_mib",
-        "declared_profile", "rollback_lineage", "source_id",
+        "declared_profile", "rollback_lineage", "source_id", "role",
     }
     assert "url" not in " ".join(document).lower()
     assert isinstance(document["license_acknowledgement_required"], bool)

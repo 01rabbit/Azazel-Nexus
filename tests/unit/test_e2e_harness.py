@@ -691,3 +691,24 @@ def test_integration_broker_stage_uses_signed_local_fixtures(short_root):
     assert "transport refusal" in detail
     assert "audit verified" in detail
     assert "HIL not covered" in detail
+
+
+def test_activation_stage_withholds_locald_without_model_admission(short_root):
+    from types import SimpleNamespace
+
+    from azazel_nexus.audit import AuditLedger
+    from tools.e2e_stages import _activation, _commission, _generation
+
+    (short_root / "etc/azazel/commissioning").mkdir(parents=True)
+    (short_root / "var/lib/azazel/state").mkdir(parents=True)
+    harness = SimpleNamespace(root=short_root)
+    _commission(harness)
+    _generation(harness)
+    _activation(harness)
+    granted = {
+        row.event["unit"]
+        for row in AuditLedger(short_root / "var/lib/azazel/state/activation.jsonl")
+        if row.event["event_type"] == "activation.unit_granted"
+    }
+    assert "azazel-mio-entryd.service" in granted
+    assert "azazel-mio-locald.service" not in granted

@@ -198,6 +198,10 @@ LAYOUT = (
     PathSpec("/var/lib/azazel/fetch/partial", 0o750, "fetch partials and refusal records", owner="azfetch", group="azfetch"),
     PathSpec("/var/lib/azazel/fetch/ready", 0o750, "complete unverified fetch handoffs", owner="azfetch", group="azfetch"),
     PathSpec("/var/lib/azazel/run/fetch", 0o2710, "fetch socket leaf with operator group inheritance", owner="azfetch", group="azazel-operator"),
+    PathSpec("/var/lib/azazel/models/staging", 0o2750,
+             "root-owned model staging; inherit the runtime read group", group="azmio"),
+    PathSpec("/var/lib/azazel/models/store", 0o2750,
+             "root-owned promoted weights; locald may read, never write", group="azmio"),
     PathSpec(
         "/var/lib/azazel/mio",
         0o750,
@@ -206,7 +210,7 @@ LAYOUT = (
         "because the account that may reach the network and the account that "
         "may run a program are not the same account, and a directory both "
         "could write is a path from a fetched byte to an executed one",
-        group="azmio",
+        owner="azmio", group="azmio",
     ),
     PathSpec(
         "/var/lib/azazel/remote",

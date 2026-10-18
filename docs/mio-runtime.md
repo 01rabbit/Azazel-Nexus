@@ -414,7 +414,7 @@ NOT_ADVICE, TIMED_OUT and FAILED, using the existing one-fallback rule and
 privacy restrictions.
 
 Production still has CORE as its default profile, no local admission, no
-prediction evidence, an unmeasured HG-05 reserve and an empty runtime
+prediction evidence, an unmeasured HG-05 reserve and a pinned runtime with closed admission
 allowlist. Trusted harnesses can inject admission, predictions and a fake
 server to exercise the path. Availability probes never change these gates;
 the new verbs do not commission a model or alter Edge authority.

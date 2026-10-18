@@ -180,7 +180,7 @@ def test_default_refuses_without_touching_runtime():
     events = []
     reply = mio_locald.LocalRuntimeService().handle(request(), audit=events.append)
     assert reply == {'outcome': 'failed', 'refusal': 'not_admitted'}
-    assert not RUNTIMES
+    assert set(RUNTIMES) == {"llama-cpp-b11716"}
     assert SENTINEL not in json.dumps(events)
 
 

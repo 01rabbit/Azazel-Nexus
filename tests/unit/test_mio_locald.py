@@ -138,10 +138,10 @@ def test_the_unit_bounds_what_a_unit_file_can_bound(setting):
     assert setting in dict(_profile(UNIT).extra)
 
 
-@pytest.mark.parametrize("setting", ["MemoryMax", "RuntimeMaxSec"])
+@pytest.mark.parametrize("setting", ["RuntimeMaxSec"])
 def test_the_unit_states_no_bound_it_would_have_to_invent(setting):
-    """Both are per-provider quantities derived from the measured Core
-    reserve, and no node this build runs on has one.
+    """RuntimeMaxSec cannot represent a per-request inference deadline.
+    MemoryMax now supplies an aggregate safety ceiling, not admission evidence.
 
     `RuntimeMaxSec` is the sharper of the two: it bounds how long the *unit*
     runs, while the deadline this product needs bounds one inference. Putting
@@ -193,7 +193,7 @@ def test_a_model_host_without_its_ceilings_cannot_be_built():
                 ("TasksMax", "64"),
                 ("LimitFSIZE", "1024"),
                 ("PrivateNetwork", "yes"),
-                ("MemoryMax", "4096M"),
+                ("RuntimeMaxSec", "30"),
             ),
         )
     assert "invented" in str(caught.value)
@@ -282,7 +282,7 @@ def test_default_service_serves_refusals_with_only_entry_service_policy(tmp_path
     from azazel_nexus_runtime import runtime_paths
 
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
-    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_local_state_dir().mkdir(parents=True)
     captured = {}
     policies = []
     monkeypatch.setattr(mio_locald, "serve_forever", lambda **kw: captured.update(kw) or 0)
@@ -311,7 +311,7 @@ def test_default_service_serves_refusals_with_only_entry_service_policy(tmp_path
 # -- three refusals, and each covers what the others do not ---------------
 
 
-def test_the_unit_is_not_granted_while_no_runtime_is_wired():
+def test_the_unit_requires_an_admitted_provider():
     definition = next(d for d in CORE_UNITS if d.name == UNIT)
     assert definition.wiring == LOCAL_MODEL_PROVIDER
     assert definition.wiring != ARTIFACT_TRANSPORT, (
@@ -327,11 +327,19 @@ def test_a_wired_transport_does_not_wire_a_provider(monkeypatch):
     assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT})
 
 
-def test_a_wired_provider_does_not_wire_a_transport(monkeypatch):
+def test_a_resolvable_runtime_does_not_wire_an_admitted_provider(monkeypatch):
     from azazel_nexus_runtime import activated
 
-    monkeypatch.setattr(activated, "RUNTIMES", {"fixture": object()})
-    assert activated.wired_capabilities() == frozenset({LOCAL_MODEL_PROVIDER})
+    from azazel_nexus import model_runtime
+
+    fixture = model_runtime.RuntimeBinary(
+        runtime_id="fixture", executable="/usr/libexec/azazel/fixture",
+        version="test", digest="sha256:" + "0" * 64,
+        argv=("/usr/libexec/azazel/fixture",),
+    )
+    monkeypatch.setattr(model_runtime, "RUNTIMES", {"fixture": fixture})
+    assert model_runtime.resolve_runtime("fixture") is fixture
+    assert activated.wired_capabilities() == frozenset()
 
 
 def test_a_request_for_an_unwired_runtime_is_answered_not_acted_on(tmp_path):
@@ -615,7 +623,7 @@ def test_main_refreshes_optional_selection_before_each_request(tmp_path, monkeyp
     from azazel_nexus.playbook_selection import PlaybookSelection
 
     monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
-    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_local_state_dir().mkdir(parents=True)
     libraries = [object(), object(), None]
     observed = []
 

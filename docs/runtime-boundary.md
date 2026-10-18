@@ -119,3 +119,12 @@ wearing the same shape.
 The fingerprint is what an operator uses to see that one unknown verb arrived
 four hundred times, without the ledger carrying four hundred copies of
 whatever it said.
+
+
+Local model hosting pins exactly one llama.cpp b11716 runtime with architecture
+specific executable digests. Only runtime mio_supervisor executes it; the
+library hashes bytes and performs admission/readiness checks without importing
+socket, subprocess or runtime. Both optional servers use AF_UNIX under the same
+PrivateNetwork and aggregate memory/CPU ceilings. Production admission remains
+closed (HG-05 and operator approval); an installed binary does not open it.
+See [local runtime](mio-local-runtime.md).

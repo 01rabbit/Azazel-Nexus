@@ -32,6 +32,7 @@ __all__ = [
     "knowledge_store_root",
     "ledger_dir",
     "lite_trust_root",
+    "mio_local_state_dir",
     "mio_state_dir",
     "mission_pack_config",
     "mission_pack_root",
@@ -104,6 +105,11 @@ def watchdog_state_dir() -> Path:
 def mio_state_dir() -> Path:
     """Return the M.I.O. entry service's separate chain directory."""
     return state_dir() / _STATE_LEAVES["mio"]
+
+
+def mio_local_state_dir() -> Path:
+    """The locald-owned cache/socket/ledger leaf, separate from entryd."""
+    return _under("/var/lib/azazel/mio")
 
 
 def knowledge_state_dir() -> Path:
