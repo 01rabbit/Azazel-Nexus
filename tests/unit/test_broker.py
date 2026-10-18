@@ -131,7 +131,7 @@ def test_privacy_refusal_withdraws_all_and_does_not_retain_payload(admitted, dat
 
 def test_real_manifest_render_and_cross_adapter_scoping(admitted):
     broker, _, raw = admitted
-    _, unit = broker.review(raw, commissioning=scope())
+    _, unit = broker.review(raw, commissioning=scope(), now=NOW)
     assert "IPAddressDeny=any\n" in unit
     assert unit.count("IPAddressAllow=") == 1
     assert "IPAddressAllow=192.0.2.8\n" in unit
@@ -140,10 +140,10 @@ def test_real_manifest_render_and_cross_adapter_scoping(admitted):
     assert "CapabilityBoundingSet=\n" in unit and "AmbientCapabilities=\n" in unit
     assert "NOT enforced" in unit  # destination-port confinement is not proven
     with pytest.raises(ValueError):
-        broker.review(raw, commissioning=scope("other"))
+        broker.review(raw, commissioning=scope("other"), now=NOW)
     with pytest.raises(ValueError):
         broker.review(raw, commissioning=replace(scope(), credential=CredentialRef(
-            "telemetry", "other-secret", instant(NOW) + timedelta(hours=1))))
+            "telemetry", "other-secret", instant(NOW) + timedelta(hours=1))), now=NOW)
 
 
 def test_topology_ineligible_high_memory_cannot_widen(tmp_path):
@@ -165,7 +165,9 @@ def test_same_edge_lease_supplies_states_approval_and_expiry(admitted):
                  commissioning=scope("exposure"), now=NOW)
     proposal = ExposureChangeProposal("exposure", b"opaque")
     edge_key = SigningKey.generate()
-    payload = canonical(routing.lease_document(proposal, broker.topology))
+    document = routing.lease_document(proposal, broker.topology)
+    document["manifest_digest"] = broker.status(now=NOW)["adapters"][0]["manifest_digest"]
+    payload = canonical(document)
     lease = EdgeLease(edge_key.sign(EDGE_LEASE_DOMAIN + payload).signature + payload)
     assert isinstance(lease, Approval) and not lease.verified
     broker.edge_keys = {"edge-test": bytes(edge_key.verify_key)}
@@ -173,7 +175,7 @@ def test_same_edge_lease_supplies_states_approval_and_expiry(admitted):
                "now": NOW, "dry_run": True, "human_confirmed": True}
     assert isinstance(broker.gate(proposal, edge_lease=None, **context), GateRefusal)
     assert isinstance(broker.gate(proposal, edge_lease=lease, **context), DispatchIntent)
-    assert broker.status(now=NOW)["adapters"][0]["state"] == "active_bounded"
+    assert broker.status(now=NOW)["adapters"][0]["state"] == "withdrawing"
     broker.expire(now=routing.EXPIRES)
     assert all(row["state"] == "disabled" for row in broker.status(now=routing.EXPIRES)["adapters"])
 
@@ -332,3 +334,23 @@ def test_corrupt_commissioning_status_is_structured_and_read_only(tmp_path, monk
     assert main(["broker", "status", "--json"], out=out) == 0
     assert json.loads(out.getvalue())["reason"] == "local_state_refused"
     assert not (tmp_path / "var").exists()
+
+
+def test_consumed_lease_survives_restart_and_readmission(admitted):
+    broker, key, _ = admitted
+    raw = signed_manifest(key, broker.topology, adapter="exposure", exposure=True)
+    broker.admit(raw, commissioning=scope("exposure"), now=NOW)
+    proposal = ExposureChangeProposal("exposure", b"opaque")
+    edge_key = SigningKey.generate()
+    doc = routing.lease_document(proposal, broker.topology)
+    doc["manifest_digest"] = broker.status(now=NOW)["adapters"][0]["manifest_digest"]
+    lease = routing.signed_lease(doc, edge_key)
+    broker.edge_keys = {"edge": bytes(edge_key.verify_key)}
+    context = {"failsafe": routing.r.ManagementFailsafe(broker.topology.digest(), "mgmt", "mgmt", NOW, True),
+               "now": NOW, "dry_run": True, "human_confirmed": True}
+    assert isinstance(broker.gate(proposal, edge_lease=lease, **context), DispatchIntent)
+    broker.withdraw_all(reason="reviewed", now=NOW)
+    broker = Broker(broker.root, trusted_keys=broker.trusted_keys, topology=broker.topology,
+                    edge_keys=broker.edge_keys)
+    broker.admit(raw, commissioning=scope("exposure"), now=NOW)
+    assert broker.gate(proposal, edge_lease=lease, **context).reason == "Edge lease already consumed"

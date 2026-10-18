@@ -97,7 +97,7 @@ def run(args, *, now, out):
         commissioning = AdapterCommissioning(
             manifest.adapter_id, doc["account"], doc["credential_directory"],
             doc["installed_artifacts"], credential, datetime.fromisoformat(now))
-        manifest, unit = broker.review(raw, commissioning=commissioning)
+        manifest, unit = broker.review(raw, commissioning=commissioning, now=now)
         print(f"Would admit {manifest.adapter_id} {manifest.version}; dry-run, no writes", file=out)
         print("Topology: " + ("eligible" if broker.topology.enforcement_ready else "OBSERVE_ONLY"), file=out)
         print(unit, file=out)

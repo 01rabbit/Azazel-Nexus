@@ -12,7 +12,7 @@ import fcntl
 import hashlib
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..audit import AuditLedger
@@ -23,6 +23,7 @@ from . import states
 from .confinement import AdapterCommissioning, render_adapter_unit
 from .manifest import Capability, ManifestRefused, is_safe_symbol, read_manifest
 from .routing import (
+    ConsumedLeaseStore,
     DataRecord,
     DispatchIntent,
     EdgeLease,
@@ -32,7 +33,7 @@ from .routing import (
     route_advisory,
     route_telemetry,
 )
-from .states import AdapterRecord, BrokerState
+from .states import BrokerState
 
 
 class BrokerRefused(ValueError):
@@ -108,15 +109,20 @@ class Broker:
         self.ledger.append({"event_type": "broker." + kind, **metadata})
 
     @staticmethod
-    def _record(entry):
-        return AdapterRecord(entry["adapter_id"], BrokerState(entry["state"]),
-                             entry["manifest_digest"], instant(entry["since"]))
+    def _record(entry, approval=None, now=None):
+        return states.restore_record(entry["adapter_id"], BrokerState(entry["state"]),
+                                     entry["manifest_digest"], instant(entry["since"]),
+                                     now=instant(now) if now else datetime.now(UTC), lease=approval,
+                                     lease_id=entry.get("lease_id"),
+                                     lease_expires_at=instant(entry["lease_until"]) if entry.get("lease_until") else None)
 
     def _manifest(self, entry):
         if self.topology is None:
             raise BrokerRefused("commissioning_required")
         manifest = read_manifest(bytes.fromhex(entry["signed"]), trusted_keys=self.trusted_keys,
-                                 commissioning_digest=self.topology.digest(), **self.sibling_keys)
+                                 commissioning_digest=self.topology.digest(),
+                                 wider_egress_allowlist=tuple(tuple(v) for v in entry.get("wider_egress_allowlist", [])),
+                                 management_prefixes=entry.get("management_prefixes", ()), **self.sibling_keys)
         if manifest.manifest_digest != entry["manifest_digest"] or manifest.adapter_id != entry["adapter_id"]:
             raise BrokerRefused("manifest_record_mismatch")
         return manifest
@@ -127,18 +133,22 @@ class Broker:
         return self._manifest(entry)
 
     def _move(self, entry, to, *, reason, now, approval=None):
-        record, event = states.transition(self._record(entry), to, reason=reason,
+        record, event = states.transition(self._record(entry, approval, now), to, reason=reason,
                                           now=instant(now), approval=approval)
         self.ledger.append(event.as_event())
-        entry.update(state=record.state.value, since=record.since.isoformat(), reason=reason)
+        entry.update(state=record.state.value, since=record.since.isoformat(), reason=event.reason,
+                     lease_id=record.lease_id,
+                     lease_until=record.lease_expires_at.isoformat() if record.lease_expires_at else None)
 
-    def review(self, raw: bytes, *, commissioning: AdapterCommissioning):
+    def review(self, raw: bytes, *, commissioning: AdapterCommissioning, now: str):
         """Pure dry-run: verifies commissioned trust and renders, writes nothing."""
         if self.topology is None:
             raise BrokerRefused("commissioning_required")
         manifest = read_manifest(raw, trusted_keys=self.trusted_keys,
-                                 commissioning_digest=self.topology.digest(), **self.sibling_keys)
-        unit = render_adapter_unit(manifest, commissioning=commissioning)
+                                 commissioning_digest=self.topology.digest(),
+                                 wider_egress_allowlist=commissioning.wider_egress_allowlist,
+                                 management_prefixes=commissioning.management_prefixes, **self.sibling_keys)
+        unit = render_adapter_unit(manifest, commissioning=commissioning, now=instant(now))
         return manifest, unit
 
     def admit(self, raw: bytes, *, commissioning: AdapterCommissioning, now: str):
@@ -146,7 +156,7 @@ class Broker:
         try:
             if commissioning.reviewed_at != instant(now):
                 raise BrokerRefused("current_credential_review_required")
-            manifest, unit = self.review(raw, commissioning=commissioning)
+            manifest, unit = self.review(raw, commissioning=commissioning, now=now)
         except (ManifestRefused, ValueError):
             with self._write() as doc:
                 self._event("schema_trust", decision="refused", occurred_at=now)
@@ -162,7 +172,9 @@ class Broker:
                      "manifest_digest": manifest.manifest_digest, "signed": raw.hex(),
                      "since": instant(now).isoformat(), "reason": "admission", "healthy_until": None,
                      "credential_expires_at": commissioning.credential.expires_at.isoformat(),
-                     "lease_until": None}
+                     "lease_until": None, "lease_id": None,
+                     "wider_egress_allowlist": commissioning.wider_egress_allowlist,
+                     "management_prefixes": commissioning.management_prefixes}
             for state in (BrokerState.DISCOVERED, BrokerState.STAGED, BrokerState.ADMITTED):
                 self._move(entry, state, reason="admission", now=now)
             if Capability.EXPOSURE_CHANGE not in manifest.capability_set or not self.topology.enforcement_ready:
@@ -211,7 +223,8 @@ class Broker:
             result = gate_exposure_proposal(
                 proposal, adapter_record=self._record(entry), manifest=manifest,
                 edge_lease=edge_lease or EdgeLease(b""), topology=self.topology, now=now,
-                edge_keys=self.edge_keys, **context)
+                edge_keys=self.edge_keys,
+                consumed_leases=ConsumedLeaseStore(doc.setdefault("consumed_leases", [])), **context)
             self._event("lease_binding", adapter_id=proposal.adapter_id,
                         allowed=isinstance(result, DispatchIntent), occurred_at=now)
             self._event("routing", adapter_id=proposal.adapter_id,
@@ -221,7 +234,8 @@ class Broker:
             if isinstance(result, DispatchIntent) and self._record(entry).state is BrokerState.ADMITTED:
                 approval = edge_lease.bind(
                     trusted_keys=self.edge_keys, commissioning_digest=self.topology.digest(),
-                    adapter_id=proposal.adapter_id, proposal_digest=proposal.digest, now=now)
+                    adapter_id=proposal.adapter_id, proposal_digest=proposal.digest,
+                    manifest_digest=manifest.manifest_digest, now=now)
                 for state in (BrokerState.OBSERVE_ONLY, BrokerState.APPROVAL_PENDING, BrokerState.ACTIVE_BOUNDED):
                     self._move(entry, state, reason="lease_bound", now=now, approval=approval)
                 entry["lease_until"] = result.expires_at
@@ -246,7 +260,7 @@ class Broker:
 
     def _withdraw(self, doc, *, reason, now):
         if not is_safe_symbol(reason):
-            raise BrokerRefused("invalid_reason")
+            reason = "reason_invalid"
         for entry in doc["adapters"].values():
             if self._record(entry).state is not BrokerState.DISABLED:
                 if self._record(entry).state is not BrokerState.WITHDRAWING:
@@ -276,7 +290,7 @@ class Broker:
                            and instant(entry["credential_expires_at"]) > instant(now))
             except (ManifestRefused, BrokerRefused):
                 reason = "trust_unverified"
-            rows.append({"adapter_id": adapter, "state": entry["state"], "reason": reason,
+            rows.append({"adapter_id": adapter, "state": self._record(entry).state.value, "reason": reason,
                          "healthy": healthy, "manifest_digest": entry["manifest_digest"]})
         return {"status_level": "LITE" if any(row["healthy"] for row in rows) else "CORE",
                 "adapters": rows, "core": "deterministic", "enforcement_ready": False,
@@ -289,6 +303,5 @@ class Broker:
         This adapter summary never changes the six product axes or Edge state.
         """
         if now is None:
-            from datetime import UTC
             now = datetime.now(UTC).isoformat()
         return self.status(now=now)["status_level"]

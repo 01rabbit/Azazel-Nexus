@@ -252,3 +252,26 @@ def test_malformed_signed_payload(signing_key, payload):
 def test_invalid_commissioning_pin(signing_key, document):
     with pytest.raises(ManifestRefused, match="invalid_commissioning_digest"):
         read_manifest(encode(signing_key, document), trusted_keys={}, commissioning_digest="bad")
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "0.0.0.0", "169.254.169.254",
+    "224.0.0.1", "240.0.0.1", "::", "::1", "fe80::1", "ff02::1", "::ffff:192.0.2.8",
+    "100::1", "192.0.0.0/16", "2001:db8::/32"])
+def test_egress_special_and_wide_ranges_refused(signing_key, document, address):
+    document["egress_allowlist"] = [{"address": address, "port": 443}]
+    with pytest.raises(ManifestRefused):
+        admit(signing_key, document)
+
+
+def test_wide_exception_is_exact_and_cannot_override_management(signing_key, document):
+    document["egress_allowlist"] = [{"address": "10.20.0.0/16", "port": 443}]
+    exception = (("10.20.0.0/16", 443),)
+    assert admit(signing_key, document, wider_egress_allowlist=exception)
+    with pytest.raises(ManifestRefused):
+        admit(signing_key, document, wider_egress_allowlist=(("10.20.0.0/16", 8443),))
+    with pytest.raises(ManifestRefused, match="management_egress"):
+        admit(signing_key, document, wider_egress_allowlist=exception,
+              management_prefixes=("10.20.1.0/24",))
+    document["egress_allowlist"] = [{"address": "169.254.0.0/16", "port": 443}]
+    with pytest.raises(ManifestRefused):
+        admit(signing_key, document, wider_egress_allowlist=(("169.254.0.0/16", 443),))

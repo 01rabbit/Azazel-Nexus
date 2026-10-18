@@ -2,7 +2,6 @@
 
 import json
 from dataclasses import dataclass, replace
-from enum import Enum
 from typing import Protocol
 
 import pytest
@@ -20,10 +19,7 @@ EXPIRES = "2026-10-18T00:01:00Z"
 DIGEST = "sha256:" + "a" * 64
 
 
-class BrokerState(str, Enum):
-    ADMITTED = "admitted"
-    OBSERVE_ONLY = "observe_only"
-    ACTIVE_BOUNDED = "active_bounded"
+from azazel_nexus.integration_broker.states import BrokerState
 
 
 class AdapterManifest(Protocol):
@@ -43,6 +39,7 @@ class Manifest:
     adapter_id: str = "adapter-1"
     capability_set: frozenset[str] = frozenset({"telemetry_read"})
     privacy_class: PrivacyClass = PrivacyClass.P1_SANITIZED
+    manifest_digest: str = DIGEST
 
 
 @dataclass(frozen=True)
@@ -176,6 +173,8 @@ def topology():
 def lease_document(proposal, topo):
     return {
         "schema": r.EDGE_LEASE_SCHEMA,
+        "lease_id": "test-lease-one",
+        "manifest_digest": DIGEST,
         "adapter_id": proposal.adapter_id,
         "proposal_digest": proposal.digest,
         "commissioning_digest": topo.digest(),
@@ -206,6 +205,7 @@ def gate_args():
         ),
         "topology": topo,
         "edge_keys": {"edge-test": bytes(key.verify_key)},
+        "consumed_leases": r.ConsumedLeaseStore(),
         "now": NOW,
         "dry_run": True,
         "human_confirmed": True,
@@ -376,3 +376,30 @@ def test_lease_reverified_and_expiry_checked_on_reuse(gate_args):
 )
 def test_delivery_always_refuses(intent):
     assert r.deliver(intent).reason == "transport unavailable: Fabric#25"
+
+
+def test_lease_replay_refused(gate_args):
+    assert isinstance(r.gate_exposure_proposal(**gate_args), r.DispatchIntent)
+    assert r.gate_exposure_proposal(**gate_args).reason == "Edge lease already consumed"
+
+
+@pytest.mark.parametrize("state", [[], {}, None, "admitted"])
+def test_malformed_state_fails_closed(data_args, state):
+    data_args["adapter_record"] = replace(data_args["adapter_record"], state=state)
+    assert isinstance(r.route_telemetry({"text": "data"}, **data_args), r.GateRefusal)
+
+
+def test_manifest_readmission_invalidates_old_lease(gate_args):
+    changed = "sha256:" + "b" * 64
+    gate_args["manifest"] = replace(gate_args["manifest"], manifest_digest=changed)
+    assert isinstance(r.gate_exposure_proposal(**gate_args), r.GateRefusal)
+    gate_args["adapter_record"] = replace(gate_args["adapter_record"], manifest_digest=changed)
+    assert isinstance(r.gate_exposure_proposal(**gate_args), r.GateRefusal)
+
+
+def test_lease_maximum_lifetime(gate_args):
+    key = SigningKey.generate()
+    doc = lease_document(gate_args["proposal"], gate_args["topology"])
+    doc["expires_at"] = "2026-10-18T00:15:01Z"
+    gate_args.update(edge_keys={"edge": bytes(key.verify_key)}, edge_lease=signed_lease(doc, key))
+    assert isinstance(r.gate_exposure_proposal(**gate_args), r.GateRefusal)

@@ -8,7 +8,7 @@ routing layer owns signature verification; this module consumes its Protocol.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import InitVar, dataclass, replace
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -93,14 +93,24 @@ def _aware(value: object) -> bool:
     return isinstance(value, datetime) and value.utcoffset() is not None
 
 
+_CONSTRUCTION = object()
+NARROWING = frozenset({BrokerState.WITHDRAWING, BrokerState.DEGRADED,
+                       BrokerState.QUARANTINED, BrokerState.FAILED, BrokerState.DISABLED})
+
+
 @dataclass(frozen=True)
 class AdapterRecord:
     adapter_id: str
     state: BrokerState = BrokerState.DISABLED
     manifest_digest: str | None = None
     since: datetime | None = None
+    lease_id: str | None = None
+    lease_expires_at: datetime | None = None
+    _authority: InitVar[object] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _authority) -> None:
+        if self.state is not BrokerState.DISABLED and _authority is not _CONSTRUCTION:
+            raise TransitionRefused("restore_required")
         if not is_safe_symbol(self.adapter_id) or not isinstance(self.state, BrokerState):
             raise TransitionRefused("invalid_record")
         if self.manifest_digest is not None and (
@@ -120,6 +130,8 @@ class Transition:
     occurred_at: datetime
     adapter_id: str
     manifest_digest: str | None
+    lease_id: str | None = None
+    lease_expires_at: datetime | None = None
 
     def as_event(self) -> dict:
         """Only bounded identifiers, digest, reason code, and timestamp."""
@@ -131,6 +143,8 @@ class Transition:
             "reason": self.reason,
             "occurred_at": self.occurred_at.isoformat(),
             "manifest_digest": self.manifest_digest,
+            "lease_id": self.lease_id,
+            "lease_expires_at": self.lease_expires_at.isoformat() if self.lease_expires_at else None,
         }
 
 
@@ -145,21 +159,61 @@ def transition(
     """
     if not isinstance(record, AdapterRecord) or not isinstance(to, BrokerState):
         raise TransitionRefused("invalid_transition")
+    narrowing = to in NARROWING
     if not is_safe_symbol(reason):
-        raise TransitionRefused("invalid_reason")
-    if not _aware(now) or (record.since is not None and now < record.since):
+        if not narrowing:
+            raise TransitionRefused("invalid_reason")
+        reason = "reason_invalid"
+    if not _aware(now) or (not narrowing and record.since is not None and now < record.since):
         raise TransitionRefused("invalid_time")
+    if narrowing and record.since is not None:
+        now = max(now, record.since)
     if to not in ALLOWED_TRANSITIONS[record.state]:
         raise TransitionRefused("transition_not_allowed")
     if (to in {BrokerState.STAGED, BrokerState.ADMITTED, BrokerState.OBSERVE_ONLY,
                BrokerState.APPROVAL_PENDING, BrokerState.ACTIVE_BOUNDED}
             and record.manifest_digest is None):
         raise TransitionRefused("manifest_required")
+    lease_id, expiry = record.lease_id, record.lease_expires_at
     if to is BrokerState.ACTIVE_BOUNDED:
-        if not isinstance(approval, Approval):
-            raise TransitionRefused("approval_required")
-        if (approval.verified is not True or approval.adapter_id != record.adapter_id
-                or not _aware(approval.expires_at) or approval.expires_at <= now):
+        if not _valid_lease(approval, record.adapter_id, record.manifest_digest, now):
             raise TransitionRefused("invalid_approval")
-    event = Transition(record.state, to, reason, now, record.adapter_id, record.manifest_digest)
-    return replace(record, state=to, since=now), event
+        lease_id, expiry = approval.lease_id, approval.expires_at
+    event = Transition(record.state, to, reason, now, record.adapter_id,
+                       record.manifest_digest, lease_id, expiry)
+    return replace(record, state=to, since=now, lease_id=lease_id,
+                   lease_expires_at=expiry, _authority=_CONSTRUCTION), event
+
+
+def _valid_lease(lease, adapter_id, manifest_digest, now):
+    # Only the signature verifier's concrete result carries activation authority.
+    from .routing import EdgeLease
+
+    return (isinstance(lease, EdgeLease) and lease.verified is True
+            and lease.adapter_id == adapter_id and lease.manifest_digest == manifest_digest
+            and lease.expires_at > now)
+
+
+def restore_record(adapter_id, state, manifest_digest, since, *, now, lease=None,
+                   lease_id=None, lease_expires_at=None):
+    """Explicit persistence boundary; pending/active restore fails toward withdrawal."""
+    if not _aware(now):
+        raise TransitionRefused("invalid_time")
+    if state in {BrokerState.ACTIVE_BOUNDED, BrokerState.APPROVAL_PENDING}:
+        if not _valid_lease(lease, adapter_id, manifest_digest, now):
+            state = BrokerState.WITHDRAWING
+        else:
+            lease_id, lease_expires_at = lease.lease_id, lease.expires_at
+    return AdapterRecord(adapter_id, state, manifest_digest, since, lease_id,
+                         lease_expires_at, _authority=_CONSTRUCTION)
+
+
+def expire_if_lease_lapsed(record, lease, now):
+    """Return (record, optional audit event), withdrawing absent or lapsed authority."""
+    if record.state is BrokerState.ACTIVE_BOUNDED and (
+        not _valid_lease(lease, record.adapter_id, record.manifest_digest, now)
+        or record.lease_id != lease.lease_id
+        or record.lease_expires_at != lease.expires_at
+    ):
+        return transition(record, BrokerState.WITHDRAWING, reason="lease_expired", now=now)
+    return record, None

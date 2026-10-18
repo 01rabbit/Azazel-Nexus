@@ -22,8 +22,8 @@ Credential directories must be administrator-owned, non-symlink scoped
 directories whose final component is adapter_id; executable mappings must
 come from verified installed artifacts. Those filesystem facts are runtime
 commissioning preconditions, not facts this pure library can establish.
-Expiry is checked against commissioning.reviewed_at: later activation must
-recheck time/revocation. Rotation returns immutable replacement records;
+Expiry is checked against the supplied current time, with a 24-hour maximum
+from commissioning review; later activation must recheck time/revocation. Rotation returns immutable replacement records;
 the broker must persist both atomically and replace its old reference.
 """
 
@@ -32,11 +32,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
-from ipaddress import ip_network
+from datetime import datetime, timedelta
 from types import MappingProxyType
 
-from .manifest import AdapterManifest
+from .manifest import AdapterManifest, ManifestRefused, validate_egress
 
 
 class ConfinementRefused(ValueError):
@@ -119,7 +118,8 @@ def rotate_credential(
     _time(now)
     _time(expires_at)
     _symbol(symbol)
-    if old.revoked or symbol == old.symbol or expires_at <= now:
+    if (old.revoked or symbol == old.symbol or expires_at <= now
+            or expires_at > now + timedelta(hours=24)):
         raise ConfinementRefused("rotation needs an unrevoked old and fresh live reference")
     new = CredentialRef(old.adapter_id, symbol, expires_at, old.generation + 1)
     return replace(old, revoked=True), new
@@ -139,6 +139,8 @@ class AdapterCommissioning:
     installed_artifacts: Mapping[str, str]
     credential: CredentialRef
     reviewed_at: datetime
+    wider_egress_allowlist: tuple[tuple[str, int], ...] = ()
+    management_prefixes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _symbol(self.adapter_id)
@@ -177,7 +179,8 @@ def _digest(value: str) -> str:
     return value
 
 
-def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterCommissioning) -> str:
+def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterCommissioning,
+                        now: datetime) -> str:
     """Render a complete service unit from admitted/reviewed values only.
 
     Exposure adapters get no additional host capability. Approval and lease
@@ -186,6 +189,9 @@ def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterComm
     """
     if not isinstance(commissioning, AdapterCommissioning):
         raise ConfinementRefused("reviewed adapter commissioning required")
+    _time(now)
+    if not isinstance(manifest, AdapterManifest):
+        raise ConfinementRefused("admitted AdapterManifest required")
     adapter = _symbol(manifest.adapter_id)
     digest = _digest(manifest.artifact_digest)
     symbol = _symbol(manifest.credential_ref)
@@ -193,7 +199,9 @@ def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterComm
         raise ConfinementRefused("commissioning belongs to another adapter")
     credential = commissioning.credential
     if (credential.symbol != symbol or credential.revoked
-            or credential.expires_at <= commissioning.reviewed_at):
+            or credential.expires_at <= now
+            or commissioning.reviewed_at > now
+            or credential.expires_at > commissioning.reviewed_at + timedelta(hours=24)):
         raise ConfinementRefused("credential is uncommissioned, revoked or expired")
     executable = commissioning.installed_artifacts.get(digest)
     if executable is None:
@@ -211,13 +219,11 @@ def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterComm
                 or not re.fullmatch(r"[0-9a-fA-F:./]+", cidr)):
             raise ConfinementRefused("numeric IP/CIDR required")
         try:
-            network = ip_network(cidr, strict=True)
-        except ValueError as exc:
-            raise ConfinementRefused("invalid numeric IP/CIDR") from exc
-        if network.prefixlen == 0:
-            raise ConfinementRefused("wildcard egress refused")
-        if type(entry.port) is not int or not 1 <= entry.port <= 65535:
-            raise ConfinementRefused("invalid destination port")
+            network = validate_egress(cidr, entry.port,
+                                      wider_allowlist=commissioning.wider_egress_allowlist,
+                                      management_prefixes=commissioning.management_prefixes)
+        except (ManifestRefused, ValueError) as exc:
+            raise ConfinementRefused("egress policy refused") from exc
         families.add("AF_INET" if network.version == 4 else "AF_INET6")
         endpoints.append((cidr, entry.port))
     lines = [
@@ -238,7 +244,7 @@ def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterComm
                f"{symbol}.g{credential.generation}"),
               "RestrictAddressFamilies=" + " ".join(
                   family for family in ("AF_UNIX", "AF_INET", "AF_INET6") if family in families
-              ), "SocketBindDeny=any"]
+              ), "SocketBindDeny=any", "InaccessiblePaths=-/run -/var/run -/var/lib/azazel/run"]
     lines += [f"{key}={value}" for key, value in SHARED_HARDENING]
     lines += [f"IPAddressAllow={cidr}" for cidr in dict.fromkeys(cidr for cidr, _ in endpoints)]
     return "\n".join(lines) + "\n"

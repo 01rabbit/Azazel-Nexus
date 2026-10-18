@@ -20,7 +20,7 @@ from ..knowledge_peer import KnowledgeRefused, canonical, fresh, instant
 from ..lite_cache import Freshness
 from ..sanitizer import PrivacyClass, Redaction, SanitizerPolicy, sanitize
 from ..signature import SignatureRefused, verify_detached
-from .manifest import AdapterManifest
+from .manifest import AdapterManifest, is_safe_symbol
 from .states import AdapterRecord, BrokerState
 
 EDGE_LEASE_DOMAIN = b"azazel-nexus/edge-lease/v1\0"
@@ -29,6 +29,23 @@ MAX_PROPOSAL_BYTES = 65536
 MAX_LEASE_BYTES = 8192
 MANAGEMENT_HEALTH_MAX_AGE = timedelta(seconds=60)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+class ConsumedLeaseStore:
+    """Broker-owned nonce ledger. Caller serializes consume and durable publication.
+
+    The supplied list is part of the broker snapshot, including across restart.
+    Standalone callers must serialize access and persist their own backing list.
+    """
+
+    def __init__(self, entries=None):
+        self.entries = [] if entries is None else entries
+
+    def consume(self, lease_id):
+        if lease_id in self.entries:
+            return False
+        self.entries.append(lease_id)
+        return True
 
 
 @dataclass(frozen=True)
@@ -65,6 +82,10 @@ def _adapter_refusal(
     *,
     exposure: bool = False,
 ) -> GateRefusal | None:
+    if not isinstance(record.state, BrokerState):
+        return GateRefusal("malformed adapter state")
+    if record.manifest_digest != manifest.manifest_digest:
+        return GateRefusal("manifest digest mismatch")
     if record.adapter_id != manifest.adapter_id or not record.adapter_id:
         return GateRefusal("adapter identity mismatch")
     if not isinstance(record.manifest_digest, str) or not _DIGEST.fullmatch(
@@ -213,7 +234,7 @@ class EdgeLease:
     """
 
     signed: bytes
-    _approval: tuple[str, datetime] | None = field(default=None, init=False, repr=False)
+    _approval: tuple[str, datetime, str, str] | None = field(default=None, init=False, repr=False)
 
     @property
     def verified(self) -> bool:
@@ -229,11 +250,20 @@ class EdgeLease:
             raise KnowledgeRefused("unverified Edge lease")
         return self._approval[1]
 
+    @property
+    def lease_id(self) -> str:
+        return self._approval[2] if self._approval else ""
+
+    @property
+    def manifest_digest(self) -> str:
+        return self._approval[3] if self._approval else ""
+
     def bind(self, **verification) -> EdgeLease:
         """Return this same lease type carrying a freshly verified Approval."""
         doc, _ = self.verify(**verification)
         bound = EdgeLease(self.signed)
-        object.__setattr__(bound, "_approval", (doc["adapter_id"], instant(doc["expires_at"])))
+        object.__setattr__(bound, "_approval", (doc["adapter_id"], instant(doc["expires_at"]),
+                                                  doc["lease_id"], doc["manifest_digest"]))
         return bound
 
     def verify(
@@ -243,6 +273,7 @@ class EdgeLease:
         commissioning_digest: str,
         adapter_id: str,
         proposal_digest: str,
+        manifest_digest: str,
         now: str,
     ) -> tuple[dict, str]:
         if (
@@ -273,6 +304,8 @@ class EdgeLease:
                 or set(doc)
                 != {
                     "schema",
+                    "lease_id",
+                    "manifest_digest",
                     "adapter_id",
                     "proposal_digest",
                     "commissioning_digest",
@@ -283,6 +316,8 @@ class EdgeLease:
                 raise ValueError
             if (
                 doc["schema"] != EDGE_LEASE_SCHEMA
+                or not is_safe_symbol(doc["lease_id"])
+                or doc["manifest_digest"] != manifest_digest
                 or doc["adapter_id"] != adapter_id
                 or doc["proposal_digest"] != proposal_digest
                 or not commissioning_digest
@@ -292,6 +327,8 @@ class EdgeLease:
         except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
             raise KnowledgeRefused("invalid Edge lease binding or schema") from exc
         fresh(doc, now)
+        if not timedelta(0) < instant(doc["expires_at"]) - instant(doc["issued_at"]) <= timedelta(minutes=15):
+            raise KnowledgeRefused("Edge lease lifetime exceeds 15 minutes")
         return doc, signer
 
 
@@ -322,6 +359,7 @@ class DispatchIntent:
     expires_at: str
     dry_run: bool
     human_confirmed: bool
+    lease_id: str = ""
 
 
 def gate_exposure_proposal(
@@ -333,6 +371,7 @@ def gate_exposure_proposal(
     failsafe: ManagementFailsafe,
     topology: CommissioningRecord,
     edge_keys: Mapping[str, bytes],
+    consumed_leases,
     now: str,
     dry_run: bool = False,
     human_confirmed: bool = False,
@@ -370,10 +409,14 @@ def gate_exposure_proposal(
             commissioning_digest=commissioning_digest,
             adapter_id=proposal.adapter_id,
             proposal_digest=proposal.digest,
+            manifest_digest=manifest.manifest_digest,
             now=now,
         )
     except KnowledgeRefused as exc:
         return GateRefusal(str(exc))
+    # The broker owns this atomic test-and-record operation under its writer lock.
+    if not consumed_leases.consume(doc["lease_id"]):
+        return GateRefusal("Edge lease already consumed")
     return DispatchIntent(
         proposal.adapter_id,
         adapter_record.manifest_digest,
@@ -383,6 +426,7 @@ def gate_exposure_proposal(
         doc["expires_at"],
         dry_run,
         human_confirmed,
+        doc["lease_id"],
     )
 
 

@@ -13,7 +13,7 @@ import ipaddress
 import json
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from enum import Enum
 
 from ..sanitizer import PrivacyClass
@@ -79,6 +79,40 @@ def _digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
+def validate_egress(address, port, *, wider_allowlist=(), management_prefixes=(),
+                    enforce_prefix=True):
+    """Apply the same commissioned address policy at admission and rendering.
+
+    Wider exceptions are exact CIDR/port pairs; they never override forbidden
+    address classes or overlap with the commissioned management plane.
+    """
+    if not isinstance(address, str) or len(address) > 49 or "%" in address:
+        raise ManifestRefused("invalid_egress_address")
+    try:
+        network = ipaddress.ip_network(address, strict=True)
+    except ValueError:
+        raise ManifestRefused("invalid_egress_address") from None
+    if network.prefixlen == 0:
+        raise ManifestRefused("wildcard_egress")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ManifestRefused("invalid_egress_port")
+    blocked = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4",
+               "240.0.0.0/4", "::/128", "::1/128", "fe80::/10", "ff00::/8",
+               "::ffff:0:0/96")
+    if any(network.version == (n := ipaddress.ip_network(cidr)).version
+           and network.overlaps(n) for cidr in blocked) or any(
+               ip.is_reserved for ip in (network.network_address, network.broadcast_address)):
+        raise ManifestRefused("forbidden_egress")
+    for cidr in management_prefixes:
+        management = ipaddress.ip_network(cidr, strict=True)
+        if network.version == management.version and network.overlaps(management):
+            raise ManifestRefused("management_egress")
+    if (enforce_prefix and network.prefixlen < (24 if network.version == 4 else 64)
+            and (str(network), port) not in wider_allowlist):
+        raise ManifestRefused("egress_prefix_too_wide")
+    return network
+
+
 @dataclass(frozen=True)
 class EgressRule:
     """One literal address or canonical CIDR, and one TCP/UDP port number.
@@ -89,18 +123,12 @@ class EgressRule:
 
     address: str
     port: int
+    wider_allowlist: InitVar[tuple] = ()
+    management_prefixes: InitVar[tuple] = ()
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.address, str) or len(self.address) > 49 or "%" in self.address:
-            raise ManifestRefused("invalid_egress_address")
-        try:
-            network = ipaddress.ip_network(self.address, strict=True)
-        except ValueError:
-            raise ManifestRefused("invalid_egress_address") from None
-        if network.prefixlen == 0:
-            raise ManifestRefused("wildcard_egress")
-        if type(self.port) is not int or not 1 <= self.port <= 65535:
-            raise ManifestRefused("invalid_egress_port")
+    def __post_init__(self, wider_allowlist, management_prefixes) -> None:
+        validate_egress(self.address, self.port, wider_allowlist=wider_allowlist,
+                        management_prefixes=management_prefixes)
 
 
 @dataclass(frozen=True)
@@ -182,6 +210,7 @@ def read_manifest(
     registry_keys: KeyRole | None = None,
     revocation_keys: KeyRole | None = None,
     bundle_keys: KeyRole | None = None,
+    wider_egress_allowlist=(), management_prefixes=(),
 ) -> AdapterManifest:
     """Verify only adapter-role keys and bind the declaration to commissioning.
 
@@ -244,7 +273,12 @@ def read_manifest(
     egress = document["egress_allowlist"]
     if not isinstance(egress, list) or len(egress) > MAX_EGRESS_RULES:
         raise ManifestRefused("invalid_egress_allowlist")
-    rules = tuple(EgressRule(**_exact(r, frozenset({"address", "port"}))) for r in egress)
+    rules = tuple(EgressRule(**_exact(r, frozenset({"address", "port"})),
+                             wider_allowlist=wider_egress_allowlist,
+                             management_prefixes=management_prefixes) for r in egress)
+    for rule in rules:
+        validate_egress(rule.address, rule.port, wider_allowlist=wider_egress_allowlist,
+                        management_prefixes=management_prefixes)
     compatibility = document["compatibility"]
     if not isinstance(compatibility, list):
         raise ManifestRefused("invalid_compatibility")

@@ -154,3 +154,48 @@ fixture telemetry admission under AZAZEL_ROOT, sanitized routing, refusal withou
 an Edge lease, intent with a fixture lease, transport refusal, withdrawal and
 chain verification. Test keys are ephemeral; no production keys are included.
 The issue remains open for Fabric#25, real runtime confinement and HIL.
+
+
+## Milestone 2 review hardening
+
+Admission and rendering share an address policy: loopback, unspecified,
+link-local (including metadata endpoints), multicast, reserved and IPv4-mapped
+IPv6 ranges are refused. IPv4 prefixes shorter than /24 and IPv6 prefixes
+shorter than /64 require an exact canonical CIDR/port pair in the local
+`wider_egress_allowlist`. `management_prefixes` always exclude overlapping
+egress, including otherwise commissioned exceptions. These optional fields
+belong to `AdapterCommissioning`; empty defaults grant no broad exception.
+The current CLI review accepts the default narrow policy only.
+
+Rendering and broker review require an explicit current `now`. Credential
+expiry is exclusive and limited to 24 hours from review; rotation limits a new
+reference to 24 hours from rotation time. Units hide `/run`, `/var/run` and `/var/lib/azazel/run` (the runtime
+control-socket tree) with
+`InaccessiblePaths` because AF_UNIX remains available. This blocks filesystem
+broker/control sockets; abstract Unix sockets and actual credential mount
+behavior still require Linux runtime validation.
+
+Edge leases include signed `lease_id` and `manifest_digest` fields and last at
+most 15 minutes. The gate requires a commissioner-owned `ConsumedLeaseStore`;
+the broker serializes consumption under its writer lock and checkpoints the
+nonce list atomically with adapter state. Standalone callers must serialize
+access and durably publish their store. Re-admission does not clear consumed
+nonces. Transition records and events carry the lease ID and expiry.
+`restore_record` is the explicit non-DISABLED construction path. Restoring
+ACTIVE_BOUNDED or APPROVAL_PENDING without a concrete verified live Edge lease
+narrows to WITHDRAWING; the broker deliberately supplies no restored authority.
+`expire_if_lease_lapsed` returns the narrowed record and its audit event.
+Clock rollback and malformed reason text cannot block narrowing: event time is
+clamped to the previous time and the reason becomes `reason_invalid`.
+
+The privilege scan now includes every broker module, the CLI, M.I.O. profile,
+operator view, Fabric boundary and provider registry. It checks privileged
+references as well as calls, dynamic attribute lookup, dangerous imports and
+package-relative imports. Existing fixed-field validators and pure Fabric
+projections have exact function-body hash exceptions for their dynamic field
+reads and optional-module availability probe; changes invalidate those
+exceptions. Fabric and commissioning draft imports of `ActivationRefused` and
+`_utc_lease_time` are allowed as pure validation helpers, without traversing the
+activation implementation. Runtime scan self-checks still reject any call in
+an activation module, regardless of the function name. No host-privilege or
+transport permission is added by these source-scan distinctions.

@@ -15,7 +15,6 @@ from azazel_nexus.integration_broker.confinement import (
     AdapterCommissioning,
     ConfinementRefused,
     CredentialRef,
-    render_adapter_unit,
     rotate_credential,
 )
 
@@ -30,17 +29,36 @@ class Egress:
     port: int
 
 
-@dataclass(frozen=True)
-class Manifest:
-    """Lane A supplies admission; only its confinement-facing fields are used."""
+from azazel_nexus.integration_broker.manifest import AdapterManifest
 
+
+@dataclass(frozen=True)
+class Manifest(AdapterManifest):
+    schema: str = "azazel-nexus/adapter-manifest/1"
+    commissioning_digest: str = DIGEST
     adapter_id: str = "telemetry"
+    kind: str = "ndr"
+    version: str = "1.0.0"
     artifact_digest: str = DIGEST
-    capability_set: frozenset[str] = frozenset({"telemetry_read"})
-    egress_allowlist: tuple[Egress, ...] = (
-        Egress("192.0.2.0/24", 443), Egress("2001:db8::/64", 6514),
-    )
+    capability_set: frozenset = frozenset({"telemetry_read"})
+    tenant: str = "test"
+    privacy_class: str = "P1-sanitized"
+    egress_allowlist: tuple = (Egress("192.0.2.0/24", 443), Egress("2001:db8::/64", 6514))
+    mtls_identity: str = "test"
     credential_ref: str = "mtls-v1"
+    compatibility: tuple = ("azazel-nexus/1",)
+    signer: str = "test"
+    manifest_digest: str = DIGEST
+
+    def __post_init__(self):
+        pass  # Deliberately malformed nominal inputs must be rechecked by rendering.
+
+
+def render_adapter_unit(manifest, *, commissioning, now=NOW):
+    from azazel_nexus.integration_broker.confinement import (
+        render_adapter_unit as render,
+    )
+    return render(manifest, commissioning=commissioning, now=now)
 
 
 def commissioned(**overrides):
@@ -75,6 +93,7 @@ ExecStart=/opt/azazel/adapters/telemetry
 LoadCredential=mtls-v1:/etc/azazel/credentials/telemetry/mtls-v1.g1
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SocketBindDeny=any
+InaccessiblePaths=-/run -/var/run -/var/lib/azazel/run
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -113,6 +132,7 @@ ExecStart=/opt/azazel/adapters/exposure
 LoadCredential=exposure-mtls:/etc/azazel/credentials/exposure/exposure-mtls.g1
 RestrictAddressFamilies=AF_UNIX
 SocketBindDeny=any
+InaccessiblePaths=-/run -/var/run -/var/lib/azazel/run
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -139,7 +159,8 @@ def test_exact_telemetry_unit():
 
 
 def test_exact_exposure_unit_has_separate_scope_and_no_extra_host_privilege():
-    manifest = Manifest("exposure", DIGEST, frozenset({"exposure_change"}), (), "exposure-mtls")
+    manifest = Manifest(adapter_id="exposure", capability_set=frozenset({"exposure_change"}),
+                        egress_allowlist=(), credential_ref="exposure-mtls")
     commissioning = AdapterCommissioning(
         "exposure", None, "/etc/azazel/credentials/exposure",
         {DIGEST: "/opt/azazel/adapters/exposure"},
@@ -379,3 +400,34 @@ def test_lane_a_string_enums_render_as_values():
 def test_payload_cannot_substitute_for_reviewed_commissioning():
     with pytest.raises(ConfinementRefused):
         render_adapter_unit(Manifest(), commissioning={"ExecStart": "/bin/sh"})
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "0.0.0.0", "169.254.169.254", "224.0.0.1",
+    "240.0.0.1", "::", "::1", "fe80::1", "ff02::1", "::ffff:192.0.2.8", "100::1",
+    "10.0.0.0/8", "2001:db8::/32"])
+def test_render_rechecks_forbidden_egress(address):
+    with pytest.raises(ConfinementRefused):
+        render_adapter_unit(replace(Manifest(), egress_allowlist=(Egress(address, 443),)),
+                            commissioning=commissioned())
+
+
+def test_render_wide_exception_management_and_unix_isolation():
+    manifest = replace(Manifest(), egress_allowlist=(Egress("10.20.0.0/16", 443),))
+    scope = commissioned(wider_egress_allowlist=(("10.20.0.0/16", 443),))
+    assert "InaccessiblePaths=-/run -/var/run -/var/lib/azazel/run" in render_adapter_unit(manifest, commissioning=scope)
+    with pytest.raises(ConfinementRefused):
+        render_adapter_unit(manifest, commissioning=replace(scope, management_prefixes=("10.20.1.0/24",)))
+
+
+def test_render_requires_current_time_nominal_manifest_and_bounded_lifetime():
+    from types import SimpleNamespace
+    with pytest.raises(ConfinementRefused):
+        render_adapter_unit(SimpleNamespace(**Manifest().__dict__), commissioning=commissioned())
+    with pytest.raises(ConfinementRefused):
+        render_adapter_unit(Manifest(), commissioning=commissioned(), now=NOW + timedelta(hours=1))
+    with pytest.raises(ConfinementRefused):
+        render_adapter_unit(Manifest(), commissioning=commissioned(credential=CredentialRef(
+            "telemetry", "mtls-v1", NOW + timedelta(hours=24, seconds=1))))
+    with pytest.raises(ConfinementRefused):
+        rotate_credential(commissioned().credential, symbol="mtls-v2", now=NOW,
+                          expires_at=NOW + timedelta(hours=24, seconds=1))

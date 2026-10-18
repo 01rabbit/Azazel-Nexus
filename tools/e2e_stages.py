@@ -1298,6 +1298,8 @@ def _integration_broker(harness: Harness) -> str:
                "dry_run": True, "human_confirmed": True, "now": NOW}
     assert isinstance(broker.gate(proposal, edge_lease=None, **context), GateRefusal)
     payload = canonical({"schema": EDGE_LEASE_SCHEMA, "adapter_id": proposal.adapter_id,
+                         "lease_id": "fixture-lease",
+                         "manifest_digest": broker.status(now=NOW)["adapters"][0]["manifest_digest"],
                          "proposal_digest": proposal.digest, "commissioning_digest": topology.digest(),
                          "issued_at": NOW, "expires_at": expires})
     lease = EdgeLease(edge_key.sign(EDGE_LEASE_DOMAIN + payload).signature + payload)
