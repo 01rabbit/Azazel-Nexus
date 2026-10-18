@@ -225,14 +225,19 @@ existing principal and identifier contract.
 model/runtime IDs, runtime resolution and a server implementing the
 `mio_serve.LocalServer.infer` contract. Inference checks admission, the reserve,
 runtime resolution and the inspected model before calling the server. The
-production defaults refuse. The prompt uses fixed generation limits (512
+production defaults refuse. The prompt uses fixed generation limits (1024
 output tokens, temperature 0); callers cannot override them.
 `local_advisory.build_prompt` constructs the messages. `LocalServer` sends
 `response_format` with a JSON schema requiring string `advice` and a `fields` object with seven required strings:
 `interpretation`, `check_1`, `check_2`, `check_3`, `alternative`, `missing`, and
-`cited_facts`. Each string is nonempty and at most 512 characters; extra fields
+`cited_facts`. Generation strings are nonempty, with advice capped at 200 characters and each
+field (including `cited_facts`) at 160; extra fields
 are refused. The schema constrains generation;
-`read_local_advisory` still independently checks every response.
+`read_local_advisory` still independently checks every response and retains its
+512-character reader limits for older valid replies. The 1024-token budget
+(previously 512) gives bounded JSON more room to close; only worst-case
+generation latency increases, while short replies can finish earlier. Existing
+request deadlines remain in force.
 Test-only compositions can inject a runtime resolver and `LocalServer` without
 adding an entry to production `RUNTIMES` or opening the admission gate.
 
@@ -273,19 +278,52 @@ present, independently of model compliance. The original item is excluded from
 citation evidence. Matching is lexical and does not detect every injection.
 
 The local reader retains all `read_advisory` instruction/URL/control/size checks.
-It additionally refuses malformed local fields as `local_schema`, citations with
-unknown numeric or structured identifier tokens as `ungrounded_facts`, and
-language mismatches as `language_mismatch`. A citation without structured tokens
-must be an exact substring of the question or retained context. Numeric matching
-is exact, including formatting; it does not normalize units, punctuation, or
-paraphrases. Each answer string must contain kana for a question containing
-Japanese characters; other questions require Latin letters and no Japanese/CJK
-characters. This is a deterministic language heuristic, not language detection.
+It additionally refuses malformed local fields as `local_schema`, unknown numeric
+or structured identifier tokens in advice or any field as `ungrounded_facts`,
+and language mismatches as `language_mismatch`. Facts must occur in the question,
+retained non-injection context, or the exact trusted reference actually sent in
+the prompt. Model text and source are NFKC-normalized before exact token matching,
+including numeric formatting. ASCII identifiers containing both letters and digits
+(with internal `.`, `_`, or `-`) and IPv6 literals must match as whole tokens;
+numeric fragments of identifiers or addresses cannot ground separate claims.
+Reference-only allowances are limited to ATT&CK `Tdddd[.ddd]` / `TAdddd`, `D3-...`,
+`CVE-yyyy-nnnn...`, and standalone four-digit Windows event IDs (including
+`Event ID NNNN` / `イベントID NNNN`). Small reference numbers such as `3`, `5`,
+and `10` cannot substantiate situation counts. Unlabelled plain lowercase words
+without digits remain unchecked, a known limit of lexical grounding. Prose shapes
+are not facts: hyphenated or dotted words without digits (`command-and-control`,
+`e.g`) unless they carry `@`, `/`, `:` or are domain names, and list enumerators
+(`1. `). `60-second` grounds as `60`. A digit-free span of 12+ characters occurring
+three times in one value is a looping generation and refuses as `degenerate`. When
+a value reaches its generation cap (advice 200, fields 160) without ending a
+sentence, the trailing fragment is deleted back to the last sentence end; nothing
+is added. These checks are lexical and do not catch wrong-but-fluent claims. Model-written
+`cited_facts` prose overlap is no longer a refusal criterion. After validation,
+that field is replaced with source fact tokens used in the answer, deduplicated
+in source order and joined with `、` (Japanese) or `, ` (English), capped at 512
+characters. Reference-only facts are not rendered as situation citations. With
+no quoted facts it says 「状況から引用できる具体的な事実はありません」 or
+“No specific facts quoted from the situation.” The response digest and audit
+counts describe this final delivered document.
+
+Advice matching `[A-Za-z0-9_.:-]{1,64}` is replaced with the validated
+`interpretation` in either language. For Japanese questions, each prose field
+still requires kana; other label-like fields of at most 32 characters are tokens
+and exempt from that prose check. English prose to Japanese questions remains
+refused. English questions require Latin letters and no Japanese characters.
+This is a deterministic language heuristic, not language detection.
 These failures become NOT_ADVICE with fixed refusal codes. The frame-less reader
 form exists for re-reading validated socket replies and checks shape/safety only;
 inference and quality evaluation must supply the original frame.
 
 ## Reasoning reference injection
+
+The system prompt in both languages instructs the model to adapt generic
+references to the facts without copying them, and to copy only exact short
+situation phrases into `cited_facts`. `reference_message` shares the exact
+1200-character capped reference between prompt construction and validation.
+The quality benchmark passes this same reference and reports refusal counts
+by reason in its metrics and Japanese summary.
 
 The service supports optional signed-pack playbook data and a deadline-bound
 Knowledge lookup callable. Matching occurs after the existing frame gate and

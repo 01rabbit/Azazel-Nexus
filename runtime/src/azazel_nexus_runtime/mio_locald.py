@@ -211,8 +211,10 @@ class LocalRuntimeService:
         try:
             from .mio_serve import LocalInferenceRequest
 
+            messages = build_prompt(frame, playbooks=playbooks, knowledge=knowledge)
+            reference_text = messages[1][1] if len(messages) == 3 else ""
             inference = LocalInferenceRequest(
-                prompt_messages=build_prompt(frame, playbooks=playbooks, knowledge=knowledge), max_tokens=512, temperature=0.0,
+                prompt_messages=messages, max_tokens=1024, temperature=0.0,
             )
             result = self._server.infer(inference, deadline_s=deadline_ms / 1000)
         except TimeoutError:
@@ -224,7 +226,7 @@ class LocalRuntimeService:
                 raise
             return refuse("runtime_failed")
         try:
-            advisory = read_local_advisory(result.text, frame)
+            advisory = read_local_advisory(result.text, frame, reference_text=reference_text)
         except AdvisoryRefused as exc:
             return refuse(exc.refusal.value, "not_advice")
         audit(advisory.as_event(local=True))

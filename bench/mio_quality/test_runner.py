@@ -56,7 +56,7 @@ class FakeContract:
 
     prompt = staticmethod(build_prompt)
 
-    def read(self, text, frame):
+    def read(self, text, frame, *, reference_text=''):
         return read_advisory(text.encode())
 
 
@@ -80,6 +80,7 @@ def test_fixed_gates_skip_model_and_preserve_denominators():
     assert result['metrics']['insufficient_accuracy']['numerator'] == 14
     assert result['metrics']['injection_acknowledgment']['denominator'] == 1
     assert result['rows'][8]['outcome'] == result['rows'][13]['outcome'] == 'gated'
+    assert all(call.max_tokens == 1024 for call in server.calls)
     assert result['rows'][0]['response_format']['type'] == 'json_schema'
     assert '受理率' in summarize(result)
 
@@ -106,6 +107,8 @@ def test_instructions_refused_and_raw_evidence_kept():
     server = FakeServer('{"advice":"rm -rf /tmp/example"}')
     result = evaluate(server, load_cases(EVAL_SET), contract=FakeContract())
     assert result['metrics']['raw_instruction']['numerator'] == 12
+    assert result['metrics']['refusals_by_reason'] == {'looks_like_an_instruction': 12}
+    assert '- looks_like_an_instruction: 12' in summarize(result)
     assert result['metrics']['command_output_zero']
     assert result['rows'][0]['outcome'] == 'not_advice'
     assert result['rows'][0]['delivered'] is None
@@ -152,7 +155,7 @@ def test_public_api_adapter_contract(monkeypatch):
     gate = None
     monkeypatch.setattr(local_advisory, 'gate_frame', lambda value: gate, raising=False)
     monkeypatch.setattr(local_advisory, 'read_local_advisory',
-                        lambda text, *, frame: read_advisory(text.encode()))
+                        lambda text, *, frame, reference_text: read_advisory(text.encode()))
     contract = LocalContract()
     assert contract.gate(frame) == (frame, None, None)
     gate = {'outcome': 'out_of_scope', 'reason': 'out_of_scope',
@@ -196,3 +199,30 @@ def test_playbook_coverage_and_fixture_prompt(tmp_path):
     fixture.write_text(json.dumps([dict(ref, technique_id='invalid')]))
     with pytest.raises(ValueError, match='invalid knowledge fixture'):
         load_knowledge_fixture(fixture)
+
+
+def test_benchmark_passes_the_reference_sent_to_reader():
+    from azazel_nexus.local_advisory import FIELD_NAMES
+
+    case = load_cases(EVAL_SET)[1]
+    case['frame'].update(question='SSH host-1 T1110', context=[])
+    ref = SimpleNamespace(technique_id='T1110', name='Event 4625', claim_id='T1110')
+    fields = {key: 'Review the logs.' for key in FIELD_NAMES}
+    fields['interpretation'] = 'Review event 4625.'
+    fields['cited_facts'] = 'An authentication issue is possible.'
+    text = json.dumps({'advice': 'Review authentication activity.', 'fields': fields})
+    with_reference = evaluate(FakeServer(text), [case], contract=LocalContract(knowledge=(ref,)))
+    without = evaluate(FakeServer(text), [case], contract=LocalContract())
+    assert with_reference['rows'][0]['outcome'] == 'advisory'
+    assert with_reference['rows'][0]['scores']['citation_match']
+    assert with_reference['rows'][0]['scores']['language_match']
+    assert without['metrics']['refusals_by_reason'] == {'ungrounded_facts': 1}
+
+
+def test_japanese_trusted_token_citation_is_not_language_prose():
+    case = load_cases(EVAL_SET)[9]
+    row = {'outcome': 'advisory', 'gate_reason': None, 'delivered': {
+        'advice': 'ログを確認します',
+        'fields': {'interpretation': 'ログを調べます', 'missing': 'unknown',
+                   'cited_facts': 'ws-112、4800'}}}
+    assert score(case, row)['language_match']

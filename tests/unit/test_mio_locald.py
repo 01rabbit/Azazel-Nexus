@@ -611,6 +611,15 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state, 
     assert reply['playbook']['references'] == [dict(ref) for ref in library.entries[0].references]
     assert lookups == [('T1110.003',)]
     assert len(calls[0].prompt_messages) == 3
+    assert calls[0].max_tokens == 1024
+    original_reader = mio_locald.read_local_advisory
+    captured = []
+
+    def read_with_reference(text, frame, *, reference_text):
+        captured.append(reference_text)
+        return original_reader(text, frame, reference_text=reference_text)
+
+    monkeypatch.setattr(mio_locald, 'read_local_advisory', read_with_reference)
     if lookup_state == 'available':
         assert reply['knowledge'] == {'claim_ids': ['T1110.003']}
     else:
@@ -625,6 +634,7 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state, 
     document['playbook'] = {'ids': ['model-forged-entry']}
     text = json.dumps(document)
     forged = service.handle(request)
+    assert captured == [calls[1].prompt_messages[1][1]]
     assert forged['outcome'] == 'not_advice'
     assert 'playbook' not in forged
 
@@ -652,3 +662,42 @@ def test_accepted_reply_without_references_has_null_playbook(tmp_path):
                               payload={'request_id': 'fixture', 'privacy_class': 'P2-mission',
                                        'question': 'SSH host-1', 'context': []})
     assert service.handle(request)['playbook'] is None
+
+
+@pytest.mark.parametrize('with_reference', [False, True])
+def test_infer_validates_against_exact_sent_reference(tmp_path, with_reference):
+    import json
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import FIELD_NAMES
+
+    (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    fields = {key: 'Review the logs.' for key in FIELD_NAMES}
+    fields['interpretation'] = 'Review event 4625.'
+    fields['cited_facts'] = 'The situation suggests an authentication issue.'
+    text = json.dumps({'advice': 'Review authentication activity.', 'fields': fields})
+    calls = []
+
+    def infer(request, **kwargs):
+        calls.append(request)
+        return SimpleNamespace(text=text)
+
+    service = mio_locald.LocalRuntimeService(
+        staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
+        runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
+        knowledge_lookup=(lambda ids: (SimpleNamespace(
+            technique_id='T1110', name='Event 4625', claim_id='T1110'),))
+        if with_reference else None)
+    request = SimpleNamespace(verb=mio_locald.INFER_VERB, arguments={'deadline_ms': 1000},
+                              payload={'request_id': 'fixture', 'privacy_class': 'P2-mission',
+                                       'question': 'SSH host-1 T1110', 'context': []})
+    reply = service.handle(request)
+    assert calls[0].max_tokens == 1024
+    if with_reference:
+        assert '4625' in calls[0].prompt_messages[1][1]
+        assert reply['outcome'] == 'advisory'
+        assert reply['fields']['cited_facts'] == 'No specific facts quoted from the situation.'
+        assert reply['knowledge'] == {'claim_ids': ['T1110']}
+    else:
+        assert len(calls[0].prompt_messages) == 2
+        assert reply == {'outcome': 'not_advice', 'refusal': 'ungrounded_facts'}
