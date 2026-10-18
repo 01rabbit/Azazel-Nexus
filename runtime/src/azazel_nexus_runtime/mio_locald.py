@@ -8,24 +8,35 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 from __future__ import annotations
 
 import sys
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
-    build_prompt,
+    build_options,
+    decide_pick,
+    delivered_document,
+    delivered_event,
+    explanation_prompt,
+    explanation_response_format,
     gate_frame,
+    letter_probabilities,
+    pick_grammar,
+    pick_prompt,
+    read_delivered,
+    read_explanation,
     read_frame,
-    read_local_advisory,
+    read_pick,
     request_event,
 )
 from azazel_nexus.model_runtime import (
-    ActivationReadiness,
     RuntimeRefused,
     inspect_artifact,
     readiness,
@@ -54,10 +65,10 @@ from .systemd_notify import runtime_ready_callback
 __all__ = [
     "ACTIVATE_VERB",
     "INFER_VERB",
-    "LocalRuntimeService",
     "REGISTRY",
     "SOCKET_NAME",
     "STAGING",
+    "LocalRuntimeService",
     "main",
 ]
 
@@ -118,7 +129,7 @@ class LocalRuntimeService:
         self,
         *,
         staging: Path = STAGING,
-        reserve: Optional[Any] = None,
+        reserve: Any | None = None,
         admitted: Callable[[str], bool] = lambda model_id: False,
         model_id: str = "uncommissioned",
         runtime_id: str = "uncommissioned",
@@ -178,6 +189,8 @@ class LocalRuntimeService:
         ).as_document()
 
     def _infer(self, request: Any, *, audit: Callable[[dict], None]) -> dict:
+        began = time.monotonic()
+
         def refuse(reason, outcome="failed"):
             audit({"event_type": "mio.local.refused", "refusal": reason})
             return {"outcome": outcome, "refusal": reason}
@@ -210,56 +223,88 @@ class LocalRuntimeService:
         knowledge_state = "unused"
         ids = technique_ids(frame)
         if self._knowledge_lookup is not None and ids:
-            try:
-                knowledge = tuple(self._knowledge_lookup(ids)[:16])
-                knowledge_state = "available"
-            except Exception as error:
-                # Optional client failures are fixed metadata, as for inference.
-                if isinstance(error, AuditUnavailable):
-                    raise
-                knowledge_state = "unavailable"
+            # Existing lookup has no remaining-budget argument. Skip rather than
+            # allowing an optional synchronous call to overrun the whole deadline.
+            knowledge_state = "skipped_deadline_contract"
         audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
                "playbook_count": len(playbooks), "knowledge": knowledge_state,
                "knowledge_count": len(knowledge)})
-        # Runtime dependency stays in the runtime distribution. Tests inject a
-        # fake server; the request contract is shared with the serving lane.
         try:
-            from .mio_serve import LocalInferenceRequest
-
-            messages = build_prompt(frame, playbooks=playbooks, knowledge=knowledge)
-            reference_text = messages[1][1] if len(messages) == 3 else ""
-            inference = LocalInferenceRequest(
-                prompt_messages=messages, max_tokens=1024, temperature=0.0,
+            reply, telemetry = closed_choice_pipeline(
+                self._server, frame, playbooks, knowledge, self._model_id,
+                end=began + deadline_ms / 1000, audit=audit,
             )
-            result = self._server.infer(inference, deadline_s=deadline_ms / 1000)
         except TimeoutError:
             return refuse("deadline", "timed_out")
         except Exception as error:
-            # Provider failures become fixed metadata. Audit failures must
-            # remain fatal even when raised inside a composed runtime.
             if isinstance(error, AuditUnavailable):
                 raise
             return refuse("runtime_failed")
-        try:
-            advisory = read_local_advisory(result.text, frame, reference_text=reference_text)
-        except AdvisoryRefused as exc:
-            return refuse(exc.refusal.value, "not_advice")
-        audit(advisory.as_event(local=True))
-        reply = {
-            "outcome": "advisory", "refusal": None,
-            "response_digest": advisory.digest,
-            "advice": advisory.text.text if advisory.text else None,
-            "fields": dict(advisory.data.fields) if advisory.data else {},
-            "playbook": {
-                "ids": [p.id for p in playbooks],
-                "status": [p.status for p in playbooks],
-                "references": [dict(ref) for p in playbooks for ref in p.references],
-                "first_response": [text for p in playbooks for text in p.guidance["first_response"]],
-            } if playbooks else None,
-        }
-        if knowledge:
-            reply["knowledge"] = {"claim_ids": [ref.claim_id for ref in knowledge]}
-        return reply
+        audit({"event_type": "mio.local.selection", **telemetry})
+        audit(delivered_event(reply))
+        return {"outcome": "advisory", "refusal": None, **reply}
+
+
+# Reserve delivery time; optional Knowledge must never consume the inference budget.
+DELIVERY_RESERVE_S = 0.02
+EXPLANATION_MIN_S = 1.0
+
+
+def closed_choice_pipeline(server, frame, playbooks=(), knowledge=(), model_id="bench", *,
+                           end, audit=lambda event: None):
+    """Shared runtime/bench orchestration, with one absolute deadline."""
+    from .mio_serve import LocalInferenceRequest
+
+    def remaining():
+        budget = end - time.monotonic() - DELIVERY_RESERVE_S
+        if budget <= 0:
+            raise TimeoutError("local pipeline deadline")
+        return budget
+
+    options = build_options(frame, playbooks)
+    picks, probabilities = [], []
+    for order in (options, tuple(reversed(options))):
+        result = server.infer(LocalInferenceRequest(
+            pick_prompt(frame, order), max_tokens=1, temperature=0,
+            grammar=pick_grammar(order), top_logprobs=20), deadline_s=remaining())
+        remaining()
+        picks.append(read_pick(result.text, order))
+        probabilities.append(letter_probabilities(getattr(result, "logprobs", None), order, result.text))
+    candidate, ranked, guard, margin = decide_pick(frame, options, picks, probabilities)
+    explanation = None
+    dropped = None
+    if candidate["kind"] != "undetermined":
+        if remaining() < EXPLANATION_MIN_S:
+            dropped = "deadline_short"
+        else:
+            chosen = next(o for o in options if o["option_id"] == candidate["option_id"])
+            messages = explanation_prompt(frame, chosen, playbooks, knowledge)
+            try:
+                result = server.infer(LocalInferenceRequest(
+                    messages, max_tokens=512, temperature=0,
+                    response_format=explanation_response_format()), deadline_s=remaining())
+                remaining()
+                explanation = read_explanation(result.text, frame, candidate, messages[1][1])
+            except TimeoutError:
+                dropped = "deadline"
+            except (ValueError, AdvisoryRefused) as exc:
+                dropped = str(exc) if type(exc) is ValueError else exc.refusal.value
+                if dropped not in {"explanation_schema", "duplicate_key", "reason_without_quote",
+                                   "opposite_class", "degenerate", "ungrounded_facts",
+                                   "language_mismatch", "looks_like_an_instruction", "not_text",
+                                   "control_characters", "empty"}:
+                    dropped = "explanation_schema"
+            except Exception as error:
+                if isinstance(error, AuditUnavailable):
+                    raise
+                dropped = "runtime_failed"
+    if dropped:
+        audit({"event_type": "mio.local.explanation", "reason": "explanation_dropped:" + dropped})
+    reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation)
+    read_delivered(reply)
+    return reply, {"suggested_option": ranked[0]["option_id"], "swap_disagreement": picks[0] != picks[1], "margin": margin,
+                   "probability_mode": "logprobs" if all(p is not None for p in probabilities)
+                   else "agreement", "guard": guard, "explanation_dropped": dropped}
 
 
 class PlaybookSelectionHolder:
@@ -332,10 +377,10 @@ class PlaybookSelectionHolder:
 
 
 def main(
-    argv: Optional[Sequence[str]] = None,
+    argv: Sequence[str] | None = None,
     *,
     stop: Callable[[], bool] = lambda: False,
-    ready: Optional[Callable[[], None]] = None,
+    ready: Callable[[], None] | None = None,
 ) -> int:
     """Serve. Takes no arguments, by design.
 

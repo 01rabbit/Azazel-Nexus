@@ -31,10 +31,15 @@ class FakeServer:
 
     def infer(self, request, *, deadline_s):
         self.calls.append(request)
-        assert deadline_s == 120
+        assert 0 < deadline_s <= 120
         assert request.temperature == 0
         if self.failure == 'infer':
             raise TimeoutError('sensitive diagnostic')
+        if request.grammar:
+            # Select the same first candidate after order reversal.
+            count = request.grammar.count('"') // 2
+            picks = sum(bool(c.grammar) for c in self.calls)
+            return SimpleNamespace(text='A' if picks % 2 else chr(64 + count))
         return SimpleNamespace(text=self.text)
 
     def stop(self):
@@ -195,28 +200,24 @@ def test_playbook_coverage_and_fixture_prompt(tmp_path):
     result = evaluate(server, cases, contract=contract)
     assert result['rows'][0]['playbook_ids'] == ['auth-password-spraying']
     assert 'プレイブック一致率: 1/1 (100.0%)' in summarize(result)
-    assert 'fixture-claim' in server.calls[0].prompt_messages[1][1]
+    assert 'fixture-claim' in server.calls[2].prompt_messages[1][1]
     fixture.write_text(json.dumps([dict(ref, technique_id='invalid')]))
     with pytest.raises(ValueError, match='invalid knowledge fixture'):
         load_knowledge_fixture(fixture)
 
 
 def test_benchmark_passes_the_reference_sent_to_reader():
-    from azazel_nexus.local_advisory import FIELD_NAMES
-
     case = load_cases(EVAL_SET)[1]
     case['frame'].update(question='SSH host-1 T1110', context=[])
     ref = SimpleNamespace(technique_id='T1110', name='Event 4625', claim_id='T1110')
-    fields = {key: 'Review the logs.' for key in FIELD_NAMES}
-    fields['interpretation'] = 'Review event 4625.'
-    fields['cited_facts'] = 'An authentication issue is possible.'
-    text = json.dumps({'advice': 'Review authentication activity.', 'fields': fields})
+    text = json.dumps({'reason': 'Review "host-1" event 4625.',
+                       'check_1': 'Review logs.', 'check_2': 'Review logs.',
+                       'check_3': 'Review logs.', 'missing': 'Time is needed.'})
     with_reference = evaluate(FakeServer(text), [case], contract=LocalContract(knowledge=(ref,)))
     without = evaluate(FakeServer(text), [case], contract=LocalContract())
-    assert with_reference['rows'][0]['outcome'] == 'advisory'
-    assert with_reference['rows'][0]['scores']['citation_match']
-    assert with_reference['rows'][0]['scores']['language_match']
-    assert without['metrics']['refusals_by_reason'] == {'ungrounded_facts': 1}
+    assert with_reference['rows'][0]['delivered']['explanation_source'] == 'model'
+    assert without['rows'][0]['delivered']['explanation_source'] == 'trusted'
+    assert without['rows'][0]['explanation_dropped'] == 'ungrounded_facts'
 
 
 def test_japanese_trusted_token_citation_is_not_language_prose():
@@ -226,3 +227,26 @@ def test_japanese_trusted_token_citation_is_not_language_prose():
         'fields': {'interpretation': 'ログを調べます', 'missing': 'unknown',
                    'cited_facts': 'ws-112、4800'}}}
     assert score(case, row)['language_match']
+
+
+
+def test_external_evaluation_size_labels_and_metrics(tmp_path):
+    from .scoring import closed_choice_metrics
+    document = json.loads(EVAL_SET.read_text())
+    document['cases'] = document['cases'][:1]
+    case = document['cases'][0]
+    case['closed_choice'] = {'acceptable_options': ['benign'], 'attack': False,
+                             'benign': True, 'adversarial': False, 'missing_or_wrong_top': False}
+    path = tmp_path / 'held-out.json'
+    path.write_text(json.dumps(document))
+    assert len(load_cases(path)) == 1
+    row = {'delivered': {'candidate': {'option_id': 'benign'},
+                         'provenance': {'state': 'converged'}},
+           'baseline_candidate': 'other_suspicious', 'latency_ms': 100,
+           'swap_disagreement': False, 'guard': None, 'probability_mode': 'agreement'}
+    metrics = closed_choice_metrics([case], [row])
+    assert metrics['benign_safe']['rate'] == 1
+    assert metrics['baseline_benign_correct']['rate'] == 0
+    assert metrics['latency_p50_ms'] == metrics['latency_p95_ms'] == 100
+    assert metrics['recommendation'] == 'deterministic_baseline'
+    assert metrics['swap_disagreement']['rate'] == 0

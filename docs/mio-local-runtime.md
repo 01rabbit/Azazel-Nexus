@@ -212,126 +212,107 @@ The M.I.O. status expression is unchanged:
 > execution unavailable pending hardware evidence and provider integration
 
 
-## 8. Bounded local advice (Milestone 3)
+## 8. Closed-choice local advice
 
-The separate payload verb `mio.local.infer` accepts the situation frame
-specified in [the entry contract](mio-runtime.md#local-advisory-payload-path-milestone-3).
-It has one bounded ordinal argument, `deadline_ms`; the caller cannot choose
-a model, runtime, path or option. It admits SERVICE only, and the daemon's
-`PrincipalPolicy` resolves only `azmioentry`. `model.activate` retains its
-existing principal and identifier contract.
+Production admission remains closed: `RUNTIMES` is empty and HG-05 is unmeasured.
+The following pipeline runs only with explicitly injected admitted test/bench
+components. It adds no authority, environment settings or remote route. P2/P3
+frames remain NEVER_REMOTE, including when a local attempt fails.
 
-`LocalRuntimeService` has trusted composition points for admission, reserve,
-model/runtime IDs, runtime resolution and a server implementing the
-`mio_serve.LocalServer.infer` contract. Inference checks admission, the reserve,
-runtime resolution and the inspected model before calling the server. The
-production defaults refuse. The prompt uses fixed generation limits (1024
-output tokens, temperature 0); callers cannot override them.
-`local_advisory.build_prompt` constructs the messages. `LocalServer` sends
-`response_format` with a JSON schema requiring string `advice` and a `fields` object with seven required strings:
-`interpretation`, `check_1`, `check_2`, `check_3`, `alternative`, `missing`, and
-`cited_facts`. Generation strings are nonempty, with advice capped at 200 characters and each
-field (including `cited_facts`) at 160; extra fields
-are refused. The schema constrains generation;
-`read_local_advisory` still independently checks every response and retains its
-512-character reader limits for older valid replies. The 1024-token budget
-(previously 512) gives bounded JSON more room to close; only worst-case
-generation latency increases, while short replies can finish earlier. Existing
-request deadlines remain in force.
-Test-only compositions can inject a runtime resolver and `LocalServer` without
-adding an entry to production `RUNTIMES` or opening the admission gate.
+After the existing scope/information gate and admission checks, deterministic
+matching supplies at most three playbooks. Each option has its own 160-character
+title and 160-character first interpretation line, independent of the separate
+1200-character reference cap. `other_suspicious` and `benign` are always options;
+`undetermined` is system-derived and never offered to the model.
 
-Advice is returned to the caller only after the bounded advisory reader
-accepts it. Malformed JSON, instruction shapes and oversized output become
-NOT_ADVICE; timeout becomes TIMED_OUT; runtime exceptions become FAILED.
-Exception messages and advisory-refusal details are never recorded. The
-router owns terminal outcomes and the existing fallback/privacy rules.
-`local.jsonl` contains only request digests/counts, advisory digests/counts
-and fixed refusal codes, plus the shared protocol's bounded refusal metadata.
-Tests use fake servers and sentinel text; they do not require llama-server.
+Two temperature-zero requests use a grammar permitting exactly one A–E letter,
+with the options reversed on the second pass. The user message and selection
+instructions are otherwise identical. Letter probabilities are mapped back to
+option IDs and averaged. Disagreeing argmax selections or a top-minus-runner-up
+margin below `MARGIN_MIN=0.10` produce `undetermined`. This threshold is provisional,
+not tuned on held-out data and not a precision claim. Without a complete usable
+single-token probability distribution on both passes, only selection agreement
+is used; no margin is invented. Invalid letters fail the request safely.
 
+Benign is retained only without an injection marker in the question or context,
+and with affirmative evidence in a system-sourced kind: `change_record`,
+`change_ticket`, `maintenance_window`, `asset_inventory`, `baseline`, `schedule`,
+`approval_record`. Alert, log and telemetry kinds cannot establish benign.
+English terms require token boundaries; Japanese terms require term boundaries.
+Simple negations such as 未承認 / 不承認 / 承認なし / not approved / unapproved /
+unplanned / unscheduled veto that item. A failed guard yields `undetermined`,
+never an attack class. The integrating collector must assign `kind` from trusted
+configuration, never copy it from log content. Attacker text inside a legitimate
+system-sourced item remains a residual risk; these lexical guards do not establish
+semantic truth or authenticate a change approval.
 
-## 9. Deterministic local quality guards
+For a definite candidate, a separate conditioned JSON generation returns only
+`reason`, `check_1..3`, `missing` (each at most 160 characters). Reason must contain
+an exact quoted situation phrase of at least three characters. Existing instruction,
+Unicode, language, lexical grounding and degenerate-output checks apply to every
+model field. Opposite-class reason vocabulary drops the explanation. Negation
+semantics are intentionally conservative: even a negated opposite term can drop
+it. Explanation failures preserve outcome `advisory`, the candidate and trusted
+text, with audit reason `explanation_dropped:<fixed reason>`. Undetermined skips
+explanation. Untrusted injection-bearing items cannot ground or supply quotations.
+The older advisory reader remains a shared lexical validator; its free verdict
+schema is no longer a local service response.
 
-`gate_frame(frame)` validates a frame and returns either `None` (continue with
-normal admission checks) or a fixed reply with `outcome` and `reason` equal to
-`out_of_scope` or `insufficient_information`, plus `advice` and empty `fields`.
-Entry and local services apply this gate before observing or invoking a provider.
-The entry reply uses the deterministic handoff route. The audit records the
-request digest/counts and `mio.local.gated` with only the fixed reason.
-These replies do not establish provider admission or measured Core reserve.
+One monotonic absolute deadline starts before frame processing. Each generation
+receives only the remaining budget, reserving 20 ms for delivery; explanation is
+skipped with less than one second left. An explanation timeout keeps the validated
+candidate. Optional Knowledge lookup is skipped as `skipped_deadline_contract`:
+its existing synchronous callable cannot accept a remaining budget. Bench fixtures
+can still supply bounded Knowledge references to explanation. As with existing
+HTTP transport, the injected server must honor the supplied deadline; no Python
+wrapper can cancel an arbitrary blocking injected callable.
 
-The scope gate uses a fixed Japanese/English security operations vocabulary
-against question and context text. With no context, an in-scope question also
-needs a concrete target: a number, address/host identifier, or labelled
-host/account/user. Otherwise the fixed answer requests the target host/account,
-time, source, count/volume, and related logs. Scope is checked first.
-This lexical gate is intentionally conservative; it does not infer intent.
+## 9. Delivered provenance and process boundary
 
-`build_prompt(frame)` replaces the entire text of any context item containing
-an injection marker (ignore previous instructions, including the “all” variant;
-`rm -rf`; 無視して; `enforcement=`; `block_all`) with a fixed omission marker.
-It does not mutate the caller's frame. The original frame must be passed to
-`read_local_advisory(text, frame)` after inference. On accepted advice, the reader
-adds the fixed observation “入力に命令調の文字列が含まれていた” when a marker was
-present, independently of model compliance. The original item is excluded from
-citation evidence. Matching is lexical and does not detect every injection.
+Every document starts with the fixed Japanese or English local-small-model
+provenance banner, explicitly saying that candidates are not conclusions and an
+operator must verify evidence. Any template playbook adds the unreviewed-template
+notice. Candidate and other hypotheses use system-set labels. Matcher evidence
+lists keyword, technique-ID and context-kind hits. Other candidates retain equal
+title prominence, including benign as a hypothesis. State says converged or split;
+there are no high/medium/low confidence labels. Measuring precision before adding
+such labels remains follow-up work.
 
-The local reader retains all `read_advisory` instruction/URL/control/size checks.
-It additionally refuses malformed local fields as `local_schema`, unknown numeric
-or structured identifier tokens in advice or any field as `ungrounded_facts`,
-and language mismatches as `language_mismatch`. Facts must occur in the question,
-retained non-injection context, or the exact trusted reference actually sent in
-the prompt. Model text and source are NFKC-normalized before exact token matching,
-including numeric formatting. ASCII identifiers containing both letters and digits
-(with internal `.`, `_`, or `-`) and IPv6 literals must match as whole tokens;
-numeric fragments of identifiers or addresses cannot ground separate claims.
-Reference-only allowances are limited to ATT&CK `Tdddd[.ddd]` / `TAdddd`, `D3-...`,
-`CVE-yyyy-nnnn...`, and standalone four-digit Windows event IDs (including
-`Event ID NNNN` / `イベントID NNNN`). Small reference numbers such as `3`, `5`,
-and `10` cannot substantiate situation counts. Unlabelled plain lowercase words
-without digits remain unchecked, a known limit of lexical grounding. Prose shapes
-are not facts: hyphenated or dotted words without digits (`command-and-control`,
-`e.g`) unless they carry `@`, `/`, `:` or are domain names, and list enumerators
-(`1. `). `60-second` grounds as `60`. A digit-free span of 12+ characters occurring
-three times in one value is a looping generation and refuses as `degenerate`. When
-a value reaches its generation cap (advice 200, fields 160) without ending a
-sentence, the trailing fragment is deleted back to the last sentence end; nothing
-is added. These checks are lexical and do not catch wrong-but-fluent claims. Model-written
-`cited_facts` prose overlap is no longer a refusal criterion. After validation,
-that field is replaced with source fact tokens used in the answer, deduplicated
-in source order and joined with `、` (Japanese) or `, ` (English), capped at 512
-characters. Reference-only facts are not rendered as situation citations. With
-no quoted facts it says 「状況から引用できる具体的な事実はありません」 or
-“No specific facts quoted from the situation.” The response digest and audit
-counts describe this final delivered document.
+`fields` contains system labels, separate trusted check/first-response/missing
+fields per playbook, and separate `model_reason`, `model_check_1..3`, `model_missing`
+fields only when the explanation passes. Without matches, fixed generic trusted
+checks/missing are supplied. Citations are deterministic whole fact tokens from
+retained situation text, capped at 512 characters and explicitly marked untrusted.
+The display evidence preview is capped at 1000 characters; full evidence is in
+machine fields. Trusted text is never joined with model text.
 
-Advice matching `[A-Za-z0-9_.:-]{1,64}` is replaced with the validated
-`interpretation` in either language. For Japanese questions, each prose field
-still requires kana; other label-like fields of at most 32 characters are tokens
-and exempt from that prose check. English prose to Japanese questions remains
-refused. English questions require Latin letters and no Japanese characters.
-This is a deterministic language heuristic, not language detection.
-These failures become NOT_ADVICE with fixed refusal codes. The frame-less reader
-form exists for re-reading validated socket replies and checks shape/safety only;
-inference and quality evaluation must supply the original frame.
+The machine contract is exactly `candidate` (`option_id`, `kind`), `alternatives`
+(option ID/kind/title), `match_evidence` (option ID/keywords/technique IDs/context
+kinds), `provenance` (`route: local`, `model_id`, `mode: closed_choice`,
+`playbooks_reviewed`, `state: converged|split`, `guard: null|fixed reason`), and
+`explanation_source: model|trusted`. Socket client and entry service independently
+validate bounds, exact keys, identities, evidence correspondence and state/guard
+consistency. Old `playbook` and `knowledge` envelopes are rejected and not forwarded.
+Gated replies keep their existing shape. Audit contains fixed reasons, IDs, scores,
+digests and counts, never situation or generated prose.
 
-## Reasoning reference injection
+## 10. b11716 probability compatibility and evaluation
 
-The system prompt in both languages instructs the model to adapt generic
-references to the facts without copying them, and to copy only exact short
-situation phrases into `cited_facts`. `reference_message` shares the exact
-1200-character capped reference between prompt construction and validation.
-The quality benchmark passes this same reference and reports refusal counts
-by reason in its metrics and Japanese summary.
+The pinned upstream [server-task.cpp](https://github.com/ggml-org/llama.cpp/blob/b11716/tools/server/server-task.cpp)
+serializes chat `logprobs.content[].top_logprobs`; the
+[server context](https://github.com/ggml-org/llama.cpp/blob/b11716/tools/server/server-context.cpp)
+has pre-sampling and post-sampling probability paths. Pre-sampling probabilities
+are vocabulary probabilities, so top 20 may omit some grammar letters. Post-sampling
+probabilities can lose alternatives at temperature zero. Source inspection therefore
+establishes endpoint support, not usable probabilities for this particular model
+and image. Docker/image execution was unavailable in the implementation sandbox.
+The actual request asks for `logprobs=true`, `top_logprobs=20` plus per-request
+GBNF. The parser accepts only all option letters, finite nonpositive logprobs,
+positive non-one-hot probabilities, and a single token matching the delivered
+letter. Missing/incomplete/malformed probabilities use agreement fallback. Fake
+endpoint tests cover both response paths without needing a socket bind.
 
-The service supports optional signed-pack playbook data and a deadline-bound
-Knowledge lookup callable. Matching occurs after the existing frame gate and
-admission checks, before inference. Accepted replies attach deterministic
-reference metadata from trusted inputs; gated replies are unchanged. Lookup
-failures proceed without Knowledge and audit a fixed unavailable state.
-
-Production `main()` leaves both dependencies unset because it has no active
-Mission Pack / commissioned installed-inventory resolver. The exact injection
-and trust-refresh requirements, schema, matcher and offline benchmark options
-are documented in [Reasoning playbooks](reasoning-playbooks.md).
+See [Reasoning playbooks](reasoning-playbooks.md) for the offline evaluation contract.
+No measured quality improvement, target-machine latency, or precision is claimed.
+Online re-review is deferred: P2/P3 never leave the node; P0/P1 would require remote
+opt-in/trust and a frame-retention design absent from this build.

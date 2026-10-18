@@ -33,8 +33,17 @@ class LocalInferenceRequest:
     prompt_messages: tuple[tuple[str, str], ...] = field(repr=False)
     max_tokens: int = 256
     temperature: float = 0.0
+    grammar: str | None = None
+    response_format: dict | None = None
+    top_logprobs: int = 0
 
     def __post_init__(self) -> None:
+        if (type(self.top_logprobs) is not int or not 0 <= self.top_logprobs <= 20
+                or (self.grammar is not None and (type(self.grammar) is not str
+                                                  or len(self.grammar) > 256))
+                or (self.response_format is not None and type(self.response_format) is not dict)
+                or (self.grammar is not None and self.response_format is not None)):
+            raise LocalServerRefused("invalid inference constraint")
         if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 32768:
             raise LocalServerRefused("invalid token limit")
         if (isinstance(self.temperature, bool)
@@ -63,6 +72,13 @@ def inference_document(request: LocalInferenceRequest, *, stream: bool = False) 
         "stream": stream, "response_format": advisory_response_format(),
         "cache_prompt": False,
     }
+    if request.grammar is not None:
+        document.pop("response_format")
+        document["grammar"] = request.grammar
+    elif request.response_format is not None:
+        document["response_format"] = request.response_format
+    if request.top_logprobs:
+        document.update(logprobs=True, top_logprobs=request.top_logprobs)
     if stream:
         document["stream_options"] = {"include_usage": True}
     return document
@@ -74,6 +90,7 @@ class LocalInferenceResult:
     tokens_in: int
     tokens_out: int
     timings: dict[str, float]
+    logprobs: dict | None = field(default=None, repr=False)
 
 
 def _deadline(seconds: float) -> float:
@@ -187,7 +204,8 @@ class LocalServer:
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError
                     timings[key] = float(value)
-            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings,
+                                        data["choices"][0].get("logprobs"))
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LocalServerRefused("invalid inference response") from None
 

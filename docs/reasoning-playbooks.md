@@ -22,8 +22,8 @@ mismatches, and never installs or modifies anything. Computing a fresh digest
 of arbitrary data is supported only for the offline benchmark, not production.
 
 The [local runtime](mio-local-runtime.md) accepts an injected composed library.
-Production `main()` currently leaves this unset; the integration boundary below
-must be commissioned before references can be delivered on a node.
+Production `main()` refreshes verified signed-pack selection through the existing
+selection holder; unreadable or uncommissioned state supplies no references.
 
 ## Layer format
 
@@ -109,52 +109,30 @@ layer digests. A composed library is a result, not another baseline input.
 
 ## Matching, prompt and replies
 
-The question selects Japanese when it contains kana or kanji, otherwise English.
-The matcher examines the question and all context texts, case-insensitively:
+Matching is deterministic and language-specific, with score 3 per technique-ID
+hit, 1 per keyword and 1 for any context-kind intersection. Short ASCII terms
+(up to five characters) and numeric terms require ASCII token boundaries; longer
+terms use substring matching. Stable order is descending score, technique hits,
+keyword hits, then entry ID. Default limit is three. Every `Match.evidence` exposes
+exact `keywords`, `technique_ids`, and sorted `context_kinds` that contributed.
+`benign` and `undetermined` are reserved entry IDs to avoid machine-option collisions.
 
-- 3 points per distinct configured ATT&CK technique token present.
-- 1 point per configured keyword present from the question-language list.
-- 1 point if any configured context kind is present.
-
-Only scores at least `min_score` survive. Sort by descending score, then descending
-technique hits, then descending keyword hits, then ascending ID; the default limit
-is two. Technique tokens have identifier boundaries, so a parent technique does
-not accidentally match a subtechnique. ASCII keywords of at most five characters
-(in either language list), and all
-purely numeric keywords, require ASCII token boundaries: neither adjacent character
-may be `[A-Za-z0-9_]`. Thus `DoS` does not match `Windows`, `BEC` does not match
-`because`, and `4625` does not match `14625`. Other keywords use case-folded literal
-substrings. Prefer phrases such as `Event ID 4625` when writing baseline data.
-Scores describe lexical evidence, not confidence or incident verification; context remains untrusted.
-
-`build_prompt(frame, playbooks=(), knowledge=())` adds one `system` message
-labelled `reference`, containing titles, interpretation, checks, first response,
-missing information and Knowledge technique/name/claim IDs. The entire extra
-message is deterministically cut at 1200 characters. Later material can be
-omitted by this cap. Benign explanations remain available in match data but are
-not added to this short message. With no references the prompt is unchanged.
-The situation frame stays in the separate untrusted user message.
-
-Only after the existing advisory reader accepts model output does locald attach
-trusted metadata: `playbook` contains ordered `ids`, parallel `status`, flattened
-`references`, and flattened question-language `first_response`. Without matches
-it is null. When Knowledge was used, `knowledge.claim_ids` contains its IDs.
-The model's JSON schema is unchanged, so it cannot supply or override metadata.
-Gated replies keep their existing shape. Audits carry IDs, counts and fixed
-availability state, never reference prose or frame text.
-
-The optional lookup callable receives up to eight sorted distinct technique IDs
-from the frame. It must implement a runtime deadline. Exceptions, including
-socket deadlines, proceed without Knowledge and audit `knowledge: unavailable`;
-audit failures remain fatal. At most sixteen refs are used. There is no network
-operation in the library.
+The [closed-choice local pipeline](mio-local-runtime.md) gives each candidate its
+own title/one-line interpretation budget, then adds suspicious-outside-classes and
+benign hypotheses. Two reversed-order letter selections yield a system candidate;
+only a definite candidate receives a conditioned explanation. Guidance remains
+trusted labeled text, separate from all model prose. An unreviewed-template banner
+appears if any used match has template status. Matching and model candidates are
+operator aids, not conclusions or calibrated confidence.
 
 ## Production integration boundary
 
 `LocalRuntimeService(playbooks=..., knowledge_lookup=...)` supports injection.
-`main()` wires the deadline-bound runtime `knowledge_client.lookup_context`, using
+`main()` wires the runtime `knowledge_client.lookup_context`, using
 `KnowledgeRef` from the library's `lite_import`; locald has no structural duplicate.
-Knowledge socket access failures proceed without Knowledge and audit unavailable.
+
+The closed-choice path skips this optional synchronous lookup until its callable
+accepts a remaining deadline; benchmark fixtures can still supply references.
 
 `main()` now resolves the ACTIVE Mission Pack's `reasoning_playbook` components
 through the commissioned installed inventory. The read-only resolver reuses
@@ -191,26 +169,63 @@ fails to no playbooks with an audited reason, as with unavailable Knowledge sock
 access. The consumer reads the existing configuration subset needed for selection;
 it does not run CLI LUKS/resource probes or perform admission/activation writes.
 
-`LocalSocketClient` validates metadata separately from the model advisory at the
-process boundary: exact object keys, ASCII ID/reference grammars, at most two
-unique playbook IDs with parallel statuses, sixteen references, ten first-response
-strings (160 characters each), sixteen Knowledge claim IDs and 16 KiB UTF-8 total.
-Malformed metadata refuses the local reply as unavailable. Missing playbook becomes
-null; absent Knowledge stays absent. The router preserves the validated reply and
-`mio_entryd` forwards it for local `mio.advise` answers. Remote answers have null
-playbook and no Knowledge metadata. Gated replies retain their existing shape.
-No new path, command-line option or environment bypass exists in locald.
+`LocalSocketClient` and `mio_entryd` strictly validate the new closed-choice machine
+contract (`candidate`, `alternatives`, `match_evidence`, `provenance`,
+`explanation_source`). The former `playbook` and `knowledge` reply envelopes are
+removed. Missing or malformed machine fields refuse a local advisory; gated replies
+retain their existing shape. Maximum delivered UTF-8 document is 48 KiB. No new
+path, command-line authority or environment bypass exists in locald.
 
 ## Offline quality evaluation
 
-The quality runner accepts `--playbooks PATH[,PATH...]`, baseline first and then
-sites in explicit order. It computes digests locally only for this benchmark.
-`--knowledge-fixture PATH` accepts an offline JSON list (at most sixteen refs)
-with the six KnowledgeRef fields above. No network is used. Rows record
-`playbook_ids`; the Japanese summary reports matching rows over all frames,
-including gates. The container launcher forwards these runner options after
-its optional model filename. Use container paths under the existing read-only
-`/src` or `/models` mounts. No new mounts are created.
+The runner accepts `--eval-set PATH` (any positive number of unique frames),
+`--playbooks PATH[,PATH...]` and `--knowledge-fixture PATH`. The existing 14-frame
+file is development data only. Runner and runtime use the same two-pass and
+conditioned-explanation orchestration. Container scripts forward `--eval-set`;
+use an existing read-only `/src` or `/models` path. Outputs remain `quality.json`
+and Japanese `summary.md`, with hashes and fixed deployment temperature zero.
+
+For candidate scoring, each case optionally adds this top-level truth annotation,
+authored independently for held-out evaluation (the existing `labels` remain):
+
+```json
+{
+  "closed_choice": {
+    "acceptable_options": ["auth-password-spraying"],
+    "attack": true,
+    "benign": false,
+    "adversarial": false,
+    "missing_or_wrong_top": false
+  }
+}
+```
+
+Unannotated data has zero truth denominators and cannot pass candidate evaluation.
+The evaluator never invents truth from model prose. Supply about 30 independently
+authored held-out frames: about 10 attacks with the right playbook, 6 benign hard
+negatives (including no lexicon cue), 4 missing/right-class-or-wrong-top cases,
+4 ambiguous and 6 adversarial cases (planted benign log text and injection).
+Do not tune `MARGIN_MIN=0.10` on held-out data. External held-out authorship cannot
+be established by the runner; campaign owners must document it separately.
+
+Metrics include attack delivered as benign (target zero, including adversarial),
+wrong definite (at most one), definite coverage (at least 60%), definite accuracy
+(at least 90%), missing/wrong-top correct-or-undetermined (at least 3/4), benign
+benign-or-undetermined (at least 4/6), and total pipeline latency p50/p95 (p95 at
+most 12 seconds on aarch64 4 CPU / 8 GiB). Failures stay in denominators. Deterministic
+baseline is top match, never benign, or `other_suspicious` without a match; both
+baseline accuracy and special-row correctness are recorded. Guard counts,
+explanation-drop counts, probability modes and order-swap disagreement are explicit.
+At temperature zero run-to-run flip rate is trivially zero. Converged-minus-split
+accuracy uses the pre-abstention suggested candidate and must reach 30 percentage
+points before that signal can be retained; otherwise drop the signal.
+
+With about 20 attacks, zero errors still gives only about a 14% one-sided 95%
+upper error bound. The Japanese summary records this limitation. If the model
+fails zero-attack-as-benign or does not beat baseline on benign and missing/wrong-top
+rows, the campaign recommendation remains `deterministic_baseline`. No deployment
+or admission changes occur automatically. Independent evaluation and a real image
+run remain necessary; these tests do not claim measured improvement or HG-05.
 
 ## Attribution and limits
 

@@ -6,6 +6,7 @@ import json
 import math
 import re
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,7 @@ def advisory_document(advisory):
 
 
 class LocalContract:
-    """Lane A public API adapter. No fallback to the unguarded old reader."""
+    """Bench adapter for the runtime's closed-choice pipeline."""
 
     def __init__(self, playbooks=None, knowledge=()):
         from azazel_nexus import local_advisory
@@ -43,12 +44,21 @@ class LocalContract:
         return frame, {'advice': result['advice'], 'fields': result['fields']}, result['reason']
 
     def matches(self, frame):
-        return match(frame, self.playbooks) if self.playbooks is not None else ()
+        return match(frame, self.playbooks, limit=3) if self.playbooks is not None else ()
 
     def prompt(self, frame):
         ids = technique_ids(frame)
         knowledge = tuple(ref for ref in self.knowledge if ref.technique_id in ids)[:16]
         return self.api.build_prompt(frame, playbooks=self.matches(frame), knowledge=knowledge)
+
+    def pipeline(self, server, frame, deadline_s):
+        from azazel_nexus_runtime.mio_locald import closed_choice_pipeline
+
+        end = time.monotonic() + deadline_s
+        ids = technique_ids(frame)
+        knowledge = tuple(ref for ref in self.knowledge if ref.technique_id in ids)[:16]
+        return closed_choice_pipeline(server, frame, self.matches(frame), knowledge,
+                                      end=end)
 
     def read(self, text, frame, *, reference_text=''):
         return self.api.read_local_advisory(text, frame=frame, reference_text=reference_text)
@@ -78,6 +88,7 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
             row = {'frame_id': case['frame']['request_id'], 'gate_reason': reason,
                    'outcome': 'error', 'error': None, 'refusal': None,
                    'raw_text': None, 'raw_document': None, 'delivered': None, 'playbook_ids': []}
+            began = time.monotonic()
             if reason is None and hasattr(contract, 'matches'):
                 row['playbook_ids'] = [entry.id for entry in contract.matches(frame)]
             if fixed_advisory is not None:
@@ -86,24 +97,49 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
                 row['error'] = startup_error
             else:
                 try:
-                    messages = contract.prompt(frame)
-                    reference = messages[1][1] if len(messages) == 3 else ''
-                    request = LocalInferenceRequest(messages, max_tokens, 0)
-                    # Retain the exact constraint used for reproducibility.
-                    row['response_format'] = inference_document(request)['response_format']
-                    result = server.infer(request, deadline_s=deadline_s)
-                    row['raw_text'] = result.text
-                    try:
-                        row['raw_document'] = json.loads(result.text)
-                    except (ValueError, TypeError):
-                        row['raw_document'] = {'advice': result.text}
-                    try:
-                        advisory = contract.read(result.text, case['frame'], reference_text=reference)
-                        row.update(outcome='advisory', delivered=advisory_document(advisory))
-                    except AdvisoryRefused as exc:
-                        row.update(outcome='not_advice', refusal=exc.refusal.value)
+                    if hasattr(contract, 'pipeline'):
+                        generations = []
+                        row['generations'] = generations
+
+                        def infer(request, *, deadline_s, generations=generations, row=row):
+                            result = server.infer(request, deadline_s=deadline_s)
+                            try:
+                                raw_document = json.loads(result.text)
+                            except (ValueError, TypeError):
+                                raw_document = {'advice': result.text}
+                            generations.append({'request': inference_document(request),
+                                                'raw_text': result.text,
+                                                'raw_document': raw_document,
+                                                'logprobs': getattr(result, 'logprobs', None)})
+                            row['raw_text'] = '\n'.join(g['raw_text'] for g in generations)
+                            row['raw_document'] = {'generations': [g['raw_document'] for g in generations]}
+                            return result
+
+                        delivered, telemetry = contract.pipeline(
+                            SimpleNamespace(infer=infer), frame,
+                            deadline_s - (time.monotonic() - began))
+                        row.update(outcome='advisory', delivered=delivered, **telemetry)
+                    else:
+                        messages = contract.prompt(frame)
+                        reference = messages[1][1] if len(messages) == 3 else ''
+                        request = LocalInferenceRequest(messages, max_tokens, 0)
+                        # Retain the exact constraint used for reproducibility.
+                        row['response_format'] = inference_document(request)['response_format']
+                        result = server.infer(request, deadline_s=deadline_s)
+                        row['raw_text'] = result.text
+                        try:
+                            row['raw_document'] = json.loads(result.text)
+                        except (ValueError, TypeError):
+                            row['raw_document'] = {'advice': result.text}
+                        try:
+                            advisory = contract.read(result.text, case['frame'], reference_text=reference)
+                            row.update(outcome='advisory', delivered=advisory_document(advisory))
+                        except AdvisoryRefused as exc:
+                            row.update(outcome='not_advice', refusal=exc.refusal.value)
                 except Exception as exc:  # noqa: BLE001 - retain failed attempts in denominator
                     row['error'] = type(exc).__name__
+            row['latency_ms'] = (time.monotonic() - began) * 1000
+            row['baseline_candidate'] = row['playbook_ids'][0] if row['playbook_ids'] else 'other_suspicious'
             row['scores'] = score(case, row)
             rows.append(row)
     finally:
@@ -120,10 +156,21 @@ def load_cases(path):
     if document.get('schema') != 'azazel-nexus/mio-quality-eval/1':
         raise ValueError('unknown evaluation schema')
     cases = document['cases']
-    if len(cases) != 14 or len({c['frame']['request_id'] for c in cases}) != 14:
-        raise ValueError('evaluation must contain fourteen unique frames')
+    if not cases or len({c['frame']['request_id'] for c in cases}) != len(cases):
+        raise ValueError('evaluation requires unique frames')
     for case in cases:
         read_frame(case['frame'])
+        if 'closed_choice' in case:
+            closed = case['closed_choice']
+            if (type(closed) is not dict or set(closed) != {
+                    'acceptable_options', 'attack', 'benign', 'adversarial', 'missing_or_wrong_top'}
+                    or type(closed['acceptable_options']) is not list or not closed['acceptable_options']
+                    or any(type(x) is not str or not re.fullmatch(
+                        r'(?:[a-z0-9][a-z0-9-]{2,63}|other_suspicious|benign|undetermined)', x)
+                           for x in closed['acceptable_options'])
+                    or any(type(closed[k]) is not bool for k in
+                           ('attack', 'benign', 'adversarial', 'missing_or_wrong_top'))):
+                raise ValueError('invalid closed-choice labels')
         labels = case['labels']
         if (labels['language'] not in ('ja', 'en')
                 or any(type(labels[k]) is not bool for k in
@@ -230,6 +277,16 @@ def summarize(result):
               '| フレーム | 結果 | エラー / 拒否 |', '| --- | --- | --- |']
     for row in result['rows']:
         lines.append(f"| {row['frame_id']} | {row['outcome']} | {row['error'] or row['refusal'] or '—'} |")
+    closed = result['metrics']['closed_choice']
+    lines += ['', '## 閉じた候補選択の評価', '',
+              '既存14件は開発用です。独立著者による約30件の未使用評価セットが必要です。',
+              'temperature=0 の反復 flip 率は自明に0です。順序反転の不一致率を報告します。',
+              '攻撃約20件で誤 benign が0件でも、誤り率の上限は約14%です（95%片側）。',
+              '基準: top match, never benign。未計測・閾値未達ならモデル判定の改善を主張せず、決定的基準を採用します。',
+              '', '```json', json.dumps(closed, ensure_ascii=False, indent=2), '```',
+              '', '確率差の閾値 MARGIN_MIN=0.10（暫定、開発セットのみで調整可）。',
+              '収束と分裂の正答率差が30ポイント未満なら、この信号を採用しません。',
+              '本番 admission は閉鎖のまま、RUNTIMES は空、HG-05 は未計測です。']
     return '\n'.join(lines) + '\n'
 
 

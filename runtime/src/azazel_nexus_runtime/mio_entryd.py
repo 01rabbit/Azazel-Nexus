@@ -127,9 +127,10 @@ class MioEntryService:
         if is_advice and result.reply.get("outcome") == "advisory":
             reply["advice"] = result.reply.get("advice")
             reply["fields"] = result.reply.get("fields", {})
-            reply["playbook"] = result.reply.get("playbook") if result.route is Route.LOCAL else None
-            if result.route is Route.LOCAL and "knowledge" in result.reply:
-                reply["knowledge"] = result.reply["knowledge"]
+            if result.route is Route.LOCAL:
+                from azazel_nexus.local_advisory import read_delivered
+
+                reply.update(read_delivered(result.reply))
         return reply
 
 
