@@ -84,6 +84,9 @@ _FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Cn", "Co"})
 class AdvisoryRefusal(str, Enum):
     """Why a response was not read as advice. One value per condition."""
 
+    LOCAL_SCHEMA = "local_schema"
+    UNGROUNDED_FACTS = "ungrounded_facts"
+    LANGUAGE_MISMATCH = "language_mismatch"
     TOO_LARGE = "too_large"
     NOT_TEXT = "not_text"
     CONTROL_CHARACTERS = "control_characters"

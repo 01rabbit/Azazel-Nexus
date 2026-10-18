@@ -228,8 +228,10 @@ runtime resolution and the inspected model before calling the server. The
 production defaults refuse. The prompt uses fixed generation limits (512
 output tokens, temperature 0); callers cannot override them.
 `local_advisory.build_prompt` constructs the messages. `LocalServer` sends
-`response_format` with a JSON schema requiring string `advice` and permitting
-an optional `fields` object of string values. The schema constrains generation;
+`response_format` with a JSON schema requiring string `advice` and a `fields` object with seven required strings:
+`interpretation`, `check_1`, `check_2`, `check_3`, `alternative`, `missing`, and
+`cited_facts`. Each string is nonempty and at most 512 characters; extra fields
+are refused. The schema constrains generation;
 `read_local_advisory` still independently checks every response.
 Test-only compositions can inject a runtime resolver and `LocalServer` without
 adding an entry to production `RUNTIMES` or opening the admission gate.
@@ -242,3 +244,43 @@ router owns terminal outcomes and the existing fallback/privacy rules.
 `local.jsonl` contains only request digests/counts, advisory digests/counts
 and fixed refusal codes, plus the shared protocol's bounded refusal metadata.
 Tests use fake servers and sentinel text; they do not require llama-server.
+
+
+## 9. Deterministic local quality guards
+
+`gate_frame(frame)` validates a frame and returns either `None` (continue with
+normal admission checks) or a fixed reply with `outcome` and `reason` equal to
+`out_of_scope` or `insufficient_information`, plus `advice` and empty `fields`.
+Entry and local services apply this gate before observing or invoking a provider.
+The entry reply uses the deterministic handoff route. The audit records the
+request digest/counts and `mio.local.gated` with only the fixed reason.
+These replies do not establish provider admission or measured Core reserve.
+
+The scope gate uses a fixed Japanese/English security operations vocabulary
+against question and context text. With no context, an in-scope question also
+needs a concrete target: a number, address/host identifier, or labelled
+host/account/user. Otherwise the fixed answer requests the target host/account,
+time, source, count/volume, and related logs. Scope is checked first.
+This lexical gate is intentionally conservative; it does not infer intent.
+
+`build_prompt(frame)` replaces the entire text of any context item containing
+an injection marker (ignore previous instructions, including the “all” variant;
+`rm -rf`; 無視して; `enforcement=`; `block_all`) with a fixed omission marker.
+It does not mutate the caller's frame. The original frame must be passed to
+`read_local_advisory(text, frame)` after inference. On accepted advice, the reader
+adds the fixed observation “入力に命令調の文字列が含まれていた” when a marker was
+present, independently of model compliance. The original item is excluded from
+citation evidence. Matching is lexical and does not detect every injection.
+
+The local reader retains all `read_advisory` instruction/URL/control/size checks.
+It additionally refuses malformed local fields as `local_schema`, citations with
+unknown numeric or structured identifier tokens as `ungrounded_facts`, and
+language mismatches as `language_mismatch`. A citation without structured tokens
+must be an exact substring of the question or retained context. Numeric matching
+is exact, including formatting; it does not normalize units, punctuation, or
+paraphrases. Each answer string must contain kana for a question containing
+Japanese characters; other questions require Latin letters and no Japanese/CJK
+characters. This is a deterministic language heuristic, not language detection.
+These failures become NOT_ADVICE with fixed refusal codes. The frame-less reader
+form exists for re-reading validated socket replies and checks shape/safety only;
+inference and quality evaluation must supply the original frame.
