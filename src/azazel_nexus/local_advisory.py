@@ -20,6 +20,9 @@ FIELD_NAMES = (
     'cited_facts',
 )
 MAX_LOCAL_TEXT = 512
+# Generation caps (the reader still accepts up to MAX_LOCAL_TEXT).
+_ADVICE_CAP = 200
+_FIELD_CAP = 160
 _SYSTEM = (
     'You are M.I.O. Provide security operations advice only, in the question language. '
     'Return JSON advice (short summary) and fields: interpretation, check_1, check_2, '
@@ -236,6 +239,34 @@ def _fact_tokens(text: str) -> list[tuple[int, int, str]]:
     return whole
 
 
+_REPEAT_SPAN = 12
+_REPEAT_COUNT = 3
+_SENTENCE_END = re.compile(r'[。．.!?！？]')
+
+
+def _degenerate(value: str) -> bool:
+    """A digit-free span of 12+ characters occurring 3+ times: a looping generation."""
+    compact = re.sub(r'\s+', ' ', value)
+    return any(compact.count(span) >= _REPEAT_COUNT
+               for i in range(len(compact) - _REPEAT_SPAN + 1)
+               if (span := compact[i:i + _REPEAT_SPAN]).strip()
+               # Identifier lists share prefixes ("host-001 host-002"); spans
+               # carrying digits are facts, grounded separately, not loops.
+               and not re.search(r'[0-9]', span))
+
+
+def _trim_at_cap(value: str, cap: int) -> str:
+    """Generation stopped at the grammar cap mid-sentence: keep whole sentences.
+
+    Deletion only; a value without any sentence end is kept as is.
+    """
+    if len(value) < cap or _SENTENCE_END.search(value[-1:]):
+        return value
+    ends = [m.end() for m in _SENTENCE_END.finditer(value)
+            if m.group() != '.' or m.end() == len(value) or value[m.end():m.end() + 1].isspace()]
+    return value[:ends[-1]].rstrip() if ends else value
+
+
 def read_local_advisory(text: str, frame: Mapping | None = None,
                         reference_text: str = "") -> Advisory:
     """Read bounded local fields; supply the original frame for quality checks.
@@ -265,6 +296,11 @@ def read_local_advisory(text: str, frame: Mapping | None = None,
         advice = advisory.text.text
         if _LABEL.fullmatch(advice):
             advice = fields['interpretation']
+        if any(_degenerate(value) for value in (advice, *fields.values())):
+            raise AdvisoryRefused(AdvisoryRefusal.DEGENERATE, 'degenerate')
+        # Drop a sentence fragment left where generation hit its length cap.
+        advice = _trim_at_cap(advice, _ADVICE_CAP)
+        fields = {name: _trim_at_cap(value, _FIELD_CAP) for name, value in fields.items()}
         # Validate all delivered prose and the original model citation before
         # replacing it. A category label in advice is replaced before this check.
         model_text = ' '.join([advice, *fields.values()])
@@ -319,11 +355,11 @@ def advisory_response_format() -> dict:
         "json_schema": {"schema": {
             "type": "object",
             "properties": {
-                "advice": {"type": "string", "minLength": 1, "maxLength": 200},
+                "advice": {"type": "string", "minLength": 1, "maxLength": _ADVICE_CAP},
                 "fields": {
                     "type": "object",
                     "properties": {name: {"type": "string", "minLength": 1,
-                                          "maxLength": 160} for name in FIELD_NAMES},
+                                          "maxLength": _FIELD_CAP} for name in FIELD_NAMES},
                     "required": list(FIELD_NAMES),
                     "additionalProperties": False,
                 },

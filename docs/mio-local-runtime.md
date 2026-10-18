@@ -290,7 +290,14 @@ Reference-only allowances are limited to ATT&CK `Tdddd[.ddd]` / `TAdddd`, `D3-..
 `CVE-yyyy-nnnn...`, and standalone four-digit Windows event IDs (including
 `Event ID NNNN` / `イベントID NNNN`). Small reference numbers such as `3`, `5`,
 and `10` cannot substantiate situation counts. Unlabelled plain lowercase words
-without digits remain unchecked, a known limit of lexical grounding. Model-written
+without digits remain unchecked, a known limit of lexical grounding. Prose shapes
+are not facts: hyphenated or dotted words without digits (`command-and-control`,
+`e.g`) unless they carry `@`, `/`, `:` or are domain names, and list enumerators
+(`1. `). `60-second` grounds as `60`. A digit-free span of 12+ characters occurring
+three times in one value is a looping generation and refuses as `degenerate`. When
+a value reaches its generation cap (advice 200, fields 160) without ending a
+sentence, the trailing fragment is deleted back to the last sentence end; nothing
+is added. These checks are lexical and do not catch wrong-but-fluent claims. Model-written
 `cited_facts` prose overlap is no longer a refusal criterion. After validation,
 that field is replaced with source fact tokens used in the answer, deduplicated
 in source order and joined with `、` (Japanese) or `, ` (English), capped at 512

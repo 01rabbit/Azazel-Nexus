@@ -883,8 +883,14 @@ def test_english_prose_for_japanese_question_still_refused(label):
 
 def test_reader_keeps_older_long_valid_strings():
     document = json.loads(japanese_response())
-    document['advice'] = 'ログを確認します' * 50
-    document['fields']['check_1'] = 'ログを確認します' * 50
+    # Long but not looping: the reader still accepts up to 512 characters.
+    long_text = ''.join(f'{word}を確認します。' for word in (
+        '認証', '通信', '端末', '共有', '権限', '設定', '証跡', '時刻', '経路', '宛先',
+        '送信元', '受信者', '添付', '本文', '署名', '鍵', '証明書', '名前解決', '経路表',
+        '機器', '利用者', '管理者', '保守', '変更', '承認', '期間', '件数', '容量', '形式',
+        '暗号', '圧縮', '保存先', '複製', '退避', '復元', '監視', '警告', '閾値', '傾向'))
+    document['advice'] = long_text[:400]
+    document['fields']['check_1'] = long_text[:400]
     assert read_local_advisory(json.dumps(document), japanese_frame()).text.text == document['advice']
 
 
@@ -961,3 +967,23 @@ def test_prose_filter_keeps_digit_facts(invented):
     with pytest.raises(AdvisoryRefused) as exc:
         read_local_advisory(response(fields=fields), item)
     assert exc.value.refusal.value == 'ungrounded_facts'
+
+
+def test_looping_generation_is_refused_as_degenerate():
+    document = json.loads(japanese_response())
+    document['fields']['missing'] = '頻度と時間帯のパターン、' * 4
+    with pytest.raises(AdvisoryRefused) as exc:
+        read_local_advisory(json.dumps(document, ensure_ascii=False), japanese_frame())
+    assert exc.value.refusal.value == 'degenerate'
+
+
+@pytest.mark.parametrize(('value', 'kept'), [
+    ('Check the jump host. Then check the logs for' + ' x' * 60, 'Check the jump host.'),
+    ('踏み台を確認する。次にログの' + 'あ' * 160, '踏み台を確認する。'),
+    ('no sentence end ' + 'y' * 160, None),
+])
+def test_cap_fragment_is_trimmed_to_whole_sentences(value, kept):
+    from azazel_nexus.local_advisory import _FIELD_CAP, _trim_at_cap
+    value = value[:_FIELD_CAP]
+    assert _trim_at_cap(value, _FIELD_CAP) == (kept if kept is not None else value)
+    assert _trim_at_cap('Short. And cut', _FIELD_CAP) == 'Short. And cut'
