@@ -30,13 +30,18 @@ from azazel_nexus.cognition import (
     AdmissionGate,
     CognitionState,
     LocalModelProvider,
-    ResourceEvidence,
     RemoteState,
+    ResourceEvidence,
     admit_local_model,
     read_cognition,
 )
+from azazel_nexus.compatibility import (
+    ADMITTED_ARCHITECTURE,
+    HostFacts,
+    TestedTuple,
+    TestedTupleSet,
+)
 from azazel_nexus.core_reserve import CoreReserve
-from azazel_nexus.compatibility import ADMITTED_ARCHITECTURE, HostFacts, TestedTuple, TestedTupleSet
 from azazel_nexus.resource_profile import ResourceProfile
 
 COMPONENT = "sha256:" + "1" * 64
@@ -72,6 +77,7 @@ def a_catalogue(**overrides) -> TestedTupleSet:
         "overlay_schema": "3",
         "security_epoch": 4,
         "max_rollback_version": "0.9.0",
+        "model_role": "embedding",
     }
     fields.update(overrides)
     return TestedTupleSet.of([TestedTuple(**fields)])
@@ -85,12 +91,19 @@ def a_provider(**overrides) -> LocalModelProvider:
         "tokenizer_format": "sentencepiece",
         "runtime_version": "1.4.0",
         "quantization": "q4_k_m",
-        "context_size": 4096,
-        "memory_need_mib": 6000,
-        "signature_verified": True,
-        "content_policy_passed": True,
+        "context_size": 2048,
+        "memory_need_mib": 3000,
+        "role": "embedding",
     }
     fields.update(overrides)
+    from admission_helpers import evidence
+
+    fields["evidence"] = evidence(component=fields["component_digest"], model_id=fields["name"],
+                                  need=max(1, fields["memory_need_mib"]),
+                                  version=fields["runtime_version"].strip() or "1.4.0",
+                                  format=fields["declared_format"].strip() or "gguf")
+    if "evidence" in overrides:
+        fields["evidence"] = overrides["evidence"]
     return LocalModelProvider(**fields)
 
 
@@ -112,7 +125,7 @@ def test_the_first_gate_to_reject_is_the_one_reported() -> None:
     """The provider fails authenticity *and* compatibility. Only the first counts."""
 
     outcome = admit_local_model(
-        a_provider(signature_verified=False, component_digest="sha256:" + "9" * 64),
+        a_provider(evidence=None, component_digest="sha256:" + "9" * 64),
         host=a_host(),
         tested=a_catalogue(),
     )
@@ -126,9 +139,9 @@ def test_a_later_gate_is_reached_only_when_the_earlier_ones_pass() -> None:
     """Each gate, reached by satisfying everything before it."""
 
     cases = [
-        (a_provider(signature_verified=False), AdmissionGate.AUTHENTICITY),
+        (a_provider(evidence=None), AdmissionGate.AUTHENTICITY),
         (a_provider(component_digest="sha256:" + "9" * 64), AdmissionGate.COMPATIBILITY),
-        (a_provider(content_policy_passed=False), AdmissionGate.CONTENT_POLICY),
+        (a_provider(declared_format=""), AdmissionGate.CONTENT_POLICY),
         (a_provider(), AdmissionGate.RESOURCE_TOPOLOGY),
     ]
     for provider, expected in cases:
@@ -140,31 +153,11 @@ def test_a_later_gate_is_reached_only_when_the_earlier_ones_pass() -> None:
 # -- absence of a check is not a pass --------------------------------------
 
 
-@pytest.mark.parametrize(
-    "field, gate",
-    [
-        ("signature_verified", AdmissionGate.AUTHENTICITY),
-        ("content_policy_passed", AdmissionGate.CONTENT_POLICY),
-    ],
-)
-def test_an_unchecked_gate_rejects_with_its_own_reason(
-    field: str, gate: AdmissionGate
-) -> None:
-    """`None` and `False` reject at the same gate for different reasons.
-
-    A check that treated them alike would let "nobody looked" read as "it
-    failed", and an operator would go looking for a fault that is not there.
-    """
-
-    unchecked = admit_local_model(
-        a_provider(**{field: None}), host=a_host(), tested=a_catalogue()
-    )
-    failed = admit_local_model(
-        a_provider(**{field: False}), host=a_host(), tested=a_catalogue()
-    )
-    assert unchecked.failed_gate is gate and failed.failed_gate is gate
-    assert unchecked.reason != failed.reason
-    assert "not a pass" in unchecked.reason
+@pytest.mark.parametrize("value", [None, False, True, object()])
+def test_unminted_evidence_refuses(value):
+    result = admit_local_model(a_provider(evidence=value), host=a_host(), tested=a_catalogue())
+    assert result.failed_gate is AdmissionGate.AUTHENTICITY
+    assert "not a pass" in result.reason
 
 
 def test_admission_is_never_inferred_from_availability() -> None:
@@ -294,41 +287,19 @@ def test_a_measured_reserve_reaches_approval_and_stops_there() -> None:
     assert "not implemented" in outcome.reason
 
 
-def test_staged_activation_is_still_reached_by_nothing() -> None:
-    """One gate further than approval, and nothing gets there.
+def test_staged_activation_requires_held_verified_descriptors():
+    from admission_helpers import H, evidence
 
-    Kept as a static scan because there is no input that reaches it: approval
-    refuses before it under every configuration, so a behavioural test would
-    be asserting that something never happens by never making it happen.
-    """
+    from azazel_nexus.model_admission import canonical, digest
 
-    tree = ast.parse(pathlib.Path(cognition.__file__).read_text(encoding="utf-8"))
-    admit = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "admit_local_model"
-    )
-    reached = {
-        node.attr
-        for node in ast.walk(admit)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "AdmissionGate"
-    }
-    # The scan is not vacuous: the gates that *are* reached show up, approval
-    # among them now.
-    assert {
-        "AUTHENTICITY",
-        "COMPATIBILITY",
-        "CONTENT_POLICY",
-        "RESOURCE_TOPOLOGY",
-        "APPROVAL",
-    } <= reached
-    assert "STAGED_ACTIVATION" not in reached
-    # And it really is in the vocabulary, so the assertion above is not
-    # satisfied by its absence from the enum.
-    assert AdmissionGate.APPROVAL in GATE_ORDER
-    assert AdmissionGate.STAGED_ACTIVATION in GATE_ORDER
+    matched, _ = a_catalogue().admits(COMPONENT, a_host(), model_role="embedding")
+    proof = evidence(component=COMPONENT, need=1000,
+                     tuple_digest=digest(canonical(matched.as_record())))
+    provider = a_provider(memory_need_mib=1000, evidence=proof)
+    result = admit_local_model(provider, host=a_host(), tested=a_catalogue(), approval=proof,
+                              resources=ResourceEvidence(a_reserve(host_digest=H), 15000,
+                                                         proof.context.bindings["reserve"]["campaign_record_digest"]))
+    assert result.failed_gate is AdmissionGate.STAGED_ACTIVATION
 
 
 def test_a_reserve_from_another_memory_class_is_refused() -> None:
@@ -349,18 +320,18 @@ def test_a_reserve_from_another_memory_class_is_refused() -> None:
 def test_a_provider_that_does_not_fit_after_the_reserve_is_refused_for_that() -> None:
     """The subtraction is the whole point: it is the envelope *after* the reserve."""
 
-    resources = ResourceEvidence(reserve=a_reserve(reserve_mib=2000), envelope_mib=15000)
-    # 13000 fits exactly; 13001 does not. The boundary is checked on both
+    resources = ResourceEvidence(reserve=a_reserve(reserve_mib=2000), envelope_mib=5000)
+    # 3000 fits exactly; 3001 does not. The boundary is checked on both
     # sides so that an off-by-one in either direction fails here.
     fits = admit_local_model(
-        a_provider(memory_need_mib=13000), host=a_host(), tested=a_catalogue(), resources=resources
+        a_provider(memory_need_mib=3000), host=a_host(), tested=a_catalogue(), resources=resources
     )
     assert fits.failed_gate is AdmissionGate.APPROVAL
     does_not = admit_local_model(
-        a_provider(memory_need_mib=13001), host=a_host(), tested=a_catalogue(), resources=resources
+        a_provider(memory_need_mib=3001), host=a_host(), tested=a_catalogue(), resources=resources
     )
     assert does_not.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
-    assert "13001" in does_not.reason and "2000" in does_not.reason
+    assert "3001" in does_not.reason and "2000" in does_not.reason
 
 
 def test_an_envelope_with_no_reserve_cannot_be_supplied_at_all() -> None:
@@ -404,7 +375,7 @@ def test_the_missing_host_refusal_is_reached_only_after_authenticity() -> None:
     """Order is preserved: an unverified asset still fails first."""
 
     outcome = admit_local_model(
-        a_provider(signature_verified=False), host=None, tested=a_catalogue()
+        a_provider(evidence=None), host=None, tested=a_catalogue()
     )
     assert outcome.failed_gate is AdmissionGate.AUTHENTICITY
 
@@ -531,7 +502,7 @@ def test_a_restart_resumes_at_core_only() -> None:
 
 
 def test_no_state_blocks_the_deterministic_path() -> None:
-    for providers in ([], [a_provider()], [a_provider(signature_verified=False)]):
+    for providers in ([], [a_provider()], [a_provider(evidence=None)]):
         reading = read(providers)
         assert reading.blocks_deterministic_path() is False
 

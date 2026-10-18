@@ -33,13 +33,14 @@ from azazel_nexus.local_advisory import (
     request_event,
     retrieval_decision,
 )
-from azazel_nexus.model_catalog import artifact_filename, verify_artifact
+from azazel_nexus.model_admission import canonical, digest
 from azazel_nexus.model_runtime import (
     LLAMA_RUNTIME_ID,
+    ActivationReadiness,
     RuntimeRefused,
     containment_for,
     inspect_artifact,
-    llama_server_record,
+    inspect_artifact_fd,
     readiness,
     resolve_runtime,
 )
@@ -217,14 +218,29 @@ class LocalRuntimeService:
             audit({"event_type": "mio.local.gated", "reason": gated["reason"]})
             return gated
         if not self._admitted(self._model_id):
-            return refuse("not_admitted")
+            if self._playbooks is None:
+                return refuse("not_admitted")
+            from .mio_embedding import retrieve
+
+            playbooks, similarities, method, embed_ms = retrieve(
+                frame, self._playbooks, None, end=began + deadline_ms / 1000)
+            reply, telemetry = retrieval_pipeline(
+                None, frame, playbooks, (), "deterministic",
+                end=began + deadline_ms / 1000, audit=audit, similarities=similarities,
+                retrieval=method, embed_ms=embed_ms)
+            audit({"event_type": "mio.local.retrieval", "method": method})
+            audit(delivered_event(reply))
+            return {"outcome": "advisory", "refusal": None, **reply}
         if self._reserve is None:
             return refuse("reserve_unmeasured")
         try:
             self._runtime(self._runtime_id)
         except RuntimeRefused:
             return refuse("runtime_unavailable")
-        artifact = inspect_artifact(self._artifact_path or self._staging / f"{self._model_id}.model")
+        if self._artifact_path is not None and str(self._artifact_path).startswith("/proc/self/fd/"):
+            artifact = inspect_artifact_fd(int(self._artifact_path.name))
+        else:
+            artifact = inspect_artifact(self._artifact_path or self._staging / f"{self._model_id}.model")
         if not artifact.is_data or (self._server is None and self._retriever is None):
             return refuse("provider_unavailable")
         from .mio_embedding import retrieve
@@ -392,104 +408,68 @@ class PlaybookSelectionHolder:
         return selection.library
 
 
-@dataclass(frozen=True)
-class LocalModelCandidate:
-    """Verified catalog entry and existing gate inputs from commissioning.
-
-    Not a command-line/configuration admission override. Production supplies no
-    candidates while the approval/staged-activation evidence loader is absent.
-    """
-
-    entry: Any
-    provider: Any
-    host: Any
-    tested: Any
-    resources: Any = None
-    license_acknowledged: bool = False
-
-
-def prepare_local_models(candidates, *, staging, audit,
-                         artifact_root=Path("/var/lib/azazel/models/store")):
-    """Admission first, then verified artifacts and runtime, then supervised handles.
-
-    The existing gate always refuses APPROVAL even with measured resources.
-    Keeping that decision here prevents a catalog role from granting execution.
-    """
+def prepare_local_models(candidates, *, staging, audit):
+    """Only loader-minted embedding evidence can reach a supervised process."""
     from azazel_nexus.runtime_lifecycle import BudgetLedger
 
     from .mio_embedding import EmbeddingRetriever
-    from .mio_serve import LocalServer, LocalServerRefused
+    from .mio_serve import LocalServer
+    from .model_admission_evidence import Admitted
 
     handles = []
-    selected = {}
-    total_memory = 0
-    try:
-        for candidate in candidates:
-            entry, provider = candidate.entry, candidate.provider
-            verdict = admit_local_model(provider, host=candidate.host,
-                                        tested=candidate.tested, resources=candidate.resources)
+    for candidate in candidates:
+        if type(candidate) is not Admitted:
+            audit({"event_type": "mio.local.refused", "refusal": "unverified_candidate"})
+            continue
+        evidence = candidate.evidence
+        server = None
+        try:
+            verdict = admit_local_model(candidate.provider, host=candidate.host,
+                                        tested=candidate.tested, resources=candidate.resources,
+                                        approval=evidence)
             audit(verdict.as_event())
             if not verdict.admitted:
                 continue
-            server = None
-            try:
-                if (provider.component_digest != entry.digest or provider.name != entry.model_id
-                        or provider.role != entry.role
-                        or entry.runtime_abi != "llama.cpp/1" or entry.role in selected
-                        or candidate.resources is None):
-                    raise RuntimeRefused("model admission binding mismatch")
-                reading = verify_artifact(entry, artifact_root=artifact_root,
-                                          license_acknowledged=candidate.license_acknowledged)
-                audit(reading.as_event())
-                path = artifact_root / artifact_filename(entry)
-                if reading.refused_by is not None or not inspect_artifact(path).is_data:
-                    raise RuntimeRefused("model artifact unavailable")
-                containment_for(memory_need_mib=total_memory + provider.memory_need_mib + 256,
-                                reserve=candidate.resources.reserve,
-                                envelope_mib=candidate.resources.envelope_mib)
-                # Leave 256 MiB for locald/cache beneath the aggregate unit ceiling.
-                if total_memory + provider.memory_need_mib > 3840:
-                    raise RuntimeRefused("combined providers exceed host safety ceiling")
-                binary = resolve_runtime(LLAMA_RUNTIME_ID)
-                if provider.runtime_version != binary.version:
-                    raise RuntimeRefused("runtime version binding mismatch")
-                endpoint = staging / (entry.role + ".sock")
-                record = llama_server_record(binary, model_path=path, socket_path=endpoint,
-                                             embedding=entry.role == "embedding")
-                ledger = BudgetLedger(staging / (entry.role + "-budget.json"))
-                budget = ledger.load(generation=0, runtime_id=record.runtime_id)
-                server = LocalServer(record, root=Path("/"), socket_path=endpoint,
-                                     start_deadline_s=120, ledger=ledger, budget=budget)
-                handles.append(server)
-                server.start()
-                total_memory += provider.memory_need_mib
-                selected[entry.role] = (candidate, server)
-                audit({"event_type": "mio.local.provider", "role": entry.role, "state": "serving"})
-            except (RuntimeRefused, LocalServerRefused, OSError, ValueError, TimeoutError):
-                audit({"event_type": "mio.local.refused", "refusal": "provider_unavailable",
-                       "role": entry.role})
-                if server is not None:
-                    server.stop()
-        embedding = selected.get("embedding")
-        if embedding is None:
-            for owned in handles:
-                owned.stop()
-            return {}, []
-        candidate, server = embedding
-        generation = selected.get("generative")
-        return {
-            "retriever": EmbeddingRetriever(server, model_digest=candidate.entry.digest,
-                                             cache_dir=staging / "embedding-cache"),
-            "artifact_path": artifact_root / artifact_filename(candidate.entry),
-            "staging": staging, "model_id": candidate.entry.model_id,
-            "runtime_id": LLAMA_RUNTIME_ID, "reserve": candidate.resources.reserve,
-            "admitted": lambda model_id: model_id == candidate.entry.model_id,
-            "server": generation[1] if generation else None,
-        }, handles
-    except BaseException:
-        for owned in handles:
-            owned.stop()
-        raise
+            held = evidence.descriptors
+            binary = held.recheck()
+            bindings = evidence.context.bindings
+            if (digest(canonical(list(candidate.record.argv))) != bindings["settings"]["argv_digest"]
+                    or binary.digest != bindings["runtime"]["binary_digest"]
+                    or binary.runtime_id != bindings["runtime"]["runtime_id"]
+                    or binary.version != bindings["runtime"]["version"]):
+                raise RuntimeRefused("runtime or argv binding mismatch")
+            ready = readiness(admitted=True, runtime_id=binary.runtime_id,
+                              artifact=inspect_artifact_fd(held.model_fd),
+                              reserve=candidate.resources.reserve, held_runtime=binary)
+            if ready.readiness is not ActivationReadiness.READY:
+                raise RuntimeRefused("staged readiness refused")
+            containment_for(memory_need_mib=candidate.provider.memory_need_mib + 256,
+                            reserve=candidate.resources.reserve,
+                            envelope_mib=candidate.resources.envelope_mib)
+            endpoint = staging / "embedding.sock"
+            ledger = BudgetLedger(staging / "embedding-budget.json")
+            generation = evidence.context.bindings["generation"]["number"]
+            budget = ledger.load(generation=generation, runtime_id=binary.runtime_id)
+            server = LocalServer(candidate.record, root=Path("/"), socket_path=endpoint,
+                                 start_deadline_s=120, ledger=ledger, budget=budget,
+                                 descriptors=held)
+            server.start()
+            handles.append(server)
+            return {"retriever": EmbeddingRetriever(server, model_digest=candidate.entry.digest,
+                                                     cache_dir=staging / "embedding-cache"),
+                    "artifact_path": Path(f"/proc/self/fd/{held.model_fd}"),
+                    "staging": staging, "model_id": candidate.entry.model_id,
+                    "runtime_id": LLAMA_RUNTIME_ID, "reserve": candidate.resources.reserve,
+                    "admitted": lambda model_id, selected=candidate.entry.model_id: model_id == selected,
+                    "runtime": lambda runtime_id, descriptors=held: descriptors.recheck(), "server": None}, handles
+        except Exception as error:
+            if isinstance(error, AuditUnavailable):
+                raise
+            if server is not None:
+                server.stop()
+            audit({"event_type": "mio.local.refused", "role": "embedding",
+                   "refusal": "provider_unavailable"})
+    return {}, []
 
 
 def main(
@@ -497,7 +477,6 @@ def main(
     *,
     stop: Callable[[], bool] = lambda: False,
     ready: Callable[[], None] | None = None,
-    candidates: Sequence[LocalModelCandidate] = (),
 ) -> int:
     """Serve. Takes no arguments, by design.
 
@@ -524,12 +503,42 @@ def main(
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     library = selection.refresh(audit=ledger.append)
+    from .model_admission_evidence import (
+        POLL_INTERVAL_SECONDS,
+        AdmissionHolder,
+        Admitted,
+    )
+
+    admissions = AdmissionHolder()
+    reading = admissions.start(audit=ledger.append)
+    candidates = [reading.embedding] if type(reading.embedding) is Admitted else []
     if not candidates:
         ledger.append({"event_type": "mio.local.refused", "refusal": "not_admitted"})
     providers, handles = prepare_local_models(candidates, staging=STAGING, audit=ledger.append)
     service = LocalRuntimeService(playbooks=library, knowledge_lookup=lookup_context, **providers)
 
+    def withdraw():
+        service._retriever = None
+        service._server = None
+        service._admitted = lambda model_id: False
+        for server in handles:
+            try:
+                server.stop()
+            except Exception:  # noqa: BLE001 - disconnect first; never restore a withdrawn retriever
+                ledger.append({"event_type": "mio.local.refused", "role": "embedding",
+                               "refusal": "withdrawal_stop_failed"})
+
+    next_poll = time.monotonic()
+
+    def poll():
+        nonlocal next_poll
+        if time.monotonic() >= next_poll:
+            admissions.refresh(withdraw=withdraw, audit=ledger.append)
+            next_poll = time.monotonic() + POLL_INTERVAL_SECONDS
+        return stop()
+
     def handle(request):
+        admissions.refresh(withdraw=withdraw, audit=ledger.append)
         service.set_playbooks(selection.refresh(audit=ledger.append))
         return service.handle(request, audit=ledger.append)
 
@@ -539,11 +548,12 @@ def main(
             policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
             audit=ledger.append,
             handler=handle,
-            stop=stop, ready=ready if ready is not None else runtime_ready_callback(),
+            stop=poll, ready=ready if ready is not None else runtime_ready_callback(),
         )
     finally:
         for server in handles:
             server.stop()
+        admissions.close()
 
 
 if __name__ == "__main__":  # pragma: no cover - the entry point

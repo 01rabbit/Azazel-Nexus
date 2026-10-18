@@ -26,6 +26,11 @@ def bounded_read(path: Path, limit: int) -> bytes:
 
 
 def load_model_trust(path: Path, *, registry: bool = False):
+    return model_trust_bytes(bounded_read(path, 65536), registry=registry)
+
+
+def model_trust_bytes(raw: bytes, *, registry: bool = False):
+    """Decode an independently protected descriptor-read trust snapshot."""
     def unique(pairs):
         doc = {}
         for key, value in pairs:
@@ -34,7 +39,7 @@ def load_model_trust(path: Path, *, registry: bool = False):
             doc[key] = value
         return doc
 
-    doc = json.loads(bounded_read(path, 65536), object_pairs_hook=unique)
+    doc = json.loads(raw, object_pairs_hook=unique)
     digest = doc["commissioning_digest"]
     if type(digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise ValueError("digest")

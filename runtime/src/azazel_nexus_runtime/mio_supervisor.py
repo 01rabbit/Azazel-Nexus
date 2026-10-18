@@ -481,8 +481,9 @@ def start_for(
 class ServingProcess:
     """Long-lived process handle. Output is discarded, never piped or logged."""
 
-    def __init__(self, record: RuntimeBinary, *, root: Path) -> None:
+    def __init__(self, record: RuntimeBinary, *, root: Path, descriptors=None) -> None:
         self.record = record
+        self.descriptors = descriptors
         self.root = root
         self.process: subprocess.Popen | None = None
 
@@ -493,7 +494,16 @@ class ServingProcess:
         descriptor = None
         executable = str(binary)
         try:
-            if self.record.architecture_digests is not None:
+            argv = [str(binary), *self.record.argv[1:]]
+            pass_fds = ()
+            if self.descriptors is not None:
+                self.descriptors.recheck()
+                executable = f"/proc/self/fd/{self.descriptors.binary_fd}"
+                argv[0] = executable
+                index = argv.index("-m") + 1
+                argv[index] = f"/proc/self/fd/{self.descriptors.model_fd}"
+                pass_fds = (self.descriptors.binary_fd, self.descriptors.model_fd)
+            elif self.record.architecture_digests is not None:
                 descriptor = open_verified_runtime(self.record, binary)
                 if Path("/proc/self/fd").is_dir():
                     executable = f"/proc/self/fd/{descriptor}"
@@ -501,9 +511,9 @@ class ServingProcess:
                     # Non-Linux fallback: repeat verification immediately before exec.
                     verify_runtime_binary(self.record, binary)
             self.process = subprocess.Popen(
-                [str(binary), *self.record.argv[1:]],
+                argv,
                 executable=executable,
-                pass_fds=() if descriptor is None else (descriptor,),
+                pass_fds=pass_fds if descriptor is None else (descriptor,),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

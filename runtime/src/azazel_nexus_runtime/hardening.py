@@ -428,6 +428,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         runtime_directory_mode="0750",
         extra=(
             # Fixed host safety limits; measured admission remains independent.
+            ("ReadOnlyPaths", "-/etc/azazel/model-admission"),
+            ("ReadOnlyPaths", "-/etc/azazel/operator-trust"),
+            ("ReadOnlyPaths", "-/var/lib/azazel/models"),
             ("ReadOnlyPaths", "-/etc/azazel/mission-pack.json"),
             ("ReadOnlyPaths", "-/data/azazel/mission-packs"),
             # Two bounded 120s startups plus verification; not an inference deadline.

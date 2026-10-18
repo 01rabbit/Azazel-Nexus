@@ -160,3 +160,33 @@ def record_in_manifest(manifest: dict, record: dict) -> bool:
     return (record.get("operator_attestation_ref") == manifest["attestation_ref"]
             and record.get("dut_id") == manifest["dut_id"]
             and any(ref["sha256"] == digest for ref in manifest["A"]["artifacts"].values()))
+
+
+def verified_manifest_bytes(files, *, public_key: bytes) -> dict:
+    """Verify a bounded bundle snapshot using an independently enrolled key.
+
+    The runtime supplies bytes from held, protected directory descriptors;
+    this interface never opens a key path or trusts a key in the bundle.
+    """
+    require(type(public_key) is bytes and len(public_key) == 32, "public key required")
+    require(isinstance(files, dict) and len(files) <= 128, "bounded bundle required")
+    require(all(type(v) is bytes and len(v) <= 4 * 1024 * 1024 for v in files.values()),
+            "bounded bundle files required")
+    require(sum(map(len, files.values())) <= 16 * 1024 * 1024, "bundle too large")
+    manifest = _json(files["manifest.json"])
+    _shape(manifest)
+    require(set(files) == {"manifest.json", "manifest.sig"} | {
+        ref["path"] for ref in manifest["A"]["artifacts"].values()}, "bundle entries differ")
+    lint_text(canonical_event_bytes({k: v for k, v in manifest.items() if k != "A"}))
+    for name, ref in manifest["A"]["artifacts"].items():
+        lint_text(name.encode())
+        payload = files[ref["path"]]
+        lint_text(payload)
+        require(hashlib.sha256(payload).hexdigest() == ref["sha256"], "artifact digest differs")
+    raw_signature = files["manifest.sig"]
+    require(re.fullmatch(rb"[0-9a-f]{128}\n?", raw_signature) is not None,
+            "malformed detached signature")
+    require(verify_detached(public_key=public_key, message=attestation_bytes(manifest),
+                            signature=bytes.fromhex(raw_signature.decode().strip())),
+            "operator attestation refused")
+    return manifest

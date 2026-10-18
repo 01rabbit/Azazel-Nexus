@@ -211,7 +211,7 @@ EXPECTED_SCRIPTS = (
 # it is not a daemon, unit, widening backend or service-start command.
 OPERATOR_TOOLS = (
     "az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap",
-    "az-hil-readiness", "az-hil-capture",
+    "az-hil-readiness", "az-hil-capture", "az-nexus-model-admission",
 )
 
 

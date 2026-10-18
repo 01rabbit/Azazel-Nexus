@@ -142,7 +142,8 @@ def test_service_admission_precedes_embedding(library, frame, tmp_path):
     service = LocalRuntimeService(playbooks=library, retriever=Forbidden())
     reply = service.handle(SimpleNamespace(verb=INFER_VERB, payload=frame,
                                            arguments={'deadline_ms': 1000}))
-    assert reply['refusal'] == 'not_admitted'
+    assert reply['outcome'] == 'advisory'
+    assert reply['provenance']['retrieval'] == 'keyword'
 
 
 def test_service_embedding_scope_and_fallback_audit(library, frame, tmp_path):

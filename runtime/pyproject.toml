@@ -30,6 +30,7 @@ requires-python = ">=3.11"
 dependencies = ["azazel-nexus", "dbus-next==0.2.3", "PyYAML==6.0.3"]
 
 [project.scripts]
+az-nexus-model-admission = "azazel_nexus_runtime.model_admission_cli:main"
 az-nexus-commission = "azazel_nexus_runtime.commission_cli:main"
 az-nexus-bootstrap = "azazel_nexus_runtime.bootstrap_cli:main"
 az-commissiond = "azazel_nexus_runtime.commissiond:main"

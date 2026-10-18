@@ -602,7 +602,9 @@ def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
 def test_locald_optional_selection_reads_have_no_write_grant():
     settings = _settings("azazel-mio-locald.service")
     assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
-    assert settings["ReadOnlyPaths"] == ["-/etc/azazel/mission-pack.json", "-/data/azazel/mission-packs"]
+    assert settings["ReadOnlyPaths"] == ["-/etc/azazel/model-admission", "-/etc/azazel/operator-trust",
+                                         "-/var/lib/azazel/models", "-/etc/azazel/mission-pack.json",
+                                         "-/data/azazel/mission-packs"]
     assert settings["ProtectSystem"] == ["strict"]
     assert settings["CapabilityBoundingSet"] == [""]
 

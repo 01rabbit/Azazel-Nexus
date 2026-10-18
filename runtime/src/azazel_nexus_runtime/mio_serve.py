@@ -100,6 +100,7 @@ class LocalServer:
         start_deadline_s: float = 10, budget: RestartBudget | None = None,
         ledger: BudgetLedger | None = None,
         on_budget_spent: Callable[[str], None] | None = None,
+        descriptors=None,
     ) -> None:
         _deadline(start_deadline_s)
         self.record = record
@@ -110,7 +111,8 @@ class LocalServer:
         self.budget = budget if budget is not None else RestartBudget(generation=0)
         self.ledger = ledger
         self.on_budget_spent = on_budget_spent
-        self._child = ServingProcess(record, root=Path(root))
+        self._child = (ServingProcess(record, root=Path(root)) if descriptors is None else
+                       ServingProcess(record, root=Path(root), descriptors=descriptors))
         self._started = False
         self.state = LifecycleState.ABSENT
 

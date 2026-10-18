@@ -253,6 +253,9 @@ make_dir 0700 root /var/lib/azazel/state/bootstrap-overlay
 make_dir 0700 root /var/lib/azazel/generations
 make_dir 0700 root /var/lib/azazel/bootstrap-generations
 make_dir 0750 azfetch /var/lib/azazel/fetch
+make_dir 0750 azmio /etc/azazel/model-admission
+make_dir 0750 azmio /etc/azazel/model-admission/evidence
+make_dir 0750 azmio /etc/azazel/model-admission/evidence/artifacts
 make_dir 0750 azmio /var/lib/azazel/models
 make_dir 2750 azmio /var/lib/azazel/models/staging
 make_dir 2750 azmio /var/lib/azazel/models/store

@@ -368,3 +368,7 @@ tuple's `model_role`. An omitted tuple role supports legacy generative providers
 only; embedding providers require an explicit embedding tuple. Catalog `/2`
 entries retain generative semantics and refuse known bge-m3 embedding digests;
 `/3` carries its role in the signed payload. These bindings grant no admission.
+
+The [disabled embedding-admission workflow](local-model-admission.md) describes
+protected evidence collection, the separate-signers ceremony, descriptor-based
+execution, withdrawal and the prerequisites still needed before enabling it.

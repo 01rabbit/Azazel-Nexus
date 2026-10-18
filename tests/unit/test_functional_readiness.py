@@ -148,7 +148,7 @@ def test_knowledge_lite_is_functional_because_a_real_bundle_is_admitted_and_serv
         "otherwise, one of the two is wrong"
     )
 
-def test_mio_is_not_functional_because_the_resource_gate_always_refuses() -> None:
+def test_mio_is_not_functional_without_minted_admission_evidence() -> None:
     """A fully evidenced provider, in the largest envelope, is still refused.
 
     `HG-05` is the reason and the gate names it. While that holds, no local
@@ -194,15 +194,14 @@ def test_mio_is_not_functional_because_the_resource_gate_always_refuses() -> Non
             quantization="q4_k_m",
             context_size=4096,
             memory_need_mib=1,
-            signature_verified=True,
-            content_policy_passed=True,
+            evidence=None,
         ),
         host=host,
         tested=tested,
     )
     assert outcome.admitted is False
-    assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
-    assert "HG-05" in outcome.reason
+    assert outcome.failed_gate is AdmissionGate.AUTHENTICITY
+    assert "not a pass" in outcome.reason
 
     assert readiness_for("mio").functional is False, (
         "the resource gate still refuses every provider; if HG-05 has closed, "

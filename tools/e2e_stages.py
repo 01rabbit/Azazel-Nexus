@@ -1033,10 +1033,10 @@ def _core_reserve_path(harness: Harness) -> str:
     if absent is not None:
         raise RuntimeError("a node with no record produced a reserve")
     unmeasured = admit_local_model(provider, host=host, tested=tested, resources=None)
-    if unmeasured.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
+    if unmeasured.failed_gate is not AdmissionGate.AUTHENTICITY:
         raise RuntimeError(f"with no reserve the gate was {unmeasured.failed_gate}")
-    if "unmeasured" not in unmeasured.reason:
-        raise RuntimeError("the refusal does not name the missing measurement")
+    if "minted" not in unmeasured.reason:
+        raise RuntimeError("the refusal does not name missing verification evidence")
 
     samples = tuple(
         Sample(offset_seconds=i * 10, resident_mib=2000) for i in range(MIN_SAMPLES + 1)
@@ -1086,7 +1086,7 @@ def _core_reserve_path(harness: Harness) -> str:
         tested=tested,
         resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
     )
-    if fits.admitted or fits.failed_gate is not AdmissionGate.APPROVAL:
+    if fits.admitted or fits.failed_gate is not AdmissionGate.AUTHENTICITY:
         raise RuntimeError(f"with a reserve the answer was {fits.failed_gate}, admitted={fits.admitted}")
 
     too_large = admit_local_model(
@@ -1095,8 +1095,10 @@ def _core_reserve_path(harness: Harness) -> str:
         tested=tested,
         resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
     )
-    if too_large.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
-        raise RuntimeError("a provider larger than the headroom was not refused for resources")
+    if too_large.failed_gate is not AdmissionGate.AUTHENTICITY:
+        raise RuntimeError("an unverified provider was not refused")
+    if reserve.fits(memory_need_mib=14000, envelope_mib=15000):
+        raise RuntimeError("a provider larger than headroom fits the reserve")
 
     # And the node's own record path on this machine is still empty.
     from azazel_nexus.core_reserve import RESERVE_RECORD_PATH
@@ -1105,10 +1107,9 @@ def _core_reserve_path(harness: Harness) -> str:
         raise RuntimeError(f"{RESERVE_RECORD_PATH} exists on this machine")
 
     return (
-        "no measurement was taken: with no record the resource gate refused for "
-        "want of one, a fixture record was refused for being a fixture, and a "
-        "synthetic record reached the approval gate and stopped there because "
-        "approval is not implemented. No provider was admitted in any of the three"
+        "no measurement was taken: fixture reserve records refused, synthetic "
+        "reserve arithmetic exercised, and providers without minted admission "
+        "evidence refused at authenticity. No provider was admitted"
     )
 
 
@@ -1124,8 +1125,7 @@ def _reserve_provider(component: str, memory_need_mib: int = 1000):
         quantization="q4_k_m",
         context_size=4096,
         memory_need_mib=memory_need_mib,
-        signature_verified=True,
-        content_policy_passed=True,
+        evidence=None,
     )
 
 
