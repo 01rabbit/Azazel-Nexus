@@ -325,10 +325,12 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/fetch",
         "/var/lib/azazel/run/mio-entry",
         "/var/lib/azazel/run/knowledge",
+        "/var/lib/azazel/run/knowledge-read",
     }
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode
-        assert spec.group == "azazel-operator"
+        assert spec.group == ("azknowledge-read" if spec.path.endswith("knowledge-read")
+                              else "azazel-operator")
         assert spec.mode & 0o007 == 0
 
 
@@ -441,3 +443,12 @@ def test_entry_and_knowledge_console_scripts_point_to_lane_modules():
     scripts = runtime["project"]["scripts"]
     assert scripts["az-mio-entryd"] == "azazel_nexus_runtime.mio_entryd:main"
     assert scripts["az-knowledge-lited"] == "azazel_nexus_runtime.knowledge_lited:main"
+
+
+def test_mission_reader_provisioning_is_part_of_installer():
+    text = _installer()
+    for group in ('azknowledge-read', 'azmission-read'):
+        assert f'getent group {group}' in text
+        assert f'groupadd --system {group}' in text
+    assert 'python_stager -IS "$REPO_ROOT/tools/provision_mission_read.py" "$@"' in text
+    assert 'usermod' not in text

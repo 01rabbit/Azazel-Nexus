@@ -339,6 +339,8 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
             assert settings["SupplementaryGroups"] == ["azknowledge"]
         elif profile.unit == "azazel-mio-entryd.service":
             assert settings["SupplementaryGroups"] == ["azazel-operator"]
+        elif profile.unit == "azazel-mio-locald.service":
+            assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
         else:
             assert "SupplementaryGroups" not in settings
 
@@ -356,7 +358,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     }
     assert widened == {
         "azazel-activated.service", "azazel-commissiond.service",
-        "azazel-mio-entryd.service",
+        "azazel-mio-entryd.service", "azazel-mio-locald.service",
     }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
@@ -571,6 +573,7 @@ def test_the_units_say_they_are_generated():
         (
             "azazel-knowledge-lited.service", "azknowledge",
             ["/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
+             "/var/lib/azazel/run/knowledge-read",
              "/var/lib/azazel/state/knowledge"],
             ["/var/lib/azazel/lite-trust"],
         ),
@@ -594,3 +597,11 @@ def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
     assert _settings("azazel-mio-entryd.service")["SupplementaryGroups"] == [
         "azazel-operator",
     ]
+
+
+def test_locald_optional_selection_reads_have_no_write_grant():
+    settings = _settings("azazel-mio-locald.service")
+    assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+    assert settings["ReadOnlyPaths"] == ["-/etc/azazel/mission-pack.json", "-/data/azazel/mission-packs"]
+    assert settings["ProtectSystem"] == ["strict"]
+    assert settings["CapabilityBoundingSet"] == [""]

@@ -153,11 +153,14 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     monkeypatch.setattr(runtime_paths, "ROOT", root.parents[3])
     monkeypatch.setattr(runtime_paths, "lite_trust_root", lambda: trust)
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda name: ("sink", name))
+    from types import SimpleNamespace
+    monkeypatch.setattr(daemon.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=123))
     monkeypatch.setattr(serve, "serve_forever", lambda **kwargs: captured.update(kwargs) or 0)
     resolved = []
     monkeypatch.setattr(daemon.PrincipalPolicy, "resolve", lambda **kw: resolved.append(kw) or "policy")
     assert daemon.main([], ready=lambda: None) == 0
     assert captured["path"] == root.parent / "run/knowledge/knowledge.sock"
+    assert captured["additional_sockets"] == ((root.parent / "run/knowledge-read/knowledge-read.sock", 123),)
     assert captured["audit"] == ("sink", "knowledge")
     assert captured["handler"].__self__.root == root
     assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio")}]

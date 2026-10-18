@@ -219,11 +219,34 @@ the cached library; verification retries when watched metadata changes. Audits r
 and ordered library IDs/versions/digests only. This consumer never writes pack
 state or promotes a generation; existing model admission remains closed.
 
-Packaging must provision `azmio` read/traverse access to the configuration,
-private generation files and selected assets, preserving commissioned root-only
-write authority and encrypted storage. This change adds no users/groups,
-permission changes or unit-hardening exceptions. Unreadable state gives an
-audited `store_unreadable` fallback with no playbooks; an absent current pointer is
-`no_pack`. See [Reasoning playbooks](reasoning-playbooks.md) for cache behavior
-and the complete reason vocabulary. The existing runtime root convention applies;
+Packaging creates the dedicated `azmission-read` group and grants it to locald
+through the generated unit's supplementary groups. The existing commissioned
+configuration becomes `0640 root:azmission-read`; the reader still rejects
+non-root ownership and all group/other write bits. Installed inventory
+`reasoning_playbook` files receive group read, with group traverse on private
+ancestors where required. Their owners and write permissions remain unchanged;
+unsafe writable or symlink paths refuse provisioning. Other asset kinds are not
+granted access. Install playbooks outside locald's writable/private paths, as
+listed in [Reasoning playbooks](reasoning-playbooks.md).
+
+The installer creates `/data/azazel/mission-packs` and `generations` as
+`2750 root:azmission-read` only on a backing volume passing the existing LUKS
+check. This store lives under the commissioned encrypted `/data` mount; the
+installer neither mounts storage nor creates an unencrypted replacement. If
+storage is unavailable/unverified it prints `MISSION PACK STORE NOT PROVISIONED`;
+mount the commissioned encrypted volume and rerun the installer. DESTDIR staging
+projects the same modes without claiming encryption evidence.
+
+Published generation directories/trees use `2750`, their files and `current`
+use `0640`, with the reader GID inherited from the setgid store. Staging stays
+private until complete. The installer also upgrades existing published
+selections; hidden interrupted stages and writer audit/lock files remain private.
+Other GenerationStore consumers retain their private defaults. Root remains the
+only writer; CLI encryption/admission checks are unchanged. Rerun installation
+after provisioning the config or new inventory assets. The installer never
+invents commissioned configuration or signs/selects a pack.
+
+Unreadable state still gives audited `store_unreadable` with no playbooks; an
+absent current pointer is `no_pack`. See [Reasoning playbooks](reasoning-playbooks.md)
+for cache behavior and the complete reason vocabulary. The existing runtime root convention applies;
 there is no new path override or environment variable.

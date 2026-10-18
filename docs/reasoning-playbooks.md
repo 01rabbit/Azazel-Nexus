@@ -182,13 +182,19 @@ Advice continues through its existing admission gates without optional reference
 
 The paths are the existing `/etc/azazel/mission-pack.json` and encrypted
 `/data/azazel/mission-packs` store, rooted through runtime_paths like other runtime
-paths. Provisioning must give `azmio` read/traverse access to the commissioned
-configuration, active generation and selected assets, while preserving root-only
-write authority and encrypted storage. Generation files are currently private to
-the pack writer; this integration does not change owners, groups, installation
-modes or unit hardening. Until packaging provisions those read permissions, locald
-fails to no playbooks with an audited reason, as with unavailable Knowledge socket
-access. The consumer reads the existing configuration subset needed for selection;
+paths. The installer provisions `azmission-read` for locald, sets the existing
+commissioned configuration to `0640 root:azmission-read`, and grants read/traverse
+to installed inventory `reasoning_playbook` files and their required ancestors.
+Only root-owned paths without group/other write access are accepted; symlinks
+are refused. Playbooks must be installed outside locald's writable/private paths
+(`/var/lib/azazel/mio`, `/var/lib/azazel/run`, `/run`, `/tmp`, `/var/tmp`,
+`/home`, `/root`).
+`ProtectSystem=strict` keeps these installed assets read-only in the service;
+explicit optional `ReadOnlyPaths` cover the configuration and pack store.
+Root remains the writer. See [Mission Pack storage](mission-pack.md#local-configuration-and-storage)
+for encrypted-mount provisioning and generation permissions. Rerun the installer
+after commissioning a configuration or installing new playbook inventory files.
+The consumer reads the existing configuration subset needed for selection;
 it does not run CLI LUKS/resource probes or perform admission/activation writes.
 
 `LocalSocketClient` validates metadata separately from the model advisory at the

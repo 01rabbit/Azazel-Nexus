@@ -16,6 +16,7 @@ finish in bounded time without a timer.
 
 from __future__ import annotations
 
+import select
 import socket
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -39,6 +40,7 @@ def serve_forever(
     handler: Callable[[Any], Any],
     stop: Callable[[], bool] = lambda: False,
     ready: Optional[Callable[[], None]] = None,
+    additional_sockets: tuple[tuple[Path, int], ...] = (),
 ) -> int:
     """Serve on `path` until `stop()` answers true. Returns the exit code.
 
@@ -52,14 +54,25 @@ def serve_forever(
     # for this daemon; a filesystem that does not provide the declared Linux
     # setgid-directory inheritance fails before READY or accept.
     listener = bind_socket(path, expected_gid=getattr(policy, "operator_gid", None))
+    listeners = [(path, listener)]
     try:
-        listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
+        for extra_path, gid in additional_sockets:
+            listeners.append((extra_path, bind_socket(extra_path, expected_gid=gid)))
+        for _, bound_listener in listeners:
+            bound_listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
         engine = SocketServer(registry=registry, policy=policy, audit=audit)
         if ready is not None:
             ready()
         while not stop():
             try:
-                connection, _ = listener.accept()
+                active = listener
+                if additional_sockets:
+                    readable, _, _ = select.select(
+                        [item for _, item in listeners], [], [], ACCEPT_TIMEOUT_SECONDS)
+                    if not readable:
+                        continue
+                    active = readable[0]
+                connection, _ = active.accept()
             except socket.timeout:
                 continue
             except OSError:
@@ -74,9 +87,10 @@ def serve_forever(
                     # failure, and the refusal (if any) is already recorded.
                     continue
     finally:
-        listener.close()
-        try:
-            path.unlink()
-        except OSError:
-            pass
+        for bound_path, bound_listener in listeners:
+            bound_listener.close()
+            try:
+                bound_path.unlink()
+            except OSError:
+                pass
     return 0

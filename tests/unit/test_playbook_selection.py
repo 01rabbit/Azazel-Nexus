@@ -117,7 +117,8 @@ def test_failure_drops_library(selection_node, mode, reason):
     assert (result.library, result.reason) == (None, reason)
 
 
-def test_config_reader_existing_schema_and_ownership(selection_node, tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", [0o600, 0o640])
+def test_config_reader_existing_schema_and_ownership(selection_node, tmp_path, monkeypatch, mode):
     ctx = selection_node[0]
     config = tmp_path / 'mission-pack.json'
     doc = {'schema': 'azazel-nexus/mission-pack-config/1', 'assets': [],
@@ -125,7 +126,7 @@ def test_config_reader_existing_schema_and_ownership(selection_node, tmp_path, m
            'signing_epoch': ctx.signing_epoch, 'revoked_keys': [], 'revoked_packs': [],
            'commissioning_digest': ctx.commissioning_digest}
     config.write_text(json.dumps(doc))
-    config.chmod(0o600)
+    config.chmod(mode)
     original = Path.lstat
 
     def root_owned(path):
@@ -137,9 +138,10 @@ def test_config_reader_existing_schema_and_ownership(selection_node, tmp_path, m
     loaded = selection_context(config, ctx.root)
     assert loaded.trusted_keys == ctx.trusted_keys
     assert active_playbooks(loaded, now=NOW).reason == 'no_pack'
-    config.chmod(0o666)
-    with pytest.raises(mp.PackRefused):
-        selection_context(config, ctx.root)
+    for unsafe in (0o620, 0o602, 0o660, 0o666):
+        config.chmod(unsafe)
+        with pytest.raises(mp.PackRefused):
+            selection_context(config, ctx.root)
 
 
 def test_holder_generation_reload_cache_damage_and_expiry(selection_node, monkeypatch):
@@ -318,3 +320,14 @@ def test_generation_commissioning_digest_mismatch(selection_node):
     ctx = activate(selection_node)
     assert active_playbooks(replace(ctx, commissioning_digest='sha256:' + '0' * 64),
                             now=NOW).reason == 'pack_degraded'
+
+
+def test_published_selection_remains_group_readable(selection_node):
+    import stat
+    ctx = activate(selection_node)
+    service = mp.MissionPack(ctx)
+    generation = service.current()
+    directory = ctx.root / 'generations' / str(generation.number)
+    for path in directory.rglob('*'):
+        assert stat.S_IMODE(path.stat().st_mode) & 0o777 == (0o750 if path.is_dir() else 0o640)
+    assert stat.S_IMODE((ctx.root / 'current').stat().st_mode) == 0o640

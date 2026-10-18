@@ -28,7 +28,7 @@ def lookup_context(technique_ids: tuple[str, ...], *,
                 or any(type(item) is not str or not TECHNIQUE_ID.fullmatch(item)
                        for item in technique_ids)):
             raise ValueError
-        result = _exchange("knowledge", "azknowledge", "knowledge.lookup",
+        result = _exchange("knowledge-read", "azknowledge", "knowledge.lookup",
                            {"technique_ids": list(technique_ids)}, deadline_s=deadline_s)
         if (set(result) != {"refs", "reason_code"} or type(result["refs"]) is not list
                 or len(result["refs"]) > 16

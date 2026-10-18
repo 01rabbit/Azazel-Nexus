@@ -21,6 +21,7 @@ ReadOnlyPaths=/var/lib/azazel/lite-trust
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/knowledge
 ReadWritePaths=/var/lib/azazel/run/knowledge
+ReadWritePaths=/var/lib/azazel/run/knowledge-read
 ReadWritePaths=/var/lib/azazel/state/knowledge
 NoNewPrivileges=yes
 ProtectSystem=strict

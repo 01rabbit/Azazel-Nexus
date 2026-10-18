@@ -98,11 +98,11 @@ class Report:
 
 #: The longest root that still leaves the declared socket paths bindable.
 #:
-#: `/var/lib/azazel/run/commission/commission.sock` is 46 bytes and a unix address holds
+#: `/var/lib/azazel/run/knowledge-read/knowledge-read.sock` is 54 bytes and a unix address holds
 #: 107, so a root beyond this pushes the daemons over -- which the kernel
 #: reports as `AF_UNIX path too long` from inside a subprocess, where it is a
 #: puzzle. Refused here instead, with the arithmetic in the message.
-LONGEST_DECLARED_SOCKET = len("/var/lib/azazel/run/commission/commission.sock")
+LONGEST_DECLARED_SOCKET = len("/var/lib/azazel/run/knowledge-read/knowledge-read.sock")
 MAX_ROOT_BYTES = 107 - LONGEST_DECLARED_SOCKET
 
 

@@ -347,10 +347,14 @@ response and unavailable trust/store conditions raise only
 that exception to its unavailable audit path, continuing without knowledge.
 No network request or retry occurs.
 
-Deployment must allow `azmio` to traverse the existing Knowledge socket directory
-and connect to its `azazel-operator` group socket, in addition to SERVICE
-admission. The current installer and generated locald unit do not provision that
-group access. Filesystem access remains a deployment prerequisite before locald can use the
-client. This integration adds no group membership or packaging permissions.
-The client otherwise fails closed to unavailable. This lookup is human advisory
-context only and adds no decision or enforcement authority.
+The installer creates a separate service-client socket directory,
+`/var/lib/azazel/run/knowledge-read`, mode `2710`, owned by
+`azknowledge:azknowledge-read`. Knowledge Lite binds `knowledge-read.sock`
+there with mode `0660`, alongside the unchanged operator socket at
+`/var/lib/azazel/run/knowledge/knowledge.sock`. Both use the existing transport
+and PrincipalPolicy; lookup still admits SERVICE only. Locald's generated unit
+has `SupplementaryGroups=azknowledge-read azmission-read`, and its client checks
+the dedicated socket GID as well as the `azknowledge` owner and peer credentials.
+`azmio` never joins `azazel-operator` and cannot reach audit, commissioning,
+watchdog or fetch sockets through these groups. Operators retain their existing
+socket and status access. No ACL tools are required.

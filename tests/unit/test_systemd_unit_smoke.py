@@ -143,7 +143,7 @@ def test_empty_reset_comparison_and_mixed_inverse_refusal():
 def test_scratch_uses_installer_owners_modes_and_ancestors(tmp_path, monkeypatch, name):
     changes = []
     monkeypatch.setattr(smoke.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid={"root": 0, "azmioentry": 77, "azknowledge": 78, "azcommission": 79}[name]))
-    monkeypatch.setattr(smoke.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid={"root": 0, "azazel-operator": 88, "azknowledge": 89}[name]))
+    monkeypatch.setattr(smoke.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid={"root": 0, "azazel-operator": 88, "azknowledge": 89, "azknowledge-read": 90}[name]))
     monkeypatch.setattr(smoke.os, "chown", lambda path, uid, gid: changes.append((path.relative_to(tmp_path), uid, gid)))
     modes = []
     original_chmod = Path.chmod
@@ -168,6 +168,7 @@ def test_scratch_uses_installer_owners_modes_and_ancestors(tmp_path, monkeypatch
         assert (Path("var/lib/azazel/state/knowledge"), 78, 0) in changes
         assert (Path("var/lib/azazel/run/knowledge"), 78, 88) in changes
         assert (Path("var/lib/azazel/knowledge"), 78, 88) in changes
+        assert (Path("var/lib/azazel/run/knowledge-read"), 78, 90) in changes
         assert (Path("var/lib/azazel/lite-trust"), 79, 89) in changes
         assert not (tmp_path / "var/lib/azazel/state/mio").exists()
 
