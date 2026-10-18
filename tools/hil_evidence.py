@@ -145,8 +145,11 @@ def main(argv: list[str] | None = None) -> int:
             status = verify(args.directory, operator_key=args.operator_key)
         print(json.dumps({"status": status}))
     except (ValueError, OSError, ImportError) as exc:
-        # Avoid leaking input, source paths or key material through diagnostics.
-        parser.exit(2, f"evidence refused ({type(exc).__name__})\n")
+        # Avoid leaking input, source paths or key material through diagnostics:
+        # only a reason this package wrote as a fixed literal is printed.
+        reason = getattr(exc, "fixed_reason", None)
+        detail = f": {reason}" if isinstance(exc, RecordRefused) and isinstance(reason, str) else ""
+        parser.exit(2, f"evidence refused ({type(exc).__name__}{detail})\n")
     return 0
 
 

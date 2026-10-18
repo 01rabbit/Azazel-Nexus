@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 import time
 
@@ -385,7 +386,10 @@ def test_supplementary_operator_group_grants_operator_but_never_elevates_a_servi
 def test_linux_peer_supplementary_groups_are_kernel_reported():
     import socket as socket_module
 
-    if not hasattr(socket_module, "SO_PEERGROUPS"):
+    # Not `hasattr(socket, "SO_PEERGROUPS")`: CPython never exports it, so
+    # that guard skipped this test everywhere and hid that no Linux peer
+    # ever had supplementary groups.
+    if sys.platform != "linux":
         pytest.skip("SO_PEERGROUPS is Linux-specific")
     left, right = socket_module.socketpair(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     try:
@@ -395,8 +399,108 @@ def test_linux_peer_supplementary_groups_are_kernel_reported():
         right.close()
 
 
+def test_a_daemon_account_carrying_the_operator_group_is_never_an_operator():
+    """entryd's unit grants it `azazel-operator` to reach provider sockets.
+
+    Once supplementary groups are actually read, that must not turn azmioentry
+    into an operator at a daemon that does not list it as a service.
+    """
+
+    operator_gid = 9001
+    entry_uid = 9003
+    policy = PrincipalPolicy(
+        operator_gid=operator_gid, service_uids=frozenset(), daemon_uids=frozenset({entry_uid}),
+    )
+    assert policy.classify(entry_uid, entry_uid, 3, (operator_gid,)).classes == frozenset()
+    assert policy.classify(entry_uid, operator_gid, 3).classes == frozenset()
+    # An ordinary operator user is unaffected.
+    assert policy.classify(1000, 1000, 1, (operator_gid,)).classes == frozenset(
+        {PrincipalClass.OPERATOR})
+
+
+def test_every_installed_daemon_account_is_a_daemon_account():
+    from azazel_nexus_runtime.hardening import SYSTEM_ACCOUNTS
+    from azazel_nexus_runtime.principal import DAEMON_ACCOUNTS, SERVICE_ACCOUNTS
+
+    assert set(SYSTEM_ACCOUNTS) <= set(DAEMON_ACCOUNTS)
+    assert set(SERVICE_ACCOUNTS) <= set(DAEMON_ACCOUNTS)
+
+
+def test_resolve_marks_daemon_accounts_that_exist(monkeypatch):
+    import types
+
+    from azazel_nexus_runtime import principal as principal_module
+
+    table = {"azmioentry": 9003, "azarbiter": 9004, "azfetch": 9005}
+
+    def getpwnam(name):
+        if name not in table:
+            raise KeyError(name)
+        return types.SimpleNamespace(pw_uid=table[name])
+
+    monkeypatch.setattr(principal_module.pwd, "getpwnam", getpwnam)
+    monkeypatch.setattr(principal_module.grp, "getgrnam",
+                        lambda name: types.SimpleNamespace(gr_gid=9001))
+    policy = PrincipalPolicy.resolve(service_accounts=("azarbiter",))
+    assert policy.service_uids == frozenset({9004})
+    assert policy.daemon_uids == frozenset({9003, 9004, 9005})
+    assert policy.classify(9003, 9003, 1, (9001,)).classes == frozenset()
+
+
+class _GroupsConnection:
+    """Records the getsockopt request; answers with fixed kernel bytes."""
+
+    def __init__(self, groups=(), error=None):
+        self.calls = []
+        self._raw = b"".join(struct.pack("=I", group) for group in groups)
+        self._error = error
+
+    def getsockopt(self, level, option, buflen):
+        self.calls.append((level, option, buflen))
+        if self._error is not None:
+            raise self._error
+        return self._raw
+
+
+def test_peergroups_option_uses_the_linux_generic_value_cpython_does_not_export(monkeypatch):
+    import types
+
+    from azazel_nexus_runtime import principal as principal_module
+
+    bare = types.SimpleNamespace()  # a socket module without SO_PEERGROUPS, like CPython's
+    monkeypatch.setattr(sys, "platform", "linux")
+    for machine, expected in (("x86_64", 59), ("aarch64", 59), ("sparc64", None),
+                              ("parisc", None), ("alpha", None), ("mips", None)):
+        monkeypatch.setattr(principal_module.os, "uname",
+                            lambda machine=machine: types.SimpleNamespace(machine=machine))
+        assert principal_module._peergroups_option(bare) == expected, machine
+    # A module that does export it wins over the table.
+    assert principal_module._peergroups_option(types.SimpleNamespace(SO_PEERGROUPS=1234)) == 1234
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert principal_module._peergroups_option(bare) is None
+
+
+def test_peer_groups_buffer_fits_cpythons_getsockopt_limit(monkeypatch):
+    import socket as socket_module
+
+    from azazel_nexus_runtime import principal as principal_module
+
+    monkeypatch.setattr(principal_module, "_peergroups_option", lambda module: 59)
+    connection = _GroupsConnection((985, 984))
+    assert peer_supplementary_groups(connection) == (985, 984)
+    # CPython raises "getsockopt buflen out of range" above 1024; the old
+    # 4 * 65536 request was swallowed as OSError and returned no groups.
+    assert connection.calls == [(socket_module.SOL_SOCKET, 59, 1024)]
+    # A refusal (for example ERANGE for more than 256 groups) stays fail-closed.
+    assert peer_supplementary_groups(_GroupsConnection(error=OSError(34, "ERANGE"))) == ()
+    odd = _GroupsConnection()
+    odd._raw = b"\x01\x02\x03"
+    with pytest.raises(SocketMisconfigured):
+        peer_supplementary_groups(odd)
+
+
 def test_linux_supplementary_operator_can_reach_and_use_its_socket(tmp_path):
-    if not hasattr(socket, "SO_PEERGROUPS"):
+    if sys.platform != "linux":
         pytest.skip("SO_PEERGROUPS is Linux-specific")
     operator_gid = next(
         (group for group in os.getgroups() if group != os.getgid()), None

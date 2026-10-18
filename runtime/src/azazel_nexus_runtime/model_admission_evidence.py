@@ -125,6 +125,9 @@ def fingerprint(paths):
 
 
 class ProtectedTree:
+    #: The group every admission-store entry must carry when root owns it.
+    ADMISSION_GROUP = "azmio"
+
     def __init__(self, root_fd, owner):
         self.root_fd, self.owner = root_fd, owner
         self.watched = set(_FIXED)
@@ -135,7 +138,7 @@ class ProtectedTree:
             import grp
 
             try:
-                self.admission_gid = grp.getgrnam("azmio").gr_gid
+                self.admission_gid = grp.getgrnam(self.ADMISSION_GROUP).gr_gid
             except KeyError as exc:
                 raise ApprovalRefused("EVIDENCE_UNPROTECTED") from exc
 

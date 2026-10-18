@@ -17,12 +17,25 @@ from .contracts import ANONYMOUS_ID
 
 
 class RecordRefused(ValueError):
-    """Malformed or unauthenticated evidence."""
+    """Malformed or unauthenticated evidence.
+
+    `fixed_reason` is set only when the message is a fixed literal from this
+    package (never input, a path or key material), so a CLI may print it.
+    """
+
+    fixed_reason: str | None = None
+
+
+def refusal(message: str) -> RecordRefused:
+    """A refusal whose message is a fixed literal, safe to show an operator."""
+    refused = RecordRefused(message)
+    refused.fixed_reason = message
+    return refused
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
-        raise RecordRefused(message)
+        raise refusal(message)
 
 
 SCHEMA = "azazel-nexus/hil-evidence/v1"
@@ -35,7 +48,8 @@ def lint_text(payload: bytes) -> None:
     try:
         lint_export(payload)
     except ConfidentialityRefused as exc:
-        raise RecordRefused(str(exc)) from exc
+        # The confidentiality lint's reasons are a closed set of literals.
+        raise refusal(str(exc)) from exc
 
 
 def attestation_bytes(manifest: dict) -> bytes:
@@ -59,7 +73,7 @@ def _json(payload: bytes) -> dict:
         canonical_event_bytes(value)
         return value
     except (ValueError, UnicodeError) as exc:
-        raise RecordRefused("invalid JSON object") from exc
+        raise refusal("invalid JSON object") from exc
 
 
 def _shape(manifest: dict) -> None:
@@ -145,7 +159,7 @@ def verified_manifest(root: Path, *, operator_key: Path | None = None) -> dict:
         require(verify_detached(public_key=key, message=attestation_bytes(manifest),
                                 signature=signature), "operator attestation refused")
     except (SignatureRefused, ValueError, OSError) as exc:
-        raise RecordRefused("operator attestation refused") from exc
+        raise refusal("operator attestation refused") from exc
     return manifest
 
 

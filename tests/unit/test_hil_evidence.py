@@ -198,7 +198,9 @@ def test_cli_all_commands_and_no_hardware_verdict(tmp_path, keys, capsys):
               "--gate-id", "HG-01", "--dut-id", "dut-" + "a" * 32,
               "--artifact", f"capture={source}", "--operator-input", str(operator)])
     assert failure.value.code == 2
-    assert "192.0.2.1" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "192.0.2.1" not in err
+    assert err == "evidence refused (RecordRefused: confidentiality: raw IP address refused)\n"
 
 
 @pytest.mark.parametrize("payload", ['{"notes":NaN}', '{"notes":Infinity}'])
@@ -230,3 +232,63 @@ def test_multiple_artifacts_are_checked(evidence, keys, tmp_path):
         with pytest.raises(RecordRefused, match="digest differs"):
             verify(root, operator_key=keys[2])
         capture.write_bytes(original)
+
+
+@pytest.mark.parametrize("dut_id,expected", [
+    ("not-a-dut", "anonymous dut id required"),
+    ("dut-" + "a" * 31, "anonymous dut id required"),
+])
+def test_cli_prints_the_fixed_reason_not_the_input(tmp_path, capsys, dut_id, expected):
+    source = tmp_path / "source"
+    source.write_text("SYNTHETIC TEST ONLY")
+    operator = tmp_path / "input"
+    operator.write_text('{"notes":"SYNTHETIC TEST ONLY"}')
+    with pytest.raises(SystemExit) as failure:
+        main(["bundle", str(tmp_path / "b"), "--run-id", "test-only", "--gate-id", "HG-01",
+              "--dut-id", dut_id, "--artifact", f"capture={source}",
+              "--operator-input", str(operator)])
+    assert failure.value.code == 2
+    err = capsys.readouterr().err
+    assert err == f"evidence refused (RecordRefused: {expected})\n"
+    assert dut_id not in err and str(tmp_path) not in err
+
+
+def test_cli_never_prints_an_unfixed_message(tmp_path, capsys):
+    # An OSError carries a path; only its type is shown.
+    with pytest.raises(SystemExit):
+        main(["lint", str(tmp_path / "private-path-name")])
+    err = capsys.readouterr().err
+    assert "private-path-name" not in err
+    assert err.startswith("evidence refused (")
+
+
+def test_fixed_reasons_come_only_from_literals():
+    """Every message that can become a printed reason is a literal in source."""
+    import ast
+
+    for relative, names in (("src/azazel_nexus/hil_records/evidence.py", {"require", "refusal"}),
+                            ("tools/hil_evidence.py", {"require", "refusal"}),
+                            ("src/azazel_nexus/hil_records/confidentiality.py",
+                             {"require", "ConfidentialityRefused"})):
+        tree = ast.parse((ROOT / relative).read_text())
+        # The forwarding calls inside `require` itself pass its parameter on.
+        forwarding = {id(call) for function in ast.walk(tree)
+                      if isinstance(function, ast.FunctionDef) and function.name == "require"
+                      for call in ast.walk(function) if isinstance(call, ast.Call)}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in names) or id(node) in forwarding:
+                continue
+            message = node.args[-1] if node.func.id != "require" else node.args[1]
+            if isinstance(message, ast.Constant):
+                assert isinstance(message.value, str), (relative, node.lineno)
+            elif isinstance(message, ast.JoinedStr):
+                # The only formatted value is the fixed pattern label `reason`.
+                assert all(isinstance(v, ast.Constant) or (
+                    isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name)
+                    and v.value.id == "reason") for v in message.values), (relative, node.lineno)
+            else:
+                # `refusal(str(exc))` in lint_text forwards a ConfidentialityRefused,
+                # whose own messages are checked above.
+                assert relative.endswith("evidence.py") and ast.unparse(message) == "str(exc)", (
+                    relative, node.lineno)

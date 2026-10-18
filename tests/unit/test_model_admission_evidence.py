@@ -22,6 +22,26 @@ from azazel_nexus.model_runtime import (
 
 
 @pytest.fixture(autouse=True)
+def root_without_azmio(monkeypatch):
+    """Run as root on a host with no `azmio` group (a CI or test container).
+
+    The fixture trees are created by this process, so as root they carry
+    root's primary group, not azmio. The root-only group check is kept and
+    bound to that group instead: entries must still carry exactly it, with the
+    same modes, so a wrong group is still refused. Elsewhere nothing changes.
+    """
+
+    import grp
+
+    if os.getuid() != 0:
+        return
+    try:
+        grp.getgrnam(loader.ProtectedTree.ADMISSION_GROUP)
+    except KeyError:
+        monkeypatch.setattr(loader.ProtectedTree, "ADMISSION_GROUP", grp.getgrgid(os.getgid()).gr_name)
+
+
+@pytest.fixture(autouse=True)
 def enabled(monkeypatch, request):
     if request.node.name != "test_disabled_is_first_and_does_no_io":
         monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
@@ -104,6 +124,26 @@ def test_absent_unprotected_symlink_and_no_writes(tmp_path, monkeypatch):
     approval.unlink()
     approval.symlink_to(directory / "policy.json")
     assert type(read_test(tmp_path, trust=kwargs["trust"]).embedding) is loader.Refused
+
+
+def test_a_root_owned_store_without_its_admission_group_is_unprotected(tmp_path, monkeypatch):
+    monkeypatch.setattr(loader.ProtectedTree, "ADMISSION_GROUP", "az-no-such-group-for-test")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(admission.ApprovalRefused, match="^EVIDENCE_UNPROTECTED$"):
+            loader.ProtectedTree(fd, 0)
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.skipif(os.getuid() != 0, reason="the admission group is checked only for root-owned stores")
+def test_as_root_an_entry_in_another_group_is_unprotected(tmp_path):
+    kwargs, _, _ = inputs()
+    directory = store(tmp_path, kwargs)
+    assert read_test(tmp_path, trust=kwargs["trust"]).embedding != loader.Refused("EVIDENCE_UNPROTECTED")
+    other = next(gid for gid in (65534, 1, 2, 3) if gid != os.getgid())
+    os.chown(directory / "policy.json", 0, other)
+    assert read_test(tmp_path, trust=kwargs["trust"]).embedding == loader.Refused("EVIDENCE_UNPROTECTED")
 
 
 def test_protected_signed_wrapper_uses_independent_context_and_ignores_env(tmp_path, monkeypatch):

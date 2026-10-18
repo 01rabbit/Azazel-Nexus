@@ -418,7 +418,15 @@ operator group, so they do not gain filesystem access to each other's sockets.
 Linux `SO_PEERCRED` identifies the peer's primary credentials, while
 `SO_PEERGROUPS` supplies its kernel-reported supplementary groups; operator
 membership is accepted from either, but a known service UID is never promoted
-to operator based on group membership. The runtime verifies socket group,
+to operator based on group membership. No Nexus daemon account
+(`principal.DAEMON_ACCOUNTS`, which includes every installer-created account)
+is ever an operator either: entryd's unit grants `azazel-operator` only so that
+it can reach provider sockets, and that group must not make it an operator at
+commissiond, auditd, watchdog or the fetcher. CPython does not export
+`socket.SO_PEERGROUPS` and caps `getsockopt` buffers at 1024 bytes, so the
+runtime uses the Linux generic value (59) on architectures that use it and reads
+at most 256 groups; a peer with more is classified without its supplementary
+groups. The runtime verifies socket group,
 owner and mode before accepting requests. If the target filesystem does not
 preserve setgid socket-group inheritance, startup fails closed. Non-Linux
 systems without `SO_PEERGROUPS` can still classify root/primary-group peers,
