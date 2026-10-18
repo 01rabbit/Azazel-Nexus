@@ -17,6 +17,7 @@ from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.local_advisory import (
     FrameRefused,
     build_prompt,
+    gate_frame,
     read_frame,
     read_local_advisory,
     request_event,
@@ -166,6 +167,10 @@ class LocalRuntimeService:
         if not 0 < deadline_ms <= 60_000:
             return refuse("invalid_deadline")
         audit(request_event(frame))
+        gated = gate_frame(frame)
+        if gated is not None:
+            audit({"event_type": "mio.local.gated", "reason": gated["reason"]})
+            return gated
         if not self._admitted(self._model_id):
             return refuse("not_admitted")
         if self._reserve is None:
@@ -195,7 +200,7 @@ class LocalRuntimeService:
                 raise
             return refuse("runtime_failed")
         try:
-            advisory = read_local_advisory(result.text)
+            advisory = read_local_advisory(result.text, frame)
         except AdvisoryRefused as exc:
             return refuse(exc.refusal.value, "not_advice")
         audit(advisory.as_event(local=True))

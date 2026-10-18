@@ -7,9 +7,15 @@ from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 
 from azazel_nexus.audit import AuditUnavailable
-from azazel_nexus.local_advisory import FrameRefused, read_frame, request_event
+from azazel_nexus.local_advisory import (
+    FrameRefused,
+    gate_frame,
+    read_frame,
+    request_event,
+)
 from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile, profile_in_force
 from azazel_nexus.remote_trust import remote_admission, unchecked_reading
+from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
 from .mio_locald import INFER_VERB
@@ -82,6 +88,11 @@ class MioEntryService:
                 raise RequestRefused(Refusal.MALFORMED_FRAME, "situation_frame") from None
             privacy = PrivacyClass(frame["privacy_class"])
             self.router._record(request_event(frame))
+            gated = gate_frame(frame)
+            if gated is not None:
+                self.router._record({"event_type": "mio.local.gated", "reason": gated["reason"]})
+                return {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
+                        "ledger_seq": self.router.ledger.head()[0]}
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
             )
