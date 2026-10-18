@@ -86,6 +86,7 @@ __all__ = [
     "inspect_artifact",
     "readiness",
     "resolve_runtime",
+    "llama_server_record",
 ]
 
 
@@ -111,7 +112,9 @@ class RuntimeBinary:
     argv: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not self.executable.startswith("/usr/libexec/azazel/"):
+        if (not self.executable.startswith("/usr/libexec/azazel/")
+                or ".." in Path(self.executable).parts
+                or "\x00" in self.executable):
             raise RuntimeRefused(
                 f"{self.runtime_id!r} names {self.executable!r}, which is not "
                 "under the package's own directory. A runtime resolved from "
@@ -123,12 +126,47 @@ class RuntimeBinary:
                 "its executable; the two would then disagree about what runs"
             )
         for argument in self.argv:
-            if "{" in argument or "%" in argument:
+            if not isinstance(argument, str) or "\x00" in argument:
+                raise RuntimeRefused("argv elements must be literal strings without NUL")
+            if "{" in argument or "}" in argument or "%" in argument:
                 raise RuntimeRefused(
                     f"{self.runtime_id!r} has {argument!r} in its argv, which "
                     "reads as a template. An argv with a hole is an argv "
                     "something fills"
                 )
+
+
+def llama_server_record(
+    binary: RuntimeBinary,
+    *,
+    model_path: Path,
+    socket_path: Path,
+    ctx: int = 2048,
+    threads: int = 2,
+    max_tokens: int = 256,
+) -> RuntimeBinary:
+    """Freeze benchmark/harness inputs into a record; grant no admission.
+
+    Paths are literal absolute paths, never templates or paths supplied by a
+    control-plane request. The executable retains RuntimeBinary's package
+    restriction. RUNTIMES remains empty.
+    """
+    for path in (model_path, socket_path):
+        if not Path(path).is_absolute() or ".." in Path(path).parts:
+            raise RuntimeRefused("model and socket paths must be literal absolute paths")
+    if not str(socket_path).endswith(".sock"):
+        raise RuntimeRefused("llama-server requires a .sock host for AF_UNIX")
+    for value in (ctx, threads, max_tokens):
+        if type(value) is not int or value < 1:
+            raise RuntimeRefused("context, threads and token limits must be positive integers")
+    return RuntimeBinary(
+        runtime_id=binary.runtime_id,
+        executable=binary.executable,
+        version=binary.version,
+        digest=binary.digest,
+        argv=(binary.executable, "-m", str(model_path), "--host", str(socket_path),
+              "-c", str(ctx), "-t", str(threads), "--no-webui", "-n", str(max_tokens)),
+    )
 
 
 #: The runtime allowlist. **Empty in this build, and that is the shipped

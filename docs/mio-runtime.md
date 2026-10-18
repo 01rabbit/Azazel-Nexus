@@ -274,8 +274,8 @@ network code. Its own `AuditLedger` lives at
 from auditd's chain and watchdog's chain. `az-mio-entryd` now composes this
 owner with Unix socket adapters, retaining the separate provider accounts.
 The router’s direct service defaults remain available to existing in-process
-callers; the entry always supplies socket clients. Remoted and locald retain
-their startup refusals in this build.
+callers; the entry always supplies socket clients. Remoted retains its startup
+refusal. Locald serves bounded refusals with production admission closed.
 
 ### Metadata-only entry daemon
 
@@ -383,3 +383,38 @@ until the following exist:**
 
 This document specifies the control plane so that implementation has something
 to be measured against. It is not evidence that the control plane exists.
+
+
+### Local advisory payload path (Milestone 3)
+
+`mio.route` remains metadata only. `mio.advise` accepts a separate JSON
+`event` payload containing exactly `request_id`, `privacy_class`, `question`
+and `context` (a list of `{kind, text}` objects). Its only argument is
+`deadline_ms` (1–60,000). Entry admits OPERATOR and SERVICE, with the service
+policy restricted to `azarbiter`. Situation frames are at most 32 KiB of
+UTF-8 JSON, with at most 16 context items and 4 KiB per text value. Request
+IDs use the existing identifier grammar; context kinds use bounded lower-case
+identifiers. Unknown keys and malformed values are refused.
+
+On a permitted, predicted LOCAL selection, the router sends the frame to
+`mio.local.infer`, authenticating the `azmio` socket owner and peer. Locald's
+service policy resolves only `azmioentry`; its inference verb admits SERVICE
+only. The transport uses the existing length prefix and `event` payload slot,
+with a bounded I/O deadline supplied from `deadline_ms`. Local model and
+runtime IDs are supplied by trusted composition, never by this payload.
+
+The prompt requests JSON `{advice, fields}` and advice only. Output passes
+through `read_local_advisory`, reusing the remote advisory reader's bounds
+and instruction refusals. The reply carries advice and fields for display;
+`mio.local.request`, `mio.local.advisory.read` and `mio.local.refused` events
+contain only digests, counts, lengths and fixed refusal codes. Locald keeps
+its own `local.jsonl` ledger beside entry's `route.jsonl`. Neither stores
+situation or response text. Terminal route events distinguish ANSWERED,
+NOT_ADVICE, TIMED_OUT and FAILED, using the existing one-fallback rule and
+privacy restrictions.
+
+Production still has CORE as its default profile, no local admission, no
+prediction evidence, an unmeasured HG-05 reserve and an empty runtime
+allowlist. Trusted harnesses can inject admission, predictions and a fake
+server to exercise the path. Availability probes never change these gates;
+the new verbs do not commission a model or alter Edge authority.

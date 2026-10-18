@@ -1,60 +1,26 @@
-"""`az-mio-locald`: the only place a model process could ever be started (#97).
+"""Local runtime service: admission and reserve checks precede inference.
 
-A module with a socket in it is a *module* boundary. This is the **service**
-boundary: its own unit, its own system account (`azmio`), its own socket, its
-own runtime directory, one writable path, and `PrivateNetwork=yes` on top of
-the `IPAddressDeny=any` every unit here carries.
-
-It is not the fetch service and shares nothing with it. `azfetch` may reach
-the network and may not run a program; `azmio` may run one program, from a
-fixed list, and may reach nothing. Neither account's access is reused for the
-other, and no future remote-inference transport (#98) inherits either.
-
-## This build starts nothing, and the reason is structural
-
-`model_runtime.RUNTIMES` is empty, so no `runtime_id` resolves.
-`activation.UnitDefinition.wiring` keeps this unit from being granted, so the
-node does not carry a unit that would start and exit at the next boot. And
-`readiness` refuses first for the unmeasured Core reserve, which is the
-answer on every node this build runs on.
-
-Three separate refusals, in three separate places, for three separate
-reasons. Not redundancy: each covers a case the others do not. Wire a runtime
-and the reserve still refuses. Measure the reserve and the empty allowlist
-still refuses. Grant the unit by hand and `main` still exits.
-
-## What a caller may ask for
-
-One verb, `model.activate`, and its arguments are **two identifiers**:
-
-| argument | kind |
-| --- | --- |
-| `model_id` | identifier |
-| `runtime_id` | identifier |
-
-`protocol.ArgumentKind` has no free-text member, so there is no way to
-express a command, a path, an environment variable, a socket address or a
-model option in a request. That is not a check this service performs; it is a
-shape a request cannot take. A control plane that could pass a model option
-could pass one that loads a plugin.
-
-The service resolves both symbols itself -- the runtime through the
-package's own allowlist, the artifact through the staging directory it owns.
-**The caller never names a file and never names a program.**
-
-## What it never says
-
-No path, no argv, no environment, no model output, no prompt. Not in a reply,
-not in an audit event, not in the journal -- and there is no command line to
-leak one through, because the executable takes no arguments at all.
+Production has no admitted model or wired runtime. The payload verb accepts
+only the entry service principal; model paths and runtime options are never
+caller supplied. Advisory bodies return to the caller, never to the ledger.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from azazel_nexus.advisory_response import AdvisoryRefused
+from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.local_advisory import (
+    FrameRefused,
+    build_prompt,
+    read_frame,
+    read_local_advisory,
+    request_event,
+)
 from azazel_nexus.model_runtime import (
     ActivationReadiness,
     RuntimeRefused,
@@ -63,11 +29,15 @@ from azazel_nexus.model_runtime import (
     resolve_runtime,
 )
 
-from .principal import PrincipalClass
+from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
+from .runtime_paths import mio_state_dir, socket_path
+from .serve import serve_forever
+from .systemd_notify import runtime_ready_callback
 
 __all__ = [
     "ACTIVATE_VERB",
+    "INFER_VERB",
     "LocalRuntimeService",
     "REGISTRY",
     "SOCKET_NAME",
@@ -97,7 +67,14 @@ ACTIVATE_VERB = Verb(
     admits=frozenset({PrincipalClass.ROOT, PrincipalClass.SERVICE}),
 )
 
-REGISTRY = VerbRegistry([ACTIVATE_VERB])
+INFER_VERB = Verb(
+    name="mio.local.infer",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=60_000),),
+    admits=frozenset({PrincipalClass.SERVICE}),
+    accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
+REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB])
 
 
 @dataclass(frozen=True)
@@ -119,13 +96,7 @@ class ActivationReply:
 
 
 class LocalRuntimeService:
-    """Decide whether a model could be started here. Never start one.
-
-    Deciding and starting are separate on purpose, and this half is the one
-    that is testable without a provider. `start` is not a method that is
-    disabled -- there is no such method, because a method nothing calls is a
-    method the next change calls.
-    """
+    """Check readiness or read advice through an explicitly supplied server."""
 
     def __init__(
         self,
@@ -133,6 +104,10 @@ class LocalRuntimeService:
         staging: Path = STAGING,
         reserve: Optional[Any] = None,
         admitted: Callable[[str], bool] = lambda model_id: False,
+        model_id: str = "uncommissioned",
+        runtime_id: str = "uncommissioned",
+        server: Any = None,
+        runtime: Callable = resolve_runtime,
     ) -> None:
         self._staging = staging
         # Supplied, never discovered. The library reads the record; this
@@ -141,8 +116,14 @@ class LocalRuntimeService:
         # remembers.
         self._reserve = reserve
         self._admitted = admitted
+        self._model_id = model_id
+        self._runtime_id = runtime_id
+        self._server = server
+        self._runtime = runtime
 
-    def handle(self, request: Any) -> dict:
+    def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
+        if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
+            return self._infer(request, audit=audit)
         arguments = request.arguments
         model_id = arguments["model_id"]
         runtime_id = arguments["runtime_id"]
@@ -172,6 +153,59 @@ class LocalRuntimeService:
             reason=verdict.reason,
         ).as_document()
 
+    def _infer(self, request: Any, *, audit: Callable[[dict], None]) -> dict:
+        def refuse(reason, outcome="failed"):
+            audit({"event_type": "mio.local.refused", "refusal": reason})
+            return {"outcome": outcome, "refusal": reason}
+
+        try:
+            frame = read_frame(request.payload)
+        except FrameRefused:
+            return refuse("malformed_frame")
+        deadline_ms = request.arguments["deadline_ms"]
+        if not 0 < deadline_ms <= 60_000:
+            return refuse("invalid_deadline")
+        audit(request_event(frame))
+        if not self._admitted(self._model_id):
+            return refuse("not_admitted")
+        if self._reserve is None:
+            return refuse("reserve_unmeasured")
+        try:
+            self._runtime(self._runtime_id)
+        except RuntimeRefused:
+            return refuse("runtime_unavailable")
+        artifact = inspect_artifact(self._staging / f"{self._model_id}.model")
+        if not artifact.is_data or self._server is None:
+            return refuse("provider_unavailable")
+        # Runtime dependency stays in the runtime distribution. Tests inject a
+        # fake server; the request contract is shared with the serving lane.
+        try:
+            from .mio_serve import LocalInferenceRequest
+
+            inference = LocalInferenceRequest(
+                prompt_messages=build_prompt(frame), max_tokens=512, temperature=0.0,
+            )
+            result = self._server.infer(inference, deadline_s=deadline_ms / 1000)
+        except TimeoutError:
+            return refuse("deadline", "timed_out")
+        except Exception as error:
+            # Provider failures become fixed metadata. Audit failures must
+            # remain fatal even when raised inside a composed runtime.
+            if isinstance(error, AuditUnavailable):
+                raise
+            return refuse("runtime_failed")
+        try:
+            advisory = read_local_advisory(result.text)
+        except AdvisoryRefused as exc:
+            return refuse(exc.refusal.value, "not_advice")
+        audit(advisory.as_event(local=True))
+        return {
+            "outcome": "advisory", "refusal": None,
+            "response_digest": advisory.digest,
+            "advice": advisory.text.text if advisory.text else None,
+            "fields": dict(advisory.data.fields) if advisory.data else {},
+        }
+
 
 def main(
     argv: Optional[Sequence[str]] = None,
@@ -187,17 +221,28 @@ def main(
     its command line would publish it to all of them.
     """
 
+    if argv is None:
+        argv = sys.argv[1:]
     if argv:
         raise SystemExit(
             "az-mio-locald takes no arguments. Which model, which runtime and "
             "what it may consume are decided from commissioned state and this "
             "package's own allowlist, not from a command line"
         )
-    raise SystemExit(
-        "az-mio-locald has no provider wired in this build. The runtime "
-        "allowlist is empty, so no runtime_id resolves to a binary, and a "
-        "service that started anyway would be a service listening for work "
-        "it could not do"
+    ledger = AuditLedger(mio_state_dir() / "local.jsonl")
+    try:
+        ledger.verify()
+        with ledger.path.open("a", encoding="utf-8"):
+            pass
+    except OSError as error:
+        raise AuditUnavailable("M.I.O. local ledger unavailable") from error
+    service = LocalRuntimeService()
+    return serve_forever(
+        path=socket_path(SOCKET_NAME), registry=REGISTRY,
+        policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
+        audit=ledger.append,
+        handler=lambda request: service.handle(request, audit=ledger.append),
+        stop=stop, ready=ready if ready is not None else runtime_ready_callback(),
     )
 
 

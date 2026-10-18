@@ -1,4 +1,4 @@
-"""Bounded, metadata-only AF_UNIX probes for the two M.I.O. services.
+"""Bounded AF_UNIX probes and local advisory payload exchange.
 
 These probes confer no admission. Fixed uncommissioned identifiers cannot
 activate a commissioned model or supply a remote envelope. Reply text is never
@@ -14,7 +14,9 @@ import pwd
 import socket
 import time
 
+from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.local_advisory import read_local_advisory
 
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
@@ -22,13 +24,23 @@ from .runtime_paths import socket_path
 from .transport import _HEADER, MAX_FRAME_BYTES
 
 
-def _exchange(leaf: str, account: str, verb: str, arguments: dict) -> dict:
+def _exchange(
+    leaf: str, account: str, verb: str, arguments: dict, *,
+    payload: dict | None = None, deadline_s: float = 0.5,
+) -> dict:
     path = socket_path(leaf)
     uid = pwd.getpwnam(account).pw_uid
     gid = grp.getgrnam("azazel-operator").gr_gid
     verify_socket(path, expected_uid=uid, expected_gid=gid)
-    deadline = time.monotonic() + 0.5
-    raw = json.dumps({"verb": verb, "arguments": arguments}).encode()
+    if not 0 < deadline_s <= 60:
+        raise ValueError("M.I.O. deadline refused")
+    deadline = time.monotonic() + deadline_s
+    document = {"verb": verb, "arguments": arguments}
+    if payload is not None:
+        document["event"] = payload
+    raw = json.dumps(document).encode()
+    if len(raw) > MAX_FRAME_BYTES:
+        raise ValueError("M.I.O. request bound refused")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         _set_remaining_timeout(connection, deadline)
         connection.connect(str(path))
@@ -78,8 +90,35 @@ class LocalSocketClient:
     def observe(self) -> str:
         return _probe("mio")
 
-    def handle(self, request) -> dict:
-        return {"readiness": "refused", "reason": self.observe()}
+    def handle(self, request, *, audit=None) -> dict:
+        if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
+            return {"readiness": "refused", "reason": self.observe()}
+        try:
+            reply = _exchange(
+                "mio", "azmio", "mio.local.infer", request.arguments,
+                payload=request.payload, deadline_s=request.arguments["deadline_ms"] / 1000,
+            )
+            if reply.get("outcome") == "advisory":
+                body = {}
+                if reply.get("advice") is not None:
+                    body["advice"] = reply["advice"]
+                if "fields" in reply:
+                    body["fields"] = reply["fields"]
+                advisory = read_local_advisory(json.dumps(body))
+                if audit is not None:
+                    audit(advisory.as_event(local=True))
+                return {**body, "outcome": "advisory", "refusal": None}
+            if reply.get("outcome") == "not_advice":
+                return {"outcome": "not_advice", "refusal": "not_advice"}
+            if reply.get("outcome") == "timed_out":
+                return {"outcome": "timed_out", "refusal": "deadline"}
+            return {"outcome": "failed", "refusal": "local_refused"}
+        except AdvisoryRefused:
+            return {"outcome": "not_advice", "refusal": "not_advice"}
+        except TimeoutError:
+            return {"outcome": "timed_out", "refusal": "deadline"}
+        except (OSError, KeyError, ValueError, SocketMisconfigured):
+            return {"outcome": "failed", "refusal": "local_unavailable"}
 
 
 class RemoteSocketClient:

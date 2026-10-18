@@ -1,15 +1,18 @@
-"""Metadata-only M.I.O. entry; providers remain separate socket services."""
+"""Metadata routing and bounded advisory entry; providers use separate sockets."""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Sequence
+from types import SimpleNamespace
 
 from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.local_advisory import FrameRefused, read_frame, request_event
 from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile, profile_in_force
 from azazel_nexus.remote_trust import remote_admission, unchecked_reading
 from azazel_nexus.sanitizer import PrivacyClass
 
+from .mio_locald import INFER_VERB
 from .mio_router import MioRouter
 from .mio_socket_client import LocalSocketClient, RemoteSocketClient
 from .principal import PrincipalClass, PrincipalPolicy
@@ -35,7 +38,14 @@ ROUTE_VERB = Verb(
     ),
     admits=frozenset({PrincipalClass.OPERATOR, PrincipalClass.SERVICE}),
 )
-REGISTRY = VerbRegistry([ROUTE_VERB])
+ADVISE_VERB = Verb(
+    "mio.advise",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=60_000),),
+    admits=frozenset({PrincipalClass.OPERATOR, PrincipalClass.SERVICE}),
+    accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
+REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 
 
@@ -47,17 +57,37 @@ def commissioned_profile() -> MioProfile:
 
 
 class MioEntryService:
-    def __init__(self, *, profile_reader: Callable[[], MioProfile] = commissioned_profile):
+    def __init__(
+        self, *, profile_reader: Callable[[], MioProfile] = commissioned_profile,
+        local_admitted: Callable[[], bool] = lambda: False,
+        predictions_reader: Callable[[], dict] = dict,
+        router: MioRouter | None = None,
+    ):
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
-        self.router = MioRouter(local=self.local, remote=self.remote)
+        self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
         self._profile_reader = profile_reader
+        self._local_admitted = local_admitted
+        self._predictions_reader = predictions_reader
 
     def handle(self, request) -> dict:
         if request.arguments["deadline_ms"] == 0:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "deadline_ms")
+        is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
+        local_request = None
+        if is_advice:
+            try:
+                frame = read_frame(request.payload)
+            except FrameRefused:
+                raise RequestRefused(Refusal.MALFORMED_FRAME, "situation_frame") from None
+            privacy = PrivacyClass(frame["privacy_class"])
+            self.router._record(request_event(frame))
+            local_request = SimpleNamespace(
+                verb=INFER_VERB, arguments=request.arguments, payload=frame,
+            )
+        else:
+            privacy = PrivacyClass(request.arguments["privacy_class"])
         profile = self._profile_reader()
-        privacy = PrivacyClass(request.arguments["privacy_class"])
         # Observations remain separate from admission and prediction. Even a
         # reachable daemon cannot lift HG-05 or establish remote trust.
         self.router._record({
@@ -68,20 +98,25 @@ class MioEntryService:
             "remote_trust": "unchecked",
         })
         result = self.router.handle(
-            local_request=None, remote_request=None,
+            local_request=local_request, remote_request=None,
             profile=profile, privacy_class=privacy,
             remote=remote_admission(
                 profile=profile, opt_in=NO_OPT_IN,
                 trust=unchecked_reading(), privacy_class=privacy, sanitised=False,
             ),
-            local_admitted=False, local_refusal=LOCAL_REFUSAL,
-            predictions={}, deadline_ms=request.arguments["deadline_ms"],
+            local_admitted=is_advice and self._local_admitted(), local_refusal=LOCAL_REFUSAL,
+            predictions=self._predictions_reader() if is_advice else {},
+            deadline_ms=request.arguments["deadline_ms"],
         )
-        return {
+        reply = {
             "route": result.route.value, "outcome": result.outcome.value,
             "reason": result.selection.reason,
             "ledger_seq": self.router.ledger.head()[0],
         }
+        if is_advice and result.reply.get("outcome") == "advisory":
+            reply["advice"] = result.reply.get("advice")
+            reply["fields"] = result.reply.get("fields", {})
+        return reply
 
 
 def main(
