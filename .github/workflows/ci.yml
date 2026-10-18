@@ -67,6 +67,13 @@ jobs:
             --deselect tests/unit/test_bootstrap_tmpfiles_packaging.py::test_staged_install_copies_rule_without_running_tmpfiles \
             --deselect tests/unit/test_e2e_harness.py::test_the_installer_runs_and_creates_the_declared_layout
 
+      # The benchmark harnesses carry their own tests (fixtures, scoring and the
+      # contract with the advisory reader). They are not under tests/unit, so
+      # without this step a reader change could break them unnoticed, which
+      # happened once (bench/mio_local after the 1a guardrails).
+      - name: Run benchmark harness tests
+        run: python -m pytest bench -q -p no:cacheprovider
+
       # The TLS, mTLS and pinning tests are the ones most worth running and
       # the ones that used to be most likely not to: an earlier version
       # generated a certificate with the `openssl` CLI and skipped when the
@@ -1070,6 +1077,13 @@ jobs:
           python -m pytest tests/unit -q \
             --deselect tests/unit/test_bootstrap_tmpfiles_packaging.py::test_staged_install_copies_rule_without_running_tmpfiles \
             --deselect tests/unit/test_e2e_harness.py::test_the_installer_runs_and_creates_the_declared_layout
+
+      # The benchmark harnesses carry their own tests (fixtures, scoring and the
+      # contract with the advisory reader). They are not under tests/unit, so
+      # without this step a reader change could break them unnoticed, which
+      # happened once (bench/mio_local after the 1a guardrails).
+      - name: Run benchmark harness tests
+        run: python -m pytest bench -q -p no:cacheprovider
 
       # test_status_claims.py is listed alongside it for the same reason:
       # its check that no document calls a pinned Fabric module unreleased

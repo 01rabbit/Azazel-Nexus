@@ -283,7 +283,10 @@ def test_bound_audit_start_refuses_pinned_interpreter_chain_drift(
 
     fresh_admission()
     with publication._environment(tmp_path) as env:
-        manager, sessions, bus, selected, *_ = publication._manager_fixture(env, monkeypatch)
+        # Refusal of interpreter-chain drift, not deadlines: the shared 0.05 s job
+        # bound timed out on a slow CI runner (same remedy as the ordering test).
+        manager, sessions, bus, selected, *_ = publication._manager_fixture(
+            env, monkeypatch, job_timeout_seconds=5.0)
         assert selected.context == approved.context
         grant = publication._transaction(approved)
         published, _ = manager._publish_and_inspect_pair(
