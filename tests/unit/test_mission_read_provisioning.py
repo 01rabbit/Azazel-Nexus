@@ -148,3 +148,120 @@ def test_only_dedicated_asset_root_is_admitted(tmp_path, path):
                                  'assets': [{'kind': 'reasoning_playbook', 'path': path}]}))
     with pytest.raises(ValueError, match='playbook must live under'):
         provision(tmp_path, accounts=False, staging=True)
+
+
+def _trust_store(root, *, directory_mode=0o700, file_mode=0o600):
+    import os
+    trust = root / 'etc/azazel/operator-trust'
+    trust.mkdir(parents=True)
+    store = trust / 'operators.json'
+    store.write_text('{"schema":"azazel-nexus/operator-trust/v1","keys":{},"revoked":[]}\n')
+    os.chmod(store, file_mode)
+    os.chmod(trust, directory_mode)
+    return trust, store
+
+
+def test_operator_trust_store_migrates_to_reader_group_idempotently(tmp_path):
+    import os
+
+    from tools.provision_mission_read import migrate_operator_trust
+    trust, store = _trust_store(tmp_path)
+    before = store.read_bytes()
+    gid = os.getgid()  # stands in for azmission-read; owner seam stands in for root
+    for _ in range(2):
+        assert migrate_operator_trust(tmp_path, gid, owner=os.getuid()) is True
+        assert stat.S_IMODE(trust.stat().st_mode) == 0o750 and trust.stat().st_gid == gid
+        assert stat.S_IMODE(store.stat().st_mode) == 0o640 and store.stat().st_gid == gid
+    assert store.read_bytes() == before
+    from azazel_nexus.operator_store import _read_at
+    fd = os.open(trust, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert _read_at(fd, owner=os.getuid()).public_keys == {}
+    finally:
+        os.close(fd)
+
+
+def test_operator_trust_absent_is_not_created(tmp_path):
+    import os
+
+    from tools.provision_mission_read import migrate_operator_trust
+    assert migrate_operator_trust(tmp_path, os.getgid(), owner=os.getuid()) is False
+    provision(tmp_path, accounts=False, staging=True)
+    assert not (tmp_path / 'etc/azazel/operator-trust').exists()
+
+
+def test_operator_trust_directory_without_store_migrates_directory_only(tmp_path):
+    import os
+
+    from tools.provision_mission_read import migrate_operator_trust
+    trust, store = _trust_store(tmp_path)
+    store.unlink()
+    assert migrate_operator_trust(tmp_path, os.getgid(), owner=os.getuid())
+    assert stat.S_IMODE(trust.stat().st_mode) == 0o750
+    assert not store.exists()
+
+
+def test_staging_provision_migrates_operator_trust_without_accounts(tmp_path):
+    trust, store = _trust_store(tmp_path)
+    provision(tmp_path, accounts=False, staging=True)
+    assert stat.S_IMODE(trust.stat().st_mode) == 0o750
+    assert stat.S_IMODE(store.stat().st_mode) == 0o640
+
+
+@pytest.mark.parametrize('unsafe', ['symlink-dir', 'symlink-file', 'hardlink', 'group-writable-file',
+                                    'other-writable-dir', 'non-root-file', 'non-root-dir',
+                                    'fifo', 'file-as-dir', 'foreign-group'])
+def test_unsafe_operator_trust_refuses_and_changes_nothing(tmp_path, monkeypatch, unsafe):
+    import os
+
+    from tools import provision_mission_read as installer
+    trust, store = _trust_store(tmp_path)
+    if unsafe == 'symlink-dir':
+        real = tmp_path / 'elsewhere'
+        trust.rename(real)
+        trust.symlink_to(real)
+        trust, store = real, real / 'operators.json'
+    elif unsafe == 'symlink-file':
+        target = tmp_path / 'target.json'
+        store.rename(target)
+        store.symlink_to(target)
+        store = target
+    elif unsafe == 'hardlink':
+        os.link(store, tmp_path / 'second-link.json')
+    elif unsafe == 'group-writable-file':
+        os.chmod(store, 0o620)
+    elif unsafe == 'other-writable-dir':
+        os.chmod(trust, 0o702)
+    elif unsafe == 'fifo':
+        store.unlink()
+        os.mkfifo(store, 0o600)
+    elif unsafe == 'file-as-dir':
+        store.unlink()
+        store.mkdir(mode=0o700)
+    owner = os.getuid()
+    if unsafe.startswith('non-root'):
+        # Production requires uid 0; the test owner seam asks for another owner.
+        real_fstat = os.fstat
+        def foreign(fd):
+            values = list(real_fstat(fd))
+            is_dir = stat.S_ISDIR(values[0])
+            if (unsafe == 'non-root-dir') == is_dir:
+                values[4] = owner + 1
+            return os.stat_result(values)
+        monkeypatch.setattr(installer.os, 'fstat', foreign)
+    gid = os.getgid()
+    if unsafe == 'foreign-group':
+        # An administrator-assigned non-root group is never silently replaced.
+        os.chown(trust, -1, os.getgid())
+        if os.getgid() == 0:
+            pytest.skip('needs a non-root primary group')
+        gid = os.getgid() + 4321
+    snapshot = [(p, p.lstat().st_mode, p.lstat().st_gid) for p in (trust, store)]
+    changes = []
+    monkeypatch.setattr(installer.os, 'fchown', lambda *a: changes.append(a))
+    monkeypatch.setattr(installer.os, 'fchmod', lambda *a: changes.append(a))
+    with pytest.raises(ValueError, match='refusing'):
+        installer.migrate_operator_trust(tmp_path, gid, owner=owner)
+    monkeypatch.undo()
+    assert changes == []
+    assert [(p, p.lstat().st_mode, p.lstat().st_gid) for p in (trust, store)] == snapshot

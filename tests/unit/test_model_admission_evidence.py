@@ -709,3 +709,30 @@ def test_complete_decision_preserves_symbols_and_audits_no_prose(monkeypatch, fa
     assert "private" not in str(event)
     assert set(event) == {"event_type", "role", "outcome", "refusal", "approval_id", "payload_digest",
                           "model_digest", "generation_id", "catalog_digest", "reserve_record_digest"}
+
+
+@pytest.mark.parametrize("modes,readable", [((0o750, 0o640), True), ((0o700, 0o600), True),
+                                            ((0o770, 0o640), False), ((0o750, 0o660), False)])
+def test_locald_tree_reads_reader_group_operator_trust(tmp_path, modes, readable):
+    # Enrollment/provisioning give operator-trust root:azmission-read 0750/0640
+    # so azmio can read public keys; writable storage still refuses.
+    trust = tmp_path / "etc/azazel/operator-trust"
+    trust.mkdir(parents=True)
+    for directory in (tmp_path, tmp_path / "etc", tmp_path / "etc/azazel"):
+        directory.chmod(0o755)
+    store = trust / "operators.json"
+    store.write_bytes(b'{"keys":{},"revoked":[],"schema":"azazel-nexus/operator-trust/v1"}\n')
+    store.chmod(modes[1])
+    trust.chmod(modes[0])
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        tree = loader.ProtectedTree(fd, os.getuid())
+        if readable:
+            raw = tree.read("/etc/azazel/operator-trust/operators.json")
+            from azazel_nexus.operator_store import operator_trust_bytes
+            assert operator_trust_bytes(raw).public_keys == {}
+        else:
+            with pytest.raises(loader.ApprovalRefused, match="EVIDENCE_UNPROTECTED"):
+                tree.read("/etc/azazel/operator-trust/operators.json")
+    finally:
+        os.close(fd)

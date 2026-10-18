@@ -596,8 +596,16 @@ key/label and explicit revocation of the old one. Removing/re-enabling revoked
 keys is not supported by this command.
 
 Updates use a nonblocking exclusive lock on the protected directory, a new
-0600 ordinary file, file fsync, atomic replacement, directory fsync and protected
-read-back. All application writers must use this lock. A failure after rename
+ordinary file, file fsync, atomic replacement, directory fsync and protected
+read-back. The new file is 0600 unless the `azmission-read` group exists; then,
+before any content is written, the descriptor is set root:azmission-read 0640
+and the locked directory descriptor root:azmission-read 0750 (fchown/fchmod,
+no path-based chmod). The store holds only public keys and revocations;
+azazel-mio-locald (azmio with supplementary `azmission-read`) needs read access
+for local model admission. Nothing becomes group/other-writable and the reader
+checks are unchanged. The installer migrates an existing root-owned
+0700/0600 store to the same modes and otherwise refuses without changes; see
+[local model admission](local-model-admission.md#protected-read-only-storage). All application writers must use this lock. A failure after rename
 can leave the new state installed even though success was not confirmed; the
 command reports failure and requires inspection before retry, never rollback
 to an older unrevoked trust state. A crash before rename can leave a protected
