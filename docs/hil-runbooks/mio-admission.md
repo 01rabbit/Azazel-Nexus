@@ -633,6 +633,13 @@ a throwaway installed copy does it reach `NODE_IDENTITY_UNAVAILABLE` and then
 `RESERVE_VIRTUALIZATION_OBSERVED`. Never change the architecture or the kill
 switch in the repository for a rehearsal.
 
+Units started by hand for a rehearsal (`systemctl unmask`, `--job-mode=ignore-requirements`)
+must be stopped and cleared before the next activation pass:
+`systemctl stop azazel-mio-locald azazel-mio-entryd azazel-knowledge-lited azazel-mio-remoted`,
+`systemctl reset-failed`, then re-mask. Otherwise azazel-activated's normal pass
+cannot confirm them stopped and ends with `RollbackFailed` (masking does not stop
+a running process; a `failed` unit also counts as unconfirmed).
+
 Rehearsing the operator path (entryd `mio.advise`) shows `deterministic handoff`
 / `refused` for every frame while admission is closed; that is the documented
 behaviour (see [M.I.O. runtime](../mio-runtime.md#what-an-operator-receives-today)),
