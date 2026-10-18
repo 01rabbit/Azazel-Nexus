@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from azazel_nexus.local_advisory import advisory_response_format
 from azazel_nexus.model_runtime import RuntimeBinary
 from azazel_nexus.runtime_lifecycle import BudgetLedger, LifecycleState, RestartBudget
 
@@ -52,6 +53,19 @@ class LocalInferenceRequest:
             size += len(text)
         if size > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
+
+
+def inference_document(request: LocalInferenceRequest, *, stream: bool = False) -> dict:
+    """The common chat request for serving and the bench's streaming observer."""
+    document = {
+        "messages": [{"role": role, "content": text} for role, text in request.prompt_messages],
+        "max_tokens": request.max_tokens, "temperature": request.temperature,
+        "stream": stream, "response_format": advisory_response_format(),
+        "cache_prompt": False,
+    }
+    if stream:
+        document["stream_options"] = {"include_usage": True}
+    return document
 
 
 @dataclass(frozen=True)
@@ -154,11 +168,7 @@ class LocalServer:
         end = _deadline(deadline_s)
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
-        body = json.dumps({
-            "messages": [{"role": role, "content": text} for role, text in request.prompt_messages],
-            "max_tokens": request.max_tokens, "temperature": request.temperature,
-            "stream": False,
-        }, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         began = time.monotonic()
@@ -173,7 +183,7 @@ class LocalServer:
                 raise ValueError
             timings = {"total_ms": (time.monotonic() - began) * 1000}
             for key, value in data.get("timings", {}).items():
-                if key in ("prompt_ms", "predicted_ms"):
+                if key in ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "predicted_per_second"):
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError
                     timings[key] = float(value)

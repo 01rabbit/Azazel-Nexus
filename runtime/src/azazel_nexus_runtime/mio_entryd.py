@@ -61,10 +61,11 @@ class MioEntryService:
         self, *, profile_reader: Callable[[], MioProfile] = commissioned_profile,
         local_admitted: Callable[[], bool] = lambda: False,
         predictions_reader: Callable[[], dict] = dict,
+        router: MioRouter | None = None,
     ):
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
-        self.router = MioRouter(local=self.local, remote=self.remote)
+        self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader

@@ -15,39 +15,52 @@ The runner records the binary digest, while the version label is the declared
 image pin; verify the image/binary before interpreting results. Server startup
 is process-cold, not a guarantee that the host filesystem cache is cold.
 
-From the integrated checkout, create an output directory and run:
+The supported candidates are the orchestrator's observed replacement set.
+The supplied `SHA256SUMS` records these digests (the entry script verifies the
+files before execution):
+
+| Model filename | License | SHA-256 |
+| --- | --- | --- |
+| `qwen2.5-1.5b-instruct-q4_k_m.gguf` | Apache-2.0 | `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e` |
+| `hf.co_XpressAI_shisa-v2.1-llama3.2-3b-GGUF_Q4_K_M.gguf` | Llama 3.2 Community License | `b5aed3ff090e2dba9587a211dc75a350ac1f501048829f140df90763f908c555` |
+| `Phi-3.5-mini-instruct-Q4_K_M.gguf` | MIT | `e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5` |
+
+Ollama's Qwen3.5 GGUFs fail upstream llama.cpp loading with
+`rope.dimension_sections`; they are excluded from both E2E selection and the
+benchmark matrix. These licenses and digests describe the supplied artifacts.
+No models or measured results belong in this repository.
+
+From the integrated checkout, use the single [container entry script](run_in_container.sh):
 
 ```sh
 mkdir -p /tmp/mio-results
-docker --context colima-dc34 run --rm --network none \
+docker --context colima-dc34 run --rm \
   --cpus 4 --memory 8g --memory-swap 8g --pids-limit 128 \
-  -v "$PWD:/work:ro" \
+  -v "$PWD:/src:ro" \
   -v /Users/mao/.claude/jobs/b59933b2/tmp/models:/models:ro \
-  -v /tmp/mio-results:/results \
-  -w /work --entrypoint /bin/sh az-llama:b11716 -ec '
-    mkdir -p /usr/libexec/azazel
-    cp "$(command -v llama-server)" /usr/libexec/azazel/llama-server
-    export PYTHONPATH=/work:/work/src:/work/runtime/src
-    python3 -m bench.mio_local.runner \
-      --model /models/qwen3.5_0.8b.gguf \
-      --model /models/qwen3.5_2b.gguf \
-      --model /models/hf.co_XpressAI_shisa-v2.1-llama3.2-3b-GGUF_Q4_K_M.gguf \
-      --requests 20 --threads 2 --context 2048 --max-tokens 256 \
-      --deadline-s 120 --start-deadline-s 120 \
-      --load-workers 1 --load-cpu 0.25 --load-memory-mib 256 \
-      --output /results/run.jsonl
-    python3 -m bench.mio_local.summary /results/run.jsonl \
-      --output /results/summary.md
-  '
+  -v /tmp/mio-results:/out \
+  --entrypoint /bin/sh az-llama:b11716 /src/bench/mio_local/run_in_container.sh
 ```
 
-The image must expose `llama-server` and Python >=3.11 on PATH (activate its
-venv if needed). Copying the binary keeps the package-owned executable path
-required by `RuntimeBinary`; the container is disposable. No network is used.
-Use new output filenames for each run: both commands refuse to overwrite.
-The three model filenames come from the orchestration plan; qwen models are
-Apache-2.0, and Shisa uses the Llama 3.2 Community License. Model files and
-results are not added to this repository.
+The script copies the read-only checkout to `/out/repo`, creates `/out/venv`,
+installs both distributions and test dependencies, then runs the functional
+E2E before all three models' bench cells. It requires Python >=3.11, pip,
+venv, a compiler and Python headers (the runtime builds its Linux timer
+extension). Dependency installation needs package-index access or a populated
+pip cache. The model and binary are never downloaded by the script.
+`AZ_LLAMA_SERVER` can select an existing binary, otherwise PATH is searched.
+It is copied into the package-owned executable path in this disposable
+container. Logs, JSONL and Markdown results go under `/out`. Use a fresh output
+directory; an existing run is refused. E2E failure stops the benchmark.
+
+Observed smoke on dc34: aarch64, 4 CPU, 8 GiB, CPU-only b11716;
+`--host /path.sock` selects AF_UNIX and ready `GET /health` returns 200.
+Chat responses provide `choices[0].message.content`, `usage` and llama.cpp
+`timings`. Both request paths use Lane B's `inference_document` serializer and
+the same `/v1/chat/completions` HTTP-over-AF_UNIX endpoint. Bench SSE observation
+is retained for TTFT; both paths request the same JSON schema constraint and
+use `build_prompt` plus `read_local_advisory` for advisory validity. A schema
+constraint alone never establishes advisory validity.
 
 Each model gets four cells in fixed order: no load at concurrency 1/2, then
 background load at concurrency 1/2. Each cell starts and stops a fresh server.

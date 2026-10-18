@@ -21,9 +21,13 @@ def real_assets():
     directory = Path(directory).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         pytest.skip("AZ_LLAMA_SERVER is not an executable file")
-    models = sorted(directory.glob("*.gguf"), key=lambda p: (p.stat().st_size, p.name))
+    candidates = ("qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "hf.co_XpressAI_shisa-v2.1-llama3.2-3b-GGUF_Q4_K_M.gguf",
+                  "Phi-3.5-mini-instruct-Q4_K_M.gguf")
+    models = sorted((directory / name for name in candidates if (directory / name).is_file()),
+                    key=lambda p: (p.stat().st_size, p.name))
     if not models:
-        pytest.skip("AZ_GGUF_DIR contains no GGUF files")
+        pytest.skip("AZ_GGUF_DIR contains no supported candidate GGUF files")
     # Functional evidence uses the smallest model; the separate bench covers
     # the model matrix. Never download a model or invoke a substitute server.
     return binary, models[0]

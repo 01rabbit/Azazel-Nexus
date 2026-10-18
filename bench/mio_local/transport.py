@@ -9,6 +9,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from azazel_nexus_runtime.mio_serve import LocalInferenceRequest, inference_document
+
 
 class UnixHTTP(http.client.HTTPConnection):
     def connect(self):
@@ -56,12 +58,9 @@ def stream(socket_path, messages, *, max_tokens, deadline_s):
     watchdog.daemon = True
     watchdog.start()
     try:
-        connection.request("POST", "/v1/chat/completions", body=json.dumps({
-            "messages": [{"role": role, "content": content} for role, content in messages],
-            "max_tokens": max_tokens, "temperature": 0, "stream": True,
-            "stream_options": {"include_usage": True},
-            "cache_prompt": False,
-        }).encode(), headers={"Content-Type": "application/json"})
+        connection.request("POST", "/v1/chat/completions", body=json.dumps(inference_document(
+            LocalInferenceRequest(messages, max_tokens, 0), stream=True,
+        )).encode(), headers={"Content-Type": "application/json"})
         response = connection.getresponse()
         if response.status != 200:
             raise ValueError("inference HTTP status")

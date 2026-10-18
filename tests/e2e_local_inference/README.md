@@ -7,16 +7,16 @@ AZ_LLAMA_SERVER=/path/to/llama-server AZ_GGUF_DIR=/dir/with/gguf \
   PYTHONPATH=src:runtime/src python -m pytest -q tests/e2e_local_inference
 ```
 
-Without both variables, an executable server, and a GGUF file, the suite
+Without both variables, an executable server, and a supported candidate GGUF file, the suite
 skips. Once assets exist, missing implementation APIs and inference failures
-are failures, not skips. Nothing is downloaded. The smallest GGUF is selected
+are failures, not skips. Nothing is downloaded. The smallest supported candidate GGUF is selected
 by size, then filename; the benchmark lane covers the full model matrix.
 The supplied binary must be the plan's CPU b11716 build. The harness labels
 its record b11716; it does not independently attest the binary's build tag.
 
 Each case starts a fresh Python subprocess with a short temporary
 `AZAZEL_ROOT` set before runtime imports. It stages a hard link to the real
-GGUF (copies across filesystems), fixes a `RuntimeBinary` argv, and starts
+GGUF (copies across filesystems), uses `llama_server_record` to fix its argv, and starts
 `LocalServer` over AF_UNIX. The binary itself is linked into the package
 executable path under that root. No real keys or network transport are used.
 The fixture reserve and predictions are explicitly test evidence, never HG-05
@@ -28,31 +28,19 @@ The service path is composed in process: entryd -> router -> locald ->
 kernel peer authorization or service socket ownership; existing transport
 tests cover those boundaries.
 
-## Integration seams for lanes A/B
+## Composition
 
-The fixed `LocalServer(record, root=..., socket_path=...,
-start_deadline_s=...)`, `start`, `health`, `infer(request, deadline_s=...)`,
-and `stop` contract is used directly. Inference results must be dataclass
-records with `text` and `tokens_out`. The existing `RuntimeBinary` constructor
-holds the fixed model argv; no unspecified record-builder name is assumed.
+The harness uses the real `llama_server_record`, `LocalServer`,
+`LocalRuntimeService`, `MioRouter`, and `MioEntryService` APIs. Locald receives
+fixture model/runtime IDs, a runtime resolver, reserve, test-only admission
+and the observed server object. Entry receives `router`, `profile_reader`,
+`local_admitted` and `predictions_reader` constructor injections. Admission is
+a callable. All production defaults stay closed.
 
-All constructor alignment is confined to `harness.compose`:
-
-* `LocalRuntimeService(staging, reserve, admitted, runtime, server)` takes
-  `admitted(model_id) -> bool`, `runtime(runtime_id) -> RuntimeBinary`, and
-  a server instance implementing the fixed LocalServer contract.
-* `MioRouter(local, remote)` uses the existing constructor injection.
-* `MioEntryService(router, profile_reader, local_admitted, local_refusal,
-  predictions)` takes an injected router, a profile reader, admission
-  boolean/reason, and fixture predictions. These entry constructor keyword
-  names are integration assumptions: the orchestration contract fixes the
-  verb and flow but does not specify the entry constructor signature.
-
-The harness deliberately fails if these seams are absent; it never mutates
-production module globals or private service members to make a test pass.
-Entry verb arguments are bound by their declared names from a closed set of
-test identifiers, privacy class, and deadline. Payload is the situation frame
-object itself. If lane A chooses a different payload wrapper, align `invoke`.
+Locald uses `local_advisory.build_prompt`; LocalServer sends the shared
+`response_format` JSON schema and locald still calls `read_local_advisory`.
+The supported candidate names and digests, plus the single container entry
+script, are in the [bench README](../../bench/mio_local/README.md).
 
 ## Evidence and limitations
 
@@ -78,10 +66,9 @@ No TimeoutError or socket exchange is fabricated.
 The Linux crash case obtains the real server PID using SO_PEERCRED and
 checks its `/proc` command line before SIGKILL. It verifies health loss,
 one allowed restart, a second real crash, and a fence persisted through
-`BudgetLedger` reload. This composes `LocalServer` with the existing production
-`RestartBudget` and `BudgetLedger` in the harness; it does not establish the
-new long-lived supervisor's internal budget wiring. The plan does not name
-that API. The crash case is skipped on macOS.
+`BudgetLedger` reload. `LocalServer` receives the fixture `RestartBudget` and
+`BudgetLedger`; its own `start()` spends and persists the budget, and refuses
+the exhausted restart. The crash case is skipped on macOS.
 
 Edge checks compare the fixed deterministic cognition reading and persistent
 state outside M.I.O. before/after answer, timeout, refusal, and crash. A test

@@ -1,8 +1,7 @@
 """Situation bounds, fake-runtime path and audit content sentinels."""
 
 import json
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 from azazel_nexus_runtime import (
@@ -44,14 +43,6 @@ def request(payload=None):
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    # Only the runtime request data contract is needed in Lane A's worktree.
-    # When Lane B is present use its real dataclass, never a llama-server.
-    try:
-        from azazel_nexus_runtime import mio_serve  # noqa: F401
-    except ImportError:
-        module = ModuleType('azazel_nexus_runtime.mio_serve')
-        module.LocalInferenceRequest = SimpleNamespace
-        monkeypatch.setitem(sys.modules, module.__name__, module)
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
     calls = []
 
@@ -109,14 +100,16 @@ def test_non_advice_is_refused(body):
 def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch, privacy):
     monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
     local, calls = service
+    from azazel_nexus_runtime.mio_router import MioRouter
+
     entry = mio_entryd.MioEntryService(
+        router=MioRouter(local=local),
         profile_reader=lambda: MioProfile.FASTEST_PERMITTED,
         local_admitted=lambda: True,
         predictions_reader=lambda: {
             Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture'),
         },
     )
-    entry.router._local = local
     monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
     monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
     reply = entry.handle(SimpleNamespace(
@@ -372,3 +365,65 @@ def test_runtime_audit_failure_stays_fatal(service):
     local._server.infer = infer
     with pytest.raises(AuditUnavailable):
         local.handle(request(), audit=lambda event: None)
+
+
+@pytest.mark.parametrize(('text', 'terminal'), [
+    ('{"advice":"Observation may help.","fields":{"status":"quiet"}}', 'answered'),
+    ('{"advice":"block host now"}', 'not_advice'),
+])
+def test_e2e_composition_uses_real_local_server_contract(tmp_path, monkeypatch, text, terminal):
+    import importlib.util
+    from pathlib import Path
+
+    from azazel_nexus_runtime.mio_serve import LocalServer
+
+    from azazel_nexus.model_runtime import RuntimeBinary, llama_server_record
+    from azazel_nexus.runtime_lifecycle import LifecycleState
+
+    path = Path(__file__).parents[1] / 'e2e_local_inference/harness.py'
+    spec = importlib.util.spec_from_file_location('m3_harness', path)
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    artifact = tmp_path / 'var/lib/azazel/mio/e2e-model.model'
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b'GGUF' + b'\0' * 4096)
+    binary = RuntimeBinary(harness.RUNTIME_ID, '/usr/libexec/azazel/llama-server',
+                           'b11716', 'sha256:' + '0' * 64,
+                           ('/usr/libexec/azazel/llama-server',))
+    record = llama_server_record(binary, model_path=artifact, socket_path=tmp_path / 's.sock')
+    server = LocalServer(record, root=tmp_path, socket_path=tmp_path / 's.sock')
+    monkeypatch.setattr(type(server._child), 'alive', property(lambda self: True))
+    server.state = LifecycleState.SERVING
+    sent = []
+
+    def http(method, path, body, end):
+        sent.append(json.loads(body))
+        return json.dumps({
+            'choices': [{'message': {'content': text}}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 12},
+            'timings': {'prompt_n': 10, 'prompt_ms': 1, 'predicted_n': 12,
+                        'predicted_ms': 2, 'predicted_per_second': 6000},
+        }).encode()
+
+    monkeypatch.setattr(server, '_http', http)
+    observed = harness.ObservedServer(server)
+    entry, router = harness.compose(tmp_path, record, observed)
+    reply = harness.invoke(entry, 'P0-public')
+    events = harness.events(router)
+    from azazel_nexus.route_selection import TerminalEvent
+    harness.assert_terminal(events, TerminalEvent[terminal.upper()])
+    if terminal == 'answered':
+        assert reply['outcome'] == 'answered'
+    else:
+        harness.assert_fallback(events)
+    assert len(sent) == 1
+    assert sent[0]['messages'] == [
+        {'role': role, 'content': content}
+        for role, content in build_prompt(harness.frame('P0-public'))
+    ]
+    schema = sent[0]['response_format']['json_schema']['schema']
+    assert schema['required'] == ['advice']
+    assert schema['properties']['fields']['additionalProperties'] == {'type': 'string'}
+    assert observed.results[0].timings['predicted_per_second'] == 6000
+    harness.assert_no_content(tmp_path, observed)

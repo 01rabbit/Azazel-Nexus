@@ -227,6 +227,12 @@ model/runtime IDs, runtime resolution and a server implementing the
 runtime resolution and the inspected model before calling the server. The
 production defaults refuse. The prompt uses fixed generation limits (512
 output tokens, temperature 0); callers cannot override them.
+`local_advisory.build_prompt` constructs the messages. `LocalServer` sends
+`response_format` with a JSON schema requiring string `advice` and permitting
+an optional `fields` object of string values. The schema constrains generation;
+`read_local_advisory` still independently checks every response.
+Test-only compositions can inject a runtime resolver and `LocalServer` without
+adding an entry to production `RUNTIMES` or opening the admission gate.
 
 Advice is returned to the caller only after the bounded advisory reader
 accepts it. Malformed JSON, instruction shapes and oversized output become

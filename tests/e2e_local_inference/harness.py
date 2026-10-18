@@ -1,4 +1,4 @@
-"""One isolated real-model scenario. See README.md for integration seams.
+"""One isolated real-model scenario. See README.md for composition details.
 
 Only constructor injection is used. No production attribute, allowlist, path
 constant, parser, transport, or process launcher is replaced at runtime.
@@ -33,7 +33,7 @@ def stage(source: Path, destination: Path) -> None:
 
 
 def record_for(root: Path, binary: Path, model: Path, sock: Path):
-    from azazel_nexus.model_runtime import RuntimeBinary
+    from azazel_nexus.model_runtime import RuntimeBinary, llama_server_record
 
     executable = "/usr/libexec/azazel/llama-server"
     target = root / executable.lstrip("/")
@@ -45,13 +45,15 @@ def record_for(root: Path, binary: Path, model: Path, sock: Path):
     stage(model, artifact)
     with binary.open("rb") as stream:
         digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
-    return RuntimeBinary(
+    binary_record = RuntimeBinary(
         runtime_id=RUNTIME_ID, executable=executable, version="b11716",
-        digest=digest,
-        argv=(executable, "-m", str(artifact), "--host", str(sock),
-              "-c", "2048", "-t", "2", "-ngl", "0", "--no-webui",
-              "--jinja", "--reasoning-budget", "0"),
+        digest=digest, argv=(executable,),
     )
+    record = llama_server_record(
+        binary_record, model_path=artifact, socket_path=sock, ctx=2048,
+        threads=2, max_tokens=512,
+    )
+    return replace(record, argv=(*record.argv, "-ngl", "0"))
 
 
 class ObservedServer:
@@ -107,11 +109,7 @@ class NoRemote:
 
 
 def compose(root: Path, record, observed):
-    """A/B integration seam: only their documented constructor injections.
-
-    These keyword names are intentionally explicit; an unavailable seam must
-    fail opt-in tests instead of falling back to patching module globals.
-    """
+    """Compose the real A/B APIs using only trusted constructor injections."""
     from azazel_nexus_runtime.mio_entryd import MioEntryService
     from azazel_nexus_runtime.mio_locald import LocalRuntimeService
     from azazel_nexus_runtime.mio_router import MioRouter
@@ -135,14 +133,14 @@ def compose(root: Path, record, observed):
     local = LocalRuntimeService(
         staging=root / "var/lib/azazel/mio", reserve=reserve,
         admitted=lambda model_id: model_id == MODEL_ID,
-        runtime=runtime, server=observed,
+        runtime=runtime, server=observed, model_id=MODEL_ID, runtime_id=RUNTIME_ID,
     )
     router = MioRouter(local=local, remote=NoRemote())
     entry = MioEntryService(
         router=router, profile_reader=lambda: MioProfile.LOCAL_ONLY,
-        local_admitted=True, local_refusal="e2e fixture admission only",
-        predictions={Route.LOCAL: Prediction(
-            Route.LOCAL.value, True, 100, 64, 100, False, "e2e fixture prediction",
+        local_admitted=lambda: True,
+        predictions_reader=lambda: {Route.LOCAL: Prediction(
+            Route.LOCAL.value, True, 100, 100, 100, False, "e2e fixture prediction",
         )},
     )
     return entry, router
@@ -256,29 +254,29 @@ def kill_real_server(sock):
 
 def crash_scenario(root, record, observed, sock):
     from azazel_nexus.route_selection import TerminalEvent
-    from azazel_nexus.runtime_lifecycle import BudgetLedger
 
     entry, router = compose(root, record, observed)
     invoke(entry, "P0-public")
     assert_terminal(events(router), TerminalEvent.ANSWERED)
-    ledger = BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json")
-    budget = ledger.load(generation=1, runtime_id=RUNTIME_ID, limit=1)
-    crashes = 0
-    while True:
+    ledger = observed.server.ledger
+    for _ in range(2):
         kill_real_server(sock)
-        crashes += 1
         until = time.monotonic() + 5
         while observed.health() and time.monotonic() < until:
             time.sleep(0.01)
         assert not observed.health(), "SIGKILL did not remove health"
-        verdict = budget.spend()
-        ledger.save(budget, runtime_id=record.runtime_id)
-        observed.stop()
-        if not verdict.may_restart:
-            break
-        observed.start()
-        assert observed.health()
-    assert crashes == 2
+        if observed.server.budget.remaining:
+            observed.start()
+            assert observed.health()
+        else:
+            from azazel_nexus_runtime.mio_serve import LocalServerRefused
+
+            try:
+                observed.start()
+            except LocalServerRefused:
+                pass
+            else:
+                raise AssertionError("exhausted server restarted")
     reloaded = ledger.load(generation=1, runtime_id=RUNTIME_ID, limit=1)
     assert reloaded.fenced and reloaded.remaining == 0
     assert not reloaded.spend().may_restart
@@ -289,6 +287,7 @@ def main():
     from azazel_nexus_runtime.mio_serve import LocalServer
 
     from azazel_nexus.route_selection import TerminalEvent
+    from azazel_nexus.runtime_lifecycle import BudgetLedger, RestartBudget
 
     def terminate(signum, frame):
         raise SystemExit(128 + signum)
@@ -301,6 +300,8 @@ def main():
     record = record_for(root, Path(binary), Path(model), sock)
     observed = ObservedServer(LocalServer(
         record, root=root, socket_path=sock, start_deadline_s=90,
+        budget=RestartBudget(generation=1, limit=1),
+        ledger=BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json"),
     ))
     before = edge_reading()
     authority = root / "var/lib/azazel/state/activation/e2e-authority.json"

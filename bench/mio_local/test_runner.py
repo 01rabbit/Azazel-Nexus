@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from azazel_nexus.advisory_response import read_advisory
+from azazel_nexus.local_advisory import build_prompt, read_local_advisory
 from bench.mio_local.load import EdgeLoad, LoadConfig
 from bench.mio_local.metrics import distribution, memory_limit, percentile
 from bench.mio_local.runner import FRAMES, SCHEMA, Condition, run_cell
@@ -44,8 +44,7 @@ GOOD = Observation('{"advice":"Further context may clarify the pattern."}', 5, 2
 
 def run(server=None, condition=None, observer=None):
     return run_cell(server or FakeServer(), condition or Condition(1, False), FRAMES_DATA,
-                    prompt_builder=lambda frame: (("user", frame["question"]),),
-                    advisory_reader=lambda text: read_advisory(text.encode()),
+                    prompt_builder=build_prompt, advisory_reader=read_local_advisory,
                     observer=observer or (lambda *args, **kwargs: GOOD))
 
 
@@ -159,6 +158,7 @@ def test_stream_ttft_usage_and_cleanup(monkeypatch):
     assert result.ttft_ms is not None and result.total_ms >= result.ttft_ms
     assert result.tokens_out == 4 and result.generation_ms == 10
     assert http.closed and http.body["cache_prompt"] is False
+    assert http.body["response_format"]["type"] == "json_schema"
 
 
 @pytest.mark.parametrize("data", [b"", b"data: bad\n", b"data: " + b"x" * 65536])
@@ -166,7 +166,7 @@ def test_stream_rejects_incomplete_invalid_or_oversized_data(monkeypatch, data):
     http = FakeHTTP(data)
     monkeypatch.setattr("bench.mio_local.transport.UnixHTTP", lambda *args, **kwargs: http)
     with pytest.raises(ValueError):
-        stream("/fake.sock", (), max_tokens=12, deadline_s=1)
+        stream("/fake.sock", (("user", "question"),), max_tokens=12, deadline_s=1)
     assert http.closed
 
 
@@ -232,33 +232,17 @@ def test_fixed_frames_use_contract_privacy_classes():
 
 
 def test_runtime_adapter_uses_public_builder(monkeypatch):
-    import sys
-    import types
+    from azazel_nexus_runtime.mio_serve import LocalServer
 
-    from azazel_nexus import model_runtime
     from bench.mio_local.runner import runtime_server
 
-    called = {}
-
-    def builder(binary, **kwargs):
-        called.update(kwargs)
-        return replace(binary, argv=(*binary.argv, "--host", str(kwargs["socket_path"])))
-
-    def server(record, **kwargs):
-        called["record"] = record
-        called["server"] = kwargs
-        return FakeServer()
-
-    monkeypatch.setattr(model_runtime, "llama_server_record", builder, raising=False)
-    module = types.ModuleType("azazel_nexus_runtime.mio_serve")
-    module.LocalServer = server
-    monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr("bench.mio_local.runner.digest", lambda path: "sha256:" + "0" * 64)
-    runtime_server("/usr/libexec/azazel/llama-server", Path("/model.gguf"), Path("/tmp/s.sock"),
-                   threads=2, context=2048, max_tokens=256, start_deadline_s=120)
-    assert called["threads"] == 2 and called["max_tokens"] == 256
-    assert called["record"].argv[-4:] == ("-ngl", "0", "--parallel", "2")
-    assert called["server"]["root"] == Path("/")
+    server = runtime_server("/usr/libexec/azazel/llama-server", Path("/model.gguf"),
+                            Path("/tmp/s.sock"), threads=2, context=2048,
+                            max_tokens=256, start_deadline_s=120)
+    assert isinstance(server, LocalServer)
+    assert server.record.argv[-4:] == ("-ngl", "0", "--parallel", "2")
+    assert server.record.argv[1:5] == ("-m", "/model.gguf", "--host", "/tmp/s.sock")
 
 
 def test_stream_absolute_deadline(monkeypatch):
@@ -272,7 +256,7 @@ def test_stream_absolute_deadline(monkeypatch):
     http.readline = delayed_read
     monkeypatch.setattr("bench.mio_local.transport.UnixHTTP", lambda *args, **kwargs: http)
     with pytest.raises(TimeoutError):
-        stream("/fake.sock", (), max_tokens=12, deadline_s=0.01)
+        stream("/fake.sock", (("user", "question"),), max_tokens=12, deadline_s=0.01)
     assert http.closed
 
 
@@ -316,4 +300,4 @@ def test_stream_rejects_malformed_usage(monkeypatch, usage):
     http = FakeHTTP(b"data: " + json.dumps({"usage": usage}).encode() + b"\ndata: [DONE]\n")
     monkeypatch.setattr("bench.mio_local.transport.UnixHTTP", lambda *args, **kwargs: http)
     with pytest.raises(ValueError):
-        stream("/fake.sock", (), max_tokens=12, deadline_s=1)
+        stream("/fake.sock", (("user", "question"),), max_tokens=12, deadline_s=1)
