@@ -109,7 +109,7 @@ class ReadOnlySystemd:
         self._type = MessageType
         self._previous = None
         try:
-            self._previous = asyncio.get_event_loop()
+            self._previous = asyncio.get_running_loop()
         except RuntimeError:
             pass
         self._loop = asyncio.new_event_loop()

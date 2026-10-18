@@ -74,11 +74,11 @@ The integrated tools are:
   `azazel-nexus/hil-evidence/v1\0`. Verification without an external trusted key
   returns `shape_only`, including when a signature file exists.
 - [azazel_nexus.hil_records](../src/azazel_nexus/hil_records/__init__.py):
-  `validate_record(record, attestation=verifier)` validates
+  `validate_record(record, bundle_directory=root, operator_key=external_key)` validates
   `azazel-nexus/hil-gate/v1` (`gate_id`), `azazel-nexus/hil-on-host/v1`
   (`behaviour`), `azazel-nexus/hil-degraded-drill/v1` (`drill`), and
-  `azazel-nexus/core-reserve-campaign/v1` (`runs`). Only external
-  `Status.ATTESTED` can yield an admissible result. These are Python APIs.
+  `azazel-nexus/core-reserve-campaign/v1` (`runs`). Only verification of a signed bundle with an out-of-band public key can yield
+  an admissible result; status constants and callbacks are not accepted. These are Python APIs.
   The six behaviour values are `local_inference`, `remote_fallback`,
   `network_loss`, `model_crash`, `resource_pressure` (shed order), and `revocation`.
 - The runtime console scripts are `az-core-reserve-probe`, `az-hil-readiness`,
@@ -134,10 +134,9 @@ Gate/campaign/run envelopes use that value as `operator_attestation_ref`.
 Run IDs must be unique within the protected campaign archive; a reference alone
 is not trust. Bundle A contains named sanitized artifacts and SHA-256 digests;
 B contains operator input. Include each complete run and aggregate as its own
-JSON artifact. `tools.hil_evidence.record_attestation(root, record,
-operator_key=external_key)` verifies the external key, manifest, artifact hashes,
-reference, DUT, and exact canonical record bytes. Pass a closure calling that
-function as `validate_record`'s verifier. Matching a reference, signing a capture,
+canonical JSON artifact (use `canonical_event_bytes(record)`). The validator's
+shared library verifier checks the external key, manifest, artifact hashes,
+reference, DUT, and the SHA-256 of exact canonical record bytes. Matching a reference, signing a capture,
 or putting `status: attested` in JSON cannot qualify a record. Fixture markers
 remain refused even when the fixture bundle is signed with an ephemeral test key.
 
@@ -190,3 +189,10 @@ Signatures establish who attested and that referenced bytes match. They do not
 prove the workload, the boot, isolation, silence, privilege refusal or Core
 continuation happened. Neither validators nor a bundle grant operational
 activation, provider approval, model quality or support certification.
+
+Promotion of a v2 run record to the legacy admission path (`core-reserve.json`)
+is a manual, attested operator step after campaign validation; it is never automatic.
+Campaign runs require `azazel-nexus/core-reserve/2`, matching measurement/envelope
+boot fingerprints, distinct positive run sequences, and consistent build commit,
+kernel release and harness across all runs. No environment variation is allowed
+within a campaign. Identical measurement payloads across runs are refused.

@@ -197,7 +197,7 @@ def measure(readers: Optional[Readers] = None) -> object:
     try:
         usable_before = readers.usable_mib()
     except Exception as exc:  # noqa: BLE001 - any read failure is a refusal
-        raise MeasurementRefused(f"the memory class could not be read: {exc}") from exc
+        raise MeasurementRefused("the memory class could not be read") from exc
     profile = select_profile(usable_before)
     try:
         identity = readers.identity()
@@ -213,7 +213,7 @@ def measure(readers: Optional[Readers] = None) -> object:
             current_bytes = readers.cgroup_current()
         except Exception as exc:  # noqa: BLE001
             raise MeasurementRefused(
-                f"sample {index} could not be read: {exc}; a run with a hole in "
+                f"sample {index} could not be read; a run with a hole in "
                 "it is a shorter run that does not say so"
             ) from exc
         resident_mib = int(current_bytes) // (1024 * 1024)
@@ -340,6 +340,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with ReadOnlySystemd() as manager:
             record = measure(Readers(call=manager))
         path = write_record(record)
+    except MeasurementRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    except FileExistsError:
+        print("refused: concurrent run publication collision", file=sys.stderr)
+        return 2
     except Exception:  # noqa: BLE001 - no host details in terminal diagnostics
         print("refused: subsystem observation, run identity, sampling or publication failed", file=sys.stderr)
         return 2

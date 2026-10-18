@@ -1,11 +1,7 @@
 """Versioned HIL evidence contracts; no acquisition, signing or admission wiring.
 
-Inputs are JSON-compatible dictionaries. Verification is supplied by a trusted
-caller, never read from a record's own ``status``. A verifier must authenticate
-the *complete* dictionary (including referenced artifact digests) using an
-out-of-band operator key and the evidence bundle's domain. This package does
-not implement a second signature protocol. A supplied Status is an equivalent
-out-of-band result for this exact record, not a claim copied from its JSON.
+Attestation is established only by verifying a bundle with an out-of-band
+operator public key and matching the record's canonical artifact digest.
 
 ``attested`` establishes attribution and validated observations, not physics.
 Only attested results are admissible; shape_only is a diagnostic state. No
@@ -17,15 +13,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.core_reserve import ReserveRefused, parse_record
 from azazel_nexus.core_reserve import validate as validate_reserve
 
+from .confidentiality import ConfidentialityRefused, lint_text
 from .contracts import ANONYMOUS_ID, HMAC
+from .evidence import record_in_manifest, verified_manifest
 
 CAMPAIGN_SCHEMA = "azazel-nexus/core-reserve-campaign/v1"
 GATE_SCHEMA = "azazel-nexus/hil-gate/v1"
@@ -66,11 +64,6 @@ CLASS_PROFILES = {
     "32GiB": "standard",
     "64GiB": "standard",
 }
-MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
-CISCO_MAC = re.compile(r"(?i)\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b")
-SERIAL = re.compile(
-    r"(?i)\b(?:serial(?:[ _-]?(?:number|no))?|s/n|asset[ _-]?(?:id|tag|number))\s*[:=#]\s*\S+"
-)
 RAW_KEYS = {
     "mac",
     "permanent_mac",
@@ -107,9 +100,6 @@ class Validation:
         return self.status is Status.ATTESTED
 
 
-Attestation = Status | Callable[[dict], Status]
-
-
 def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -139,10 +129,11 @@ def _privacy(value: object, reasons: list[str]) -> None:
     elif isinstance(value, list):
         for child in value:
             _privacy(child, reasons)
-    elif isinstance(value, str) and (
-        MAC.search(value) or CISCO_MAC.search(value) or SERIAL.search(value)
-    ):
-        reasons.append("raw MAC/serial/asset pattern refused")
+    elif isinstance(value, str):
+        try:
+            lint_text(value.encode("utf-8"))
+        except ConfidentialityRefused:
+            reasons.append("raw MAC/serial/asset pattern refused; confidentiality violation")
 
 
 def _common(record: dict, reasons: list[str]) -> None:
@@ -170,20 +161,11 @@ def _common(record: dict, reasons: list[str]) -> None:
         reasons.append("hardware_class: explicit GiB class required")
 
 
-def _verification(
-    record: dict, attestation: Attestation | None, reasons: list[str]
-) -> Status:
-    try:
-        status = attestation(record) if callable(attestation) else attestation
-    except (ValueError, TypeError, RuntimeError, OSError):
-        reasons.append("operator attestation verification failed")
-        return Status.REFUSED
-    if status is None or status is Status.SHAPE_ONLY:
+def _verification(record: dict, manifest: dict | None, reasons: list[str]) -> Status:
+    if manifest is None:
         return Status.SHAPE_ONLY
-    if status is not Status.ATTESTED:
-        reasons.append(
-            "operator attestation refused (explicit external Status required)"
-        )
+    if not record_in_manifest(manifest, record):
+        reasons.append("record is not a canonical artifact in the verified bundle")
         return Status.REFUSED
     return Status.ATTESTED
 
@@ -554,7 +536,7 @@ def validate_acquisition(record: object) -> Validation:
 
 
 def _campaign(
-    record: dict, attestation: Attestation | None, reasons: list[str]
+    record: dict, manifest: dict | None, reasons: list[str]
 ) -> int | None:
     runs = record.get("runs")
     if not isinstance(runs, list) or len(runs) < 3:
@@ -562,6 +544,9 @@ def _campaign(
         return None
     boots: set[str] = set()
     maxima: list[int] = []
+    sequences: set[int] = set()
+    payloads: set[str] = set()
+    environment = None
     for index, run in enumerate(runs):
         errors: list[str] = []
         if not isinstance(run, dict):
@@ -577,9 +562,29 @@ def _campaign(
         else:
             boots.add(boot)
         measurement = run.get("measurement")
-        if (isinstance(measurement, dict) and "boot_fingerprint" in measurement
-                and validate_acquisition(measurement).status is Status.REFUSED):
+        from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2
+
+        if not isinstance(measurement, dict) or measurement.get("schema") != RESERVE_SCHEMA_V2:
+            errors.append("measurement: core-reserve/2 required for campaign runs")
+        if validate_acquisition(measurement).status is Status.REFUSED:
             errors.append("measurement: invalid v2 acquisition shape")
+        if isinstance(measurement, dict):
+            payload = json.dumps(measurement, sort_keys=True)
+            if payload in payloads:
+                errors.append("identical measurement payload across runs refused")
+            payloads.add(payload)
+            sequence = measurement.get("run_sequence")
+            if type(sequence) is not int or sequence < 1 or sequence in sequences:
+                errors.append("distinct positive run_sequence required")
+            else:
+                sequences.add(sequence)
+            current = tuple(measurement.get(k) for k in
+                            ("build_commit", "kernel_release", "harness_version"))
+            if environment is not None and current != environment:
+                errors.append("measurement build_commit/kernel_release/harness must be consistent")
+            environment = current
+            if measurement.get("boot_fingerprint") != boot:
+                errors.append("measurement boot differs from run")
         try:
             parsed = parse_record(json.dumps(measurement, allow_nan=False))
             errors.extend(validate_reserve(parsed).refusals)
@@ -589,18 +594,11 @@ def _campaign(
                 errors.append("measurement harness differs from campaign")
             if parsed.host_digest != record.get("dut_fingerprint"):
                 errors.append("measurement host differs from campaign DUT HMAC")
-            # v2 carries its own boot identity; v1 requires the attested envelope.
-            if (
-                isinstance(measurement, dict)
-                and "boot_fingerprint" in measurement
-                and measurement["boot_fingerprint"] != boot
-            ):
-                errors.append("measurement boot differs from run")
             if parsed.observed_maximum_mib is not None:
                 maxima.append(parsed.observed_maximum_mib)
         except (ReserveRefused, ValueError, TypeError):
             errors.append("measurement: malformed or unsupported core-reserve record")
-        if _verification(run, attestation, errors) is not Status.ATTESTED:
+        if _verification(run, manifest, errors) is not Status.ATTESTED:
             errors.append(
                 "every campaign run must be externally attested; shape_only refused"
             )
@@ -611,16 +609,26 @@ def _campaign(
 
 
 def validate_record(
-    record: object, *, attestation: Attestation | None = None
+    record: object, *, bundle_directory: Path | None = None, operator_key: Path | None = None
 ) -> Validation:
     """Validate one contract. Never trust an in-record attestation status.
 
     Missing verification yields diagnostic shape_only, never admissibility.
     Campaign runs must each be attested; a shape-only run refuses the campaign.
     A campaign also requires verification of the aggregate and workload notes.
-    The callable is invoked independently on each run and the aggregate.
+    Each run and aggregate must have its canonical SHA-256 in the signed bundle.
     """
     reasons: list[str] = []
+    manifest = None
+    if bundle_directory is not None:
+        try:
+            checked = verified_manifest(Path(bundle_directory), operator_key=operator_key)
+            if operator_key is not None:
+                manifest = checked
+        except (ValueError, TypeError, OSError, RuntimeError):
+            return Validation(Status.REFUSED, ("operator attestation verification failed",))
+    elif operator_key is not None:
+        return Validation(Status.REFUSED, ("bundle directory required",))
     if not isinstance(record, dict):
         return Validation(Status.REFUSED, ("record: object required",))
     try:
@@ -636,7 +644,7 @@ def validate_record(
         if schema == CAMPAIGN_SCHEMA:
             if not _text(record.get("harness_version")):
                 reasons.append("harness_version required")
-            maximum = _campaign(record, attestation, reasons)
+            maximum = _campaign(record, manifest, reasons)
         elif schema == GATE_SCHEMA:
             _gate(record, reasons)
         elif schema == BEHAVIOUR_SCHEMA:
@@ -645,7 +653,7 @@ def validate_record(
             _drill(record, reasons)
         else:
             reasons.append("unsupported versioned HIL record schema")
-        status = _verification(record, attestation, reasons)
+        status = _verification(record, manifest, reasons)
     except (ValueError, TypeError, RecursionError):
         return Validation(Status.REFUSED, ("record: malformed JSON fields",))
     if reasons:

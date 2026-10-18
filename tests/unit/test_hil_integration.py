@@ -11,6 +11,7 @@ from azazel_nexus_runtime import hil_capture as capture
 from azazel_nexus_runtime import hil_readiness as readiness
 from nacl.signing import SigningKey
 
+from azazel_nexus.audit import canonical_event_bytes
 from azazel_nexus.core_reserve import record_as_document
 from azazel_nexus.hil_records import (
     CAMPAIGN_SCHEMA,
@@ -136,7 +137,7 @@ def test_probe_v2_is_campaign_measurement_shape_but_unattested_campaign_refused(
         (f"run-{i}.json", run) for i, run in enumerate(campaign["runs"])
     ]:
         path = tmp_path / name
-        path.write_text(json.dumps(record))
+        path.write_bytes(canonical_event_bytes(record))
         paths[name] = path
     root = tmp_path / "bundle"
     manifest = bundle(root, run_id="test-only", gate_ids=["HG-05"], dut_id=DUT,
@@ -151,7 +152,7 @@ def test_probe_v2_is_campaign_measurement_shape_but_unattested_campaign_refused(
     verifier = lambda record: record_attestation(root, record, operator_key=public)
     assert all(verifier(run) is Status.ATTESTED for run in campaign["runs"])
     assert verifier(campaign) is Status.ATTESTED
-    assert not validate_record(campaign, attestation=verifier).admissible
+    assert not validate_record(campaign, bundle_directory=root, operator_key=public).admissible
     assert verifier(dict(campaign, workload_notes="unsigned change")) is Status.REFUSED
     assert verifier(dict(campaign, operator_attestation_ref="hil-evidence:other")) is Status.REFUSED
 
@@ -179,3 +180,30 @@ def test_export_rejects_other_dut_widths(length):
 def test_export_rejects_other_fingerprint_formats(fingerprint):
     with pytest.raises(ValueError):
         lint_text(json.dumps({"boot_fingerprint": fingerprint}).encode())
+
+
+def test_validator_requires_listed_canonical_record_and_untampered_bundle(tmp_path):
+    record = fixture_envelope(GATE_SCHEMA)
+    record.update(gate_id="HG-01", observations={})
+    source = tmp_path / "record.json"
+    source.write_bytes(canonical_event_bytes(record))
+    root = tmp_path / "bundle"
+    bundle(root, run_id="test-only", gate_ids=["HG-01"], dut_id=DUT,
+           artifacts={"record.json": source}, operator_input={"notes": "fixture-only"})
+    key = SigningKey.generate()
+    seed, public = tmp_path / "seed", tmp_path / "public"
+    seed.write_text(key.encode().hex())
+    public.write_text(key.verify_key.encode().hex())
+    sign(root, key_file=seed)
+    result = validate_record(record, bundle_directory=root, operator_key=public)
+    assert not result.admissible  # Signed fixture remains inadmissible.
+    assert not any("verified bundle" in r or "verification failed" in r for r in result.reasons)
+    unlisted = dict(record, workload_notes="unsigned modification")
+    result = validate_record(unlisted, bundle_directory=root, operator_key=public)
+    assert "record is not a canonical artifact in the verified bundle" in result.reasons
+    assert result.reserve_mib is None
+    (root / "artifacts" / "record.json").write_text("tampered")
+    result = validate_record(record, bundle_directory=root, operator_key=public)
+    assert result.reasons == ("operator attestation verification failed",)
+    assert not result.admissible
+    assert result.reserve_mib is None

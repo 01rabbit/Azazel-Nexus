@@ -28,115 +28,39 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Literal
 
 from azazel_nexus.audit import canonical_event_bytes
-from azazel_nexus.hil_records.confidentiality import ConfidentialityRefused
-from azazel_nexus.hil_records.confidentiality import lint_text as lint_export
-from azazel_nexus.hil_records.contracts import ANONYMOUS_ID
-from azazel_nexus.signature import SignatureRefused, parse_public_key, verify_detached
-from tools.service_objectives import RecordRefused, artifact, require
+from azazel_nexus.hil_records.evidence import (
+    DOMAIN,
+    SAFE_NAME,
+    SCHEMA,
+    RecordRefused,
+    _external_key,
+    _json,
+    _shape,
+    attestation_bytes,
+    lint,
+    lint_text,
+    record_in_manifest,
+    require,
+    verified_manifest,
+    verify,
+)
 
-SCHEMA = "azazel-nexus/hil-evidence/v1"
-DOMAIN = b"azazel-nexus/hil-evidence/v1\0"
-SAFE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
-def lint_text(payload: bytes) -> None:
-    """Use the same export boundary as on-device capture."""
-    try:
-        lint_export(payload)
-    except ConfidentialityRefused as exc:
-        raise RecordRefused(str(exc)) from exc
-
-
-def attestation_bytes(manifest: dict) -> bytes:
-    """Sign the entire manifest, without embedded key or signature fields."""
-    return DOMAIN + canonical_event_bytes(manifest)
-
-
-def _json(payload: bytes) -> dict:
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            require(key not in result, "duplicate JSON key refused")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(payload, object_pairs_hook=unique)
-        require(isinstance(value, dict), "JSON object required")
-        # Reject non-JSON floating point constants before canonicalization.
-        json.dumps(value, allow_nan=False)
-        canonical_event_bytes(value)
-        return value
-    except (ValueError, UnicodeError) as exc:
-        raise RecordRefused("invalid JSON object") from exc
+__all__ = [
+    "DOMAIN", "RecordRefused", "attestation_bytes", "bundle", "lint",
+    "lint_text", "main", "record_attestation", "sign", "verify",
+]
 
 
-def _shape(manifest: dict) -> None:
-    require(set(manifest) == {"schema", "run_id", "attestation_ref", "gate_ids", "dut_id", "A", "B"},
-            "unsupported manifest fields")
-    require(manifest["schema"] == SCHEMA, "unsupported manifest schema")
-    require(isinstance(manifest["run_id"], str)
-            and SAFE_NAME.fullmatch(manifest["run_id"]) is not None, "invalid run id")
-    require(manifest["attestation_ref"] == "hil-evidence:" + manifest["run_id"],
-            "attestation reference must identify the signed run")
-    gates = manifest["gate_ids"]
-    require(isinstance(gates, list) and bool(gates)
-            and all(isinstance(g, str) and re.fullmatch(r"(?:HG|SO)-[0-9]{2}", g)
-                    for g in gates), "gate ids required")
-    require(len(set(gates)) == len(gates), "duplicate gate id")
-    require(isinstance(manifest["dut_id"], str)
-            and ANONYMOUS_ID.fullmatch(manifest["dut_id"]) is not None,
-            "anonymous dut id required")
-    require(isinstance(manifest["B"], dict), "operator block B must be an object")
-    automatic = manifest["A"]
-    require(isinstance(automatic, dict) and set(automatic) == {"artifacts"},
-            "automatic block A must contain only artifacts")
-    refs = automatic["artifacts"]
-    require(isinstance(refs, dict) and bool(refs), "named artifacts required")
-    for name, reference in refs.items():
-        require(isinstance(name, str) and SAFE_NAME.fullmatch(name) is not None,
-                "invalid artifact name")
-        artifact(reference)
-        require(set(reference) == {"path", "sha256"}
-                and reference["path"] == f"artifacts/{name}", "unsafe artifact path")
+def record_attestation(root: Path, record: dict, *, operator_key: Path | None = None):
+    """Diagnostic convenience; validate_record verifies bundles directly."""
+    from azazel_nexus.hil_records import Status
 
-
-def _external_key(root: Path, key: Path) -> None:
-    require(not key.resolve().is_relative_to(root.resolve()), "key must be outside bundle")
-
-
-def lint(root: Path) -> dict:
-    """Validate layout, lint every file, and recompute every artifact digest."""
-    require(root.is_dir() and not root.is_symlink(), "bundle directory required")
-    require(not (root / "manifest.json").is_symlink(), "symlink refused")
-    manifest = _json((root / "manifest.json").read_bytes())
-    _shape(manifest)
-    # Inspect semantic strings, not hashes or a signature's random bytes.
-    metadata = {k: v for k, v in manifest.items() if k != "A"}
-    lint_text(canonical_event_bytes(metadata))
-    refs = manifest["A"]["artifacts"]
-    expected = {"manifest.json", "artifacts"}
-    if (root / "manifest.sig").exists():
-        expected.add("manifest.sig")
-    require({p.name for p in root.iterdir()} == expected, "unlisted bundle entry")
-    directory = root / "artifacts"
-    require(directory.is_dir() and not directory.is_symlink(), "artifact directory required")
-    require({p.name for p in directory.iterdir()} == set(refs), "unlisted or missing artifact")
-    for name, reference in refs.items():
-        path = root / reference["path"]
-        require(path.is_file() and not path.is_symlink(), "regular artifact required")
-        lint_text(name.encode())
-        payload = path.read_bytes()
-        lint_text(payload)
-        require(hashlib.sha256(payload).hexdigest() == reference["sha256"],
-                "artifact digest differs")
-    signature = root / "manifest.sig"
-    if signature.exists():
-        require(signature.is_file() and not signature.is_symlink(), "regular signature required")
-        require(re.fullmatch(rb"[0-9a-f]{128}\n?", signature.read_bytes()) is not None,
-                "malformed detached signature")
-    return manifest
+    manifest = verified_manifest(root, operator_key=operator_key)
+    if not record_in_manifest(manifest, record):
+        return Status.REFUSED
+    return Status.SHAPE_ONLY if operator_key is None else Status.ATTESTED
 
 
 def bundle(destination: Path, *, run_id: str, gate_ids: list[str], dut_id: str,
@@ -181,46 +105,6 @@ def sign(root: Path, *, key_file: Path) -> None:
     signature = SigningKey(bytes.fromhex(seed)).sign(attestation_bytes(manifest)).signature
     with (root / "manifest.sig").open("x", encoding="ascii") as output:
         output.write(signature.hex() + "\n")
-
-
-def verify(root: Path, *, operator_key: Path | None = None) -> Literal["shape_only", "attested"]:
-    """Integrity without an external trust anchor is always shape_only."""
-    manifest = lint(root)
-    if operator_key is None:
-        return "shape_only"
-    _external_key(root, operator_key)
-    try:
-        key = parse_public_key(operator_key.read_text().strip())
-        signature = bytes.fromhex((root / "manifest.sig").read_text().strip())
-        require(verify_detached(public_key=key, message=attestation_bytes(manifest),
-                                signature=signature), "operator attestation refused")
-    except (SignatureRefused, ValueError, OSError) as exc:
-        raise RecordRefused("operator attestation refused") from exc
-    return "attested"
-
-
-def record_attestation(root: Path, record: dict, *, operator_key: Path | None = None):
-    """Bind C's external verification to an exact signed artifact, never a claim.
-
-    Use a closure for validate_record's attestation callback. Each run and the
-    aggregate must be present as a complete JSON artifact. Reference and DUT
-    checks alone do not authenticate a record. No key means SHAPE_ONLY.
-    """
-    from azazel_nexus.hil_records import Status
-
-    manifest = lint(root)
-    if (record.get("operator_attestation_ref") != manifest["attestation_ref"]
-            or record.get("dut_id") != manifest["dut_id"]):
-        return Status.REFUSED
-    expected = canonical_event_bytes(record)
-    for reference in manifest["A"]["artifacts"].values():
-        try:
-            candidate = _json((root / reference["path"]).read_bytes())
-        except ValueError:
-            continue
-        if canonical_event_bytes(candidate) == expected:
-            return Status(verify(root, operator_key=operator_key))
-    return Status.REFUSED
 
 
 def main(argv: list[str] | None = None) -> int:

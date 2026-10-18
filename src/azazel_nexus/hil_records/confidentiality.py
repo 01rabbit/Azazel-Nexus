@@ -20,7 +20,7 @@ MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f]
 DOTTED_MAC = re.compile(r"(?i)\b[0-9a-f]{4}(?:\.[0-9a-f]{4}){2}\b")
 LABEL = re.compile(
     r"(?i)\b(?:serial(?:[ _-]?(?:number|no))?|s/n|asset(?:[ _-]?(?:tag|id|number))?"
-    r"|host(?:[ _-]?name)|fqdn)\b[\s\"']*[:=]"
+    r"|host(?:[ _-]?name)|fqdn)\b[\s\"']*[:=#]"
 )
 SERIAL = re.compile(
     r"\b(?i:SN|SNA|SERIAL|ASSET)[-_]?[A-Za-z0-9]{4,}\b"

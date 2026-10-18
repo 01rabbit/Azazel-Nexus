@@ -363,3 +363,29 @@ def test_boot_change_refuses_entire_run():
     count = iter([identity, dict(identity, boot_fingerprint="hmac-sha256:" + "d" * 64)])
     with pytest.raises(MeasurementRefused, match="identity changed"):
         measure(replace(supplied, identity=lambda: next(count)))
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (probe.MeasurementRefused("required subsystems inactive"), "required subsystems inactive"),
+    (FileExistsError("private path"), "concurrent run"),
+    (RuntimeError("private details"), "sampling or publication failed"),
+])
+def test_main_reports_safe_refusal_reasons(monkeypatch, capsys, failure, expected):
+    from azazel_nexus_runtime import hil_readiness
+
+    class Manager:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    def fail(*_):
+        raise failure
+
+    monkeypatch.setattr(hil_readiness, "ReadOnlySystemd", Manager)
+    monkeypatch.setattr(probe, "measure", fail)
+    assert probe.main([]) == 2
+    output = capsys.readouterr()
+    assert expected in output.err
+    assert "private" not in output.err

@@ -67,8 +67,8 @@ def fixture_campaign():
     return campaign
 
 
-def refused(record, attestation=Status.ATTESTED):
-    result = validate_record(record, attestation=attestation)
+def refused(record):
+    result = validate_record(record)
     assert result.status is Status.REFUSED
     assert not result.admissible
     assert result.reserve_mib is None
@@ -77,12 +77,8 @@ def refused(record, attestation=Status.ATTESTED):
 
 
 @pytest.mark.parametrize("schema", SCHEMAS)
-@pytest.mark.parametrize(
-    "attestation",
-    [None, Status.SHAPE_ONLY, Status.REFUSED, Status.ATTESTED, "attested", True],
-)
-def test_fixture_is_always_refused(schema, attestation):
-    assert "fixture/synthetic refused" in refused(fixture_record(schema), attestation)
+def test_fixture_is_always_refused(schema):
+    assert "fixture/synthetic refused" in refused(fixture_record(schema))
 
 
 @pytest.mark.parametrize("gate", GATES)
@@ -137,6 +133,10 @@ def test_degraded_drills_require_metrics_recovery_and_core_invariants(drill):
         "Serial: TEST-ONLY",
         "S/N=TEST-ONLY",
         "asset tag: TEST-ONLY",
+        "192.0.2.1",
+        "2001:db8::1",
+        "node.private",
+        "hostname: test-node",
     ],
 )
 def test_raw_identifier_patterns_are_refused_anywhere_without_echo(value):
@@ -200,19 +200,7 @@ def test_campaign_needs_three_runs(count):
 
 
 def test_campaign_checks_every_run_attestation_and_aggregate():
-    campaign = fixture_campaign()
-    seen = []
-
-    def verifier(record):
-        seen.append(record)
-        return Status.SHAPE_ONLY
-
-    assert "every campaign run must be externally attested" in refused(
-        campaign, verifier
-    )
-    assert len(seen) == 4
-    assert seen[-1] == campaign
-    assert seen[:-1] == campaign["runs"]
+    assert "every campaign run must be externally attested" in refused(fixture_campaign())
 
 
 def test_campaign_reuses_existing_sample_and_duration_floors():
@@ -242,16 +230,21 @@ def test_campaign_checks_nested_measurement_identity_and_profile():
 def test_in_record_status_cannot_grant_authority(status):
     record = fixture_record()
     record["status"] = status
-    refused(record, None)
+    refused(record)
 
 
-def test_verification_failure_returns_explicit_refusal():
-    def failed(record):
-        raise ValueError("TEST-ONLY secret must not be echoed")
+def test_verification_failure_returns_explicit_refusal(tmp_path):
+    result = validate_record(fixture_record(), bundle_directory=tmp_path / "missing",
+                             operator_key=tmp_path / "external")
+    assert result.status is Status.REFUSED
+    assert "operator attestation verification failed" in result.reasons
 
-    reasons = refused(fixture_record(), failed)
-    assert "operator attestation verification failed" in reasons
-    assert "secret" not in reasons
+
+def test_bare_status_or_callback_cannot_establish_attestation():
+    for forged in (Status.ATTESTED, lambda _: Status.ATTESTED):
+        with pytest.raises(TypeError):
+            validate_record(fixture_campaign(), attestation=forged)
+
 
 
 @pytest.mark.parametrize(
@@ -296,11 +289,7 @@ def test_result_status_invariants():
 
 
 def test_no_committed_json_validates_as_attested():
-    """Even a trusted status must not launder committed JSON into HIL evidence.
-
-    Passing ATTESTED deliberately tests *shape and provenance*, rather than
-    succeeding trivially because no operator key was supplied to the scan.
-    """
+    """Committed JSON has no bundle trust anchor and must remain inadmissible."""
     found = []
     for path in sorted(REPOSITORY.rglob("*.json")):
         if any(
@@ -312,7 +301,7 @@ def test_no_committed_json_validates_as_attested():
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError):
             continue
-        if validate_record(record, attestation=Status.ATTESTED).admissible:
+        if validate_record(record).admissible:
             found.append(str(path.relative_to(REPOSITORY)))
     assert found == [], f"committed JSON accepted as attested HIL evidence: {found}"
 
@@ -330,3 +319,53 @@ def test_nested_capture_cannot_hide_fixture_or_shape_only(marker):
     record = fixture_record()
     record["capture"] = marker
     assert "nested fixture/synthetic/shape_only evidence refused" in refused(record)
+
+
+def v2_fixture_campaign():
+    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2
+
+    campaign = fixture_campaign()
+    for index, run in enumerate(campaign["runs"]):
+        run["measurement"].update(
+            schema=RESERVE_SCHEMA_V2, boot_fingerprint=run["boot_fingerprint"],
+            run_sequence=index + 1, build_commit="c" * 40, kernel_release="6.12.0-test",
+        )
+    return campaign
+
+
+def test_v1_campaign_copy_repro_refused():
+    campaign = fixture_campaign()
+    # Reviewer's invented measured data must not acquire authority from a constant.
+    campaign.update(provenance="measured", synthetic=False, physical_hardware=True)
+    measurement = dict(campaign["runs"][0]["measurement"], provenance="measured")
+    for run in campaign["runs"]:
+        run.update(provenance="measured", synthetic=False, physical_hardware=True,
+                   measurement=measurement)
+    with pytest.raises(TypeError):
+        validate_record(campaign, attestation=Status.ATTESTED)
+    result = validate_record(campaign)
+    assert not result.admissible
+    assert result.reserve_mib is None
+    assert any("core-reserve/2 required" in r for r in result.reasons)
+    assert any("identical measurement payload" in r for r in result.reasons)
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("boot_fingerprint", "hmac-sha256:" + "f" * 64, "measurement boot differs"),
+    ("run_sequence", 1, "distinct positive run_sequence"),
+    ("build_commit", "d" * 40, "must be consistent"),
+    ("kernel_release", "6.13.0-test", "must be consistent"),
+    ("harness_version", "other-test", "must be consistent"),
+])
+def test_campaign_v2_identity_and_environment_constraints(field, value, reason):
+    campaign = v2_fixture_campaign()
+    campaign["runs"][1]["measurement"][field] = value
+    assert reason in refused(campaign)
+
+
+def test_campaign_v2_copy_refused_even_with_distinct_run_envelopes():
+    campaign = v2_fixture_campaign()
+    campaign["runs"][1]["measurement"] = campaign["runs"][0]["measurement"]
+    reasons = refused(campaign)
+    assert "identical measurement payload" in reasons
+    assert "measurement boot differs" in reasons
