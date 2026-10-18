@@ -409,7 +409,7 @@ signature or product release approval.
 | `/var/lib/azazel/bootstrap-generations/` | Private bootstrap-only trees; separate numbering from operational generations | Byte integrity does not establish admission; the selected approval remains boot-bound |
 | `/var/lib/azazel/secrets/commissioning.key` | Root-only HIL-preflight protection key | The installer does not create it; preflight requires it and independently refuses to write the commissioning record unless `/etc/azazel/commissioning` is LUKS-backed |
 | `/var/lib/azazel/fetch/`, `/var/lib/azazel/mio/`, `/var/lib/azazel/remote/` | Optional fetch staging, local model, and remote registry state | Needed only when those later workflows are configured; they are not populated by this installer |
-| `/var/lib/azazel/run/` | Runtime sockets and short-lived probe/measurement records | Treat as runtime data, not durable state; stale records have TTLs and sockets are recreated |
+| `/var/lib/azazel/run/` | Runtime sockets and short-lived probe/measurement records | Treat as runtime data, not durable state; stale records have TTLs and sockets are recreated. Each socket daemon's unit may write only its own leaf; only `azazel-edge-probed` keeps the run root writable at the mount layer, for `edge-probe.json` |
 | `/run/azazel/` and service-specific runtime directories | systemd-created volatile runtime directories | Recreated by systemd; do not require persistence |
 
 The persistent socket parents `/var/lib/azazel` and `run/` are root-owned
