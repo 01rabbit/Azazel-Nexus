@@ -186,9 +186,12 @@ paths. The installer provisions `azmission-read` for locald, sets the existing
 commissioned configuration to `0640 root:azmission-read`, and grants read/traverse
 to installed inventory `reasoning_playbook` files and their required ancestors.
 Only root-owned paths without group/other write access are accepted; symlinks
-are refused. Playbooks must be installed outside locald's writable/private paths
-(`/var/lib/azazel/mio`, `/var/lib/azazel/run`, `/run`, `/tmp`, `/var/tmp`,
-`/home`, `/root`).
+are refused. All playbooks must be installed under `/var/lib/azazel/playbooks`,
+created `2750 root:azmission-read`. Other locations refuse provisioning; advice
+still works through the existing fallback if selection is unreadable. Private
+ancestors with a group other than root or azmission-read refuse provisioning,
+preserving existing group access. These installed advisory assets do not require
+encrypted storage; Mission Pack admission/audit state remains on encrypted `/data`.
 `ProtectSystem=strict` keeps these installed assets read-only in the service;
 explicit optional `ReadOnlyPaths` cover the configuration and pack store.
 Root remains the writer. See [Mission Pack storage](mission-pack.md#local-configuration-and-storage)

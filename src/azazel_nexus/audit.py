@@ -102,10 +102,14 @@ class AuditLedger:
     The head is read from the file rather than held in memory across calls, so
     that two writers cannot both believe they are appending to the same head.
     The second one finds the chain has moved and is refused.
+
+    `private=True` creates/restricts the file to 0600 and refuses symlinks;
+    other callers retain their existing open and permission semantics.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, private: bool = False) -> None:
         self.path = path
+        self.private = private
 
     # -- reading ---------------------------------------------------------
 
@@ -234,7 +238,17 @@ class AuditLedger:
             # A caller is told the event is recorded only once it survives the
             # process, because "recorded" is the claim the next entry's hash
             # will depend on.
-            with self.path.open("a", encoding="utf-8") as handle:
+            def opener(path, flags):
+                fd = os.open(path, flags | os.O_NOFOLLOW, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                except BaseException:
+                    os.close(fd)
+                    raise
+                return fd
+
+            with (open(self.path, "a", encoding="utf-8", opener=opener)
+                  if self.private else self.path.open("a", encoding="utf-8")) as handle:
                 handle.write(line + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())

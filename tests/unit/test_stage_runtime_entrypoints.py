@@ -362,6 +362,8 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
         "}\nprint(values[field])\n",
         encoding="utf-8",
     )
+    shutil.copy(ROOT / "tools/provision_mission_read.py", tools)
+    shutil.copytree(ROOT / "src", root / "src")
     destdir = tmp_path / "image"
     env_report = destdir / "stager-environment.json"
     entrypoints = (
@@ -438,6 +440,9 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
         if any(Path(argument).name == "stage_runtime_entrypoints.py"
                for argument in invocation["args"]):
             staged = True
+            assert child_env.get("DESTDIR") == str(destdir)
+        elif any(Path(argument).name == "provision_mission_read.py"
+                 for argument in invocation["args"]):
             assert child_env.get("DESTDIR") == str(destdir)
         else:
             assert "DESTDIR" not in child_env

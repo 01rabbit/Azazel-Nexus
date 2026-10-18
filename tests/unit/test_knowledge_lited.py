@@ -160,7 +160,7 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     monkeypatch.setattr(daemon.PrincipalPolicy, "resolve", lambda **kw: resolved.append(kw) or "policy")
     assert daemon.main([], ready=lambda: None) == 0
     assert captured["path"] == root.parent / "run/knowledge/knowledge.sock"
-    assert captured["additional_sockets"] == ((root.parent / "run/knowledge-read/knowledge-read.sock", 123),)
+    assert captured["additional_sockets"] == ((root.parent / "run/knowledge-read/knowledge-read.sock", 123, daemon.READ_REGISTRY),)
     assert captured["audit"] == ("sink", "knowledge")
     assert captured["handler"].__self__.root == root
     assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio")}]
@@ -279,3 +279,11 @@ def test_lookup_json_escape_bound(node):
     assert 0 < len(result["refs"]) < 16
     assert len(json.dumps({"ok": True, "result": result}).encode()) <= 60 * 1024
     assert events[0]["count"] == len(result["refs"])
+
+
+def test_read_listener_only_registers_lookup():
+    policy = PrincipalPolicy(100, frozenset({201}))
+    principal = policy.classify(201, 200, 1)
+    assert daemon.READ_REGISTRY.resolve("knowledge.lookup", principal) == daemon.LOOKUP_VERB
+    with pytest.raises(RequestRefused):
+        daemon.READ_REGISTRY.resolve("knowledge.status", principal)

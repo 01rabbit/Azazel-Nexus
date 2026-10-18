@@ -213,7 +213,7 @@ class MissionPack:
     def __init__(self, context: PackContext, *, checkpoint: Callable[[str], None] | None = None):
         self.context = context
         self.store = GenerationStore(context.root / "generations", group_read=True)
-        self.ledger = AuditLedger(context.root / "audit.jsonl")
+        self.ledger = AuditLedger(context.root / "audit.jsonl", private=True)
         self.checkpoint = checkpoint or (lambda step: None)
 
     def current(self) -> Generation | None:

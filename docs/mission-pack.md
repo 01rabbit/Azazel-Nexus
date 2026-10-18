@@ -223,11 +223,15 @@ Packaging creates the dedicated `azmission-read` group and grants it to locald
 through the generated unit's supplementary groups. The existing commissioned
 configuration becomes `0640 root:azmission-read`; the reader still rejects
 non-root ownership and all group/other write bits. Installed inventory
-`reasoning_playbook` files receive group read, with group traverse on private
-ancestors where required. Their owners and write permissions remain unchanged;
-unsafe writable or symlink paths refuse provisioning. Other asset kinds are not
-granted access. Install playbooks outside locald's writable/private paths, as
-listed in [Reasoning playbooks](reasoning-playbooks.md).
+`reasoning_playbook` files must live under `/var/lib/azazel/playbooks`, created
+by the installer as `2750 root:azmission-read`. Files receive group read;
+private ancestors receive traverse only when their group is root or
+azmission-read. A different private directory group is refused without replacing
+it. Unsafe writable or symlink paths and all other asset locations refuse
+provisioning. Other asset kinds are not granted access. Playbooks are installed
+advisory data, separate from confidential admission/audit state, so this asset
+root does not require the encrypted `/data` mount. The store below still does.
+See [Reasoning playbooks](reasoning-playbooks.md).
 
 The installer creates `/data/azazel/mission-packs` and `generations` as
 `2750 root:azmission-read` only on a backing volume passing the existing LUKS
@@ -235,12 +239,16 @@ check. This store lives under the commissioned encrypted `/data` mount; the
 installer neither mounts storage nor creates an unencrypted replacement. If
 storage is unavailable/unverified it prints `MISSION PACK STORE NOT PROVISIONED`;
 mount the commissioned encrypted volume and rerun the installer. DESTDIR staging
-projects the same modes without claiming encryption evidence.
+projects the same modes without claiming encryption evidence. A resolved
+`DESTDIR=/` is a live install and still requires the LUKS check.
 
 Published generation directories/trees use `2750`, their files and `current`
 use `0640`, with the reader GID inherited from the setgid store. Staging stays
 private until complete. The installer also upgrades existing published
-selections; hidden interrupted stages and writer audit/lock files remain private.
+selections and restricts existing store-root writer files to `0600` root-owned.
+The Mission Pack ledger is created `0600` even with a permissive umask; its
+setgid-inherited reader group gains no access. The writer locks the directory
+itself, creating no lock file. Hidden interrupted stages remain private.
 Other GenerationStore consumers retain their private defaults. Root remains the
 only writer; CLI encryption/admission checks are unchanged. Rerun installation
 after provisioning the config or new inventory assets. The installer never

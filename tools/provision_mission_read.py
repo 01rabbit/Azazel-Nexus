@@ -25,17 +25,26 @@ def provision(root: Path, *, accounts: bool = True, staging: bool = False,
                 or accounts and info.st_uid != 0):
             raise ValueError("Mission Pack reader requires root-owned non-writable installation paths")
 
+    def chmod(path: Path, mode: int) -> None:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+
     def access(path: Path, directory: bool, *, exact: bool = False) -> None:
         checked(path, directory)
         info = path.lstat()
         # Keep world-traversable parents and their existing groups untouched.
         if directory and not exact and info.st_mode & 0o001:
             return
+        if directory and gid is not None and info.st_gid not in (0, gid):
+            raise ValueError(f"refusing to replace private directory group: {path}")
         if gid is not None:
             os.chown(path, -1, gid, follow_symlinks=False)
         mode = (0o2750 if directory else 0o640) if exact else (
             stat.S_IMODE(info.st_mode) | (0o010 if directory else 0o040))
-        path.chmod(mode)
+        chmod(path, mode)
 
     def parents(path: Path, *, create: bool = False) -> None:
         for parent in reversed(path.parents):
@@ -54,6 +63,15 @@ def provision(root: Path, *, accounts: bool = True, staging: bool = False,
         for directory in (store, store / "generations"):
             directory.mkdir(mode=0o2750, exist_ok=True)
             access(directory, True, exact=True)
+        # The only reader-visible root file is current. Audit and interrupted
+        # writer state (including pointer temporaries) stay owner-only.
+        for path in store.iterdir():
+            if path.name == "current" or path.is_dir():
+                continue
+            checked(path, False)
+            if accounts:
+                os.chown(path, 0, -1, follow_symlinks=False)
+            chmod(path, 0o600)
         # Upgrade retained published selections, never hidden interrupted stages
         # or the writer's audit/lock files. Symlinks and unsafe writers refuse.
         for generation in (store / "generations").iterdir():
@@ -66,6 +84,11 @@ def provision(root: Path, *, accounts: bool = True, staging: bool = False,
             access(store / "current", False, exact=True)
     else:
         print("MISSION PACK STORE NOT PROVISIONED: mount commissioned LUKS storage and rerun installer.")
+
+    assets_root = root / "var/lib/azazel/playbooks"
+    parents(assets_root, create=True)
+    assets_root.mkdir(mode=0o2750, exist_ok=True)
+    access(assets_root, True, exact=True)
 
     config = root / "etc/azazel/mission-pack.json"
     if not config.exists() and not config.is_symlink():
@@ -80,10 +103,8 @@ def provision(root: Path, *, accounts: bool = True, staging: bool = False,
             continue
         absolute = Path(asset["path"])
         if (not absolute.is_absolute() or ".." in absolute.parts
-                or any(absolute.is_relative_to(base) for base in (
-                    "/var/lib/azazel/mio", "/var/lib/azazel/run", "/run", "/tmp",
-                    "/var/tmp", "/home", "/root"))):
-            raise ValueError("playbook must live outside locald writable/private paths")
+                or not absolute.is_relative_to("/var/lib/azazel/playbooks")):
+            raise ValueError("playbook must live under /var/lib/azazel/playbooks")
         path = root / absolute.relative_to("/")
         parents(path)
         access(path, False)
@@ -95,8 +116,8 @@ def main() -> None:
     parser.add_argument("--without-accounts", action="store_true")
     args = parser.parse_args()
     destination = os.environ.get("DESTDIR")
-    provision(Path(destination or "/"), accounts=not args.without_accounts,
-              staging=bool(destination))
+    root = Path(destination or "/").resolve()
+    provision(root, accounts=not args.without_accounts, staging=root != Path("/"))
 
 
 if __name__ == "__main__":

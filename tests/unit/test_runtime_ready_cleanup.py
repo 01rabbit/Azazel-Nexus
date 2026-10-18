@@ -236,7 +236,7 @@ def test_additional_client_listener_ready_dispatch_and_cleanup(tmp_path, monkeyp
         assert len(binds) == 2
     assert serve.serve_forever(path=paths[0], registry=object(),
         policy=SimpleNamespace(operator_gid=10), audit=lambda e: None,
-        handler=lambda r: None, additional_sockets=((paths[1], 20),),
+        handler=lambda r: None, additional_sockets=((paths[1], 20, object()),),
         ready=ready, stop=lambda: bool(served)) == 0
     assert binds == [(paths[0], 10), (paths[1], 20)]
     assert all(listener.closed for listener in listeners)
@@ -255,6 +255,6 @@ def test_second_listener_bind_failure_cleans_operator_listener(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match='second bind failed'):
         serve.serve_forever(path=path, registry=object(), policy=object(),
             audit=lambda e: None, handler=lambda r: None,
-            additional_sockets=((tmp_path / 'client.sock', 20),))
+            additional_sockets=((tmp_path / 'client.sock', 20, object()),))
     assert listener.closed
     assert not path.exists()
