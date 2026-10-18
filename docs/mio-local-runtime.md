@@ -339,7 +339,12 @@ the same identity directly as root. The helper accepts no arguments or environme
 inputs. A failed identity observation removes the previous digest. With admission enabled,
 the helper returns nonzero and the unit start fails visibly; while disabled it
 may return zero. Missing or invalid identity refuses with
-`NODE_IDENTITY_UNAVAILABLE` in both locald and activation. Its wrapper is staged with the other fixed unit executables.
+`NODE_IDENTITY_UNAVAILABLE` in both locald and activation. In either case the helper
+writes one fixed line to the journal naming the first input that did not read, from
+`commissioning_key`, `boot_id`, `machine_id`, `build_commit`, or `identity_digest`
+when all four read (for example
+`az-mio-identity: NODE_IDENTITY_UNAVAILABLE input=build_commit; no node identity written; start refused`).
+No path, value or exception text is printed. Its wrapper is staged with the other fixed unit executables.
 
 The recommended configuration remains retrieval + trusted text, per the
 [container development results](evidence/mio-candidates-2026-10-18.md).

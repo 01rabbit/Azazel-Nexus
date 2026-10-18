@@ -29,6 +29,7 @@ import grp
 import os
 import pwd
 import stat
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -125,6 +126,22 @@ SERVICE_ACCOUNTS = (
     "azactivate",
 )
 
+#: Every account a Nexus daemon runs as: the specification's service accounts
+#: plus the ones the installer creates (`hardening.SYSTEM_ACCOUNTS`; a test
+#: keeps the two in step). None of them is ever an operator, whatever groups
+#: its process carries. A unit's `SupplementaryGroups=azazel-operator` lets
+#: entryd reach provider sockets; it must not make entryd an operator at
+#: commissiond, auditd, watchdog or the fetcher, which do not list it as a
+#: service. Before `SO_PEERGROUPS` was read on Linux this could not happen,
+#: because no supplementary group was ever seen.
+DAEMON_ACCOUNTS = tuple(dict.fromkeys((
+    *SERVICE_ACCOUNTS,
+    "azprobe",
+    "azfetch",
+    "azmioentry",
+    "azremote",
+)))
+
 #: Who may reach a daemon socket at all.
 DEFAULT_OPERATOR_GROUP = "azazel-operator"
 
@@ -147,6 +164,9 @@ class PrincipalPolicy:
 
     operator_gid: Optional[int]
     service_uids: frozenset[int]
+    #: Daemon accounts that are never classified as operators. Not services
+    #: here unless also in `service_uids`.
+    daemon_uids: frozenset[int] = frozenset()
 
     @classmethod
     def resolve(
@@ -161,13 +181,20 @@ class PrincipalPolicy:
             # Absent group means no operator principal exists on this host,
             # not that everyone is one.
             operator_gid = None
-        uids = set()
-        for account in service_accounts:
-            try:
-                uids.add(pwd.getpwnam(account).pw_uid)
-            except KeyError:
-                continue
-        return cls(operator_gid=operator_gid, service_uids=frozenset(uids))
+        def uids(accounts: Iterable[str]) -> frozenset[int]:
+            found = set()
+            for account in accounts:
+                try:
+                    found.add(pwd.getpwnam(account).pw_uid)
+                except KeyError:
+                    continue
+            return frozenset(found)
+
+        return cls(
+            operator_gid=operator_gid,
+            service_uids=uids(service_accounts),
+            daemon_uids=uids(DAEMON_ACCOUNTS),
+        )
 
     def classify(
         self,
@@ -185,7 +212,11 @@ class PrincipalPolicy:
         if (
             self.operator_gid is not None
             and uid not in self.service_uids
-            and (gid == self.operator_gid or self.operator_gid in groups)
+            and uid not in self.daemon_uids
+            # Root's supplementary groups never make it an operator: a root unit
+            # carrying SupplementaryGroups=azazel-operator (activated) stays ROOT
+            # only, exactly as before supplementary groups were read.
+            and (gid == self.operator_gid or (uid != 0 and self.operator_gid in groups))
         ):
             classes.add(PrincipalClass.OPERATOR)
         if uid in self.service_uids:
@@ -210,6 +241,31 @@ def peer_credentials(connection) -> tuple[int, int, int]:
     return pid, uid, gid
 
 
+#: Linux ``SO_PEERGROUPS`` (4.13+) from ``asm-generic/socket.h``. CPython does
+#: not export the constant (3.12/3.13 have no ``socket.SO_PEERGROUPS``), so
+#: without this value no Linux peer ever had supplementary groups and every
+#: supplementary-group operator was refused. Only architectures that use the
+#: generic value are listed; any other machine keeps the fail-closed ``()``.
+_LINUX_SO_PEERGROUPS = 59
+_GENERIC_SOCKET_MACHINES = frozenset({
+    "x86_64", "aarch64", "arm64", "i386", "i486", "i586", "i686",
+    "armv6l", "armv7l", "armv8l", "riscv64", "ppc64le", "ppc64", "s390x",
+})
+#: CPython refuses a ``getsockopt`` buffer larger than 1024 bytes ("getsockopt
+#: buflen out of range"), so 256 groups is the most it can read. A peer with
+#: more groups gets ERANGE from the kernel and is classified without them.
+_PEERGROUPS_BUFFER = 1024
+
+
+def _peergroups_option(socket_module) -> int | None:
+    option = getattr(socket_module, "SO_PEERGROUPS", None)
+    if option is not None:
+        return option
+    if sys.platform == "linux" and os.uname().machine in _GENERIC_SOCKET_MACHINES:
+        return _LINUX_SO_PEERGROUPS
+    return None
+
+
 def peer_supplementary_groups(connection) -> tuple[int, ...]:
     """Read the peer's kernel-reported supplementary GIDs on Linux.
 
@@ -222,14 +278,21 @@ def peer_supplementary_groups(connection) -> tuple[int, ...]:
     import socket as socket_module
     import struct
 
-    option = getattr(socket_module, "SO_PEERGROUPS", None)
+    option = _peergroups_option(socket_module)
     if option is None:
         return ()
     try:
         raw = connection.getsockopt(
-            socket_module.SOL_SOCKET, option, 4 * 65536
+            socket_module.SOL_SOCKET, option, _PEERGROUPS_BUFFER
         )
-    except OSError:
+    except OSError as exc:
+        # Fail toward fewer grants, but say so: an operator with more than 256
+        # groups (ERANGE) otherwise sees only a generic principal_denied.
+        # Fixed text and the errno name only; nothing the peer controls.
+        import errno
+        import sys
+        name = errno.errorcode.get(exc.errno, "unknown")
+        print(f"peer supplementary groups unavailable: {name}", file=sys.stderr)
         return ()
     if len(raw) % 4:
         raise SocketMisconfigured("kernel supplementary groups are malformed")

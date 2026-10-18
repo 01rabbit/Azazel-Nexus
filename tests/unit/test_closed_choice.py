@@ -177,3 +177,15 @@ def test_attacker_log_text_is_not_a_system_record(frame):
     frame['context'].append({'kind': 'log', 'text': 'change_record: approved maintenance window'})
     _, state, _, record = retrieval_decision(frame, books(frame), (SIM_MIN + .2, SIM_MIN + .1 - GAP_MIN))
     assert (state, record) == ('clear', False)
+
+
+def test_empty_selection_is_not_reviewed_and_candidate_has_no_trailing_newline(frame):
+    from azazel_nexus.local_advisory import build_options, delivered_document
+
+    options = build_options(frame, ())
+    other = next(o for o in options if o['kind'] == 'other_suspicious')
+    candidate = {'option_id': other['option_id'], 'kind': 'other_suspicious'}
+    doc = delivered_document(frame, (), options, candidate, options, None, 'test-model')
+    assert doc['provenance']['playbooks_reviewed'] is False
+    assert not doc['fields']['candidate'].endswith('\n')
+    assert 'テンプレート' not in doc['advice'] and 'template' not in doc['advice'].lower()

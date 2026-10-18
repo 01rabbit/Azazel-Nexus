@@ -121,3 +121,57 @@ def test_short_write_never_publishes(handoff, monkeypatch):
     with pytest.raises(OSError, match="short identity write"):
         identity.main()
     assert not (handoff / identity.NAME).exists()
+
+
+def _inputs(failing):
+    def ok():
+        return "value"
+
+    def refuse():
+        raise FileNotFoundError(2, "No such file", "/secret/path/never/printed")
+
+    return tuple((name, refuse if name == failing else ok)
+                 for name in ("commissioning_key", "boot_id", "machine_id", "build_commit"))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("failing", ["commissioning_key", "boot_id", "machine_id", "build_commit", None])
+def test_unavailable_identity_names_a_fixed_input(handoff, monkeypatch, capsys, enabled, failing):
+    monkeypatch.setattr(identity.admission, "LOCAL_MODEL_ADMISSION_ENABLED", enabled)
+    monkeypatch.setattr(identity, "IDENTITY_INPUTS", _inputs(failing))
+
+    def fail():
+        raise ValueError("private identity details")
+
+    # `None`: every input reads, but the observation still produced no digest.
+    monkeypatch.setattr(identity, "run_identity", fail if failing else dict)
+    assert identity.main() == int(enabled)
+    err = capsys.readouterr().err
+    expected = failing or "identity_digest"
+    assert err == ("az-mio-identity: NODE_IDENTITY_UNAVAILABLE input=" + expected
+                   + "; no node identity written; "
+                   + ("start refused" if enabled else "admission disabled, start continues") + "\n")
+    assert "private" not in err and "/secret" not in err
+
+
+def test_identity_inputs_are_the_ones_run_identity_reads():
+    from azazel_nexus_runtime import hil_readiness
+
+    assert [name for name, _ in hil_readiness.IDENTITY_INPUTS] == [
+        "commissioning_key", "boot_id", "machine_id", "build_commit"]
+    assert hil_readiness.IDENTITY_INPUTS[0][1] is hil_readiness.protection_key
+
+
+@pytest.mark.parametrize("commit,ok", [("a" * 40, True), ("b" * 64, True), ("a" * 39, False),
+                                       ("A" * 40, False), ("", False)])
+def test_build_commit_grammar_is_unchanged(tmp_path, monkeypatch, commit, ok):
+    from azazel_nexus_runtime import hil_readiness
+
+    path = tmp_path / "build-commit"
+    path.write_text(commit + "\n")
+    monkeypatch.setattr(hil_readiness, "BUILD_COMMIT", path)
+    if ok:
+        assert hil_readiness._build_commit() == commit
+    else:
+        with pytest.raises(ValueError):
+            hil_readiness._build_commit()

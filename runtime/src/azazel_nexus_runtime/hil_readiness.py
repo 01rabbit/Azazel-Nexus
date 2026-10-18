@@ -72,15 +72,41 @@ def digest(value: str, *, key: bytes, domain: str) -> str:
     ).hexdigest()
 
 
-def run_identity() -> dict:
-    key = protection_key()
+def _boot_id() -> str:
     boot = BOOT_ID.read_text().strip()
     UUID(boot)
+    return boot
+
+
+def _machine_id() -> str:
     host = MACHINE_ID.read_text().strip()
+    if not host:
+        raise ValueError("host identity unavailable")
+    return host
+
+
+def _build_commit() -> str:
     commit = BUILD_COMMIT.read_text().strip()
-    if (not host or len(commit) not in (40, 64)
-            or any(c not in "0123456789abcdef" for c in commit)):
-        raise ValueError("host/build identity unavailable")
+    if len(commit) not in (40, 64) or any(c not in "0123456789abcdef" for c in commit):
+        raise ValueError("build identity unavailable")
+    return commit
+
+
+#: The fixed inputs of an identity observation, in the order they are read.
+#: Names are a closed vocabulary an operator can be told; values never are.
+IDENTITY_INPUTS = (
+    ("commissioning_key", protection_key),
+    ("boot_id", _boot_id),
+    ("machine_id", _machine_id),
+    ("build_commit", _build_commit),
+)
+
+
+def run_identity() -> dict:
+    key = protection_key()
+    boot = _boot_id()
+    host = _machine_id()
+    commit = _build_commit()
     return {
         "boot_fingerprint": digest(boot, key=key, domain="hil-boot"),
         "host_digest": digest(host, key=key, domain="hil-host"),

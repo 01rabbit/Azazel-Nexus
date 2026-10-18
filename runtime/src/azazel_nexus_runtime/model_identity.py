@@ -9,7 +9,7 @@ import sys
 
 from azazel_nexus import model_admission as admission
 
-from .hil_readiness import run_identity
+from .hil_readiness import IDENTITY_INPUTS, run_identity
 
 DIRECTORY = "/run/azazel-mio-identity"
 NAME = "node-identity"
@@ -50,6 +50,27 @@ def read_identity():
         os.close(fd)
 
 
+def _unavailable_input() -> str:
+    """Name the first fixed input that does not read, or the digest itself.
+
+    Only a name from a closed vocabulary leaves this function: never a path's
+    contents, a key byte or exception text.
+    """
+
+    for name, read in IDENTITY_INPUTS:
+        try:
+            read()
+        except (OSError, ValueError, KeyError, UnicodeError):
+            return name
+    return "identity_digest"
+
+
+def _report_unavailable(enabled: bool) -> None:
+    effect = "start refused" if enabled else "admission disabled, start continues"
+    print(f"az-mio-identity: NODE_IDENTITY_UNAVAILABLE input={_unavailable_input()}; "
+          f"no node identity written; {effect}", file=sys.stderr)
+
+
 def main():
     """No arguments or environment inputs; refresh on every service start."""
     if sys.argv[1:] or os.geteuid() != 0:
@@ -69,7 +90,10 @@ def main():
                 raise ValueError("identity digest refused")
         except (OSError, ValueError, KeyError, UnicodeError):
             # Enabling admission makes unavailable identity a visible start failure.
-            return 1 if admission.LOCAL_MODEL_ADMISSION_ENABLED else 0
+            # Either way the journal gets a fixed reason, never exception text.
+            enabled = admission.LOCAL_MODEL_ADMISSION_ENABLED
+            _report_unavailable(enabled)
+            return 1 if enabled else 0
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         try:
