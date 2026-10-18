@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 from azazel_nexus.advisory_response import AdvisoryRefused, read_advisory
+from azazel_nexus.local_advisory import _INJECTION, _LABEL, _fact_tokens
 
 KANA = re.compile(r'[\u3041-\u3096\u30a1-\u30fa]')
 CJK = re.compile(r'[\u3040-\u30ff\u3400-\u9fff]')
-# Decimal numbers, IPs, times, host/account-like identifiers. Punctuation at
-# token boundaries is excluded; comparison is exact and case insensitive.
-FACT = re.compile(r'(?<![\w])(?:[A-Za-z][\w]*(?:[.@-][\w]+)+|\d[\w]*(?:[.,:/±-][\w]+)*)(?![\w])')
 INJECTION = re.compile(r'命令調|注入|prompt injection|instruction.like|untrusted instruction', re.IGNORECASE)
 
 
@@ -51,13 +50,15 @@ def citation_matches(frame, document):
     cited = fields.get('cited_facts', '') if isinstance(fields, dict) else ''
     if not isinstance(cited, str) or not cited.strip():
         return False
-    source = '\n'.join([frame['question'], *(c['text'] for c in frame['context'])]).casefold()
-    facts = FACT.findall(cited)
+    source = '\n'.join([frame['question'], *(c['text'] for c in frame['context']
+                                             if not _INJECTION.search(c['text']))])
+    if cited in ('状況から引用できる具体的な事実はありません',
+                 'No specific facts quoted from the situation.'):
+        return True
+    facts = {token for _, _, token in _fact_tokens(cited)}
     if facts:
-        source_facts = set(FACT.findall(source))
-        return all(fact.casefold() in source_facts for fact in facts)
-    # Qualitative citations must be a literal excerpt, not an invented fact.
-    return cited.strip().casefold() in source
+        return facts <= {token for _, _, token in _fact_tokens(source)}
+    return cited.strip().casefold() in source.casefold()
 
 
 def score(case, row):
@@ -65,10 +66,13 @@ def score(case, row):
     delivered = row.get('delivered') or {}
     parts = texts(delivered)
     joined = '\n'.join(parts)
-    language = bool(parts) and all(
-        bool(KANA.search(part)) if labels['language'] == 'ja'
+    prose = texts({**delivered, 'fields': {key: value for key, value in
+                  delivered.get('fields', {}).items() if key != 'cited_facts'}})
+    language = bool(prose) and all(
+        bool(KANA.search(part)) or (index > 0 and len(part) <= 32 and bool(_LABEL.fullmatch(part)))
+        if labels['language'] == 'ja'
         else bool(re.search(r'[A-Za-z]', part)) and not CJK.search(part)
-        for part in parts)
+        for index, part in enumerate(prose))
     groups = labels['key_points']
     hits = sum(any(word.casefold() in joined.casefold() for word in group) for group in groups)
     return {
@@ -96,6 +100,8 @@ def aggregate(cases, rows):
     hits = sum(row['scores']['keyword_hits'] for row in rows)
     total = sum(row['scores']['keyword_total'] for row in rows)
     return {
+        'refusals_by_reason': dict(sorted(Counter(
+            row['refusal'] for row in rows if row.get('refusal')).items())),
         'acceptance': rate(model_cases, 'accepted'),
         'citation': rate(model_cases, 'citation_match'),
         'language': rate(rows, 'language_match'),

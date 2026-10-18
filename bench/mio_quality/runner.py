@@ -50,11 +50,11 @@ class LocalContract:
         knowledge = tuple(ref for ref in self.knowledge if ref.technique_id in ids)[:16]
         return self.api.build_prompt(frame, playbooks=self.matches(frame), knowledge=knowledge)
 
-    def read(self, text, frame):
-        return self.api.read_local_advisory(text, frame=frame)
+    def read(self, text, frame, *, reference_text=''):
+        return self.api.read_local_advisory(text, frame=frame, reference_text=reference_text)
 
 
-def evaluate(server, cases, *, contract, max_tokens=512, deadline_s=120):
+def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
     """Fake-injectable server with start/health/infer/stop, like LocalServer.
 
     Preflight every gate before starting a server. Gated frames never invoke
@@ -86,7 +86,9 @@ def evaluate(server, cases, *, contract, max_tokens=512, deadline_s=120):
                 row['error'] = startup_error
             else:
                 try:
-                    request = LocalInferenceRequest(contract.prompt(frame), max_tokens, 0)
+                    messages = contract.prompt(frame)
+                    reference = messages[1][1] if len(messages) == 3 else ''
+                    request = LocalInferenceRequest(messages, max_tokens, 0)
                     # Retain the exact constraint used for reproducibility.
                     row['response_format'] = inference_document(request)['response_format']
                     result = server.infer(request, deadline_s=deadline_s)
@@ -96,7 +98,7 @@ def evaluate(server, cases, *, contract, max_tokens=512, deadline_s=120):
                     except (ValueError, TypeError):
                         row['raw_document'] = {'advice': result.text}
                     try:
-                        advisory = contract.read(result.text, case['frame'])
+                        advisory = contract.read(result.text, case['frame'], reference_text=reference)
                         row.update(outcome='advisory', delivered=advisory_document(advisory))
                     except AdvisoryRefused as exc:
                         row.update(outcome='not_advice', refusal=exc.refusal.value)
@@ -165,7 +167,7 @@ def main(argv=None):
     parser.add_argument('--summary', required=True, type=Path)
     parser.add_argument('--playbooks', help='comma-separated baseline then site layer paths')
     parser.add_argument('--knowledge-fixture', type=Path)
-    parser.add_argument('--max-tokens', type=int, default=512)
+    parser.add_argument('--max-tokens', type=int, default=1024)
     parser.add_argument('--context', type=int, default=4096)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--deadline-s', type=float, default=120)
@@ -215,6 +217,9 @@ def summarize(result):
         metric = result['metrics'][key]
         percent = f"{metric['rate']:.1%}" if metric['rate'] is not None else '対象なし'
         lines.append(f"| {label} | {metric['numerator']}/{metric['denominator']} | {percent} |")
+    lines += ['', '拒否理由別件数:']
+    for reason, count in result['metrics']['refusals_by_reason'].items():
+        lines.append(f'- {reason}: {count}')
     matched = sum(bool(row.get('playbook_ids')) for row in result['rows'])
     total = len(result['rows'])
     lines += ['', f'プレイブック一致率: {matched}/{total}' +
