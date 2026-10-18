@@ -87,6 +87,7 @@ class AdvisoryRefusal(str, Enum):
     LOCAL_SCHEMA = "local_schema"
     UNGROUNDED_FACTS = "ungrounded_facts"
     LANGUAGE_MISMATCH = "language_mismatch"
+    DEGENERATE = "degenerate"
     TOO_LARGE = "too_large"
     NOT_TEXT = "not_text"
     CONTROL_CHARACTERS = "control_characters"
