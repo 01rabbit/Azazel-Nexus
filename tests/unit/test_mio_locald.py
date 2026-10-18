@@ -287,7 +287,21 @@ def test_default_service_serves_refusals_with_only_entry_service_policy(tmp_path
     monkeypatch.setattr(mio_locald, "serve_forever", lambda **kw: captured.update(kw) or 0)
     monkeypatch.setattr(mio_locald.PrincipalPolicy, "resolve",
                         lambda **kw: policies.append(kw) or "policy")
+    services = []
+    original = mio_locald.LocalRuntimeService
+
+    def construct(**kwargs):
+        service = original(**kwargs)
+        services.append(service)
+        return service
+
+    monkeypatch.setattr(mio_locald, "LocalRuntimeService", construct)
     assert mio_locald.main([]) == 0
+    assert services[0]._playbooks is None
+    assert services[0]._knowledge_lookup is mio_locald.lookup_context
+    from azazel_nexus.lite_import import KnowledgeRef
+
+    assert mio_locald.KnowledgeRef is KnowledgeRef
     assert policies == [{"service_accounts": ("azmioentry",)}]
     assert captured["registry"] is mio_locald.REGISTRY
     assert captured["path"] == runtime_paths.socket_path("mio")
@@ -541,11 +555,12 @@ def test_the_state_list_covers_a_crash_and_a_rollback():
     assert len(LOCAL_RUNTIME_STATES) == len(set(LOCAL_RUNTIME_STATES))
 
 
-@pytest.mark.parametrize('lookup_state', ['available', 'failed', 'timeout'])
-def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state):
+@pytest.mark.parametrize('lookup_state', ['available', 'failed', 'timeout', 'permission'])
+def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state, monkeypatch):
     import json
     from types import SimpleNamespace
 
+    from azazel_nexus.lite_import import KnowledgeRef
     from azazel_nexus.local_advisory import FIELD_NAMES
     from azazel_nexus.reasoning_playbook import read_library
 
@@ -568,8 +583,16 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state):
             raise ValueError('SECRET_DIAGNOSTIC')
         if lookup_state == 'timeout':
             raise TimeoutError('SECRET_DIAGNOSTIC')
-        return (SimpleNamespace(technique_id='T1110.003', name='Spraying', summary='Context',
-                                claim_id='claim-fixture', bundle_digest='sha256:' + '0' * 64,
+        if lookup_state == 'permission':
+            from azazel_nexus_runtime import knowledge_client
+
+            def denied(*args, **kwargs):
+                raise PermissionError('group-protected socket')
+
+            monkeypatch.setattr(knowledge_client, '_exchange', denied)
+            return knowledge_client.lookup_context(ids)
+        return (KnowledgeRef(technique_id='T1110.003', name='Spraying', summary='Context',
+                                claim_id='T1110.003', bundle_digest='sha256:' + '0' * 64,
                                 freshness='static'),)
 
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
@@ -589,7 +612,7 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state):
     assert lookups == [('T1110.003',)]
     assert len(calls[0].prompt_messages) == 3
     if lookup_state == 'available':
-        assert reply['knowledge'] == {'claim_ids': ['claim-fixture']}
+        assert reply['knowledge'] == {'claim_ids': ['T1110.003']}
     else:
         assert 'knowledge' not in reply
         assert any(event.get('knowledge') == 'unavailable' for event in events)

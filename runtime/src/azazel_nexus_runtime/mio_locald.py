@@ -10,10 +10,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
     build_prompt,
@@ -31,6 +32,7 @@ from azazel_nexus.model_runtime import (
 )
 from azazel_nexus.reasoning_playbook import Library, match, technique_ids
 
+from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import mio_state_dir, socket_path
@@ -95,17 +97,6 @@ class ActivationReply:
             "readiness": self.readiness,
             "reason": self.reason,
         }
-
-
-class KnowledgeRef(Protocol):
-    """Structural Lane K contract; the library never imports the runtime client."""
-
-    technique_id: str
-    name: str
-    summary: str
-    claim_id: str
-    bundle_digest: str
-    freshness: str
 
 
 class LocalRuntimeService:
@@ -283,7 +274,7 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
-    service = LocalRuntimeService()
+    service = LocalRuntimeService(playbooks=None, knowledge_lookup=lookup_context)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),

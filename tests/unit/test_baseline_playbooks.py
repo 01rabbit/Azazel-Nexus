@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from azazel_nexus.local_advisory import read_frame
+from azazel_nexus.reasoning_playbook import compose, match, read_library
+
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "playbooks" / "baseline" / "azazel-baseline.json"
 SPEC = importlib.util.spec_from_file_location("check_playbooks", ROOT / "tools/check_playbooks.py")
@@ -207,3 +210,19 @@ def test_cli_failure_uses_fixed_reason(tmp_path, capsys):
     assert capsys.readouterr().out == "playbooks: invalid: invalid fields\n"
     assert checker.main([str(tmp_path / "absent.json")]) == 1
     assert capsys.readouterr().out == "playbooks: invalid: unreadable file\n"
+
+
+def test_baseline_real_validator_composition_and_eval_coverage():
+    baseline = read_library(BASELINE.read_bytes())
+    library = compose(baseline)
+    assert library.entries == tuple(sorted(baseline.entries, key=lambda entry: entry.id))
+    cases = json.loads((ROOT / "bench/mio_quality/eval_set.json").read_text())["cases"]
+    required = {f"q{number:02}" for number in (*range(1, 9), *range(11, 14))}
+    covered = set()
+    for case in cases:
+        frame = read_frame(case["frame"])
+        ident = frame["request_id"].split("-", 1)[0]
+        if ident in required:
+            assert match(frame, library), frame["request_id"]
+            covered.add(ident)
+    assert covered == required

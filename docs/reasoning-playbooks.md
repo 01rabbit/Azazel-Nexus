@@ -147,21 +147,28 @@ operation in the library.
 ## Production integration boundary
 
 `LocalRuntimeService(playbooks=..., knowledge_lookup=...)` supports injection.
-`main()` has neither a commissioned `PackContext` nor an installed-inventory
-resolver; it leaves both dependencies unset. Integration must obtain the active
-Mission Pack through its existing trust/admission path, recheck current trust,
-revocation, expiry and installed-asset pins, resolve selected `reasoning_playbook`
-components through `PackContext.assets[(kind, id, digest)].path`, and call
-`load_library` with each **selected component digest**. Establish baseline then
-site order from the commissioned selection, compose, and inject the result.
-Wire Lane K's deadline-bound runtime client as the lookup callable. Reconcile
-its frozen `KnowledgeRef` with locald's structural protocol (technique_id, name,
-summary, claim_id, bundle_digest, freshness). Selection changes and trust loss
-must refresh or remove the injected references through the same lifecycle.
-The existing `LocalSocketClient` and `mio_entryd` currently reconstruct only
-advice/fields. Integration must also validate and forward the trusted metadata
-through those callers if it is needed in the operator-facing entry reply;
-those files are outside Lane P's scope. The direct locald reply includes it.
+`main()` wires the deadline-bound runtime `knowledge_client.lookup_context`, using
+`KnowledgeRef` from the library's `lite_import`; locald has no structural duplicate.
+Knowledge socket access failures proceed without Knowledge and audit unavailable.
+
+Follow-up: `main()` still explicitly uses `playbooks=None`: locald has no
+commissioned `PackContext` or installed-inventory resolver. Integration must obtain
+the active Mission Pack through its existing trust/admission path, recheck current
+trust, revocation, expiry and installed-asset pins, resolve selected
+`reasoning_playbook` components through `PackContext.assets[(kind, id, digest)].path`,
+and call `load_library` with each **selected component digest**. Establish baseline
+then site order from the commissioned selection, compose, and inject the result.
+Selection changes and trust loss must refresh or remove references through that
+same lifecycle. The shipped baseline is not automatically loaded by locald.
+
+`LocalSocketClient` validates metadata separately from the model advisory at the
+process boundary: exact object keys, ASCII ID/reference grammars, at most two
+unique playbook IDs with parallel statuses, sixteen references, ten first-response
+strings (160 characters each), sixteen Knowledge claim IDs and 16 KiB UTF-8 total.
+Malformed metadata refuses the local reply as unavailable. Missing playbook becomes
+null; absent Knowledge stays absent. The router preserves the validated reply and
+`mio_entryd` forwards it for local `mio.advise` answers. Remote answers have null
+playbook and no Knowledge metadata. Gated replies retain their existing shape.
 No new path, command-line option or environment bypass exists in locald.
 
 ## Offline quality evaluation

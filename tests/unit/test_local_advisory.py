@@ -652,3 +652,113 @@ def test_reference_prompt_is_optional_bounded_and_separate():
     capped = build_prompt(original, matches * 20, (ref,) * 16)
     assert len(capped[1][1]) == 1200
     assert capped == build_prompt(original, matches * 20, (ref,) * 16)
+
+
+@pytest.fixture
+def trusted_metadata():
+    return {
+        'playbook': {
+            'ids': ['auth-password-spraying'], 'status': ['template'],
+            'references': [{'source': 'mitre-attack', 'id': 'T1110.003'}],
+            'first_response': ['担当者が証拠の保全を判断する'],
+        },
+        'knowledge': {'claim_ids': ['T1110.003']},
+    }
+
+
+def test_metadata_crosses_socket_router_and_operator_entry(tmp_path, monkeypatch, trusted_metadata):
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
+        **json.loads(response()), **trusted_metadata, 'outcome': 'advisory',
+    })
+    entry = mio_entryd.MioEntryService(
+        profile_reader=lambda: MioProfile.FASTEST_PERMITTED,
+        local_admitted=lambda: True,
+        predictions_reader=lambda: {
+            Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture'),
+        },
+    )
+    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    reply = entry.handle(SimpleNamespace(
+        verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(),
+    ))
+    assert reply['route'] == Route.LOCAL.value
+    assert reply['outcome'] == 'answered'
+    assert {key: reply[key] for key in trusted_metadata} == trusted_metadata
+    ledger = entry.router.ledger.path.read_text()
+    assert '担当者' not in ledger and 'first_response' not in ledger
+
+
+@pytest.mark.parametrize(('path', 'bad'), [
+    (('playbook',), []), (('playbook', 'extra'), 'untrusted'),
+    (('playbook', 'ids'), []), (('playbook', 'ids'), ['abc'] * 3),
+    (('playbook', 'ids'), ['abc', 'abc']),
+    (('playbook', 'ids'), ['INVALID_ID']), (('playbook', 'ids'), ['a' * 65]),
+    (('playbook', 'ids'), ['abc\n']), (('playbook', 'ids'), [True]),
+    (('playbook', 'status'), []), (('playbook', 'status'), [['template']]),
+    (('playbook', 'status'), ['trusted']),
+    (('playbook', 'references'), []),
+    (('playbook', 'references'), [{'source': 'mitre-attack', 'id': 'T１１１０'}]),
+    (('playbook', 'references'), [{'source': [], 'id': 'T1110'}]),
+    (('playbook', 'references'), [{'source': 'unknown', 'id': 'T1110'}]),
+    (('playbook', 'references'), [{'source': 'mitre-attack', 'id': 'T1110', 'extra': 1}]),
+    (('playbook', 'references'), [{'source': 'mitre-attack', 'id': 'T1110'}] * 9),
+    (('playbook', 'first_response'), []), (('playbook', 'first_response'), ['x'] * 6),
+    (('playbook', 'first_response'), ['x' * 161]),
+    (('playbook', 'first_response'), ['\ud800']),
+    (('playbook', 'first_response'), ['x\x00']),
+    (('playbook', 'first_response'), [1]),
+    (('knowledge',), None), (('knowledge',), {'claim_ids': [], 'extra': 1}),
+    (('knowledge', 'claim_ids'), []), (('knowledge', 'claim_ids'), ['T1110'] * 17),
+    (('knowledge', 'claim_ids'), ['claim-forged']),
+    (('knowledge', 'claim_ids'), ['T1110\n']),
+    (('knowledge', 'claim_ids'), [True]),
+])
+def test_malformed_process_metadata_refuses_reply(monkeypatch, trusted_metadata, path, bad):
+    target = trusted_metadata
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = bad
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
+        **json.loads(response()), **trusted_metadata, 'outcome': 'advisory',
+    })
+    events = []
+    result = mio_socket_client.LocalSocketClient().handle(request(), audit=events.append)
+    assert result == {'outcome': 'failed', 'refusal': 'local_unavailable'}
+    assert events == []
+
+
+def test_metadata_maximum_and_absence(monkeypatch, trusted_metadata):
+    playbook = trusted_metadata['playbook']
+    playbook.update(ids=['auth-one', 'auth-two'], status=['template', 'reviewed'],
+                    references=playbook['references'] * 16,
+                    first_response=['確認' * 80] * 10)
+    trusted_metadata['knowledge']['claim_ids'] *= 16
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
+        **json.loads(response()), **trusted_metadata, 'outcome': 'advisory',
+    })
+    reply = mio_socket_client.LocalSocketClient().handle(request())
+    assert reply['playbook'] == playbook
+    assert reply['knowledge'] == trusted_metadata['knowledge']
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
+        **json.loads(response()), 'outcome': 'advisory', 'playbook': None,
+    })
+    reply = mio_socket_client.LocalSocketClient().handle(request())
+    assert reply['playbook'] is None and 'knowledge' not in reply
+
+
+def test_remote_entry_has_null_playbook_and_no_knowledge(tmp_path, monkeypatch, trusted_metadata):
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    entry = mio_entryd.MioEntryService()
+    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.router, 'handle', lambda **kw: SimpleNamespace(
+        route=Route.REMOTE, outcome=SimpleNamespace(value='answered'),
+        selection=SimpleNamespace(reason='fixture'),
+        reply={**json.loads(response()), **trusted_metadata, 'outcome': 'advisory'},
+    ))
+    reply = entry.handle(SimpleNamespace(
+        verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(),
+    ))
+    assert reply['playbook'] is None and 'knowledge' not in reply

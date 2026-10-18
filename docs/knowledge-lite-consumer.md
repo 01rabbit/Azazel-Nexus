@@ -343,14 +343,14 @@ AF_UNIX exchange with a default 0.5-second monotonic deadline, verifies the
 `azknowledge` socket owner and peer credentials, and validates the bounded
 response. Missing context returns an empty tuple; transport, deadline, invalid
 response and unavailable trust/store conditions raise only
-`KnowledgeUnavailable("knowledge unavailable")`. Locald integration should map
-that exception to its unavailable audit path and continue without knowledge.
+`KnowledgeUnavailable("knowledge unavailable")`. Locald main wires this client and maps
+that exception to its unavailable audit path, continuing without knowledge.
 No network request or retry occurs.
 
 Deployment must allow `azmio` to traverse the existing Knowledge socket directory
 and connect to its `azazel-operator` group socket, in addition to SERVICE
 admission. The current installer and generated locald unit do not provision that
-group access. Packaging/hardening integration must supply that access before
-locald can use the client; those files are outside this lane's permitted scope.
+group access. Filesystem access remains a deployment prerequisite before locald can use the
+client. This integration adds no group membership or packaging permissions.
 The client otherwise fails closed to unavailable. This lookup is human advisory
 context only and adds no decision or enforcement authority.
