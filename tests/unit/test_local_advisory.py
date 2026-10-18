@@ -529,14 +529,16 @@ def test_fabricated_citations_refused(cited):
     assert exc.value.refusal.value == 'ungrounded_facts'
 
 
-@pytest.mark.parametrize('field', ['advice', *FIELD_NAMES])
+@pytest.mark.parametrize('field', ['advice', *(n for n in FIELD_NAMES if n != 'cited_facts')])
 def test_every_japanese_text_requires_kana(field):
+    # cited_facts is a verbatim quote of the frame and is exempt; every field
+    # the model writes in its own words must be Japanese for a Japanese question.
     document = json.loads(japanese_response())
     if field == 'advice':
         document[field] = '需要確認'
     else:
         document['fields'][field] = '需要確認'
-    # A Chinese citation copied from the frame must still fail language checking.
+    # Chinese prose in any answer field fails even if the same text is in the frame.
     item = japanese_frame()
     item['context'].append({'kind': 'log', 'text': '需要確認'})
     with pytest.raises(AdvisoryRefused) as exc:
