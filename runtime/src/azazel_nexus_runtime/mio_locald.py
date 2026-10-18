@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
@@ -30,12 +31,22 @@ from azazel_nexus.model_runtime import (
     readiness,
     resolve_runtime,
 )
+from azazel_nexus.playbook_selection import (
+    PlaybookSelection,
+    active_playbooks,
+    selection_context,
+)
 from azazel_nexus.reasoning_playbook import Library, match, technique_ids
 
 from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
-from .runtime_paths import mio_state_dir, socket_path
+from .runtime_paths import (
+    mio_state_dir,
+    mission_pack_config,
+    mission_pack_root,
+    socket_path,
+)
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
@@ -245,6 +256,63 @@ class LocalRuntimeService:
         return reply
 
 
+class PlaybookSelectionHolder:
+    """Cache verified layers; inspect only file metadata until state changes.
+
+    Trust/config, pointer, retained bytes and selected assets invalidate the
+    cache. Expiry removes references even if no files change. Failures retry
+    on the next request, so restored access needs no daemon restart.
+    """
+
+    def __init__(self, *, config: Path, root: Path, clock=None):
+        self.config = config
+        self.root = root
+        self.clock = clock or (lambda: datetime.now(UTC).isoformat().replace('+00:00', 'Z'))
+        self.selection = PlaybookSelection(None, 'no_pack')
+        self._revision = None
+        self._audited = False
+
+    def _fingerprint(self):
+        result = []
+        for path in (self.config, self.root / 'current', *self.selection.watch_paths):
+            try:
+                info = path.lstat()
+                result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                               info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid))
+            except OSError:
+                result.append(None)
+        return tuple(result)
+
+    def refresh(self, *, audit: Callable[[dict], None]) -> Library | None:
+        now = self.clock()
+        revision = self._fingerprint()
+        expired = (self.selection.expires_at is not None
+                   and datetime.fromisoformat(now) >= datetime.fromisoformat(self.selection.expires_at))
+        if (self._revision == revision and self.selection.library is not None and not expired):
+            return self.selection.library
+        try:
+            # An absent store is ordinary CORE, even before commissioning.
+            try:
+                (self.root / 'current').lstat()
+            except FileNotFoundError:
+                selection = PlaybookSelection(None, 'no_pack')
+            else:
+                selection = active_playbooks(selection_context(self.config, self.root), now=now)
+        except Exception as error:
+            if isinstance(error, AuditUnavailable):
+                raise
+            selection = PlaybookSelection(None, 'pack_degraded')
+        # Never retain the old library on a failed refresh.
+        previous = self.selection
+        stable = revision == self._fingerprint()
+        self.selection = selection
+        self._revision = self._fingerprint() if stable else None
+        if not self._audited or selection != previous or self._revision is None:
+            audit(selection.as_event())
+            self._audited = True
+        return selection.library
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -274,12 +342,19 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
-    service = LocalRuntimeService(playbooks=None, knowledge_lookup=lookup_context)
+    selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
+    library = selection.refresh(audit=ledger.append)
+    service = LocalRuntimeService(playbooks=library, knowledge_lookup=lookup_context)
+
+    def handle(request):
+        service._playbooks = selection.refresh(audit=ledger.append)
+        return service.handle(request, audit=ledger.append)
+
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
         audit=ledger.append,
-        handler=lambda request: service.handle(request, audit=ledger.append),
+        handler=handle,
         stop=stop, ready=ready if ready is not None else runtime_ready_callback(),
     )
 

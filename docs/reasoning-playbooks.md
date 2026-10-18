@@ -156,15 +156,36 @@ operation in the library.
 `KnowledgeRef` from the library's `lite_import`; locald has no structural duplicate.
 Knowledge socket access failures proceed without Knowledge and audit unavailable.
 
-Follow-up: `main()` still explicitly uses `playbooks=None`: locald has no
-commissioned `PackContext` or installed-inventory resolver. Integration must obtain
-the active Mission Pack through its existing trust/admission path, recheck current
-trust, revocation, expiry and installed-asset pins, resolve selected
-`reasoning_playbook` components through `PackContext.assets[(kind, id, digest)].path`,
-and call `load_library` with each **selected component digest**. Establish baseline
-then site order from the commissioned selection, compose, and inject the result.
-Selection changes and trust loss must refresh or remove references through that
-same lifecycle. The shipped baseline is not automatically loaded by locald.
+`main()` now resolves the ACTIVE Mission Pack's `reasoning_playbook` components
+through the commissioned installed inventory. The read-only resolver reuses
+Mission Pack status and retained generation/admission integrity checks, then
+checks the retained signature, current signer trust and signing epoch, validity
+interval, and selected asset version/size/digest pins. It loads each library with
+the selected component digest. Exactly one baseline is required; baseline comes
+first, followed by site layers in manifest component order. Site-only selections
+are refused as `invalid_library`; two baselines produce `multiple_baselines`.
+The shipped baseline is not automatically loaded.
+
+A small locald holder resolves at startup and checks metadata for the `current`
+pointer, commissioned configuration, retained generation files and selected asset
+files per request. Changes trigger verification and recomposition; expiry also
+invalidates the cache without a file change. Failed resolution immediately drops
+the old library and retries on the next request. The fixed reasons are `no_pack`,
+`pack_degraded`, `asset_missing`, `digest_mismatch`, `invalid_library` and
+`multiple_baselines`; success is `active`. Selection audits contain only the
+reason and ordered library IDs, versions and raw digests, never paths or prose.
+Advice continues through its existing admission gates without optional references.
+
+The paths are the existing `/etc/azazel/mission-pack.json` and encrypted
+`/data/azazel/mission-packs` store, rooted through runtime_paths like other runtime
+paths. Provisioning must give `azmio` read/traverse access to the commissioned
+configuration, active generation and selected assets, while preserving root-only
+write authority and encrypted storage. Generation files are currently private to
+the pack writer; this integration does not change owners, groups, installation
+modes or unit hardening. Until packaging provisions those read permissions, locald
+fails to no playbooks with an audited reason, as with unavailable Knowledge socket
+access. The consumer reads the existing configuration subset needed for selection;
+it does not run CLI LUKS/resource probes or perform admission/activation writes.
 
 `LocalSocketClient` validates metadata separately from the model advisory at the
 process boundary: exact object keys, ASCII ID/reference grammars, at most two
