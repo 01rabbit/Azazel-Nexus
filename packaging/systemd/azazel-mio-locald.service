@@ -39,7 +39,7 @@ LogRateLimitBurst=50
 LogExtraFields=AZ_SERVICE=mio-local
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/mio
-ReadWritePaths=/var/lib/azazel/run
+ReadWritePaths=/var/lib/azazel/run/mio
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

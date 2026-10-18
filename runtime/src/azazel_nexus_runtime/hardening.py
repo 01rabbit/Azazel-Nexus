@@ -379,7 +379,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus remote inference transport",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/remote-inference.md",
         address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
-        read_write_paths=("/var/lib/azazel/remote", "/var/lib/azazel/run"),
+        # Its own socket leaf (installer-owned azremote:azazel-operator
+        # 2710), never the whole run tree.
+        read_write_paths=("/var/lib/azazel/remote", "/var/lib/azazel/run/remote"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         is_inference_transport=True,
@@ -417,7 +419,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus local model runtime host",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-local-runtime.md",
         address_families=("AF_UNIX",),
-        read_write_paths=("/var/lib/azazel/mio", "/var/lib/azazel/run"),
+        # Its own socket leaf, never the whole run tree: the installer owns
+        # /var/lib/azazel/run/mio as azmio:azazel-operator 2710, and nothing
+        # else under /var/lib/azazel/run -- including the legacy unattested
+        # core-reserve.json -- is this service's to write.
+        read_write_paths=("/var/lib/azazel/mio", "/var/lib/azazel/run/mio"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         is_model_host=True,

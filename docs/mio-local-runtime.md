@@ -32,7 +32,8 @@ the [M.I.O. admission runbook](hil-runbooks/mio-admission.md).
 ## 2. The service boundary, and the account that is not reused
 
 `az-mio-locald` — its own unit, its own system account (`azmio`), its own
-socket (`mio`), its own runtime directory, one writable path, and
+socket (`mio`), its own runtime directory, its staging directory plus its own
+socket leaf as the only writable paths, and
 `PrivateNetwork=yes` on top of the `IPAddressDeny=any` every unit here
 carries.
 
@@ -42,7 +43,7 @@ carries.
 | --- | --- | --- |
 | may reach the network | yes, one address family | **no network namespace at all** |
 | may run a program | no | one, from a fixed list |
-| writes | `/var/lib/azazel/fetch` | `/var/lib/azazel/mio` |
+| writes | `/var/lib/azazel/fetch` | `/var/lib/azazel/mio`, `/var/lib/azazel/run/mio` |
 | socket | `fetch` | `mio` |
 
 `ServiceProfile` refuses a profile that sets both `is_artifact_fetcher` and
@@ -356,6 +357,14 @@ stay under root-owned `/var/lib/azazel/models/store`. Root-owned staging/store
 are setgid azmio 2750; verified promotion changes data mode to 0640, granting
 azmio read access without write or executable bits. No model bytes move into
 the checkout. Binary pins must use the `sha256:<64 lowercase hex>` format.
+
+Locald's unit grants write access to exactly `/var/lib/azazel/mio` and its own
+socket leaf `/var/lib/azazel/run/mio` (azmio:azazel-operator 2710, created by
+the installer). The rest of `/var/lib/azazel/run` -- other daemons' socket
+leaves and the legacy unattested `core-reserve.json` -- stays read-only under
+`ProtectSystem=strict`. Connecting to the existing knowledge-read socket needs
+no write grant; creating a socket does, which is why only the `mio` leaf is
+writable.
 
 The orchestrator built linux/arm64 twice from clean containers using the image
 above: gcc 14.2.0-19, cmake 3.31.6-2, binutils 2.44-3 and

@@ -75,8 +75,8 @@ __all__ = [
 #: be reachable by everything that can reach anything.
 SOCKET_NAME = "mio"
 
-#: The one directory this service reads models from and the only path it may
-#: write. Fixed here: a staging directory supplied by a caller is a caller
+#: The one directory this service reads models from and, with its own socket
+#: leaf under /var/lib/azazel/run/mio, the only path it may write. Fixed here: a staging directory supplied by a caller is a caller
 #: choosing which file is the model.
 STAGING = Path("/var/lib/azazel/mio")
 
