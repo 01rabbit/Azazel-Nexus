@@ -315,3 +315,20 @@ def test_non_owner_group_member_can_load_store_written_as_root(monkeypatch):
             assert os.waitstatus_to_exitcode(status) == (0 if readable else 3)
     finally:
         shutil.rmtree(base)
+
+
+def test_missing_trust_directory_is_named(monkeypatch):
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(enrollment, "TRUST_DIRECTORY", "/nonexistent/azazel-operator-trust")
+    with pytest.raises(ApprovalRefused, match="operator trust directory .* is missing"):
+        enrollment.update_operator(action="enroll", operator="operator-a",
+                                   public_key_hex="00" * 32, confirmation="sha256:" + "0" * 64)
+
+
+def test_refusal_reason_is_printed(monkeypatch, capsys):
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(enrollment.sys.stdin, "isatty", lambda: True)
+    answers = iter(["00" * 32, "sha256:" + "0" * 64, "WRONG"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert enrollment.main(["enroll", "operator-a"]) == 1
+    assert "explicit change confirmation refused" in capsys.readouterr().err

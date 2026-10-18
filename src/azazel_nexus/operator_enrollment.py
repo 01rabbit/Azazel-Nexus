@@ -53,6 +53,7 @@ def _updated(current, *, action, operator, public_key_hex, confirmation):
 # group) need the public keys and revocations for local model admission. The
 # store holds no secrets; it stays root-owned and never group/other-writable.
 READER_GROUP = "azmission-read"
+TRUST_DIRECTORY = "/etc/azazel/operator-trust"
 
 
 def _reader_gid():
@@ -142,6 +143,13 @@ def update_operator(*, action, operator, public_key_hex, confirmation) -> None:
     """Root-only explicit change at the fixed path; no service activation."""
     if os.geteuid() != 0:
         raise ApprovalRefused("operator enrollment requires local administrator privilege")
+    if not os.path.lexists(TRUST_DIRECTORY):
+        # Diagnostic only (the protected open below still decides): say what is
+        # missing instead of a generic failure. Nothing has been changed yet.
+        raise ApprovalRefused(
+            "operator trust directory /etc/azazel/operator-trust is missing; create it as "
+            "root first: install -d -m 0750 -o root -g azmission-read /etc/azazel/operator-trust "
+            "(or -m 0700 -g root where the azmission-read group does not exist)")
     try:
         with _trust_directory() as fd:
             _update_at(fd, owner=0, action=action, operator=operator,
@@ -168,7 +176,12 @@ def main(argv=None) -> int:
             raise ApprovalRefused("explicit change confirmation refused")
         update_operator(action=args.action, operator=args.operator,
                         public_key_hex=public, confirmation=confirmation)
-    except (ApprovalRefused, EOFError, KeyboardInterrupt):
+    except ApprovalRefused as refused:
+        # ApprovalRefused messages are fixed literals in this package; no input is echoed.
+        print(f"No success confirmed ({refused}). Inspect the trust store before retrying.",
+              file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
         print("No success confirmed. Inspect the trust store before retrying.", file=sys.stderr)
         return 1
     print("Operator trust update verified. No service was activated.")
