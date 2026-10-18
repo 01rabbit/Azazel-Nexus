@@ -245,10 +245,11 @@ class EdgeLease:
         return self._approval[0] if self._approval else ""
 
     @property
-    def expires_at(self) -> datetime:
-        if self._approval is None:
-            raise KnowledgeRefused("unverified Edge lease")
-        return self._approval[1]
+    def expires_at(self) -> datetime | None:
+        # None, not an exception: Python 3.11's runtime Protocol isinstance()
+        # evaluates properties, and an unverified lease must still be
+        # inspectable. Callers check `verified` before using the expiry.
+        return self._approval[1] if self._approval else None
 
     @property
     def lease_id(self) -> str:
