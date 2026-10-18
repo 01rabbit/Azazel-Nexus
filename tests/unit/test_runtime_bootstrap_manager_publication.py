@@ -512,7 +512,9 @@ def test_manager_publication_faults_refuse_and_close_single_session(
         manager, sessions, bus, approval, _policy_value, _policy_calls, _confirms, _checks = (
             # Only the hanging Reload needs a short bound to reach its deadline.
             _manager_fixture(env, monkeypatch, fault=fault,
-                             job_timeout_seconds=0.05 if fault == "reload-timeout" else 5.0)
+                             # The deadline case must still reach the injected Reload hang
+                             # before its bound fires; 0.05 s did not under CPU load.
+                             job_timeout_seconds=1.0 if fault == "reload-timeout" else 5.0)
         )
         expected_error = (
             "loaded bootstrap observation refused"
