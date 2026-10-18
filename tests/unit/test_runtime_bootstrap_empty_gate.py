@@ -27,7 +27,7 @@ def test_empty_pair_gate_rechecks_real_fixture_after_previous_success(tmp_path):
 
         try:
             manager = BootstrapNarrowingManager(
-                job_timeout_seconds=0.5, session_factory=factory,
+                job_timeout_seconds=5.0, session_factory=factory,
                 closed_overlay_files=_files(env), cgroup_root_fd=root_fd,
                 cgroup_owner_uid=os.getuid(),
             )
@@ -69,7 +69,7 @@ def test_closed_cgroup_descriptor_refuses_before_new_session(tmp_path):
             return session
 
         manager = BootstrapNarrowingManager(
-            job_timeout_seconds=0.5, session_factory=factory,
+            job_timeout_seconds=5.0, session_factory=factory,
             closed_overlay_files=_files(env), cgroup_root_fd=root_fd,
             cgroup_owner_uid=os.getuid(),
         )

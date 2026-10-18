@@ -32,7 +32,7 @@ def _pinned_inspector(bus, expected_owner):
         bus=bus,
         message_factory=Message,
         message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        timeout_seconds=0.2,
+        timeout_seconds=5.0,
         expected_owner=expected_owner,
     )
 
@@ -71,7 +71,7 @@ def test_owner_mismatch_refuses_before_job_list_or_cancellation():
         bus=bus,
         message_factory=lambda **values: SimpleNamespace(**values),
         message_type=SimpleNamespace(METHOD_RETURN=JobFakeBus.METHOD_RETURN),
-        timeout_seconds=0.1,
+        timeout_seconds=5.0,
         check_closed=_always_closed,
         expected_owner=":1.99",
     )
@@ -91,7 +91,7 @@ def test_matching_owner_succeeds_for_both_observers_and_none_keeps_legacy_behavi
             bus=bus,
             message_factory=lambda **values: SimpleNamespace(**values),
             message_type=SimpleNamespace(METHOD_RETURN=JobFakeBus.METHOD_RETURN),
-            timeout_seconds=0.1,
+            timeout_seconds=5.0,
             check_closed=lambda: _async_none(),
             expected_owner=expected_owner,
         )
@@ -124,7 +124,7 @@ def test_manager_forwards_matching_and_mismatching_owner_pin(entrypoint):
             bus = JobFakeBus([[], []])
             session = FakeSystemdBusSession(bus=bus)
             manager = BootstrapNarrowingManager(
-                job_timeout_seconds=0.1, session_factory=lambda: session,
+                job_timeout_seconds=5.0, session_factory=lambda: session,
             )
             if should_succeed:
                 assert manager.drain_pending_jobs(

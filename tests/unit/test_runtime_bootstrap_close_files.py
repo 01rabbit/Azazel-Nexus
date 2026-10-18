@@ -207,7 +207,7 @@ def test_manager_close_starts_closes_real_files_and_reloads_fake_systemd(tmp_pat
                     self._loop.close()
 
         manager = BootstrapNarrowingManager(
-            job_timeout_seconds=0.2,
+            job_timeout_seconds=5.0,
             session_factory=Session,
             closed_overlay_files=_files(env),
         )

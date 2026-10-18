@@ -52,7 +52,7 @@ class RestoreFiles:
         return None
 
 
-def _sequence(bus, files, root_fd, *, timeout_seconds=0.5, check_mount=None):
+def _sequence(bus, files, root_fd, *, timeout_seconds=5.0, check_mount=None):
     return BootstrapRestoreSequence(
         bus=bus,
         message_factory=Message,

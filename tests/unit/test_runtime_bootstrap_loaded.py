@@ -278,7 +278,7 @@ def _service_settings(**overrides):
 
 
 def _inspector(
-    bus, *, timeout_seconds=0.25, expected_service_settings=None,
+    bus, *, timeout_seconds=5.0, expected_service_settings=None,
     expected_owner=None,
 ):
     return BootstrapLoadedUnitInspector(

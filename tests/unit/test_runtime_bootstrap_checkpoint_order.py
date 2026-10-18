@@ -55,9 +55,7 @@ class _StoreProxy:
 def _run_publication(tmp_path, monkeypatch, fail_at=None):
     events, state = [], {"checks": 0}
     with _environment(tmp_path) as env:
-        # Ordering, not deadlines: a 0.05 s job bound times out on slow CI runners.
-        manager, _sessions, bus, approval, *_ = _manager_fixture(
-            env, monkeypatch, job_timeout_seconds=5.0)
+        manager, _sessions, bus, approval, *_ = _manager_fixture(env, monkeypatch)
         directories, store, guard = manager._publication_inputs
         manager._publication_inputs = (directories, _StoreProxy(store, events), guard)
         real_create = bootstrap_overlay_files._create_candidate

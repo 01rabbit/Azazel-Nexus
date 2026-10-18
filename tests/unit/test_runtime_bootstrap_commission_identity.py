@@ -89,7 +89,7 @@ def _inspector(bus, **changes):
     options = {
         "bus": bus, "message_factory": lambda **values: SimpleNamespace(**values),
         "message_type": SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        "timeout_seconds": 0.2, "expected_owner": OWNER,
+        "timeout_seconds": 5.0, "expected_owner": OWNER,
         "systemd_profile_digest": PROFILE_DIGEST,
     }
     options.update(changes)

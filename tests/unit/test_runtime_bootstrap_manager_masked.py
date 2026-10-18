@@ -19,13 +19,13 @@ class TrackedBus(FakeBus):
         self.disconnected = True
 
 
-def _manager(bus):
+def _manager(bus, timeout=5.0):
     session = FakeSystemdBusSession(bus=bus)
     session.bootstrap_profile = lambda: observe_bootstrap_systemd_profile(
         version="257.13-1~deb13u1", unit_path=list(_DEBIAN13_V257_UNIT_PATH),
     )
     return BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=lambda: session,
+        job_timeout_seconds=timeout, session_factory=lambda: session,
     ), session
 
 
@@ -53,7 +53,8 @@ def test_manager_mask_observation_failure_still_cleans_up(failure):
         owner_changes=failure == "owner",
         hang_member="GetAll" if failure == "timeout" else None,
     )
-    manager, session = _manager(bus)
+    # Only the hanging GetAll case needs a short bound to reach its deadline.
+    manager, session = _manager(bus, 0.05 if failure == "timeout" else 5.0)
     if failure == "profile":
         session.bootstrap_profile = lambda: None
     with pytest.raises(UnitOperationFailed):

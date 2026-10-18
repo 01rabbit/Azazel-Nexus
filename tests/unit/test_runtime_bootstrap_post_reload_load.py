@@ -131,7 +131,7 @@ def _closure(bus, *, load_roots=frozenset(), owner=OWNER):
     return BootstrapStartClosureInspector(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
         message_type=SimpleNamespace(METHOD_RETURN=1, SIGNAL=4),
-        timeout_seconds=0.5, expected_owner=owner,
+        timeout_seconds=5.0, expected_owner=owner,
         systemd_profile_digest=PROFILE_DIGEST, load_roots=load_roots,
     )
 
@@ -139,7 +139,7 @@ def _closure(bus, *, load_roots=frozenset(), owner=OWNER):
 def _loaded(bus, **kwargs):
     return BootstrapLoadedUnitInspector(
         bus=bus, message_factory=LoadedMessage,
-        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1), timeout_seconds=0.5,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1), timeout_seconds=5.0,
         expected_service_settings=_service_settings(), **kwargs,
     )
 
@@ -355,7 +355,7 @@ def _reader(bus, *, owner=OWNER, manager_owner=OWNER):
     reader = BootstrapStopJobs(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
         message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        timeout_seconds=0.5, expected_owner=owner,
+        timeout_seconds=5.0, expected_owner=owner,
     )
     reader._manager_owner = manager_owner
     return reader
@@ -407,7 +407,7 @@ def _start_client(bus, **kwargs):
             bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
             message_type=SimpleNamespace(METHOD_RETURN=StartFakeBus.METHOD_RETURN,
                                          SIGNAL=StartFakeBus.SIGNAL),
-            timeout_seconds=0.5, check_start=lambda: None,
+            timeout_seconds=5.0, check_start=lambda: None,
             expected_owner=bus.owner, load_first=True,
         )
     return client

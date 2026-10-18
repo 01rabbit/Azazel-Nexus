@@ -98,7 +98,7 @@ class ReadyThenStartBus(DelayedReadyBus):
         raise AssertionError(f"unexpected start bridge call: {message.member}")
 
 
-def _manager(bus, monkeypatch, *, timeout=0.5):
+def _manager(bus, monkeypatch, *, timeout=5.0):
     monkeypatch.setattr(
         manager_module, "current_bootstrap_controller_identity", lambda: IDENTITY,
     )
@@ -147,7 +147,7 @@ def test_delayed_ready_is_confirmed_once_on_one_owned_session_without_start(monk
 @pytest.mark.parametrize("change", ["owner", "pid"])
 def test_identity_drift_during_ready_poll_refuses_without_start(change, monkeypatch):
     bus = DelayedReadyBus(ready_after=20)
-    manager, sessions = _manager(bus, monkeypatch, timeout=0.5)
+    manager, sessions = _manager(bus, monkeypatch)
     notifications = []
     if change == "owner":
         bus.owner_drift_at = 4

@@ -10,7 +10,7 @@ from azazel_nexus_runtime.bootstrap_manager import BootstrapNarrowingManager
 from azazel_nexus_runtime.units import UnitKey, UnitOperationFailed
 
 
-def _manager_with_bus(*, timeout=0.1, bus=None):
+def _manager_with_bus(*, timeout=5.0, bus=None):
     from test_runtime_bootstrap_manager import FakeSystemdBusSession
     from test_runtime_bootstrap_start import FakeBus
 
@@ -97,7 +97,7 @@ def test_presubmission_checkpoint_refusal_or_expiry_never_submits_start(failure,
     # Sync check time is no longer charged to the job budget; "expiry" now means
     # exceeding the total synchronous-check ceiling.
     monkeypatch.setattr(bootstrap_start_bridge, "START_SYNC_CEILING_SECONDS", 0.05)
-    manager, bus, session, _sessions = _manager_with_bus(timeout=0.04)
+    manager, bus, session, _sessions = _manager_with_bus()
     calls = []
 
     def check_start():

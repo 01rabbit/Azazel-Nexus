@@ -26,7 +26,7 @@ def _manager(*, changed_pid=False):
         sessions.append(session)
         return session
 
-    return BootstrapNarrowingManager(job_timeout_seconds=0.2, session_factory=factory), sessions
+    return BootstrapNarrowingManager(job_timeout_seconds=5.0, session_factory=factory), sessions
 
 
 def _capture(manager, check=lambda: None):

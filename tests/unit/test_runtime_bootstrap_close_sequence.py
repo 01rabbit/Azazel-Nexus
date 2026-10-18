@@ -95,7 +95,7 @@ class FakeFiles:
         return self.fragments if self.closed else ()
 
 
-def _sequence(bus, files, timeout_seconds=0.2):
+def _sequence(bus, files, timeout_seconds=5.0):
     return BootstrapCloseSequence(
         bus=bus,
         message_factory=Message,
@@ -193,7 +193,7 @@ def test_jobs_that_do_not_drain_refuse():
     audit = UNIT_NAMES[UnitKey.AUDITD]
     bus = FakeBus(snapshots=[[job_row(29, audit)]] * 16)
     with pytest.raises(UnitOperationFailed):
-        _run(_sequence(bus, FakeFiles(bus), timeout_seconds=0.5).close())
+        _run(_sequence(bus, FakeFiles(bus)).close())
     assert [call.member for call in bus.calls].count("CancelJob") > 0
 
 

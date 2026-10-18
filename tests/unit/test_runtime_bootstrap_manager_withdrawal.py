@@ -76,7 +76,7 @@ def _manager(env, root_fd, buses, fault_state):
         return session
 
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.5,
+        job_timeout_seconds=5.0,
         session_factory=session_factory,
         closed_overlay_files=closed_files,
         withdrawal_files=withdrawal_files,

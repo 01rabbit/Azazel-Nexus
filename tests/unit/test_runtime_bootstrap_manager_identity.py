@@ -74,7 +74,7 @@ def message_factory(**values):
 MESSAGE_TYPE = SimpleNamespace(METHOD_RETURN=FakeBus.METHOD_RETURN)
 
 
-def inspect(bus, timeout=0.05):
+def inspect(bus, timeout=5.0):
     return asyncio.run(inspect_bootstrap_manager_identity(
         bus=bus,
         message_factory=message_factory,
@@ -130,7 +130,7 @@ def test_inherited_bus_owner_pin_rejects_change_without_reader_expected_owner():
         bus=bus,
         message_factory=message_factory,
         message_type=MESSAGE_TYPE,
-        timeout_seconds=0.05,
+        timeout_seconds=5.0,
         expected_owner=None,
     )
 

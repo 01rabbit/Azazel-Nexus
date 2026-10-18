@@ -92,7 +92,7 @@ def _inspector(bus, root_fd, *, check_closed=None, expected_owner=OWNER):
         bus=bus,
         message_factory=lambda **fields: SimpleNamespace(**fields),
         message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        timeout_seconds=0.2,
+        timeout_seconds=5.0,
         cgroup_root_fd=root_fd,
         owner_uid=OWNER_UID,
         expected_owner=expected_owner,

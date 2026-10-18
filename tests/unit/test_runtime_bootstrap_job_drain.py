@@ -74,7 +74,7 @@ def row(job, unit, *, kind="start", state="waiting", path=None, unit_path=None):
     ]
 
 
-def make_drain(bus, checks=None, timeout=0.1):
+def make_drain(bus, checks=None, timeout=5.0):
     checks = checks if checks is not None else []
 
     async def check_closed():
@@ -202,7 +202,7 @@ def test_guard_loss_after_first_cancel_prevents_second_cancel():
     drain = BootstrapJobDrain(
         bus=bus, message_factory=lambda **values: SimpleNamespace(**values),
         message_type=SimpleNamespace(METHOD_RETURN=FakeBus.METHOD_RETURN),
-        timeout_seconds=0.1, check_closed=guard,
+        timeout_seconds=5.0, check_closed=guard,
     )
     with pytest.raises(UnitOperationFailed):
         run(drain.drain())
@@ -267,7 +267,7 @@ def test_guard_change_after_snapshot_prevents_cancellation():
         bus=bus,
         message_factory=lambda **values: SimpleNamespace(**values),
         message_type=SimpleNamespace(METHOD_RETURN=FakeBus.METHOD_RETURN),
-        timeout_seconds=0.1,
+        timeout_seconds=5.0,
         check_closed=closes_then_opens,
     )
     with pytest.raises(UnitOperationFailed):
@@ -286,7 +286,7 @@ def test_systemd_owner_change_prevents_cancellation():
 def test_persistent_or_running_pair_jobs_are_not_mistaken_for_stopped():
     audit = UNIT_NAMES[UnitKey.AUDITD]
     bus = FakeBus([[row(5, audit, state="running")]] * 8)
-    drain, _ = make_drain(bus, timeout=0.5)
+    drain, _ = make_drain(bus)
     with pytest.raises(UnitOperationFailed):
         run(drain.drain())
     assert [call.member for call in bus.calls].count("ListJobs") == 8
@@ -324,7 +324,7 @@ def test_sync_manager_drain_owns_loop_disconnects_and_limits_scope(guard_fails):
     bus = FakeBus([[row(10, audit), row(11, unrelated)], [], []])
     session = OwnedSession(bus)
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.2, session_factory=lambda: session
+        job_timeout_seconds=5.0, session_factory=lambda: session
     )
 
     async def guard():

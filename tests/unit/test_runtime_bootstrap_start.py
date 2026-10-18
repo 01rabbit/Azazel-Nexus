@@ -135,7 +135,7 @@ class FakeBus:
         raise AssertionError(f"unexpected D-Bus method {message.member}")
 
 
-def make_client(bus, check_start=None, timeout=0.03, expected_owner=":1.40"):
+def make_client(bus, check_start=None, timeout=5.0, expected_owner=":1.40"):
     if check_start is None:
 
         def check_start():

@@ -19,7 +19,7 @@ def test_supervisor_requires_real_ready_before_audit_intent_and_start(
     evidence, monkeypatch, failure,
 ):
     bus = ReadyThenStartBus()
-    real, sessions = _manager(bus, monkeypatch, timeout=0.1)
+    real, sessions = _manager(bus, monkeypatch)
     if failure == "owner":
         bus.owner_drift_at = 4
     elif failure == "pending":

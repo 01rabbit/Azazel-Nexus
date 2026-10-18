@@ -128,7 +128,7 @@ def _inspector(bus, *, owner=OWNER, digest=PROFILE_DIGEST):
         bus=bus,
         message_factory=lambda **fields: SimpleNamespace(**fields),
         message_type=SimpleNamespace(METHOD_RETURN=1, SIGNAL=4),
-        timeout_seconds=0.2,
+        timeout_seconds=5.0,
         expected_owner=owner,
         systemd_profile_digest=digest,
     )

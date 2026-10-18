@@ -158,7 +158,7 @@ def _cgroup_root(tmp_path, *, populated_unit=None):
 def _manager(env, bus):
     session = Session(bus)
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.5,
+        job_timeout_seconds=5.0,
         session_factory=lambda: session,
         closed_overlay_files=_files(env),
     )
