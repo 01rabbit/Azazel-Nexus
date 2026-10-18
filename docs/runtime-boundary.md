@@ -96,6 +96,7 @@ connection.
 | `argument_type` / `argument_range` | The value is not what the argument declares |
 | `principal_denied` | The caller holds no class the verb admits |
 | `read_deadline` | The peer stopped sending and did not close |
+| `verb_unavailable` | The caller was admitted, but this build does not implement the verb yet (`watchdog.probe`, #42); the daemon keeps serving |
 
 `frame_too_large` is refused **before the body is read**. A ceiling enforced
 after reading everything has already spent the memory it exists to protect.

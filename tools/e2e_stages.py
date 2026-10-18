@@ -759,7 +759,7 @@ def _edge_probe(harness: Harness) -> str:
     if ran != [[str(root / "bin/azazel-edge-core"), "--health"]]:
         raise RuntimeError(f"the probe ran {ran}, not the command fixed in code")
 
-    state = harness.root / "run" / "edge-probe.json"
+    state = harness.root / "run" / "edge-probe" / "edge-probe.json"
     edge_probed.write_result(outcome, state)
     result = load_probe_result(state)
     if result is None:

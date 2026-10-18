@@ -574,13 +574,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus Edge health and running probe",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/edge-package-verification.md",
         address_families=("AF_UNIX",),
-        # The one remaining run-tree grant, kept on purpose: the result is
-        # `edge_package.PROBE_STATE_PATH` (run/edge-probe.json, at the run
-        # root), written as a temporary file in the same directory and moved
-        # into place. A rename needs the directory, not the file, writable,
-        # so no narrower mount target exists without moving the record into
-        # a leaf of its own -- a data-location change, not a sandbox one.
-        read_write_paths=("/var/lib/azazel/run",),
+        # Only its own result leaf (azprobe:azazel-operator 2750). The result
+        # is `edge_package.PROBE_STATE_PATH`, written as a temporary file in
+        # that leaf and renamed into place; a rename needs the directory
+        # writable, and the leaf is the smallest directory that holds both.
+        read_write_paths=("/var/lib/azazel/run/edge-probe",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         unit_type="oneshot",
@@ -591,8 +589,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "takes no argument that could redirect it, and `AF_UNIX` is all "
             "it needs: "
             "the D-Bus connection it reads unit state over is one. It writes "
-            "into the operator plane's own directory, which already answers "
-            "who may read what is there, and the result holds no secret: a "
+            "only into its own result leaf, which the operator group may "
+            "read, and the result holds no secret: a "
             "version, a digest, two verdicts and their reasons."
         ),
     ),

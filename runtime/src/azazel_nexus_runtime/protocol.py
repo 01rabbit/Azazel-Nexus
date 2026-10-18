@@ -101,6 +101,9 @@ class Refusal(str, Enum):
     ARGUMENT_RANGE = "argument_range"
     PRINCIPAL_DENIED = "principal_denied"
     READ_DEADLINE = "read_deadline"
+    #: A declared verb whose implementation this build does not provide yet.
+    #: A fixed refusal rather than an exception, so the daemon keeps serving.
+    VERB_UNAVAILABLE = "verb_unavailable"
 
 
 class RequestRefused(Exception):

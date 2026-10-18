@@ -57,7 +57,14 @@ from azazel_nexus.degradation import DeadlineExceeded, call_with_deadline
 from azazel_nexus.generation import GenerationRefused, GenerationStore
 
 from .principal import PrincipalClass
-from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
+from .protocol import (
+    Argument,
+    ArgumentKind,
+    Refusal,
+    RequestRefused,
+    Verb,
+    VerbRegistry,
+)
 from .units import UNIT_NAMES, UnitKey, UnitManager, resolve
 
 __all__ = [
@@ -326,10 +333,13 @@ class WatchdogService:
     def handle(self, request) -> dict:
         if request.verb.name == "watchdog.status":
             return {"fenced": self.fenced}
-        raise NotImplementedError(
-            "watchdog.probe is driven by the service loop in #42, which is "
-            "what supplies the call it times"
-        )
+        # `watchdog.probe` is declared (root only) but is driven by the
+        # service loop in #42, which is what supplies the call it times. Until
+        # then it is a fixed refusal, never an exception: an unhandled error
+        # here would take the whole daemon down, and with it every fence it
+        # holds in memory. The verb's admission policy is unchanged -- a
+        # non-root caller is still refused as `principal_denied` before this.
+        raise RequestRefused(Refusal.VERB_UNAVAILABLE, request.verb.name)
 
 
 def main(
@@ -341,6 +351,7 @@ def main(
     from .principal import PrincipalPolicy
     from .runtime_paths import audit_sink, socket_path, watchdog_state_dir
     from .serve import serve_forever
+    from .systemd_notify import runtime_ready_callback
     from .units import DbusUnitManager
 
     def refuse(method: str, unit: str) -> object:
@@ -362,7 +373,8 @@ def main(
         audit=audit_sink("watchdog"),
         handler=service.handle,
         stop=stop,
-        ready=ready,
+        # Type=notify: READY=1 only once serve_forever has bound the socket.
+        ready=ready if ready is not None else runtime_ready_callback(),
     )
 
 

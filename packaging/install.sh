@@ -243,6 +243,9 @@ make_dir 0711 root /var/lib/azazel/run
 make_owned_dir 2710 azaudit azazel-operator /var/lib/azazel/run/audit
 make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
 make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
+# Not a socket leaf: the Edge probe's result, renamed into place inside it.
+# Group-readable (not traversal-only) so `azazel-nexus status` can read it.
+make_owned_dir 2750 azprobe azazel-operator /var/lib/azazel/run/edge-probe
 make_dir 0711 root /var/lib/azazel/state
 make_owned_dir 0700 azaudit root /var/lib/azazel/state/audit
 make_owned_dir 0700 azaudit root /var/lib/azazel/state/auditd

@@ -133,17 +133,17 @@ HEALTH_ARGV = ("bin/azazel-edge-core", "--health")
 
 #: The state file the probe writes and this module reads.
 #:
-#: `/var/lib/azazel/run` rather than a tmpfs of its own: it is the directory
-#: `layout.py` already declares for runtime records (root-owned, 0711
-#: traversal-only), so the operator who runs `azazel-nexus status` can read
-#: the result by name without anybody inventing a second answer to "who may
-#: see this". The probe's unit is the only unprivileged one whose
-#: `ReadWritePaths` still covers this directory, because the result is
-#: renamed into place here; `docs/edge-package-verification.md` records why,
-#: and that installed DAC currently refuses the probe's temporary file. Durability across a reboot is not a problem the location has to
+#: In a leaf of its own, `/var/lib/azazel/run/edge-probe`, which `layout.py`
+#: declares `azprobe:azazel-operator 2750`: the probe's account owns the
+#: directory, so it can create its temporary file there and rename it into
+#: place, and nothing else under the traversal-only (`root 0711`) run root is
+#: writable to it -- the leaf is the whole of the unit's `ReadWritePaths`.
+#: The operator group may list and read the leaf, and the result itself is
+#: `0644`, so the operator who runs `azazel-nexus status` (and root) reads it
+#: by name. Durability across a reboot is not a problem the location has to
 #: solve; the TTL solves it, and a result from before a reboot is stale by
 #: exactly the rule that makes any other old result stale.
-PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe.json")
+PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe/edge-probe.json")
 PROBE_CONTRACT = "azazel-nexus/edge-probe/v1"
 
 #: A ceiling on what is read from the state file. A reader with no ceiling is
@@ -409,9 +409,17 @@ class ProbeResult:
                 f"a TTL of {self.ttl_seconds}s is outside 1-{MAX_TTL_SECONDS}s; "
                 "an unbounded expiry is an expiry that never arrives"
             )
-        for name in ("observed_at", "package_version", "package_digest"):
+        for name in ("observed_at", "package_version"):
             if not str(getattr(self, name)).strip():
                 raise EdgePackageRefused(f"a probe result states its {name}")
+        # A probe that found no usable package checked nothing and claims no
+        # package: it may leave the digest empty, but only when both checks are
+        # not-checked. Any result that reports a checked outcome must name the
+        # package it checked.
+        checked_nothing = (self.health is Evidence.NOT_CHECKED
+                           and self.running is Evidence.NOT_CHECKED)
+        if not str(self.package_digest).strip() and not checked_nothing:
+            raise EdgePackageRefused("a probe result states its package_digest")
         for name in ("health_reason", "running_reason"):
             if not str(getattr(self, name)).strip():
                 raise EdgePackageRefused(
