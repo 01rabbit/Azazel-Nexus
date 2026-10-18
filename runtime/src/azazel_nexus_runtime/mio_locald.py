@@ -281,7 +281,7 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
 
     remaining()
     options = build_options(frame, playbooks)
-    candidate, state, support = retrieval_decision(frame, playbooks, similarities)
+    candidate, state, support, record = retrieval_decision(frame, playbooks, similarities)
     ranked = list(options)
     guard = None
     explanation = None
@@ -316,7 +316,7 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
         audit({"event_type": "mio.local.explanation", "reason": "explanation_dropped:" + dropped})
     reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation,
                                similarities=similarities, state=state, retrieval=retrieval,
-                               benign_evidence=support)
+                               benign_evidence=support, system_record=record)
     read_delivered(reply)
     return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
                    "explanation_ms": (time.monotonic() - explanation_began) * 1000,

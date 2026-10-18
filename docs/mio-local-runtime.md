@@ -216,16 +216,20 @@ with audited method `keyword` and visible 「照合は簡易方式」. Such fall
 fabricated similarity and can never produce a clear state.
 
 Scope rejects only when the existing security lexicon misses AND maximum cosine
-similarity is below SCOPE_MIN=0.40. The existing insufficient-information check
+similarity is below SCOPE_MIN=0.45. The existing insufficient-information check
 is retained. Entryd defers scope to locald because it has no embedding scores;
 it still handles the existing insufficient-information gate. Runtime admission,
 reserve, artifact and provider gates must pass before embeddings can execute.
 
 Candidates are 「該当する可能性のある類型（類似度順の候補）」 with similarities
-rounded to two decimals. Deterministic states use provisional development values
-SIM_MIN=0.55 and GAP_MIN=0.09:
+rounded to two decimals. Deterministic states use SIM_MIN=0.52 and GAP_MIN=0.05,
+calibrated in `docs/evidence/mio-threshold-calibration-2026-10-18.md`:
 
-- 「候補が明確」: top1 >= SIM_MIN and top1 minus top2 >= GAP_MIN.
+- 「候補が明確」: top1 >= SIM_MIN, top1 minus top2 >= GAP_MIN, no benign support and
+  no collector-attached system record (change record, schedule, inventory, approval…).
+  The record rule is wording-independent: neutral records defeat the benign lexicon,
+  so any such record keeps the state at most 「候補が拮抗」 and the display asks the
+  operator to check it.
 - 「候補が拮抗」: other above-threshold cases; a lone candidate has no measured gap.
 - 「該当する類型なし」: top1 below SIM_MIN; generic trusted checks and
   other_suspicious wording, with no model explanation.
