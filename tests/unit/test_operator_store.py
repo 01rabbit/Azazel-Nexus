@@ -172,3 +172,22 @@ def test_public_directory_traversal_on_synthetic_root(store, monkeypatch, fault)
     else:
         with pytest.raises(ApprovalRefused):
             load_operator_trust()
+
+
+@pytest.mark.parametrize("directory_mode,file_mode", [(0o750, 0o640), (0o710, 0o640), (0o700, 0o600)])
+def test_group_readable_store_for_locald_is_accepted(store, directory_mode, file_mode):
+    # Reader-group modes written by enrollment/provisioning; public keys only.
+    path, _ = store
+    path.chmod(file_mode)
+    path.parent.chmod(directory_mode)
+    assert "operator-a" in _read(path.parent).public_keys
+
+
+@pytest.mark.parametrize("directory_mode,file_mode", [(0o750, 0o660), (0o770, 0o640),
+                                                      (0o752, 0o640), (0o750, 0o642)])
+def test_group_or_other_writable_store_still_refused(store, directory_mode, file_mode):
+    path, _ = store
+    path.chmod(file_mode)
+    path.parent.chmod(directory_mode)
+    with pytest.raises(ApprovalRefused):
+        _read(path.parent)

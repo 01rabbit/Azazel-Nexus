@@ -568,9 +568,10 @@ def _campaign(
         required_schema = (RESERVE_SCHEMA_V3 if record.get("schema") == MIO_CAMPAIGN_SCHEMA
                            else RESERVE_SCHEMA_V2)
         if not isinstance(measurement, dict) or measurement.get("schema") != required_schema:
-            errors.append("measurement: core-reserve/2 required for campaign runs")
+            errors.append("measurement: " + required_schema.removeprefix("azazel-nexus/")
+                          + " required for campaign runs")
         if validate_acquisition(measurement).status is Status.REFUSED:
-            errors.append("measurement: invalid v2 acquisition shape")
+            errors.append("measurement: invalid probe acquisition shape")
         if isinstance(measurement, dict):
             payload = json.dumps(measurement, sort_keys=True)
             if payload in payloads:

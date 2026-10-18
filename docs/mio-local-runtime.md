@@ -20,10 +20,12 @@ is the shipped state, not a limitation being worked around.
 RUNTIMES pins exactly one runtime, llama.cpp b11716. Resolving it refuses a
 missing/nonregular binary, wrong digest, pending digest or unknown architecture.
 Installing a binary grants no model admission. The locald unit is not granted
-by activation until a model is admitted. This build has no production
-admission-evidence loader, so `local_model_provider` remains unwired.
-Admission remains closed in this build, including after a supplied reserve:
-the existing approval gate still refuses. No model is started by default.
+by activation until a model is admitted. The production embedding
+admission-evidence loader exists but is disabled by the reviewed code kill
+switch `LOCAL_MODEL_ADMISSION_ENABLED = False`, so `local_model_provider`
+remains unwired and every role refuses `ADMISSION_DISABLED`. No model is
+started by default. The hardware campaign that would supply its evidence is
+the [M.I.O. admission runbook](hil-runbooks/mio-admission.md).
 
 ---
 

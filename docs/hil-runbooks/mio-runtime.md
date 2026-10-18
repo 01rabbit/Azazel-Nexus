@@ -1,42 +1,31 @@
-# Local retrieval and optional explanation — hardware measurement gate
+# Local retrieval runtime — hardware measurement (superseded)
 
-Status: **not run; hardware-unverified; required before admission**.
-Follow [campaign prerequisites, approvals and stop conditions](../hil-campaign.md).
-The shipped admission gate remains closed. Do not manually unmask, patch admission,
-set environment overrides, or invoke a model in this build to collect numbers.
-HG-05 Core reserve must first be validated on the DUT and an operator must approve
-an isolated measurement campaign using an approved measurement harness. If that
-path is unavailable, record blocked/not-run; do not substitute a container run.
-Final production admission additionally requires review of these measurements.
+## 概要（日本語）
 
-1. Retain DUT class (initially 8 GiB), kernel/image, CPU/storage class, runtime
-   architecture and executable hash, source/build provenance, both model hashes,
-   quantization, context/thread/batch settings, test corpus digest and repeats.
-   Use bge-m3 Q8_0 for embeddings and Qwen2.5-1.5B-Instruct Q4_K_M only in a
-   separately approved generative exercise. No model starts before prerequisites.
-2. Measure cold/warm startup to AF_UNIX healthy response for each server. Retain
-   every sample, failures/timeouts, peak and steady RSS (per process and aggregate
-   cgroup), cache preparation RSS/time, swap and OOM events. bge-m3 RSS is pending;
-   Qwen ~1.23 GiB is container evidence only, never a sizing/admission pass.
-3. Measure retrieval p50/p95 with cold and warm vector caches, query embedding
-   separately, exact library/corpus and repetition counts. Measure explanation
-   p50/p95 separately, accepted/dropped explanation counts and deadline outcomes.
-   Recommended production configuration keeps generation OFF; testing it does
-   not authorize enabling it. Never retain raw sensitive prompts in ordinary audit.
-4. Repeat embedding alone, generation alone and combined where approved under
-   the declared Core workload. Record reserve/headroom impact, Core/audit/lease
-   continuity, CPU contention and responsiveness. Validate the 4 GiB aggregate
-   safety ceiling, 3840 MiB provider budget and 256 MiB locald/cache allowance;
-   lower qualified needs or keep a provider unavailable if they do not fit.
-5. Exercise crash/restart-budget persistence, wrong/missing binary, wrong model,
-   stale cache, timeout and memory pressure. Confirm keyword fallback/refusal is
-   audited and no explanation server starts without separate admission. Observe
-   no non-AF_UNIX sockets, outbound packets, privilege or Edge authority widening.
-6. Archive sanitised raw sample tables, workload and independent observations
-   through the campaign evidence lifecycle. Review HG-05, runtime measurements,
-   operator approval and staged activation separately. Missing observations,
-   interrupted Core work, unexpected traffic or incomplete audit block admission.
+この手順は [M.I.O. 埋め込み admission ランブック](mio-admission.md) に統合された。
+実機計測・証跡・承認はすべてそちらに従う。生成（explanation）モデルの計測は
+admission の入力にならず、生成 admission は将来作業である。
 
-No VM/container latency or RSS qualifies target hardware, another architecture,
-or another memory class. Keep failures and repeat after relevant image/runtime/
-model/workload changes. This runbook supplies no approval or admission bypass.
+Status: **not run; hardware-unverified**.
+
+The executable procedure for measuring the local embedding runtime on target
+hardware, together with the HG-05 reserve, is now
+[mio-admission.md](mio-admission.md). It produces the single attested
+`azazel-nexus/hil-mio-campaign/v1` record that the admission loader requires.
+Do not run a separate runtime campaign from this page.
+
+What remains true here:
+
+- Only the embedding role (bge-m3 Q8_0 on `llama-cpp-b11716`) can be admitted.
+  A generative (Qwen2.5-1.5B-Instruct Q4_K_M) exercise, if separately approved
+  under [#100](https://github.com/01rabbit/Azazel-Nexus/issues/100), is a
+  diagnostic measurement only; it is never an admission input and authorizes
+  nothing. Container RSS figures are never sizing or admission evidence.
+- Fault exercises (crash/restart budget, wrong or missing binary, wrong model,
+  timeout, memory pressure, keyword fallback, no non-AF_UNIX sockets, no Edge
+  authority widening) belong to the [#100 behaviours](../hil-campaign.md#admission-and-the-six-100-behaviours)
+  after admission, not to the measurement campaign.
+- No VM/container latency or RSS qualifies target hardware, another
+  architecture or another memory class. Keep failures and repeat after any
+  image, runtime, model or workload change. This page supplies no approval or
+  admission bypass.

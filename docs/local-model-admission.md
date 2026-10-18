@@ -67,11 +67,11 @@ The DUT HMAC is recomputed using the existing HIL identity derivation, and the
 node binding also includes SHA-256 of the protected node declaration bytes and
 the commissioning digest. Architecture comes from `os.uname().machine`.
 
-**Deployment prerequisite still unresolved:** the existing HIL identity reader
-requires the root-only commissioning HMAC protection file. The `azmio` account
-cannot read that file under current provisioning, so it refuses collection.
-This change does not broaden key access. A reviewed identity-observation handoff
-is needed before enabling; do not change the kill switch to work around this.
+Node identity crosses to locald only as the host HMAC: at every locald start
+the root pre-start helper `az-mio-identity` writes it to
+`/run/azazel-mio-identity/node-identity` (root:azmio 0640); the CLI and
+activation observe it directly as root. Missing or invalid identity refuses
+`NODE_IDENTITY_UNAVAILABLE`; commissioning key access is not broadened.
 Host facts other than architecture and DUT identity retain their existing
 commissioned-declaration semantics.
 
@@ -83,6 +83,20 @@ regular files with one link. No component may be a symlink; group/other write
 access refuses. The loader uses held directory descriptors, bounded reads and
 no writes. The directory and operator trust/models are ReadOnlyPaths for locald.
 No payload revocation-list file or separate runtime-evidence directory is used.
+
+locald (User=azmio, SupplementaryGroups=azmission-read) must also read the
+operator trust store to verify the attester. On hosts where the
+`azmission-read` group exists, `/etc/azazel/operator-trust/` is therefore
+root:azmission-read 0750 and `operators.json` root:azmission-read 0640. The
+store contains only operator public keys and revoked labels, never private
+keys, so group read exposes no secret; it stays root-owned, single-link and
+never group/other-writable, and the readers keep refusing anything else.
+`operator_enrollment` applies these modes by descriptor on every update, and
+`tools/provision_mission_read.py` (run by `packaging/install.sh`) migrates an
+existing 0700/0600 store, refusing symlinks, extra links, non-root owners,
+writable modes or a foreign non-root group without changing anything. The
+installer never creates the store. Without the group (development hosts) the
+store stays 0700/0600, and admission would refuse there.
 
 `policy.json` is canonical ASCII JSON with exactly `schema`, `operators`,
 `max_seconds` and `roles`. Schema is `azazel-nexus/model-admission-policy/v1`;
@@ -101,6 +115,9 @@ payload and signature as separate mutable files. Installation is an external
 administrator operation; the request/verify CLI has no write capability.
 
 ## Request, independent review and external signing ceremony
+
+The executable campaign, checklist and ceremony commands are in the
+[M.I.O. admission runbook](hil-runbooks/mio-admission.md).
 
 Run as root, with no group granted write access to the admission directory.
 All groups have read/search access at most under the required modes.

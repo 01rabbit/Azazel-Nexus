@@ -154,14 +154,18 @@ of policy, and it changes no number this build has.
 
 ## 8. Where an admissible record goes
 
-The existing consumer path is `/var/lib/azazel/run/core-reserve.json`.
-Probe v2 retains a distinct file for each run rather
+The legacy path `/var/lib/azazel/run/core-reserve.json` is read only by
+`core_reserve.load_reserve()` for legacy diagnostics; local model admission
+never reads it, even when it declares a measurement.
+The probe (v3, harness `core-reserve-probe/3`) retains a distinct file for each run rather
 than overwriting previous observations, with boot HMAC fingerprint, sequence,
 commit and protected kernel context. See [HIL evidence records](hil-evidence-records.md)
 for archive, confidentiality, attestation and campaign validation. Do not copy
-an arbitrary run to the consumer path: first validate at least three attested
-runs on distinct boots of the same class/harness with workload notes and select
-the maximum of their maxima, then use the integrated approved consumption path.
+any run to the legacy path: validate at least three attested runs on distinct
+boots of the same class/harness with workload notes; the validator selects the
+maximum of their maxima. The only admission consumption path is the attested
+`azazel-nexus/hil-mio-campaign/v1` record of the
+[M.I.O. admission runbook](hil-runbooks/mio-admission.md).
 The reader continues to support v1; that alone does not establish v2 campaign
 provenance. Runtime state, never a packaged file:
 `tests/unit/test_core_reserve.py::test_no_measurement_is_committed_anywhere`
@@ -236,8 +240,10 @@ RAM selects the pilot's Core class. Missing Edge Core prerequisites are
 reported explicitly. Nexus installation alone does not supply those Edge
 Core units. Readiness does not replace the hardware/operator preflight.
 
-The probe's v2 records include a domain-separated HMAC of the boot ID, a run
-sequence, the full build commit, and kernel release. Provision the full source
+The probe's v3 records include a domain-separated HMAC of the boot ID, a run
+sequence, the full build commit, kernel release and the file-only
+virtualization observations (a negative filter; an observed signal refuses
+the run). Provision the full source
 commit used to build the installed distributions in the root-owned file
 `/usr/share/azazel/build-commit` during installation. Missing build identity or
 commissioning key refuses the run. Raw boot ID and machine ID are never
@@ -246,9 +252,9 @@ included. Boot/build identity is checked again after sampling.
 Each run is published without replacement as
 `/var/lib/azazel/run/core-reserve-run-<eight-digit-sequence>.json`. Keep all run files;
 sequence allocation reads this archive and publication refuses a concurrent
-collision. Run only one probe at a time. The sampler does not promote a run to
-`core-reserve.json`; the campaign validator and attestation must precede any
-operator promotion to that admission input. The reader retains v1 support.
+collision. Run only one probe at a time. The sampler never promotes a run to
+`core-reserve.json` and no operator should; admission uses only the attested
+campaign bundle. The reader retains v1 support.
 
 `az-hil-capture hg-01` emits the governed unit-file list, per-unit active/sub
 states, and systemd version over the system bus. An unloaded unit is reported

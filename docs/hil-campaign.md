@@ -1,5 +1,11 @@
 # Rugged x86_64 HIL campaign
 
+## 概要（日本語）
+
+実機 HIL キャンペーン全体の前提・順序・停止条件。HG-05 と M.I.O. 埋め込み計測は
+[M.I.O. admission ランブック](hil-runbooks/mio-admission.md) で一つの証明済み記録
+`azazel-nexus/hil-mio-campaign/v1` にまとめる。VM・コンテナ・CI の結果は証跡にならない。
+
 Status: **preparation only; no hardware exercise has run**. HG-05 remains
 `unmeasured`; HG-01/02/03/04/06/07 remain `hardware-unverified`. This plan
 creates no measurement, admission, activation approval or supported entry.
@@ -29,11 +35,11 @@ campaign ownership decisions; issue relationship comments are reserved for the c
 | HG-02 | [Privilege refusal](hil-runbooks/hg-02.md) | per-account refusal and restoration observations | HIL gate validator | #115 pilot, #4 parent |
 | HG-03 / SO-10 | [Independent capture](service-objectives.md#so-10-field-exercise--hardware-only); include driver reload for HG-03 | SO-10 record and protected capture evidence | service-objective validator | #17, linked by #4 |
 | HG-04 | [Commissioning](hil-runbooks/hg-04.md) | permanent-identity availability and before/after reboot continuity | HIL gate validator | #115 pilot, #4 parent |
-| HG-05 | [Reserve](core-reserve-measurement.md#5-the-procedure) | probe v2 runs and class campaign, workload notes | core_reserve.validate and HIL campaign validator | #115 pilot; #100 consumes; #4 parent |
+| HG-05 | [Reserve](core-reserve-measurement.md#5-the-procedure); for admission inside [M.I.O. admission](hil-runbooks/mio-admission.md) | probe v3 (`azazel-nexus/core-reserve/3`) runs and class campaign, workload notes | core_reserve.validate and HIL campaign validator | #115 pilot; #100 consumes; #4 parent |
 | HG-06 | [Isolation](hil-runbooks/hg-06.md) | denied-path observations for every required zone | HIL gate validator | #4, explicit child work |
 | HG-07 | [Real Edge package](hil-runbooks/hg-07.md) | package/probe/status observations | HIL gate validator | #4, explicit child work |
 | SO-01 | [Cold boot](service-objectives.md#so-01-field-exercise--hardware-only) | ten cold-boot samples and durable-audit evidence | service-objective validator | #115 pilot, #17 objective, #4 parent |
-| Local embedding + optional generation measurements | [Runtime measurements](hil-runbooks/mio-runtime.md) | RSS/startup/latency/reserve-impact records; required before admission | independent hardware review | #100 |
+| Local embedding admission campaign | [M.I.O. admission](hil-runbooks/mio-admission.md) | one attested `azazel-nexus/hil-mio-campaign/v1` record (HG-05 runs + embedding runtime), approval ceremony record | `validate_record`, then the admission loader (`az-nexus-model-admission`) | #100 |
 | Admission and six behaviours | Procedure below | admission and six E2E behaviour records | HIL E2E validator | #100 |
 | Degraded-mode drills | Procedure below; [recovery](recovery.md) | per-fault degradation records | HIL degradation validator | #4 |
 
@@ -102,7 +108,7 @@ preflight inventory into an issue, ordinary journal or terminal transcript.
    `not-run`/blocked. Do not hand-edit records or manually unmask services to
    manufacture a pass. Installation-state evidence and running-load evidence
    concern different phases and must not be conflated.
-3. On **each** subsequent boot, allocate a new run ID and retain the probe v2
+3. On **each** subsequent boot, allocate a new run ID and retain the probe v3
    HMAC boot fingerprint and sequence. Recheck the approved image, class,
    inventory continuity, A/B validity, encrypted storage and key availability.
    Use readiness, then HG-07, to establish what is present/running through the
@@ -123,16 +129,19 @@ preflight inventory into an issue, ordinary journal or terminal transcript.
    [evidence records](hil-evidence-records.md). Review the complete campaign
    before consuming a reserve. Re-run affected checks after image, firmware,
    driver, topology, trust or workload changes; retain superseded observations.
-7. Only then attempt #100 admission and provider exercises where all remaining
-   approval, staged activation and confinement prerequisites are implemented
-   and explicitly satisfied. A verified reserve can reach a later refusal; it
+7. Only then attempt #100 admission through [M.I.O. admission](hil-runbooks/mio-admission.md)
+   and provider exercises where all remaining approval, staged activation and
+   confinement prerequisites are implemented and explicitly satisfied. The
+   admission loader stays disabled (`ADMISSION_DISABLED`) until a reviewed code
+   change enables it. A verified reserve can reach a later refusal; it
    does not implement those gates. Record such refusal and stop dependent
    exercises rather than bypassing it.
 
 ## Admission and the six #100 behaviours
 
-On the same declared class, use validated reserve input through the existing
-resource gate, then the approved staging-to-promotion and runtime policy paths.
+On the same declared class, use the attested `azazel-nexus/hil-mio-campaign/v1`
+bundle and signed approval through the admission loader (never the legacy
+`core-reserve.json`), then the approved staging-to-promotion and runtime policy paths.
 Record artifact generations, trust/lease context, actual admission outcome and
 acquisition method. For each scenario, capture healthy baseline, bounded
 stimulus, observed route/outcome, durable audit and recovery. Retain failures.
