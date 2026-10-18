@@ -36,7 +36,8 @@ def _copy_installer_tree(tmp_path: Path) -> Path:
     root = tmp_path / "installer-tree"
     shutil.copytree(PACKAGING, root / "packaging")
     (root / "tools").mkdir()
-    for name in ("install_profile_fields.py", "stage_runtime_entrypoints.py"):
+    for name in ("install_profile_fields.py", "stage_runtime_entrypoints.py",
+                 "provision_mission_read.py"):
         shutil.copy2(REPO_ROOT / "tools" / name, root / "tools" / name)
     shutil.copytree(REPO_ROOT / "src", root / "src")
     shutil.copytree(REPO_ROOT / "runtime" / "src", root / "runtime" / "src")

@@ -429,6 +429,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         is_model_host=True,
+        supplementary_groups=("azknowledge-read", "azmission-read"),
         # Its own runtime directory. The socket that could start a process is
         # not the socket everything else answers on.
         runtime_directory="azazel/mio",
@@ -440,6 +441,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             # deliberately absent and refused above: both are derived from
             # the measured Core reserve and the provider's declared need, and
             # no node this build runs on has a reserve to derive them from.
+            ("ReadOnlyPaths", "-/etc/azazel/mission-pack.json"),
+            ("ReadOnlyPaths", "-/data/azazel/mission-packs"),
             ("CPUQuota", "40%"),
             ("TasksMax", "64"),
             ("LimitFSIZE", "16777216"),
@@ -603,6 +606,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         address_families=("AF_UNIX",),
         read_write_paths=(
             "/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
+            "/var/lib/azazel/run/knowledge-read",
             "/var/lib/azazel/state/knowledge",
         ),
         after=(ACTIVATION_CONTROLLER_UNIT,),

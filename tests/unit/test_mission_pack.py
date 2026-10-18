@@ -781,3 +781,18 @@ def test_rollback_records_pointer_active_source_with_newer_staged_generation(nod
     assert generation.supersedes == staged
     assert result["pack_digest"] == original
     assert list(service.ledger)[-1].event["from_generation"] == active
+
+
+def test_writer_ledger_is_private_with_permissive_umask(node):
+    import os
+    import stat
+
+    ctx, _, media = node
+    ctx.root.mkdir(parents=True, mode=0o2750)
+    pack = mp.MissionPack(ctx)
+    previous = os.umask(0)
+    try:
+        pack.stage(media(), now=NOW, actor="test")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(pack.ledger.path.stat().st_mode) == 0o600

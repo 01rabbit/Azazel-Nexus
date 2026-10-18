@@ -212,8 +212,8 @@ class MissionPack:
     """
     def __init__(self, context: PackContext, *, checkpoint: Callable[[str], None] | None = None):
         self.context = context
-        self.store = GenerationStore(context.root / "generations")
-        self.ledger = AuditLedger(context.root / "audit.jsonl")
+        self.store = GenerationStore(context.root / "generations", group_read=True)
+        self.ledger = AuditLedger(context.root / "audit.jsonl", private=True)
         self.checkpoint = checkpoint or (lambda step: None)
 
     def current(self) -> Generation | None:
@@ -544,6 +544,7 @@ def _pointer(path: Path, number: int, checkpoint) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".pack-pointer-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o640)
             stream.write(f"{number}\n".encode())
             stream.flush()
             os.fsync(stream.fileno())

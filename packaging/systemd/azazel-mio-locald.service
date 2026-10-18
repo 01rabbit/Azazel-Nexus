@@ -16,9 +16,12 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azmio
+SupplementaryGroups=azknowledge-read azmission-read
 ExecStart=/usr/libexec/azazel/az-mio-locald
 RuntimeDirectory=azazel/mio
 RuntimeDirectoryMode=0750
+ReadOnlyPaths=-/etc/azazel/mission-pack.json
+ReadOnlyPaths=-/data/azazel/mission-packs
 CPUQuota=40%
 TasksMax=64
 LimitFSIZE=16777216

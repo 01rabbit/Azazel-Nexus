@@ -206,3 +206,55 @@ def test_listener_remains_available_without_ready_callback(tmp_path, monkeypatch
     assert listener.accept_calls == 1
     assert listener.closed
     assert not path.exists()
+
+
+def test_additional_client_listener_ready_dispatch_and_cleanup(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    paths = (tmp_path / 'operator.sock', tmp_path / 'client.sock')
+    listeners = [FakeListener(), FakeListener()]
+    binds = []
+    served = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def bind(path, **kwargs):
+        binds.append((path, kwargs['expected_gid']))
+        path.touch()
+        return listeners[len(binds) - 1]
+
+    listeners[1].accept = lambda: (Connection(), None)
+    monkeypatch.setattr(serve, 'bind_socket', bind)
+    monkeypatch.setattr(serve.select, 'select', lambda *args: ([listeners[1]], [], []))
+    monkeypatch.setattr(serve, 'SocketServer', lambda **kwargs: SimpleNamespace(
+        serve_connection=lambda conn, handler: served.append(conn)))
+    def ready():
+        assert len(binds) == 2
+    assert serve.serve_forever(path=paths[0], registry=object(),
+        policy=SimpleNamespace(operator_gid=10), audit=lambda e: None,
+        handler=lambda r: None, additional_sockets=((paths[1], 20, object()),),
+        ready=ready, stop=lambda: bool(served)) == 0
+    assert binds == [(paths[0], 10), (paths[1], 20)]
+    assert all(listener.closed for listener in listeners)
+    assert all(not path.exists() for path in paths)
+
+
+def test_second_listener_bind_failure_cleans_operator_listener(tmp_path, monkeypatch):
+    path = tmp_path / 'operator.sock'
+    path.touch()
+    listener = FakeListener()
+    def bind(candidate, **kwargs):
+        if candidate != path:
+            raise RuntimeError('second bind failed')
+        return listener
+    monkeypatch.setattr(serve, 'bind_socket', bind)
+    with pytest.raises(RuntimeError, match='second bind failed'):
+        serve.serve_forever(path=path, registry=object(), policy=object(),
+            audit=lambda e: None, handler=lambda r: None,
+            additional_sockets=((tmp_path / 'client.sock', 20, object()),))
+    assert listener.closed
+    assert not path.exists()

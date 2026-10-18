@@ -150,7 +150,7 @@ def test_client_exchange_and_empty_result(monkeypatch):
 
     monkeypatch.setattr(client, "_exchange", exchange)
     assert client.lookup_context(("T1110",), deadline_s=0.2) == (ref,)
-    assert calls == [(("knowledge", "azknowledge", "knowledge.lookup", {"technique_ids": ["T1110"]}),
+    assert calls == [(("knowledge-read", "azknowledge", "knowledge.lookup", {"technique_ids": ["T1110"]}),
                       {"deadline_s": 0.2})]
     monkeypatch.setattr(client, "_exchange", lambda *a, **k: {"refs": [], "reason_code": "no_context"})
     assert client.lookup_context(("T1110",)) == ()
@@ -198,3 +198,27 @@ def test_stream_stops_at_sixteen_and_empty_query_still_checks_trust(node, monkey
     assert reading(node, ()).reason_code == "no_context"
     (node[2] / "trust.json").unlink()
     assert reading(node, ()).reason_code == "trust_unreadable"
+
+
+def test_client_checks_dedicated_socket_gid_before_connect(monkeypatch):
+    from types import SimpleNamespace
+
+    from azazel_nexus_runtime import mio_socket_client
+
+    groups = []
+    monkeypatch.setattr(mio_socket_client.pwd, 'getpwnam',
+                        lambda account: SimpleNamespace(pw_uid=111))
+    def group(name):
+        groups.append(name)
+        return SimpleNamespace(gr_gid=222)
+    monkeypatch.setattr(mio_socket_client.grp, 'getgrnam', group)
+    observed = []
+    def verify(path, **kwargs):
+        observed.append((path, kwargs))
+        raise ValueError('stop before connect')
+    monkeypatch.setattr(mio_socket_client, 'verify_socket', verify)
+    with pytest.raises(ValueError, match='stop before connect'):
+        mio_socket_client._exchange('knowledge-read', 'azknowledge', 'knowledge.lookup', {})
+    assert groups == ['azknowledge-read']
+    assert observed[0][0].name == 'knowledge-read.sock'
+    assert observed[0][1] == {'expected_uid': 111, 'expected_gid': 222}

@@ -16,6 +16,7 @@ finish in bounded time without a timer.
 
 from __future__ import annotations
 
+import select
 import socket
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -39,6 +40,7 @@ def serve_forever(
     handler: Callable[[Any], Any],
     stop: Callable[[], bool] = lambda: False,
     ready: Optional[Callable[[], None]] = None,
+    additional_sockets: tuple[tuple[Path, int, VerbRegistry], ...] = (),
 ) -> int:
     """Serve on `path` until `stop()` answers true. Returns the exit code.
 
@@ -52,14 +54,32 @@ def serve_forever(
     # for this daemon; a filesystem that does not provide the declared Linux
     # setgid-directory inheritance fails before READY or accept.
     listener = bind_socket(path, expected_gid=getattr(policy, "operator_gid", None))
+    listeners = [(path, listener, registry)]
     try:
-        listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
-        engine = SocketServer(registry=registry, policy=policy, audit=audit)
+        for extra_path, gid, extra_registry in additional_sockets:
+            listeners.append((extra_path, bind_socket(extra_path, expected_gid=gid), extra_registry))
+        for _, bound_listener, _ in listeners:
+            bound_listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
+        engines = {bound: SocketServer(registry=verbs, policy=policy, audit=audit)
+                   for _, bound, verbs in listeners}
+        next_listener = 0
         if ready is not None:
             ready()
         while not stop():
             try:
-                connection, _ = listener.accept()
+                active = listener
+                if additional_sockets:
+                    readable, _, _ = select.select(
+                        [item for _, item, _ in listeners], [], [], ACCEPT_TIMEOUT_SECONDS)
+                    if not readable:
+                        continue
+                    for offset in range(len(listeners)):
+                        index = (next_listener + offset) % len(listeners)
+                        if listeners[index][1] in readable:
+                            active = listeners[index][1]
+                            next_listener = (index + 1) % len(listeners)
+                            break
+                connection, _ = active.accept()
             except socket.timeout:
                 continue
             except OSError:
@@ -68,15 +88,16 @@ def serve_forever(
                 break
             with connection:
                 try:
-                    engine.serve_connection(connection, handler)
+                    engines[active].serve_connection(connection, handler)
                 except OSError:
                     # A peer that vanished mid-exchange is not this daemon's
                     # failure, and the refusal (if any) is already recorded.
                     continue
     finally:
-        listener.close()
-        try:
-            path.unlink()
-        except OSError:
-            pass
+        for bound_path, bound_listener, _ in listeners:
+            bound_listener.close()
+            try:
+                bound_path.unlink()
+            except OSError:
+                pass
     return 0

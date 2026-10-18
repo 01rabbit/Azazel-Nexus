@@ -14,6 +14,7 @@ import azazel_nexus_runtime.runtime_paths as runtime_paths
         ("remote", "remote"),
         ("mio-entry", "mio-entry"),
         ("knowledge", "knowledge"),
+        ("knowledge-read", "knowledge-read"),
     ],
 )
 def test_socket_path_uses_the_installer_owned_service_leaf(tmp_path, monkeypatch, name, leaf):

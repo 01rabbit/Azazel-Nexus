@@ -146,8 +146,9 @@ def _install_accounts(harness: Harness) -> str:
         entry = pwd.getpwnam(account)
         if "nologin" not in entry.pw_shell and "false" not in entry.pw_shell:
             raise RuntimeError(f"{account} has a login shell: {entry.pw_shell}")
-    grp.getgrnam("azazel-operator")
-    return f"{len(SYSTEM_ACCOUNTS)} non-login accounts and the operator group"
+    for group in ("azazel-operator", "azknowledge-read", "azmission-read"):
+        grp.getgrnam(group)
+    return f"{len(SYSTEM_ACCOUNTS)} non-login accounts and operator/Knowledge/Mission Pack groups"
 
 
 def _masked(harness: Harness) -> str:

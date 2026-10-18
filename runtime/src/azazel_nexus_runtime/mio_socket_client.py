@@ -32,7 +32,7 @@ def _exchange(
 ) -> dict:
     path = socket_path(leaf)
     uid = pwd.getpwnam(account).pw_uid
-    gid = grp.getgrnam("azazel-operator").gr_gid
+    gid = grp.getgrnam("azknowledge-read" if leaf == "knowledge-read" else "azazel-operator").gr_gid
     verify_socket(path, expected_uid=uid, expected_gid=gid)
     if not 0 < deadline_s <= 60:
         raise ValueError("M.I.O. deadline refused")

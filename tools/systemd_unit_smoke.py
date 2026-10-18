@@ -358,6 +358,7 @@ REAL_DIRECTORIES = tuple(map(Path, (
     "/var/lib/azazel/state/mio", "/var/lib/azazel/state/knowledge",
     "/var/lib/azazel/run", "/var/lib/azazel/knowledge",
     "/var/lib/azazel/lite-trust", "/run/azazel",
+    "/data/azazel/mission-packs", "/etc/azazel/mission-pack.json",
 )))
 HASH_LIMIT = 8 * 1024 * 1024
 

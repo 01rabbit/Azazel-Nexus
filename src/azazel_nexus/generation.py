@@ -204,8 +204,9 @@ class Generation:
 class GenerationStore:
     """The generations on disk, and the rules for adding one."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, group_read: bool = False) -> None:
         self.root = root
+        self.group_read = group_read
 
     def _meta(self, number: int) -> Path:
         return self.root / str(number) / "generation.json"
@@ -348,6 +349,15 @@ class GenerationStore:
                 raise GenerationRefused("staged generation metadata read-back refused") from None
             if observed != files or observed_metadata != metadata:
                 raise GenerationRefused("staged generation read-back mismatch")
+            if self.group_read:
+                # Setgid parents carry the installer-provisioned reader GID.
+                # Staging stays private until complete; writes remain owner-only.
+                for child in stage.rglob("*"):
+                    child.chmod(0o2750 if child.is_dir() else 0o640)
+                    if child.is_file():
+                        with child.open("rb") as stream:
+                            os.fsync(stream.fileno())
+                stage.chmod(0o2750)
             for child in sorted(tree.rglob("*"), key=lambda p: len(p.parts), reverse=True):
                 if child.is_dir():
                     _sync_directory(child)

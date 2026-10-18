@@ -83,11 +83,10 @@ class PathSpec:
 
 #: The CORE subset of `IMPLEMENTATION_SPEC.md` §3.
 #:
-#: Only the paths this slice actually writes to are here. The evidence store,
-#: the mission volume and the optional components' state directories are not
-#: omitted because they are optional -- they belong to slices that are not
-#: built yet, and declaring a directory the node never creates would make this
-#: table describe an intention instead of a host.
+#: Unconditionally installed directories only. The Mission Pack store under
+#: /data is provisioned separately by tools/provision_mission_read.py: adding it
+#: here would let create_layout create state before the encrypted mount check.
+#: Its reader modes and conditional creation are covered by installer tests.
 LAYOUT = (
     PathSpec("/etc/azazel", 0o755, "node configuration; world-readable by design"),
     PathSpec(
@@ -243,6 +242,11 @@ LAYOUT = (
         "/var/lib/azazel/run/knowledge", 0o2710,
         "Knowledge Lite socket with operator group inheritance",
         owner="azknowledge", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/knowledge-read", 0o2710,
+        "Knowledge Lite service client socket; no operator socket access",
+        owner="azknowledge", group="azknowledge-read",
     ),
     PathSpec(
         "/var/lib/azazel/knowledge", 0o2750,

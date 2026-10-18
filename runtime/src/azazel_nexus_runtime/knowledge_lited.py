@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import grp
 import json
 import sys
 from collections.abc import Callable, Sequence
@@ -50,6 +51,7 @@ LOOKUP_VERB = Verb(
     admits=frozenset({PrincipalClass.SERVICE}),
 )
 REGISTRY = VerbRegistry([STATUS_VERB, LOOKUP_VERB])
+READ_REGISTRY = VerbRegistry([LOOKUP_VERB])
 
 
 class KnowledgeLiteService:
@@ -109,6 +111,8 @@ def main(
                                    trust_root=lite_trust_root(), audit=audit)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
+        additional_sockets=((socket_path("knowledge-read"),
+                             grp.getgrnam("azknowledge-read").gr_gid, READ_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry", "azarbiter", "azmio")),
         audit=audit, handler=service.handle, stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),

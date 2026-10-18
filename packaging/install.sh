@@ -183,6 +183,12 @@ if [ "$WITH_ACCOUNTS" = yes ]; then
             useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
         fi
     done
+    if ! getent group azknowledge-read >/dev/null 2>&1; then
+        groupadd --system azknowledge-read
+    fi
+    if ! getent group azmission-read >/dev/null 2>&1; then
+        groupadd --system azmission-read
+    fi
     if ! getent group azazel-operator >/dev/null 2>&1; then
         groupadd --system azazel-operator
     fi
@@ -246,8 +252,15 @@ make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
 make_owned_dir 0700 azknowledge root /var/lib/azazel/state/knowledge
 make_owned_dir 2710 azmioentry azazel-operator /var/lib/azazel/run/mio-entry
 make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge
+make_owned_dir 2710 azknowledge azknowledge-read /var/lib/azazel/run/knowledge-read
 make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/knowledge
 make_dir 0700 root /var/lib/azazel/secrets
+
+# No pack data is created on an unverified backing volume. DESTDIR is only a
+# staging projection; production uses the same LUKS check as the pack CLI.
+set --
+[ "$WITH_ACCOUNTS" = yes ] || set -- --without-accounts
+python_stager -IS "$REPO_ROOT/tools/provision_mission_read.py" "$@"
 
 install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
 install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"

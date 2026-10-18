@@ -219,11 +219,42 @@ the cached library; verification retries when watched metadata changes. Audits r
 and ordered library IDs/versions/digests only. This consumer never writes pack
 state or promotes a generation; existing model admission remains closed.
 
-Packaging must provision `azmio` read/traverse access to the configuration,
-private generation files and selected assets, preserving commissioned root-only
-write authority and encrypted storage. This change adds no users/groups,
-permission changes or unit-hardening exceptions. Unreadable state gives an
-audited `store_unreadable` fallback with no playbooks; an absent current pointer is
-`no_pack`. See [Reasoning playbooks](reasoning-playbooks.md) for cache behavior
-and the complete reason vocabulary. The existing runtime root convention applies;
+Packaging creates the dedicated `azmission-read` group and grants it to locald
+through the generated unit's supplementary groups. The existing commissioned
+configuration becomes `0640 root:azmission-read`; the reader still rejects
+non-root ownership and all group/other write bits. Installed inventory
+`reasoning_playbook` files must live under `/var/lib/azazel/playbooks`, created
+by the installer as `2750 root:azmission-read`. Files receive group read;
+private ancestors receive traverse only when their group is root or
+azmission-read. A different private directory group is refused without replacing
+it. Unsafe writable or symlink paths and all other asset locations refuse
+provisioning. Other asset kinds are not granted access. Playbooks are installed
+advisory data, separate from confidential admission/audit state, so this asset
+root does not require the encrypted `/data` mount. The store below still does.
+See [Reasoning playbooks](reasoning-playbooks.md).
+
+The installer creates `/data/azazel/mission-packs` and `generations` as
+`2750 root:azmission-read` only on a backing volume passing the existing LUKS
+check. This store lives under the commissioned encrypted `/data` mount; the
+installer neither mounts storage nor creates an unencrypted replacement. If
+storage is unavailable/unverified it prints `MISSION PACK STORE NOT PROVISIONED`;
+mount the commissioned encrypted volume and rerun the installer. DESTDIR staging
+projects the same modes without claiming encryption evidence. A resolved
+`DESTDIR=/` is a live install and still requires the LUKS check.
+
+Published generation directories/trees use `2750`, their files and `current`
+use `0640`, with the reader GID inherited from the setgid store. Staging stays
+private until complete. The installer also upgrades existing published
+selections and restricts existing store-root writer files to `0600` root-owned.
+The Mission Pack ledger is created `0600` even with a permissive umask; its
+setgid-inherited reader group gains no access. The writer locks the directory
+itself, creating no lock file. Hidden interrupted stages remain private.
+Other GenerationStore consumers retain their private defaults. Root remains the
+only writer; CLI encryption/admission checks are unchanged. Rerun installation
+after provisioning the config or new inventory assets. The installer never
+invents commissioned configuration or signs/selects a pack.
+
+Unreadable state still gives audited `store_unreadable` with no playbooks; an
+absent current pointer is `no_pack`. See [Reasoning playbooks](reasoning-playbooks.md)
+for cache behavior and the complete reason vocabulary. The existing runtime root convention applies;
 there is no new path override or environment variable.

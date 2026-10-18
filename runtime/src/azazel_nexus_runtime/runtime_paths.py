@@ -52,6 +52,7 @@ _SOCKET_LEAVES = {
     "mio": "mio",
     "remote": "remote",
     "knowledge": "knowledge",
+    "knowledge-read": "knowledge-read",
 }
 _STATE_LEAVES = {
     "mio-entry": "mio",
