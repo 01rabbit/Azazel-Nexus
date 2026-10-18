@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import stat
 import sys
 from dataclasses import dataclass
@@ -47,7 +48,7 @@ DIRECTORY = "/etc/azazel/model-admission"
 POLL_INTERVAL_SECONDS = 1.0
 MAX_SNAPSHOT_RETRIES = 3
 _FIXED = (DIRECTORY, DIRECTORY + "/embedding.approval", DIRECTORY + "/policy.json",
-          DIRECTORY + "/evidence", "/run/azazel/mio/node-identity", "/etc/azazel/operator-trust",
+          DIRECTORY + "/evidence", "/run/azazel-mio-identity", "/run/azazel-mio-identity/node-identity", "/etc/azazel/operator-trust",
           "/etc/azazel/operator-trust/operators.json", "/etc/azazel/mission-pack.json",
           "/etc/azazel/node.yaml", "/var/lib/azazel/models", "/var/lib/azazel/models/trust/trust.json",
           "/var/lib/azazel/models/trust/catalog.signed", "/var/lib/azazel/models/state/current",
@@ -306,12 +307,15 @@ def _collect(tree, *, trust, policy, operator):
     architecture = os.uname().machine
     if architecture != ADMITTED_ARCHITECTURE or host.architecture != architecture:
         raise ApprovalRefused("WRONG_ARCHITECTURE")
-    if os.geteuid() == 0:
-        identity = run_identity()
-    else:
-        from .model_identity import read_identity
+    try:
+        if os.geteuid() == 0:
+            identity = run_identity()
+        else:
+            from .model_identity import read_identity
 
-        identity = read_identity()
+            identity = read_identity()
+    except (OSError, ValueError, KeyError, UnicodeError) as error:
+        raise ApprovalRefused("NODE_IDENTITY_UNAVAILABLE") from error
     observed = observe_virtualization()
     if not virtualization_not_observed(observed):
         raise ApprovalRefused("RESERVE_VIRTUALIZATION_OBSERVED")
@@ -630,6 +634,11 @@ def request_context(*, operator):
         os.close(fd)
 
 
+def _refusal_symbol(value, fallback):
+    # Never expose exception prose, paths or key material in the audit event.
+    return value if re.fullmatch(r"[A-Z][A-Z0-9_]*", value) else fallback
+
+
 def decide_embedding_admission(*, now, reading=None):
     """Own the complete admission decision shared by activation and locald."""
     from azazel_nexus.cognition import admit_local_model
@@ -653,7 +662,8 @@ def decide_embedding_admission(*, now, reading=None):
                                     tested=candidate.tested, resources=candidate.resources,
                                     approval=candidate.evidence)
         if not verdict.admitted:
-            raise RuntimeRefused("ADMISSION_GATE_REFUSED")
+            raise RuntimeRefused(_refusal_symbol(
+                verdict.reason, "GATE_" + verdict.failed_gate.name + "_REFUSED"))
         held = candidate.evidence.descriptors
         binary = held.recheck()
         bindings = candidate.evidence.context.bindings
@@ -666,11 +676,14 @@ def decide_embedding_admission(*, now, reading=None):
                           artifact=inspect_artifact_fd(held.model_fd),
                           reserve=candidate.resources.reserve, held_runtime=binary)
         if ready.readiness is not ActivationReadiness.READY:
-            raise RuntimeRefused("READINESS_REFUSED")
+            raise RuntimeRefused(_refusal_symbol(getattr(ready, "reason", ""), "READINESS_REFUSED"))
         containment_for(memory_need_mib=candidate.provider.memory_need_mib + 256,
                         reserve=candidate.resources.reserve,
                         envelope_mib=candidate.resources.envelope_mib)
         return reading
+    except (RuntimeRefused, ApprovalRefused) as error:
+        reading.close()
+        return AdmissionReading(Refused(_refusal_symbol(str(error), "PRECONDITIONS_REFUSED")))
     except Exception:  # noqa: BLE001 - any failed precondition refuses admission
         reading.close()
         return AdmissionReading(Refused("PRECONDITIONS_REFUSED"))

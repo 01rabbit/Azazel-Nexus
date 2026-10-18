@@ -31,6 +31,7 @@ BOOTSTRAP_TMPFILES = PACKAGING / "tmpfiles.d" / "azazel-nexus-bootstrap.conf"
 EXPECTED_BOOTSTRAP_TMPFILES = (
     b"d /run/systemd/system.control :0755 :root :root - -\n"
     b"d /run/azazel-nexus-bootstrap :0700 :root :root - -\n"
+    b"d /run/azazel-mio-identity 0750 root azmio - -\n"
 )
 
 GOVERNED = tuple(d.name for d in CORE_UNITS)

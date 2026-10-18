@@ -7,14 +7,25 @@ import re
 import stat
 import sys
 
+from azazel_nexus import model_admission as admission
+
 from .hil_readiness import run_identity
 
-DIRECTORY = "/run/azazel/mio"
+DIRECTORY = "/run/azazel-mio-identity"
 NAME = "node-identity"
 
 
 def _directory():
-    return os.open(DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid != 0 or info.st_gid != grp.getgrnam("azmio").gr_gid
+                or stat.S_IMODE(info.st_mode) != 0o750):
+            raise ValueError("identity directory protection refused")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def read_identity():
@@ -56,15 +67,15 @@ def main():
             raw = (run_identity()["host_digest"] + "\n").encode("ascii")
             if not re.fullmatch(rb"hmac-sha256:[0-9a-f]{64}\n", raw):
                 raise ValueError("identity digest refused")
-        except (OSError, ValueError, UnicodeError):
-            # No stale digest remains. Locald refuses admission and serves
-            # keyword retrieval instead of flapping on missing host evidence.
-            return 0
+        except (OSError, ValueError, KeyError, UnicodeError):
+            # Enabling admission makes unavailable identity a visible start failure.
+            return 1 if admission.LOCAL_MODEL_ADMISSION_ENABLED else 0
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         try:
             os.fchown(fd, 0, grp.getgrnam("azmio").gr_gid)
-            os.write(fd, raw)
+            if os.write(fd, raw) != len(raw):
+                raise OSError("short identity write")
             os.fchmod(fd, 0o640)
         finally:
             os.close(fd)

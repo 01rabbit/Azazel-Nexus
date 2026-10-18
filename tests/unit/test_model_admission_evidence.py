@@ -645,3 +645,67 @@ def test_local_server_rechecks_kill_switch_after_construction(tmp_path, monkeypa
         server.start()
     with pytest.raises(mio_serve.LocalServerRefused, match="ADMISSION_DISABLED"):
         server._http("GET", "/health", b"", 1)
+
+
+@pytest.mark.parametrize("root", [False, True])
+@pytest.mark.parametrize("failure", [OSError, ValueError, KeyError])
+def test_identity_unavailable_agrees_for_live_and_handoff(tmp_path, monkeypatch, root, failure):
+    from azazel_nexus_runtime import hil_readiness, model_identity
+
+    trust, _, _ = collected_store(tmp_path, monkeypatch)
+    def unavailable():
+        raise failure("private identity details")
+    monkeypatch.setattr(loader.os, "geteuid", lambda: 0 if root else 999)
+    monkeypatch.setattr(hil_readiness, "run_identity", unavailable)
+    monkeypatch.setattr(model_identity, "read_identity", unavailable)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        tree = loader.ProtectedTree(fd, os.getuid())
+        with pytest.raises(admission.ApprovalRefused, match="^NODE_IDENTITY_UNAVAILABLE$"):
+            loader._collect(tree, trust=trust, policy=admission.AdmissionPolicy(
+                frozenset({"approver"}), 86400, ("embedding",)), operator="approver")
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("failure,symbol", [
+    ("argv", "SETTINGS_MISMATCH"),
+    ("gate", "GATE_RESOURCE_TOPOLOGY_REFUSED"),
+    ("gate_symbol", "RESOURCE_FIT"),
+    ("descriptor", "EVIDENCE_CHANGED"),
+    ("readiness", "ARTIFACT_REFUSED"),
+    ("readiness_prose", "READINESS_REFUSED"),
+    ("unexpected", "PRECONDITIONS_REFUSED"),
+])
+def test_complete_decision_preserves_symbols_and_audits_no_prose(monkeypatch, failure, symbol):
+    from azazel_nexus import model_runtime
+
+    candidate = admitted_candidate()
+    closed = []
+    candidate.evidence.descriptors.close = lambda: closed.append(True)
+    if failure == "argv":
+        candidate = replace(candidate, record=replace(candidate.record, argv=(*candidate.record.argv, "bad")))
+    elif failure == "gate":
+        candidate = replace(candidate, resources=replace(candidate.resources, envelope_mib=2000))
+    elif failure == "gate_symbol":
+        from azazel_nexus import cognition
+        monkeypatch.setattr(cognition, "admit_local_model", lambda *args, **kw: SimpleNamespace(
+            admitted=False, reason="RESOURCE_FIT", failed_gate=cognition.AdmissionGate.RESOURCE_TOPOLOGY))
+    elif failure in {"descriptor", "unexpected"}:
+        def refuse():
+            if failure == "descriptor":
+                raise loader.RuntimeRefused("EVIDENCE_CHANGED")
+            raise ValueError("private path and key details")
+        candidate.evidence.descriptors.recheck = refuse
+    else:
+        monkeypatch.setattr(model_runtime, "readiness", lambda **kw: SimpleNamespace(
+            readiness=model_runtime.ActivationReadiness.REFUSED,
+            reason="ARTIFACT_REFUSED" if failure == "readiness" else "private path and key details"))
+    reading = loader.decide_embedding_admission(now=NOW, reading=loader.AdmissionReading(candidate))
+    assert reading.embedding == loader.Refused(symbol)
+    assert closed == [True]
+    event = reading.as_event()
+    assert event["refusal"] == symbol
+    assert "private" not in str(event)
+    assert set(event) == {"event_type", "role", "outcome", "refusal", "approval_id", "payload_digest",
+                          "model_digest", "generation_id", "catalog_digest", "reserve_record_digest"}

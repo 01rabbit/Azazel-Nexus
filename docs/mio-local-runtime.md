@@ -327,13 +327,17 @@ server; generative admission remains future work.
 
 At every locald start, the fixed `az-mio-identity` pre-start helper runs as root
 via the unit's `ExecStartPre=+` directive. It observes the node identity again
-and writes only the host HMAC to `/run/azazel/mio/node-identity`, root:azmio
+and writes only the host HMAC to `/run/azazel-mio-identity/node-identity`, root:azmio
 0640. locald opens this bounded file without following symlinks and checks its
-owner, group, mode and link count. The commissioning secret stays root-only;
+owner, group, mode and link count, and checks its parent is root:azmio 0750.
+Tmpfiles creates that separate directory; it is independent of `/run/azazel`,
+which entryd and other services declare as a RuntimeDirectory. The commissioning secret stays root-only;
 copying `/etc` cannot replay a prior machine's observation. Activation observes
 the same identity directly as root. The helper accepts no arguments or environment
-inputs. A failed identity observation removes the previous digest and lets
-locald serve keyword retrieval with admission refused. Its wrapper is staged with the other fixed unit executables.
+inputs. A failed identity observation removes the previous digest. With admission enabled,
+the helper returns nonzero and the unit start fails visibly; while disabled it
+may return zero. Missing or invalid identity refuses with
+`NODE_IDENTITY_UNAVAILABLE` in both locald and activation. Its wrapper is staged with the other fixed unit executables.
 
 The recommended configuration remains retrieval + trusted text, per the
 [container development results](evidence/mio-candidates-2026-10-18.md).
