@@ -61,6 +61,7 @@ def run_all(harness: Harness) -> None:
     harness.stage("Operator setup flow", lambda: _operator_setup(harness),
                   requires=("install files", "Knowledge Lite offline import"))
     harness.stage("Core reserve input path", lambda: _core_reserve_path(harness))
+    harness.stage("Integration broker", lambda: _integration_broker(harness))
 
 
 def _install_files(harness: Harness) -> str:
@@ -1225,3 +1226,86 @@ def _knowledge_status(harness: Harness) -> str:
     assert f"reason: {expected['reason_code']}" in setup["knowledge-store"]["reason"]
     assert f"freshness: {expected['freshness']}" in setup["knowledge-store"]["reason"]
     return "real Knowledge daemon matches reconciled setup/status view with the offline import store and separate trust pin"
+
+
+def _integration_broker(harness: Harness) -> str:
+    """Signed test-only local assurance; deliberately no adapter transport."""
+    from datetime import datetime, timedelta
+
+    from nacl.signing import SigningKey
+
+    from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
+    from azazel_nexus.integration_broker import (
+        ADAPTER_MANIFEST_DOMAIN,
+        AdapterCommissioning,
+        Broker,
+        CredentialRef,
+        DispatchIntent,
+        EdgeLease,
+        ExposureChangeProposal,
+        GateRefusal,
+        ManagementFailsafe,
+    )
+    from azazel_nexus.integration_broker.routing import (
+        EDGE_LEASE_DOMAIN,
+        EDGE_LEASE_SCHEMA,
+    )
+    from azazel_nexus.knowledge_peer import canonical
+    from azazel_nexus.sanitizer import SanitizerPolicy
+
+    now = datetime.fromisoformat(NOW)
+    expires = (now + timedelta(minutes=5)).isoformat()
+    topology = CommissioningRecord(
+        (ConfirmedRole((("serial", "fixture-nic"),), "deception_bridge", ACTOR, NOW),),
+        ("hardware", "resource", "topology"), NOW)
+    adapter_key, edge_key = SigningKey.generate(), SigningKey.generate()
+    root = Path(harness.env["AZAZEL_ROOT"]) / "var/lib/azazel/integration-broker"
+    broker = Broker(root, trusted_keys={"fixture-adapter": bytes(adapter_key.verify_key)}, topology=topology,
+                    edge_keys={"fixture-edge": bytes(edge_key.verify_key)})
+    fixture = root / "fixtures"
+    fixture.mkdir(parents=True)
+    for adapter, capability in (("fixture-telemetry", "telemetry_read"), ("fixture-exposure", "exposure_change")):
+        document = {
+            "schema": "azazel-nexus/adapter-manifest/1", "commissioning_digest": topology.digest(),
+            "adapter_id": adapter, "kind": "ndr", "version": "1.0.0",
+            "artifact_digest": "sha256:" + "b" * 64, "capability_set": [capability],
+            "tenant": "fixture", "privacy_class": "P1-sanitized",
+            "egress_allowlist": [{"address": "192.0.2.8", "port": 443}],
+            "mtls_identity": "fixture-mtls", "credential_ref": "fixture-credential",
+            "compatibility": ["azazel-nexus/1"],
+        }
+        payload = canonical(document)
+        signed = adapter_key.sign(ADAPTER_MANIFEST_DOMAIN + payload).signature + payload
+        manifest_file = fixture / (adapter + ".signed")
+        manifest_file.write_bytes(signed)
+        scope = AdapterCommissioning(
+            adapter, None, "/etc/azazel/credentials/" + adapter,
+            {document["artifact_digest"]: "/opt/azazel/adapters/" + adapter},
+            CredentialRef(adapter, "fixture-credential", now + timedelta(hours=1)), now)
+        unit = broker.admit(manifest_file.read_bytes(), commissioning=scope, now=NOW)
+        assert "IPAddressDeny=any" in unit and "port 443" in unit
+    policy = SanitizerPolicy.from_mapping({
+        "version": "fixture-v1", "remote_default": "deny",
+        "classes": {"P1-sanitized": {"remote": "allow", "fields": ["text"]}},
+        "redactions": ["secret"], "limits": {"max_bytes": 4096}})
+    record = broker.route("fixture-telemetry", {"text": "fixture observation", "secret": "discard"},
+                          observed_at=NOW, expires_at=expires, now=NOW, policy=policy,
+                          mission="fixture", alias_key=b"fixture-test-key")
+    assert record.destination == "knowledge" and b"discard" not in record.frame
+    assert broker.status_level(now=NOW) == "LITE"
+    proposal = ExposureChangeProposal("fixture-exposure", b'{"fixture":"opaque data"}')
+    context = {"failsafe": ManagementFailsafe(topology.digest(), "mgmt", "mgmt", NOW, True),
+               "dry_run": True, "human_confirmed": True, "now": NOW}
+    assert isinstance(broker.gate(proposal, edge_lease=None, **context), GateRefusal)
+    payload = canonical({"schema": EDGE_LEASE_SCHEMA, "adapter_id": proposal.adapter_id,
+                         "proposal_digest": proposal.digest, "commissioning_digest": topology.digest(),
+                         "issued_at": NOW, "expires_at": expires})
+    lease = EdgeLease(edge_key.sign(EDGE_LEASE_DOMAIN + payload).signature + payload)
+    intent = broker.gate(proposal, edge_lease=lease, **context)
+    assert isinstance(intent, DispatchIntent)
+    assert broker.deliver(intent, now=NOW).reason == "transport unavailable: Fabric#25"
+    broker.withdraw_all(reason="fixture_complete", now=NOW)
+    assert broker.status_level(now=NOW) == "CORE"
+    assert all(row["state"] == "disabled" for row in broker.status(now=NOW)["adapters"])
+    broker.ledger.verify()
+    return "signed telemetry admission, sanitized routing, lease-gated intent, transport refusal, withdrawal; audit verified; HIL not covered"

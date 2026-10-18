@@ -266,6 +266,7 @@ REQUIRED_STAGES = (
     "Knowledge Lite status",
     "Operator setup flow",
     "Core reserve input path",
+    "Integration broker",
 )
 
 
@@ -587,7 +588,7 @@ def test_the_refusal_happens_before_the_harness_writes_anything():
     assert not target.exists(), "the harness wrote to a root it refused"
 
 
-@pytest.mark.parametrize("root,expected", [(True, (19, 1)), (False, (15, 5))])
+@pytest.mark.parametrize("root,expected", [(True, (20, 1)), (False, (16, 5))])
 def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
     from tools import e2e_stages as stages
 
@@ -603,13 +604,13 @@ def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
                  "_activation", "_health", "_failure", "_rollback", "_audit",
                  "_lite_matrix", "_edge_package", "_loopback_decoys", "_edge_probe",
                  "_lite_import", "_core_reserve_path", "_mio_entry", "_knowledge_status",
-                 "_operator_setup"):
+                 "_operator_setup", "_integration_broker"):
         monkeypatch.setattr(stages, name, lambda h: "executed")
     harness = Harness(short_root)
     stages.run_all(harness)
     passed, skipped = expected
     assert harness.report.summary() == {
-        "passed": passed, "not_executed": skipped, "failed": 0, "total": 20}
+        "passed": passed, "not_executed": skipped, "failed": 0, "total": 21}
 
 
 def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):
@@ -681,3 +682,11 @@ def test_root_exchange_uses_operator_gid_and_restores_it(monkeypatch, refused):
     else:
         assert module.request(Path("/fixture.sock"), {}) == {"ok": True, "result": {}}
     assert groups == [456, 123]
+
+
+def test_integration_broker_stage_uses_signed_local_fixtures(short_root):
+    from tools.e2e_stages import _integration_broker
+    detail = _integration_broker(Harness(short_root))
+    assert "transport refusal" in detail
+    assert "audit verified" in detail
+    assert "HIL not covered" in detail

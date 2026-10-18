@@ -12,15 +12,16 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import timedelta
-from typing import Protocol
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from ..commissioning import CommissioningRecord
 from ..knowledge_peer import KnowledgeRefused, canonical, fresh, instant
 from ..lite_cache import Freshness
 from ..sanitizer import PrivacyClass, Redaction, SanitizerPolicy, sanitize
 from ..signature import SignatureRefused, verify_detached
+from .manifest import AdapterManifest
+from .states import AdapterRecord, BrokerState
 
 EDGE_LEASE_DOMAIN = b"azazel-nexus/edge-lease/v1\0"
 EDGE_LEASE_SCHEMA = "azazel-nexus/edge-lease/1"
@@ -28,18 +29,6 @@ MAX_PROPOSAL_BYTES = 65536
 MAX_LEASE_BYTES = 8192
 MANAGEMENT_HEALTH_MAX_AGE = timedelta(seconds=60)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-
-
-class ManifestView(Protocol):
-    adapter_id: str
-    capability_set: frozenset[str]
-    privacy_class: str
-
-
-class RecordView(Protocol):
-    adapter_id: str
-    state: str
-    manifest_digest: str
 
 
 @dataclass(frozen=True)
@@ -70,8 +59,8 @@ class DataRecord:
 
 
 def _adapter_refusal(
-    record: RecordView,
-    manifest: ManifestView,
+    record: AdapterRecord,
+    manifest: AdapterManifest,
     capability: str,
     *,
     exposure: bool = False,
@@ -82,10 +71,10 @@ def _adapter_refusal(
         record.manifest_digest
     ):
         return GateRefusal("missing admitted manifest digest")
-    state = record.state.upper()  # str Enums retain their string value methods.
-    allowed = {"ADMITTED", "ACTIVE_BOUNDED"}
+    state = record.state
+    allowed = {BrokerState.ADMITTED, BrokerState.ACTIVE_BOUNDED}
     if not exposure:
-        allowed.add("OBSERVE_ONLY")
+        allowed.add(BrokerState.OBSERVE_ONLY)
     if state not in allowed:
         return GateRefusal("adapter state does not permit routing")
     capabilities = frozenset(manifest.capability_set)
@@ -102,8 +91,8 @@ def _adapter_refusal(
 def _route(
     payload: Mapping,
     *,
-    adapter_record: RecordView,
-    manifest: ManifestView,
+    adapter_record: AdapterRecord,
+    manifest: AdapterManifest,
     observed_at: str,
     expires_at: str,
     now: str,
@@ -152,8 +141,8 @@ def _route(
 def route_telemetry(
     payload: Mapping,
     *,
-    adapter_record: RecordView,
-    manifest: ManifestView,
+    adapter_record: AdapterRecord,
+    manifest: AdapterManifest,
     observed_at: str,
     expires_at: str,
     now: str,
@@ -179,8 +168,8 @@ def route_telemetry(
 def route_advisory(
     payload: Mapping,
     *,
-    adapter_record: RecordView,
-    manifest: ManifestView,
+    adapter_record: AdapterRecord,
+    manifest: AdapterManifest,
     observed_at: str,
     expires_at: str,
     now: str,
@@ -224,6 +213,28 @@ class EdgeLease:
     """
 
     signed: bytes
+    _approval: tuple[str, datetime] | None = field(default=None, init=False, repr=False)
+
+    @property
+    def verified(self) -> bool:
+        return self._approval is not None
+
+    @property
+    def adapter_id(self) -> str:
+        return self._approval[0] if self._approval else ""
+
+    @property
+    def expires_at(self) -> datetime:
+        if self._approval is None:
+            raise KnowledgeRefused("unverified Edge lease")
+        return self._approval[1]
+
+    def bind(self, **verification) -> EdgeLease:
+        """Return this same lease type carrying a freshly verified Approval."""
+        doc, _ = self.verify(**verification)
+        bound = EdgeLease(self.signed)
+        object.__setattr__(bound, "_approval", (doc["adapter_id"], instant(doc["expires_at"])))
+        return bound
 
     def verify(
         self,
@@ -316,8 +327,8 @@ class DispatchIntent:
 def gate_exposure_proposal(
     proposal: ExposureChangeProposal,
     *,
-    adapter_record: RecordView,
-    manifest: ManifestView,
+    adapter_record: AdapterRecord,
+    manifest: AdapterManifest,
     edge_lease: EdgeLease,
     failsafe: ManagementFailsafe,
     topology: CommissioningRecord,

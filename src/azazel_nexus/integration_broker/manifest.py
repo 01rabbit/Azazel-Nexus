@@ -16,6 +16,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
+from ..sanitizer import PrivacyClass
 from ..signature import SIGNATURE_BYTES, SignatureRefused, verify_detached
 
 ADAPTER_MANIFEST_DOMAIN = b"azazel-nexus/adapter-manifest/v1\0"
@@ -127,10 +128,14 @@ class AdapterManifest:
             self.commissioning_digest, self.artifact_digest, self.manifest_digest,
         )):
             raise ManifestRefused("invalid_digest")
-        for value in (self.adapter_id, self.tenant, self.privacy_class,
+        for value in (self.adapter_id, self.tenant,
                       self.mtls_identity, self.credential_ref, self.signer):
             if not is_safe_symbol(value):
                 raise ManifestRefused("invalid_symbol")
+        if (not isinstance(self.privacy_class, str)
+                or (self.privacy_class not in {c.value for c in PrivacyClass}
+                    and not is_safe_symbol(self.privacy_class))):
+            raise ManifestRefused("invalid_privacy_class")
         if not isinstance(self.kind, AdapterKind):
             raise ManifestRefused("unknown_kind")
         if (not isinstance(self.version, str) or len(self.version) > 64

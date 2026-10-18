@@ -41,6 +41,7 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | subcommand | what it answers |
 | --- | --- |
 | `setup` | read-only ordered setup guidance, reasons and next commands; `--next` / `--json`; HG-05 stays unmeasured and provider admission blocked |
+| `broker` | read-only adapter status (`--json`) and signed-manifest dry-run review; [local assurance scope](docs/integration-broker.md); no admission/disable CLI |
 | `inventory` | the read-only hardware and interface list |
 | `profile` | measured RAM and the resource envelope it selects |
 | `commission` | role assignment, with explicit operator confirmation |

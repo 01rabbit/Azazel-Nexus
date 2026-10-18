@@ -32,7 +32,7 @@ ORDER = (
     "installed-files", "host-preflight", "commissioning", "commission-review",
     "bootstrap-deployment", "bootstrap-selection", "knowledge-store", "knowledge-trust",
     "mission-pack", "fetch-commissioning", "model-import-fetched", "provider-admission",
-    "activation-units",
+    "activation-units", "integration-broker",
 )
 
 NOTICE = (

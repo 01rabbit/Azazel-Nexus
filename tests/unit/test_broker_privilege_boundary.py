@@ -122,6 +122,15 @@ def scan(sources, entries=ENTRY_MODULES):
         tree = ast.parse(sources[module])
         imports = _local_imports(module, tree)
         for name in imports:
+            # Lane D shares the pure lifecycle data types. This grants no
+            # transition call: widening and aliased transition imports remain
+            # forbidden, including the planted-call checks below.
+            if module == "azazel_nexus.integration_broker.routing" and name in {
+                "azazel_nexus.integration_broker.states",
+                "azazel_nexus.integration_broker.states.AdapterRecord",
+                "azazel_nexus.integration_broker.states.BrokerState",
+            }:
+                continue
             if (
                 name.startswith("azazel_nexus_runtime")
                 or set(name.split(".")) & PRIVILEGED_MODULES
@@ -296,3 +305,25 @@ def test_verified_knowledge_response_also_has_no_privileged_calls():
     assert context.facts == tuple(doc["facts"])
     assert forbidden == []
     assert ("azazel_nexus.knowledge_peer", "read_context") in seen
+
+
+def test_broker_and_cli_control_plane_has_no_host_privilege_or_transport():
+    """Control-plane entry points can persist/audit and render, never execute.
+
+    Content-plane scan above still forbids reaching these entry points. Unlike
+    content routing, the broker must call states.transition to record lifecycle
+    changes, and the read-only CLI must call the pure confinement renderer.
+    """
+    sources = source_map()
+    for module in ("azazel_nexus.integration_broker.broker", "azazel_nexus.broker_cli"):
+        tree = ast.parse(sources[module])
+        imports = _local_imports(module, tree)
+        assert not any(name.startswith("azazel_nexus_runtime") for name in imports)
+        assert not any(set(name.split(".")) & {"activation", "activation_store", "units"}
+                       for name in imports)
+        calls = {node.func.attr if isinstance(node.func, ast.Attribute) else
+                 node.func.id if isinstance(node.func, ast.Name) else ""
+                 for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        assert not calls & (PRIVILEGED_CALLS - {"transition", "gate_exposure_proposal", "deliver"})
+        if module.endswith("broker_cli"):
+            assert not calls & {"admit", "withdraw_all", "gate", "deliver", "transition"}

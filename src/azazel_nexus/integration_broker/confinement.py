@@ -1,8 +1,8 @@
 """Pure adapter unit rendering and credential-reference lifecycle (#16).
 
 The caller supplies an *admitted* manifest and reviewed commissioning, never
-connector/M.I.O./Knowledge/Deception payloads. Structural typing keeps this
-lane independent of admission; it does not authenticate a Python object.
+connector/M.I.O./Knowledge/Deception payloads. The real admission type is shared with the verifier; a Python object alone
+does not authenticate commissioning.
 No files are read, units installed, secrets fetched, or processes started.
 
 Network limits: IPAddressAllow is address-only; SocketBindDeny=any denies
@@ -35,7 +35,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from ipaddress import ip_network
 from types import MappingProxyType
-from typing import Protocol
+
+from .manifest import AdapterManifest
 
 
 class ConfinementRefused(ValueError):
@@ -176,20 +177,7 @@ def _digest(value: str) -> str:
     return value
 
 
-class _Egress(Protocol):
-    address: str
-    port: int
-
-
-class _Manifest(Protocol):
-    adapter_id: str
-    artifact_digest: str
-    capability_set: frozenset[str]
-    egress_allowlist: tuple[_Egress, ...]
-    credential_ref: str
-
-
-def render_adapter_unit(manifest: _Manifest, *, commissioning: AdapterCommissioning) -> str:
+def render_adapter_unit(manifest: AdapterManifest, *, commissioning: AdapterCommissioning) -> str:
     """Render a complete service unit from admitted/reviewed values only.
 
     Exposure adapters get no additional host capability. Approval and lease
