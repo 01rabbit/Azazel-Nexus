@@ -24,7 +24,7 @@ LogRateLimitBurst=50
 LogExtraFields=AZ_SERVICE=mio-remote
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/azazel/remote
-ReadWritePaths=/var/lib/azazel/run
+ReadWritePaths=/var/lib/azazel/run/remote
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

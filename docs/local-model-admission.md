@@ -166,7 +166,9 @@ hash residual for admitted Linux execution is removed by descriptors.
 There is no trusted time source or boot-ID binding. Wall-clock rollback can
 extend effective approval exposure; the mandatory policy bound, capped at seven
 days, limits the signed interval but is not a rollback-resistant clock. Durable
-epoch/catalog high-water and trusted time remain follow-ups. Locald still has
-ReadWritePaths for `/var/lib/azazel/run`; narrowing requires a socket-layout
-change and remains a follow-up. Admission never reads the legacy Core reserve
-record in that directory, even if it declares a measurement.
+epoch/catalog high-water and trusted time remain follow-ups. Locald's
+ReadWritePaths are exactly `/var/lib/azazel/mio` and its own socket leaf
+`/var/lib/azazel/run/mio` (installer-owned azmio:azazel-operator 2710), not the
+whole run tree, so the legacy unattested Core reserve record
+`/var/lib/azazel/run/core-reserve.json` is read-only inside its sandbox.
+Admission never reads that record either, even if it declares a measurement.

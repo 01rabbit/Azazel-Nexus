@@ -545,9 +545,9 @@ def test_it_shares_nothing_with_the_fetcher_or_the_local_runtime():
 
     for other in (fetch, local):
         shared = set(remote.read_write_paths) & set(other.read_write_paths)
-        assert shared == {"/var/lib/azazel/run"}, (
-            "the socket directory is shared; the state directories must not be"
-        )
+        assert not shared, (
+            "each writes only its own state directory and socket leaf")
+    assert "/var/lib/azazel/run" not in remote.read_write_paths
 
 
 def test_each_holds_exactly_one_network_or_execution_role():

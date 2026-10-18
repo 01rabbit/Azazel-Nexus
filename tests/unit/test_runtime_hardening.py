@@ -592,6 +592,25 @@ def test_entry_and_knowledge_profiles_have_exact_least_privilege_scope(
     assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT]
 
 
+@pytest.mark.parametrize(
+    ("unit", "paths"),
+    [
+        ("azazel-mio-locald.service", ["/var/lib/azazel/mio", "/var/lib/azazel/run/mio"]),
+        ("azazel-mio-remoted.service",
+         ["/var/lib/azazel/remote", "/var/lib/azazel/run/remote"]),
+    ],
+)
+def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
+    """Never the whole run tree: not other daemons' leaves and not the legacy
+    unattested `/var/lib/azazel/run/core-reserve.json`."""
+
+    written = _settings(unit)["ReadWritePaths"]
+    assert written == paths
+    assert "/var/lib/azazel/run" not in written
+    assert not any("/var/lib/azazel/run/core-reserve.json".startswith(path + "/")
+                   for path in written)
+
+
 def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
     # Provider leaves are operator-group 2710 and their sockets are 0660.
     assert _settings("azazel-mio-entryd.service")["SupplementaryGroups"] == [

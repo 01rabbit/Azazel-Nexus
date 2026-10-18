@@ -56,8 +56,20 @@ def test_it_has_its_own_unit_account_socket_and_directory():
     assert mio_locald.SOCKET_NAME == "mio"
     assert profile.read_write_paths == (
         "/var/lib/azazel/mio",
-        "/var/lib/azazel/run",
+        "/var/lib/azazel/run/mio",
     )
+
+
+def test_it_cannot_write_the_rest_of_the_run_tree():
+    """Its socket leaf, not the run tree: the legacy unattested Core reserve
+    record and every other daemon's socket leaf stay outside its grant."""
+
+    paths = _profile(UNIT).read_write_paths
+    assert "/var/lib/azazel/run" not in paths
+    assert mio_locald.socket_path(mio_locald.SOCKET_NAME).parent.as_posix().endswith(
+        "/var/lib/azazel/run/mio")
+    for path in paths:
+        assert not "/var/lib/azazel/run/core-reserve.json".startswith(path + "/")
 
 
 def test_it_shares_nothing_with_the_artifact_fetcher():
@@ -69,9 +81,8 @@ def test_it_shares_nothing_with_the_artifact_fetcher():
     assert mio.account != fetch.account
     assert mio.runtime_directory != fetch.runtime_directory
     assert mio_locald.SOCKET_NAME != "fetch"
-    assert set(mio.read_write_paths) & set(fetch.read_write_paths) == {
-        "/var/lib/azazel/run"
-    }, "the socket directory is shared; the staging directories must not be"
+    assert not set(mio.read_write_paths) & set(fetch.read_write_paths), (
+        "neither a staging directory nor a socket leaf is shared")
     assert "/var/lib/azazel/fetch" not in mio.read_write_paths
     assert "/var/lib/azazel/mio" not in fetch.read_write_paths
 
