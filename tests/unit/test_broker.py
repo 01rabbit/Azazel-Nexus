@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, replace
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
 
 import pytest
 import test_activation as activation
@@ -180,14 +181,23 @@ def test_same_edge_lease_supplies_states_approval_and_expiry(admitted):
     assert all(row["state"] == "disabled" for row in broker.status(now=routing.EXPIRES)["adapters"])
 
 
-def test_audit_covers_all_event_kinds_and_verifies(tmp_path):
-    _integration_broker(Harness(tmp_path))
-    broker = Broker(tmp_path / "var/lib/azazel/integration-broker")
-    broker.ledger.verify()
-    kinds = {entry.event["event_type"] for entry in broker.ledger}
-    assert {"broker." + kind for kind in (
-        "admission", "schema_trust", "privacy_sanitization", "routing", "lease_binding",
-        "postcondition_observation", "rollback", "withdrawal", "adapter.transition", "checkpoint")} <= kinds
+def test_audit_covers_all_event_kinds_and_verifies():
+    # A short root: the harness refuses roots that would push daemon socket
+    # paths past the AF_UNIX limit, and pytest's tmp_path can be too long.
+    import shutil
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="az-brk-", dir="/tmp"))
+    try:
+        _integration_broker(Harness(root))
+        broker = Broker(root / "var/lib/azazel/integration-broker")
+        broker.ledger.verify()
+        kinds = {entry.event["event_type"] for entry in broker.ledger}
+        assert {"broker." + kind for kind in (
+            "admission", "schema_trust", "privacy_sanitization", "routing", "lease_binding",
+            "postcondition_observation", "rollback", "withdrawal", "adapter.transition", "checkpoint")} <= kinds
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_broken_audit_and_interrupted_snapshot_fail_closed(admitted, monkeypatch):
