@@ -657,6 +657,15 @@ must be stopped and cleared before the next activation pass:
 cannot confirm them stopped and ends with `RollbackFailed` (masking does not stop
 a running process; a `failed` unit also counts as unconfirmed).
 
+A supporting-bootstrap selection left from an earlier rehearsal is bound to the boot
+it was made in. On a later boot every activation pass then fails closed, granting
+nothing, and the journal names the chain, for example
+`ApprovalRefused: optional protected bootstrap selection refused <- protected bootstrap
+selection refused <- bootstrap selection binding differs`. This is the documented
+refusal, not a fault of the rehearsal; renewal of a stale selection is not
+implemented, so do not delete `/etc/azazel/bootstrap/selection.json` by hand on a
+node whose state matters (a disposable rehearsal VM may be reset from its backup).
+
 Rehearsing the operator path (entryd `mio.advise`) shows `deterministic handoff`
 / `refused` for every frame while admission is closed; that is the documented
 behaviour (see [M.I.O. runtime](../mio-runtime.md#what-an-operator-receives-today)),

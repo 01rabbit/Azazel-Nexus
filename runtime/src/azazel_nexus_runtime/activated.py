@@ -531,9 +531,10 @@ def _narrow_bootstrap_core_units():
         raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed")
 
 
-# Reviewed static messages of the bootstrap path (see
-# tests/unit/test_runtime_activated_entrypoint.py, which keeps this exactly equal
-# to the literal raises in the listed modules). Only these are ever logged.
+# Reviewed static messages of the bootstrap path, including the library's
+# bootstrap selection modules (see tests/unit/test_runtime_activated_entrypoint.py,
+# which keeps this exactly equal to the literal raises in the listed modules).
+# Only these are ever logged.
 _STATIC_FAILURE_MESSAGES = frozenset({
     'additional controller command refused',
     'admitted resource thresholds required',
@@ -589,8 +590,22 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'bootstrap restore requires a fresh transaction',
     'bootstrap restored fence changed',
     'bootstrap restored masks unconfirmed',
+    'bootstrap selection absence changed',
+    'bootstrap selection appeared during observation',
+    'bootstrap selection binding differs',
+    'bootstrap selection binding inputs required',
+    'bootstrap selection changed',
     'bootstrap selection changed before composition',
     'bootstrap selection changed during initial narrowing',
+    'bootstrap selection digest refused',
+    'bootstrap selection directory changed',
+    'bootstrap selection encoding refused',
+    'bootstrap selection generation refused',
+    'bootstrap selection identity refused',
+    'bootstrap selection publication unfinished',
+    'bootstrap selection refused',
+    'bootstrap selection required',
+    'bootstrap selection source changed',
     'bootstrap start cancelled',
     'bootstrap start completion unconfirmed',
     'bootstrap start elapsed clock invalid or expired',
@@ -604,6 +619,7 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'bootstrap transaction requires recovery',
     'bootstrap transaction validator required',
     'bootstrap unpublished baseline changed',
+    'bounded bootstrap selection required',
     'commission start admission unconfirmed',
     'commission start context changed',
     'commission start differs from publication',
@@ -639,12 +655,14 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'controller watchdog notification unconfirmed',
     'controller watchdog progress not admitted',
     'current boot id refused',
+    'deployment changed during selection publication',
     'durable bootstrap transaction unavailable',
     'durable bootstrap transaction update unconfirmed',
     'durably retained bootstrap deadline required',
     'enclosing systemd owner changed',
     'enclosing systemd owner changed before loaded inspection',
     'existing bootstrap transaction requires manual review',
+    'existing selection cannot be replaced',
     'explicit positive resource floors required',
     'fresh audit binding and checkpoint required',
     'fresh retained audit start context required',
@@ -668,12 +686,15 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'loaded-unit inspection requires fresh session',
     'login environment policy malformed',
     'manager stop evidence unavailable',
+    'noncanonical bootstrap selection refused',
     'only the fixed system bus socket is admitted',
+    'optional protected bootstrap selection refused',
     'owned bootstrap closure unavailable',
     'pinned system bus client unavailable',
     'prior boot grant identity differs from journal',
     'prior boot journal retirement unavailable',
     'protected bootstrap grant store required',
+    'protected bootstrap selection refused',
     'publication admission unconfirmed',
     'publication composition unavailable',
     'publication controller observation changed',
@@ -704,7 +725,11 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'retained publication prerequisites changed',
     'retained publication profile changed',
     'retained publication start closure changed',
+    'retained selection differs',
     'retained start intent changed',
+    'selection directory changed',
+    'selection publication refused; inspect retained state',
+    'separate digest and exact operation confirmation required',
     'service timer policy malformed',
     'single fixed bootstrap command required',
     'stop root differs from admitted cgroup mount',
@@ -728,6 +753,9 @@ _STATIC_FAILURE_MESSAGES = frozenset({
 })
 
 
+_FAILURE_CHAIN_LIMIT = 4
+
+
 def _failure_label(exc: BaseException) -> str:
     """Class name, plus the message only when it is a reviewed static literal.
 
@@ -740,13 +768,35 @@ def _failure_label(exc: BaseException) -> str:
 
     from .units import UnitOperationFailed
 
+    def one(error: BaseException) -> str | None:
+        if type(error) not in (ApprovalRefused, UnitOperationFailed) or len(error.args) != 1:
+            return None
+        message = error.args[0]
+        if type(message) is str and message in _STATIC_FAILURE_MESSAGES:
+            return message
+        return None
+
     name = type(exc).__name__
-    if type(exc) not in (ApprovalRefused, UnitOperationFailed) or len(exc.args) != 1:
+    first = one(exc)
+    if first is None:
         return name
-    message = exc.args[0]
-    if type(message) is str and message in _STATIC_FAILURE_MESSAGES:
-        return f"{name}: {message}"
-    return name
+    # Follow the cause chain (also a suppressed context: only reviewed literals
+    # are ever printed) so the root reason is visible, e.g. a selection bound to
+    # an earlier boot. Bounded; stops at the first unreviewed link.
+    reasons = [first]
+    seen = {id(exc)}
+    error = exc
+    while len(reasons) < _FAILURE_CHAIN_LIMIT:
+        error = error.__cause__ if error.__cause__ is not None else error.__context__
+        if error is None or id(error) in seen:
+            break
+        seen.add(id(error))
+        reason = one(error)
+        if reason is None:
+            break
+        if reason != reasons[-1]:
+            reasons.append(reason)
+    return f"{name}: " + " <- ".join(reasons)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

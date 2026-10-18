@@ -291,6 +291,20 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
                     and isinstance(node.exc.args[0], ast.Constant)
                     and type(node.exc.args[0].value) is str):
                 found.add(node.exc.args[0].value)
+    library = Path(activated.__file__).parents[2].parent / "src" / "azazel_nexus"
+    if not library.is_dir():
+        import azazel_nexus
+        library = Path(azazel_nexus.__file__).parent
+    for module in ("bootstrap_selection", "bootstrap_selection_optional",
+                   "bootstrap_selection_store"):
+        for node in ast.walk(ast.parse((library / f"{module}.py").read_text())):
+            if (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+                    and isinstance(node.exc.func, ast.Name)
+                    and node.exc.func.id in ("ApprovalRefused", "UnitOperationFailed")
+                    and len(node.exc.args) == 1
+                    and isinstance(node.exc.args[0], ast.Constant)
+                    and type(node.exc.args[0].value) is str):
+                found.add(node.exc.args[0].value)
     found.add("bootstrap helper readiness lost")  # bootstrap._READINESS_LOST
     found = {m for m in found if "/" not in m and "{" not in m}
     assert activated._STATIC_FAILURE_MESSAGES == found
@@ -331,3 +345,37 @@ def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys) -> None:
     assert activated.main([]) == 1
     assert ("failed before completing a safe pass: UnitOperationFailed: "
             "controller one-use start condition refused") in capsys.readouterr().err
+
+
+def test_failure_label_follows_reviewed_causes() -> None:
+    """A stale selection names its root reason, not just the outer refusal."""
+    from azazel_nexus.operator_trust import ApprovalRefused
+
+    def chained():
+        try:
+            try:
+                raise ApprovalRefused("bootstrap selection binding differs")
+            except ApprovalRefused:
+                raise ApprovalRefused("protected bootstrap selection refused") from None
+        except ApprovalRefused:
+            raise ApprovalRefused("optional protected bootstrap selection refused") from None
+
+    try:
+        chained()
+    except ApprovalRefused as exc:
+        assert activated._failure_label(exc) == (
+            "ApprovalRefused: optional protected bootstrap selection refused"
+            " <- protected bootstrap selection refused"
+            " <- bootstrap selection binding differs")
+
+
+def test_failure_label_stops_at_unreviewed_cause() -> None:
+    from azazel_nexus.operator_trust import ApprovalRefused
+
+    try:
+        try:
+            raise ApprovalRefused("secret /etc/path detail")
+        except ApprovalRefused as inner:
+            raise ApprovalRefused("bootstrap selection required") from inner
+    except ApprovalRefused as exc:
+        assert activated._failure_label(exc) == "ApprovalRefused: bootstrap selection required"
