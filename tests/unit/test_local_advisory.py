@@ -607,3 +607,16 @@ def test_runtime_quality_refusals_have_fixed_audit_codes(service, body, reason):
     assert reply == {'outcome': 'not_advice', 'refusal': reason}
     assert events[-1] == {'event_type': 'mio.local.refused', 'refusal': reason}
     assert SENTINEL not in json.dumps(events)
+
+
+@pytest.mark.parametrize('cited', [
+    # A fact directly followed by Japanese must still be extracted and matched.
+    'ホストws-112から4800件が出ている',
+    'ws-112という端末から4800件',
+    # No number or identifier: substantial overlap with the source suffices.
+    'ホストから大量の問い合わせが出ています',
+])
+def test_grounded_japanese_citations_accepted(cited):
+    item = japanese_frame()
+    item['context'][0]['text'] = 'ホストws-112から4800件が出ています。ホストから大量の問い合わせが出ています'
+    assert read_local_advisory(japanese_response(cited), item).text is not None

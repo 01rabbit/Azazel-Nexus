@@ -42,10 +42,23 @@ _INJECTION_NOTE = '入力に命令調の文字列が含まれていた'
 _KANA = re.compile(r'[ぁ-ゖァ-ヺー]')
 _JAPANESE = re.compile(r'[ぁ-ゖァ-ヺ一-鿿]')
 # Keep punctuation inside addresses/times/host identifiers, but exclude prose periods.
+# ASCII boundaries only: in Python `\w` also matches kana/kanji, so a fact
+# followed directly by Japanese ("203.0.113.45という") would not be extracted.
 _FACT = re.compile(
-    r'(?<![\w])(?:[A-Za-z0-9_]+(?:[.:@/-][A-Za-z0-9_]+)+|'
-    r'[A-Za-z_]+[-_][A-Za-z0-9_-]+|\d+(?:[.,]\d+)*)(?![\w])'
+    r'(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+(?:[.:@/-][A-Za-z0-9_]+)+|'
+    r'[A-Za-z_]+[-_][A-Za-z0-9_-]+|\d+(?:[.,]\d+)*)(?![A-Za-z0-9_])'
 )
+# A citation with no number or identifier must still overlap the source.
+_GRAM = 4
+_MIN_OVERLAP = 0.5
+
+
+def _overlap(cited: str, source: str) -> float:
+    def grams(text: str) -> set[str]:
+        compact = re.sub(r'[\s、。,.:;「」『』()（）\-]+', '', text.lower())
+        return {compact[i:i + _GRAM] for i in range(max(len(compact) - _GRAM + 1, 0))}
+    cited_grams = grams(cited)
+    return len(cited_grams & grams(source)) / len(cited_grams) if cited_grams else 0.0
 _LABELLED_FACT = re.compile(
     r'(?:host|hostname|account|user|src|source)\s*[=:]\s*([A-Za-z0-9_.@-]+)',
     re.IGNORECASE,
@@ -176,7 +189,7 @@ def read_local_advisory(text: str, frame: Mapping | None = None) -> Advisory:
         if (any(identifier not in source_identifiers for identifier in identifiers)
                 or any(number not in source_numbers for number in numbers)
                 or (facts and any(fact not in source_facts for fact in facts))
-                or (not facts and cited not in source)):
+                or (not facts and _overlap(cited, source) < _MIN_OVERLAP)):
             raise AdvisoryRefused(AdvisoryRefusal.UNGROUNDED_FACTS, 'ungrounded_facts')
         texts = [advisory.text.text, *fields.values()]
         japanese = bool(_JAPANESE.search(checked['question']))
