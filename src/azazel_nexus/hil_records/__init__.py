@@ -285,7 +285,7 @@ def _gate(record: dict, reasons: list[str]) -> None:
         )
         paths = observations.get("denied_paths")
         if not isinstance(paths, dict) or set(paths) != {
-            "protected",
+            "protected_zone",
             "management",
             "control_plane",
             "internet",
