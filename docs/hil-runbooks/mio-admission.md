@@ -55,7 +55,8 @@ name and refusal symbol named here exists in the code.
   `python -m azazel_nexus.operator_enrollment enroll LABEL` procedure
   ([explicit administrator enrollment](../debian-live-install.md#explicit-administrator-enrollment)),
   confirming the fingerprint (SHA-256 over the raw 32-byte public key) through a
-  separate channel.
+  separate channel. The directory must exist first (enrollment refuses and names
+  it otherwise): `install -d -m 0750 -o root -g azmission-read /etc/azazel/operator-trust`.
 - `tools/hil_evidence.py sign` reads a seed file. Run it **only on the attester's
   own workstation**, never on the DUT, never in this repository's CI and never
   with a key stored in any checkout. No private key, seed or signature tool ever
@@ -97,7 +98,10 @@ name and refusal symbol named here exists in the code.
    sudo packaging/install.sh --llama-runtime /media/approved/llama-server
    ```
 
-   The installer refuses before mutation on a digest mismatch. Then check:
+   The installer refuses before mutation on a digest mismatch. Installing the
+   runtime distribution from source builds a small C extension, so the build host
+   (or the DUT, if building there) needs `gcc`, `libc6-dev` and `python3-dev`.
+   Then check:
 
    ```sh
    sha256sum /usr/libexec/azazel/llama-server
@@ -632,6 +636,19 @@ stops at `WRONG_ARCHITECTURE`, and only with the admitted architecture changed i
 a throwaway installed copy does it reach `NODE_IDENTITY_UNAVAILABLE` and then
 `RESERVE_VIRTUALIZATION_OBSERVED`. Never change the architecture or the kill
 switch in the repository for a rehearsal.
+
+On Apple Silicon an x86_64 (amd64) container can run under Rosetta. It rehearses
+the admission chain **without** changing the admitted architecture (it passes
+`WRONG_ARCHITECTURE` and stops at `RESERVE_VIRTUALIZATION_OBSERVED`), but:
+`MemoryDenyWriteExecute=yes` must be dropped there (Rosetta needs executable heap
+mappings; the pinned llama-server and the Python daemons fail with it), and
+seccomp filters are not enforced under Rosetta, so it says nothing about
+`SystemCallFilter` compatibility on x86_64. §5.2 measurements and sandbox
+compatibility belong on the DUT (or a native x86_64 VM for mechanics). Keep
+systemd from mounting `binfmt_misc` inside the container, or the host loses the
+Rosetta registration. `azazel-auditd` and `azazel-commissiond` cannot be started by
+hand in a rehearsal (`BindsTo=azazel-activated`); use a transient unit with the
+same `ExecStart` and properties to exercise them.
 
 Units started by hand for a rehearsal (`systemctl unmask`, `--job-mode=ignore-requirements`)
 must be stopped and cleared before the next activation pass:
