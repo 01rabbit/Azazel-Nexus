@@ -29,14 +29,21 @@ response text in any ledger, Edge authority unchanged.
 
 | Model (Q4_K_M) | License | Peak RSS | Cold start | Total p50 / p95 (1 client) | Valid advice |
 | --- | --- | --- | --- | --- | --- |
-| Qwen2.5-1.5B-Instruct | Apache-2.0 | 1.26 GiB | 0.5 s | 6.9 s / 8.6 s | 100 % |
-| shisa v2.1 Llama 3.2 3B | Llama 3.2 Community | 2.45 GiB | 0.9 s | 21.5 s / 38.9 s | 95–100 % |
+| Qwen2.5-1.5B-Instruct | Apache-2.0 | 1257–1275 MiB (≈1.23–1.25 GiB) | 0.5 s | 6.9 s / 8.6 s | 100 % |
+| shisa v2.1 Llama 3.2 3B | Llama 3.2 Community | 2446–2453 MiB (≈2.39–2.40 GiB) | 0.9 s | 21.5 s / 38.9 s | 95–100 % |
 
-- Two concurrent clients roughly double total latency (Qwen 12.8 s p50,
-  Llama 46.7 s p50); an Edge-like background load (1 worker, 25 % CPU, 256 MiB)
-  changed little.
-- Both fit an 8 GiB class with room for Core, but Llama-3B's p95 approaches the
-  30 s per-inference deadline at two clients; Qwen-1.5B stays well inside it.
+- Two concurrent clients roughly double total latency: Qwen p50 6.9 s → 12.8 s
+  (p95 8.6 s → 20.1 s); Llama p50 21.5 s → 46.7 s (p95 38.9 s → 90.1 s).
+- An Edge-like background load (1 worker, 25 % CPU, 256 MiB) barely moved Qwen
+  (p50 6.9 s → 7.0 s) but slowed Llama by about 20 % at one client
+  (p50 21.5 s → 25.9 s, p95 38.9 s → 43.7 s).
+- All cells ran under a 120 s bench deadline, not the production 30 s
+  per-inference deadline. Against 30 s: Qwen's p95 is 8.6 s at one client and
+  about 20 s at two; Llama-3B's p95 already exceeds it at one client (38.9 s)
+  and reaches about 90 s at two, so under the production deadline a share of
+  its requests would time out.
+- Both fit in an 8 GiB class by memory (≈1.2 and ≈2.4 GiB server RSS); by
+  latency, only Qwen-1.5B stays inside the 30 s deadline.
 - `Phi-3.5-mini` (MIT, 3.0 GiB) loads, but every grammar-constrained request
   fails with HTTP 400 "Failed to initialize samplers" on b11716, so it is
   excluded. Ollama's Qwen3.5 GGUFs do not load in upstream llama.cpp.
