@@ -92,6 +92,10 @@ __all__ = [
     "MAX_INBOX_ENTRIES",
     "Transition",
     "status_summary",
+    "KnowledgeRef",
+    "LookupContext",
+    "lookup_context",
+    "lookup_context_reading",
 ]
 
 #: Members a bundle may not carry whatever its manifest says. A bundle does
@@ -472,7 +476,8 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         raise
 
 
-def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
+def _read_trusted(*, root: Path, trust_root: Path,
+                  reader: Callable[[BundleAccepted], dict]) -> dict:
     """Read the imported tar store using separate commissioner-owned trust.
 
     The legacy import root's anchors are deliberately not consulted. Anchor
@@ -480,7 +485,8 @@ def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
     ``trust_root/trust/anchors.toml``; its keys must also be currently pinned
     by TrustStore. KnowledgeLite supplies the same revocation-policy reader
     used by the content-generation cache, without treating a tar as that cache.
-    Only fixed symbols and the verified bundle version leave this adapter.
+    The callback sees only the verified admitted bundle. Failures return fixed
+    status symbols; no input or exception text leaves this adapter.
     """
     from .lite_service import KnowledgeLite
     from .lite_trust import TrustRefused, TrustStore
@@ -538,13 +544,105 @@ def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
                 or any(revocations.revokes_key(anchors.keys[name])
                        for name in accepted.signers)):
             return summary("quarantined", "revoked", generation)
-        reading = reading_for(read_claims(accepted, query_as_of=query_as_of),
-                              query_as_of=query_as_of)
+        result = reader(accepted)
         # A repin observed during the read cannot yield an available answer.
         if trust.path != trust_path or bounded_read(trust_path, 65536) != trust_bytes:
             return summary("unavailable", "trust_unreadable")
-        return summary(reading.overall, reading.overall, generation, reading.time_bound.value)
+        return result
     except BundleRefused:
         return summary("quarantined", "bundle_refused")
     except (OSError, ValueError, KeyError, TypeError, TrustRefused):
         return summary("unavailable", "store_unreadable")
+
+
+def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
+    """Bounded diagnostics, with exactly the existing status response shape."""
+    def read(accepted):
+        reading = reading_for(read_claims(accepted, query_as_of=query_as_of),
+                              query_as_of=query_as_of)
+        return {"state": reading.overall, "reason_code": reading.overall,
+                "generation": accepted.bundle_version,
+                "freshness": reading.time_bound.value}
+
+    return _read_trusted(root=root, trust_root=trust_root, reader=read)
+
+
+TECHNIQUE_ID = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?", re.ASCII)
+
+
+@dataclass(frozen=True)
+class KnowledgeRef:
+    """Bounded advisory reference; the technique primary key is its claim id."""
+
+    technique_id: str
+    name: str
+    summary: str
+    claim_id: str
+    bundle_digest: str
+    freshness: str
+
+
+@dataclass(frozen=True)
+class LookupContext:
+    refs: tuple[KnowledgeRef, ...]
+    reason_code: str
+
+
+def _plain_text(value, limit: int) -> str:
+    # Strip HTML and Markdown links/formatting from producer descriptions.
+    # Never interpret markup, follow a URL, or execute the resulting prose.
+    import html
+
+    if not isinstance(value, str):
+        return ""
+    value = html.unescape(value)
+    value = re.sub(r"<[^>]*>", " ", value)
+    value = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"https?://\S+|www\.\S+", " ", value)
+    value = value.translate(str.maketrans("", "", "`*_#"))
+    return " ".join("".join(c if c.isprintable() else " " for c in value).split())[:limit]
+
+
+def lookup_context_reading(*, root: Path, trust_root: Path,
+                           technique_ids: tuple[str, ...], query_as_of: str) -> LookupContext:
+    """Stream only served rows; failures expose a fixed reason, never input.
+
+    Input and retained output are bounded independently of bundle size. The
+    existing verifier still bounds and authenticates the complete archive.
+    Order is the existing sorted-member/row order; duplicate queries are inert.
+    """
+    if (type(technique_ids) is not tuple or len(technique_ids) > 8
+            or any(type(item) is not str or not TECHNIQUE_ID.fullmatch(item)
+                   for item in technique_ids)):
+        return LookupContext((), "invalid_technique_ids")
+    wanted = frozenset(technique_ids)
+
+    def read(accepted):
+        if not wanted:
+            return {"refs": (), "reason_code": "no_context"}
+        refs = []
+        for row in iter_served(accepted, query_as_of=query_as_of):
+            technique = row.get("technique_id")
+            if not isinstance(technique, str) or technique not in wanted:
+                continue
+            name = _plain_text(row.get("name"), 120)
+            if not name:
+                continue
+            refs.append(KnowledgeRef(
+                technique, name, _plain_text(row.get("description"), 240),
+                technique, accepted.bundle_digest,
+                "static" if row.get("agg_next_expiry") is None else "current",
+            ))
+            if len(refs) == 16:
+                break
+        return {"refs": tuple(refs), "reason_code": "available" if refs else "no_context"}
+
+    result = _read_trusted(root=root, trust_root=trust_root, reader=read)
+    return LookupContext(result.get("refs", ()), result["reason_code"])
+
+
+def lookup_context(*, root: Path, trust_root: Path,
+                   technique_ids: tuple[str, ...], query_as_of: str) -> tuple[KnowledgeRef, ...]:
+    """No usable context is an empty tuple. See lookup_context_reading for why."""
+    return lookup_context_reading(root=root, trust_root=trust_root,
+                                  technique_ids=technique_ids, query_as_of=query_as_of).refs
