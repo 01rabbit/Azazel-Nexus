@@ -31,6 +31,10 @@ def test_file_observer_catches_container_hypervisor_and_dmi(tmp_path, monkeypatc
     assert observation.observe_virtualization()["cpu_hypervisor"] == "observed"
     (tmp_path / "dmi_vendor").write_text("QEMU")
     assert observation.observe_virtualization()["dmi_vendor"] == "observed"
+    # Apple's Virtualization.framework guest DMI, observed in the container
+    # rehearsal; "Virtual Machine" alone did not match it.
+    (tmp_path / "dmi_product").write_text("Apple Virtualization Generic Platform\n")
+    assert observation.observe_virtualization()["dmi_product"] == "observed"
 
 
 def test_probe_refuses_virtualized_and_unknown_observations_before_samples():

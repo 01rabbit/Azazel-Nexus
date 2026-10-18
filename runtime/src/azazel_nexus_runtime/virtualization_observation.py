@@ -12,7 +12,8 @@ _FILES = {
 }
 _VIRTUAL = re.compile(r"qemu|kvm|vmware|virtualbox|innotek|xen|microsoft corporation|"
                       r"virtual machine|bochs|parallels|bhyve|amazon ec2|google compute|"
-                      r"openstack|docker|lxc|kubepods|containerd|podman", re.IGNORECASE)
+                      r"openstack|apple virtualization|docker|lxc|kubepods|containerd|podman",
+                      re.IGNORECASE)
 
 
 def observe_virtualization():
