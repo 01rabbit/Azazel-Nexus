@@ -176,6 +176,8 @@ class LocalModelProvider:
     #: Whether the content policy passed. Same three-valued rule.
     content_policy_passed: Optional[bool] = None
 
+    role: str = "generative"
+
     # There is deliberately no `approved` or `staged` field. The resource gate
     # always rejects while the Core reserve is unmeasured, so the approval and
     # staged-activation gates are never reached -- and a field nothing reads is
@@ -238,7 +240,7 @@ def admit_local_model(
             "matched against this node; admission needs what the node is, and "
             "inventing it would make the tuple match something nobody tested",
         )
-    matched, reason = tested.admits(provider.component_digest, host)
+    matched, reason = tested.admits(provider.component_digest, host, model_role=provider.role)
     if matched is None:
         return refuse(AdmissionGate.COMPATIBILITY, reason)
 

@@ -13,17 +13,15 @@ is the shipped state, not a limitation being worked around.
 
 | refusal | where | what defeats it |
 | --- | --- | --- |
-| the runtime allowlist is empty | `model_runtime.RUNTIMES` | a reviewed code change adding a runtime |
-| the unit is not granted | `activation.UnitDefinition.wiring` | the same code change |
-| the Core reserve is unmeasured | `model_runtime.readiness` | taking the measurement (`HG-05`) |
+| runtime bytes lack or mismatch their architecture pin | `model_runtime.RUNTIMES` | reviewed per-architecture build digests |
+| no model has operator approval | `cognition.admit_local_model` | future reviewed approval/staging evidence implementation |
+| the Core reserve is unmeasured | `model_runtime.readiness` | hardware measurement (`HG-05`) |
 
-Wire a runtime and the reserve still refuses. Measure the reserve and the
-empty allowlist still refuses. Grant the unit by hand and inference still
-refuses; the service starts only after its installer-owned audit leaf is writable.
-
-Each answers a different question, so none substitutes for another:
-*is there a binary here*, *may this node run it at boot*, and *is this node
-in a state where running it is safe*.
+RUNTIMES pins exactly one runtime, llama.cpp b11716. Resolving it refuses a
+missing/nonregular binary, wrong digest, pending digest or unknown architecture.
+Installing a binary or wiring the locald unit grants no model admission.
+Admission remains closed in this build, including after a supplied reserve:
+the existing approval gate still refuses. No model is started by default.
 
 ---
 
@@ -110,45 +108,23 @@ unpacks nothing.
 
 ---
 
-## 5. Containment, and the two numbers the unit file must not state
+## 5. Containment and the 8 GiB target
 
-`Containment` is memory, CPU, processes, file size, a deadline, loopback-only
-and no outbound network. It is **derived from the measured Core reserve**, so
-there is no containment on a node that has not measured one — which is every
-node this build runs on.
+The generated host unit declares `MemoryMax=4G`, `MemorySwapMax=0`, `CPUQuota=40%`, `TasksMax=64`,
+`LimitFSIZE=16777216`, `PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`
+and `IPAddressDeny=any`. The memory ceiling covers locald and both children;
+it is a conservative safety ceiling, **not** measured capacity or admission.
+The binary at `/usr/libexec/azazel/llama-server` is executable under this unit:
+there is no NoExecPaths/ExecPaths restriction, and ProtectSystem=strict makes
+package paths read-only. Both servers share this containment and use separate
+AF_UNIX sockets. No additional executable exemption or network family is added.
 
-That is the point rather than a limitation. A limit chosen without a
-measurement is a number somebody liked, and a cgroup set from it either
-strangles the node's own work or fails to protect it. Which of the two it did
-is discovered on the node, not here.
-
-### What the unit file states
-
-`CPUQuota=40%`, `TasksMax=64`, `LimitFSIZE=16777216`, `PrivateNetwork=yes`.
-These need no measurement. The quota is below half on purpose: the
-deterministic path is what this product *is*, and a provider that can take
-most of the CPU is a provider that decides how fast the arbiter runs.
-
-### What it must not state, and `ServiceProfile` refuses
-
-- **`MemoryMax`** — derived from the measured reserve and the provider's
-  *declared need*. Not from the spare: a provider given everything the node
-  can spare will use everything the node can spare, and the reserve then
-  holds only because nothing else asked. A ceiling at the declared need is
-  also what makes the declaration mean something — a provider that exceeds it
-  is one whose declaration was wrong, and the node finds out by the limit
-  rather than by running short.
-- **`RuntimeMaxSec`** — this bounds how long the **unit** runs. The deadline
-  this product needs bounds **one inference**. Putting the inference deadline
-  on the host would terminate a healthy long-running service on a timer and
-  record it as a failure: a restart loop that reads, from the journal,
-  exactly like a provider that keeps dying.
-
-Both belong to the scope one provider runs in, not to the host. A static
-value for either would be an invented number in the one file an operator
-trusts.
-
----
+After admission, each declared memory need must pass `containment_for` against
+the measured reserve/envelope; combined needs must fit 3840 MiB, leaving 256 MiB
+beneath the host ceiling for locald/cache. Hardware must validate that margin.
+Qwen container RSS was approximately **1.23 GiB**; bge-m3 RSS is **measure later**.
+Neither is hardware evidence. The host must never have RuntimeMaxSec: request
+and startup deadlines belong to LocalServer, not the long-running daemon.
 
 ## 6. `HG-05` refuses a node that is sound in every other way
 
@@ -214,7 +190,7 @@ The M.I.O. status expression is unchanged:
 
 ## 8. Local embedding retrieval (v3)
 
-Production admission remains closed: `RUNTIMES` is empty and HG-05 is unmeasured.
+Production admission remains closed: `RUNTIMES` pins exactly one runtime and HG-05 is unmeasured.
 Injected test/bench components grant no production authority. P2/P3 remain
 NEVER_REMOTE. There is no model verdict or letter selection.
 
@@ -297,3 +273,92 @@ pass/fail. Fake-server checks establish mechanics, not model accuracy or device
 latency. No target-machine precision, quality improvement or admission is claimed.
 Online re-review stays deferred: P2/P3 never leave; P0/P1 require opt-in/trust and
 a retention design absent from this build.
+
+## Pinned runtime build and offline installation
+
+`tools/build_llama_runtime.sh` builds b11716 from a fixed HTTPS tarball and a
+reviewed SHA-256, failing before extraction on mismatch. It uses a fixed source/
+build path, SOURCE_DATE_EPOCH, UTC/C locale, prefix maps, fixed build metadata,
+`-Werror=date-time`, no native CPU tuning/GPU/BLAS/OpenMP/curl, static project
+libraries and static libstdc++/libgcc where possible. glibc remains dynamically linked.
+Binary release
+pins exist only in `model_runtime.LLAMA_RUNTIME_DIGESTS`. Pending pins refuse.
+
+The orchestrator runs the following exact command once with `ARCH=arm64` and
+once with `ARCH=amd64`; Docker must not be run by this lane. Create `out-$ARCH`
+first and retain the image digest, compiler/cmake/package versions and logs.
+The base image is pinned by digest. Apt repository contents/toolchain packages
+remain unpinned; the build uses network access for apt and the source download.
+Retain the package set and logs and compare two clean build hashes.
+
+```sh
+ARCH=arm64
+mkdir -p "out-$ARCH"
+docker run --rm --platform "linux/$ARCH" \
+  -v "$PWD:/repo:ro" -v "$PWD/out-$ARCH:/out" debian@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5 \
+  sh -ec 'apt-get update; apt-get install -y --no-install-recommends build-essential cmake curl ca-certificates; sh /repo/tools/build_llama_runtime.sh /out'
+```
+
+The script prints the resulting llama-server SHA-256. Review and fill the two
+architecture pins; never derive trust by executing an unverified binary.
+Install offline as root with `packaging/install.sh --llama-runtime /path/to/llama-server`.
+It verifies before mutation, then stages, rehashes and atomically publishes a
+root:root 0755 binary at `/usr/libexec/azazel/llama-server`. No network or model
+execution occurs. Omitting the option installs no runtime binary. Pending pins,
+unknown architectures and mismatched bytes refuse with a clear error.
+
+`main()` accepts only internal commissioning candidates, never command-line or
+environment model settings. It calls the existing admission function before
+artifact/runtime resolution or LocalServer construction, audits refusals,
+loads separate persistent restart budgets, and stops owned children on exit.
+Each startup is bounded at 120 seconds; the generated unit allows 300 seconds
+for two startups plus verification before readiness.
+No production candidate/approval evidence loader is implemented: the default
+candidate set is empty and audited. The approval gate remains closed even if
+candidates are supplied internally. Future loader work must bind the verified
+catalog, promoted artifact, tested tuple, reserve and operator approval.
+An admitted embedding role injects EmbeddingRetriever. Explanation has no
+server by default; only a separately admitted generative role supplies one.
+The recommended configuration remains retrieval + trusted text, per the
+[container development results](evidence/mio-candidates-2026-10-18.md).
+
+The installer owns `/var/lib/azazel/mio` as azmio:azmio 0750; locald keeps its
+ledger there, separate from entryd's 0700 state leaf. Cache, restart ledgers
+and both model sockets use the same locald-owned directory. Promoted weights
+stay under root-owned `/var/lib/azazel/models/store`. Root-owned staging/store
+are setgid azmio 2750; verified promotion changes data mode to 0640, granting
+azmio read access without write or executable bits. No model bytes move into
+the checkout. Binary pins must use the `sha256:<64 lowercase hex>` format.
+
+The orchestrator built linux/arm64 twice from clean containers using the image
+above: gcc 14.2.0-19, cmake 3.31.6-2, binutils 2.44-3 and
+libc6 2.41-12+deb13u4. Both binaries hashed to
+`eca8b1abbd8f7a5b121d2d0b7486829fc191736206cacf8556e878175c4ca8a6`.
+That arm64 binary served bge-m3 embeddings and reproduced held-out retrieval
+recall@1 **14/20**, recall@3 **17/20** exactly. These are container build and
+retrieval results, not hardware evidence; HG-05 remains open.
+
+linux/amd64 was built twice from clean containers with the same image and the
+same toolchain versions. Both binaries hashed to
+`e1671cd4167b39b29fe34bb906f62d610b289aed19301445c4844764467fb701`, and that
+binary served bge-m3 embeddings over its AF_UNIX socket. On an Apple Silicon
+host, build amd64 in a Rosetta-backed VM (`colima start --vm-type vz
+--vz-rosetta`); under qemu user emulation cc1plus crashed with a segmentation
+fault on both attempts, which is an emulator fault, not a source or flag issue.
+Real x86_64 hardware remains part of the HIL campaign.
+
+Runtime verification requires root ownership and no group/other write bits on
+the executable and every parent through `/`, rejecting symlinked parents.
+Linux hashes an O_NOFOLLOW descriptor and executes that same descriptor via
+`/proc/self/fd` with `pass_fds`. On platforms without procfs, verification is
+repeated immediately before Popen; a residual pathname replacement window
+remains there. Root can still modify an open inode; root is the trust boundary.
+Installation inputs may reside in untrusted directories: their digest is checked
+before and after copying, ownership/mode are set on staging, and promotion fsyncs
+the destination directory.
+
+Catalog roles must match the provider admission role and the tested compatibility
+tuple's `model_role`. An omitted tuple role supports legacy generative providers
+only; embedding providers require an explicit embedding tuple. Catalog `/2`
+entries retain generative semantics and refuse known bge-m3 embedding digests;
+`/3` carries its role in the signed payload. These bindings grant no admission.

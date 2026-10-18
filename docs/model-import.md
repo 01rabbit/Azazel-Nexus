@@ -194,3 +194,17 @@ the ready file remains available for inspection. No ready file or a non-root
 caller is refused. Existing identical installed digests are refused by #95;
 a changed digest follows its normal generation promotion rules. Promotion
 never grants admission. `AZAZEL_ROOT` relocates both fixed roots for tests.
+
+
+The two local retrieval/explanation declarations and signed role schema are in
+[Model catalog](model-catalog.md#embedding-retrieval-development-artifact).
+Both follow the existing verification and staging-to-promotion flow. Import or
+fetch never installs executable code. The optional prebuilt runtime installer
+is documented in [Local runtime](mio-local-runtime.md#pinned-runtime-build-and-offline-installation);
+it performs no network acquisition. RUNTIMES pins exactly one runtime, but
+admission remains closed pending HG-05 and operator approval.
+
+The installer provisions root-owned setgid azmio staging/store leaves (2750).
+Temporary weights remain private while being verified; promotion sets verified
+weights to 0640 before atomic rename, inheriting the azmio group from staging.
+Only root can replace promoted data; locald can read it after separate admission.

@@ -88,12 +88,12 @@ def test_no_shipped_manifest_names_the_stub(path):
     assert STUB_NAME not in path.read_text(encoding="utf-8")
 
 
-def test_the_production_allowlist_is_empty():
+def test_the_production_allowlist_pins_one_real_runtime():
     """The shipped state, asserted here as well as in the model-runtime
     tests: a stub that reached `RUNTIMES` would be a stub a node could
     start."""
 
-    assert RUNTIMES == {}
+    assert set(RUNTIMES) == {"llama-cpp-b11716"}
     assert STUB_NAME not in RUNTIMES
 
 

@@ -10,7 +10,7 @@ reasons, and each covers a case the others do not:
 
 | refusal | where | defeated by |
 | --- | --- | --- |
-| the runtime allowlist is empty | `model_runtime.RUNTIMES` | wiring a runtime |
+| the pinned runtime is absent or unverified | `model_runtime.RUNTIMES` | wiring a runtime |
 | the unit is not granted | `activation.UnitDefinition.wiring` | wiring a runtime |
 | the Core reserve is unmeasured | `readiness` | measuring it (`HG-05`) |
 
@@ -74,10 +74,10 @@ def _reserve(reserve_mib: int = 512) -> CoreReserve:
 # -- 1. the allowlist is the only way to a binary -------------------------
 
 
-def test_this_build_contains_no_runtime():
+def test_this_build_pins_exactly_one_runtime():
     """The shipped answer, and the first of the three refusals."""
 
-    assert RUNTIMES == {}
+    assert set(RUNTIMES) == {"llama-cpp-b11716"}
 
 
 def test_an_unknown_runtime_id_resolves_to_nothing():

@@ -117,7 +117,7 @@ def test_fake_endpoint_order_and_pinned_embedding_record(monkeypatch, tmp_path):
                                  embedding=True)
     assert record.digest == binary.digest and record.executable == binary.executable
     assert '--embedding' in record.argv and record.argv[record.argv.index('--pooling') + 1] == 'cls'
-    assert not RUNTIMES
+    assert set(RUNTIMES) == {"llama-cpp-b11716"}
 
 
 def test_changed_library_reloads_documents(library, frame, tmp_path):

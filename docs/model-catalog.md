@@ -100,7 +100,7 @@ node* by the trust policy that node accepted; it does not travel.
 
 | | `CATALOG_DOMAIN` | `CATALOG_SCHEMA` |
 | --- | --- | --- |
-| currently | `azazel-nexus/model-catalog/v1\0` | `azazel-nexus/model-catalog/2` |
+| currently | `azazel-nexus/model-catalog/v1\0` | `azazel-nexus/model-catalog/3` (also reads `/2`) |
 | says | **what kind** of thing was signed, and the **canonical signing protocol** by which a payload becomes signed bytes | **what shape** the payload has |
 | moves when | the kind of signing target changes, the canonicalisation changes, or cross-protocol separation has to mean something new | a field is added, removed or changed |
 
@@ -132,6 +132,7 @@ text that steers anything:
 | `digest` | `sha256:<64 hex>` over the artifact. |
 | `size_bytes` | Positive; checked before the digest is computed. |
 | `provenance` | Recorded, displayed, and never acted on. |
+| `role` | `/3`: `embedding` or `generative`; `/2` retains generative semantics. |
 | `source_id` | A **symbol** naming an acquisition source, or `null`. See §3.1. |
 | `license_acknowledgement_required` | Whether the operator must acknowledge before use. The licence *text* is not carried here. |
 | `runtime_abi` | From `KNOWN_RUNTIME_ABIS`. |
@@ -231,10 +232,27 @@ with another would be a refusal nobody could act on.
 
 | Name | License | SHA-256 | Bytes |
 | --- | --- | --- | ---: |
-| bge-m3-Q8_0.gguf | MIT | `950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167` | 634553760 |
+| bge-m3-Q8_0.gguf (embedding) | MIT | `950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167` | 634553760 |
 
-This is a development artifact declaration, not a signed commissioned catalog,
+| qwen2.5-1.5b-instruct-q4_k_m.gguf (generative) | Apache-2.0 | `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e` | 1117320736 |
+
+These are development artifact declarations, not a signed commissioned catalog,
 import, admission or RUNTIMES entry. Use the existing model-catalog domain-tagged
 signature and staging-to-promotion model-import flow for any later commissioned
 artifact. The supplied external model file is not copied into this repository.
 Retrieval uses a separate AF_UNIX embedding server; production gates remain closed.
+
+
+Catalog schema `/3` adds required `role: embedding|generative`, covered by the
+existing v1 domain signature. Writers emit `/3`; readers also accept `/2`,
+whose entries retain their historical generative role. `/2` with a role field,
+unknown roles and `/3` without a role refuse. Default Python entries remain
+generative for caller compatibility. The TEST-only signed fixtures are created
+at test time with PyNaCl; no commissioning key or production catalog is shipped.
+Both declarations use `llama.cpp/1` and offline `source_id: null` unless a later
+reviewed source registry entry is commissioned. License acknowledgement, inert
+artifact verification, promotion and admission remain separate checks. Resource
+need/context/profile declarations must be qualified on hardware before admission.
+Qwen's digest was checked against the supplied external SHA256SUMS and its file
+size; model files were never copied into the repository. RUNTIMES pins exactly
+one runtime; HG-05 and operator approval remain required and closed in this build.

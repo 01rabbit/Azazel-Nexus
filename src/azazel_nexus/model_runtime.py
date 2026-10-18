@@ -23,7 +23,7 @@ cannot take. A control plane that could pass an option could pass
 The `runtime_id` resolves through `RUNTIMES`, a table **in this package**.
 A runtime is a binary, and a binary is code: it arrives by a reviewed change
 to this file, never as commissioned data, never as an operator setting, and
-never as something discovered on the node. `RUNTIMES` is empty in this build.
+never as something discovered on the node. `RUNTIMES` pins one runtime; admission remains closed in this build.
 
 ## The model is data
 
@@ -63,9 +63,12 @@ runtime -- started, crashed, rolled back or absent -- moves none of it.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import platform
+import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Mapping, Optional
@@ -110,6 +113,7 @@ class RuntimeBinary:
     version: str
     digest: str
     argv: tuple[str, ...]
+    architecture_digests: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if (not self.executable.startswith("/usr/libexec/azazel/")
@@ -150,7 +154,7 @@ def llama_server_record(
 
     Paths are literal absolute paths, never templates or paths supplied by a
     control-plane request. The executable retains RuntimeBinary's package
-    restriction. RUNTIMES remains empty.
+    restriction. This grants no admission.
     """
     for path in (model_path, socket_path):
         if not Path(path).is_absolute() or ".." in Path(path).parts:
@@ -165,6 +169,7 @@ def llama_server_record(
         executable=binary.executable,
         version=binary.version,
         digest=binary.digest,
+        architecture_digests=binary.architecture_digests,
         argv=(binary.executable, "-m", str(model_path), "--host", str(socket_path),
               "-c", str(ctx), "-t", str(threads), "--no-webui", "-n", str(max_tokens),
               *(("--embedding", "--pooling", "cls", "-ub", str(ctx), "-b", str(ctx), "-ngl", "0")
@@ -172,18 +177,77 @@ def llama_server_record(
     )
 
 
-#: The runtime allowlist. **Empty in this build, and that is the shipped
-#: state.**
-#:
-#: Not empty as a disabled feature: this distribution contains no model
-#: runtime, so there is no symbol to resolve and `az-mio-locald` starts
-#: nothing. `activation.UnitDefinition.wiring` is what keeps its unit from
-#: being granted, so the node does not carry a unit that would start and exit.
-#:
-#: A runtime is added here, in code, under review -- never as commissioned
-#: data. The Source Registry is data because an endpoint is a deployment fact;
-#: a binary is not a fact about a deployment, it is a thing that executes.
-RUNTIMES: Mapping[str, RuntimeBinary] = {}
+# Digests are maintained ONLY here. Pending values deliberately fail validation.
+LLAMA_RUNTIME_DIGESTS = {
+    "aarch64": "sha256:eca8b1abbd8f7a5b121d2d0b7486829fc191736206cacf8556e878175c4ca8a6",
+    "x86_64": "sha256:e1671cd4167b39b29fe34bb906f62d610b289aed19301445c4844764467fb701",
+}
+LLAMA_RUNTIME_ID = "llama-cpp-b11716"
+LLAMA_EXECUTABLE = "/usr/libexec/azazel/llama-server"
+RUNTIMES: Mapping[str, RuntimeBinary] = {
+    LLAMA_RUNTIME_ID: RuntimeBinary(
+        LLAMA_RUNTIME_ID, LLAMA_EXECUTABLE, "b11716", "", (LLAMA_EXECUTABLE,),
+        LLAMA_RUNTIME_DIGESTS,
+    ),
+}
+
+
+def pinned_runtime_digest(machine: str | None = None) -> str:
+    """Architecture pin, shared by runtime resolution and offline installation."""
+    architecture = machine if machine is not None else platform.machine()
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(architecture, architecture)
+    digest = LLAMA_RUNTIME_DIGESTS.get(architecture, "")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise RuntimeRefused("runtime digest pending or architecture unsupported")
+    return digest
+
+
+def _trusted_runtime_metadata(info, *, directory=False):
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not kind(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+            or (not directory and not info.st_mode & 0o111)):
+        raise RuntimeRefused("runtime and parents must be root-owned, non-writable, without symlinks")
+
+
+def open_verified_runtime(record: RuntimeBinary, path: Path) -> int:
+    """Return the hashed descriptor, walking trusted directories without symlinks.
+
+    The caller owns the descriptor. Linux executes this same descriptor via procfs.
+    """
+    descriptor = None
+    parent = None
+    try:
+        if not path.is_absolute() or ".." in path.parts:
+            raise RuntimeRefused("runtime path must be absolute without traversal")
+        parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        _trusted_runtime_metadata(os.fstat(parent), directory=True)
+        for part in path.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+            _trusted_runtime_metadata(os.fstat(parent), directory=True)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        _trusted_runtime_metadata(os.fstat(descriptor))
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            observed = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+        if observed != record.digest:
+            raise RuntimeRefused("runtime binary digest mismatch")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        result, descriptor = descriptor, None
+        return result
+    except OSError as error:
+        raise RuntimeRefused("runtime binary absent, unreadable or symlinked") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent is not None:
+            os.close(parent)
+
+
+def verify_runtime_binary(record: RuntimeBinary, path: Path) -> None:
+    """Require trusted ownership, parents and bytes without executing a probe."""
+    os.close(open_verified_runtime(record, path))
+
 
 #: A model artifact larger than this is refused before it is read. The same
 #: ceiling `model_import` uses, because two ceilings for one quantity is one
@@ -204,13 +268,18 @@ def resolve_runtime(runtime_id: str) -> RuntimeBinary:
     """
 
     try:
-        return RUNTIMES[runtime_id]
+        record = RUNTIMES[runtime_id]
     except (KeyError, TypeError):
         raise RuntimeRefused(
             f"{runtime_id!r} is not a runtime this build contains. The "
             "allowlist is code in this package, so a runtime that is not here "
             "is one nobody reviewed"
         ) from None
+
+    if record.architecture_digests is not None:
+        record = replace(record, digest=pinned_runtime_digest())
+        verify_runtime_binary(record, Path(record.executable))
+    return record
 
 
 def archive_signatures() -> tuple[tuple[bytes, str], ...]:

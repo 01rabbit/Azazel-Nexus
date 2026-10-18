@@ -1,7 +1,7 @@
 # M.I.O. local advice quality — step 1b (reasoning playbooks), 2026-10-18
 
 `provenance=bench`. Not HG-05 evidence and not a production admission claim.
-Production stays closed: RUNTIMES empty, HG-05 unmeasured, `playbooks=None` in locald `main()`.
+Production stays closed: RUNTIMES pins exactly one runtime, HG-05 unmeasured, `playbooks=None` in locald `main()`.
 
 ## 条件 / Setup
 

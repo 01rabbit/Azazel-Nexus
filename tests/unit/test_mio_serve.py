@@ -214,7 +214,7 @@ def test_llama_record_has_fixed_literal_argv_and_no_admission():
                                  socket_path=Path('/run/mio.sock'), ctx=1024, threads=4)
     assert record.argv == (binary.executable, '-m', '/models/a b.gguf', '--host',
                            '/run/mio.sock', '-c', '1024', '-t', '4', '--no-webui', '-n', '256')
-    assert RUNTIMES == {}
+    assert set(RUNTIMES) == {"llama-cpp-b11716"}
     for overrides in ({'model_path': Path('relative')}, {'ctx': 0}, {'threads': True},
                       {'socket_path': Path('/tmp/not-unix')},
                       {'model_path': Path('/models/{template}')},

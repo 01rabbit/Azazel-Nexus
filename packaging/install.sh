@@ -37,8 +37,15 @@ REPO_ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 # whoever ran the script.
 WITH_SERVICE_MANAGER=yes
 WITH_ACCOUNTS=yes
-for argument in "$@"; do
+LLAMA_RUNTIME=
+while [ "$#" -gt 0 ]; do
+    argument=$1
+    shift
     case "$argument" in
+        --llama-runtime)
+            [ "$#" -gt 0 ] && [ -n "$1" ] && [ -z "$LLAMA_RUNTIME" ] || { echo "--llama-runtime needs one path, once" >&2; exit 2; }
+            LLAMA_RUNTIME=$1
+            shift ;;
         --without-service-manager) WITH_SERVICE_MANAGER=no ;;
         --without-accounts) WITH_ACCOUNTS=no ;;
         *) echo "unknown option: $argument" >&2; exit 2 ;;
@@ -103,6 +110,12 @@ if ! python_fixed -IS -c 'import sys; raise SystemExit(0 if sys.version_info >= 
     echo "what reads the trust anchor a Knowledge Lite bundle verifies" >&2
     echo "against. There is no fallback parser and no partial mode." >&2
     exit 1
+fi
+
+# Validate optional prebuilt input before any installation mutation; no network.
+if [ -n "$LLAMA_RUNTIME" ]; then
+    python_fixed -IS "$REPO_ROOT/tools/install_llama_runtime.py" \
+        "$LLAMA_RUNTIME" "${DESTDIR:-}/usr/libexec/azazel/llama-server" --check-only
 fi
 
 # Select a declared install profile before writing any files. This is a pure
@@ -241,11 +254,13 @@ make_dir 0700 root /var/lib/azazel/generations
 make_dir 0700 root /var/lib/azazel/bootstrap-generations
 make_dir 0750 azfetch /var/lib/azazel/fetch
 make_dir 0750 azmio /var/lib/azazel/models
+make_dir 2750 azmio /var/lib/azazel/models/staging
+make_dir 2750 azmio /var/lib/azazel/models/store
 make_dir 0750 azfetch /var/lib/azazel/fetch/commission
 make_owned_dir 0750 azfetch azfetch /var/lib/azazel/fetch/partial
 make_owned_dir 0750 azfetch azfetch /var/lib/azazel/fetch/ready
 make_owned_dir 2710 azfetch azazel-operator /var/lib/azazel/run/fetch
-make_dir 0750 azmio /var/lib/azazel/mio
+make_owned_dir 0750 azmio azmio /var/lib/azazel/mio
 make_dir 0750 azremote /var/lib/azazel/remote
 make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
 make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
@@ -261,6 +276,11 @@ make_dir 0700 root /var/lib/azazel/secrets
 set --
 [ "$WITH_ACCOUNTS" = yes ] || set -- --without-accounts
 python_stager -IS "$REPO_ROOT/tools/provision_mission_read.py" "$@"
+
+if [ -n "$LLAMA_RUNTIME" ]; then
+    python_fixed -IS "$REPO_ROOT/tools/install_llama_runtime.py" \
+        "$LLAMA_RUNTIME" "${DESTDIR:-}/usr/libexec/azazel/llama-server"
+fi
 
 install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
 install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"

@@ -226,4 +226,4 @@ countermeasure exists or that the cited reference supports the guidance.
 
 These are generic baselines and human advice. They grant no enforcement,
 commands, automatic containment, model admission or Edge policy authority.
-Production RUNTIMES remains empty and HG-05 remains unmeasured.
+Production RUNTIMES pins exactly one runtime and HG-05 remains unmeasured.

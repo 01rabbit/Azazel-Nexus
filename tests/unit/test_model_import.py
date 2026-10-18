@@ -339,6 +339,7 @@ def test_a_verified_artifact_is_promoted(node) -> None:
     assert outcome.generation.number == 1
     assert outcome.generation.installed == {"small-advisor": an_entry().digest}
     assert (node.store / artifact_filename(an_entry())).read_bytes() == WEIGHTS
+    assert (node.store / artifact_filename(an_entry())).stat().st_mode & 0o777 == 0o640
     assert [transition for transition, _ in log] == [
         Transition.IMPORT_STARTED,
         Transition.PROMOTED,

@@ -279,11 +279,8 @@ CORE_UNITS = (
         "azmio",
         "local model runtime host; the only unit that could start a model, "
         "and it starts none",
-        # `model_runtime.RUNTIMES` is empty, so no runtime_id resolves to a
-        # binary and the service exits rather than listen for work it cannot
-        # do. A runtime arrives by a reviewed change to that table -- it is
-        # code, not commissioned data, because a binary is not a fact about a
-        # deployment.
+        # One runtime is pinned; wiring grants no model admission. HG-05 and
+        # operator approval remain separate closed gates in locald/cognition.
         wiring=LOCAL_MODEL_PROVIDER,
     ),
     UnitDefinition(

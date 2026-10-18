@@ -1,6 +1,6 @@
 # M.I.O. local advice — closed-choice vs similarity-ordered candidates, 2026-10-18
 
-`provenance=bench`. Not HG-05 evidence and not a production admission claim. RUNTIMES stays empty;
+`provenance=bench`. Not HG-05 evidence and not a production admission claim. RUNTIMES pins exactly one runtime;
 neither the generative model nor the embedding model is admitted.
 
 ## Setup

@@ -125,7 +125,7 @@ def test_supporting_units_run_before_anything_else_is_established(tmp_path):
     daemon, manager = _daemon(tmp_path)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert set(outcome.granted) == {
-        d.name for d in CORE_UNITS if d.wiring is None
+        d.name for d in CORE_UNITS if d.wiring is None or d.name == "azazel-mio-locald.service"
     }
 
 
@@ -740,7 +740,7 @@ def test_this_build_wires_no_artifact_transport():
     from azazel_nexus_runtime.model_fetch import ENDPOINT_FOR
 
     assert ENDPOINT_FOR == {}
-    assert wired_capabilities() == frozenset()
+    assert wired_capabilities() == frozenset({"local_model_provider"})
 
 
 def test_the_capability_is_derived_from_the_table_not_declared(monkeypatch):
@@ -753,7 +753,7 @@ def test_the_capability_is_derived_from_the_table_not_declared(monkeypatch):
     import azazel_nexus_runtime.activated as activated
 
     monkeypatch.setattr(activated, "ENDPOINT_FOR", {"vendor-primary": object()})
-    assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT})
+    assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT, "local_model_provider"})
 
 
 def test_a_pass_asks_the_distribution_rather_than_assuming(tmp_path, monkeypatch):

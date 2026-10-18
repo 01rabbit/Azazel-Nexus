@@ -301,3 +301,12 @@ reach the reply or the recorder.
 It establishes nothing about a real endpoint, a real credential, a real
 download or a real link: none was configured, and the fixture keys are
 test-only.
+
+
+The two local retrieval/explanation declarations and signed role schema are in
+[Model catalog](model-catalog.md#embedding-retrieval-development-artifact).
+Both follow the existing verification and staging-to-promotion flow. Import or
+fetch never installs executable code. The optional prebuilt runtime installer
+is documented in [Local runtime](mio-local-runtime.md#pinned-runtime-build-and-offline-installation);
+it performs no network acquisition. RUNTIMES pins exactly one runtime, but
+admission remains closed pending HG-05 and operator approval.

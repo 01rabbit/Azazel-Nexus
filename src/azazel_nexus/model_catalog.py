@@ -138,7 +138,8 @@ CATALOG_DOMAIN = b"azazel-nexus/model-catalog/v1\x00"
 #: step the signer and the verifier could disagree about.
 CATALOG_FILENAME = "catalog.signed"
 
-#: The document shape, and nothing else. Moved to `/2` when `source_id` was
+#: The document shape, and nothing else. `/3` adds signed model role; `/2`
+#: remains readable with its original generative semantics. Moved to `/2` when `source_id` was
 #: added (#96): a required field changes what the document *is*, and a reader
 #: that accepted a `/1` document under `/2` rules would be inferring a field
 #: nobody wrote.
@@ -158,7 +159,8 @@ CATALOG_FILENAME = "catalog.signed"
 #: An unknown schema is **refused**, never best-effort parsed. A reader that
 #: guesses at a shape it does not know is a reader that accepts a document
 #: nobody wrote for it.
-CATALOG_SCHEMA = "azazel-nexus/model-catalog/2"
+CATALOG_SCHEMA = "azazel-nexus/model-catalog/3"
+LEGACY_CATALOG_SCHEMA = "azazel-nexus/model-catalog/2"
 
 #: A ceiling before parsing. A catalog is a list of declarations, not content.
 MAX_CATALOG_BYTES = 1024 * 1024
@@ -289,8 +291,11 @@ class ModelEntry:
     #: consulted -- because a `null` that fell back to something would be a
     #: way to acquire from a source this entry never named.
     source_id: Optional[str] = None
+    role: str = "generative"
 
     def __post_init__(self) -> None:
+        if self.role not in ("embedding", "generative"):
+            raise CatalogRefused("model role must be embedding or generative")
         if not _MODEL_ID.match(self.model_id):
             raise CatalogRefused(
                 f"{self.model_id!r} is not a model id. An id names an entry, "
@@ -330,6 +335,7 @@ class ModelEntry:
 
     def as_document(self) -> Mapping[str, object]:
         return {
+            "role": self.role,
             "model_id": self.model_id,
             "format": self.format,
             "digest": self.digest,
@@ -469,7 +475,7 @@ def read_catalog(
         raise CatalogRefused(f"{Refusal.CATALOG_INVALID.value}: {exc}") from exc
     if not isinstance(document, dict):
         raise CatalogRefused(f"{Refusal.CATALOG_INVALID.value}: not an object")
-    if document.get("schema") != CATALOG_SCHEMA:
+    if document.get("schema") not in (CATALOG_SCHEMA, LEGACY_CATALOG_SCHEMA):
         raise CatalogRefused(
             f"the catalog names schema {document.get('schema')!r} and this "
             f"reader knows {CATALOG_SCHEMA!r}"
@@ -491,13 +497,14 @@ def read_catalog(
     if len(raw_entries) > MAX_ENTRIES:
         raise CatalogRefused(f"the catalog offers more than {MAX_ENTRIES} entries")
 
-    entries = tuple(_entry_from(item, index) for index, item in enumerate(raw_entries))
+    entries = tuple(_entry_from(item, index, schema=document["schema"])
+                    for index, item in enumerate(raw_entries))
     seen = [entry.model_id for entry in entries]
     duplicated = sorted({i for i in seen if seen.count(i) > 1})
     if duplicated:
         raise CatalogRefused(f"{duplicated} appear more than once; an id names one entry")
     return ModelCatalog(
-        schema=CATALOG_SCHEMA,
+        schema=document["schema"],
         version=version,
         commissioning_digest=commissioning_digest,
         entries=entries,
@@ -523,16 +530,22 @@ _ENTRY_FIELDS = (
 )
 
 
-def _entry_from(item: object, index: int) -> ModelEntry:
+KNOWN_EMBEDDING_DIGESTS = frozenset({
+    "sha256:950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167",
+})
+
+
+def _entry_from(item: object, index: int, *, schema: str = CATALOG_SCHEMA) -> ModelEntry:
     if not isinstance(item, dict):
         raise CatalogRefused(f"entry {index} is not an object")
-    extra = sorted(set(item) - set(_ENTRY_FIELDS))
+    fields = (*_ENTRY_FIELDS, "role") if schema == CATALOG_SCHEMA else _ENTRY_FIELDS
+    extra = sorted(set(item) - set(fields))
     if extra:
         raise CatalogRefused(
             f"entry {index} carries {extra}, which a model entry does not "
             "declare. A field nobody decided on is a field nobody checks"
         )
-    missing = [field for field in _ENTRY_FIELDS if field not in item]
+    missing = [field for field in fields if field not in item]
     if missing:
         raise CatalogRefused(f"entry {index} is missing {missing}")
     try:
@@ -549,6 +562,8 @@ def _entry_from(item: object, index: int) -> ModelEntry:
         raise CatalogRefused(
             f"entry {index}: license_acknowledgement_required is a boolean"
         )
+    if (schema != CATALOG_SCHEMA and item["digest"] in KNOWN_EMBEDDING_DIGESTS):
+        raise CatalogRefused("legacy catalog cannot declare a known embedding digest")
     return ModelEntry(
         model_id=str(item["model_id"]),
         format=str(item["format"]),
@@ -564,6 +579,7 @@ def _entry_from(item: object, index: int) -> ModelEntry:
         declared_profile=profile,
         rollback_lineage=tuple(lineage),
         source_id=_source_id_from(item, index),
+        role=item["role"] if schema == CATALOG_SCHEMA else "generative",
     )
 
 

@@ -107,6 +107,8 @@ class TestedTuple:
     fabric_features: frozenset[str] = frozenset()
     schema_features: frozenset[str] = frozenset()
 
+    model_role: str | None = None
+
     #: Fields whose value must name one version, never a set of them.
     _VERSIONED = (
         "os_abi",
@@ -122,6 +124,8 @@ class TestedTuple:
     )
 
     def __post_init__(self) -> None:
+        if self.model_role not in (None, "embedding", "generative"):
+            raise CompatibilityRefused("unknown model role")
         for name in self._DIGESTS:
             value = getattr(self, name)
             if not _DIGEST.match(value or ""):
@@ -195,6 +199,7 @@ class TestedTuple:
         """The tuple as it appears in an audit event. Sorted, so it replays."""
 
         return {
+            **({"model_role": self.model_role} if self.model_role is not None else {}),
             "component_digest": self.component_digest,
             "adapter_digest": self.adapter_digest,
             "renderer_digest": self.renderer_digest,
@@ -225,7 +230,7 @@ class TestedTupleSet:
         return cls(tuple(tuples))
 
     def admits(
-        self, component_digest: str, host: HostFacts
+        self, component_digest: str, host: HostFacts, *, model_role: str | None = None
     ) -> tuple[Optional[TestedTuple], str]:
         """The matching tuple and why, or `None` and why not.
 
@@ -248,6 +253,9 @@ class TestedTupleSet:
 
         refusals: list[str] = []
         for tested in candidates:
+            if model_role is not None and (tested.model_role or "generative") != model_role:
+                refusals.append("tested model role mismatch")
+                continue
             refusal = tested.refusal_for(host)
             if refusal is None:
                 return tested, (

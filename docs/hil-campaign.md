@@ -33,6 +33,7 @@ campaign ownership decisions; issue relationship comments are reserved for the c
 | HG-06 | [Isolation](hil-runbooks/hg-06.md) | denied-path observations for every required zone | HIL gate validator | #4, explicit child work |
 | HG-07 | [Real Edge package](hil-runbooks/hg-07.md) | package/probe/status observations | HIL gate validator | #4, explicit child work |
 | SO-01 | [Cold boot](service-objectives.md#so-01-field-exercise--hardware-only) | ten cold-boot samples and durable-audit evidence | service-objective validator | #115 pilot, #17 objective, #4 parent |
+| Local embedding + optional generation measurements | [Runtime measurements](hil-runbooks/mio-runtime.md) | RSS/startup/latency/reserve-impact records; required before admission | independent hardware review | #100 |
 | Admission and six behaviours | Procedure below | admission and six E2E behaviour records | HIL E2E validator | #100 |
 | Degraded-mode drills | Procedure below; [recovery](recovery.md) | per-fault degradation records | HIL degradation validator | #4 |
 

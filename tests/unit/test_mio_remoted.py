@@ -562,7 +562,8 @@ def test_the_three_capabilities_are_separate(monkeypatch):
 
     import azazel_nexus_runtime.activated as activated
 
-    assert activated.wired_capabilities() == frozenset()
+    assert activated.wired_capabilities() == frozenset({LOCAL_MODEL_PROVIDER})
+    monkeypatch.setattr(activated, "RUNTIMES", {})
 
     monkeypatch.setattr(activated, "TRANSPORT", lambda **k: None)
     assert activated.wired_capabilities() == frozenset({REMOTE_INFERENCE_TRANSPORT})

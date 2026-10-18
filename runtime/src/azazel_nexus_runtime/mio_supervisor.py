@@ -12,7 +12,7 @@ module cannot acquire the ability by accident.
 ## What a caller may influence
 
 A **runtime ID**, and nothing else. It is looked up in
-`model_runtime.RUNTIMES` -- code in the package, empty in this build -- and
+`model_runtime.RUNTIMES` -- code in the package, pinned in this build -- and
 the resulting record carries the whole argv, already fixed, with no hole
 anything can fill.
 
@@ -50,7 +50,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from azazel_nexus.model_runtime import RuntimeBinary, RuntimeRefused, resolve_runtime
+from azazel_nexus.model_runtime import (
+    RuntimeBinary, RuntimeRefused, resolve_runtime, verify_runtime_binary, open_verified_runtime,
+)
 from azazel_nexus.runtime_lifecycle import (
     BudgetLedger,
     LifecycleState,
@@ -465,7 +467,7 @@ def start_for(
     """Resolve a **symbol** and run what it names. The only entry a caller has.
 
     `runtime_id` is looked up, never joined to a path and never formatted
-    into a command. `RUNTIMES` is empty in this build, so the ordinary result
+    into a command. `RUNTIMES` is pinned in this build, so the ordinary result
     is a refusal.
     """
 
@@ -487,10 +489,21 @@ class ServingProcess:
     def start(self) -> None:
         if self.process is not None:
             raise SupervisorRefused("stop the previous process group before starting")
-        binary = (self.root / self.record.executable.lstrip("/")).resolve()
+        binary = (self.root / self.record.executable.lstrip("/")).absolute()
+        descriptor = None
+        executable = str(binary)
         try:
+            if self.record.architecture_digests is not None:
+                descriptor = open_verified_runtime(self.record, binary)
+                if Path("/proc/self/fd").is_dir():
+                    executable = f"/proc/self/fd/{descriptor}"
+                else:
+                    # Non-Linux fallback: repeat verification immediately before exec.
+                    verify_runtime_binary(self.record, binary)
             self.process = subprocess.Popen(
                 [str(binary), *self.record.argv[1:]],
+                executable=executable,
+                pass_fds=() if descriptor is None else (descriptor,),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -501,6 +514,9 @@ class ServingProcess:
             )
         except (OSError, ValueError):
             raise SupervisorRefused("the serving process did not start") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @property
     def alive(self) -> bool:

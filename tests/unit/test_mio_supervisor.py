@@ -343,7 +343,7 @@ def test_a_fence_is_not_cleared_by_supervising_again():
 
 @injected
 def test_a_symbol_that_resolves_to_nothing_starts_nothing():
-    """`RUNTIMES` is empty in this build, so this is the shipped answer."""
+    """`RUNTIMES` pins one runtime; unknown symbols refuse, so this is the shipped answer."""
 
     with pytest.raises(SupervisorRefused) as caught:
         start_for("stub", root=STUB_ROOT)
