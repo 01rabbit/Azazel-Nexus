@@ -67,11 +67,16 @@ The DUT HMAC is recomputed using the existing HIL identity derivation, and the
 node binding also includes SHA-256 of the protected node declaration bytes and
 the commissioning digest. Architecture comes from `os.uname().machine`.
 
-**Deployment prerequisite still unresolved:** the existing HIL identity reader
-requires the root-only commissioning HMAC protection file. The `azmio` account
-cannot read that file under current provisioning, so it refuses collection.
-This change does not broaden key access. A reviewed identity-observation handoff
-is needed before enabling; do not change the kill switch to work around this.
+Node identity crosses to locald only as the host HMAC: at every locald start
+the root pre-start helper `az-mio-identity` writes it to
+`/run/azazel-mio-identity/node-identity` (root:azmio 0640); the CLI and
+activation observe it directly as root. Missing or invalid identity refuses
+`NODE_IDENTITY_UNAVAILABLE`; commissioning key access is not broadened.
+**Deployment prerequisite still unresolved:** `operator_enrollment` writes
+`/etc/azazel/operator-trust/operators.json` root-only (0600), which locald's
+`azmio` account cannot read, so locald would refuse even when the root CLI
+admits. This needs its own reviewed change before enabling; do not change the
+kill switch to work around it.
 Host facts other than architecture and DUT identity retain their existing
 commissioned-declaration semantics.
 
@@ -101,6 +106,9 @@ payload and signature as separate mutable files. Installation is an external
 administrator operation; the request/verify CLI has no write capability.
 
 ## Request, independent review and external signing ceremony
+
+The executable campaign, checklist and ceremony commands are in the
+[M.I.O. admission runbook](hil-runbooks/mio-admission.md).
 
 Run as root, with no group granted write access to the admission directory.
 All groups have read/search access at most under the required modes.

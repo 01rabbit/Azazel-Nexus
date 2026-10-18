@@ -76,13 +76,20 @@ The integrated tools are:
 - [azazel_nexus.hil_records](../src/azazel_nexus/hil_records/__init__.py):
   `validate_record(record, bundle_directory=root, operator_key=external_key)` validates
   `azazel-nexus/hil-gate/v1` (`gate_id`), `azazel-nexus/hil-on-host/v1`
-  (`behaviour`), `azazel-nexus/hil-degraded-drill/v1` (`drill`), and
-  `azazel-nexus/core-reserve-campaign/v1` (`runs`). Only verification of a signed bundle with an out-of-band public key can yield
+  (`behaviour`), `azazel-nexus/hil-degraded-drill/v1` (`drill`),
+  `azazel-nexus/core-reserve-campaign/v1` (`runs`), and
+  `azazel-nexus/hil-mio-campaign/v1` (`runs` plus `embedding_runtime` and
+  virtualization observations; the only admission input, see
+  [M.I.O. admission](hil-runbooks/mio-admission.md)). The admission loader calls
+  it with `bundle_files=` and `public_key=` (enrolled key bytes) instead of a
+  directory and key path. Only verification of a signed bundle with an out-of-band public key can yield
   an admissible result; status constants and callbacks are not accepted. These are Python APIs.
   The six behaviour values are `local_inference`, `remote_fallback`,
   `network_loss`, `model_crash`, `resource_pressure` (shed order), and `revocation`.
 - The runtime console scripts are `az-core-reserve-probe`, `az-hil-readiness`,
-  and `az-hil-capture hg-01` / `az-hil-capture hg-04`. Readiness is read-only
+  and `az-hil-capture hg-01` / `az-hil-capture hg-04`; admission adds the
+  read-only `az-nexus-model-admission request` / `verify` and the root
+  pre-start `az-mio-identity`. Readiness is read-only
   and reports required subsystem units, `azazel.slice`, commissioning key and
   pilot class. Use the [on-device key initialization procedure](core-reserve-measurement.md#commissioning-key-initialization-root-only).
   Probe and preflight arguments remain unchanged.
@@ -102,7 +109,7 @@ within a campaign; key rotation changes correlation and requires a new campaign.
 `Status.SHAPE_ONLY` or `Status.REFUSED`; it never returns `attested` or a reserve.
 It accepts the HG-01/HG-04 acquisition schemas
 `azazel-nexus/hil-capture/hg-01/1` and `azazel-nexus/hil-capture/hg-04/1`,
-and probe schema `azazel-nexus/core-reserve/2`. This does not satisfy
+and probe schemas `azazel-nexus/core-reserve/2` and `azazel-nexus/core-reserve/3`. This does not satisfy
 `validate_record`: qualification requires a complete gate/campaign envelope.
 
 Both capture outputs carry `gate_id`, `capture_method`, `dut_id`,
@@ -118,7 +125,9 @@ artifact references. Do not fill unobserved outcomes to make validation pass.
 
 Probe v2 fields are `schema`, `provenance`, `profile`, `host_digest`,
 `harness_version`, `subsystems_active`, `samples`, `boot_fingerprint`,
-`run_sequence`, `build_commit`, and `kernel_release`. `host_digest` is the
+`run_sequence`, `build_commit`, and `kernel_release`. The current harness
+(`core-reserve-probe/3`) writes v3, which adds `virtualization_observations`
+and `virtualization_not_observed` (a negative filter only). `host_digest` is the
 legacy field spelling for the same protected value called `dut_fingerprint`
 in campaign/capture envelopes. A campaign run embeds the probe document
 unchanged under `measurement`, copies its boot fingerprint and harness version,
@@ -190,9 +199,14 @@ prove the workload, the boot, isolation, silence, privilege refusal or Core
 continuation happened. Neither validators nor a bundle grant operational
 activation, provider approval, model quality or support certification.
 
-Promotion of a v2 run record to the legacy admission path (`core-reserve.json`)
-is a manual, attested operator step after campaign validation; it is never automatic.
-Campaign runs require `azazel-nexus/core-reserve/2`, matching measurement/envelope
+No run record is promoted to the legacy `core-reserve.json`; the admission
+loader never reads it. Admission consumes only the attested
+`azazel-nexus/hil-mio-campaign/v1` bundle placed under
+`/etc/azazel/model-admission/evidence/`, in which the aggregate and every run
+are canonical artifacts of one manifest signed by an enrolled operator who is
+not the approver. `azazel-nexus/core-reserve-campaign/v1` runs require
+`azazel-nexus/core-reserve/2`; `azazel-nexus/hil-mio-campaign/v1` runs require
+`azazel-nexus/core-reserve/3`. Both require matching measurement/envelope
 boot fingerprints, distinct positive run sequences, and consistent build commit,
 kernel release and harness across all runs. No environment variation is allowed
 within a campaign. Identical measurement payloads across runs are refused.
