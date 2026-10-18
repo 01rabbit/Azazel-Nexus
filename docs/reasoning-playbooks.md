@@ -116,11 +116,16 @@ The matcher examines the question and all context texts, case-insensitively:
 - 1 point per configured keyword present from the question-language list.
 - 1 point if any configured context kind is present.
 
-Only scores at least `min_score` survive. Sort by descending score then ascending
-ID; the default limit is two. Technique tokens have identifier boundaries, so a
-parent technique does not accidentally match a subtechnique. Keyword matching
-uses literal substrings. Scores describe lexical evidence, not confidence or
-incident verification; context remains untrusted.
+Only scores at least `min_score` survive. Sort by descending score, then descending
+technique hits, then descending keyword hits, then ascending ID; the default limit
+is two. Technique tokens have identifier boundaries, so a parent technique does
+not accidentally match a subtechnique. ASCII keywords of at most five characters
+(in either language list), and all
+purely numeric keywords, require ASCII token boundaries: neither adjacent character
+may be `[A-Za-z0-9_]`. Thus `DoS` does not match `Windows`, `BEC` does not match
+`because`, and `4625` does not match `14625`. Other keywords use case-folded literal
+substrings. Prefer phrases such as `Event ID 4625` when writing baseline data.
+Scores describe lexical evidence, not confidence or incident verification; context remains untrusted.
 
 `build_prompt(frame, playbooks=(), knowledge=())` adds one `system` message
 labelled `reference`, containing titles, interpretation, checks, first response,

@@ -30,7 +30,11 @@
             "Failed password",
             "SSH認証失敗",
             "SSHログイン失敗",
-            "SSHブルートフォース"
+            "SSHブルートフォース",
+            "不正ログイン",
+            "ログイン試行が多い",
+            "brute-force",
+            "blocked login attempts"
           ],
           "en": [
             "SSH brute force",
@@ -38,7 +42,9 @@
             "sshd authentication failure",
             "failed SSH logins",
             "SSH login failures",
-            "SSH password attack"
+            "SSH password attack",
+            "brute-force",
+            "blocked login attempts"
           ]
         },
         "attack_techniques": [
@@ -59,11 +65,11 @@
         "checks": {
           "ja": [
             "1. 最初に接続元別の失敗数、対象ユーザー、失敗後の成功と鍵認証の有無を確認する。",
-            "2. 古いパスワードを使う監視処理や管理者の入力ミスという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、古いパスワードを使う監視処理や管理者の入力ミスで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare failures by source and user, later successes, and password versus key authentication.",
-            "2. Verify the explanation of a monitor with an old password or repeated administrator typing errors with approvals and the owner."
+            "2. Check whether a monitor with an old password or repeated administrator typing errors explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -84,7 +90,7 @@
         },
         "missing": {
           "ja": [
-            "対象時刻の範囲、接続元IP、SSHサーバー名、ユーザー別の失敗数と成功記録を確認する。"
+            "対象時刻の範囲、接続元IP、SSHサーバー名、ユーザー別の失敗数と成功記録の提示を求める。"
           ],
           "en": [
             "Request time window, source IPs, SSH server, per-user failure counts, and successful login records."
@@ -115,13 +121,13 @@
           "ja": [
             "RDP総当たり",
             "RDP認証失敗",
-            "4625",
+            "Event ID 4625",
             "RDP"
           ],
           "en": [
             "RDP brute force",
             "RDP authentication failure",
-            "4625",
+            "Event ID 4625",
             "RDP"
           ]
         },
@@ -143,11 +149,11 @@
         "checks": {
           "ja": [
             "1. 最初に4625のログオン種類と送信元をRDP記録に照合し、後続の4624とセッション作成を確認する。",
-            "2. 保存済みの古い資格情報による再接続という説明を、承認記録と担当者への確認で検証する。"
+            "2. 保存済みの古い資格情報による再接続の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First correlate 4625 logon types and sources with RDP records, then check later 4624 events and session creation.",
-            "2. Verify the explanation of reconnections using stale saved credentials with approvals and the owner."
+            "2. Check whether reconnections using stale saved credentials explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -168,7 +174,7 @@
         },
         "missing": {
           "ja": [
-            "対象端末、接続元、時刻範囲、失敗理由、ログオン種類、成功セッションの記録を確認する。"
+            "対象端末、接続元、時刻範囲、失敗理由、ログオン種類、成功セッションの記録の提示を求める。"
           ],
           "en": [
             "Request target hosts, sources, time window, failure reasons, logon types, and successful session records."
@@ -229,11 +235,11 @@
         "checks": {
           "ja": [
             "1. 最初に同じ時間帯の接続元、対象アカウント数、各失敗回数と後続の成功を並べる。",
-            "2. 一括移行後の認証設定不整合という説明を、承認記録と担当者への確認で検証する。"
+            "2. 一括移行後の認証設定不整合に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare sources, distinct accounts, attempts per account, and later successes within the same time window.",
-            "2. Verify the explanation of authentication configuration drift after an account migration with approvals and the owner."
+            "2. Check whether authentication configuration drift after an account migration explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -254,7 +260,7 @@
         },
         "missing": {
           "ja": [
-            "失敗の集計期間、送信元IP、対象アカウント一覧、各回数、成功とMFA結果を確認する。"
+            "失敗の集計期間、送信元IP、対象アカウント一覧、各回数、成功とMFA結果の提示を求める。"
           ],
           "en": [
             "Request aggregation window, source IPs, targeted accounts, per-account counts, successes, and MFA outcomes."
@@ -311,11 +317,11 @@
         "checks": {
           "ja": [
             "1. 最初に失敗と成功のアカウント重複、接続元の分散、端末の新規性と認証後の操作を確認する。",
-            "2. 正規利用者が新しい端末で古いパスワードを試した状況という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、正規利用者が新しい端末で古いパスワードを試した状況で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare accounts in failures and successes, source diversity, unfamiliar devices, and post-login activity.",
-            "2. Verify the explanation of users trying old passwords on new devices with approvals and the owner."
+            "2. Check whether users trying old passwords on new devices explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -336,7 +342,7 @@
         },
         "missing": {
           "ja": [
-            "対象サービス、時刻範囲、成功率、接続元と端末分布、認証後のアクセス先を確認する。"
+            "対象サービス、時刻範囲、成功率、接続元と端末分布、認証後のアクセス先の提示を求める。"
           ],
           "en": [
             "Request service, time window, success rate, source and device distribution, and post-login resource access."
@@ -367,12 +373,14 @@
           "ja": [
             "MFA疲労",
             "プッシュ爆撃",
-            "MFA通知連打"
+            "MFA通知連打",
+            "push notification"
           ],
           "en": [
             "MFA fatigue",
             "push bombing",
-            "repeated MFA prompts"
+            "repeated MFA prompts",
+            "push notification"
           ]
         },
         "attack_techniques": [
@@ -393,11 +401,11 @@
         "checks": {
           "ja": [
             "1. 最初に通知の要求元、回数、本人の操作有無、承認後のトークン発行と接続先を確認する。",
-            "2. 認証アプリの再試行や端末移行中の重複要求という説明を、承認記録と担当者への確認で検証する。"
+            "2. 認証アプリの再試行や端末移行中の重複要求の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First check prompt origins, counts, user initiation, and token issuance and resource access following any approval.",
-            "2. Verify the explanation of authentication retries or duplicate requests during device migration with approvals and the owner."
+            "2. Check whether authentication retries or duplicate requests during device migration explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -418,7 +426,7 @@
         },
         "missing": {
           "ja": [
-            "通知時刻一覧、対象アカウント、要求元IP、承認結果、認証基盤の記録を確認する。"
+            "通知時刻一覧、対象アカウント、要求元IP、承認結果、認証基盤の記録の提示を求める。"
           ],
           "en": [
             "Request prompt timestamps, account, requesting IPs, approval outcomes, and identity provider records."
@@ -449,12 +457,14 @@
           "ja": [
             "不可能な移動",
             "異常なログイン場所",
-            "海外からログイン"
+            "海外からログイン",
+            "impossible-travel"
           ],
           "en": [
             "impossible travel",
             "anomalous login location",
-            "unusual country login"
+            "unusual country login",
+            "impossible-travel"
           ]
         },
         "attack_techniques": [
@@ -475,11 +485,11 @@
         "checks": {
           "ja": [
             "1. 最初に両セッションの時刻、端末、MFAとIP所有者を比較し、VPN出口か本人に確認する。",
-            "2. 会社VPNや携帯回線の出口変更という説明を、承認記録と担当者への確認で検証する。"
+            "2. 会社VPNや携帯回線の出口変更に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare timestamps, devices, MFA, and IP ownership for both sessions and verify any VPN egress with the user.",
-            "2. Verify the explanation of corporate VPN egress or mobile network routing changes with approvals and the owner."
+            "2. Check whether corporate VPN egress or mobile network routing changes explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -500,7 +510,7 @@
         },
         "missing": {
           "ja": [
-            "両地点の時刻とタイムゾーン、IP、端末ID、VPN利用記録、本人確認結果を確認する。"
+            "両地点の時刻とタイムゾーン、IP、端末ID、VPN利用記録、本人確認結果の提示を求める。"
           ],
           "en": [
             "Request both timestamps and time zones, IPs, device IDs, VPN records, and user verification results."
@@ -531,7 +541,8 @@
           "ja": [
             "時間外ログイン",
             "深夜の特権ログイン",
-            "業務時間外の認証"
+            "業務時間外の認証",
+            "深夜の不正ログイン"
           ],
           "en": [
             "off-hours login",
@@ -557,11 +568,11 @@
         "checks": {
           "ja": [
             "1. 最初に本人の勤務予定、接続元、利用端末、権限と認証後の変更を確認する。",
-            "2. 夜間保守や時差のある拠点での勤務という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、夜間保守や時差のある拠点での勤務で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare the user's schedule, source, device, privileges, and changes made after authentication.",
-            "2. Verify the explanation of approved overnight maintenance or work in another time zone with approvals and the owner."
+            "2. Check whether approved overnight maintenance or work in another time zone explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -582,7 +593,7 @@
         },
         "missing": {
           "ja": [
-            "対象アカウント、時刻とタイムゾーン、接続元、承認記録、認証後の操作一覧を確認する。"
+            "対象アカウント、時刻とタイムゾーン、接続元、承認記録、認証後の操作一覧の提示を求める。"
           ],
           "en": [
             "Request account, timestamp and time zone, source, approvals, and post-login actions."
@@ -617,14 +628,14 @@
           "ja": [
             "特権アカウント作成",
             "管理者追加",
-            "4720",
-            "4728"
+            "Event ID 4720",
+            "Event ID 4728"
           ],
           "en": [
             "new privileged account",
             "administrator added",
-            "4720",
-            "4728"
+            "Event ID 4720",
+            "Event ID 4728"
           ]
         },
         "attack_techniques": [
@@ -646,11 +657,11 @@
         "checks": {
           "ja": [
             "1. 最初に作成者、権限付与者、追加グループと作成直後のログインを申請に照合する。",
-            "2. 承認済みの運用担当追加やアカウント移行という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認済みの運用担当追加やアカウント移行の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare the creator, privilege grantor, added groups, and immediate logins against the provisioning request.",
-            "2. Verify the explanation of approved administrator onboarding or account migration with approvals and the owner."
+            "2. Check whether approved administrator onboarding or account migration explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -671,7 +682,7 @@
         },
         "missing": {
           "ja": [
-            "アカウントID、作成と権限変更時刻、実行者、所属グループ、申請番号を確認する。"
+            "アカウントID、作成と権限変更時刻、実行者、所属グループ、申請番号の提示を求める。"
           ],
           "en": [
             "Request account ID, creation and privilege-change times, actors, group memberships, and request reference."
@@ -728,11 +739,11 @@
         "checks": {
           "ja": [
             "1. 最初に通常の実行ホストとジョブ時刻を比較し、ログオン種類とアクセス対象を確認する。",
-            "2. ジョブ移行や保守中の一時的な実行ホスト変更という説明を、承認記録と担当者への確認で検証する。"
+            "2. ジョブ移行や保守中の一時的な実行ホスト変更に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare usual execution hosts and job schedules, then inspect logon type and accessed resources.",
-            "2. Verify the explanation of job migration or temporary host changes during maintenance with approvals and the owner."
+            "2. Check whether job migration or temporary host changes during maintenance explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -753,7 +764,7 @@
         },
         "missing": {
           "ja": [
-            "アカウント用途、通常ホスト、ジョブ予定、今回の接続元、ログオン種類と操作を確認する。"
+            "アカウント用途、通常ホスト、ジョブ予定、今回の接続元、ログオン種類と操作の提示を求める。"
           ],
           "en": [
             "Request account purpose, usual hosts, job schedule, current source, logon type, and actions."
@@ -777,6 +788,10 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "detect"
         }
       ],
       "match": {
@@ -794,7 +809,7 @@
             "many destination ports",
             "SYN scan",
             "scanned TCP ports",
-            "reconnaissance"
+            "network port reconnaissance"
           ]
         },
         "attack_techniques": [
@@ -815,11 +830,11 @@
         "checks": {
           "ja": [
             "1. 最初に送信元、宛先数、ポート分布、成功接続と後続の認証や転送を確認する。",
-            "2. 承認された資産棚卸しや脆弱性診断という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された資産棚卸しや脆弱性診断で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First review source, destination count, port distribution, successful connections, and later authentication or transfers.",
-            "2. Verify the explanation of approved asset inventory or vulnerability assessment with approvals and the owner."
+            "2. Check whether approved asset inventory or vulnerability assessment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -840,7 +855,7 @@
         },
         "missing": {
           "ja": [
-            "観測期間、送信元IP、宛先とポート一覧、接続成功率、診断の承認記録を確認する。"
+            "観測期間、送信元IP、宛先とポート一覧、接続成功率、診断の承認記録の提示を求める。"
           ],
           "en": [
             "Request observation window, source IP, destinations and ports, connection success rate, and scan approval."
@@ -901,11 +916,11 @@
         "checks": {
           "ja": [
             "1. 最初に周期の揺れ、送受信量、宛先の継続性と通信プロセスの親子関係を確認する。",
-            "2. 監視エージェントの定期通知や更新確認という説明を、承認記録と担当者への確認で検証する。"
+            "2. 監視エージェントの定期通知や更新確認の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First inspect interval variation, byte counts, destination persistence, and the network process's parent chain.",
-            "2. Verify the explanation of monitoring-agent heartbeats or scheduled update checks with approvals and the owner."
+            "2. Check whether monitoring-agent heartbeats or scheduled update checks explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -926,7 +941,7 @@
         },
         "missing": {
           "ja": [
-            "通信時刻列、宛先、送受信量、プロセス名と署名、通常時の周期を確認する。"
+            "通信時刻列、宛先、送受信量、プロセス名と署名、通常時の周期の提示を求める。"
           ],
           "en": [
             "Request connection timestamps, destinations, byte counts, process identity and signature, and normal intervals."
@@ -983,11 +998,11 @@
         "checks": {
           "ja": [
             "1. 最初に問い合わせ長、種類、親ドメイン別回数、応答量と発生プロセスを確認する。",
-            "2. 正規の配信サービスやDNSによる計測という説明を、承認記録と担当者への確認で検証する。"
+            "2. 正規の配信サービスやDNSによる計測に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare query lengths, record types, counts per parent domain, response sizes, and the originating process.",
-            "2. Verify the explanation of legitimate delivery services or DNS-based measurement with approvals and the owner."
+            "2. Check whether legitimate delivery services or DNS-based measurement explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1008,7 +1023,7 @@
         },
         "missing": {
           "ja": [
-            "時間範囲、問い合わせ名と種類、応答コード、端末別件数、送受信量を確認する。"
+            "時間範囲、問い合わせ名と種類、応答コード、端末別件数、送受信量の提示を求める。"
           ],
           "en": [
             "Request time window, query names and types, response codes, per-host counts, and byte totals."
@@ -1039,12 +1054,12 @@
           "ja": [
             "DGAドメイン",
             "ランダムなドメイン",
-            "NXDOMAIN"
+            "NXDOMAIN spike with random domains"
           ],
           "en": [
             "DGA domains",
             "random-looking domains",
-            "NXDOMAIN"
+            "NXDOMAIN spike with random domains"
           ]
         },
         "attack_techniques": [
@@ -1065,11 +1080,11 @@
         "checks": {
           "ja": [
             "1. 最初に端末別の失敗率、名前の反復規則、解決成功後の接続と発生プロセスを確認する。",
-            "2. 誤った検索サフィックスや配信サービスの一時名という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、誤った検索サフィックスや配信サービスの一時名で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect per-host failure rates, naming patterns, connections after successful resolution, and originating processes.",
-            "2. Verify the explanation of incorrect search suffixes or temporary delivery-service names with approvals and the owner."
+            "2. Check whether incorrect search suffixes or temporary delivery-service names explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1090,7 +1105,7 @@
         },
         "missing": {
           "ja": [
-            "問い合わせ一覧、成功と失敗の件数、時刻、送信端末、成功先への通信記録を確認する。"
+            "問い合わせ一覧、成功と失敗の件数、時刻、送信端末、成功先への通信記録の提示を求める。"
           ],
           "en": [
             "Request queries, success and failure counts, timestamps, source hosts, and connections to resolved destinations."
@@ -1109,7 +1124,7 @@
       "references": [
         {
           "source": "mitre-attack",
-          "id": "T1041"
+          "id": "T1048"
         },
         {
           "source": "nist-sp800-61r3",
@@ -1135,7 +1150,7 @@
           ]
         },
         "attack_techniques": [
-          "T1041"
+          "T1048"
         ],
         "context_kinds": [],
         "min_score": 1
@@ -1152,11 +1167,11 @@
         "checks": {
           "ja": [
             "1. 最初に平常量との差、宛先所有者、転送プロセスと直前に読まれたファイルを確認する。",
-            "2. 承認されたバックアップや大きな成果物の配信という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたバックアップや大きな成果物の配信の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare normal volume, destination ownership, transfer process, and files read immediately beforehand.",
-            "2. Verify the explanation of approved backups or distribution of large build artifacts with approvals and the owner."
+            "2. Check whether approved backups or distribution of large build artifacts explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1177,7 +1192,7 @@
         },
         "missing": {
           "ja": [
-            "集計期間、通常量と今回量、宛先、プロセス、対象データ分類、転送の承認を確認する。"
+            "集計期間、通常量と今回量、宛先、プロセス、対象データ分類、転送の承認の提示を求める。"
           ],
           "en": [
             "Request aggregation window, normal and observed bytes, destinations, process, data classification, and transfer approval."
@@ -1234,11 +1249,11 @@
         "checks": {
           "ja": [
             "1. 最初に検知根拠の鮮度、利用プロセス、ユーザーと接続先を調べ、許可された用途に照合する。",
-            "2. 承認された調査業務やプライバシー保護の検証という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された調査業務やプライバシー保護の検証に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First check indicator freshness, the process, user, and destination against approved uses.",
-            "2. Verify the explanation of approved research or privacy testing with approvals and the owner."
+            "2. Check whether approved research or privacy testing explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1259,7 +1274,7 @@
         },
         "missing": {
           "ja": [
-            "検知時刻、匿名化判定の根拠、接続元端末、プロセス、利用者と目的を確認する。"
+            "検知時刻、匿名化判定の根拠、接続元端末、プロセス、利用者と目的の提示を求める。"
           ],
           "en": [
             "Request detection time, basis for anonymizer attribution, source host, process, user, and purpose."
@@ -1318,11 +1333,11 @@
         "checks": {
           "ja": [
             "1. 最初に送信端末、利用アカウント、共有への書込、宛先のサービス作成や実行を時刻で結ぶ。",
-            "2. 承認されたソフトウェア配布やバックアップ処理という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認されたソフトウェア配布やバックアップ処理で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First correlate source host and account, share writes, and destination service creation or execution by timestamp.",
-            "2. Verify the explanation of approved software deployment or backup activity with approvals and the owner."
+            "2. Check whether approved software deployment or backup activity explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1343,7 +1358,7 @@
         },
         "missing": {
           "ja": [
-            "送信元と宛先、共有名、認証記録、転送ファイル、実行プロセス、保守申請を確認する。"
+            "送信元と宛先、共有名、認証記録、転送ファイル、実行プロセス、保守申請の提示を求める。"
           ],
           "en": [
             "Request source and destination hosts, share names, authentication, transferred files, execution processes, and maintenance approval."
@@ -1400,11 +1415,11 @@
         "checks": {
           "ja": [
             "1. 最初に接続元端末、対象アカウント、セッション開始と宛先での操作を既知の管理経路に照合する。",
-            "2. 承認された踏み台経由の障害対応という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された踏み台経由の障害対応の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare source host, account, session start, and destination actions against known administrative routes.",
-            "2. Verify the explanation of approved troubleshooting through a jump host with approvals and the owner."
+            "2. Check whether approved troubleshooting through a jump host explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1425,7 +1440,7 @@
         },
         "missing": {
           "ja": [
-            "接続時刻、送信元と宛先、ログオン種類、アカウント、接続先のプロセスと承認を確認する。"
+            "接続時刻、送信元と宛先、ログオン種類、アカウント、接続先のプロセスと承認の提示を求める。"
           ],
           "en": [
             "Request connection time, sources and destinations, logon types, account, destination processes, and approval."
@@ -1489,11 +1504,11 @@
         "checks": {
           "ja": [
             "1. 最初に接続元、実行者、サービス登録、親プロセスと配布ファイルを管理申請に照合する。",
-            "2. 構成管理製品による正規の遠隔実行という説明を、承認記録と担当者への確認で検証する。"
+            "2. 構成管理製品による正規の遠隔実行に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare source, actor, service registration, parent process, and transferred files with the maintenance request.",
-            "2. Verify the explanation of legitimate remote execution by configuration management with approvals and the owner."
+            "2. Check whether legitimate remote execution by configuration management explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1514,7 +1529,7 @@
         },
         "missing": {
           "ja": [
-            "送受信端末、実行時刻、利用アカウント、サービス名、親子プロセス、変更記録を確認する。"
+            "送受信端末、実行時刻、利用アカウント、サービス名、親子プロセス、変更記録の提示を求める。"
           ],
           "en": [
             "Request endpoints, execution times, account, service names, process ancestry, and change records."
@@ -1571,11 +1586,11 @@
         "checks": {
           "ja": [
             "1. 最初に接続の前後関係、認証方法、鍵の指紋、利用者と宛先の操作を比較する。",
-            "2. 承認された踏み台利用や自動デプロイという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された踏み台利用や自動デプロイで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare connection order, authentication method, key fingerprints, users, and destination activity.",
-            "2. Verify the explanation of approved jump-host access or automated deployment with approvals and the owner."
+            "2. Check whether approved jump-host access or automated deployment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1596,7 +1611,7 @@
         },
         "missing": {
           "ja": [
-            "接続元と宛先、時刻、アカウント、鍵の指紋、認証方式、宛先の操作記録を確認する。"
+            "接続元と宛先、時刻、アカウント、鍵の指紋、認証方式、宛先の操作記録の提示を求める。"
           ],
           "en": [
             "Request sources and destinations, times, accounts, key fingerprints, authentication methods, and destination actions."
@@ -1627,12 +1642,14 @@
           "ja": [
             "権限昇格",
             "低権限から管理者",
-            "SYSTEM権限獲得"
+            "SYSTEM権限獲得",
+            "Event ID 4672"
           ],
           "en": [
             "privilege escalation",
             "low privilege to administrator",
-            "unexpected SYSTEM token"
+            "unexpected SYSTEM token",
+            "Event ID 4672"
           ]
         },
         "attack_techniques": [
@@ -1653,11 +1670,11 @@
         "checks": {
           "ja": [
             "1. 最初に昇格前後の実行主体、親子プロセス、昇格手段と対象ソフトウェアの版を確認する。",
-            "2. 承認されたインストーラーや管理者による昇格という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたインストーラーや管理者による昇格の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare identities before and after elevation, process ancestry, the elevation mechanism, and software versions.",
-            "2. Verify the explanation of approved installers or administrator-approved elevation with approvals and the owner."
+            "2. Check whether approved installers or administrator-approved elevation explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1678,7 +1695,7 @@
         },
         "missing": {
           "ja": [
-            "発生時刻、端末、実行主体、親子プロセス、権限の変化、対象製品の版を確認する。"
+            "発生時刻、端末、実行主体、親子プロセス、権限の変化、対象製品の版の提示を求める。"
           ],
           "en": [
             "Request time, host, identities, process ancestry, privilege transitions, and affected product versions."
@@ -1735,11 +1752,11 @@
         "checks": {
           "ja": [
             "1. 最初にNTLM認証の送受信端末、ログオン種類、特権利用と直前の資格情報アクセスを確認する。",
-            "2. 既存の管理製品が行う承認済みNTLM認証という説明を、承認記録と担当者への確認で検証する。"
+            "2. 既存の管理製品が行う承認済みNTLM認証に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First correlate NTLM endpoints, logon types, privilege use, and preceding credential-access activity.",
-            "2. Verify the explanation of approved NTLM authentication by legacy management software with approvals and the owner."
+            "2. Check whether approved NTLM authentication by legacy management software explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1760,7 +1777,7 @@
         },
         "missing": {
           "ja": [
-            "認証時刻、送信元と宛先、アカウント、認証方式、ログオン種類、資格情報アクセス記録を確認する。"
+            "認証時刻、送信元と宛先、アカウント、認証方式、ログオン種類、資格情報アクセス記録の提示を求める。"
           ],
           "en": [
             "Request times, endpoints, account, authentication method, logon type, and credential-access records."
@@ -1791,12 +1808,14 @@
           "ja": [
             "パスザチケット",
             "Pass-the-Ticket",
-            "盗用チケット"
+            "盗用チケット",
+            "Event ID 4769"
           ],
           "en": [
             "pass-the-ticket",
             "stolen Kerberos ticket",
-            "ticket reuse anomaly"
+            "ticket reuse anomaly",
+            "Event ID 4769"
           ]
         },
         "attack_techniques": [
@@ -1817,11 +1836,11 @@
         "checks": {
           "ja": [
             "1. 最初にチケット発行時刻、利用端末、対象サービスと認証基盤側の対応する発行記録を比較する。",
-            "2. チケット更新や端末移行に伴う正規の再利用という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、チケット更新や端末移行に伴う正規の再利用で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare ticket issuance times, client hosts, target services, and corresponding identity-server issuance records.",
-            "2. Verify the explanation of normal ticket renewal or reuse during host migration with approvals and the owner."
+            "2. Check whether normal ticket renewal or reuse during host migration explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -1842,7 +1861,7 @@
         },
         "missing": {
           "ja": [
-            "対象アカウント、端末、発行と使用時刻、チケット種別、サービス名、認証基盤記録を確認する。"
+            "対象アカウント、端末、発行と使用時刻、チケット種別、サービス名、認証基盤記録の提示を求める。"
           ],
           "en": [
             "Request account, hosts, issuance and use times, ticket type, service names, and identity-server records."
@@ -1899,19 +1918,19 @@
         "checks": {
           "ja": [
             "1. 最初にLSASSへアクセスしたプロセス、署名、アクセス権、ダンプ生成先と後続認証を確認する。",
-            "2. 承認された障害解析や保護製品による検査という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された障害解析や保護製品による検査の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First inspect the process accessing LSASS, its signature and access rights, dump destination, and later authentication.",
-            "2. Verify the explanation of approved crash analysis or inspection by security software with approvals and the owner."
+            "2. Check whether approved crash analysis or inspection by security software explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は端末隔離と露出した可能性のある資格情報の更新を検討し、ダンプを機密証跡として保全する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、ダンプを機密証跡として保全する。並行して端末隔離と露出した資格情報の更新を検討する。"
           ],
           "en": [
-            "An operator should consider isolation and rotation of potentially exposed credentials, treating dumps as sensitive evidence."
+            "Keep power on while considering volatile evidence capture. Secure sensitive dumps before or alongside host isolation and rotation of exposed credentials."
           ]
         },
         "benign": {
@@ -1924,7 +1943,7 @@
         },
         "missing": {
           "ja": [
-            "端末、時刻、アクセス元プロセスと署名、権限、生成ファイル、同端末のログオン履歴を確認する。"
+            "端末、時刻、アクセス元プロセスと署名、権限、生成ファイル、同端末のログオン履歴の提示を求める。"
           ],
           "en": [
             "Request host, time, accessing process and signature, rights, output files, and host logon history."
@@ -1959,13 +1978,13 @@
           "ja": [
             "符号化PowerShell",
             "EncodedCommand",
-            "4688",
+            "Event ID 4688",
             "PowerShell"
           ],
           "en": [
             "encoded PowerShell",
             "EncodedCommand",
-            "4688",
+            "Event ID 4688",
             "PowerShell"
           ]
         },
@@ -1988,11 +2007,11 @@
         "checks": {
           "ja": [
             "1. 最初に親プロセス、実行者、復号済みの内容を実行せず確認し、通信とファイル変更に照合する。",
-            "2. 管理製品が引数の文字化けを避けるために使う符号化という説明を、承認記録と担当者への確認で検証する。"
+            "2. 管理製品が引数の文字化けを避けるために使う符号化に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect parent process, actor, and decoded content without executing it, then correlate network and file changes.",
-            "2. Verify the explanation of encoding used by management software to avoid argument character issues with approvals and the owner."
+            "2. Check whether encoding used by management software to avoid argument character issues explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2013,7 +2032,7 @@
         },
         "missing": {
           "ja": [
-            "実行時刻、端末、親子プロセス、スクリプト記録、実行者、通信先と変更ファイルを確認する。"
+            "実行時刻、端末、親子プロセス、スクリプト記録、実行者、通信先と変更ファイルの提示を求める。"
           ],
           "en": [
             "Request time, host, process ancestry, script records, actor, destinations, and changed files."
@@ -2074,11 +2093,11 @@
         "checks": {
           "ja": [
             "1. 最初に親プロセス、読み込まれたファイルの場所と署名、子プロセス、外向き通信を確認する。",
-            "2. 署名済み部品の正規インストールや登録処理という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、署名済み部品の正規インストールや登録処理で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect parent process, loaded file locations and signatures, child processes, and outbound connections.",
-            "2. Verify the explanation of legitimate installation or registration of signed components with approvals and the owner."
+            "2. Check whether legitimate installation or registration of signed components explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2099,7 +2118,7 @@
         },
         "missing": {
           "ja": [
-            "実行主体、親子プロセス、読込ファイルのハッシュと署名、通信先、変更記録を確認する。"
+            "実行主体、親子プロセス、読込ファイルのハッシュと署名、通信先、変更記録の提示を求める。"
           ],
           "en": [
             "Request actor, process ancestry, loaded-file hashes and signatures, destinations, and change records."
@@ -2130,12 +2149,12 @@
           "ja": [
             "不審なタスク登録",
             "スケジュールタスク永続化",
-            "4698"
+            "Event ID 4698"
           ],
           "en": [
             "suspicious scheduled task",
             "scheduled task persistence",
-            "4698"
+            "Event ID 4698"
           ]
         },
         "attack_techniques": [
@@ -2156,11 +2175,11 @@
         "checks": {
           "ja": [
             "1. 最初に登録者、トリガー、実行権限、参照ファイルと初回実行を保守申請に照合する。",
-            "2. 更新製品やバックアップ製品の定期タスクという説明を、承認記録と担当者への確認で検証する。"
+            "2. 更新製品やバックアップ製品の定期タスクの予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare creator, trigger, run privileges, referenced files, and first execution with the maintenance request.",
-            "2. Verify the explanation of scheduled tasks from update or backup software with approvals and the owner."
+            "2. Check whether scheduled tasks from update or backup software explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2181,7 +2200,7 @@
         },
         "missing": {
           "ja": [
-            "登録時刻、タスク定義、登録者、実行権限、参照ファイル、実行履歴を確認する。"
+            "登録時刻、タスク定義、登録者、実行権限、参照ファイル、実行履歴の提示を求める。"
           ],
           "en": [
             "Request registration time, task definition, creator, run privileges, referenced files, and execution history."
@@ -2212,12 +2231,12 @@
           "ja": [
             "不審サービス登録",
             "サービス永続化",
-            "7045"
+            "Event ID 7045"
           ],
           "en": [
             "suspicious service installed",
             "service persistence",
-            "7045"
+            "Event ID 7045"
           ]
         },
         "attack_techniques": [
@@ -2238,11 +2257,11 @@
         "checks": {
           "ja": [
             "1. 最初に登録者、起動方式、実行アカウント、実行先のハッシュと署名を変更記録に照合する。",
-            "2. 承認されたエージェント導入や製品更新という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたエージェント導入や製品更新に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare creator, start mode, run account, executable hash, and signature with approved changes.",
-            "2. Verify the explanation of approved agent installation or product updates with approvals and the owner."
+            "2. Check whether approved agent installation or product updates explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2263,7 +2282,7 @@
         },
         "missing": {
           "ja": [
-            "登録時刻、端末、サービス定義、実行主体、実行ファイル、導入申請を確認する。"
+            "登録時刻、端末、サービス定義、実行主体、実行ファイル、導入申請の提示を求める。"
           ],
           "en": [
             "Request registration time, host, service definition, actor, executable, and installation request."
@@ -2320,11 +2339,11 @@
         "checks": {
           "ja": [
             "1. 最初に変更したプロセス、対象ユーザー、変更前後の値と実行先の署名を比較する。",
-            "2. 正規アプリの初回設定や更新という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、正規アプリの初回設定や更新で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare the modifying process, affected user, old and new values, and the target executable's signature.",
-            "2. Verify the explanation of initial setup or update of a legitimate application with approvals and the owner."
+            "2. Check whether initial setup or update of a legitimate application explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2345,7 +2364,7 @@
         },
         "missing": {
           "ja": [
-            "変更時刻、レジストリ位置、旧値と新値、変更プロセス、参照ファイルのハッシュを確認する。"
+            "変更時刻、レジストリ位置、旧値と新値、変更プロセス、参照ファイルのハッシュの提示を求める。"
           ],
           "en": [
             "Request change time, registry location, old and new values, modifying process, and target-file hash."
@@ -2402,11 +2421,11 @@
         "checks": {
           "ja": [
             "1. 最初に対象ユーザー、登録時刻、スケジュールと参照スクリプトを通常のジョブ一覧に照合する。",
-            "2. 承認されたログ整理やバックアップの定期処理という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたログ整理やバックアップの定期処理の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare user, registration time, schedule, and referenced scripts with the normal job inventory.",
-            "2. Verify the explanation of approved log housekeeping or scheduled backups with approvals and the owner."
+            "2. Check whether approved log housekeeping or scheduled backups explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2427,7 +2446,7 @@
         },
         "missing": {
           "ja": [
-            "端末、対象ユーザー、ジョブ定義の差分、参照先、登録者、実行履歴を確認する。"
+            "端末、対象ユーザー、ジョブ定義の差分、参照先、登録者、実行履歴の提示を求める。"
           ],
           "en": [
             "Request host, user, job-definition differences, referenced files, creator, and execution history."
@@ -2484,11 +2503,11 @@
         "checks": {
           "ja": [
             "1. 最初に定義の作成者、実行主体、参照ファイル、起動条件とパッケージ所有情報を確認する。",
-            "2. 承認されたパッケージ導入や運用タイマー追加という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたパッケージ導入や運用タイマー追加に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect definition creator, run identity, referenced files, activation conditions, and package ownership.",
-            "2. Verify the explanation of approved package installation or operational timer additions with approvals and the owner."
+            "2. Check whether approved package installation or operational timer additions explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2509,7 +2528,7 @@
         },
         "missing": {
           "ja": [
-            "定義の差分、作成時刻、作成者、参照ファイルのハッシュ、起動履歴、配布記録を確認する。"
+            "定義の差分、作成時刻、作成者、参照ファイルのハッシュ、起動履歴、配布記録の提示を求める。"
           ],
           "en": [
             "Request definition differences, creation time, author, target-file hashes, activation history, and deployment records."
@@ -2544,13 +2563,13 @@
           "ja": [
             "ログ消去",
             "監査停止",
-            "1102",
+            "Event ID 1102",
             "audit disabled"
           ],
           "en": [
             "log cleared",
             "audit disabled",
-            "1102",
+            "Event ID 1102",
             "audit policy changed"
           ]
         },
@@ -2573,11 +2592,11 @@
         "checks": {
           "ja": [
             "1. 最初に消去や停止の実行者、対象範囲、直前の権限操作と転送済みログの連続性を確認する。",
-            "2. 承認されたログ整理や収集基盤の障害という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認されたログ整理や収集基盤の障害で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect the actor, affected scope, preceding privileged actions, and continuity of forwarded logs.",
-            "2. Verify the explanation of approved log rotation or a log-collection outage with approvals and the owner."
+            "2. Check whether approved log rotation or a log-collection outage explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2598,7 +2617,7 @@
         },
         "missing": {
           "ja": [
-            "欠落期間、対象ホスト、実行者、監査設定差分、転送先の記録、直前の操作を確認する。"
+            "欠落期間、対象ホスト、実行者、監査設定差分、転送先の記録、直前の操作の提示を求める。"
           ],
           "en": [
             "Request gap interval, hosts, actor, audit-setting differences, forwarded records, and preceding actions."
@@ -2655,11 +2674,11 @@
         "checks": {
           "ja": [
             "1. 最初に変更実行者、停止理由、除外の対象、同時刻の実行と管理基盤の承認を確認する。",
-            "2. 保護製品の承認済み更新や互換性対応という説明を、承認記録と担当者への確認で検証する。"
+            "2. 保護製品の承認済み更新や互換性対応の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First inspect actor, stop reason, exclusion scope, concurrent execution, and approval in the management system.",
-            "2. Verify the explanation of approved security-product upgrades or compatibility work with approvals and the owner."
+            "2. Check whether approved security-product upgrades or compatibility work explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -2680,7 +2699,7 @@
         },
         "missing": {
           "ja": [
-            "端末、停止時刻、実行者、設定差分、製品状態、同時刻のプロセスと保守申請を確認する。"
+            "端末、停止時刻、実行者、設定差分、製品状態、同時刻のプロセスと保守申請の提示を求める。"
           ],
           "en": [
             "Request host, stop time, actor, setting differences, product health, concurrent processes, and maintenance approval."
@@ -2697,10 +2716,6 @@
         "en": "Malware detected on a host"
       },
       "references": [
-        {
-          "source": "mitre-attack",
-          "id": "T1204.002"
-        },
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
@@ -2719,9 +2734,7 @@
             "host malware alert"
           ]
         },
-        "attack_techniques": [
-          "T1204.002"
-        ],
+        "attack_techniques": [],
         "context_kinds": [],
         "min_score": 1
       },
@@ -2737,19 +2750,19 @@
         "checks": {
           "ja": [
             "1. 最初に検知名、検知対象、実行有無、隔離結果、子プロセスと通信の有無を確認する。",
-            "2. 検証用サンプルや正規ツールへの誤検知という説明を、承認記録と担当者への確認で検証する。"
+            "2. 検証用サンプルや正規ツールへの誤検知に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect the finding, affected object, execution status, quarantine result, child processes, and network activity.",
-            "2. Verify the explanation of an approved test sample or a false positive on a legitimate tool with approvals and the owner."
+            "2. Check whether an approved test sample or a false positive on a legitimate tool explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は実行済みや隔離失敗なら端末隔離を検討し、ファイルと検知記録を保全する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、ファイルと検知記録の保全と並行して、実行済みや隔離失敗なら端末隔離を検討する。"
           ],
           "en": [
-            "An operator should preserve the file and detection records and consider host isolation if execution occurred or quarantine failed."
+            "Keep power on while considering volatile evidence capture. Preserve files and detection records alongside isolation if execution occurred or quarantine failed."
           ]
         },
         "benign": {
@@ -2762,7 +2775,7 @@
         },
         "missing": {
           "ja": [
-            "端末、検知時刻、ファイルのハッシュ、実行記録、検知根拠、保護製品の処理結果を確認する。"
+            "端末、検知時刻、ファイルのハッシュ、実行記録、検知根拠、保護製品の処理結果の提示を求める。"
           ],
           "en": [
             "Request host, detection time, file hash, execution records, detection basis, and protection response result."
@@ -2786,6 +2799,10 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "recover"
         }
       ],
       "match": {
@@ -2817,7 +2834,7 @@
       "guidance": {
         "interpretation": {
           "ja": [
-            "短時間の大量書換えや読めなくなったファイルは、暗号化被害の進行を疑う強い材料になる。"
+            "短時間の大量書き換えや読めなくなったファイルは、暗号化被害の進行を疑う強い材料になる。"
           ],
           "en": [
             "Rapid file rewrites and newly unreadable files can indicate active ransomware damage."
@@ -2825,20 +2842,22 @@
         },
         "checks": {
           "ja": [
-            "1. 最初に書換え元の端末とプロセス、対象共有、拡張子変化とバックアップへの操作を確認する。",
-            "2. 承認された一括暗号化やデータ変換処理という説明を、承認記録と担当者への確認で検証する。"
+            "1. 最初に書き換え元の端末とプロセス、対象共有、拡張子変化とバックアップへの操作を確認する。",
+            "2. 承認記録を照合し、承認された一括暗号化やデータ変換処理で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First identify the writing host and process, affected shares, extension changes, and access to backups.",
-            "2. Verify the explanation of approved bulk encryption or data conversion with approvals and the owner."
+            "2. Check whether approved bulk encryption or data conversion explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は影響端末と共有へのアクセス隔離を優先的に検討し、責任者へ連携して復旧用証跡を保全する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、証跡保全と並行して影響端末と共有へのアクセス隔離を急ぎ検討し、対応責任者へ連携する。",
+            "復旧前にバックアップがオフラインで被害を受けていないことを確認し、検証済みの復旧元を確保する。"
           ],
           "en": [
-            "An operator should prioritize considering host and share isolation, escalate to the incident lead, and preserve recovery evidence."
+            "Keep power on while considering volatile evidence capture. Preserve evidence alongside urgent host and share isolation decisions and notify the incident lead.",
+            "Before recovery, confirm backups are offline and unaffected, and secure a verified recovery source."
           ]
         },
         "benign": {
@@ -2851,7 +2870,7 @@
         },
         "missing": {
           "ja": [
-            "開始時刻、変更ファイル数、影響共有、書込プロセスとアカウント、バックアップ状態を確認する。"
+            "開始時刻、変更ファイル数、影響共有、書込プロセスとアカウント、バックアップ状態の提示を求める。"
           ],
           "en": [
             "Request start time, changed-file count, affected shares, writing process and account, and backup health."
@@ -2875,6 +2894,10 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "recover"
         }
       ],
       "match": {
@@ -2882,12 +2905,14 @@
           "ja": [
             "身代金要求文",
             "ランサムノート",
-            "復号の支払い要求"
+            "復号の支払い要求",
+            "ランサムウェア"
           ],
           "en": [
             "ransom note",
             "ransom demand",
-            "decryption payment demand"
+            "decryption payment demand",
+            "ransomware"
           ]
         },
         "attack_techniques": [
@@ -2899,7 +2924,7 @@
       "guidance": {
         "interpretation": {
           "ja": [
-            "身代金要求文は侵害の重要な兆候だが、暗号化や持出しの実態は別の証跡で確認する。"
+            "身代金要求文は侵害の重要な兆候だが、暗号化や持ち出しの実態は別の証跡で確認する。"
           ],
           "en": [
             "A ransom note is a serious indicator, but encryption and data theft need independent evidence."
@@ -2908,19 +2933,21 @@
         "checks": {
           "ja": [
             "1. 最初に作成時刻と作成者、同名ファイルの分布、読めないデータと転送履歴を確認する。",
-            "2. 承認された訓練資料や過去被害の調査用コピーという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された訓練資料や過去被害の調査用コピーの予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First inspect creation time and actor, distribution of matching notes, unreadable data, and transfer history.",
-            "2. Verify the explanation of approved exercise material or a copy retained for an earlier investigation with approvals and the owner."
+            "2. Check whether approved exercise material or a copy retained for an earlier investigation explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は要求文と関連証跡を保全し、端末隔離と対応責任者への緊急連携を検討する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、要求文と関連証跡の保全と並行して端末隔離と対応責任者への緊急連携を検討する。",
+            "復旧前にバックアップがオフラインで被害を受けていないことを確認する。"
           ],
           "en": [
-            "An operator should preserve the note and related evidence and consider isolation and urgent escalation to the incident lead."
+            "Keep power on while considering volatile evidence capture. Preserve the note and related evidence before or alongside isolation and urgent escalation.",
+            "Before recovery, confirm backups are offline and unaffected."
           ]
         },
         "benign": {
@@ -2933,7 +2960,7 @@
         },
         "missing": {
           "ja": [
-            "発見場所、作成時刻、作成プロセス、影響端末数、暗号化状態と関連通信を確認する。"
+            "発見場所、作成時刻、作成プロセス、影響端末数、暗号化状態と関連通信の提示を求める。"
           ],
           "en": [
             "Request discovery location, creation time, creating process, host count, encryption status, and related traffic."
@@ -2990,11 +3017,11 @@
         "checks": {
           "ja": [
             "1. 最初に読取プロセスの署名、実行者、対象プロファイル、コピー先と外向き通信を確認する。",
-            "2. 承認されたプロファイル移行やバックアップという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたプロファイル移行やバックアップに一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect reader signature, actor, affected profiles, copy destinations, and outbound connections.",
-            "2. Verify the explanation of approved browser-profile migration or backup with approvals and the owner."
+            "2. Check whether approved browser-profile migration or backup explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3015,7 +3042,7 @@
         },
         "missing": {
           "ja": [
-            "端末、時刻、読取プロセス、対象プロファイル、コピー先、通信と移行申請を確認する。"
+            "端末、時刻、読取プロセス、対象プロファイル、コピー先、通信と移行申請の提示を求める。"
           ],
           "en": [
             "Request host, time, reading process, profiles, copy destination, network activity, and migration request."
@@ -3072,11 +3099,11 @@
         "checks": {
           "ja": [
             "1. 最初にコンテナー権限、ホスト共有、名前空間、ホスト側プロセスとランタイム版を確認する。",
-            "2. 承認された特権付きの基盤管理ワークロードという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された特権付きの基盤管理ワークロードで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect container privileges, host mounts, namespaces, host-side processes, and runtime version.",
-            "2. Verify the explanation of approved privileged infrastructure-management workloads with approvals and the owner."
+            "2. Check whether approved privileged infrastructure-management workloads explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3097,7 +3124,7 @@
         },
         "missing": {
           "ja": [
-            "コンテナーID、ノード、権限と共有定義、発生時刻、ホスト側実行記録、ランタイム版を確認する。"
+            "コンテナーID、ノード、権限と共有定義、発生時刻、ホスト側実行記録、ランタイム版の提示を求める。"
           ],
           "en": [
             "Request container ID, node, privilege and mount definitions, time, host execution records, and runtime version."
@@ -3152,11 +3179,11 @@
         "checks": {
           "ja": [
             "1. 最初に要求ID、入力箇所、応答とDB監査を照合し、権限外の読取や変更の有無を確認する。",
-            "2. 診断ツールの承認されたテストや引用符を含む通常入力という説明を、承認記録と担当者への確認で検証する。"
+            "2. 診断ツールの承認されたテストや引用符を含む通常入力の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First correlate request IDs, input fields, responses, and database audit records for unauthorized reads or changes.",
-            "2. Verify the explanation of approved assessment traffic or ordinary input containing quotation marks with approvals and the owner."
+            "2. Check whether approved assessment traffic or ordinary input containing quotation marks explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3177,7 +3204,7 @@
         },
         "missing": {
           "ja": [
-            "時刻範囲、要求ID、対象パラメーター、応答、DBクエリー記録、公開範囲を確認する。"
+            "時刻範囲、要求ID、対象パラメーター、応答、DBクエリー記録、公開範囲の提示を求める。"
           ],
           "en": [
             "Request time window, request IDs, parameters, responses, database query records, and exposure."
@@ -3232,11 +3259,11 @@
         "checks": {
           "ja": [
             "1. 最初に保存型か反射型か、出力位置、無害化状態と閲覧記録を実行せず確認する。",
-            "2. エスケープ済みの教材や診断用入力という説明を、承認記録と担当者への確認で検証する。"
+            "2. エスケープ済みの教材や診断用入力に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect whether content is stored or reflected, its output context, sanitization, and viewer records without executing it.",
-            "2. Verify the explanation of escaped training material or assessment input with approvals and the owner."
+            "2. Check whether escaped training material or assessment input explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3257,7 +3284,7 @@
         },
         "missing": {
           "ja": [
-            "要求ID、入力と出力の位置、保存先、閲覧時刻と利用者、セッション異常を確認する。"
+            "要求ID、入力と出力の位置、保存先、閲覧時刻と利用者、セッション異常の提示を求める。"
           ],
           "en": [
             "Request request IDs, input and output contexts, storage location, viewer times and users, and session anomalies."
@@ -3312,11 +3339,11 @@
         "checks": {
           "ja": [
             "1. 最初に正規化後の参照先、応答内容とファイル読取記録を照合し、実際の到達先を確認する。",
-            "2. 拒否された診断リクエストや無害な相対パス入力という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、拒否された診断リクエストや無害な相対パス入力で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare the normalized target path, response content, and file-read records to establish actual access.",
-            "2. Verify the explanation of rejected assessment requests or harmless relative-path input with approvals and the owner."
+            "2. Check whether rejected assessment requests or harmless relative-path input explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3337,7 +3364,7 @@
         },
         "missing": {
           "ja": [
-            "対象機能名、要求ID、入力パス、応答量、参照ファイルの記録を確認する。"
+            "対象機能名、要求ID、入力パス、応答量、参照ファイルの記録の提示を求める。"
           ],
           "en": [
             "Request feature name, request IDs, input paths, response size, and file-access records."
@@ -3392,11 +3419,11 @@
         "checks": {
           "ja": [
             "1. 最初に入力で指定された宛先、サーバーの接続記録、内部応答と資格情報発行を照合する。",
-            "2. 承認されたプレビュー機能や稼働監視の内部接続という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたプレビュー機能や稼働監視の内部接続の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First correlate user-selected destinations, server connections, internal responses, and credential issuance.",
-            "2. Verify the explanation of approved preview features or internal health checks with approvals and the owner."
+            "2. Check whether approved preview features or internal health checks explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3417,7 +3444,7 @@
         },
         "missing": {
           "ja": [
-            "要求ID、入力された宛先の識別子、接続元サーバー、応答、内部接続とトークン発行記録を確認する。"
+            "要求ID、入力された宛先の識別子、接続元サーバー、応答、内部接続とトークン発行記録の提示を求める。"
           ],
           "en": [
             "Request request IDs, destination identifiers, source server, responses, internal connections, and token issuance records."
@@ -3472,11 +3499,11 @@
         "checks": {
           "ja": [
             "1. 最初に要求者の権限、対象データの所有者、応答内容と認可判断を同じ要求IDで照合する。",
-            "2. 共有設定による正規アクセスや委任された閲覧権限という説明を、承認記録と担当者への確認で検証する。"
+            "2. 共有設定による正規アクセスや委任された閲覧権限に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First correlate requester permissions, data ownership, response content, and authorization decisions using the same request ID.",
-            "2. Verify the explanation of legitimate sharing settings or delegated viewing rights with approvals and the owner."
+            "2. Check whether legitimate sharing settings or delegated viewing rights explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3497,7 +3524,7 @@
         },
         "missing": {
           "ja": [
-            "要求ID、要求者と対象所有者、権限設定、返却項目、同種アクセス件数を確認する。"
+            "要求ID、要求者と対象所有者、権限設定、返却項目、同種アクセス件数の提示を求める。"
           ],
           "en": [
             "Request request IDs, requester and object owner, permissions, returned fields, and count of similar accesses."
@@ -3552,11 +3579,11 @@
         "checks": {
           "ja": [
             "1. 最初に対象機能の認証要件、トークン検証、プロキシ経路と実行された操作を確認する。",
-            "2. 認証済みプロキシが付与する正規セッションという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、認証済みプロキシが付与する正規セッションで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect authentication requirements, token validation, proxy routing, and actions actually performed.",
-            "2. Verify the explanation of a legitimate session supplied by an authenticated proxy with approvals and the owner."
+            "2. Check whether a legitimate session supplied by an authenticated proxy explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3577,7 +3604,7 @@
         },
         "missing": {
           "ja": [
-            "要求ID、認証状態、トークン検証結果、経路構成、成功操作と対象データを確認する。"
+            "要求ID、認証状態、トークン検証結果、経路構成、成功操作と対象データの提示を求める。"
           ],
           "en": [
             "Request request IDs, authentication state, token-validation results, route configuration, successful actions, and affected data."
@@ -3600,7 +3627,7 @@
         },
         {
           "source": "owasp-top10-2021",
-          "id": "A04"
+          "id": "A05"
         },
         {
           "source": "nist-sp800-61r3",
@@ -3638,19 +3665,19 @@
         "checks": {
           "ja": [
             "1. 最初に配置元の要求、ファイルのハッシュ、実行設定とWebプロセスの子プロセスを照合する。",
-            "2. 承認されたアプリ配布や実行不可の検査用ファイルという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたアプリ配布や実行不可の検査用ファイルの予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First correlate the upload request, file hash, execution settings, and child processes of the web service.",
-            "2. Verify the explanation of approved application deployment or non-executable test files with approvals and the owner."
+            "2. Check whether approved application deployment or non-executable test files explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は影響サーバーの隔離と公開制限を検討し、配置ファイルと実行記録を保全する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、配置ファイルと実行記録の保全と並行して影響サーバーの隔離と公開制限を検討する。"
           ],
           "en": [
-            "An operator should consider server isolation and exposure restriction and preserve uploaded files and execution records."
+            "Keep power on while considering volatile evidence capture. Preserve uploaded files and execution records before or alongside server isolation and access limits."
           ]
         },
         "benign": {
@@ -3663,7 +3690,7 @@
         },
         "missing": {
           "ja": [
-            "配置時刻、要求ID、アップロード主体、ファイルのハッシュ、実行権限、子プロセスを確認する。"
+            "配置時刻、要求ID、アップロード主体、ファイルのハッシュ、実行権限、子プロセスの提示を求める。"
           ],
           "en": [
             "Request upload time, request IDs, actor, file hash, execution permissions, and child processes."
@@ -3718,11 +3745,11 @@
         "checks": {
           "ja": [
             "1. 最初に入力経路、復元した型、例外と子プロセスを要求IDで照合し、署名検証の有無を確認する。",
-            "2. 互換性のない版のデータや破損した正規メッセージという説明を、承認記録と担当者への確認で検証する。"
+            "2. 互換性のない版のデータや破損した正規メッセージに一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First correlate input route, reconstructed types, exceptions, and child processes by request ID, then check integrity validation.",
-            "2. Verify the explanation of version-incompatible data or a corrupted legitimate message with approvals and the owner."
+            "2. Check whether version-incompatible data or a corrupted legitimate message explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3743,7 +3770,7 @@
         },
         "missing": {
           "ja": [
-            "要求ID、入力形式、処理ライブラリと版、復元した型、例外、子プロセスと通信を確認する。"
+            "要求ID、入力形式、処理ライブラリと版、復元した型、例外、子プロセスと通信の提示を求める。"
           ],
           "en": [
             "Request request IDs, input format, library and version, reconstructed types, exceptions, child processes, and network activity."
@@ -3779,7 +3806,7 @@
           "en": [
             "API abuse",
             "API rate anomaly",
-            "429 spike"
+            "API 429 spike"
           ]
         },
         "attack_techniques": [],
@@ -3798,11 +3825,11 @@
         "checks": {
           "ja": [
             "1. 最初にキーと利用者別の回数、対象機能、応答量、失敗率と遅延を平常値に比較する。",
-            "2. 承認された一括連携や再試行処理の不具合という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された一括連携や再試行処理の不具合で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare per-key and per-user counts, features, response bytes, failure rates, and latency with normal levels.",
-            "2. Verify the explanation of approved bulk integration or a faulty retry loop with approvals and the owner."
+            "2. Check whether approved bulk integration or a faulty retry loop explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3823,7 +3850,7 @@
         },
         "missing": {
           "ja": [
-            "集計期間、キーの識別子、機能別回数、応答量、遅延、通常量と連携予定を確認する。"
+            "集計期間、キーの識別子、機能別回数、応答量、遅延、通常量と連携予定の提示を求める。"
           ],
           "en": [
             "Request window, key identifiers, per-feature counts, response bytes, latency, normal volume, and integration schedule."
@@ -3858,11 +3885,12 @@
           "ja": [
             "Webログイン総当たり",
             "ログイン失敗急増",
-            "認証フォーム攻撃"
+            "認証フォーム攻撃",
+            "ログイン試行が多い"
           ],
           "en": [
             "web login brute force",
-            "login failure spike",
+            "web login failure spike",
             "login form attack"
           ]
         },
@@ -3884,11 +3912,11 @@
         "checks": {
           "ja": [
             "1. 最初にアカウント別と送信元別の失敗数、成功、セッション発行と認証後の操作を確認する。",
-            "2. 古い資格情報を持つ連携や利用者の繰り返し入力ミスという説明を、承認記録と担当者への確認で検証する。"
+            "2. 古い資格情報を持つ連携や利用者の繰り返し入力ミスの予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First inspect failures by account and source, successes, session issuance, and actions after authentication.",
-            "2. Verify the explanation of an integration using stale credentials or repeated user typing mistakes with approvals and the owner."
+            "2. Check whether an integration using stale credentials or repeated user typing mistakes explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3909,7 +3937,7 @@
         },
         "missing": {
           "ja": [
-            "対象サービス、時間範囲、アカウント別回数、送信元、成功セッションと認証後の操作を確認する。"
+            "対象サービス、時間範囲、アカウント別回数、送信元、成功セッションと認証後の操作の提示を求める。"
           ],
           "en": [
             "Request service, time window, per-account counts, sources, successful sessions, and post-login actions."
@@ -3952,7 +3980,7 @@
             "credential phishing email",
             "phishing email",
             "invoice phishing",
-            "entered credentials"
+            "entered credentials on phishing page"
           ]
         },
         "attack_techniques": [
@@ -3973,11 +4001,11 @@
         "checks": {
           "ja": [
             "1. 最初に原本のヘッダー、送信者、配送先と利用者の操作を確認し、関連する認証を照合する。",
-            "2. 正規業者の配信設定不備や承認済み訓練という説明を、承認記録と担当者への確認で検証する。"
+            "2. 正規業者の配信設定不備や承認済み訓練に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect original headers, sender, recipients, and user actions, then correlate related authentication.",
-            "2. Verify the explanation of legitimate sender configuration errors or an approved exercise with approvals and the owner."
+            "2. Check whether legitimate sender configuration errors or an approved exercise explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -3998,7 +4026,7 @@
         },
         "missing": {
           "ja": [
-            "原本の識別子、受信時刻、配送先、リンク閲覧や入力の有無、関連認証記録を確認する。"
+            "原本の識別子、受信時刻、配送先、リンク閲覧や入力の有無、関連認証記録の提示を求める。"
           ],
           "en": [
             "Request original message identifier, receipt time, recipients, visits or credential entry, and related authentication."
@@ -4060,11 +4088,11 @@
         "checks": {
           "ja": [
             "1. 最初に添付のハッシュ、閲覧時刻、親子プロセス、検知結果と外向き通信を時系列で結ぶ。",
-            "2. 承認された業務マクロや添付ファイルへの誤検知という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された業務マクロや添付ファイルへの誤検知で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First correlate attachment hash, opening time, process ancestry, detection results, and outbound traffic.",
-            "2. Verify the explanation of approved business macros or a false positive on an attachment with approvals and the owner."
+            "2. Check whether approved business macros or a false positive on an attachment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4085,7 +4113,7 @@
         },
         "missing": {
           "ja": [
-            "メール識別子、添付ハッシュ、受信者、実行時刻、親子プロセス、通信と検知結果を確認する。"
+            "メール識別子、添付ハッシュ、受信者、実行時刻、親子プロセス、通信と検知結果の提示を求める。"
           ],
           "en": [
             "Request message identifier, attachment hash, recipients, execution time, process ancestry, traffic, and detection results."
@@ -4149,11 +4177,11 @@
         "checks": {
           "ja": [
             "1. 最初に既知の連絡先で依頼を別経路確認し、送信元と返信先、転送規則、認証記録を調べる。",
-            "2. 正規の取引先による銀行口座変更という説明を、承認記録と担当者への確認で検証する。"
+            "2. 正規の取引先による銀行口座変更の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First verify through a previously known contact channel, then inspect sender, reply address, forwarding rules, and login records.",
-            "2. Verify the explanation of a genuine banking change by an established supplier with approvals and the owner."
+            "2. Check whether a genuine banking change by an established supplier explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4174,7 +4202,7 @@
         },
         "missing": {
           "ja": [
-            "原本の識別子、依頼時刻、変更前後の振込情報、既知連絡先での確認、送金実行有無を確認する。"
+            "原本の識別子、依頼時刻、変更前後の振込情報、既知連絡先での確認、送金実行有無の提示を求める。"
           ],
           "en": [
             "Request message identifier, request time, old and new payment details, independent verification, and payment status."
@@ -4198,6 +4226,10 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1078.004"
         }
       ],
       "match": {
@@ -4214,7 +4246,8 @@
           ]
         },
         "attack_techniques": [
-          "T1552.001"
+          "T1552.001",
+          "T1078.004"
         ],
         "context_kinds": [],
         "min_score": 1
@@ -4231,19 +4264,19 @@
         "checks": {
           "ja": [
             "1. 最初にキーの識別子と有効状態、権限、公開期間とその期間中のAPI利用を確認する。",
-            "2. 無効なサンプルキーや失効済みの検証用キーという説明を、承認記録と担当者への確認で検証する。"
+            "2. 無効なサンプルキーや失効済みの検証用キーに一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First check key identifier and validity, permissions, exposure interval, and API use during that interval.",
-            "2. Verify the explanation of an inert sample key or an already revoked test key with approvals and the owner."
+            "2. Check whether an inert sample key or an already revoked test key explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は依存処理を確認してキー失効と更新を検討し、公開範囲と利用記録を保全する。"
+            "担当者はまず利用ログと公開範囲の記録を保存し、依存処理を確認してキーを削除せず無効化し、代替キーへの更新を検討する。"
           ],
           "en": [
-            "An operator should assess dependent workloads, consider key revocation and replacement, and preserve exposure and usage records."
+            "Snapshot usage logs and exposure records first. Assess dependent workloads and consider deactivating the key rather than deleting it, then replacing it."
           ]
         },
         "benign": {
@@ -4256,7 +4289,7 @@
         },
         "missing": {
           "ja": [
-            "キー本体を除いた識別子、有効状態、公開時刻、権限、利用元IPとAPI履歴を確認する。"
+            "キー本体を除いた識別子、有効状態、公開時刻、権限、利用元IPとAPI履歴の提示を求める。"
           ],
           "en": [
             "Request key identifier excluding secret material, validity, exposure time, permissions, source IPs, and API history."
@@ -4275,7 +4308,7 @@
       "references": [
         {
           "source": "owasp-top10-2021",
-          "id": "A01"
+          "id": "A05"
         },
         {
           "source": "nist-sp800-61r3",
@@ -4287,12 +4320,14 @@
           "ja": [
             "ストレージ公開",
             "公開バケット",
-            "匿名読取許可"
+            "匿名読取許可",
+            "S3 bucket"
           ],
           "en": [
             "public storage exposure",
             "public bucket",
-            "anonymous storage read"
+            "anonymous storage read",
+            "S3 bucket"
           ]
         },
         "attack_techniques": [],
@@ -4311,11 +4346,11 @@
         "checks": {
           "ja": [
             "1. 最初に有効な公開設定、対象データ分類、設定変更者と匿名アクセス記録を確認する。",
-            "2. 承認された公開配布用バケットという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認された公開配布用バケットで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect effective public permissions, data classification, the change actor, and anonymous-access records.",
-            "2. Verify the explanation of an approved bucket for public distribution with approvals and the owner."
+            "2. Check whether an approved bucket for public distribution explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4336,7 +4371,7 @@
         },
         "missing": {
           "ja": [
-            "保存先の識別子、公開設定の差分、対象データ、公開期間、読取と書込の記録を確認する。"
+            "保存先の識別子、公開設定の差分、対象データ、公開期間、読取と書込の記録の提示を求める。"
           ],
           "en": [
             "Request storage identifier, permission differences, affected data, exposure period, and read and write records."
@@ -4355,7 +4390,7 @@
       "references": [
         {
           "source": "mitre-attack",
-          "id": "T1098"
+          "id": "T1098.003"
         },
         {
           "source": "nist-sp800-61r3",
@@ -4376,7 +4411,7 @@
           ]
         },
         "attack_techniques": [
-          "T1098"
+          "T1098.003"
         ],
         "context_kinds": [],
         "min_score": 1
@@ -4393,11 +4428,11 @@
         "checks": {
           "ja": [
             "1. 最初に変更前後の実効権限、変更主体、対象プリンシパルと直後のAPI操作を確認する。",
-            "2. 承認されたロール再編や基盤配布という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたロール再編や基盤配布の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare effective permissions before and after, modifying identity, affected principals, and subsequent API calls.",
-            "2. Verify the explanation of approved role restructuring or infrastructure deployment with approvals and the owner."
+            "2. Check whether approved role restructuring or infrastructure deployment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4418,7 +4453,7 @@
         },
         "missing": {
           "ja": [
-            "ポリシー差分、変更時刻と主体、対象ロール、実効権限、承認と後続API記録を確認する。"
+            "ポリシー差分、変更時刻と主体、対象ロール、実効権限、承認と後続API記録の提示を求める。"
           ],
           "en": [
             "Request policy differences, time and actor, affected roles, effective permissions, approvals, and subsequent API records."
@@ -4475,11 +4510,11 @@
         "checks": {
           "ja": [
             "1. 最初に実行主体、作成資源、利用元IP、権限と既存のリージョン利用実績を比較する。",
-            "2. 承認された災害復旧試験や新地域への展開という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された災害復旧試験や新地域への展開に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare actor, created resources, source IP, permissions, and previous regional usage.",
-            "2. Verify the explanation of approved disaster-recovery tests or regional expansion with approvals and the owner."
+            "2. Check whether approved disaster-recovery tests or regional expansion explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4500,7 +4535,7 @@
         },
         "missing": {
           "ja": [
-            "アカウント、リージョン、操作時刻、資源ID、実行主体、利用元IP、費用と展開予定を確認する。"
+            "アカウント、リージョン、操作時刻、資源ID、実行主体、利用元IP、費用と展開予定の提示を求める。"
           ],
           "en": [
             "Request account, region, times, resource IDs, actor, source IP, costs, and deployment plans."
@@ -4524,6 +4559,14 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "identify"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "protect"
         }
       ],
       "match": {
@@ -4562,11 +4605,11 @@
         "checks": {
           "ja": [
             "1. 最初に正確な製品版、影響条件、外部到達性と悪用を示す要求や異常実行を確認する。",
-            "2. 版番号の誤認や修正のバックポートという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、版番号の誤認や修正のバックポートで説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First check exact version, affected conditions, external reachability, and requests or execution indicating exploitation.",
-            "2. Verify the explanation of incorrect version identification or a backported fix with approvals and the owner."
+            "2. Check whether incorrect version identification or a backported fix explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4587,7 +4630,7 @@
         },
         "missing": {
           "ja": [
-            "CVE番号、製品版と修正証明、公開経路、影響条件、該当期間の要求と実行記録を確認する。"
+            "CVE番号、製品版と修正証明、公開経路、影響条件、該当期間の要求と実行記録の提示を求める。"
           ],
           "en": [
             "Request cVE, version and fix evidence, exposure path, affected conditions, and request and execution records for the period."
@@ -4605,12 +4648,16 @@
       },
       "references": [
         {
-          "source": "cisa-kev",
-          "id": "CVE-2021-44228"
+          "source": "nist-sp800-61r3",
+          "id": "respond"
         },
         {
           "source": "nist-sp800-61r3",
-          "id": "respond"
+          "id": "identify"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "protect"
         }
       ],
       "match": {
@@ -4618,13 +4665,11 @@
           "ja": [
             "KEV掲載",
             "既知悪用脆弱性",
-            "Log4Shell",
             "悪用が確認済み"
           ],
           "en": [
             "KEV-listed vulnerability",
             "known exploited vulnerability",
-            "Log4Shell",
             "exploitation observed in the wild"
           ]
         },
@@ -4644,11 +4689,11 @@
         "checks": {
           "ja": [
             "1. 最初に対象CVEの現行カタログ掲載、製品版、到達経路と公開期間中の悪用痕跡を確認する。",
-            "2. 既に修正済みの資産を古いスキャン結果が示した状況という説明を、承認記録と担当者への確認で検証する。"
+            "2. 既に修正済みの資産を古いスキャン結果が示した状況の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First verify the CVE in the current catalog, affected versions, reachability, and exploitation evidence during exposure.",
-            "2. Verify the explanation of a stale scan reporting an asset that has already been fixed with approvals and the owner."
+            "2. Check whether a stale scan reporting an asset that has already been fixed explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4669,7 +4714,7 @@
         },
         "missing": {
           "ja": [
-            "対象CVE、照合日、製品版、修正状態、公開期間、要求とプロセスの記録を確認する。"
+            "対象CVE、照合日、製品版、修正状態、公開期間、要求とプロセスの記録の提示を求める。"
           ],
           "en": [
             "Request cVE, catalog-check date, product version, fix status, exposure interval, and request and process records."
@@ -4693,6 +4738,14 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "identify"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "protect"
         }
       ],
       "match": {
@@ -4707,7 +4760,7 @@
             "missing security patch",
             "unpatched asset",
             "security update overdue",
-            "patch available",
+            "security patch available for affected version",
             "behind the fixed release"
           ]
         },
@@ -4727,11 +4780,11 @@
         "checks": {
           "ja": [
             "1. 最初に実際の適用状態、製品の保守期限、脆弱な機能の有効性と接続可能範囲を確認する。",
-            "2. 再起動待ちや棚卸し記録の反映遅延という説明を、承認記録と担当者への確認で検証する。"
+            "2. 再起動待ちや棚卸し記録の反映遅延に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First check actual installation state, support status, whether vulnerable features are enabled, and reachable networks.",
-            "2. Verify the explanation of a pending restart or delayed inventory synchronization with approvals and the owner."
+            "2. Check whether a pending restart or delayed inventory synchronization explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -4752,7 +4805,7 @@
         },
         "missing": {
           "ja": [
-            "資産ID、製品版、修正番号、最終適用時刻、到達範囲、保守予定と適用失敗理由を確認する。"
+            "資産ID、製品版、修正番号、最終適用時刻、到達範囲、保守予定と適用失敗理由の提示を求める。"
           ],
           "en": [
             "Request asset ID, version, patch identifier, last update time, reachability, maintenance schedule, and failure reasons."
@@ -4800,7 +4853,7 @@
       "guidance": {
         "interpretation": {
           "ja": [
-            "平常を超える大量取得は持出し準備の候補で、対象データと業務目的が判断を左右する。"
+            "平常を超える大量取得は持ち出し準備の候補で、対象データと業務目的が判断を左右する。"
           ],
           "en": [
             "Unusual bulk retrieval may precede exfiltration, depending on data sensitivity and business purpose."
@@ -4809,19 +4862,21 @@
         "checks": {
           "ja": [
             "1. 最初に取得者、件数と量、対象データ分類、利用端末とその後の転送先を確認する。",
-            "2. 承認された監査資料の収集やデータ移行という説明を、承認記録と担当者への確認で検証する。"
+            "2. まず承認記録と業務記録で説明を検証する。対人確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
             "1. First inspect actor, counts and bytes, data classification, device, and subsequent transfer destinations.",
-            "2. Verify the explanation of approved audit-data collection or data migration with approvals and the owner."
+            "2. Check approval and work records first. Route any contact through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は情報管理担当と目的を確認し、不正持出しが疑われる場合に取得と転送の制限を検討する。"
+            "担当者は証跡を保全し、承認記録と業務記録で目的を検証した上で、不正な持ち出しが疑われる場合に取得と転送の制限を検討する。",
+            "証跡へのアクセスを限定し、人への確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
-            "An operator should verify purpose with data owners and consider restricting retrieval and transfer if exfiltration is suspected."
+            "Preserve evidence and verify purpose against approval and work records before considering retrieval or transfer limits for suspected exfiltration.",
+            "Keep evidence access restricted. Route any approach to people through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "benign": {
@@ -4834,7 +4889,7 @@
         },
         "missing": {
           "ja": [
-            "時刻範囲、取得者、ファイル件数と量、データ分類、端末、転送履歴と申請を確認する。"
+            "時刻範囲、取得者、ファイル件数と量、データ分類、端末、転送履歴と申請の提示を求める。"
           ],
           "en": [
             "Request time window, actor, file counts and bytes, classification, device, transfer history, and approval."
@@ -4863,7 +4918,7 @@
       "match": {
         "keywords": {
           "ja": [
-            "USB持出し",
+            "USB持ち出し",
             "リムーバブル媒体転送",
             "外部媒体コピー"
           ],
@@ -4882,7 +4937,7 @@
       "guidance": {
         "interpretation": {
           "ja": [
-            "機密ファイルと外部媒体への書込が重なる場合、承認された受渡しか持出しかを確認する。"
+            "機密ファイルと外部媒体への書込が重なる場合、承認された受渡しか持ち出しかを確認する。"
           ],
           "en": [
             "Sensitive-file reads overlapping removable-media writes require distinguishing approved handoff from exfiltration."
@@ -4891,19 +4946,21 @@
         "checks": {
           "ja": [
             "1. 最初に媒体識別子、接続時刻、利用者、書込ファイルとデータ分類を照合する。",
-            "2. 承認されたオフライン搬送や復旧用媒体作成という説明を、承認記録と担当者への確認で検証する。"
+            "2. まず承認記録と業務記録で説明を検証する。対人確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
             "1. First correlate media identifier, insertion time, user, written files, and data classification.",
-            "2. Verify the explanation of approved offline transfer or creation of recovery media with approvals and the owner."
+            "2. Check approval and work records first. Route any contact through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は媒体とコピーの証跡を保全し、継続転送の制限と情報管理担当への連携を検討する。"
+            "担当者は媒体とコピーの証跡を保全し、継続転送の制限と対応責任者への連携を検討する。",
+            "証跡へのアクセスを限定し、人への確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
-            "An operator should preserve media and copy evidence and consider restricting further transfer and involving data owners."
+            "An operator should preserve media and copy evidence and consider restricting further transfer and involving the responsible lead.",
+            "Keep evidence access restricted. Route any approach to people through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "benign": {
@@ -4916,7 +4973,7 @@
         },
         "missing": {
           "ja": [
-            "端末、媒体識別子、接続期間、利用者、書込件数とファイル分類、搬送申請を確認する。"
+            "端末、媒体識別子、接続期間、利用者、書込件数とファイル分類、搬送申請の提示を求める。"
           ],
           "en": [
             "Request host, media identifier, connection interval, user, write counts and data classifications, and transfer approval."
@@ -4978,19 +5035,21 @@
         "checks": {
           "ja": [
             "1. 最初に宛先テナントや所有者、転送量、送信プロセスと直前の機密ファイル読取を確認する。",
-            "2. 承認された外部共同作業領域や業務アカウントの同期という説明を、承認記録と担当者への確認で検証する。"
+            "2. まず承認記録と業務記録で説明を検証する。対人確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
             "1. First inspect destination tenant or owner, bytes, sending process, and preceding sensitive-file reads.",
-            "2. Verify the explanation of approved external collaboration or synchronization with a business account with approvals and the owner."
+            "2. Check approval and work records first. Route any contact through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は転送証跡を保全し、未承認なら同期や共有の制限と情報管理担当への連携を検討する。"
+            "担当者は転送証跡を保全し、未承認なら同期や共有の制限と対応責任者への連携を検討する。",
+            "証跡へのアクセスを限定し、人への確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
-            "An operator should preserve transfer evidence and consider restricting unapproved sync or sharing and involving data owners."
+            "An operator should preserve transfer evidence and consider restricting unapproved sync or sharing and involving the responsible lead.",
+            "Keep evidence access restricted. Route any approach to people through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "benign": {
@@ -5003,7 +5062,7 @@
         },
         "missing": {
           "ja": [
-            "宛先所有者、利用者、時間範囲、転送量と対象分類、共有状態、業務承認を確認する。"
+            "宛先所有者、利用者、時間範囲、転送量と対象分類、共有状態、業務承認の提示を求める。"
           ],
           "en": [
             "Request destination owner, user, time window, bytes and data classification, sharing state, and business approval."
@@ -5060,19 +5119,21 @@
         "checks": {
           "ja": [
             "1. 最初に職務、委任記録、対象情報、閲覧頻度とアカウント侵害の可能性を確認する。",
-            "2. 一時的な応援業務や正式な調査への参加という説明を、承認記録と担当者への確認で検証する。"
+            "2. まず承認記録と業務記録で説明を検証する。対人確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
             "1. First inspect duties, delegation records, affected data, access frequency, and the possibility of account compromise.",
-            "2. Verify the explanation of temporary reassignment or participation in an authorized investigation with approvals and the owner."
+            "2. Check approval and work records first. Route any contact through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は必要な関係者に限定して証跡を保全し、情報管理責任者とアクセス見直しを検討する。"
+            "担当者は必要な関係者に限定して証跡を保全し、対応責任者とアクセス見直しを検討する。",
+            "証跡へのアクセスを限定し、人への確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
-            "An operator should preserve evidence with restricted access and discuss access review with the responsible data owner."
+            "An operator should preserve evidence with restricted access and discuss access review with the responsible lead.",
+            "Keep evidence access restricted. Route any approach to people through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "benign": {
@@ -5085,7 +5146,7 @@
         },
         "missing": {
           "ja": [
-            "対象アカウント、職務と委任、閲覧時刻と件数、対象データ分類、接続端末を確認する。"
+            "対象アカウント、職務と委任、閲覧時刻と件数、対象データ分類、接続端末の提示を求める。"
           ],
           "en": [
             "Request account, duties and delegation, access times and counts, data classification, and source device."
@@ -5104,7 +5165,7 @@
       "references": [
         {
           "source": "mitre-attack",
-          "id": "T1530"
+          "id": "T1213"
         },
         {
           "source": "nist-sp800-61r3",
@@ -5117,19 +5178,19 @@
             "退職前の大量取得",
             "異動前の書出し",
             "担当変更時の大量転送",
-            "退職予定",
-            "退職前"
+            "退職予定者の大量書き出し",
+            "退職前の未承認転送"
           ],
           "en": [
             "predeparture export",
             "role transition bulk transfer",
             "unusual handover export",
-            "departing employee",
-            "before departure"
+            "departing employee bulk export",
+            "bulk transfer before departure"
           ]
         },
         "attack_techniques": [
-          "T1530"
+          "T1213"
         ],
         "context_kinds": [],
         "min_score": 1
@@ -5137,33 +5198,35 @@
       "guidance": {
         "interpretation": {
           "ja": [
-            "担当変更前後の大量取得は引継ぎにも持出しにも見えるため、承認範囲と実際の宛先を確認する。"
+            "担当変更前後の大量取得は引き継ぎにも持ち出しにも見えるため、承認範囲と実際の宛先を確認する。"
           ],
           "en": [
-            "Bulk export around a role change can be a handover or unauthorized transfer. approval scope and destination decide the distinction."
+            "Bulk export around a role change can be a handover or unauthorized transfer. Approval scope and destination decide the distinction."
           ]
         },
         "checks": {
           "ja": [
-            "1. 最初に引継ぎ対象、承認者、書出し量、データ分類と保存先の所有者を照合する。",
-            "2. 承認された業務引継ぎや保存期間に基づく保管という説明を、承認記録と担当者への確認で検証する。"
+            "1. 最初に引き継ぎ対象、承認者、書出し量、データ分類と保存先の所有者を照合する。",
+            "2. まず承認記録と業務記録で説明を検証する。対人確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
             "1. First compare handover scope, approver, exported bytes, classification, and destination ownership.",
-            "2. Verify the explanation of approved handover or retention-related archiving with approvals and the owner."
+            "2. Check approval and work records first. Route any contact through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は証跡へのアクセスを限定して保全し、責任者と未承認の取得制限を検討する。"
+            "担当者は証跡へのアクセスを限定して保全し、責任者と未承認の取得制限を検討する。",
+            "証跡へのアクセスを限定し、人への確認は人事・法務・対応責任者を通じて行い、調査対象者には接触しない。"
           ],
           "en": [
-            "An operator should preserve evidence under restricted access and discuss limiting unapproved retrieval with the responsible lead."
+            "An operator should preserve evidence under restricted access and discuss limiting unapproved retrieval with the responsible lead.",
+            "Keep evidence access restricted. Route any approach to people through HR, legal, or the responsible lead, never the subject."
           ]
         },
         "benign": {
           "ja": [
-            "承認された業務引継ぎや保存期間に基づく保管"
+            "承認された業務引き継ぎや保存期間に基づく保管"
           ],
           "en": [
             "Approved handover or retention-related archiving"
@@ -5171,7 +5234,7 @@
         },
         "missing": {
           "ja": [
-            "担当変更日、引継ぎ申請、取得時刻と件数、対象分類、保存先と共有権限を確認する。"
+            "担当変更日、引き継ぎ申請、取得時刻と件数、対象分類、保存先と共有権限の提示を求める。"
           ],
           "en": [
             "Request transition date, handover approval, retrieval times and counts, data classification, destination, and sharing rights."
@@ -5230,11 +5293,11 @@
         "checks": {
           "ja": [
             "1. 最初に流量、送信元分布、要求種類、回線使用率、応答遅延と影響範囲を平常値に比較する。",
-            "2. 正規の人気集中や大量配信の予定という説明を、承認記録と担当者への確認で検証する。"
+            "2. 正規の人気集中や大量配信の予定に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare traffic, source distribution, request types, link use, latency, and affected scope with normal levels.",
-            "2. Verify the explanation of legitimate demand spikes or scheduled bulk distribution with approvals and the owner."
+            "2. Check whether legitimate demand spikes or scheduled bulk distribution explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5255,7 +5318,7 @@
         },
         "missing": {
           "ja": [
-            "開始時刻、流量、接続数、送信元分布、影響サービス、回線状態と通常量を確認する。"
+            "開始時刻、流量、接続数、送信元分布、影響サービス、回線状態と通常量の提示を求める。"
           ],
           "en": [
             "Request start time, traffic volume, connection counts, source distribution, affected services, link state, and normal volume."
@@ -5289,7 +5352,7 @@
             "CPU急増"
           ],
           "en": [
-            "resource exhaustion",
+            "unexpected service resource exhaustion",
             "connection pool exhausted",
             "application CPU spike"
           ]
@@ -5312,11 +5375,11 @@
         "checks": {
           "ja": [
             "1. 最初に要求別処理時間、CPUとメモリー、接続待ち、直前の配布と重い要求元を確認する。",
-            "2. 正規の集計処理や配布後の性能退行という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、正規の集計処理や配布後の性能退行で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect per-request duration, CPU and memory, connection queues, recent deployments, and sources of costly requests.",
-            "2. Verify the explanation of legitimate reporting jobs or a performance regression after deployment with approvals and the owner."
+            "2. Check whether legitimate reporting jobs or a performance regression after deployment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5337,7 +5400,7 @@
         },
         "missing": {
           "ja": [
-            "影響時間、要求別件数と処理時間、資源使用率、接続待ち、配布履歴を確認する。"
+            "影響時間、要求別件数と処理時間、資源使用率、接続待ち、配布履歴の提示を求める。"
           ],
           "en": [
             "Request impact interval, per-request counts and durations, resource utilization, connection queues, and deployment history."
@@ -5361,6 +5424,10 @@
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "detect"
         }
       ],
       "match": {
@@ -5372,8 +5439,7 @@
           ],
           "en": [
             "decoy touched",
-            "honeypot hit",
-            "Azazel deception"
+            "honeypot hit"
           ]
         },
         "attack_techniques": [],
@@ -5392,11 +5458,11 @@
         "checks": {
           "ja": [
             "1. 最初にデコイID、送信元、接触した機能、成功状態と同送信元の実環境アクセスを照合する。",
-            "2. 承認された診断や資産棚卸しの到達という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された診断や資産棚卸しの到達の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First correlate decoy ID, source, touched service, success state, and access to real assets from the same source.",
-            "2. Verify the explanation of approved assessment or asset-inventory contact with approvals and the owner."
+            "2. Check whether approved assessment or asset-inventory contact explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5417,7 +5483,7 @@
         },
         "missing": {
           "ja": [
-            "デコイID、時刻、送信元IP、接触操作と結果、関連する実資産の記録、診断予定を確認する。"
+            "デコイID、時刻、送信元IP、接触操作と結果、関連する実資産の記録、診断予定の提示を求める。"
           ],
           "en": [
             "Request decoy ID, time, source IP, interaction and result, related real-asset records, and assessment schedule."
@@ -5472,11 +5538,11 @@
         "checks": {
           "ja": [
             "1. 最初にトークン識別子、配置場所、認証要求元と時刻を確認し、配置場所への直前の読取に照合する。",
-            "2. 承認されたカナリア動作確認や診断という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたカナリア動作確認や診断に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect token identifier, placement, authentication source and time, then correlate preceding reads at the placement location.",
-            "2. Verify the explanation of approved canary validation or assessment with approvals and the owner."
+            "2. Check whether approved canary validation or assessment explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5497,7 +5563,7 @@
         },
         "missing": {
           "ja": [
-            "秘密値を除いたトークンID、配置場所、認証時刻、要求元、読取記録と試験予定を確認する。"
+            "秘密値を除いたトークンID、配置場所、認証時刻、要求元、読取記録と試験予定の提示を求める。"
           ],
           "en": [
             "Request token ID without its secret, placement, authentication time, source, read records, and test schedule."
@@ -5558,11 +5624,11 @@
         "checks": {
           "ja": [
             "1. 最初に更新前後の固定版、配布元、ハッシュ、保守者変更と導入時の実行を確認する。",
-            "2. 正規の保守者移管や意図された導入処理の変更という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、正規の保守者移管や意図された導入処理の変更で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare pinned versions, package sources, hashes, maintainer changes, and installation-time execution.",
-            "2. Verify the explanation of legitimate maintainer transfer or intended install-time behavior changes with approvals and the owner."
+            "2. Check whether legitimate maintainer transfer or intended install-time behavior changes explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5583,7 +5649,7 @@
         },
         "missing": {
           "ja": [
-            "パッケージ名と版、配布元識別子、ハッシュ、依存差分、導入時刻、対象ビルドを確認する。"
+            "パッケージ名と版、配布元識別子、ハッシュ、依存差分、導入時刻、対象ビルドの提示を求める。"
           ],
           "en": [
             "Request package and version, source identifier, hashes, dependency differences, install time, and affected builds."
@@ -5640,11 +5706,11 @@
         "checks": {
           "ja": [
             "1. 最初に署名者、ハッシュ、配布経路と他端末の同一更新を比較し、実行有無を確認する。",
-            "2. 転送破損や承認された署名証明書の更新という説明を、承認記録と担当者への確認で検証する。"
+            "2. 転送破損や承認された署名証明書の更新の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare signer, hash, distribution path, and the same update on other hosts, then check whether it ran.",
-            "2. Verify the explanation of transfer corruption or an approved signing-certificate rotation with approvals and the owner."
+            "2. Check whether transfer corruption or an approved signing-certificate rotation explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5665,7 +5731,7 @@
         },
         "missing": {
           "ja": [
-            "製品版、期待署名者、実署名、ハッシュ、取得時刻、配布経路、実行済み端末数を確認する。"
+            "製品版、期待署名者、実署名、ハッシュ、取得時刻、配布経路、実行済み端末数の提示を求める。"
           ],
           "en": [
             "Request version, expected and observed signer, hashes, retrieval time, distribution path, and count of hosts that ran it."
@@ -5684,7 +5750,7 @@
       "references": [
         {
           "source": "mitre-attack",
-          "id": "T1557"
+          "id": "T1557.003"
         },
         {
           "source": "nist-sp800-61r3",
@@ -5705,7 +5771,7 @@
           ]
         },
         "attack_techniques": [
-          "T1557"
+          "T1557.003"
         ],
         "context_kinds": [],
         "min_score": 1
@@ -5722,16 +5788,16 @@
         "checks": {
           "ja": [
             "1. 最初に応答元MACと接続ポート、配布ゲートウェイとDNS、影響端末のリースを確認する。",
-            "2. 冗長DHCPサーバーや承認された移行試験という説明を、承認記録と担当者への確認で検証する。"
+            "2. 冗長DHCPサーバーや承認された移行試験に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First inspect responder MAC and switch port, offered gateway and DNS, and leases on affected clients.",
-            "2. Verify the explanation of redundant DHCP servers or an approved migration test with approvals and the owner."
+            "2. Check whether redundant DHCP servers or an approved migration test explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は応答とリース証跡を保全し、未承認応答元の切離しと配布設定復旧を検討する。"
+            "担当者は応答とリース証跡を保全し、未承認応答元の切り離しと配布設定復旧を検討する。"
           ],
           "en": [
             "An operator should preserve offers and leases and consider disconnecting the unapproved responder and restoring client settings."
@@ -5747,7 +5813,7 @@
         },
         "missing": {
           "ja": [
-            "観測時刻、VLAN、応答元MACとポート、配布設定、影響リースと正規サーバー一覧を確認する。"
+            "観測時刻、VLAN、応答元MACとポート、配布設定、影響リースと正規サーバー一覧の提示を求める。"
           ],
           "en": [
             "Request time, VLAN, responder MAC and port, offered settings, affected leases, and authorized server inventory."
@@ -5804,16 +5870,16 @@
         "checks": {
           "ja": [
             "1. 最初に変更前後のIPとMAC、発生VLAN、接続ポート、重複応答と通信経路を比較する。",
-            "2. ゲートウェイ冗長切替やNIC交換という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、ゲートウェイ冗長切替やNIC交換で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First compare old and new IP/MAC mappings, VLAN, switch ports, duplicate replies, and traffic paths.",
-            "2. Verify the explanation of gateway failover or network-interface replacement with approvals and the owner."
+            "2. Check whether gateway failover or network-interface replacement explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は対応表と通信記録を保全し、未承認端末の切離しと影響セッション確認を検討する。"
+            "担当者は対応表と通信記録を保全し、未承認端末の切り離しと影響セッション確認を検討する。"
           ],
           "en": [
             "An operator should preserve mapping and traffic records and consider disconnecting unapproved devices and reviewing affected sessions."
@@ -5829,7 +5895,7 @@
         },
         "missing": {
           "ja": [
-            "変更時刻、VLAN、IPとMACの対応履歴、接続ポート、冗長系の状態と変更申請を確認する。"
+            "変更時刻、VLAN、IPとMACの対応履歴、接続ポート、冗長系の状態と変更申請の提示を求める。"
           ],
           "en": [
             "Request change time, VLAN, IP/MAC history, switch ports, redundancy status, and approved changes."
@@ -5884,19 +5950,19 @@
         "checks": {
           "ja": [
             "1. 最初にBSSID、暗号方式、設置位置、接続端末と有線側の接続先を正規台帳に照合する。",
-            "2. 承認されたAP交換や近隣施設の同名SSIDという説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認されたAP交換や近隣施設の同名SSIDの予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare BSSID, encryption, location, client devices, and wired uplink with the authorized inventory.",
-            "2. Verify the explanation of approved AP replacement or a nearby organization using the same SSID with approvals and the owner."
+            "2. Check whether approved AP replacement or a nearby organization using the same SSID explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
           "ja": [
-            "担当者は観測証跡を保全し、未承認APの切離しと接続端末の資格情報確認を検討する。"
+            "担当者は電源を切らず揮発性証拠の保全を検討し、観測記録の保全と並行して未承認APの切り離しと接続端末の資格情報確認を検討する。"
           ],
           "en": [
-            "An operator should preserve observations and consider disconnecting an unapproved AP and reviewing credentials used by its clients."
+            "Keep power on while considering volatile evidence capture. Preserve observations before or alongside AP disconnection and review credentials used by clients."
           ]
         },
         "benign": {
@@ -5909,7 +5975,7 @@
         },
         "missing": {
           "ja": [
-            "観測時刻、SSIDとBSSID、位置、暗号設定、接続端末、有線ポートとAP台帳を確認する。"
+            "観測時刻、SSIDとBSSID、位置、暗号設定、接続端末、有線ポートとAP台帳の提示を求める。"
           ],
           "en": [
             "Request time, SSID and BSSID, location, encryption settings, clients, wired port, and AP inventory."
@@ -5964,11 +6030,11 @@
         "checks": {
           "ja": [
             "1. 最初にMAC、IP、接続ポート、端末の識別情報と最初の通信先を資産台帳に照合する。",
-            "2. 端末交換や無線端末のMACランダム化という説明を、承認記録と担当者への確認で検証する。"
+            "2. 端末交換や無線端末のMACランダム化に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First compare MAC, IP, switch port, device identity, and initial destinations with the asset inventory.",
-            "2. Verify the explanation of device replacement or wireless MAC randomization with approvals and the owner."
+            "2. Check whether device replacement or wireless MAC randomization explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -5989,7 +6055,7 @@
         },
         "missing": {
           "ja": [
-            "初回観測時刻、MACとIP、VLANとポート、識別情報、通信先、資産所有者を確認する。"
+            "初回観測時刻、MACとIP、VLANとポート、識別情報、通信先、資産所有者の提示を求める。"
           ],
           "en": [
             "Request first-seen time, MAC and IP, VLAN and port, device identity, destinations, and asset owner."
@@ -6006,10 +6072,6 @@
         "en": "Unexpected DNS resolver change"
       },
       "references": [
-        {
-          "source": "mitre-attack",
-          "id": "T1557"
-        },
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
@@ -6028,9 +6090,7 @@
             "unknown DNS server"
           ]
         },
-        "attack_techniques": [
-          "T1557"
-        ],
+        "attack_techniques": [],
         "context_kinds": [],
         "min_score": 1
       },
@@ -6040,17 +6100,17 @@
             "名前解決先の変更は通信誘導や監視回避の候補で、端末設定と配布元のどちらが変わったかを確認する。"
           ],
           "en": [
-            "A resolver change may redirect traffic or evade visibility. determine whether it originated on the client or in network provisioning."
+            "A resolver change may redirect traffic or evade visibility. Determine whether it originated on the client or in network provisioning."
           ]
         },
         "checks": {
           "ja": [
             "1. 最初に旧新リゾルバー、設定変更者、DHCP配布値と名前解決結果の差を確認する。",
-            "2. 承認されたDNS移行やVPN接続時の設定変更という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認記録を照合し、承認されたDNS移行やVPN接続時の設定変更で説明できるか責任者に確認する。"
           ],
           "en": [
             "1. First inspect old and new resolvers, change actor, DHCP-provided values, and differences in resolution results.",
-            "2. Verify the explanation of approved DNS migration or settings applied by a VPN connection with approvals and the owner."
+            "2. Check whether approved DNS migration or settings applied by a VPN connection explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -6071,7 +6131,7 @@
         },
         "missing": {
           "ja": [
-            "変更時刻、端末、旧新のDNS識別子、変更主体、DHCPとVPN記録、解決結果を確認する。"
+            "変更時刻、端末、旧新のDNS識別子、変更主体、DHCPとVPN記録、解決結果の提示を求める。"
           ],
           "en": [
             "Request change time, host, old and new resolver identifiers, actor, DHCP and VPN records, and resolution results."
@@ -6088,10 +6148,6 @@
         "en": "Unexpected gateway or route change"
       },
       "references": [
-        {
-          "source": "mitre-attack",
-          "id": "T1557"
-        },
         {
           "source": "nist-sp800-61r3",
           "id": "respond"
@@ -6110,9 +6166,7 @@
             "default route changed"
           ]
         },
-        "attack_techniques": [
-          "T1557"
-        ],
+        "attack_techniques": [],
         "context_kinds": [],
         "min_score": 1
       },
@@ -6128,11 +6182,11 @@
         "checks": {
           "ja": [
             "1. 最初に経路差分、変更主体、次ホップのMACと接続先、影響宛先とVPN状態を比較する。",
-            "2. 承認された回線切替やVPNによる経路追加という説明を、承認記録と担当者への確認で検証する。"
+            "2. 承認された回線切替やVPNによる経路追加の予定と承認範囲を記録で確認し、責任者と実際の操作を照合する。"
           ],
           "en": [
             "1. First compare route differences, actor, next-hop MAC and uplink, affected destinations, and VPN state.",
-            "2. Verify the explanation of approved circuit failover or routes installed by a VPN with approvals and the owner."
+            "2. Check whether approved circuit failover or routes installed by a VPN explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -6153,7 +6207,7 @@
         },
         "missing": {
           "ja": [
-            "変更時刻、旧新の経路、変更者、次ホップ、影響範囲、VPNと保守記録を確認する。"
+            "変更時刻、旧新の経路、変更者、次ホップ、影響範囲、VPNと保守記録の提示を求める。"
           ],
           "en": [
             "Request change time, old and new routes, actor, next hop, affected scope, VPN records, and maintenance approval."
@@ -6187,8 +6241,8 @@
             "変更後の接続障害"
           ],
           "en": [
-            "misconfiguration",
-            "configuration drift",
+            "network misconfiguration after change",
+            "unapproved network configuration drift",
             "connectivity failure after change"
           ]
         },
@@ -6208,11 +6262,11 @@
         "checks": {
           "ja": [
             "1. 最初に障害開始と設定差分、影響範囲、変更者を照合し、不審認証や端末間実行の有無を確認する。",
-            "2. アドレス重複やVLANと名前解決設定の不一致という説明を、承認記録と担当者への確認で検証する。"
+            "2. アドレス重複やVLANと名前解決設定の不一致に一致するか、申請記録と責任者が把握する作業内容から検証する。"
           ],
           "en": [
             "1. First correlate failure onset, configuration differences, scope, and actor, then check for suspect logins or cross-host execution.",
-            "2. Verify the explanation of address conflicts or mismatched VLAN and DNS settings with approvals and the owner."
+            "2. Check whether address conflicts or mismatched VLAN and DNS settings explains the activity, using approval records and the owner."
           ]
         },
         "first_response": {
@@ -6233,7 +6287,7 @@
         },
         "missing": {
           "ja": [
-            "変更時刻と差分、影響端末、接続試験結果、認証と実行の記録、変更承認を確認する。"
+            "変更時刻と差分、影響端末、接続試験結果、認証と実行の記録、変更承認の提示を求める。"
           ],
           "en": [
             "Request change time and differences, affected hosts, connectivity results, authentication and execution records, and approval."

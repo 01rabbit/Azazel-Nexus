@@ -148,3 +148,49 @@ def test_reference_source_formats(source, identity):
     doc['entries'][0]['references'][0]['id'] = identity + '/invalid'
     with pytest.raises(PlaybookRefused):
         library(doc)
+
+
+@pytest.mark.parametrize('language', ['ja', 'en'])
+@pytest.mark.parametrize(('keyword', 'negative', 'positive'), [
+    ('DoS', 'Windows', 'DoS'),
+    ('BEC', 'because', 'BEC'),
+    ('4625', '14625', '4625'),
+    ('123456', '91234567', '123456'),
+    ('SSRF', '_SSRF SSRF_ aSSRF SSRF2', '(ssrf)'),
+    ('abcde', 'xabcdey', 'ABCDE'),
+    ('longer', 'unrelated', 'xLONGERy'),
+    ('持ち出し', 'unrelated', '資料持ち出し疑い'),
+])
+def test_keyword_boundaries_in_both_language_lists(language, keyword, negative, positive):
+    doc = document()
+    rules = doc['entries'][0]['match']
+    rules.update(keywords={'ja': [keyword], 'en': [keyword]}, attack_techniques=[],
+                 context_kinds=[], min_score=1)
+    lib = library(doc)
+    prefix = '確認 ' if language == 'ja' else ''
+    assert not match(frame(prefix + negative, kind='observation'), lib)
+    assert match(frame(prefix + positive, kind='observation'), lib)[0].score == 1
+
+
+def test_ties_prefer_technique_hits_then_keyword_hits_then_id():
+    doc = document()
+    template = doc['entries'][0]
+    doc['entries'] = []
+    for ident, keywords, techniques, kinds in [
+        ('aaa-context', ['alpha', 'bravo'], [], ['auth_log']),
+        ('bbb-keywords', ['alpha', 'bravo', 'charlie'], [], []),
+        ('ccc-technique', ['absent'], ['T1110.003'], []),
+        ('ddd-keywords', ['alpha', 'bravo', 'charlie'], [], []),
+    ]:
+        entry = copy.deepcopy(template)
+        entry['id'] = ident
+        entry['match'].update(keywords={'ja': keywords, 'en': keywords},
+                              attack_techniques=techniques, context_kinds=kinds, min_score=1)
+        doc['entries'].append(entry)
+    question = 'alpha bravo charlie T1110.003'
+    expected = ['ccc-technique', 'bbb-keywords', 'ddd-keywords', 'aaa-context']
+    matches = match(frame(question), library(doc), limit=4)
+    assert [item.id for item in matches] == expected
+    assert [item.score for item in matches] == [3, 3, 3, 3]
+    doc['entries'].reverse()
+    assert match(frame(question), library(doc), limit=4) == matches

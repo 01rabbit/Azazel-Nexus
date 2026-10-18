@@ -222,7 +222,42 @@ def test_baseline_real_validator_composition_and_eval_coverage():
     for case in cases:
         frame = read_frame(case["frame"])
         ident = frame["request_id"].split("-", 1)[0]
+        matches = match(frame, library)
+        top = f"{matches[0].id} (score={matches[0].score})" if matches else "none"
+        print(f"{frame['request_id']}: {top}")
         if ident in required:
-            assert match(frame, library), frame["request_id"]
+            assert matches, frame["request_id"]
             covered.add(ident)
     assert covered == required
+
+
+@pytest.mark.parametrize(('ident', 'text'), [
+    ('availability-traffic-flood', 'Windows'),
+    ('email-bec-payment-change', 'because'),
+    ('auth-rdp-brute-force', '14625'),
+    ('network-recon-port-scan', 'reconnaissance'),
+    ('network-dga-domains', 'NXDOMAIN'),
+    ('edge-misconfiguration', 'misconfiguration'),
+    ('edge-misconfiguration', 'configuration drift'),
+    ('vuln-missing-patch', 'patch available'),
+    ('email-phishing-report', 'entered credentials'),
+    ('insider-predeparture-export', 'departing employee'),
+    ('insider-predeparture-export', 'before departure'),
+    ('availability-resource-exhaustion', 'resource exhaustion'),
+    ('web-api-rate-abuse', '429 spike'),
+    ('web-login-brute-force', 'login failure spike'),
+])
+def test_generic_or_embedded_signals_do_not_select_scenario(ident, text):
+    library = compose(read_library(BASELINE.read_bytes()))
+    frame = {'request_id': 'generic', 'privacy_class': 'P0-public',
+             'question': text, 'context': []}
+    assert ident not in {result.id for result in match(frame, library, limit=512)}
+
+
+def test_insider_and_exfiltration_contact_uses_protected_route(layer):
+    for entry in layer['entries']:
+        if entry['category'] in ('insider', 'data_exfiltration'):
+            check = entry['guidance']['checks']
+            assert 'records first' in check['en'][1]
+            assert 'HR, legal, or the responsible lead, never the subject' in check['en'][1]
+            assert '調査対象者には接触しない' in check['ja'][1]

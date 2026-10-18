@@ -20,22 +20,32 @@ this baseline. This directory does not create an installation or admission path.
 Each entry separates interpretation, ordered checks, advisory first response,
 realistic benign explanations, and concrete missing facts. Checks first identify
 the decisive evidence, then test a scenario-specific benign explanation against
-approvals and the responsible owner. First responses describe decisions for a
+approval records and the responsible owner. Insider and exfiltration checks use
+records first; any contact with people goes through HR, legal, or the responsible
+lead, never the subject. First responses describe decisions for a
 human operator. They contain no executable instructions, commands, or URLs.
 Neither a match nor a framework identifier proves compromise.
 
 Keywords include alert phrases and log terms in both languages. Context kinds
 are intentionally empty: a generic log or telemetry item is not extra evidence
 for a particular incident. Most entries use `min_score: 1` for explicit scenario
-phrases. RDP guessing and encoded PowerShell use `min_score: 2` so a bare `4625`
-or `4688` does not select them. Their protocol/tool keywords supply a second
-signal. ATT&CK IDs provide the contract's stronger signal. Shared technique IDs
+phrases. RDP guessing and encoded PowerShell use `min_score: 2` with
+`Event ID 4625` / `Event ID 4688` phrases; bare numeric IDs do not select them.
+Their protocol/tool keywords supply a second signal. ATT&CK IDs provide the contract's stronger signal. Shared technique IDs
 can match several scenarios; site review and the bounded matcher still matter.
 
-The KEV entry cites CVE-2021-44228 as an illustrative known-exploited vulnerability,
-not a claim about an installed product. Operators must check the current catalog,
-affected versions, exposure, and remediation status for the actual reported CVE.
+The KEV entry uses generic catalog wording without a product or single-CVE example.
+Operators must check the current catalog, affected versions, exposure, and remediation status for the actual reported CVE.
 The baseline is static and is not a vulnerability feed.
+
+Short ASCII keywords (at most five characters) and purely numeric keywords require
+ASCII token boundaries in both language lists. Other keywords use case-folded
+substrings. Ties use score, technique hits, keyword hits (all descending), then ID
+(ascending). Generic alert words are qualified by scenario-specific context.
+Containment guidance considers evidence preservation before or alongside isolation;
+volatile evidence is considered before powering off, and ransomware recovery checks
+that backups are offline and unaffected. Leaked cloud keys are deactivated rather
+than deleted after usage logs are saved.
 
 Check offline from the repository root:
 
@@ -46,8 +56,7 @@ python3 tools/check_playbooks.py
 The stdlib-only checker rejects malformed layers, duplicate or unknown keys,
 invalid identifiers and references, oversized content, and forbidden prose.
 It is a structural development check, not signature verification or admission.
-Integration should switch it to the authoritative library validator. Runtime
-loading must separately verify the Mission Pack component digest and trust.
+It uses the authoritative library validator. Runtime loading must separately verify the Mission Pack component digest and trust.
 
 ## Attribution and limits
 
@@ -63,9 +72,9 @@ technique names refer to these public frameworks:
   The schema also permits OWASP ASVS and Cheat Sheet topic references. OWASP text
   is not reproduced or adapted here.
 - [NIST SP 800-61 Rev. 3](https://csrc.nist.gov/pubs/sp/800/61/r3/final): incident
-  response context, represented by the `respond` identifier.
+  response context, including detection, response, recovery, identification, and protection.
 - [CISA Known Exploited Vulnerabilities Catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog):
-  a CVE reference for the KEV example.
+  catalog context for generic KEV guidance; no single CVE is asserted.
 
 These references do not imply endorsement or certification. Advice remains for
 a human operator, adds no decision or enforcement authority, and introduces no

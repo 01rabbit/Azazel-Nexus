@@ -235,6 +235,15 @@ def technique_ids(frame) -> tuple[str, ...]:
                                       text, flags=re.ASCII))))[:8]
 
 
+def _keyword_hit(word: str, text: str) -> bool:
+    """Short ASCII terms and digit strings require ASCII token boundaries."""
+    folded = word.casefold()
+    if (word.isascii() and len(word) <= 5) or word.isdigit():
+        return re.search(r'(?<![a-z0-9_])' + re.escape(folded) + r'(?![a-z0-9_])',
+                         text) is not None
+    return folded in text
+
+
 def match(frame, library: Library, *, limit=2) -> tuple[Match, ...]:
     _require(type(limit) is int and 0 <= limit <= 512, 'invalid_limit')
     checked = read_frame(frame)
@@ -246,11 +255,13 @@ def match(frame, library: Library, *, limit=2) -> tuple[Match, ...]:
     matches = []
     for entry in library.entries:
         rules = entry.match
-        score = (3 * sum(identity.casefold() in ids for identity in rules['attack_techniques'])
-                 + sum(word.casefold() in text for word in rules['keywords'][language])
+        technique_hits = sum(identity.casefold() in ids for identity in rules['attack_techniques'])
+        keyword_hits = sum(_keyword_hit(word, text) for word in rules['keywords'][language])
+        score = (3 * technique_hits + keyword_hits
                  + int(bool(kinds.intersection(rules['context_kinds']))))
         if score >= rules['min_score']:
-            matches.append(Match(entry.id, score, entry.status, entry.title[language],
-                                 entry.references, MappingProxyType({
-                                     key: value[language] for key, value in entry.guidance.items()})))
-    return tuple(sorted(matches, key=lambda item: (-item.score, item.id))[:limit])
+            result = Match(entry.id, score, entry.status, entry.title[language],
+                           entry.references, MappingProxyType({
+                               key: value[language] for key, value in entry.guidance.items()}))
+            matches.append(((-score, -technique_hits, -keyword_hits, entry.id), result))
+    return tuple(result for _, result in sorted(matches, key=lambda item: item[0])[:limit])
