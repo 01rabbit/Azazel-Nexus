@@ -290,3 +290,10 @@ def test_encoded_request_size_is_checked_before_transport(monkeypatch):
     handle.state = LifecycleState.SERVING
     with pytest.raises(LocalServerRefused, match='byte ceiling'):
         handle.infer(LocalInferenceRequest((('user', '\u0000' * 60000),)), 1)
+
+
+@pytest.fixture(autouse=True)
+def explicit_fake_serving(monkeypatch):
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)

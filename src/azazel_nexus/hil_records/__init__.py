@@ -25,11 +25,12 @@ from .confidentiality import ConfidentialityRefused, lint_text
 from .contracts import ANONYMOUS_ID, HMAC
 from .evidence import record_in_manifest, verified_manifest
 
+MIO_CAMPAIGN_SCHEMA = "azazel-nexus/hil-mio-campaign/v1"
 CAMPAIGN_SCHEMA = "azazel-nexus/core-reserve-campaign/v1"
 GATE_SCHEMA = "azazel-nexus/hil-gate/v1"
 BEHAVIOUR_SCHEMA = "azazel-nexus/hil-on-host/v1"
 DRILL_SCHEMA = "azazel-nexus/hil-degraded-drill/v1"
-SCHEMAS = (CAMPAIGN_SCHEMA, GATE_SCHEMA, BEHAVIOUR_SCHEMA, DRILL_SCHEMA)
+SCHEMAS = (CAMPAIGN_SCHEMA, MIO_CAMPAIGN_SCHEMA, GATE_SCHEMA, BEHAVIOUR_SCHEMA, DRILL_SCHEMA)
 GATES = ("HG-01", "HG-02", "HG-04", "HG-06", "HG-07")
 BEHAVIOURS = (
     "local_inference",
@@ -457,7 +458,7 @@ def validate_acquisition(record: object) -> Validation:
     contracts. Even a complete acquisition can return only SHAPE_ONLY.
     Probe v2 is embedded unchanged as a campaign run's ``measurement``.
     """
-    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2
+    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3
 
     from .confidentiality import lint_text
     from .contracts import anonymous_dut
@@ -470,7 +471,7 @@ def validate_acquisition(record: object) -> Validation:
         if len(encoded) > 4 * 1024 * 1024:
             raise ValueError("acquisition exceeds 4 MiB")
         lint_text(encoded)
-        if record.get("schema") == RESERVE_SCHEMA_V2:
+        if record.get("schema") in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
             # parse_record checks sample types, profile and all v2 metadata.
             # Provenance, duration, count and workload checks remain mandatory
             # in _campaign/validate_reserve, independently of this shape check.
@@ -562,9 +563,11 @@ def _campaign(
         else:
             boots.add(boot)
         measurement = run.get("measurement")
-        from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2
+        from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3
 
-        if not isinstance(measurement, dict) or measurement.get("schema") != RESERVE_SCHEMA_V2:
+        required_schema = (RESERVE_SCHEMA_V3 if record.get("schema") == MIO_CAMPAIGN_SCHEMA
+                           else RESERVE_SCHEMA_V2)
+        if not isinstance(measurement, dict) or measurement.get("schema") != required_schema:
             errors.append("measurement: core-reserve/2 required for campaign runs")
         if validate_acquisition(measurement).status is Status.REFUSED:
             errors.append("measurement: invalid v2 acquisition shape")
@@ -609,7 +612,8 @@ def _campaign(
 
 
 def validate_record(
-    record: object, *, bundle_directory: Path | None = None, operator_key: Path | None = None
+    record: object, *, bundle_directory: Path | None = None, operator_key: Path | None = None,
+    bundle_files: dict | None = None, public_key: bytes | None = None
 ) -> Validation:
     """Validate one contract. Never trust an in-record attestation status.
 
@@ -620,7 +624,16 @@ def validate_record(
     """
     reasons: list[str] = []
     manifest = None
-    if bundle_directory is not None:
+    if bundle_files is not None or public_key is not None:
+        from .evidence import verified_manifest_bytes
+
+        try:
+            if bundle_directory is not None or operator_key is not None:
+                raise ValueError("ambiguous attestation inputs")
+            manifest = verified_manifest_bytes(bundle_files, public_key=public_key)
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError):
+            return Validation(Status.REFUSED, ("operator attestation verification failed",))
+    elif bundle_directory is not None:
         try:
             checked = verified_manifest(Path(bundle_directory), operator_key=operator_key)
             if operator_key is not None:
@@ -641,10 +654,12 @@ def validate_record(
         _common(record, reasons)
         schema = record.get("schema")
         maximum = None
-        if schema == CAMPAIGN_SCHEMA:
+        if schema in (CAMPAIGN_SCHEMA, MIO_CAMPAIGN_SCHEMA):
             if not _text(record.get("harness_version")):
                 reasons.append("harness_version required")
             maximum = _campaign(record, manifest, reasons)
+            if schema == MIO_CAMPAIGN_SCHEMA:
+                _mio_campaign(record, reasons)
         elif schema == GATE_SCHEMA:
             _gate(record, reasons)
         elif schema == BEHAVIOUR_SCHEMA:
@@ -661,3 +676,28 @@ def validate_record(
     return Validation(
         status, reserve_mib=maximum if status is Status.ATTESTED else None
     )
+
+
+def _mio_campaign(record, reasons):
+    from azazel_nexus.virtualization import virtualization_not_observed
+
+    if (record.get("virtualization_not_observed") is not True
+            or not virtualization_not_observed(record.get("virtualization_observations"))):
+        reasons.append("RESERVE_VIRTUALIZATION_OBSERVED")
+    runtime = record.get("embedding_runtime")
+    fields = {"peak_rss_mib", "startup_ms", "retrieval_p50_ms", "retrieval_p95_ms",
+              "runtime_binary_digest", "model_digest", "argv_digest"}
+    if type(runtime) is not dict or set(runtime) != fields:
+        reasons.append("embedding runtime measurement required")
+        return
+    for key in fields:
+        value = runtime[key]
+        if key.endswith("digest"):
+            if type(value) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                reasons.append("runtime digest required")
+        elif type(value) is not int or value < 1:
+            reasons.append("positive whole runtime measurements required")
+    if (type(runtime.get("retrieval_p50_ms")) is int
+            and type(runtime.get("retrieval_p95_ms")) is int
+            and runtime["retrieval_p50_ms"] > runtime["retrieval_p95_ms"]):
+        reasons.append("runtime percentiles reversed")

@@ -100,9 +100,17 @@ class LocalServer:
         start_deadline_s: float = 10, budget: RestartBudget | None = None,
         ledger: BudgetLedger | None = None,
         on_budget_spent: Callable[[str], None] | None = None,
+        descriptors=None,
     ) -> None:
+        from azazel_nexus import model_admission
+
+        if model_admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
+            raise LocalServerRefused("ADMISSION_DISABLED")
+        if descriptors is None:
+            raise LocalServerRefused("held verified descriptors required")
         _deadline(start_deadline_s)
         self.record = record
+        self.descriptors = descriptors
         self.socket_path = Path(socket_path)
         if not self.socket_path.is_absolute() or not str(self.socket_path).endswith(".sock"):
             raise LocalServerRefused("an absolute .sock path is required")
@@ -110,7 +118,7 @@ class LocalServer:
         self.budget = budget if budget is not None else RestartBudget(generation=0)
         self.ledger = ledger
         self.on_budget_spent = on_budget_spent
-        self._child = ServingProcess(record, root=Path(root))
+        self._child = ServingProcess(record, root=Path(root), descriptors=descriptors)
         self._started = False
         self.state = LifecycleState.ABSENT
 
@@ -124,7 +132,17 @@ class LocalServer:
                 self.on_budget_spent("mio-local")
             raise LocalServerRefused("restart budget spent; provider fenced")
 
+    def _check_admission(self):
+        from azazel_nexus import model_admission
+
+        if model_admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
+            raise LocalServerRefused("ADMISSION_DISABLED")
+        if self.descriptors is None:
+            raise LocalServerRefused("held verified descriptors required")
+        self.descriptors.recheck()
+
     def start(self, deadline_s: float | None = None) -> None:
+        self._check_admission()
         end = _deadline(self.start_deadline_s)
         if deadline_s is not None:
             end = min(end, _deadline(deadline_s))
@@ -221,6 +239,8 @@ class LocalServer:
             raise LocalServerRefused("invalid embedding response") from None
 
     def _http(self, method: str, path: str, body: bytes, end: float) -> bytes:
+        self._check_admission()
+
         def remaining() -> float:
             value = end - time.monotonic()
             if value <= 0:

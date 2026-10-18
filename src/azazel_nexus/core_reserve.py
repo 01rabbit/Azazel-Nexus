@@ -96,6 +96,7 @@ __all__ = [
 #: version is a reader that will one day interpret a field it does not have.
 RESERVE_SCHEMA = "azazel-nexus/core-reserve/1"
 RESERVE_SCHEMA_V2 = "azazel-nexus/core-reserve/2"
+RESERVE_SCHEMA_V3 = "azazel-nexus/core-reserve/3"
 
 #: Where a measurement would live on a node. Runtime state, never packaged.
 RESERVE_RECORD_PATH = Path("/var/lib/azazel/run/core-reserve.json")
@@ -171,6 +172,8 @@ class ReserveRecord:
     run_sequence: int | None = None
     build_commit: str | None = None
     kernel_release: str | None = None
+    virtualization_observations: dict | None = None
+    virtualization_not_observed: bool | None = None
 
     @property
     def duration_seconds(self) -> int:
@@ -254,7 +257,7 @@ def parse_record(text: str) -> ReserveRecord:
     ]
     if missing:
         raise ReserveRefused(f"the reserve record is missing {missing}")
-    if document["schema"] not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2):
+    if document["schema"] not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
         raise ReserveRefused(
             f"the reserve record names schema {document['schema']!r} and this "
             f"reader knows {RESERVE_SCHEMA!r} and {RESERVE_SCHEMA_V2!r}; a reader that guesses at an "
@@ -300,11 +303,15 @@ def parse_record(text: str) -> ReserveRecord:
         if not isinstance(document[field], str) or not document[field].strip():
             raise ReserveRefused(f"{field} is not a non-empty string")
     metadata = {}
-    if document["schema"] == RESERVE_SCHEMA_V2:
+    if document["schema"] in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
         metadata = {name: document.get(name) for name in (
             "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
         )}
         _validate_v2_metadata(document)
+    if document["schema"] == RESERVE_SCHEMA_V3:
+        metadata.update({name: document.get(name) for name in (
+            "virtualization_observations", "virtualization_not_observed")})
+        _validate_v3_metadata(document)
     return ReserveRecord(
         **metadata,
         schema=document["schema"],
@@ -321,11 +328,16 @@ def validate(record: ReserveRecord) -> Validation:
     """Every reason this record may not be used as the Core reserve."""
 
     refusals: list[str] = []
-    if record.schema not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2):
+    if record.schema not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
         refusals.append("unknown reserve schema")
-    if record.schema == RESERVE_SCHEMA_V2:
+    if record.schema in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
         try:
             _validate_v2_metadata(vars(record))
+        except ReserveRefused as exc:
+            refusals.append(str(exc))
+    if record.schema == RESERVE_SCHEMA_V3:
+        try:
+            _validate_v3_metadata(vars(record))
         except ReserveRefused as exc:
             refusals.append(str(exc))
     if record.provenance is not Provenance.MEASURED:
@@ -408,10 +420,13 @@ def record_as_document(record: ReserveRecord) -> Mapping[str, object]:
     """The record as the harness writes it. The inverse of `parse_record`."""
 
     metadata = {}
-    if record.schema == RESERVE_SCHEMA_V2:
+    if record.schema in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
         metadata = {name: getattr(record, name) for name in (
             "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
         )}
+    if record.schema == RESERVE_SCHEMA_V3:
+        metadata.update(virtualization_observations=record.virtualization_observations,
+                        virtualization_not_observed=record.virtualization_not_observed)
     return {
         **metadata,
         "schema": record.schema,
@@ -439,11 +454,14 @@ def build_record(
     run_sequence: int | None = None,
     build_commit: str | None = None,
     kernel_release: str | None = None,
+    virtualization_observations: dict | None = None,
 ) -> ReserveRecord:
     """Assemble v2 with campaign metadata, or v1 for legacy callers."""
 
     return ReserveRecord(
-        schema=(RESERVE_SCHEMA_V2 if any(value is not None for value in (
+        virtualization_observations=virtualization_observations,
+        virtualization_not_observed=(True if virtualization_observations is not None else None),
+        schema=(RESERVE_SCHEMA_V3 if virtualization_observations is not None else RESERVE_SCHEMA_V2 if any(value is not None for value in (
             boot_fingerprint, run_sequence, build_commit, kernel_release
         )) else RESERVE_SCHEMA),
         boot_fingerprint=boot_fingerprint,
@@ -479,3 +497,11 @@ def _validate_v2_metadata(document: Mapping[str, object]) -> None:
     kernel = document.get("kernel_release")
     if not isinstance(kernel, str) or not kernel.strip() or len(kernel) > 256:
         raise ReserveRefused("kernel_release is not a non-empty bounded string")
+
+
+def _validate_v3_metadata(document):
+    from .virtualization import virtualization_not_observed
+
+    if (document.get("virtualization_not_observed") is not True
+            or not virtualization_not_observed(document.get("virtualization_observations"))):
+        raise ReserveRefused("RESERVE_VIRTUALIZATION_OBSERVED")

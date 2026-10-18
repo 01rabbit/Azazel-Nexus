@@ -73,14 +73,11 @@ def test_install_rechecks_copied_bytes_and_owns_result(tmp_path, monkeypatch):
     assert destination.read_bytes() == b"TEST ONLY"
 
 
-def test_denied_admission_never_resolves_or_constructs_server(tmp_path, monkeypatch):
+def test_unverified_candidates_never_resolve_or_construct_server(tmp_path, monkeypatch):
     events = []
-    monkeypatch.setattr(mio_locald, "admit_local_model", lambda *a, **k: SimpleNamespace(
-        admitted=False, as_event=lambda: {"event_type": "test.denied"}))
     monkeypatch.setattr(mio_locald, "resolve_runtime", lambda *a: pytest.fail("resolution before admission"))
-    candidate = mio_locald.LocalModelCandidate(SimpleNamespace(), object(), None, None)
-    assert mio_locald.prepare_local_models([candidate], staging=tmp_path, audit=events.append) == ({}, [])
-    assert events == [{"event_type": "test.denied"}]
+    assert mio_locald.prepare_local_models([object()], staging=tmp_path, audit=events.append) == ({}, [])
+    assert events == [{"event_type": "mio.local.refused", "refusal": "unverified_candidate"}]
 
 
 def test_both_model_roles_are_signed_test_only_and_v2_is_readable(tmp_path):
@@ -104,50 +101,36 @@ def test_both_model_roles_are_signed_test_only_and_v2_is_readable(tmp_path):
     assert read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING).entries[0].role == "generative"
 
 
-@pytest.mark.parametrize("with_generation", [False, True])
-def test_admitted_roles_wire_separate_servers_and_embedding_argv(tmp_path, monkeypatch, with_generation):
+def test_admitted_embedding_uses_pinned_argv_and_generation_budget(tmp_path, monkeypatch):
     from azazel_nexus_runtime import mio_serve
-    from test_model_catalog import an_entry
+    from test_model_admission_evidence import admitted_candidate
 
-    from azazel_nexus.model_catalog import artifact_filename
-
+    from azazel_nexus import model_admission
+    from azazel_nexus.model_runtime import ArtifactDisposition, ArtifactInspection
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    candidate = admitted_candidate()
+    monkeypatch.setattr(mio_locald, "inspect_artifact_fd", lambda fd: ArtifactInspection(ArtifactDisposition.DATA, ""))
     started = []
 
     class TestServer:
         def __init__(self, record, **kwargs):
-            self.record = record
+            self.record, self.kwargs = record, kwargs
             started.append(self)
 
         def start(self):
-            self.serving = True
+            pass
 
         def stop(self):
-            self.serving = False
+            pass
 
     monkeypatch.setattr(mio_serve, "LocalServer", TestServer)
-    monkeypatch.setattr(mio_locald, "admit_local_model", lambda *a, **k: SimpleNamespace(
-        admitted=True, as_event=lambda: {"event_type": "TEST.admitted"}))
-    monkeypatch.setattr(mio_locald, "containment_for", lambda **k: None)
-    record = runtime.RuntimeBinary("TEST", runtime.LLAMA_EXECUTABLE, "b11716", "sha256:" + "0" * 64,
-                                   (runtime.LLAMA_EXECUTABLE,))
-    monkeypatch.setattr(mio_locald, "resolve_runtime", lambda *a: record)
-    candidates = []
-    for role in (["embedding", "generative"] if with_generation else ["embedding"]):
-        entry = an_entry(model_id="TEST".lower() + role, role=role)
-        (tmp_path / artifact_filename(entry)).write_bytes(b"weights, not a program")
-        candidates.append(mio_locald.LocalModelCandidate(entry, SimpleNamespace(
-            name=entry.model_id, component_digest=entry.digest, memory_need_mib=1024,
-            runtime_version="b11716", role=role), None, None,
-            SimpleNamespace(reserve=object(), envelope_mib=8192)))
-    options, handles = mio_locald.prepare_local_models(candidates, staging=tmp_path,
-                                                       artifact_root=tmp_path, audit=lambda e: None)
-    assert len(handles) == (2 if with_generation else 1)
+    options, handles = mio_locald.prepare_local_models([candidate], staging=tmp_path, audit=lambda e: None)
+    assert len(handles) == 1
     assert "--embedding" in started[0].record.argv
     assert options["retriever"].server is started[0]
-    assert options["server"] is (started[1] if with_generation else None)
-    if with_generation:
-        assert "--embedding" not in started[1].record.argv
-        assert started[0].record.argv != started[1].record.argv
+    assert options["server"] is None
+    assert started[0].kwargs["budget"].generation == 1
+    assert started[0].kwargs["descriptors"] is candidate.evidence.descriptors
 
 
 @pytest.mark.parametrize("mutation", ["missing", "unknown", "legacy_role"])
@@ -169,48 +152,29 @@ def test_signed_catalog_role_schema_refuses_ambiguous_roles(tmp_path, mutation):
         read_catalog(path, trusted_keys=trusted(), commissioning_digest=COMMISSIONING)
 
 
-@pytest.mark.parametrize("embedding", ["missing", "fails", "role_mismatch"])
-def test_missing_embedding_cleans_all_started_handles(tmp_path, monkeypatch, embedding):
+def test_failed_embedding_start_stops_handle_and_keeps_daemon_available(tmp_path, monkeypatch):
     from azazel_nexus_runtime import mio_serve
-    from test_model_catalog import an_entry
+    from test_model_admission_evidence import admitted_candidate
 
-    from azazel_nexus.model_catalog import artifact_filename
-
-    handles = []
+    from azazel_nexus import model_admission
+    from azazel_nexus.model_runtime import ArtifactDisposition, ArtifactInspection
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    stopped = []
+    monkeypatch.setattr(mio_locald, "inspect_artifact_fd", lambda fd: ArtifactInspection(ArtifactDisposition.DATA, ""))
 
     class TestServer:
-        def __init__(self, record, **kwargs):
-            self.record = record
-            self.stopped = False
-            handles.append(self)
+        def __init__(self, *args, **kwargs):
+            pass
 
         def start(self):
-            if "--embedding" in self.record.argv:
-                raise mio_serve.LocalServerRefused("TEST failed readiness")
+            raise mio_serve.LocalServerRefused("test startup refusal")
 
         def stop(self):
-            self.stopped = True
+            stopped.append(True)
 
     monkeypatch.setattr(mio_serve, "LocalServer", TestServer)
-    monkeypatch.setattr(mio_locald, "admit_local_model", lambda *a, **k: SimpleNamespace(
-        admitted=True, as_event=lambda: {"event_type": "TEST.admitted"}))
-    monkeypatch.setattr(mio_locald, "containment_for", lambda **k: None)
-    monkeypatch.setattr(mio_locald, "resolve_runtime", lambda *a: runtime.RuntimeBinary(
-        "TEST", runtime.LLAMA_EXECUTABLE, "b11716", "sha256:" + "0" * 64,
-        (runtime.LLAMA_EXECUTABLE,)))
-    candidates = []
-    for role in ["generative", *([] if embedding == "missing" else ["embedding"])]:
-        entry = an_entry(model_id="test-" + role, role=role)
-        (tmp_path / artifact_filename(entry)).write_bytes(b"weights, not a program")
-        provider = SimpleNamespace(name=entry.model_id, component_digest=entry.digest,
-                                   memory_need_mib=1024, runtime_version="b11716",
-                                   role="generative" if embedding == "role_mismatch" else role)
-        candidates.append(mio_locald.LocalModelCandidate(
-            entry, provider, None, None, SimpleNamespace(reserve=object(), envelope_mib=8192)))
-    assert mio_locald.prepare_local_models(candidates, staging=tmp_path,
-                                          artifact_root=tmp_path, audit=lambda e: None) == ({}, [])
-    assert handles and all(handle.stopped for handle in handles)
-    assert len(handles) == (2 if embedding == "fails" else 1)
+    assert mio_locald.prepare_local_models([admitted_candidate()], staging=tmp_path, audit=lambda e: None) == ({}, [])
+    assert stopped == [True]
 
 
 def test_legacy_catalog_refuses_known_embedding_digest(tmp_path):
@@ -238,7 +202,7 @@ def test_admission_compatibility_binds_role():
 
     from azazel_nexus.cognition import AdmissionGate, admit_local_model
 
-    verdict = admit_local_model(a_provider(role="embedding"), host=a_host(), tested=a_catalogue())
+    verdict = admit_local_model(a_provider(role="embedding"), host=a_host(), tested=a_catalogue(model_role=None))
     assert verdict.failed_gate is AdmissionGate.COMPATIBILITY
     assert "role mismatch" in verdict.reason
     verdict = admit_local_model(a_provider(role="embedding"), host=a_host(),
@@ -286,24 +250,22 @@ def test_runtime_walk_checks_every_parent_and_file(monkeypatch, bad_index):
     assert all(flag & os.O_NOFOLLOW for flag in flags)
 
 
-def test_linux_exec_uses_hashed_descriptor_and_closes_it(monkeypatch):
+def test_serving_process_refuses_without_held_descriptors(monkeypatch):
     from pathlib import Path
 
     from azazel_nexus_runtime import mio_supervisor
 
-    closed, calls = [], []
-    record = runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID]
-    monkeypatch.setattr(mio_supervisor, "open_verified_runtime", lambda *a: 99)
-    monkeypatch.setattr(Path, "is_dir", lambda p: str(p) == "/proc/self/fd")
-    monkeypatch.setattr(mio_supervisor.os, "close", closed.append)
-    monkeypatch.setattr(mio_supervisor.subprocess, "Popen", lambda *a, **k: calls.append(k) or object())
-    mio_supervisor.ServingProcess(record, root=Path("/")).start()
-    assert calls[0]["executable"] == "/proc/self/fd/99"
-    assert calls[0]["pass_fds"] == (99,)
-    assert closed == [99]
+    from azazel_nexus import model_admission
+
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    with pytest.raises(mio_supervisor.SupervisorRefused, match="held verified descriptors"):
+        mio_supervisor.ServingProcess(runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID], root=Path("/")).start()
 
 
 def test_local_server_stop_is_idempotent_without_socket_bind(tmp_path, monkeypatch):
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)
     from azazel_nexus_runtime.mio_serve import LocalServer
 
     from azazel_nexus.runtime_lifecycle import LifecycleState
@@ -336,7 +298,7 @@ def test_production_main_passes_no_candidates(tmp_path, monkeypatch):
     monkeypatch.setattr(mio_locald, "serve_forever", lambda **kw: 0)
     monkeypatch.setattr(mio_locald.PrincipalPolicy, "resolve", lambda **kw: object())
     assert mio_locald.main([]) == 0
-    assert captured == [()]
+    assert captured == [[]]
 
 
 def test_installer_empty_runtime_option_refuses():
@@ -358,34 +320,14 @@ def test_runtime_refuses_symlinked_parent(tmp_path, monkeypatch):
                                       path / "link" / "llama-server")
 
 
-@pytest.mark.parametrize("refuse", [False, True])
-def test_non_proc_fallback_reverifies_before_popen_and_closes_fd(monkeypatch, refuse):
+def test_non_procfs_serving_refuses_without_held_descriptors(monkeypatch):
     from pathlib import Path
 
     from azazel_nexus_runtime import mio_supervisor
 
-    events = []
-    record = runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID]
-    monkeypatch.setattr(mio_supervisor, "open_verified_runtime", lambda *a: 99)
-    monkeypatch.setattr(Path, "is_dir", lambda p: False)
-    monkeypatch.setattr(mio_supervisor.os, "close", lambda fd: events.append(("close", fd)))
+    from azazel_nexus import model_admission
 
-    def verify(*args):
-        events.append("verify")
-        if refuse:
-            raise runtime.RuntimeRefused("TEST substituted binary")
-
-    def popen(*args, **kwargs):
-        assert kwargs["executable"] == runtime.LLAMA_EXECUTABLE
-        events.append("exec")
-        return object()
-
-    monkeypatch.setattr(mio_supervisor, "verify_runtime_binary", verify)
-    monkeypatch.setattr(mio_supervisor.subprocess, "Popen", popen)
-    process = mio_supervisor.ServingProcess(record, root=Path("/"))
-    if refuse:
-        with pytest.raises(runtime.RuntimeRefused):
-            process.start()
-    else:
-        process.start()
-    assert events == ["verify", *([] if refuse else ["exec"]), ("close", 99)]
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    monkeypatch.setattr(Path, "is_dir", lambda path: False)
+    with pytest.raises(mio_supervisor.SupervisorRefused, match="held verified descriptors"):
+        mio_supervisor.ServingProcess(runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID], root=Path("/")).start()

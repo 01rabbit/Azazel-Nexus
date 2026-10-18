@@ -38,6 +38,7 @@ from azazel_nexus.core_reserve import (
     validate,
 )
 from azazel_nexus.resource_profile import ResourceProfile
+from azazel_nexus.virtualization import SENSORS
 
 #: Enough usable memory to classify as `lite`, so `select_profile` has a real
 #: input rather than a profile handed to it.
@@ -96,6 +97,7 @@ def readers(*, inactive=(), inactive_after=(), residents=None, usable=LITE_MIB, 
             "kernel_release": "test-kernel",
         },
         run_sequence=lambda: 1,
+        virtualization=lambda: dict.fromkeys(SENSORS, "clear"),
         call=call,
         cgroup_current=cgroup_current,
         usable_mib=usable_mib,

@@ -17,7 +17,7 @@ EXPECTED_RULE = b"d /run/systemd/system.control :0755 :root :root - -\n"
 _ENTRYPOINTS = (
     "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
     "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
-    "az-mio-entryd", "az-knowledge-lited",
+    "az-mio-entryd", "az-knowledge-lited", "az-mio-identity",
 )
 
 
@@ -64,6 +64,7 @@ def test_bootstrap_tmpfiles_rule_is_exact_and_does_not_clean_other_paths():
     assert directives == [
         EXPECTED_RULE.strip(),
         b"d /run/azazel-nexus-bootstrap :0700 :root :root - -",
+        b"d /run/azazel-mio-identity 0750 root azmio - -",
     ]
 
 

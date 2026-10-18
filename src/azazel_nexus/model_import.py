@@ -1024,3 +1024,26 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def generation_from_bytes(raw: bytes, *, number: int, commissioning_digest: str) -> Generation:
+    """Validate a protected generation snapshot, including its content identity."""
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ImportRefused("duplicate generation field")
+            result[key] = value
+        return result
+
+    if type(number) is not int or number < 1 or len(raw) > 1024 * 1024:
+        raise ImportRefused("invalid generation")
+    doc = json.loads(raw, object_pairs_hook=unique)
+    if (doc.get("schema") != MANIFEST_SCHEMA or type(doc.get("generation")) is not int
+            or doc["generation"] != number
+            or doc.get("commissioning_digest") != commissioning_digest
+            or type(doc.get("installed")) is not dict
+            or any(type(k) is not str or type(v) is not str for k, v in doc["installed"].items())
+            or doc.get("generation_id") != _generation_id(number, doc["installed"])):
+        raise ImportRefused("generation binding mismatch")
+    return Generation(number, doc["generation_id"], doc["installed"], doc["previous_generation_id"])

@@ -427,7 +427,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         runtime_directory="azazel/mio",
         runtime_directory_mode="0750",
         extra=(
+            ("ExecStartPre", "+/usr/libexec/azazel/az-mio-identity"),
             # Fixed host safety limits; measured admission remains independent.
+            ("ReadOnlyPaths", "-/etc/azazel/model-admission"),
+            ("ReadOnlyPaths", "-/etc/azazel/operator-trust"),
+            ("ReadOnlyPaths", "-/var/lib/azazel/models"),
             ("ReadOnlyPaths", "-/etc/azazel/mission-pack.json"),
             ("ReadOnlyPaths", "-/data/azazel/mission-packs"),
             # Two bounded 120s startups plus verification; not an inference deadline.

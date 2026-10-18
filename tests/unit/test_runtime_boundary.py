@@ -211,7 +211,7 @@ EXPECTED_SCRIPTS = (
 # it is not a daemon, unit, widening backend or service-start command.
 OPERATOR_TOOLS = (
     "az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap",
-    "az-hil-readiness", "az-hil-capture",
+    "az-hil-readiness", "az-hil-capture", "az-nexus-model-admission",
 )
 
 
@@ -251,7 +251,7 @@ def _script_for(unit: str) -> str:
 
 
 def test_the_runtime_declares_exactly_the_daemons_the_units_name():
-    assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS + OPERATOR_TOOLS)
+    assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS + OPERATOR_TOOLS + ("az-mio-identity",))
     units = _governed_units()
     for script in EXPECTED_SCRIPTS:
         assert f"azazel-{script[3:]}.service" in units, (
@@ -297,7 +297,7 @@ def test_the_installer_requires_exactly_the_unit_backed_executables():
     match = re.search(r"for binary in ([^;]+); do", installer)
     assert match, "the installer no longer checks that the unit executables exist"
     required = set(match.group(1).split())
-    assert required == {_script_for(unit) for unit in _governed_units()}, (
+    assert required == {_script_for(unit) for unit in _governed_units()} | {"az-mio-identity"}, (
         "the installer's required binaries and the governed units disagree"
     )
 
@@ -363,3 +363,10 @@ def test_an_entry_point_with_no_module_yet_is_matched_by_an_installer_that_refus
             f"{script} has no module and the installer's preflight does not "
             "check for it, so the refusal would miss exactly this one"
         )
+
+
+def test_identity_helper_is_the_only_privileged_prestart():
+    from azazel_nexus_runtime.hardening import PROFILES
+
+    prestarts = [(p.unit, value) for p in PROFILES for key, value in p.extra if key == "ExecStartPre"]
+    assert prestarts == [("azazel-mio-locald.service", "+/usr/libexec/azazel/az-mio-identity")]

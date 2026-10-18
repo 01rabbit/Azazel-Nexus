@@ -16,6 +16,7 @@ from azazel_nexus.core_reserve import record_as_document
 from azazel_nexus.hil_records import (
     CAMPAIGN_SCHEMA,
     GATE_SCHEMA,
+    MIO_CAMPAIGN_SCHEMA,
     Status,
     validate_acquisition,
     validate_record,
@@ -106,8 +107,10 @@ def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     assert validate_acquisition(malformed).status is Status.REFUSED
 
 
-def test_probe_v2_is_campaign_measurement_shape_but_unattested_campaign_refused(tmp_path):
-    campaign = fixture_envelope(CAMPAIGN_SCHEMA)
+def test_probe_v3_is_campaign_measurement_shape_but_unattested_campaign_refused(tmp_path):
+    from azazel_nexus.virtualization import SENSORS
+
+    campaign = fixture_envelope(MIO_CAMPAIGN_SCHEMA)
     campaign["runs"] = []
     for index in range(3):
         identity = dict(IDENTITY, boot_fingerprint="hmac-sha256:" + str(index) * 64)
@@ -116,6 +119,7 @@ def test_probe_v2_is_campaign_measurement_shape_but_unattested_campaign_refused(
             call=lambda *_: {"ActiveState": "active", "SubState": "running"},
             cgroup_current=lambda: 1024 * 1024 * 1000,
             usable_mib=lambda: 8000, sleep=lambda _: None,
+            virtualization=lambda: dict.fromkeys(SENSORS, "clear"),
         )
         measurement = record_as_document(probe.measure(readers))
         assert validate_acquisition(measurement).status is Status.SHAPE_ONLY

@@ -45,17 +45,17 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
     ARTIFACT_TRANSPORT,
+    CORE_UNITS,
     REMOTE_INFERENCE_TRANSPORT,
     ActivationController,
     ActivationLease,
     ActivationOutcome,
-    CORE_UNITS,
     EdgeBaselineState,
     UnitController,
     UnitDefinition,
@@ -68,11 +68,11 @@ from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
 
+from .commissioning_input import load_commissioning_evidence
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
-from .units import DbusUnitManager, UnitManager, UnitOperationFailed
 from .node_config import load_declared_node
-from .commissioning_input import load_commissioning_evidence
+from .units import DbusUnitManager, UnitManager, UnitOperationFailed
 
 __all__ = [
     "ActivationDaemon",
@@ -137,8 +137,8 @@ def wired_capabilities() -> frozenset:
     Artifact transport requires a nonempty legacy endpoint table or fully
     loadable fetch commissioning. Merely having a signed registry is insufficient.
     A fresh node has neither and keeps the unit withheld. Local model wiring
-    requires an admitted provider; no production admission-evidence loader
-    exists in this build, so locald is never granted.
+    requires independently verified embedding evidence. The admission kill
+    switch is closed in this build; lease and health remain absent.
     """
 
     wired = set()
@@ -147,9 +147,25 @@ def wired_capabilities() -> frozenset:
     commissioned = _fetch_commissioned(fetch_commission_dir())
     if ENDPOINT_FOR or commissioned:
         wired.add(ARTIFACT_TRANSPORT)
-    # LOCAL_MODEL_PROVIDER requires an admitted model provider. This build
-    # has no production admission-evidence loader and admission refuses, so
-    # the unit stays withheld even when a pinned runtime resolves.
+    from azazel_nexus.activation import LOCAL_MODEL_PROVIDER
+
+    from .model_admission_evidence import (
+        MAX_SNAPSHOT_RETRIES,
+        Admitted,
+        decide_embedding_admission,
+        fingerprint,
+    )
+
+    for _ in range(MAX_SNAPSHOT_RETRIES):
+        reading = decide_embedding_admission(now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        try:
+            if type(reading.embedding) is not Admitted:
+                break
+            if reading.snapshot and fingerprint(reading.watch_paths) == reading.snapshot:
+                wired.add(LOCAL_MODEL_PROVIDER)
+                break
+        finally:
+            reading.close()
     if TRANSPORT is not None:
         wired.add(REMOTE_INFERENCE_TRANSPORT)
     return frozenset(wired)
@@ -769,7 +785,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     )
     try:
-        from azazel_nexus.bootstrap_selection_optional import load_optional_bootstrap_selection
+        from azazel_nexus.bootstrap_selection_optional import (
+            load_optional_bootstrap_selection,
+        )
 
         try:
             selected = load_optional_bootstrap_selection()

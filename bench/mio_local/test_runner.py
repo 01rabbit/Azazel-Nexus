@@ -239,6 +239,10 @@ def test_runtime_adapter_uses_public_builder(monkeypatch):
 
     from bench.mio_local.runner import runtime_server
 
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "tests/unit"))
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)
     monkeypatch.setattr("bench.mio_local.runner.digest", lambda path: "sha256:" + "0" * 64)
     server = runtime_server("/usr/libexec/azazel/llama-server", Path("/model.gguf"),
                             Path("/tmp/s.sock"), threads=2, context=2048,

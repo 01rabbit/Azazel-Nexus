@@ -447,6 +447,13 @@ def read_catalog(
     except OSError as exc:
         raise CatalogRefused(f"the catalog could not be read: {exc}") from exc
 
+    return read_catalog_bytes(raw, trusted_keys=trusted_keys,
+                              commissioning_digest=commissioning_digest)
+
+
+def read_catalog_bytes(raw: bytes, *, trusted_keys: Mapping[str, bytes],
+                       commissioning_digest: str) -> ModelCatalog:
+    """Verify an already bounded, descriptor-read catalog snapshot."""
     if len(raw) > MAX_CATALOG_BYTES + SIGNATURE_BYTES:
         raise CatalogRefused(f"the catalog is larger than {MAX_CATALOG_BYTES} bytes")
     if len(raw) <= SIGNATURE_BYTES:
@@ -745,3 +752,37 @@ def catalog_payload(
         ],
     }
     return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def verify_artifact_fd(entry: ModelEntry, descriptor: int, *, license: str) -> ModelReading:
+    """Full re-hash and data inspection of the held inode, never reopen a path."""
+    import os
+    import stat
+
+    info = os.fstat(descriptor)
+    if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o111
+            or not 0 < info.st_size <= 64 * 1024 * 1024 * 1024
+            or info.st_size != entry.size_bytes or info.st_nlink != 1
+            or license != ("acknowledged" if entry.license_acknowledgement_required else "not-required")):
+        raise CatalogRefused("ARTIFACT_REFUSED")
+    head = os.pread(descriptor, min(512, entry.size_bytes), 0)
+    for magic, _ in _EXECUTABLE_OR_ARCHIVE_MAGIC:
+        if head.startswith(magic) or (magic == b"ustar" and magic in head):
+            raise CatalogRefused("ARTIFACT_REFUSED")
+    observed = hashlib.sha256()
+    offset = 0
+    while offset < entry.size_bytes:
+        chunk = os.pread(descriptor, min(8 * 1024 * 1024, entry.size_bytes - offset), offset)
+        if not chunk:
+            raise CatalogRefused("ARTIFACT_REFUSED")
+        observed.update(chunk)
+        offset += len(chunk)
+    after = os.fstat(descriptor)
+    before_revision = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                       info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
+    after_revision = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                      after.st_ctime_ns, after.st_mode, after.st_uid, after.st_gid, after.st_nlink)
+    if (before_revision != after_revision
+            or "sha256:" + observed.hexdigest() != entry.digest):
+        raise CatalogRefused("ARTIFACT_REFUSED")
+    return ModelReading(entry.model_id, CatalogState.PRESENT, None, "held artifact verified")

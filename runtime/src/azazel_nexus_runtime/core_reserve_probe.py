@@ -98,7 +98,7 @@ __all__ = [
 #: Identifies this sampler in every record it writes. A record from a harness
 #: whose sampling changed must be identifiable rather than silently comparable
 #: with one from another.
-HARNESS_VERSION = "core-reserve-probe/2"
+HARNESS_VERSION = "core-reserve-probe/3"
 
 #: The cgroup the Azazel units live in, and the kernel's own accounting. Both
 #: fixed in code; neither can be supplied.
@@ -150,6 +150,7 @@ class Readers:
     sleep: Callable[[float], None] = time.sleep
     identity: Callable[[], dict] = lambda: _identity()
     run_sequence: Callable[[], int] = lambda: next_sequence()
+    virtualization: Callable[[], dict] = lambda: _virtualization()
 
 
 def _active(readers: Readers, unit: str) -> bool:
@@ -205,6 +206,11 @@ def measure(readers: Optional[Readers] = None) -> object:
     except Exception as exc:
         raise MeasurementRefused("run identity/key/build metadata unavailable") from exc
 
+    observations = readers.virtualization()
+    from azazel_nexus.virtualization import virtualization_not_observed
+
+    if not virtualization_not_observed(observations):
+        raise MeasurementRefused("RESERVE_VIRTUALIZATION_OBSERVED")
     samples: list[Sample] = []
     for index in range(SAMPLE_COUNT):
         if index:
@@ -241,7 +247,10 @@ def measure(readers: Optional[Readers] = None) -> object:
     if readers.identity() != identity:
         raise MeasurementRefused("boot or build identity changed during the run")
 
+    if readers.virtualization() != observations:
+        raise MeasurementRefused("virtualization observations changed")
     record = build_record(
+        virtualization_observations=observations,
         provenance=Provenance.MEASURED,
         profile=profile,
         **identity,
@@ -354,3 +363,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"on the {record.profile.value!r} class to {path}"
     )
     return 0
+
+
+def _virtualization():
+    from .virtualization_observation import observe_virtualization
+
+    return observe_virtualization()

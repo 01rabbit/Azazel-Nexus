@@ -30,6 +30,7 @@ requires-python = ">=3.11"
 dependencies = ["azazel-nexus", "dbus-next==0.2.3", "PyYAML==6.0.3"]
 
 [project.scripts]
+az-nexus-model-admission = "azazel_nexus_runtime.model_admission_cli:main"
 az-nexus-commission = "azazel_nexus_runtime.commission_cli:main"
 az-nexus-bootstrap = "azazel_nexus_runtime.bootstrap_cli:main"
 az-commissiond = "azazel_nexus_runtime.commissiond:main"
@@ -38,6 +39,7 @@ az-auditd = "azazel_nexus_runtime.auditd:main"
 az-watchdog = "azazel_nexus_runtime.watchdog:main"
 az-edge-probed = "azazel_nexus_runtime.edge_probed:main"
 az-model-fetchd = "azazel_nexus_runtime.model_fetchd:main"
+az-mio-identity = "azazel_nexus_runtime.model_identity:main"
 az-mio-locald = "azazel_nexus_runtime.mio_locald:main"
 az-mio-remoted = "azazel_nexus_runtime.mio_remoted:main"
 az-mio-entryd = "azazel_nexus_runtime.mio_entryd:main"

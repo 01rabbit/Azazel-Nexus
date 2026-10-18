@@ -178,7 +178,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-remoted az-mio-entryd az-knowledge-lited; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-knowledge-lited; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -253,6 +253,9 @@ make_dir 0700 root /var/lib/azazel/state/bootstrap-overlay
 make_dir 0700 root /var/lib/azazel/generations
 make_dir 0700 root /var/lib/azazel/bootstrap-generations
 make_dir 0750 azfetch /var/lib/azazel/fetch
+make_dir 0750 azmio /etc/azazel/model-admission
+make_dir 0750 azmio /etc/azazel/model-admission/evidence
+make_dir 0750 azmio /etc/azazel/model-admission/evidence/artifacts
 make_dir 0750 azmio /var/lib/azazel/models
 make_dir 2750 azmio /var/lib/azazel/models/staging
 make_dir 2750 azmio /var/lib/azazel/models/store

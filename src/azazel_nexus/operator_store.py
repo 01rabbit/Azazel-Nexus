@@ -106,3 +106,10 @@ def load_operator_trust() -> OperatorTrust:
     """Fresh protected snapshot; a missing/malformed store is never permissive."""
     with _trust_directory() as fd:
         return _read_at(fd, owner=0)
+
+
+def operator_trust_bytes(raw: bytes) -> OperatorTrust:
+    """Decode a bounded snapshot already read through protected descriptors."""
+    if type(raw) is not bytes or not 0 < len(raw) <= _MAX_STORE_BYTES:
+        raise ApprovalRefused("operator trust file size refused")
+    return _decode(raw)

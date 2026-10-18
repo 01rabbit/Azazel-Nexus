@@ -28,6 +28,7 @@ class ApprovalPurpose(str, Enum):
     COMMISSIONING = "commissioning"
     ACTIVATION = "activation"
     COMMISSIONING_PROPOSAL = "commissioning-proposal"
+    LOCAL_MODEL_ADMISSION = "local-model-admission"
     SUPPORTING_BOOTSTRAP = "supporting-bootstrap"
 
 

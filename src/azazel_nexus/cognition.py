@@ -49,6 +49,7 @@ from typing import Optional, Sequence
 
 from .compatibility import HostFacts, TestedTupleSet
 from .core_reserve import CoreReserve
+from .model_admission import VerifiedModelAdmission, canonical, digest, is_verified
 from .resource_profile import ResourceProfile
 
 __all__ = [
@@ -95,23 +96,9 @@ class AdmissionGate(str, Enum):
     STAGED_ACTIVATION = "staged activation"
 
 
-#: The order gates run in. A later gate never runs when an earlier one
-#: rejected, so the gate a refusal names is the first one that rejected --
-#: which is the one an operator acts on.
-#:
-#: `APPROVAL` and `STAGED_ACTIVATION` are in the vocabulary and are **not
-#: reached on any node this build runs on**: the resource gate before them
-#: refuses without a measured Core reserve, and no node has one
-#: (`core_reserve.py`, `docs/hardware-gates.md` HG-05).
-#:
-#: They are not *unreachable*, and the difference matters. Supply a measured
-#: reserve that a provider fits under and `APPROVAL` is reached -- where it
-#: refuses for having no implementation, not for being past the end of the
-#: road. A gate that refuses only by being unreachable is a gate that starts
-#: passing the day something upstream stops refusing, silently and without a
-#: line of code changing. `tests/unit/test_cognition.py` drives both: no node
-#: today gets past the resource gate, and a node with a reserve gets exactly
-#: one gate further and stops.
+#: Gates run in order; the first refusal is the answer. Production remains
+#: closed at the evidence loader's code kill switch. Tests can exercise signed
+#: approval and held-descriptor checks without supplying hardware evidence.
 GATE_ORDER = (
     AdmissionGate.AUTHENTICITY,
     AdmissionGate.COMPATIBILITY,
@@ -145,6 +132,7 @@ class ResourceEvidence:
 
     reserve: CoreReserve
     envelope_mib: int
+    reserve_record_digest: str | None = None
 
     def __post_init__(self) -> None:
         if self.envelope_mib < 1:
@@ -169,20 +157,12 @@ class LocalModelProvider:
     quantization: str
     context_size: int
     memory_need_mib: int
-    #: Whether the asset's signature verified. Supplied by the caller because
-    #: this module does not own asset verification; `False` and `None` are
-    #: different -- the second means nobody checked.
-    signature_verified: Optional[bool] = None
-    #: Whether the content policy passed. Same three-valued rule.
-    content_policy_passed: Optional[bool] = None
+    evidence: VerifiedModelAdmission | None = None
 
     role: str = "generative"
 
-    # There is deliberately no `approved` or `staged` field. The resource gate
-    # always rejects while the Core reserve is unmeasured, so the approval and
-    # staged-activation gates are never reached -- and a field nothing reads is
-    # a claim the code does not support. They arrive with HG-05, together with
-    # the gates that would consult them.
+    # Evidence is minted by the verifier; callers cannot substitute booleans.
+
 
 
 @dataclass(frozen=True)
@@ -210,6 +190,7 @@ def admit_local_model(
     host: Optional[HostFacts],
     tested: TestedTupleSet,
     resources: Optional[ResourceEvidence] = None,
+    approval: VerifiedModelAdmission | None = None,
 ) -> ProviderAdmission:
     """Run §4's gates in order. The first rejection is the answer.
 
@@ -224,14 +205,15 @@ def admit_local_model(
             provider=provider.name, admitted=False, failed_gate=gate, reason=reason
         )
 
-    if provider.signature_verified is None:
-        return refuse(
-            AdmissionGate.AUTHENTICITY,
-            "no asset verification result was supplied; an unchecked asset is "
-            "not an admitted one, and absence of a check is not a pass",
-        )
-    if not provider.signature_verified:
-        return refuse(AdmissionGate.AUTHENTICITY, "the asset signature did not verify")
+    evidence = provider.evidence if approval is None else approval
+    if not is_verified(evidence):
+        return refuse(AdmissionGate.AUTHENTICITY,
+                      "no minted asset verification evidence was supplied; unchecked is not a pass")
+    context = evidence.context.bindings
+    if (context["model"]["digest"] != provider.component_digest
+            or context["model"]["model_id"] != provider.name
+            or context["model"]["role"] != provider.role):
+        return refuse(AdmissionGate.AUTHENTICITY, "asset evidence binding mismatch")
 
     if host is None:
         return refuse(
@@ -261,13 +243,11 @@ def admit_local_model(
             AdmissionGate.CONTENT_POLICY,
             "context size and memory need are declared as positive quantities",
         )
-    if provider.content_policy_passed is None:
-        return refuse(
-            AdmissionGate.CONTENT_POLICY,
-            "no content-policy result was supplied; nobody checked is not a pass",
-        )
-    if not provider.content_policy_passed:
-        return refuse(AdmissionGate.CONTENT_POLICY, "the content policy rejected the asset")
+    if (provider.declared_format != context["model"]["format"]
+            or provider.runtime_version != context["runtime"]["version"]
+            or provider.context_size != 2048
+            or provider.memory_need_mib != context["resources"]["memory_need_mib"]):
+        return refuse(AdmissionGate.CONTENT_POLICY, "content evidence binding mismatch")
 
     # The resource gate. With no measured reserve it refuses, which is the
     # answer on every node this build runs on.
@@ -303,18 +283,34 @@ def admit_local_model(
             f"{resources.reserve.reserve_mib} MiB",
         )
 
-    # Past the resource gate, and into the two that are named by the contract
-    # and not implemented. This is reachable only with a measured reserve, so
-    # no node this build runs on reaches it -- but it refuses by having no
-    # implementation rather than by being unreachable, because an unreachable
-    # gate that becomes reachable is a gate that silently starts passing.
-    return refuse(
-        AdmissionGate.APPROVAL,
-        "operator or policy-authority approval is not implemented; the gate "
-        "became reachable with a measured Core reserve and has no evidence to "
-        "consider, and absence of a check is not a pass "
-        "(docs/mio-runtime.md §3, Nexus#68)",
-    )
+    if approval is None:
+        return refuse(
+            AdmissionGate.APPROVAL,
+            "operator or policy-authority approval is not implemented; the gate "
+            "became reachable with a measured Core reserve and has no evidence to "
+            "consider, and absence of a check is not a pass "
+            "(docs/mio-runtime.md §3, Nexus#68)",
+        )
+    if (not is_verified(approval) or approval is not evidence
+            or context["compatibility"]["tuple_digest"] != digest(canonical(matched.as_record()))
+            or context["reserve"]["campaign_record_digest"] != resources.reserve_record_digest
+            or context["reserve"]["reserve_mib"] != resources.reserve.reserve_mib
+            or context["node"]["dut_fingerprint"] != resources.reserve.host_digest
+            or resources.envelope_mib < context["resources"]["envelope_floor_mib"]):
+        return refuse(AdmissionGate.APPROVAL, "approval binding mismatch")
+    # Runtime owns the held descriptor checks; this pure gate cannot spawn or
+    # manufacture them. Locald calls readiness for these same inodes before start.
+    import os
+    import stat
+
+    try:
+        held = approval.descriptors
+        if held is None or any(not stat.S_ISREG(os.fstat(fd).st_mode)
+                               for fd in (held.binary_fd, held.model_fd)):
+            raise ValueError("held descriptors required")
+    except (AttributeError, OSError, TypeError, ValueError):
+        return refuse(AdmissionGate.STAGED_ACTIVATION, "held verified descriptors required")
+    return ProviderAdmission(provider.name, True, None, "")
 
 
 @dataclass(frozen=True)

@@ -9,10 +9,9 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from azazel_nexus_runtime.install_platform import CURRENT_INSTALL_PLATFORM_PROFILES
-from tools.stage_runtime_entrypoints import declared_daemons, stage
 
+from tools.stage_runtime_entrypoints import declared_daemons, stage
 
 ROOT = Path(__file__).resolve().parents[2]
 LIBEXEC = Path(CURRENT_INSTALL_PLATFORM_PROFILES[0].libexec_directory.lstrip("/"))
@@ -24,8 +23,8 @@ def test_staged_set_is_derived_from_the_installed_units_and_runtime_scripts() ->
     unit_names = set()
     for unit in (ROOT / "packaging" / "systemd").glob("*.service"):
         for line in unit.read_text(encoding="utf-8").splitlines():
-            if line.startswith("ExecStart="):
-                unit_names.add(Path(line.removeprefix("ExecStart=")).name)
+            if line.startswith(("ExecStart=", "ExecStartPre=+")):
+                unit_names.add(Path(line.split("=", 1)[1].removeprefix("+")).name)
 
     assert set(daemons) == unit_names
     assert "az-core-reserve-probe" not in daemons
@@ -171,6 +170,7 @@ def test_malformed_runtime_module_path_is_refused(tmp_path: Path) -> None:
 
 def test_staging_requires_yaml_dependency_before_writing(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from tools import stage_runtime_entrypoints as staging
 
     import_paths = staging._discover_import_paths(Path(sys.executable))
@@ -194,6 +194,7 @@ def test_staging_refuses_broken_or_wrong_yaml(tmp_path, monkeypatch, problem):
     import importlib
     import importlib.metadata
     from types import SimpleNamespace
+
     from tools import stage_runtime_entrypoints as staging
 
     original_import = importlib.import_module
@@ -231,6 +232,7 @@ def test_staging_refuses_broken_or_wrong_yaml(tmp_path, monkeypatch, problem):
 
 def test_discovery_probe_preserves_first_occurrence_and_deduplicates_paths(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from tools import stage_runtime_entrypoints as staging
 
     first = os.fspath(tmp_path.resolve())
@@ -273,6 +275,7 @@ def test_discovery_probe_preserves_first_occurrence_and_deduplicates_paths(tmp_p
 ])
 def test_discovery_probe_rejects_malformed_or_overbound_output(monkeypatch, stdout):
     from types import SimpleNamespace
+
     from tools import stage_runtime_entrypoints as staging
 
     monkeypatch.setattr(
@@ -301,6 +304,7 @@ def test_wrapper_renders_explicit_isolated_import_paths(tmp_path):
 
 def test_import_check_uses_same_isolated_mode_and_explicit_paths(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from tools import stage_runtime_entrypoints as staging
 
     runtime = tmp_path / "runtime"
@@ -368,7 +372,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     env_report = destdir / "stager-environment.json"
     entrypoints = (
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
-        "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+        "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
         "az-mio-entryd", "az-knowledge-lited",
     )
     stager = tools / "stage_runtime_entrypoints.py"

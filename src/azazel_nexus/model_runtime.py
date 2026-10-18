@@ -564,6 +564,7 @@ def readiness(
     runtime_id: Optional[str],
     artifact: Optional[ArtifactInspection],
     reserve: Optional[CoreReserve],
+    held_runtime: RuntimeBinary | None = None,
 ) -> ActivationVerdict:
     """Everything that must hold before a model process could be started.
 
@@ -600,7 +601,10 @@ def readiness(
             "judged. Nobody checked is not a pass",
         )
     try:
-        resolve_runtime(runtime_id)
+        if held_runtime is None:
+            resolve_runtime(runtime_id)
+        elif held_runtime.runtime_id != runtime_id:
+            raise RuntimeRefused("held runtime mismatch")
     except RuntimeRefused as exc:
         return ActivationVerdict(ActivationReadiness.REFUSED, str(exc))
     if artifact is None:
@@ -612,3 +616,43 @@ def readiness(
     if not artifact.is_data:
         return ActivationVerdict(ActivationReadiness.REFUSED, artifact.reason)
     return ActivationVerdict(ActivationReadiness.READY, "")
+
+
+def runtime_from_fd(descriptor: int, *, architecture: str) -> RuntimeBinary:
+    """Verify a held protected runtime inode against this build's architecture pin."""
+    info = os.fstat(descriptor)
+    expected = pinned_runtime_digest(architecture)
+    if (not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o111
+            or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 512 * 1024 * 1024):
+        raise RuntimeRefused("RUNTIME_MISMATCH")
+    observed = hashlib.sha256()
+    offset = 0
+    while offset < info.st_size:
+        chunk = os.pread(descriptor, min(8 * 1024 * 1024, info.st_size - offset), offset)
+        if not chunk:
+            raise RuntimeRefused("RUNTIME_MISMATCH")
+        observed.update(chunk)
+        offset += len(chunk)
+    after = os.fstat(descriptor)
+    before_revision = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                       info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
+    after_revision = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                      after.st_ctime_ns, after.st_mode, after.st_uid, after.st_gid, after.st_nlink)
+    if (before_revision != after_revision
+            or "sha256:" + observed.hexdigest() != expected):
+        raise RuntimeRefused("RUNTIME_MISMATCH")
+    return replace(RUNTIMES[LLAMA_RUNTIME_ID], digest=expected)
+
+
+def inspect_artifact_fd(descriptor: int) -> ArtifactInspection:
+    """Inspect held data without path reopening."""
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o111:
+        return ArtifactInspection(ArtifactDisposition.NOT_A_REGULAR_FILE, "held artifact is not data")
+    if not 0 < info.st_size <= MAX_MODEL_ARTIFACT_BYTES:
+        return ArtifactInspection(ArtifactDisposition.OUT_OF_RANGE, "held artifact size refused")
+    head = os.pread(descriptor, 512, 0)
+    if any(head.startswith(magic) or (magic == b"ustar" and head[257:262] == magic)
+           for magic, _ in archive_signatures()):
+        return ArtifactInspection(ArtifactDisposition.ARCHIVE, "held artifact is archived")
+    return ArtifactInspection(ArtifactDisposition.DATA, "")
