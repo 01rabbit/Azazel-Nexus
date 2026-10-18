@@ -629,3 +629,26 @@ def test_english_log_quoted_in_cited_facts_does_not_fail_japanese_language_check
     item['context'][0]['text'] = 'host=ws-112, 4800 TXT queries/hour'
     advisory = read_local_advisory(japanese_response('host=ws-112, 4800 TXT queries/hour'), item)
     assert advisory.text is not None
+
+
+def test_reference_prompt_is_optional_bounded_and_separate():
+    from pathlib import Path
+
+    from azazel_nexus.reasoning_playbook import match, read_library
+
+    original = frame()
+    assert build_prompt(original) == build_prompt(original, playbooks=(), knowledge=())
+    library = read_library((Path(__file__).parents[1] / 'fixtures' / 'reasoning-playbook.json').read_bytes())
+    original['question'] = 'Password spray T1110.003'
+    original['context'] = [{'kind': 'auth_log', 'text': 'many accounts'}]
+    matches = match(original, library)
+    ref = SimpleNamespace(technique_id='T1110.003', name='Spraying', claim_id='claim-fixture')
+    messages = build_prompt(original, matches, (ref,))
+    assert [role for role, _ in messages] == ['system', 'system', 'user']
+    assert messages[1][1].startswith('reference\nPassword spraying')
+    assert 'claim-fixture' in messages[1][1]
+    assert matches[0].guidance['first_response'][0] in messages[1][1]
+    assert json.loads(messages[-1][1]) == original
+    capped = build_prompt(original, matches * 20, (ref,) * 16)
+    assert len(capped[1][1]) == 1200
+    assert capped == build_prompt(original, matches * 20, (ref,) * 16)

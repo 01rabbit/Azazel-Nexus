@@ -1,0 +1,89 @@
+{
+  "schema": "azazel-nexus/reasoning-playbook/1",
+  "library_id": "fixture-baseline",
+  "layer": "baseline",
+  "version": "1.0.0",
+  "disable": [],
+  "entries": [
+    {
+      "id": "auth-password-spraying",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "パスワードスプレー",
+        "en": "Password spraying"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "多数のアカウント",
+            "スプレー"
+          ],
+          "en": [
+            "spray",
+            "many accounts"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.003"
+        ],
+        "context_kinds": [
+          "auth_log"
+        ],
+        "min_score": 2
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "多数のアカウントへの認証試行の可能性があります。"
+          ],
+          "en": [
+            "Repeated authentication attempts may span many accounts."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "対象アカウントと送信元ごとの回数を確認してください。"
+          ],
+          "en": [
+            "Compare counts per target account and source."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者が認証情報の保護と証拠の保全を判断してください。"
+          ],
+          "en": [
+            "An operator should consider protecting credentials and preserving evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された認証試験の可能性があります。"
+          ],
+          "en": [
+            "An approved authentication test may explain the activity."
+          ]
+        },
+        "missing": {
+          "ja": [
+            "時間帯、送信元、対象アカウント、成功した認証を確認してください。"
+          ],
+          "en": [
+            "Request the time window, sources, target accounts and successful logins."
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -147,12 +147,25 @@ def request_event(frame: Mapping) -> dict:
     }
 
 
-def build_prompt(frame: Mapping) -> tuple[tuple[str, str], ...]:
+def build_prompt(frame: Mapping, playbooks=(), knowledge=()) -> tuple[tuple[str, str], ...]:
     checked = read_frame(frame)
     for item in checked['context']:
         if _INJECTION.search(item['text']):
             item['text'] = _OMITTED
-    return (('system', _SYSTEM), ('user', json.dumps(checked, ensure_ascii=False)))
+    messages = [('system', _SYSTEM)]
+    references = []
+    for entry in playbooks:
+        references.append(entry.title + '\n' + '\n'.join(
+            name + ': ' + ' / '.join(entry.guidance[name])
+            for name in ('interpretation', 'checks', 'first_response', 'missing')))
+    for ref in knowledge:
+        references.append(f'{ref.technique_id} {ref.name} [{ref.claim_id}]')
+    if references:
+        # Cap includes the label. Stable ordering comes from the matcher/lookup.
+        reference = 'reference\n' + '\n'.join(references)
+        messages.append(('system', reference[:1200]))
+    messages.append(('user', json.dumps(checked, ensure_ascii=False)))
+    return tuple(messages)
 
 
 def read_local_advisory(text: str, frame: Mapping | None = None) -> Advisory:

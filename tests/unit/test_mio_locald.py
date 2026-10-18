@@ -539,3 +539,93 @@ def test_the_state_list_covers_a_crash_and_a_rollback():
 
     assert {"crashed", "rolled_back"} <= set(LOCAL_RUNTIME_STATES)
     assert len(LOCAL_RUNTIME_STATES) == len(set(LOCAL_RUNTIME_STATES))
+
+
+@pytest.mark.parametrize('lookup_state', ['available', 'failed', 'timeout'])
+def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state):
+    import json
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import FIELD_NAMES
+    from azazel_nexus.reasoning_playbook import read_library
+
+    library = read_library((REPO_ROOT / 'tests/fixtures/reasoning-playbook.json').read_bytes())
+    frame = {'request_id': 'reference-fixture', 'privacy_class': 'P2-mission',
+             'question': 'Password spray T1110.003',
+             'context': [{'kind': 'auth_log', 'text': 'many accounts'}]}
+    text = json.dumps({'advice': 'Review authentication activity.', 'fields': {
+        key: 'Review authentication activity.' if key != 'cited_facts' else 'T1110.003'
+        for key in FIELD_NAMES}})
+    calls = []
+    def infer(request, *, deadline_s):
+        calls.append(request)
+        return SimpleNamespace(text=text)
+
+    lookups = []
+    def lookup(ids):
+        lookups.append(ids)
+        if lookup_state == 'failed':
+            raise ValueError('SECRET_DIAGNOSTIC')
+        if lookup_state == 'timeout':
+            raise TimeoutError('SECRET_DIAGNOSTIC')
+        return (SimpleNamespace(technique_id='T1110.003', name='Spraying', summary='Context',
+                                claim_id='claim-fixture', bundle_digest='sha256:' + '0' * 64,
+                                freshness='static'),)
+
+    (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    service = mio_locald.LocalRuntimeService(
+        staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
+        runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
+        playbooks=library, knowledge_lookup=lookup)
+    request = SimpleNamespace(verb=mio_locald.INFER_VERB, payload=frame,
+                              arguments={'deadline_ms': 1000})
+    events = []
+    reply = service.handle(request, audit=events.append)
+    assert reply['outcome'] == 'advisory'
+    assert reply['playbook']['ids'] == ['auth-password-spraying']
+    assert reply['playbook']['status'] == ['template']
+    assert reply['playbook']['first_response'] == list(library.entries[0].guidance['first_response']['en'])
+    assert reply['playbook']['references'] == [dict(ref) for ref in library.entries[0].references]
+    assert lookups == [('T1110.003',)]
+    assert len(calls[0].prompt_messages) == 3
+    if lookup_state == 'available':
+        assert reply['knowledge'] == {'claim_ids': ['claim-fixture']}
+    else:
+        assert 'knowledge' not in reply
+        assert any(event.get('knowledge') == 'unavailable' for event in events)
+    rendered = json.dumps(events)
+    for secret in ('SECRET_DIAGNOSTIC', 'many accounts', 'Password spraying', 'preserving evidence'):
+        assert secret not in rendered
+
+    # A model cannot supply metadata through the unchanged response schema.
+    document = json.loads(text)
+    document['playbook'] = {'ids': ['model-forged-entry']}
+    text = json.dumps(document)
+    forged = service.handle(request)
+    assert forged['outcome'] == 'not_advice'
+    assert 'playbook' not in forged
+
+    # Gates short-circuit references and preserve the original reply shape.
+    frame.update(question='How do I bake bread?', context=[])
+    gated = service.handle(request)
+    assert gated['reason'] == 'out_of_scope'
+    assert 'playbook' not in gated and len(lookups) == 2 and len(calls) == 2
+
+
+def test_accepted_reply_without_references_has_null_playbook(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import FIELD_NAMES
+
+    (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    text = json.dumps({'advice': 'Review the logs.', 'fields': {
+        key: 'Review the logs.' if key != 'cited_facts' else 'host-1' for key in FIELD_NAMES}})
+    service = mio_locald.LocalRuntimeService(
+        staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
+        runtime_id='fixture', runtime=lambda _: object(),
+        server=SimpleNamespace(infer=lambda *a, **kw: SimpleNamespace(text=text)))
+    request = SimpleNamespace(verb=mio_locald.INFER_VERB, arguments={'deadline_ms': 1000},
+                              payload={'request_id': 'fixture', 'privacy_class': 'P2-mission',
+                                       'question': 'SSH host-1', 'context': []})
+    assert service.handle(request)['playbook'] is None

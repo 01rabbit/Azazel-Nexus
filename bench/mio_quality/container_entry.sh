@@ -13,4 +13,4 @@ binary=/usr/libexec/azazel/llama-server
 # No installation or network access: stdlib + repository packages only.
 exec python3 -m bench.mio_quality.runner \
   --binary "$binary" --model "/models/$QUALITY_MODEL" \
-  --output /out/quality.json --summary /out/summary.md
+  --output /out/quality.json --summary /out/summary.md "$@"

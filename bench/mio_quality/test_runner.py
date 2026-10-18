@@ -168,3 +168,31 @@ def test_invalid_eval_labels_rejected(tmp_path):
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match='labels'):
         load_cases(path)
+
+
+def test_playbook_coverage_and_fixture_prompt(tmp_path):
+    from pathlib import Path
+
+    from azazel_nexus.reasoning_playbook import read_library
+
+    from .runner import load_knowledge_fixture
+
+    path = Path(__file__).parents[2] / 'tests/fixtures/reasoning-playbook.json'
+    library = read_library(path.read_bytes())
+    ref = {'technique_id': 'T1110.003', 'name': 'Spraying', 'summary': 'Context',
+           'claim_id': 'fixture-claim', 'bundle_digest': 'sha256:' + '0' * 64,
+           'freshness': 'static'}
+    fixture = tmp_path / 'knowledge.json'
+    fixture.write_text(json.dumps([ref]))
+    contract = LocalContract(library, load_knowledge_fixture(fixture))
+    cases = load_cases(EVAL_SET)[:1]
+    cases[0]['frame'].update(question='Password spray T1110.003',
+                              context=[{'kind': 'auth_log', 'text': 'many accounts'}])
+    server = FakeServer()
+    result = evaluate(server, cases, contract=contract)
+    assert result['rows'][0]['playbook_ids'] == ['auth-password-spraying']
+    assert 'プレイブック一致率: 1/1 (100.0%)' in summarize(result)
+    assert 'fixture-claim' in server.calls[0].prompt_messages[1][1]
+    fixture.write_text(json.dumps([dict(ref, technique_id='invalid')]))
+    with pytest.raises(ValueError, match='invalid knowledge fixture'):
+        load_knowledge_fixture(fixture)
