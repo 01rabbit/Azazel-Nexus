@@ -1,0 +1,6245 @@
+{
+  "schema": "azazel-nexus/reasoning-playbook/1",
+  "library_id": "azazel-baseline",
+  "layer": "baseline",
+  "version": "1.0.0",
+  "disable": [],
+  "entries": [
+    {
+      "id": "auth-ssh-brute-force",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "SSH認証の総当たり",
+        "en": "SSH password guessing"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "SSH総当たり",
+            "Failed password",
+            "SSH認証失敗",
+            "SSHログイン失敗",
+            "SSHブルートフォース"
+          ],
+          "en": [
+            "SSH brute force",
+            "Failed password",
+            "sshd authentication failure",
+            "failed SSH logins",
+            "SSH login failures",
+            "SSH password attack"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "同じSSH接続元から認証失敗が集中する場合はパスワード推測を疑う。"
+          ],
+          "en": [
+            "Concentrated SSH failures may indicate password guessing against remote access."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に接続元別の失敗数、対象ユーザー、失敗後の成功と鍵認証の有無を確認する。",
+            "2. 古いパスワードを使う監視処理や管理者の入力ミスという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare failures by source and user, later successes, and password versus key authentication.",
+            "2. Verify the explanation of a monitor with an old password or repeated administrator typing errors with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は成功した不審セッションの制限と対象資格情報の更新を検討し、認証記録を保全する。"
+          ],
+          "en": [
+            "An operator should preserve authentication records and consider restricting suspicious sessions and rotating affected credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "古いパスワードを使う監視処理や管理者の入力ミス"
+          ],
+          "en": [
+            "A monitor with an old password or repeated administrator typing errors"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象時刻の範囲、接続元IP、SSHサーバー名、ユーザー別の失敗数と成功記録を確認する。"
+          ],
+          "en": [
+            "Request time window, source IPs, SSH server, per-user failure counts, and successful login records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-rdp-brute-force",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "RDP認証の総当たり",
+        "en": "RDP password guessing"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "RDP総当たり",
+            "RDP認証失敗",
+            "4625",
+            "RDP"
+          ],
+          "en": [
+            "RDP brute force",
+            "RDP authentication failure",
+            "4625",
+            "RDP"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.001"
+        ],
+        "context_kinds": [],
+        "min_score": 2
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "RDPへの失敗集中は推測攻撃の候補だが、4625だけでは接続方式も侵害も確定しない。"
+          ],
+          "en": [
+            "Repeated RDP failures may be guessing, but event 4625 alone establishes neither RDP use nor compromise."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に4625のログオン種類と送信元をRDP記録に照合し、後続の4624とセッション作成を確認する。",
+            "2. 保存済みの古い資格情報による再接続という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate 4625 logon types and sources with RDP records, then check later 4624 events and session creation.",
+            "2. Verify the explanation of reconnections using stale saved credentials with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は不審なRDPセッションの制限を検討し、認証成功があれば端末調査へ引き継ぐ。"
+          ],
+          "en": [
+            "An operator should consider restricting suspect RDP sessions and escalate successful unauthorized access for host investigation."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "保存済みの古い資格情報による再接続"
+          ],
+          "en": [
+            "Reconnections using stale saved credentials"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象端末、接続元、時刻範囲、失敗理由、ログオン種類、成功セッションの記録を確認する。"
+          ],
+          "en": [
+            "Request target hosts, sources, time window, failure reasons, logon types, and successful session records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-password-spraying",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "パスワードスプレー",
+        "en": "Password spraying"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.003"
+        },
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-ANET"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "パスワードスプレー",
+            "多数のアカウント",
+            "少数回の失敗"
+          ],
+          "en": [
+            "password spraying",
+            "many accounts",
+            "few attempts per account"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "多数のアカウントに少数回ずつ失敗する分布はスプレー攻撃と整合する。"
+          ],
+          "en": [
+            "Few failures across many accounts can fit password spraying even when each account stays below a threshold."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に同じ時間帯の接続元、対象アカウント数、各失敗回数と後続の成功を並べる。",
+            "2. 一括移行後の認証設定不整合という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare sources, distinct accounts, attempts per account, and later successes within the same time window.",
+            "2. Verify the explanation of authentication configuration drift after an account migration with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は影響アカウントのセッション確認と侵害資格情報の更新を検討し、認証担当へ連携する。"
+          ],
+          "en": [
+            "An operator should review affected sessions, consider rotating compromised credentials, and involve the identity team."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "一括移行後の認証設定不整合"
+          ],
+          "en": [
+            "Authentication configuration drift after an account migration"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "失敗の集計期間、送信元IP、対象アカウント一覧、各回数、成功とMFA結果を確認する。"
+          ],
+          "en": [
+            "Request aggregation window, source IPs, targeted accounts, per-account counts, successes, and MFA outcomes."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-credential-stuffing",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "漏えい資格情報の使い回し",
+        "en": "Credential stuffing"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.004"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "クレデンシャルスタッフィング",
+            "漏えい資格情報",
+            "使い回し攻撃"
+          ],
+          "en": [
+            "credential stuffing",
+            "leaked credentials",
+            "reused password attack"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.004"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "漏えいした組み合わせを試す攻撃では、多様な接続元から一部の認証が成功することがある。"
+          ],
+          "en": [
+            "Testing leaked credential pairs can produce scattered successes across many sources."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に失敗と成功のアカウント重複、接続元の分散、端末の新規性と認証後の操作を確認する。",
+            "2. 正規利用者が新しい端末で古いパスワードを試した状況という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare accounts in failures and successes, source diversity, unfamiliar devices, and post-login activity.",
+            "2. Verify the explanation of users trying old passwords on new devices with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は不正利用が疑われるセッションの失効と資格情報の更新を検討し、本人に別経路で確認する。"
+          ],
+          "en": [
+            "An operator should verify with account owners independently and consider revoking suspect sessions and rotating credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規利用者が新しい端末で古いパスワードを試した状況"
+          ],
+          "en": [
+            "Users trying old passwords on new devices"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象サービス、時刻範囲、成功率、接続元と端末分布、認証後のアクセス先を確認する。"
+          ],
+          "en": [
+            "Request service, time window, success rate, source and device distribution, and post-login resource access."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-mfa-fatigue",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "MFA通知の連打",
+        "en": "MFA push fatigue"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1621"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "MFA疲労",
+            "プッシュ爆撃",
+            "MFA通知連打"
+          ],
+          "en": [
+            "MFA fatigue",
+            "push bombing",
+            "repeated MFA prompts"
+          ]
+        },
+        "attack_techniques": [
+          "T1621"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "本人が開始していない承認通知の反復は、誤承認を狙う可能性がある。"
+          ],
+          "en": [
+            "Repeated unsolicited approval prompts may be intended to obtain an accidental MFA approval."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に通知の要求元、回数、本人の操作有無、承認後のトークン発行と接続先を確認する。",
+            "2. 認証アプリの再試行や端末移行中の重複要求という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First check prompt origins, counts, user initiation, and token issuance and resource access following any approval.",
+            "2. Verify the explanation of authentication retries or duplicate requests during device migration with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は本人に承認しないよう案内し、関連セッションの失効と資格情報更新を検討する。"
+          ],
+          "en": [
+            "An operator should advise the user to deny unsolicited prompts and consider revoking related sessions and rotating credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "認証アプリの再試行や端末移行中の重複要求"
+          ],
+          "en": [
+            "Authentication retries or duplicate requests during device migration"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "通知時刻一覧、対象アカウント、要求元IP、承認結果、認証基盤の記録を確認する。"
+          ],
+          "en": [
+            "Request prompt timestamps, account, requesting IPs, approval outcomes, and identity provider records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-impossible-travel",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "移動困難な位置間のログイン",
+        "en": "Impossible travel or anomalous location"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1078"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "不可能な移動",
+            "異常なログイン場所",
+            "海外からログイン"
+          ],
+          "en": [
+            "impossible travel",
+            "anomalous login location",
+            "unusual country login"
+          ]
+        },
+        "attack_techniques": [
+          "T1078"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "短時間の遠隔地ログインは資格情報悪用の候補だが、IPの位置情報だけでは確定しない。"
+          ],
+          "en": [
+            "Distant logins in a short interval can indicate account misuse, but IP geolocation alone is insufficient."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に両セッションの時刻、端末、MFAとIP所有者を比較し、VPN出口か本人に確認する。",
+            "2. 会社VPNや携帯回線の出口変更という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare timestamps, devices, MFA, and IP ownership for both sessions and verify any VPN egress with the user.",
+            "2. Verify the explanation of corporate VPN egress or mobile network routing changes with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は本人が否認するセッションの失効と資格情報更新を検討し、操作履歴を保全する。"
+          ],
+          "en": [
+            "An operator should preserve activity history and consider revoking denied sessions and rotating affected credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "会社VPNや携帯回線の出口変更"
+          ],
+          "en": [
+            "Corporate VPN egress or mobile network routing changes"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "両地点の時刻とタイムゾーン、IP、端末ID、VPN利用記録、本人確認結果を確認する。"
+          ],
+          "en": [
+            "Request both timestamps and time zones, IPs, device IDs, VPN records, and user verification results."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-off-hours-account",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "時間外の正規アカウント利用",
+        "en": "Off-hours valid-account misuse"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1078"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "時間外ログイン",
+            "深夜の特権ログイン",
+            "業務時間外の認証"
+          ],
+          "en": [
+            "off-hours login",
+            "after-hours privileged login",
+            "unusual overnight authentication"
+          ]
+        },
+        "attack_techniques": [
+          "T1078"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "正しい資格情報による時間外アクセスでも、本人の予定と操作内容が合わなければ悪用を疑う。"
+          ],
+          "en": [
+            "Successful off-hours access warrants review when the user's schedule and subsequent actions do not fit."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に本人の勤務予定、接続元、利用端末、権限と認証後の変更を確認する。",
+            "2. 夜間保守や時差のある拠点での勤務という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare the user's schedule, source, device, privileges, and changes made after authentication.",
+            "2. Verify the explanation of approved overnight maintenance or work in another time zone with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は本人と当番責任者に確認し、不正利用が疑われるセッションの制限と証跡保全を検討する。"
+          ],
+          "en": [
+            "An operator should verify with the owner and duty lead and consider restricting suspect sessions while preserving evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "夜間保守や時差のある拠点での勤務"
+          ],
+          "en": [
+            "Approved overnight maintenance or work in another time zone"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象アカウント、時刻とタイムゾーン、接続元、承認記録、認証後の操作一覧を確認する。"
+          ],
+          "en": [
+            "Request account, timestamp and time zone, source, approvals, and post-login actions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-new-privileged-account",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "新規特権アカウント",
+        "en": "New privileged account"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1136"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1098"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "特権アカウント作成",
+            "管理者追加",
+            "4720",
+            "4728"
+          ],
+          "en": [
+            "new privileged account",
+            "administrator added",
+            "4720",
+            "4728"
+          ]
+        },
+        "attack_techniques": [
+          "T1136",
+          "T1098"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "新規アカウントへの強い権限付与は、承認された管理作業かアクセス維持の試みかを確認する。"
+          ],
+          "en": [
+            "Creation of a privileged account may be approved provisioning or an attempt to retain access."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に作成者、権限付与者、追加グループと作成直後のログインを申請に照合する。",
+            "2. 承認済みの運用担当追加やアカウント移行という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare the creator, privilege grantor, added groups, and immediate logins against the provisioning request.",
+            "2. Verify the explanation of approved administrator onboarding or account migration with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は証跡を保全し、未承認なら権限の一時制限と関連アカウント調査を検討する。"
+          ],
+          "en": [
+            "An operator should preserve records and consider temporarily restricting unapproved privileges and reviewing related accounts."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認済みの運用担当追加やアカウント移行"
+          ],
+          "en": [
+            "Approved administrator onboarding or account migration"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "アカウントID、作成と権限変更時刻、実行者、所属グループ、申請番号を確認する。"
+          ],
+          "en": [
+            "Request account ID, creation and privilege-change times, actors, group memberships, and request reference."
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-service-account-anomaly",
+      "status": "template",
+      "category": "authentication",
+      "title": {
+        "ja": "サービスアカウントの異常利用",
+        "en": "Service-account anomaly"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1078"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "サービスアカウントの対話ログイン",
+            "サービスアカウント異常",
+            "service account interactive"
+          ],
+          "en": [
+            "service account interactive",
+            "service account anomaly",
+            "service identity unusual login"
+          ]
+        },
+        "attack_techniques": [
+          "T1078"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "処理専用アカウントの対話ログインや新規ホスト利用は、想定用途を外れる可能性がある。"
+          ],
+          "en": [
+            "Interactive use or new hosts for a service identity may indicate activity outside its intended role."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に通常の実行ホストとジョブ時刻を比較し、ログオン種類とアクセス対象を確認する。",
+            "2. ジョブ移行や保守中の一時的な実行ホスト変更という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare usual execution hosts and job schedules, then inspect logon type and accessed resources.",
+            "2. Verify the explanation of job migration or temporary host changes during maintenance with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は依存ジョブへの影響を確認して疑わしい利用を制限し、秘密情報の更新を検討する。"
+          ],
+          "en": [
+            "An operator should assess dependent jobs before restricting suspect use and consider rotating the service secret."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "ジョブ移行や保守中の一時的な実行ホスト変更"
+          ],
+          "en": [
+            "Job migration or temporary host changes during maintenance"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "アカウント用途、通常ホスト、ジョブ予定、今回の接続元、ログオン種類と操作を確認する。"
+          ],
+          "en": [
+            "Request account purpose, usual hosts, job schedule, current source, logon type, and actions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-recon-port-scan",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "ポート走査と探索",
+        "en": "Port scanning and reconnaissance"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1046"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ポートスキャン",
+            "ポート走査",
+            "多数のポート",
+            "SYNスキャン",
+            "ネットワーク探索"
+          ],
+          "en": [
+            "port scan",
+            "port sweep",
+            "many destination ports",
+            "SYN scan",
+            "scanned TCP ports",
+            "reconnaissance"
+          ]
+        },
+        "attack_techniques": [
+          "T1046"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "多くの宛先やポートへの短い接続はサービス探索と整合し、即座に侵害成功を意味しない。"
+          ],
+          "en": [
+            "Short connections across many hosts or ports fit service discovery and do not establish a successful intrusion."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に送信元、宛先数、ポート分布、成功接続と後続の認証や転送を確認する。",
+            "2. 承認された資産棚卸しや脆弱性診断という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First review source, destination count, port distribution, successful connections, and later authentication or transfers.",
+            "2. Verify the explanation of approved asset inventory or vulnerability assessment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は未承認の探索元の通信制限を検討し、内部端末なら端末担当へ調査を依頼する。"
+          ],
+          "en": [
+            "An operator should consider restricting an unapproved scanning source and refer internal sources for host investigation."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された資産棚卸しや脆弱性診断"
+          ],
+          "en": [
+            "Approved asset inventory or vulnerability assessment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "観測期間、送信元IP、宛先とポート一覧、接続成功率、診断の承認記録を確認する。"
+          ],
+          "en": [
+            "Request observation window, source IP, destinations and ports, connection success rate, and scan approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-c2-beacon",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "周期的な外向き通信",
+        "en": "Possible C2 beaconing"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1071.001"
+        },
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-NTA"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "C2ビーコン",
+            "周期的な外向き通信",
+            "一定間隔の通信"
+          ],
+          "en": [
+            "C2 beacon",
+            "periodic outbound connection",
+            "regular beacon interval"
+          ]
+        },
+        "attack_techniques": [
+          "T1071.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "小さな外向き通信の反復は遠隔制御の候補だが、周期性だけで悪性とは決められない。"
+          ],
+          "en": [
+            "Repeated small outbound exchanges may be command-and-control, but regular timing alone is not conclusive."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に周期の揺れ、送受信量、宛先の継続性と通信プロセスの親子関係を確認する。",
+            "2. 監視エージェントの定期通知や更新確認という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect interval variation, byte counts, destination persistence, and the network process's parent chain.",
+            "2. Verify the explanation of monitoring-agent heartbeats or scheduled update checks with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は業務影響を確認して疑わしい端末の隔離を検討し、通信とプロセス記録を保全する。"
+          ],
+          "en": [
+            "An operator should assess business impact, consider isolating the suspect host, and preserve network and process records."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "監視エージェントの定期通知や更新確認"
+          ],
+          "en": [
+            "Monitoring-agent heartbeats or scheduled update checks"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "通信時刻列、宛先、送受信量、プロセス名と署名、通常時の周期を確認する。"
+          ],
+          "en": [
+            "Request connection timestamps, destinations, byte counts, process identity and signature, and normal intervals."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-dns-tunneling",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "DNSトンネルの疑い",
+        "en": "Possible DNS tunneling"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1071.004"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "DNSトンネリング",
+            "DNSトンネル",
+            "長いサブドメイン"
+          ],
+          "en": [
+            "DNS tunneling",
+            "DNS tunnel",
+            "long subdomains"
+          ]
+        },
+        "attack_techniques": [
+          "T1071.004"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "長い可変サブドメインへの大量問い合わせはDNS経由の制御や転送の候補になる。"
+          ],
+          "en": [
+            "Many long changing subdomains may indicate control traffic or data transfer carried through DNS."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に問い合わせ長、種類、親ドメイン別回数、応答量と発生プロセスを確認する。",
+            "2. 正規の配信サービスやDNSによる計測という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare query lengths, record types, counts per parent domain, response sizes, and the originating process.",
+            "2. Verify the explanation of legitimate delivery services or DNS-based measurement with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は問い合わせ記録を保全し、未承認の転送なら送信端末や宛先の通信制限を検討する。"
+          ],
+          "en": [
+            "An operator should preserve DNS records and consider restricting the source host or destination if transfer is unauthorized."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規の配信サービスやDNSによる計測"
+          ],
+          "en": [
+            "Legitimate delivery services or DNS-based measurement"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "時間範囲、問い合わせ名と種類、応答コード、端末別件数、送受信量を確認する。"
+          ],
+          "en": [
+            "Request time window, query names and types, response codes, per-host counts, and byte totals."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-dga-domains",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "生成ドメインへの通信",
+        "en": "Possible DGA domains"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1568.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "DGAドメイン",
+            "ランダムなドメイン",
+            "NXDOMAIN"
+          ],
+          "en": [
+            "DGA domains",
+            "random-looking domains",
+            "NXDOMAIN"
+          ]
+        },
+        "attack_techniques": [
+          "T1568.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "多数の無作為に見える名前と名前解決失敗は生成型の通信先探索を疑う材料になる。"
+          ],
+          "en": [
+            "Many random-looking names with resolution failures can support a domain-generation hypothesis."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に端末別の失敗率、名前の反復規則、解決成功後の接続と発生プロセスを確認する。",
+            "2. 誤った検索サフィックスや配信サービスの一時名という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect per-host failure rates, naming patterns, connections after successful resolution, and originating processes.",
+            "2. Verify the explanation of incorrect search suffixes or temporary delivery-service names with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は関連端末の調査と必要な隔離を検討し、名前解決と通信の時系列を保全する。"
+          ],
+          "en": [
+            "An operator should preserve the DNS and connection timeline and consider investigation and isolation of affected hosts."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "誤った検索サフィックスや配信サービスの一時名"
+          ],
+          "en": [
+            "Incorrect search suffixes or temporary delivery-service names"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "問い合わせ一覧、成功と失敗の件数、時刻、送信端末、成功先への通信記録を確認する。"
+          ],
+          "en": [
+            "Request queries, success and failure counts, timestamps, source hosts, and connections to resolved destinations."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-outbound-volume",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "外向き転送量の増加",
+        "en": "Unusual outbound volume"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1041"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "外向き通信量急増",
+            "大量の外向き通信",
+            "送信量異常",
+            "大容量の外部送信",
+            "大量送信",
+            "外向き転送"
+          ],
+          "en": [
+            "unusual outbound volume",
+            "outbound traffic spike",
+            "large outbound transfer",
+            "large external transfer",
+            "high egress volume"
+          ]
+        },
+        "attack_techniques": [
+          "T1041"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "外向き転送の増加は情報流出の候補だが、宛先と内容の機密性を確認する必要がある。"
+          ],
+          "en": [
+            "A large outbound transfer may be exfiltration, depending on its destination and the sensitivity of the data."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に平常量との差、宛先所有者、転送プロセスと直前に読まれたファイルを確認する。",
+            "2. 承認されたバックアップや大きな成果物の配信という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare normal volume, destination ownership, transfer process, and files read immediately beforehand.",
+            "2. Verify the explanation of approved backups or distribution of large build artifacts with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は転送記録を保全し、未承認の機密転送が疑われる場合は転送制限と情報管理担当への連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve transfer records and consider limiting suspected unauthorized transfers and involving the data owner."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたバックアップや大きな成果物の配信"
+          ],
+          "en": [
+            "Approved backups or distribution of large build artifacts"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "集計期間、通常量と今回量、宛先、プロセス、対象データ分類、転送の承認を確認する。"
+          ],
+          "en": [
+            "Request aggregation window, normal and observed bytes, destinations, process, data classification, and transfer approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-tor-anonymizer",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "匿名化経路の利用",
+        "en": "Tor or anonymizer use"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1090.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "Tor通信",
+            "匿名プロキシ",
+            "匿名化サービス"
+          ],
+          "en": [
+            "Tor traffic",
+            "anonymizing proxy",
+            "anonymizer use"
+          ]
+        },
+        "attack_techniques": [
+          "T1090.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "匿名化経路は接続元や宛先を隠せるが、利用だけで攻撃者とは判断できない。"
+          ],
+          "en": [
+            "An anonymizing route can obscure traffic attribution, but use alone does not establish malicious intent."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に検知根拠の鮮度、利用プロセス、ユーザーと接続先を調べ、許可された用途に照合する。",
+            "2. 承認された調査業務やプライバシー保護の検証という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First check indicator freshness, the process, user, and destination against approved uses.",
+            "2. Verify the explanation of approved research or privacy testing with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は利用目的を確認し、不正な遠隔制御や転送が疑われる場合に経路制限と端末調査を検討する。"
+          ],
+          "en": [
+            "An operator should verify purpose and consider route restrictions and host review when control or unauthorized transfer is suspected."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された調査業務やプライバシー保護の検証"
+          ],
+          "en": [
+            "Approved research or privacy testing"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "検知時刻、匿名化判定の根拠、接続元端末、プロセス、利用者と目的を確認する。"
+          ],
+          "en": [
+            "Request detection time, basis for anonymizer attribution, source host, process, user, and purpose."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-lateral-smb",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "SMB管理共有による横展開",
+        "en": "SMB administrative-share lateral movement"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1021.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "SMB横展開",
+            "管理共有",
+            "ADMIN$",
+            "C$"
+          ],
+          "en": [
+            "SMB lateral movement",
+            "admin share",
+            "ADMIN$",
+            "C$"
+          ]
+        },
+        "attack_techniques": [
+          "T1021.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "端末間の管理共有アクセスと実行の連鎖は横展開を疑う材料で、設定不備だけでは説明できない場合がある。"
+          ],
+          "en": [
+            "Administrative-share access followed by execution can indicate lateral movement beyond a simple configuration issue."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に送信端末、利用アカウント、共有への書込、宛先のサービス作成や実行を時刻で結ぶ。",
+            "2. 承認されたソフトウェア配布やバックアップ処理という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate source host and account, share writes, and destination service creation or execution by timestamp.",
+            "2. Verify the explanation of approved software deployment or backup activity with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は送信端末の隔離と侵害アカウントの制限を検討し、宛先端末を含めて証跡を保全する。"
+          ],
+          "en": [
+            "An operator should consider isolating the source and restricting compromised accounts while preserving evidence on destination hosts."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたソフトウェア配布やバックアップ処理"
+          ],
+          "en": [
+            "Approved software deployment or backup activity"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "送信元と宛先、共有名、認証記録、転送ファイル、実行プロセス、保守申請を確認する。"
+          ],
+          "en": [
+            "Request source and destination hosts, share names, authentication, transferred files, execution processes, and maintenance approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-lateral-rdp",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "RDPによる横展開",
+        "en": "RDP lateral movement"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1021.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "RDP横展開",
+            "端末間RDP",
+            "複数端末へのRDP"
+          ],
+          "en": [
+            "RDP lateral movement",
+            "host-to-host RDP",
+            "RDP across multiple hosts"
+          ]
+        },
+        "attack_techniques": [
+          "T1021.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "侵害が疑われる端末から別端末へのRDP成功は、追加端末へのアクセス拡大を示す可能性がある。"
+          ],
+          "en": [
+            "Successful RDP from a suspect host may indicate expansion of access to other hosts."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に接続元端末、対象アカウント、セッション開始と宛先での操作を既知の管理経路に照合する。",
+            "2. 承認された踏み台経由の障害対応という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare source host, account, session start, and destination actions against known administrative routes.",
+            "2. Verify the explanation of approved troubleshooting through a jump host with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は不審セッションと送信端末の制限を検討し、踏み台と接続先双方の記録を保全する。"
+          ],
+          "en": [
+            "An operator should consider restricting suspicious sessions and the source host, preserving records from both ends."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された踏み台経由の障害対応"
+          ],
+          "en": [
+            "Approved troubleshooting through a jump host"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "接続時刻、送信元と宛先、ログオン種類、アカウント、接続先のプロセスと承認を確認する。"
+          ],
+          "en": [
+            "Request connection time, sources and destinations, logon types, account, destination processes, and approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-lateral-remote-exec",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "遠隔管理機能による実行",
+        "en": "WinRM or PsExec-style remote execution"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1021.006"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1569.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "WinRM横展開",
+            "PsExec",
+            "遠隔サービス作成",
+            "wsmprovhost"
+          ],
+          "en": [
+            "WinRM lateral movement",
+            "PsExec",
+            "remote service creation",
+            "wsmprovhost"
+          ]
+        },
+        "attack_techniques": [
+          "T1021.006",
+          "T1569.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "遠隔管理セッションと新規サービスやプロセスの組合せは、管理作業か横展開かを判別する必要がある。"
+          ],
+          "en": [
+            "Remote management with new services or processes requires distinguishing authorized administration from lateral movement."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に接続元、実行者、サービス登録、親プロセスと配布ファイルを管理申請に照合する。",
+            "2. 構成管理製品による正規の遠隔実行という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare source, actor, service registration, parent process, and transferred files with the maintenance request.",
+            "2. Verify the explanation of legitimate remote execution by configuration management with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は未承認の遠隔操作を制限する判断を行い、送信端末と宛先の実行記録を保全する。"
+          ],
+          "en": [
+            "An operator should decide whether to restrict unapproved remote activity and preserve execution records from both endpoints."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "構成管理製品による正規の遠隔実行"
+          ],
+          "en": [
+            "Legitimate remote execution by configuration management"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "送受信端末、実行時刻、利用アカウント、サービス名、親子プロセス、変更記録を確認する。"
+          ],
+          "en": [
+            "Request endpoints, execution times, account, service names, process ancestry, and change records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "network-lateral-ssh",
+      "status": "template",
+      "category": "network",
+      "title": {
+        "ja": "SSHによる横展開",
+        "en": "SSH lateral movement"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1021.004"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "SSH横展開",
+            "SSHの連鎖",
+            "内部端末からSSH"
+          ],
+          "en": [
+            "SSH lateral movement",
+            "chained SSH",
+            "internal host SSH pivot"
+          ]
+        },
+        "attack_techniques": [
+          "T1021.004"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "内部端末から新しい宛先へのSSH成功が連鎖すると、資格情報を利用した横展開を疑う。"
+          ],
+          "en": [
+            "Chained successful SSH access from internal hosts may indicate lateral movement using available credentials."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に接続の前後関係、認証方法、鍵の指紋、利用者と宛先の操作を比較する。",
+            "2. 承認された踏み台利用や自動デプロイという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare connection order, authentication method, key fingerprints, users, and destination activity.",
+            "2. Verify the explanation of approved jump-host access or automated deployment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は疑わしい送信端末の隔離と鍵やセッションの失効を検討し、接続先への波及を調べる。"
+          ],
+          "en": [
+            "An operator should consider isolating the source and revoking affected keys or sessions, then review downstream hosts."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された踏み台利用や自動デプロイ"
+          ],
+          "en": [
+            "Approved jump-host access or automated deployment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "接続元と宛先、時刻、アカウント、鍵の指紋、認証方式、宛先の操作記録を確認する。"
+          ],
+          "en": [
+            "Request sources and destinations, times, accounts, key fingerprints, authentication methods, and destination actions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-privilege-escalation",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "権限昇格の疑い",
+        "en": "Possible privilege escalation"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1068"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "権限昇格",
+            "低権限から管理者",
+            "SYSTEM権限獲得"
+          ],
+          "en": [
+            "privilege escalation",
+            "low privilege to administrator",
+            "unexpected SYSTEM token"
+          ]
+        },
+        "attack_techniques": [
+          "T1068"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "低い権限の処理が予期せず管理者権限を得た場合、脆弱性悪用や権限設定の問題を疑う。"
+          ],
+          "en": [
+            "An unexpected transition from low privilege to administrator can indicate exploitation or unsafe privilege configuration."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に昇格前後の実行主体、親子プロセス、昇格手段と対象ソフトウェアの版を確認する。",
+            "2. 承認されたインストーラーや管理者による昇格という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare identities before and after elevation, process ancestry, the elevation mechanism, and software versions.",
+            "2. Verify the explanation of approved installers or administrator-approved elevation with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は対象端末の隔離と昇格済みセッションの制限を検討し、揮発性の実行証跡を保全する。"
+          ],
+          "en": [
+            "An operator should preserve volatile execution evidence and consider isolating the host and restricting elevated sessions."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたインストーラーや管理者による昇格"
+          ],
+          "en": [
+            "Approved installers or administrator-approved elevation"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "発生時刻、端末、実行主体、親子プロセス、権限の変化、対象製品の版を確認する。"
+          ],
+          "en": [
+            "Request time, host, identities, process ancestry, privilege transitions, and affected product versions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-pass-the-hash",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "ハッシュを使った認証の疑い",
+        "en": "Possible pass-the-hash"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1550.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "パスザハッシュ",
+            "Pass-the-Hash",
+            "NTLM横展開"
+          ],
+          "en": [
+            "pass-the-hash",
+            "NTLM lateral movement",
+            "hash-based authentication"
+          ]
+        },
+        "attack_techniques": [
+          "T1550.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "ハッシュによる認証悪用は、パスワード入力を伴わず別端末へアクセスを広げる可能性がある。"
+          ],
+          "en": [
+            "Misuse of password hashes can extend access to other hosts without an interactive password entry."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にNTLM認証の送受信端末、ログオン種類、特権利用と直前の資格情報アクセスを確認する。",
+            "2. 既存の管理製品が行う承認済みNTLM認証という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate NTLM endpoints, logon types, privilege use, and preceding credential-access activity.",
+            "2. Verify the explanation of approved NTLM authentication by legacy management software with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は送信端末の隔離と影響資格情報の更新を検討し、宛先端末の利用履歴を保全する。"
+          ],
+          "en": [
+            "An operator should consider isolating the source and rotating affected credentials while preserving destination activity records."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "既存の管理製品が行う承認済みNTLM認証"
+          ],
+          "en": [
+            "Approved NTLM authentication by legacy management software"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "認証時刻、送信元と宛先、アカウント、認証方式、ログオン種類、資格情報アクセス記録を確認する。"
+          ],
+          "en": [
+            "Request times, endpoints, account, authentication method, logon type, and credential-access records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-pass-the-ticket",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "チケットを使った認証の疑い",
+        "en": "Possible pass-the-ticket"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1550.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "パスザチケット",
+            "Pass-the-Ticket",
+            "盗用チケット"
+          ],
+          "en": [
+            "pass-the-ticket",
+            "stolen Kerberos ticket",
+            "ticket reuse anomaly"
+          ]
+        },
+        "attack_techniques": [
+          "T1550.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "チケット再利用の異常は資格情報窃取と整合するが、単一のサービス認証だけでは判断できない。"
+          ],
+          "en": [
+            "Unusual ticket reuse can fit credential theft, but one service authentication is not enough to establish it."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にチケット発行時刻、利用端末、対象サービスと認証基盤側の対応する発行記録を比較する。",
+            "2. チケット更新や端末移行に伴う正規の再利用という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare ticket issuance times, client hosts, target services, and corresponding identity-server issuance records.",
+            "2. Verify the explanation of normal ticket renewal or reuse during host migration with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は影響セッションの失効と資格情報更新の範囲を認証担当と検討し、チケット関連証跡を保全する。"
+          ],
+          "en": [
+            "An operator should preserve ticket evidence and discuss session revocation and credential rotation scope with the identity team."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "チケット更新や端末移行に伴う正規の再利用"
+          ],
+          "en": [
+            "Normal ticket renewal or reuse during host migration"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象アカウント、端末、発行と使用時刻、チケット種別、サービス名、認証基盤記録を確認する。"
+          ],
+          "en": [
+            "Request account, hosts, issuance and use times, ticket type, service names, and identity-server records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-lsass-dumping",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "LSASS資格情報ダンプ",
+        "en": "LSASS credential dumping"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1003.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "LSASSダンプ",
+            "資格情報ダンプ",
+            "lsass memory"
+          ],
+          "en": [
+            "LSASS dump",
+            "credential dumping",
+            "lsass memory access"
+          ]
+        },
+        "attack_techniques": [
+          "T1003.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "認証プロセスへの不審なメモリアクセスやダンプ生成は、資格情報窃取の可能性がある。"
+          ],
+          "en": [
+            "Suspicious access to authentication-process memory or dump creation can expose credentials."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にLSASSへアクセスしたプロセス、署名、アクセス権、ダンプ生成先と後続認証を確認する。",
+            "2. 承認された障害解析や保護製品による検査という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect the process accessing LSASS, its signature and access rights, dump destination, and later authentication.",
+            "2. Verify the explanation of approved crash analysis or inspection by security software with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は端末隔離と露出した可能性のある資格情報の更新を検討し、ダンプを機密証跡として保全する。"
+          ],
+          "en": [
+            "An operator should consider isolation and rotation of potentially exposed credentials, treating dumps as sensitive evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された障害解析や保護製品による検査"
+          ],
+          "en": [
+            "Approved crash analysis or inspection by security software"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、時刻、アクセス元プロセスと署名、権限、生成ファイル、同端末のログオン履歴を確認する。"
+          ],
+          "en": [
+            "Request host, time, accessing process and signature, rights, output files, and host logon history."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-encoded-powershell",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "符号化PowerShellの実行",
+        "en": "Encoded PowerShell execution"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1059.001"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1027"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "符号化PowerShell",
+            "EncodedCommand",
+            "4688",
+            "PowerShell"
+          ],
+          "en": [
+            "encoded PowerShell",
+            "EncodedCommand",
+            "4688",
+            "PowerShell"
+          ]
+        },
+        "attack_techniques": [
+          "T1059.001",
+          "T1027"
+        ],
+        "context_kinds": [],
+        "min_score": 2
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "符号化されたスクリプトは内容を隠せるが、符号化やプロセス作成記録だけで悪性とは限らない。"
+          ],
+          "en": [
+            "Encoded scripts can hide intent, but encoding or a process-creation event alone does not prove malicious behavior."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に親プロセス、実行者、復号済みの内容を実行せず確認し、通信とファイル変更に照合する。",
+            "2. 管理製品が引数の文字化けを避けるために使う符号化という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect parent process, actor, and decoded content without executing it, then correlate network and file changes.",
+            "2. Verify the explanation of encoding used by management software to avoid argument character issues with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は疑わしい端末の隔離を検討し、実行内容と親子プロセスの証跡を保全する。"
+          ],
+          "en": [
+            "An operator should consider isolating the suspect host and preserve script content and process ancestry."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "管理製品が引数の文字化けを避けるために使う符号化"
+          ],
+          "en": [
+            "Encoding used by management software to avoid argument character issues"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "実行時刻、端末、親子プロセス、スクリプト記録、実行者、通信先と変更ファイルを確認する。"
+          ],
+          "en": [
+            "Request time, host, process ancestry, script records, actor, destinations, and changed files."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-lolbin-abuse",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "正規バイナリの悪用",
+        "en": "LOLBIN abuse"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1218"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "LOLBIN悪用",
+            "正規バイナリ悪用",
+            "rundll32",
+            "regsvr32",
+            "mshta"
+          ],
+          "en": [
+            "LOLBIN abuse",
+            "signed binary proxy execution",
+            "rundll32",
+            "regsvr32",
+            "mshta"
+          ]
+        },
+        "attack_techniques": [
+          "T1218"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "署名付きの正規ツールでも、読み込む内容や親プロセスが不審なら実行経路の悪用を疑う。"
+          ],
+          "en": [
+            "A signed utility can be abused when its loaded content or parent process is inconsistent with its normal role."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に親プロセス、読み込まれたファイルの場所と署名、子プロセス、外向き通信を確認する。",
+            "2. 署名済み部品の正規インストールや登録処理という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect parent process, loaded file locations and signatures, child processes, and outbound connections.",
+            "2. Verify the explanation of legitimate installation or registration of signed components with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は対象端末の隔離と不審ファイルの保全を検討し、正規ツール名だけで許可しない。"
+          ],
+          "en": [
+            "An operator should consider isolation and preservation of suspect files and assess behavior beyond the legitimate utility name."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "署名済み部品の正規インストールや登録処理"
+          ],
+          "en": [
+            "Legitimate installation or registration of signed components"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "実行主体、親子プロセス、読込ファイルのハッシュと署名、通信先、変更記録を確認する。"
+          ],
+          "en": [
+            "Request actor, process ancestry, loaded-file hashes and signatures, destinations, and change records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-persistence-task",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "スケジュールタスクの永続化",
+        "en": "Scheduled-task persistence"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1053.005"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "不審なタスク登録",
+            "スケジュールタスク永続化",
+            "4698"
+          ],
+          "en": [
+            "suspicious scheduled task",
+            "scheduled task persistence",
+            "4698"
+          ]
+        },
+        "attack_techniques": [
+          "T1053.005"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "未承認のタスク登録は定期的な再実行やログオン時の再侵入経路になる可能性がある。"
+          ],
+          "en": [
+            "An unapproved scheduled task may provide recurring execution or a route back at logon."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に登録者、トリガー、実行権限、参照ファイルと初回実行を保守申請に照合する。",
+            "2. 更新製品やバックアップ製品の定期タスクという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare creator, trigger, run privileges, referenced files, and first execution with the maintenance request.",
+            "2. Verify the explanation of scheduled tasks from update or backup software with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はタスク定義と参照ファイルを保全し、未承認の再実行を抑える判断を行う。"
+          ],
+          "en": [
+            "An operator should preserve the task definition and referenced files and decide how to prevent unauthorized repeat execution."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "更新製品やバックアップ製品の定期タスク"
+          ],
+          "en": [
+            "Scheduled tasks from update or backup software"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "登録時刻、タスク定義、登録者、実行権限、参照ファイル、実行履歴を確認する。"
+          ],
+          "en": [
+            "Request registration time, task definition, creator, run privileges, referenced files, and execution history."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-persistence-service",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "サービス登録による永続化",
+        "en": "Windows service persistence"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1543.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "不審サービス登録",
+            "サービス永続化",
+            "7045"
+          ],
+          "en": [
+            "suspicious service installed",
+            "service persistence",
+            "7045"
+          ]
+        },
+        "attack_techniques": [
+          "T1543.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "新しいサービスは起動時の実行を維持できるため、実行先と登録主体の正当性を確認する。"
+          ],
+          "en": [
+            "A new service can preserve execution across restarts, so its executable and registering identity need review."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に登録者、起動方式、実行アカウント、実行先のハッシュと署名を変更記録に照合する。",
+            "2. 承認されたエージェント導入や製品更新という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare creator, start mode, run account, executable hash, and signature with approved changes.",
+            "2. Verify the explanation of approved agent installation or product updates with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はサービス定義と実行ファイルを保全し、不審な実行の制限と端末隔離を検討する。"
+          ],
+          "en": [
+            "An operator should preserve the service definition and executable and consider restricting execution and isolating the host."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたエージェント導入や製品更新"
+          ],
+          "en": [
+            "Approved agent installation or product updates"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "登録時刻、端末、サービス定義、実行主体、実行ファイル、導入申請を確認する。"
+          ],
+          "en": [
+            "Request registration time, host, service definition, actor, executable, and installation request."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-persistence-run-key",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "自動起動レジストリの変更",
+        "en": "Run-key persistence"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1547.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "Runキー変更",
+            "自動起動レジストリ",
+            "CurrentVersion Run"
+          ],
+          "en": [
+            "Run key change",
+            "registry autorun",
+            "CurrentVersion Run"
+          ]
+        },
+        "attack_techniques": [
+          "T1547.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "ログオン時の実行先変更は正規の自動起動設定にも永続化にも使われる。"
+          ],
+          "en": [
+            "A logon startup change can be ordinary application setup or persistence."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に変更したプロセス、対象ユーザー、変更前後の値と実行先の署名を比較する。",
+            "2. 正規アプリの初回設定や更新という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare the modifying process, affected user, old and new values, and the target executable's signature.",
+            "2. Verify the explanation of initial setup or update of a legitimate application with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は変更値と参照ファイルを保全し、未承認の自動起動を抑える判断を行う。"
+          ],
+          "en": [
+            "An operator should preserve changed values and referenced files and decide how to prevent unapproved startup execution."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規アプリの初回設定や更新"
+          ],
+          "en": [
+            "Initial setup or update of a legitimate application"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "変更時刻、レジストリ位置、旧値と新値、変更プロセス、参照ファイルのハッシュを確認する。"
+          ],
+          "en": [
+            "Request change time, registry location, old and new values, modifying process, and target-file hash."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-persistence-cron",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "cron登録による永続化",
+        "en": "Cron persistence"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1053.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "cron永続化",
+            "不審なcrontab",
+            "cron追加"
+          ],
+          "en": [
+            "cron persistence",
+            "suspicious crontab",
+            "unexpected cron entry"
+          ]
+        },
+        "attack_techniques": [
+          "T1053.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "未承認の定期ジョブは継続実行を可能にするため、登録者と実行内容を確認する。"
+          ],
+          "en": [
+            "An unapproved recurring job can maintain execution, requiring review of its author and purpose."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に対象ユーザー、登録時刻、スケジュールと参照スクリプトを通常のジョブ一覧に照合する。",
+            "2. 承認されたログ整理やバックアップの定期処理という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare user, registration time, schedule, and referenced scripts with the normal job inventory.",
+            "2. Verify the explanation of approved log housekeeping or scheduled backups with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はジョブ定義とスクリプトを保全し、未承認の定期実行を制限する判断を行う。"
+          ],
+          "en": [
+            "An operator should preserve job definitions and scripts and decide whether to restrict unauthorized recurring execution."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたログ整理やバックアップの定期処理"
+          ],
+          "en": [
+            "Approved log housekeeping or scheduled backups"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、対象ユーザー、ジョブ定義の差分、参照先、登録者、実行履歴を確認する。"
+          ],
+          "en": [
+            "Request host, user, job-definition differences, referenced files, creator, and execution history."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-persistence-systemd",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "systemd定義による永続化",
+        "en": "Systemd persistence"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1543.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "systemd永続化",
+            "不審なunit",
+            "未承認timer"
+          ],
+          "en": [
+            "systemd persistence",
+            "suspicious unit",
+            "unapproved systemd timer"
+          ]
+        },
+        "attack_techniques": [
+          "T1543.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "新規サービスやタイマーは再起動後も実行を続けられるため、配布元と変更理由を確認する。"
+          ],
+          "en": [
+            "New service or timer definitions can sustain execution after restart, requiring validation of origin and purpose."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に定義の作成者、実行主体、参照ファイル、起動条件とパッケージ所有情報を確認する。",
+            "2. 承認されたパッケージ導入や運用タイマー追加という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect definition creator, run identity, referenced files, activation conditions, and package ownership.",
+            "2. Verify the explanation of approved package installation or operational timer additions with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は定義と実行ファイルを保全し、未承認の起動を抑える判断と端末調査を検討する。"
+          ],
+          "en": [
+            "An operator should preserve definitions and executables and consider preventing unapproved activation and investigating the host."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたパッケージ導入や運用タイマー追加"
+          ],
+          "en": [
+            "Approved package installation or operational timer additions"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "定義の差分、作成時刻、作成者、参照ファイルのハッシュ、起動履歴、配布記録を確認する。"
+          ],
+          "en": [
+            "Request definition differences, creation time, author, target-file hashes, activation history, and deployment records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-audit-clearing",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "ログ消去や監査停止",
+        "en": "Log clearing or audit disablement"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1070.001"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1562.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ログ消去",
+            "監査停止",
+            "1102",
+            "audit disabled"
+          ],
+          "en": [
+            "log cleared",
+            "audit disabled",
+            "1102",
+            "audit policy changed"
+          ]
+        },
+        "attack_techniques": [
+          "T1070.001",
+          "T1562.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "監査の欠落は証跡隠蔽の候補であり、直前の操作と別系統の記録を合わせて調べる。"
+          ],
+          "en": [
+            "Audit gaps can reflect evidence concealment and should be investigated using preceding actions and independent records."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に消去や停止の実行者、対象範囲、直前の権限操作と転送済みログの連続性を確認する。",
+            "2. 承認されたログ整理や収集基盤の障害という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect the actor, affected scope, preceding privileged actions, and continuity of forwarded logs.",
+            "2. Verify the explanation of approved log rotation or a log-collection outage with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は残存証跡を別保管し、監査復旧と対象アカウントの制限を検討して責任者へ連携する。"
+          ],
+          "en": [
+            "An operator should secure remaining evidence, consider restoring audit coverage and restricting suspect accounts, and notify the lead."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたログ整理や収集基盤の障害"
+          ],
+          "en": [
+            "Approved log rotation or a log-collection outage"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "欠落期間、対象ホスト、実行者、監査設定差分、転送先の記録、直前の操作を確認する。"
+          ],
+          "en": [
+            "Request gap interval, hosts, actor, audit-setting differences, forwarded records, and preceding actions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-edr-tampering",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "AVやEDRの無効化",
+        "en": "AV or EDR tampering"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1562.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "EDR無効化",
+            "AV停止",
+            "保護機能改変"
+          ],
+          "en": [
+            "EDR tampering",
+            "antivirus disabled",
+            "security agent stopped"
+          ]
+        },
+        "attack_techniques": [
+          "T1562.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "保護機能の停止や除外追加は、正規保守か検知回避かを周辺の実行と合わせて判断する。"
+          ],
+          "en": [
+            "Protection shutdown or exclusion changes may be maintenance or evasion, depending on surrounding execution."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に変更実行者、停止理由、除外の対象、同時刻の実行と管理基盤の承認を確認する。",
+            "2. 保護製品の承認済み更新や互換性対応という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect actor, stop reason, exclusion scope, concurrent execution, and approval in the management system.",
+            "2. Verify the explanation of approved security-product upgrades or compatibility work with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は管理基盤側の証跡を保全し、端末隔離と保護復旧を業務影響を踏まえて検討する。"
+          ],
+          "en": [
+            "An operator should preserve management-side evidence and consider isolation and protection recovery with business impact in mind."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "保護製品の承認済み更新や互換性対応"
+          ],
+          "en": [
+            "Approved security-product upgrades or compatibility work"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、停止時刻、実行者、設定差分、製品状態、同時刻のプロセスと保守申請を確認する。"
+          ],
+          "en": [
+            "Request host, stop time, actor, setting differences, product health, concurrent processes, and maintenance approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-malware-detection",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "端末上のマルウェア検知",
+        "en": "Malware detected on a host"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1204.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "マルウェア検知",
+            "悪性ファイル検出",
+            "malware detected"
+          ],
+          "en": [
+            "malware detected",
+            "malicious file found",
+            "host malware alert"
+          ]
+        },
+        "attack_techniques": [
+          "T1204.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "悪性ファイルの検知は、保存だけか実行済みか、保護製品が処理できたかで対応範囲が変わる。"
+          ],
+          "en": [
+            "A malware finding requires distinguishing a stored file from executed malware and checking whether protection completed its response."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に検知名、検知対象、実行有無、隔離結果、子プロセスと通信の有無を確認する。",
+            "2. 検証用サンプルや正規ツールへの誤検知という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect the finding, affected object, execution status, quarantine result, child processes, and network activity.",
+            "2. Verify the explanation of an approved test sample or a false positive on a legitimate tool with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は実行済みや隔離失敗なら端末隔離を検討し、ファイルと検知記録を保全する。"
+          ],
+          "en": [
+            "An operator should preserve the file and detection records and consider host isolation if execution occurred or quarantine failed."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "検証用サンプルや正規ツールへの誤検知"
+          ],
+          "en": [
+            "An approved test sample or a false positive on a legitimate tool"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、検知時刻、ファイルのハッシュ、実行記録、検知根拠、保護製品の処理結果を確認する。"
+          ],
+          "en": [
+            "Request host, detection time, file hash, execution records, detection basis, and protection response result."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-ransomware-encryption",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "ランサムウェア暗号化の兆候",
+        "en": "Ransomware encryption activity"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1486"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "大量暗号化",
+            "ランサムウェア暗号化",
+            "拡張子一括変更",
+            "ランサムウェア",
+            "大量のファイル名変更",
+            "拡張子の書き換え",
+            "シャドウコピー削除"
+          ],
+          "en": [
+            "ransomware encryption",
+            "mass file encryption",
+            "bulk extension changes",
+            "ransomware activity",
+            "mass file renaming",
+            "shadow copy deletion"
+          ]
+        },
+        "attack_techniques": [
+          "T1486"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "短時間の大量書換えや読めなくなったファイルは、暗号化被害の進行を疑う強い材料になる。"
+          ],
+          "en": [
+            "Rapid file rewrites and newly unreadable files can indicate active ransomware damage."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に書換え元の端末とプロセス、対象共有、拡張子変化とバックアップへの操作を確認する。",
+            "2. 承認された一括暗号化やデータ変換処理という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First identify the writing host and process, affected shares, extension changes, and access to backups.",
+            "2. Verify the explanation of approved bulk encryption or data conversion with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は影響端末と共有へのアクセス隔離を優先的に検討し、責任者へ連携して復旧用証跡を保全する。"
+          ],
+          "en": [
+            "An operator should prioritize considering host and share isolation, escalate to the incident lead, and preserve recovery evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された一括暗号化やデータ変換処理"
+          ],
+          "en": [
+            "Approved bulk encryption or data conversion"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "開始時刻、変更ファイル数、影響共有、書込プロセスとアカウント、バックアップ状態を確認する。"
+          ],
+          "en": [
+            "Request start time, changed-file count, affected shares, writing process and account, and backup health."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-ransom-note",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "身代金要求文の発見",
+        "en": "Ransom note discovered"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1486"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "身代金要求文",
+            "ランサムノート",
+            "復号の支払い要求"
+          ],
+          "en": [
+            "ransom note",
+            "ransom demand",
+            "decryption payment demand"
+          ]
+        },
+        "attack_techniques": [
+          "T1486"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "身代金要求文は侵害の重要な兆候だが、暗号化や持出しの実態は別の証跡で確認する。"
+          ],
+          "en": [
+            "A ransom note is a serious indicator, but encryption and data theft need independent evidence."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に作成時刻と作成者、同名ファイルの分布、読めないデータと転送履歴を確認する。",
+            "2. 承認された訓練資料や過去被害の調査用コピーという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect creation time and actor, distribution of matching notes, unreadable data, and transfer history.",
+            "2. Verify the explanation of approved exercise material or a copy retained for an earlier investigation with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は要求文と関連証跡を保全し、端末隔離と対応責任者への緊急連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve the note and related evidence and consider isolation and urgent escalation to the incident lead."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された訓練資料や過去被害の調査用コピー"
+          ],
+          "en": [
+            "Approved exercise material or a copy retained for an earlier investigation"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "発見場所、作成時刻、作成プロセス、影響端末数、暗号化状態と関連通信を確認する。"
+          ],
+          "en": [
+            "Request discovery location, creation time, creating process, host count, encryption status, and related traffic."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-browser-credential-theft",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "ブラウザー保存資格情報へのアクセス",
+        "en": "Browser credential access"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1555.003"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ブラウザー資格情報窃取",
+            "保存パスワード読取",
+            "Login Dataアクセス"
+          ],
+          "en": [
+            "browser credential theft",
+            "saved password access",
+            "browser Login Data access"
+          ]
+        },
+        "attack_techniques": [
+          "T1555.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "ブラウザー以外の処理が保存資格情報へ触れる場合、窃取か承認された移行かを確認する。"
+          ],
+          "en": [
+            "Access to saved browser credentials by another process may indicate theft or an approved migration."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に読取プロセスの署名、実行者、対象プロファイル、コピー先と外向き通信を確認する。",
+            "2. 承認されたプロファイル移行やバックアップという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect reader signature, actor, affected profiles, copy destinations, and outbound connections.",
+            "2. Verify the explanation of approved browser-profile migration or backup with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は端末隔離と保存資格情報の更新範囲を検討し、アクセス証跡を機密情報として保全する。"
+          ],
+          "en": [
+            "An operator should consider isolation and the scope of credential rotation, preserving access evidence as sensitive information."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたプロファイル移行やバックアップ"
+          ],
+          "en": [
+            "Approved browser-profile migration or backup"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、時刻、読取プロセス、対象プロファイル、コピー先、通信と移行申請を確認する。"
+          ],
+          "en": [
+            "Request host, time, reading process, profiles, copy destination, network activity, and migration request."
+          ]
+        }
+      }
+    },
+    {
+      "id": "endpoint-container-escape",
+      "status": "template",
+      "category": "endpoint",
+      "title": {
+        "ja": "コンテナー境界逸脱の疑い",
+        "en": "Possible container escape"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1611"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "コンテナー脱出",
+            "コンテナエスケープ",
+            "ホスト名前空間"
+          ],
+          "en": [
+            "container escape",
+            "escape to host",
+            "unexpected host namespace access"
+          ]
+        },
+        "attack_techniques": [
+          "T1611"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "コンテナーからホスト資源への予期しないアクセスは、分離の破綻や危険な特権設定を疑う。"
+          ],
+          "en": [
+            "Unexpected container access to host resources can indicate an escape or unsafe privilege configuration."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にコンテナー権限、ホスト共有、名前空間、ホスト側プロセスとランタイム版を確認する。",
+            "2. 承認された特権付きの基盤管理ワークロードという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect container privileges, host mounts, namespaces, host-side processes, and runtime version.",
+            "2. Verify the explanation of approved privileged infrastructure-management workloads with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はワークロードとホスト双方の隔離を検討し、定義と実行証跡を保全して基盤担当へ連携する。"
+          ],
+          "en": [
+            "An operator should consider isolating the workload and host, preserve definitions and execution records, and involve platform owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された特権付きの基盤管理ワークロード"
+          ],
+          "en": [
+            "Approved privileged infrastructure-management workloads"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "コンテナーID、ノード、権限と共有定義、発生時刻、ホスト側実行記録、ランタイム版を確認する。"
+          ],
+          "en": [
+            "Request container ID, node, privilege and mount definitions, time, host execution records, and runtime version."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-sql-injection",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "SQLインジェクション",
+        "en": "SQL injection"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A03"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "SQLインジェクション",
+            "SQL構文エラー",
+            "SQLi"
+          ],
+          "en": [
+            "SQL injection",
+            "SQL syntax error",
+            "SQLi"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "入力にSQLの断片が含まれる場合、試行だけか実際にクエリーの意味が変わったかを分ける。"
+          ],
+          "en": [
+            "SQL-like input may be an attempt, but changed query behavior is needed to establish successful injection."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に要求ID、入力箇所、応答とDB監査を照合し、権限外の読取や変更の有無を確認する。",
+            "2. 診断ツールの承認されたテストや引用符を含む通常入力という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate request IDs, input fields, responses, and database audit records for unauthorized reads or changes.",
+            "2. Verify the explanation of approved assessment traffic or ordinary input containing quotation marks with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は関連要求とDB証跡を保全し、影響機能の一時制限と開発担当への緊急連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve request and database evidence and consider restricting the affected feature and involving developers."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "診断ツールの承認されたテストや引用符を含む通常入力"
+          ],
+          "en": [
+            "Approved assessment traffic or ordinary input containing quotation marks"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "時刻範囲、要求ID、対象パラメーター、応答、DBクエリー記録、公開範囲を確認する。"
+          ],
+          "en": [
+            "Request time window, request IDs, parameters, responses, database query records, and exposure."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-cross-site-scripting",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "クロスサイトスクリプティング",
+        "en": "Cross-site scripting"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A03"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "クロスサイトスクリプティング",
+            "XSS",
+            "スクリプト埋込"
+          ],
+          "en": [
+            "cross-site scripting",
+            "XSS",
+            "script injection"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "入力がブラウザーで実行可能な形で返る場合、閲覧者のセッションへ影響する可能性がある。"
+          ],
+          "en": [
+            "Input rendered as executable browser content may affect the viewing user's session."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に保存型か反射型か、出力位置、無害化状態と閲覧記録を実行せず確認する。",
+            "2. エスケープ済みの教材や診断用入力という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect whether content is stored or reflected, its output context, sanitization, and viewer records without executing it.",
+            "2. Verify the explanation of escaped training material or assessment input with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は関連コンテンツを保全し、公開制限と影響セッションの失効を開発担当と検討する。"
+          ],
+          "en": [
+            "An operator should preserve the content and discuss exposure restriction and affected-session revocation with developers."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "エスケープ済みの教材や診断用入力"
+          ],
+          "en": [
+            "Escaped training material or assessment input"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "要求ID、入力と出力の位置、保存先、閲覧時刻と利用者、セッション異常を確認する。"
+          ],
+          "en": [
+            "Request request IDs, input and output contexts, storage location, viewer times and users, and session anomalies."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-path-traversal",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "パストラバーサル",
+        "en": "Path traversal"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A01"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "パストラバーサル",
+            "ディレクトリ横断",
+            "../"
+          ],
+          "en": [
+            "path traversal",
+            "directory traversal",
+            "../"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "パスを上位へ移動させる入力は、想定ディレクトリ外のファイル取得を狙う場合がある。"
+          ],
+          "en": [
+            "Directory-escape input may seek files outside an application's intended storage area."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に正規化後の参照先、応答内容とファイル読取記録を照合し、実際の到達先を確認する。",
+            "2. 拒否された診断リクエストや無害な相対パス入力という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare the normalized target path, response content, and file-read records to establish actual access.",
+            "2. Verify the explanation of rejected assessment requests or harmless relative-path input with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は要求と応答の証跡を保全し、対象機能の制限と露出した秘密情報の更新を検討する。"
+          ],
+          "en": [
+            "An operator should preserve request and response evidence and consider restricting the feature and rotating exposed secrets."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "拒否された診断リクエストや無害な相対パス入力"
+          ],
+          "en": [
+            "Rejected assessment requests or harmless relative-path input"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象機能名、要求ID、入力パス、応答量、参照ファイルの記録を確認する。"
+          ],
+          "en": [
+            "Request feature name, request IDs, input paths, response size, and file-access records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-ssrf",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "サーバー側リクエスト偽造",
+        "en": "Server-side request forgery"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A10"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "SSRF",
+            "サーバー側リクエスト偽造",
+            "メタデータへのアクセス"
+          ],
+          "en": [
+            "SSRF",
+            "server-side request forgery",
+            "cloud metadata access"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "入力を受けてサーバーが内部資源へ接続すると、外部利用者が内部権限を悪用できる可能性がある。"
+          ],
+          "en": [
+            "A server fetching internal resources on a user's behalf may expose internal access or credentials."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に入力で指定された宛先、サーバーの接続記録、内部応答と資格情報発行を照合する。",
+            "2. 承認されたプレビュー機能や稼働監視の内部接続という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate user-selected destinations, server connections, internal responses, and credential issuance.",
+            "2. Verify the explanation of approved preview features or internal health checks with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は要求と外向き通信記録を保全し、取得機能の制限と露出資格情報の失効を検討する。"
+          ],
+          "en": [
+            "An operator should preserve requests and outbound records and consider restricting fetching and revoking exposed credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたプレビュー機能や稼働監視の内部接続"
+          ],
+          "en": [
+            "Approved preview features or internal health checks"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "要求ID、入力された宛先の識別子、接続元サーバー、応答、内部接続とトークン発行記録を確認する。"
+          ],
+          "en": [
+            "Request request IDs, destination identifiers, source server, responses, internal connections, and token issuance records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-idor-access-control",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "権限外オブジェクトへのアクセス",
+        "en": "Broken access control or IDOR"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A01"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "IDOR",
+            "アクセス制御不備",
+            "他人のデータ閲覧"
+          ],
+          "en": [
+            "IDOR",
+            "broken access control",
+            "another user's records"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "識別子を変えるだけで他者のデータが返る場合、認証済みでもアクセス制御が成立していない。"
+          ],
+          "en": [
+            "Returning another user's data after an identifier change may indicate failed authorization despite successful authentication."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に要求者の権限、対象データの所有者、応答内容と認可判断を同じ要求IDで照合する。",
+            "2. 共有設定による正規アクセスや委任された閲覧権限という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate requester permissions, data ownership, response content, and authorization decisions using the same request ID.",
+            "2. Verify the explanation of legitimate sharing settings or delegated viewing rights with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は影響データを特定し、対象機能の一時制限と情報管理担当への連携を検討する。"
+          ],
+          "en": [
+            "An operator should identify affected data and consider temporarily restricting the feature and involving the data owner."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "共有設定による正規アクセスや委任された閲覧権限"
+          ],
+          "en": [
+            "Legitimate sharing settings or delegated viewing rights"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "要求ID、要求者と対象所有者、権限設定、返却項目、同種アクセス件数を確認する。"
+          ],
+          "en": [
+            "Request request IDs, requester and object owner, permissions, returned fields, and count of similar accesses."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-authentication-bypass",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "Web認証の回避",
+        "en": "Web authentication bypass"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A07"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "認証バイパス",
+            "認証回避",
+            "未認証の管理画面"
+          ],
+          "en": [
+            "authentication bypass",
+            "unauthenticated admin access",
+            "login bypass"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "有効な認証なしに保護機能へ到達した場合、認証経路やセッション検証の欠落を疑う。"
+          ],
+          "en": [
+            "Access to a protected feature without valid authentication may indicate a missing identity or session check."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に対象機能の認証要件、トークン検証、プロキシ経路と実行された操作を確認する。",
+            "2. 認証済みプロキシが付与する正規セッションという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect authentication requirements, token validation, proxy routing, and actions actually performed.",
+            "2. Verify the explanation of a legitimate session supplied by an authenticated proxy with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は該当経路の一時制限と発行済みセッションの確認を検討し、開発担当へ連携する。"
+          ],
+          "en": [
+            "An operator should consider restricting the affected route, review issued sessions, and involve developers."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "認証済みプロキシが付与する正規セッション"
+          ],
+          "en": [
+            "A legitimate session supplied by an authenticated proxy"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "要求ID、認証状態、トークン検証結果、経路構成、成功操作と対象データを確認する。"
+          ],
+          "en": [
+            "Request request IDs, authentication state, token-validation results, route configuration, successful actions, and affected data."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-webshell-upload",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "Webシェルの配置",
+        "en": "Webshell upload"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1505.003"
+        },
+        {
+          "source": "owasp-top10-2021",
+          "id": "A04"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "Webシェル",
+            "webshell",
+            "不審なアップロード"
+          ],
+          "en": [
+            "webshell",
+            "suspicious script upload",
+            "uploaded server-side script"
+          ]
+        },
+        "attack_techniques": [
+          "T1505.003"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "アップロードされたサーバー側スクリプトの実行は、Web経由の遠隔操作につながる可能性がある。"
+          ],
+          "en": [
+            "Execution of an uploaded server-side script may provide remote control through a web server."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に配置元の要求、ファイルのハッシュ、実行設定とWebプロセスの子プロセスを照合する。",
+            "2. 承認されたアプリ配布や実行不可の検査用ファイルという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate the upload request, file hash, execution settings, and child processes of the web service.",
+            "2. Verify the explanation of approved application deployment or non-executable test files with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は影響サーバーの隔離と公開制限を検討し、配置ファイルと実行記録を保全する。"
+          ],
+          "en": [
+            "An operator should consider server isolation and exposure restriction and preserve uploaded files and execution records."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたアプリ配布や実行不可の検査用ファイル"
+          ],
+          "en": [
+            "Approved application deployment or non-executable test files"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "配置時刻、要求ID、アップロード主体、ファイルのハッシュ、実行権限、子プロセスを確認する。"
+          ],
+          "en": [
+            "Request upload time, request IDs, actor, file hash, execution permissions, and child processes."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-insecure-deserialization",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "危険なデシリアライズ",
+        "en": "Insecure deserialization"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A08"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "安全でないデシリアライズ",
+            "危険な逆直列化",
+            "deserialization"
+          ],
+          "en": [
+            "insecure deserialization",
+            "unsafe object loading",
+            "deserialization exception"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "外部由来のオブジェクト復元に伴う異常実行は、危険な型の処理や改変データを疑う。"
+          ],
+          "en": [
+            "Unexpected execution during external-object reconstruction can indicate unsafe type handling or tampered serialized data."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に入力経路、復元した型、例外と子プロセスを要求IDで照合し、署名検証の有無を確認する。",
+            "2. 互換性のない版のデータや破損した正規メッセージという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate input route, reconstructed types, exceptions, and child processes by request ID, then check integrity validation.",
+            "2. Verify the explanation of version-incompatible data or a corrupted legitimate message with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は入力と実行証跡を保全し、対象機能の制限と影響サーバー隔離を検討する。"
+          ],
+          "en": [
+            "An operator should preserve input and execution evidence and consider restricting the feature and isolating affected servers."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "互換性のない版のデータや破損した正規メッセージ"
+          ],
+          "en": [
+            "Version-incompatible data or a corrupted legitimate message"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "要求ID、入力形式、処理ライブラリと版、復元した型、例外、子プロセスと通信を確認する。"
+          ],
+          "en": [
+            "Request request IDs, input format, library and version, reconstructed types, exceptions, child processes, and network activity."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-api-rate-abuse",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "API利用の急増",
+        "en": "API abuse or rate anomaly"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A04"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "API大量呼出",
+            "APIレート異常",
+            "429急増"
+          ],
+          "en": [
+            "API abuse",
+            "API rate anomaly",
+            "429 spike"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "API呼出の急増は自動化された収集や資源消費の候補で、利用目的と処理負荷を分けて確認する。"
+          ],
+          "en": [
+            "An API surge may reflect automated collection or resource consumption, requiring review of purpose and processing impact."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にキーと利用者別の回数、対象機能、応答量、失敗率と遅延を平常値に比較する。",
+            "2. 承認された一括連携や再試行処理の不具合という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare per-key and per-user counts, features, response bytes, failure rates, and latency with normal levels.",
+            "2. Verify the explanation of approved bulk integration or a faulty retry loop with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は利用者に目的を確認し、不正利用なら対象キーや機能の制限と証跡保全を検討する。"
+          ],
+          "en": [
+            "An operator should verify purpose with the owner and consider restricting affected keys or features and preserving evidence if abused."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された一括連携や再試行処理の不具合"
+          ],
+          "en": [
+            "Approved bulk integration or a faulty retry loop"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "集計期間、キーの識別子、機能別回数、応答量、遅延、通常量と連携予定を確認する。"
+          ],
+          "en": [
+            "Request window, key identifiers, per-feature counts, response bytes, latency, normal volume, and integration schedule."
+          ]
+        }
+      }
+    },
+    {
+      "id": "web-login-brute-force",
+      "status": "template",
+      "category": "web_application",
+      "title": {
+        "ja": "Webログインの総当たり",
+        "en": "Web login brute force"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1110.001"
+        },
+        {
+          "source": "owasp-top10-2021",
+          "id": "A07"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "Webログイン総当たり",
+            "ログイン失敗急増",
+            "認証フォーム攻撃"
+          ],
+          "en": [
+            "web login brute force",
+            "login failure spike",
+            "login form attack"
+          ]
+        },
+        "attack_techniques": [
+          "T1110.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "認証フォームへの反復試行はパスワード推測の候補で、成功後の利用があれば優先度が上がる。"
+          ],
+          "en": [
+            "Repeated login-form attempts can indicate password guessing, especially when followed by successful resource access."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にアカウント別と送信元別の失敗数、成功、セッション発行と認証後の操作を確認する。",
+            "2. 古い資格情報を持つ連携や利用者の繰り返し入力ミスという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect failures by account and source, successes, session issuance, and actions after authentication.",
+            "2. Verify the explanation of an integration using stale credentials or repeated user typing mistakes with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は認証記録を保全し、不審セッションの失効と対象資格情報の更新を検討する。"
+          ],
+          "en": [
+            "An operator should preserve authentication records and consider revoking suspect sessions and rotating affected credentials."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "古い資格情報を持つ連携や利用者の繰り返し入力ミス"
+          ],
+          "en": [
+            "An integration using stale credentials or repeated user typing mistakes"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象サービス、時間範囲、アカウント別回数、送信元、成功セッションと認証後の操作を確認する。"
+          ],
+          "en": [
+            "Request service, time window, per-account counts, sources, successful sessions, and post-login actions."
+          ]
+        }
+      }
+    },
+    {
+      "id": "email-phishing-report",
+      "status": "template",
+      "category": "email",
+      "title": {
+        "ja": "フィッシングメールの申告",
+        "en": "Reported phishing email"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1566"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "フィッシング申告",
+            "不審メール報告",
+            "認証情報入力メール",
+            "請求書メール",
+            "認証情報を入力",
+            "フィッシングメール",
+            "リンクをクリック"
+          ],
+          "en": [
+            "phishing report",
+            "suspicious email reported",
+            "credential phishing email",
+            "phishing email",
+            "invoice phishing",
+            "entered credentials"
+          ]
+        },
+        "attack_techniques": [
+          "T1566"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "不審メールの申告では、受信だけかリンク閲覧や認証情報入力まで進んだかで対応が変わる。"
+          ],
+          "en": [
+            "A phishing report requires distinguishing receipt from link visits, credential entry, or file execution."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に原本のヘッダー、送信者、配送先と利用者の操作を確認し、関連する認証を照合する。",
+            "2. 正規業者の配信設定不備や承認済み訓練という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect original headers, sender, recipients, and user actions, then correlate related authentication.",
+            "2. Verify the explanation of legitimate sender configuration errors or an approved exercise with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は原本を保全し、同種メールの隔離と入力された資格情報の更新を検討する。"
+          ],
+          "en": [
+            "An operator should preserve the original message and consider quarantining matching mail and rotating credentials entered by users."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規業者の配信設定不備や承認済み訓練"
+          ],
+          "en": [
+            "Legitimate sender configuration errors or an approved exercise"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "原本の識別子、受信時刻、配送先、リンク閲覧や入力の有無、関連認証記録を確認する。"
+          ],
+          "en": [
+            "Request original message identifier, receipt time, recipients, visits or credential entry, and related authentication."
+          ]
+        }
+      }
+    },
+    {
+      "id": "email-attachment-executed",
+      "status": "template",
+      "category": "email",
+      "title": {
+        "ja": "メール添付ファイルの実行",
+        "en": "Malicious attachment executed"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1566.001"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1204.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "添付ファイル実行",
+            "悪性添付",
+            "メールからマクロ実行"
+          ],
+          "en": [
+            "malicious attachment executed",
+            "email attachment opened",
+            "macro from email"
+          ]
+        },
+        "attack_techniques": [
+          "T1566.001",
+          "T1204.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "添付ファイルから不審な子プロセスや通信が生じた場合、端末侵害の可能性を優先する。"
+          ],
+          "en": [
+            "Suspicious child processes or connections after opening an attachment prioritize investigation of host compromise."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に添付のハッシュ、閲覧時刻、親子プロセス、検知結果と外向き通信を時系列で結ぶ。",
+            "2. 承認された業務マクロや添付ファイルへの誤検知という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate attachment hash, opening time, process ancestry, detection results, and outbound traffic.",
+            "2. Verify the explanation of approved business macros or a false positive on an attachment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は端末隔離と同一添付の配送先確認を検討し、メール原本と実行証跡を保全する。"
+          ],
+          "en": [
+            "An operator should consider isolating the host and identifying recipients of the same attachment, preserving mail and execution evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された業務マクロや添付ファイルへの誤検知"
+          ],
+          "en": [
+            "Approved business macros or a false positive on an attachment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "メール識別子、添付ハッシュ、受信者、実行時刻、親子プロセス、通信と検知結果を確認する。"
+          ],
+          "en": [
+            "Request message identifier, attachment hash, recipients, execution time, process ancestry, traffic, and detection results."
+          ]
+        }
+      }
+    },
+    {
+      "id": "email-bec-payment-change",
+      "status": "template",
+      "category": "email",
+      "title": {
+        "ja": "送金先変更を求めるメール",
+        "en": "BEC or payment-change request"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1566"
+        },
+        {
+          "source": "mitre-attack",
+          "id": "T1078"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "送金先変更",
+            "振込先変更",
+            "BEC",
+            "ビジネスメール詐欺"
+          ],
+          "en": [
+            "payment change request",
+            "bank details changed",
+            "BEC",
+            "business email compromise"
+          ]
+        },
+        "attack_techniques": [
+          "T1566",
+          "T1078"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "緊急の振込先変更は詐欺やメールアカウント侵害の候補で、表示名や既存スレッドだけでは信用できない。"
+          ],
+          "en": [
+            "An urgent payment change can indicate fraud or mailbox compromise, even inside an existing conversation."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に既知の連絡先で依頼を別経路確認し、送信元と返信先、転送規則、認証記録を調べる。",
+            "2. 正規の取引先による銀行口座変更という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First verify through a previously known contact channel, then inspect sender, reply address, forwarding rules, and login records.",
+            "2. Verify the explanation of a genuine banking change by an established supplier with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は送金の保留を財務担当と検討し、原本保全とメールアカウントのセッション確認を行う。"
+          ],
+          "en": [
+            "An operator should discuss holding payment with finance, preserve the original message, and review mailbox sessions."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規の取引先による銀行口座変更"
+          ],
+          "en": [
+            "A genuine banking change by an established supplier"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "原本の識別子、依頼時刻、変更前後の振込情報、既知連絡先での確認、送金実行有無を確認する。"
+          ],
+          "en": [
+            "Request message identifier, request time, old and new payment details, independent verification, and payment status."
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloud-access-key-leak",
+      "status": "template",
+      "category": "cloud",
+      "title": {
+        "ja": "クラウドアクセスキーの露出",
+        "en": "Cloud access key leak"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1552.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "クラウドキー漏えい",
+            "アクセスキー流出",
+            "公開リポジトリのキー"
+          ],
+          "en": [
+            "cloud access key leak",
+            "exposed access key",
+            "key in public repository"
+          ]
+        },
+        "attack_techniques": [
+          "T1552.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "公開場所にある有効なアクセスキーは、利用履歴がなくても不正利用可能な露出として扱う。"
+          ],
+          "en": [
+            "A valid key in a public location represents usable exposure even before unauthorized activity is observed."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にキーの識別子と有効状態、権限、公開期間とその期間中のAPI利用を確認する。",
+            "2. 無効なサンプルキーや失効済みの検証用キーという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First check key identifier and validity, permissions, exposure interval, and API use during that interval.",
+            "2. Verify the explanation of an inert sample key or an already revoked test key with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は依存処理を確認してキー失効と更新を検討し、公開範囲と利用記録を保全する。"
+          ],
+          "en": [
+            "An operator should assess dependent workloads, consider key revocation and replacement, and preserve exposure and usage records."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "無効なサンプルキーや失効済みの検証用キー"
+          ],
+          "en": [
+            "An inert sample key or an already revoked test key"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "キー本体を除いた識別子、有効状態、公開時刻、権限、利用元IPとAPI履歴を確認する。"
+          ],
+          "en": [
+            "Request key identifier excluding secret material, validity, exposure time, permissions, source IPs, and API history."
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloud-public-storage",
+      "status": "template",
+      "category": "cloud",
+      "title": {
+        "ja": "ストレージの意図しない公開",
+        "en": "Public storage exposure"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A01"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ストレージ公開",
+            "公開バケット",
+            "匿名読取許可"
+          ],
+          "en": [
+            "public storage exposure",
+            "public bucket",
+            "anonymous storage read"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "意図しない匿名読取や書込は情報露出や改変を可能にするが、実アクセスの有無も別途確認する。"
+          ],
+          "en": [
+            "Unexpected anonymous read or write permissions can expose data or allow changes, requiring separate review of actual access."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に有効な公開設定、対象データ分類、設定変更者と匿名アクセス記録を確認する。",
+            "2. 承認された公開配布用バケットという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect effective public permissions, data classification, the change actor, and anonymous-access records.",
+            "2. Verify the explanation of an approved bucket for public distribution with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は設定証跡を保全し、公開範囲の縮小と情報管理担当への連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve configuration evidence and consider narrowing exposure and involving data owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された公開配布用バケット"
+          ],
+          "en": [
+            "An approved bucket for public distribution"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "保存先の識別子、公開設定の差分、対象データ、公開期間、読取と書込の記録を確認する。"
+          ],
+          "en": [
+            "Request storage identifier, permission differences, affected data, exposure period, and read and write records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloud-iam-policy-change",
+      "status": "template",
+      "category": "cloud",
+      "title": {
+        "ja": "IAM権限の変更",
+        "en": "IAM policy change"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1098"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "IAMポリシー変更",
+            "クラウド権限拡大",
+            "権限境界変更"
+          ],
+          "en": [
+            "IAM policy change",
+            "cloud privilege expansion",
+            "permission boundary changed"
+          ]
+        },
+        "attack_techniques": [
+          "T1098"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "権限ポリシーの変更は実効権限を広げる場合があり、変更者の資格情報悪用も確認する。"
+          ],
+          "en": [
+            "A policy change can expand effective access and may result from misuse of the modifying identity."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に変更前後の実効権限、変更主体、対象プリンシパルと直後のAPI操作を確認する。",
+            "2. 承認されたロール再編や基盤配布という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare effective permissions before and after, modifying identity, affected principals, and subsequent API calls.",
+            "2. Verify the explanation of approved role restructuring or infrastructure deployment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は変更証跡を保全し、未承認の権限縮小と変更主体のセッション失効を検討する。"
+          ],
+          "en": [
+            "An operator should preserve change evidence and consider removing unapproved grants and revoking the modifying identity's sessions."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたロール再編や基盤配布"
+          ],
+          "en": [
+            "Approved role restructuring or infrastructure deployment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "ポリシー差分、変更時刻と主体、対象ロール、実効権限、承認と後続API記録を確認する。"
+          ],
+          "en": [
+            "Request policy differences, time and actor, affected roles, effective permissions, approvals, and subsequent API records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloud-unusual-region",
+      "status": "template",
+      "category": "cloud",
+      "title": {
+        "ja": "普段と異なるリージョンの活動",
+        "en": "Cloud activity in an unusual region"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1078.004"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "未知リージョン",
+            "異常リージョン",
+            "未使用リージョン"
+          ],
+          "en": [
+            "unusual cloud region",
+            "unexpected region activity",
+            "unused region activity"
+          ]
+        },
+        "attack_techniques": [
+          "T1078.004"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "通常利用しないリージョンの操作は資格情報悪用の候補で、展開予定と費用影響を確認する。"
+          ],
+          "en": [
+            "Activity in an unfamiliar region can indicate credential misuse, requiring review of deployment plans and cost impact."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に実行主体、作成資源、利用元IP、権限と既存のリージョン利用実績を比較する。",
+            "2. 承認された災害復旧試験や新地域への展開という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare actor, created resources, source IP, permissions, and previous regional usage.",
+            "2. Verify the explanation of approved disaster-recovery tests or regional expansion with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は未承認セッションや資源の制限を検討し、監査と費用の記録を保全する。"
+          ],
+          "en": [
+            "An operator should consider restricting unapproved sessions or resources and preserve audit and billing records."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された災害復旧試験や新地域への展開"
+          ],
+          "en": [
+            "Approved disaster-recovery tests or regional expansion"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "アカウント、リージョン、操作時刻、資源ID、実行主体、利用元IP、費用と展開予定を確認する。"
+          ],
+          "en": [
+            "Request account, region, times, resource IDs, actor, source IP, costs, and deployment plans."
+          ]
+        }
+      }
+    },
+    {
+      "id": "vuln-critical-exposed-service",
+      "status": "template",
+      "category": "vulnerability",
+      "title": {
+        "ja": "公開サービスの重大脆弱性",
+        "en": "Critical CVE in an exposed service"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1190"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "公開サービスの重大CVE",
+            "外部公開の脆弱性",
+            "critical CVE exposed",
+            "重大なリモートコード実行",
+            "認証前RCE"
+          ],
+          "en": [
+            "critical CVE exposed",
+            "internet-facing vulnerable service",
+            "critical vulnerability exposure",
+            "critical remote code execution",
+            "pre-auth RCE",
+            "vulnerable VPN appliance"
+          ]
+        },
+        "attack_techniques": [
+          "T1190"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "重大な脆弱性と到達可能なサービスの組合せは優先調査の対象だが、検知だけで侵害とは判断しない。"
+          ],
+          "en": [
+            "A critical vulnerability in a reachable service warrants priority review, but a finding alone does not establish compromise."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に正確な製品版、影響条件、外部到達性と悪用を示す要求や異常実行を確認する。",
+            "2. 版番号の誤認や修正のバックポートという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First check exact version, affected conditions, external reachability, and requests or execution indicating exploitation.",
+            "2. Verify the explanation of incorrect version identification or a backported fix with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は公開範囲の縮小と修正適用を検討し、侵害兆候があれば隔離と対応責任者への連携を行う。"
+          ],
+          "en": [
+            "An operator should consider reducing exposure and applying remediation, escalating and considering isolation if compromise is indicated."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "版番号の誤認や修正のバックポート"
+          ],
+          "en": [
+            "Incorrect version identification or a backported fix"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "CVE番号、製品版と修正証明、公開経路、影響条件、該当期間の要求と実行記録を確認する。"
+          ],
+          "en": [
+            "Request cVE, version and fix evidence, exposure path, affected conditions, and request and execution records for the period."
+          ]
+        }
+      }
+    },
+    {
+      "id": "vuln-kev-listed",
+      "status": "template",
+      "category": "vulnerability",
+      "title": {
+        "ja": "既知悪用脆弱性への対応",
+        "en": "KEV-listed vulnerability"
+      },
+      "references": [
+        {
+          "source": "cisa-kev",
+          "id": "CVE-2021-44228"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "KEV掲載",
+            "既知悪用脆弱性",
+            "Log4Shell",
+            "悪用が確認済み"
+          ],
+          "en": [
+            "KEV-listed vulnerability",
+            "known exploited vulnerability",
+            "Log4Shell",
+            "exploitation observed in the wild"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "既知の悪用事例がある脆弱性は優先確認が必要で、掲載例と自環境の適用可否を区別する。"
+          ],
+          "en": [
+            "A vulnerability known to have been exploited needs priority review, while applicability still depends on the local environment."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に対象CVEの現行カタログ掲載、製品版、到達経路と公開期間中の悪用痕跡を確認する。",
+            "2. 既に修正済みの資産を古いスキャン結果が示した状況という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First verify the CVE in the current catalog, affected versions, reachability, and exploitation evidence during exposure.",
+            "2. Verify the explanation of a stale scan reporting an asset that has already been fixed with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は修正と到達制限の優先度を上げる判断を行い、侵害痕跡があれば証跡保全と連携を検討する。"
+          ],
+          "en": [
+            "An operator should prioritize remediation and access restrictions and consider evidence preservation and escalation if exploitation is found."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "既に修正済みの資産を古いスキャン結果が示した状況"
+          ],
+          "en": [
+            "A stale scan reporting an asset that has already been fixed"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象CVE、照合日、製品版、修正状態、公開期間、要求とプロセスの記録を確認する。"
+          ],
+          "en": [
+            "Request cVE, catalog-check date, product version, fix status, exposure interval, and request and process records."
+          ]
+        }
+      }
+    },
+    {
+      "id": "vuln-missing-patch",
+      "status": "template",
+      "category": "vulnerability",
+      "title": {
+        "ja": "修正未適用の資産",
+        "en": "Missing security patch"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A06"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "パッチ未適用",
+            "修正未適用",
+            "更新遅延",
+            "修正パッチ待ち"
+          ],
+          "en": [
+            "missing security patch",
+            "unpatched asset",
+            "security update overdue",
+            "patch available",
+            "behind the fixed release"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "修正未適用は露出の評価材料で、攻撃成功の証拠とは分けて優先度を判断する。"
+          ],
+          "en": [
+            "A missing patch informs exposure assessment. remediation priority should remain distinct from evidence of compromise."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に実際の適用状態、製品の保守期限、脆弱な機能の有効性と接続可能範囲を確認する。",
+            "2. 再起動待ちや棚卸し記録の反映遅延という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First check actual installation state, support status, whether vulnerable features are enabled, and reachable networks.",
+            "2. Verify the explanation of a pending restart or delayed inventory synchronization with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は修正計画と代替の到達制限を資産担当と検討し、適用後の状態確認を行う。"
+          ],
+          "en": [
+            "An operator should discuss a patch plan and interim access restrictions with the asset owner and verify the resulting state."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "再起動待ちや棚卸し記録の反映遅延"
+          ],
+          "en": [
+            "A pending restart or delayed inventory synchronization"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "資産ID、製品版、修正番号、最終適用時刻、到達範囲、保守予定と適用失敗理由を確認する。"
+          ],
+          "en": [
+            "Request asset ID, version, patch identifier, last update time, reachability, maintenance schedule, and failure reasons."
+          ]
+        }
+      }
+    },
+    {
+      "id": "exfil-bulk-download",
+      "status": "template",
+      "category": "data_exfiltration",
+      "title": {
+        "ja": "大量ダウンロード",
+        "en": "Bulk download of sensitive data"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1213"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "大量ダウンロード",
+            "一括ダウンロード",
+            "大量取得"
+          ],
+          "en": [
+            "bulk download",
+            "mass download",
+            "unusual document export"
+          ]
+        },
+        "attack_techniques": [
+          "T1213"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "平常を超える大量取得は持出し準備の候補で、対象データと業務目的が判断を左右する。"
+          ],
+          "en": [
+            "Unusual bulk retrieval may precede exfiltration, depending on data sensitivity and business purpose."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に取得者、件数と量、対象データ分類、利用端末とその後の転送先を確認する。",
+            "2. 承認された監査資料の収集やデータ移行という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect actor, counts and bytes, data classification, device, and subsequent transfer destinations.",
+            "2. Verify the explanation of approved audit-data collection or data migration with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は情報管理担当と目的を確認し、不正持出しが疑われる場合に取得と転送の制限を検討する。"
+          ],
+          "en": [
+            "An operator should verify purpose with data owners and consider restricting retrieval and transfer if exfiltration is suspected."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された監査資料の収集やデータ移行"
+          ],
+          "en": [
+            "Approved audit-data collection or data migration"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "時刻範囲、取得者、ファイル件数と量、データ分類、端末、転送履歴と申請を確認する。"
+          ],
+          "en": [
+            "Request time window, actor, file counts and bytes, classification, device, transfer history, and approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "exfil-removable-media",
+      "status": "template",
+      "category": "data_exfiltration",
+      "title": {
+        "ja": "USB媒体へのデータ転送",
+        "en": "Removable-media exfiltration"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1052.001"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "USB持出し",
+            "リムーバブル媒体転送",
+            "外部媒体コピー"
+          ],
+          "en": [
+            "USB exfiltration",
+            "removable media transfer",
+            "copy to external drive"
+          ]
+        },
+        "attack_techniques": [
+          "T1052.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "機密ファイルと外部媒体への書込が重なる場合、承認された受渡しか持出しかを確認する。"
+          ],
+          "en": [
+            "Sensitive-file reads overlapping removable-media writes require distinguishing approved handoff from exfiltration."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に媒体識別子、接続時刻、利用者、書込ファイルとデータ分類を照合する。",
+            "2. 承認されたオフライン搬送や復旧用媒体作成という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate media identifier, insertion time, user, written files, and data classification.",
+            "2. Verify the explanation of approved offline transfer or creation of recovery media with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は媒体とコピーの証跡を保全し、継続転送の制限と情報管理担当への連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve media and copy evidence and consider restricting further transfer and involving data owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたオフライン搬送や復旧用媒体作成"
+          ],
+          "en": [
+            "Approved offline transfer or creation of recovery media"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "端末、媒体識別子、接続期間、利用者、書込件数とファイル分類、搬送申請を確認する。"
+          ],
+          "en": [
+            "Request host, media identifier, connection interval, user, write counts and data classifications, and transfer approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "exfil-personal-cloud",
+      "status": "template",
+      "category": "data_exfiltration",
+      "title": {
+        "ja": "個人クラウドへのアップロード",
+        "en": "Upload to personal cloud storage"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1567.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "個人クラウド送信",
+            "私用ストレージ",
+            "未承認クラウドアップロード",
+            "個人のクラウドストレージ",
+            "個人クラウド",
+            "私用クラウド"
+          ],
+          "en": [
+            "personal cloud upload",
+            "unapproved cloud storage",
+            "upload to personal drive",
+            "personal cloud storage",
+            "personal storage upload"
+          ]
+        },
+        "attack_techniques": [
+          "T1567.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "組織外の個人ストレージへの転送は、宛先の所有者とデータ分類によって情報流出になり得る。"
+          ],
+          "en": [
+            "Transfer to personal storage can expose organizational data depending on destination ownership and data classification."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に宛先テナントや所有者、転送量、送信プロセスと直前の機密ファイル読取を確認する。",
+            "2. 承認された外部共同作業領域や業務アカウントの同期という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect destination tenant or owner, bytes, sending process, and preceding sensitive-file reads.",
+            "2. Verify the explanation of approved external collaboration or synchronization with a business account with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は転送証跡を保全し、未承認なら同期や共有の制限と情報管理担当への連携を検討する。"
+          ],
+          "en": [
+            "An operator should preserve transfer evidence and consider restricting unapproved sync or sharing and involving data owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された外部共同作業領域や業務アカウントの同期"
+          ],
+          "en": [
+            "Approved external collaboration or synchronization with a business account"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "宛先所有者、利用者、時間範囲、転送量と対象分類、共有状態、業務承認を確認する。"
+          ],
+          "en": [
+            "Request destination owner, user, time window, bytes and data classification, sharing state, and business approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "insider-role-mismatch",
+      "status": "template",
+      "category": "insider",
+      "title": {
+        "ja": "担当範囲外の情報アクセス",
+        "en": "Access outside assigned duties"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1213"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "担当外データ閲覧",
+            "業務範囲外アクセス",
+            "権限と職務の不一致"
+          ],
+          "en": [
+            "access outside assigned duties",
+            "unrelated sensitive records",
+            "role mismatch access"
+          ]
+        },
+        "attack_techniques": [
+          "T1213"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "権限上は可能でも職務と合わない閲覧は調査対象になり得るが、動機や内部不正を断定しない。"
+          ],
+          "en": [
+            "Permitted access outside usual duties may warrant review without presuming intent or insider wrongdoing."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に職務、委任記録、対象情報、閲覧頻度とアカウント侵害の可能性を確認する。",
+            "2. 一時的な応援業務や正式な調査への参加という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect duties, delegation records, affected data, access frequency, and the possibility of account compromise.",
+            "2. Verify the explanation of temporary reassignment or participation in an authorized investigation with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は必要な関係者に限定して証跡を保全し、情報管理責任者とアクセス見直しを検討する。"
+          ],
+          "en": [
+            "An operator should preserve evidence with restricted access and discuss access review with the responsible data owner."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "一時的な応援業務や正式な調査への参加"
+          ],
+          "en": [
+            "Temporary reassignment or participation in an authorized investigation"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "対象アカウント、職務と委任、閲覧時刻と件数、対象データ分類、接続端末を確認する。"
+          ],
+          "en": [
+            "Request account, duties and delegation, access times and counts, data classification, and source device."
+          ]
+        }
+      }
+    },
+    {
+      "id": "insider-predeparture-export",
+      "status": "template",
+      "category": "insider",
+      "title": {
+        "ja": "担当変更前後の異常な書出し",
+        "en": "Unusual export around a role transition"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1530"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "退職前の大量取得",
+            "異動前の書出し",
+            "担当変更時の大量転送",
+            "退職予定",
+            "退職前"
+          ],
+          "en": [
+            "predeparture export",
+            "role transition bulk transfer",
+            "unusual handover export",
+            "departing employee",
+            "before departure"
+          ]
+        },
+        "attack_techniques": [
+          "T1530"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "担当変更前後の大量取得は引継ぎにも持出しにも見えるため、承認範囲と実際の宛先を確認する。"
+          ],
+          "en": [
+            "Bulk export around a role change can be a handover or unauthorized transfer. approval scope and destination decide the distinction."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に引継ぎ対象、承認者、書出し量、データ分類と保存先の所有者を照合する。",
+            "2. 承認された業務引継ぎや保存期間に基づく保管という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare handover scope, approver, exported bytes, classification, and destination ownership.",
+            "2. Verify the explanation of approved handover or retention-related archiving with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は証跡へのアクセスを限定して保全し、責任者と未承認の取得制限を検討する。"
+          ],
+          "en": [
+            "An operator should preserve evidence under restricted access and discuss limiting unapproved retrieval with the responsible lead."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された業務引継ぎや保存期間に基づく保管"
+          ],
+          "en": [
+            "Approved handover or retention-related archiving"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "担当変更日、引継ぎ申請、取得時刻と件数、対象分類、保存先と共有権限を確認する。"
+          ],
+          "en": [
+            "Request transition date, handover approval, retrieval times and counts, data classification, destination, and sharing rights."
+          ]
+        }
+      }
+    },
+    {
+      "id": "availability-traffic-flood",
+      "status": "template",
+      "category": "availability",
+      "title": {
+        "ja": "大量通信によるサービス妨害",
+        "en": "DoS or traffic flood"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1498"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "DoS",
+            "DDoS",
+            "トラフィック洪水",
+            "通信フラッド"
+          ],
+          "en": [
+            "DoS",
+            "DDoS",
+            "traffic flood",
+            "network flood"
+          ]
+        },
+        "attack_techniques": [
+          "T1498"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "流入量の急増と利用不能が重なる場合、容量超過か意図的な妨害かを調べつつ可用性回復を優先する。"
+          ],
+          "en": [
+            "A traffic surge with unavailability requires assessing overload versus attack while prioritizing service recovery."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に流量、送信元分布、要求種類、回線使用率、応答遅延と影響範囲を平常値に比較する。",
+            "2. 正規の人気集中や大量配信の予定という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare traffic, source distribution, request types, link use, latency, and affected scope with normal levels.",
+            "2. Verify the explanation of legitimate demand spikes or scheduled bulk distribution with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は上流事業者と緩和や到達制限を検討し、流量証跡を保全して利用者対応へ連携する。"
+          ],
+          "en": [
+            "An operator should discuss mitigation and access restrictions with upstream providers, preserve traffic evidence, and involve service owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規の人気集中や大量配信の予定"
+          ],
+          "en": [
+            "Legitimate demand spikes or scheduled bulk distribution"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "開始時刻、流量、接続数、送信元分布、影響サービス、回線状態と通常量を確認する。"
+          ],
+          "en": [
+            "Request start time, traffic volume, connection counts, source distribution, affected services, link state, and normal volume."
+          ]
+        }
+      }
+    },
+    {
+      "id": "availability-resource-exhaustion",
+      "status": "template",
+      "category": "availability",
+      "title": {
+        "ja": "アプリ資源の枯渇",
+        "en": "Application resource exhaustion"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1499"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "資源枯渇",
+            "接続プール枯渇",
+            "CPU急増"
+          ],
+          "en": [
+            "resource exhaustion",
+            "connection pool exhausted",
+            "application CPU spike"
+          ]
+        },
+        "attack_techniques": [
+          "T1499"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "少量の要求でも重い処理や接続の占有でサービスが止まるため、流量だけで妨害を否定しない。"
+          ],
+          "en": [
+            "Costly requests or occupied connections can halt a service without high bandwidth, so volume alone cannot exclude abuse."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に要求別処理時間、CPUとメモリー、接続待ち、直前の配布と重い要求元を確認する。",
+            "2. 正規の集計処理や配布後の性能退行という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect per-request duration, CPU and memory, connection queues, recent deployments, and sources of costly requests.",
+            "2. Verify the explanation of legitimate reporting jobs or a performance regression after deployment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は重い機能や要求元の制限と縮退運用を検討し、障害証跡を保全して開発担当へ連携する。"
+          ],
+          "en": [
+            "An operator should consider limiting costly features or requesters and degraded service, preserve evidence, and involve developers."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規の集計処理や配布後の性能退行"
+          ],
+          "en": [
+            "Legitimate reporting jobs or a performance regression after deployment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "影響時間、要求別件数と処理時間、資源使用率、接続待ち、配布履歴を確認する。"
+          ],
+          "en": [
+            "Request impact interval, per-request counts and durations, resource utilization, connection queues, and deployment history."
+          ]
+        }
+      }
+    },
+    {
+      "id": "deception-decoy-touched",
+      "status": "template",
+      "category": "deception",
+      "title": {
+        "ja": "デコイやハニーポットへの接触",
+        "en": "Decoy or honeypot touched"
+      },
+      "references": [
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-DE"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "デコイ接触",
+            "ハニーポット接触",
+            "Azazelデコイ"
+          ],
+          "en": [
+            "decoy touched",
+            "honeypot hit",
+            "Azazel deception"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "通常業務で利用しないデコイへの接触は探索や侵入の手掛かりだが、診断元の誤接触も確認する。"
+          ],
+          "en": [
+            "Contact with a non-production decoy can indicate discovery or intrusion, while approved scan contact must be checked."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にデコイID、送信元、接触した機能、成功状態と同送信元の実環境アクセスを照合する。",
+            "2. 承認された診断や資産棚卸しの到達という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate decoy ID, source, touched service, success state, and access to real assets from the same source.",
+            "2. Verify the explanation of approved assessment or asset-inventory contact with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はデコイと周辺通信の証跡を保全し、送信元端末の調査や隔離を検討する。"
+          ],
+          "en": [
+            "An operator should preserve decoy and surrounding traffic evidence and consider investigating or isolating the source host."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された診断や資産棚卸しの到達"
+          ],
+          "en": [
+            "Approved assessment or asset-inventory contact"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "デコイID、時刻、送信元IP、接触操作と結果、関連する実資産の記録、診断予定を確認する。"
+          ],
+          "en": [
+            "Request decoy ID, time, source IP, interaction and result, related real-asset records, and assessment schedule."
+          ]
+        }
+      }
+    },
+    {
+      "id": "deception-canary-credential",
+      "status": "template",
+      "category": "deception",
+      "title": {
+        "ja": "カナリア資格情報の使用",
+        "en": "Canary credential used"
+      },
+      "references": [
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-DUC"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "カナリア資格情報",
+            "デコイ認証情報",
+            "ハニートークン使用"
+          ],
+          "en": [
+            "canary credential used",
+            "decoy credential",
+            "honeytoken used"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "通常の処理に使わない資格情報の使用は、保管場所へのアクセスや漏えい経路を調べる手掛かりになる。"
+          ],
+          "en": [
+            "Use of credentials excluded from normal workflows can reveal access to their storage location or a leakage path."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にトークン識別子、配置場所、認証要求元と時刻を確認し、配置場所への直前の読取に照合する。",
+            "2. 承認されたカナリア動作確認や診断という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect token identifier, placement, authentication source and time, then correlate preceding reads at the placement location.",
+            "2. Verify the explanation of approved canary validation or assessment with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者はトークンとアクセス記録を保全し、送信端末の隔離と同じ場所の実資格情報更新を検討する。"
+          ],
+          "en": [
+            "An operator should preserve token and access records and consider isolating the source and rotating real secrets stored nearby."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたカナリア動作確認や診断"
+          ],
+          "en": [
+            "Approved canary validation or assessment"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "秘密値を除いたトークンID、配置場所、認証時刻、要求元、読取記録と試験予定を確認する。"
+          ],
+          "en": [
+            "Request token ID without its secret, placement, authentication time, source, read records, and test schedule."
+          ]
+        }
+      }
+    },
+    {
+      "id": "supply-chain-dependency-update",
+      "status": "template",
+      "category": "supply_chain",
+      "title": {
+        "ja": "依存ライブラリ更新の異常",
+        "en": "Suspicious dependency update"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1195.001"
+        },
+        {
+          "source": "owasp-top10-2021",
+          "id": "A08"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "依存ライブラリ改ざん",
+            "不審な依存更新",
+            "dependency confusion"
+          ],
+          "en": [
+            "suspicious dependency update",
+            "dependency confusion",
+            "tampered package"
+          ]
+        },
+        "attack_techniques": [
+          "T1195.001"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "依存更新に伴う不審な実行は、配布元の取り違えやパッケージ侵害の可能性がある。"
+          ],
+          "en": [
+            "Suspicious execution after a dependency update may indicate source confusion or a compromised package."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に更新前後の固定版、配布元、ハッシュ、保守者変更と導入時の実行を確認する。",
+            "2. 正規の保守者移管や意図された導入処理の変更という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare pinned versions, package sources, hashes, maintainer changes, and installation-time execution.",
+            "2. Verify the explanation of legitimate maintainer transfer or intended install-time behavior changes with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は更新の展開停止と影響ビルドの隔離を検討し、配布物と導入証跡を保全する。"
+          ],
+          "en": [
+            "An operator should consider pausing rollout and isolating affected builds, preserving package artifacts and installation evidence."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "正規の保守者移管や意図された導入処理の変更"
+          ],
+          "en": [
+            "Legitimate maintainer transfer or intended install-time behavior changes"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "パッケージ名と版、配布元識別子、ハッシュ、依存差分、導入時刻、対象ビルドを確認する。"
+          ],
+          "en": [
+            "Request package and version, source identifier, hashes, dependency differences, install time, and affected builds."
+          ]
+        }
+      }
+    },
+    {
+      "id": "supply-chain-updater-anomaly",
+      "status": "template",
+      "category": "supply_chain",
+      "title": {
+        "ja": "更新配布物の信頼異常",
+        "en": "Software update trust anomaly"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1195.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "更新署名不一致",
+            "更新配布物改変",
+            "不審なアップデーター"
+          ],
+          "en": [
+            "update signature mismatch",
+            "tampered software update",
+            "suspicious updater"
+          ]
+        },
+        "attack_techniques": [
+          "T1195.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "更新の署名や配布元が期待値と違う場合、破損と配布経路侵害を区別するまで展開を見直す。"
+          ],
+          "en": [
+            "An unexpected update signature or source requires distinguishing corruption from compromised distribution before rollout continues."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に署名者、ハッシュ、配布経路と他端末の同一更新を比較し、実行有無を確認する。",
+            "2. 転送破損や承認された署名証明書の更新という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare signer, hash, distribution path, and the same update on other hosts, then check whether it ran.",
+            "2. Verify the explanation of transfer corruption or an approved signing-certificate rotation with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は配布物を保全し、展開停止と実行済み端末の隔離を検討して配布責任者へ連携する。"
+          ],
+          "en": [
+            "An operator should preserve the update, consider pausing distribution and isolating hosts where it ran, and involve release owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "転送破損や承認された署名証明書の更新"
+          ],
+          "en": [
+            "Transfer corruption or an approved signing-certificate rotation"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "製品版、期待署名者、実署名、ハッシュ、取得時刻、配布経路、実行済み端末数を確認する。"
+          ],
+          "en": [
+            "Request version, expected and observed signer, hashes, retrieval time, distribution path, and count of hosts that ran it."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-rogue-dhcp",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "未承認のDHCP応答",
+        "en": "Rogue DHCP"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1557"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "不正DHCP",
+            "未承認DHCP",
+            "DHCP競合"
+          ],
+          "en": [
+            "rogue DHCP",
+            "unauthorized DHCP",
+            "competing DHCP offers"
+          ]
+        },
+        "attack_techniques": [
+          "T1557"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "未承認のDHCP応答は端末の経路や名前解決先を変える可能性があり、正規冗長系との照合が必要になる。"
+          ],
+          "en": [
+            "An unapproved DHCP responder can redirect routing or DNS and must be distinguished from authorized redundancy."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に応答元MACと接続ポート、配布ゲートウェイとDNS、影響端末のリースを確認する。",
+            "2. 冗長DHCPサーバーや承認された移行試験という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect responder MAC and switch port, offered gateway and DNS, and leases on affected clients.",
+            "2. Verify the explanation of redundant DHCP servers or an approved migration test with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は応答とリース証跡を保全し、未承認応答元の切離しと配布設定復旧を検討する。"
+          ],
+          "en": [
+            "An operator should preserve offers and leases and consider disconnecting the unapproved responder and restoring client settings."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "冗長DHCPサーバーや承認された移行試験"
+          ],
+          "en": [
+            "Redundant DHCP servers or an approved migration test"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "観測時刻、VLAN、応答元MACとポート、配布設定、影響リースと正規サーバー一覧を確認する。"
+          ],
+          "en": [
+            "Request time, VLAN, responder MAC and port, offered settings, affected leases, and authorized server inventory."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-arp-spoofing",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "ARP偽装の疑い",
+        "en": "Possible ARP spoofing"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1557.002"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ARPスプーフィング",
+            "ARP偽装",
+            "ゲートウェイMAC変更"
+          ],
+          "en": [
+            "ARP spoofing",
+            "ARP poisoning",
+            "gateway MAC change"
+          ]
+        },
+        "attack_techniques": [
+          "T1557.002"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "同じIPのMAC対応が予期せず変わる場合、中間者による誘導か正規の切替かを確認する。"
+          ],
+          "en": [
+            "An unexpected IP-to-MAC change may be interception or an authorized network failover."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に変更前後のIPとMAC、発生VLAN、接続ポート、重複応答と通信経路を比較する。",
+            "2. ゲートウェイ冗長切替やNIC交換という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare old and new IP/MAC mappings, VLAN, switch ports, duplicate replies, and traffic paths.",
+            "2. Verify the explanation of gateway failover or network-interface replacement with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は対応表と通信記録を保全し、未承認端末の切離しと影響セッション確認を検討する。"
+          ],
+          "en": [
+            "An operator should preserve mapping and traffic records and consider disconnecting unapproved devices and reviewing affected sessions."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "ゲートウェイ冗長切替やNIC交換"
+          ],
+          "en": [
+            "Gateway failover or network-interface replacement"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "変更時刻、VLAN、IPとMACの対応履歴、接続ポート、冗長系の状態と変更申請を確認する。"
+          ],
+          "en": [
+            "Request change time, VLAN, IP/MAC history, switch ports, redundancy status, and approved changes."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-rogue-access-point",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "未承認の無線アクセスポイント",
+        "en": "Rogue access point"
+      },
+      "references": [
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-NNI"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "不正アクセスポイント",
+            "偽AP",
+            "未承認無線AP"
+          ],
+          "en": [
+            "rogue access point",
+            "evil twin",
+            "unauthorized wireless AP"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "見慣れたSSIDでも未承認BSSIDや設定差があれば、偽装や管理外の無線接続を疑う。"
+          ],
+          "en": [
+            "A familiar SSID with an unapproved BSSID or different settings may indicate impersonation or unmanaged wireless access."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にBSSID、暗号方式、設置位置、接続端末と有線側の接続先を正規台帳に照合する。",
+            "2. 承認されたAP交換や近隣施設の同名SSIDという説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare BSSID, encryption, location, client devices, and wired uplink with the authorized inventory.",
+            "2. Verify the explanation of approved AP replacement or a nearby organization using the same SSID with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は観測証跡を保全し、未承認APの切離しと接続端末の資格情報確認を検討する。"
+          ],
+          "en": [
+            "An operator should preserve observations and consider disconnecting an unapproved AP and reviewing credentials used by its clients."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたAP交換や近隣施設の同名SSID"
+          ],
+          "en": [
+            "Approved AP replacement or a nearby organization using the same SSID"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "観測時刻、SSIDとBSSID、位置、暗号設定、接続端末、有線ポートとAP台帳を確認する。"
+          ],
+          "en": [
+            "Request time, SSID and BSSID, location, encryption settings, clients, wired port, and AP inventory."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-unknown-device",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "未知の新規端末",
+        "en": "Unknown new network device"
+      },
+      "references": [
+        {
+          "source": "mitre-d3fend",
+          "id": "D3-NNI"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "未知端末",
+            "未登録端末",
+            "新規MAC"
+          ],
+          "en": [
+            "unknown network device",
+            "unregistered device",
+            "new MAC address"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "未登録端末は未承認接続の候補だが、ランダムMACや棚卸し遅延による見かけの新規性もある。"
+          ],
+          "en": [
+            "An unregistered device may be unauthorized, though randomized MACs and inventory lag can create apparent novelty."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初にMAC、IP、接続ポート、端末の識別情報と最初の通信先を資産台帳に照合する。",
+            "2. 端末交換や無線端末のMACランダム化という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare MAC, IP, switch port, device identity, and initial destinations with the asset inventory.",
+            "2. Verify the explanation of device replacement or wireless MAC randomization with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は接続記録を保全し、所有者が確認できない場合に接続制限と端末確認を検討する。"
+          ],
+          "en": [
+            "An operator should preserve connection records and consider restricting access and inspecting the device if ownership cannot be verified."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "端末交換や無線端末のMACランダム化"
+          ],
+          "en": [
+            "Device replacement or wireless MAC randomization"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "初回観測時刻、MACとIP、VLANとポート、識別情報、通信先、資産所有者を確認する。"
+          ],
+          "en": [
+            "Request first-seen time, MAC and IP, VLAN and port, device identity, destinations, and asset owner."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-dns-resolver-change",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "DNSリゾルバーの予期しない変更",
+        "en": "Unexpected DNS resolver change"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1557"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "DNSリゾルバー変更",
+            "DNS設定改変",
+            "未知のDNSサーバー"
+          ],
+          "en": [
+            "unexpected DNS resolver",
+            "DNS settings changed",
+            "unknown DNS server"
+          ]
+        },
+        "attack_techniques": [
+          "T1557"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "名前解決先の変更は通信誘導や監視回避の候補で、端末設定と配布元のどちらが変わったかを確認する。"
+          ],
+          "en": [
+            "A resolver change may redirect traffic or evade visibility. determine whether it originated on the client or in network provisioning."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に旧新リゾルバー、設定変更者、DHCP配布値と名前解決結果の差を確認する。",
+            "2. 承認されたDNS移行やVPN接続時の設定変更という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First inspect old and new resolvers, change actor, DHCP-provided values, and differences in resolution results.",
+            "2. Verify the explanation of approved DNS migration or settings applied by a VPN connection with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は設定と問い合わせ証跡を保全し、未承認リゾルバーの利用制限と設定復旧を検討する。"
+          ],
+          "en": [
+            "An operator should preserve settings and query evidence and consider restricting unapproved resolver use and restoring configuration."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認されたDNS移行やVPN接続時の設定変更"
+          ],
+          "en": [
+            "Approved DNS migration or settings applied by a VPN connection"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "変更時刻、端末、旧新のDNS識別子、変更主体、DHCPとVPN記録、解決結果を確認する。"
+          ],
+          "en": [
+            "Request change time, host, old and new resolver identifiers, actor, DHCP and VPN records, and resolution results."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-route-change",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "予期しない経路変更",
+        "en": "Unexpected gateway or route change"
+      },
+      "references": [
+        {
+          "source": "mitre-attack",
+          "id": "T1557"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "ゲートウェイ改変",
+            "不審な経路追加",
+            "デフォルトルート変更"
+          ],
+          "en": [
+            "unexpected gateway change",
+            "suspicious route added",
+            "default route changed"
+          ]
+        },
+        "attack_techniques": [
+          "T1557"
+        ],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "想定外の経路追加は通信の迂回や監視の欠落につながるため、変更主体と実際の到達先を確認する。"
+          ],
+          "en": [
+            "An unexpected route can redirect traffic or reduce visibility, requiring validation of its origin and actual next hop."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に経路差分、変更主体、次ホップのMACと接続先、影響宛先とVPN状態を比較する。",
+            "2. 承認された回線切替やVPNによる経路追加という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First compare route differences, actor, next-hop MAC and uplink, affected destinations, and VPN state.",
+            "2. Verify the explanation of approved circuit failover or routes installed by a VPN with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は経路と通信証跡を保全し、未承認経路の利用制限と復旧をネットワーク担当と検討する。"
+          ],
+          "en": [
+            "An operator should preserve route and traffic evidence and discuss restricting unapproved paths and recovery with network owners."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "承認された回線切替やVPNによる経路追加"
+          ],
+          "en": [
+            "Approved circuit failover or routes installed by a VPN"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "変更時刻、旧新の経路、変更者、次ホップ、影響範囲、VPNと保守記録を確認する。"
+          ],
+          "en": [
+            "Request change time, old and new routes, actor, next hop, affected scope, VPN records, and maintenance approval."
+          ]
+        }
+      }
+    },
+    {
+      "id": "edge-misconfiguration",
+      "status": "template",
+      "category": "edge_network",
+      "title": {
+        "ja": "設定不整合による接続障害",
+        "en": "Connectivity misconfiguration"
+      },
+      "references": [
+        {
+          "source": "owasp-top10-2021",
+          "id": "A05"
+        },
+        {
+          "source": "nist-sp800-61r3",
+          "id": "respond"
+        }
+      ],
+      "match": {
+        "keywords": {
+          "ja": [
+            "設定不整合",
+            "誤設定",
+            "変更後の接続障害"
+          ],
+          "en": [
+            "misconfiguration",
+            "configuration drift",
+            "connectivity failure after change"
+          ]
+        },
+        "attack_techniques": [],
+        "context_kinds": [],
+        "min_score": 1
+      },
+      "guidance": {
+        "interpretation": {
+          "ja": [
+            "承認済み変更と一致する接続障害は設定不整合の候補だが、侵害の証跡があれば別途調査する。"
+          ],
+          "en": [
+            "A failure matching an approved change may be misconfiguration, while evidence of compromise still requires separate investigation."
+          ]
+        },
+        "checks": {
+          "ja": [
+            "1. 最初に障害開始と設定差分、影響範囲、変更者を照合し、不審認証や端末間実行の有無を確認する。",
+            "2. アドレス重複やVLANと名前解決設定の不一致という説明を、承認記録と担当者への確認で検証する。"
+          ],
+          "en": [
+            "1. First correlate failure onset, configuration differences, scope, and actor, then check for suspect logins or cross-host execution.",
+            "2. Verify the explanation of address conflicts or mismatched VLAN and DNS settings with approvals and the owner."
+          ]
+        },
+        "first_response": {
+          "ja": [
+            "担当者は設定証跡を保全して承認された復旧を検討し、侵害兆候があれば対応責任者へ連携する。"
+          ],
+          "en": [
+            "An operator should preserve configuration evidence and consider an approved recovery, escalating any indicators of compromise."
+          ]
+        },
+        "benign": {
+          "ja": [
+            "アドレス重複やVLANと名前解決設定の不一致"
+          ],
+          "en": [
+            "Address conflicts or mismatched VLAN and DNS settings"
+          ]
+        },
+        "missing": {
+          "ja": [
+            "変更時刻と差分、影響端末、接続試験結果、認証と実行の記録、変更承認を確認する。"
+          ],
+          "en": [
+            "Request change time and differences, affected hosts, connectivity results, authentication and execution records, and approval."
+          ]
+        }
+      }
+    }
+  ]
+}
