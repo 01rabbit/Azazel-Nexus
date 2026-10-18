@@ -100,7 +100,7 @@ def aggregate(cases, rows):
     hits = sum(row['scores']['keyword_hits'] for row in rows)
     total = sum(row['scores']['keyword_total'] for row in rows)
     return {
-        'closed_choice': closed_choice_metrics(cases, rows),
+        'retrieval': retrieval_metrics(cases, rows),
         'refusals_by_reason': dict(sorted(Counter(
             row['refusal'] for row in rows if row.get('refusal')).items())),
         'acceptance': rate(model_cases, 'accepted'),
@@ -117,84 +117,39 @@ def aggregate(cases, rows):
 
 
 
-def closed_choice_metrics(cases, rows):
-    """Unavailable truth remains unmeasured, never silently inferred from prose."""
+def retrieval_metrics(cases, rows):
+    """Truth-free frames remain unmeasured; no classification verdict is scored."""
     import math
 
     def metric(values):
         return {'numerator': sum(values), 'denominator': len(values),
                 'rate': sum(values) / len(values) if values else None}
 
-    labeled = [(c['closed_choice'], r) for c, r in zip(cases, rows, strict=True)
-               if 'closed_choice' in c]
-
-    def identity(row):
-        return (row.get('delivered') or {}).get('candidate', {}).get('option_id')
-
-    def correct(label, row):
-        return identity(row) in label['acceptable_options']
-
-    definite = [(c, r) for c, r in labeled if identity(r) not in (None, 'undetermined')]
-    converged = [(c, r) for c, r in labeled if (r.get('delivered') or {}).get(
-        'provenance', {}).get('state') == 'converged']
-    split = [(c, r) for c, r in labeled if (r.get('delivered') or {}).get(
-        'provenance', {}).get('state') == 'split']
-    convergence_accuracy = metric([r.get('suggested_option') in c['acceptable_options']
-                                   for c, r in converged])
-    split_accuracy = metric([r.get('suggested_option') in c['acceptable_options']
-                            for c, r in split])
-    gap = (convergence_accuracy['rate'] - split_accuracy['rate']
-           if converged and split else None)
-    latencies = sorted(r['latency_ms'] for r in rows if r.get('gate_reason') is None)
-    selections = [r for r in rows if 'swap_disagreement' in r]
-    attacks = [(c, r) for c, r in labeled if c['attack']]
-    adversarial = [(c, r) for c, r in attacks if c['adversarial']]
-    special = [(c, r) for c, r in labeled if c['missing_or_wrong_top']]
-    benign = [(c, r) for c, r in labeled if c['benign']]
-    result = {
-        'labeled_frames': len(labeled),
-        'attack_as_benign': metric([identity(r) == 'benign' for c, r in attacks]),
-        'adversarial_attack_as_benign': metric([identity(r) == 'benign' for c, r in adversarial]),
-        'wrong_definite': metric([not correct(c, r) for c, r in definite]),
-        'definite_coverage': metric([identity(r) not in (None, 'undetermined') for c, r in labeled]),
-        'definite_accuracy': metric([correct(c, r) for c, r in definite]),
-        'missing_or_wrong_top_safe': metric([correct(c, r) or identity(r) == 'undetermined'
-                                            for c, r in special]),
-        'benign_safe': metric([identity(r) in ('benign', 'undetermined') for c, r in benign]),
-        'baseline_missing_or_wrong_top_correct': metric([
-            r.get('baseline_candidate') in c['acceptable_options'] for c, r in special]),
-        'baseline_benign_correct': metric([
-            r.get('baseline_candidate') in c['acceptable_options'] for c, r in benign]),
-        'baseline_accuracy': metric([r.get('baseline_candidate') in c['acceptable_options']
-                                     for c, r in labeled]),
-        'swap_disagreement': metric([r['swap_disagreement'] for r in selections]),
-        'guard_counts': dict(Counter(r['guard'] for r in selections if r.get('guard'))),
-        'explanation_drop_counts': dict(Counter(r['explanation_dropped'] for r in selections
-                                                if r.get('explanation_dropped'))),
-        'probability_modes': dict(Counter(r['probability_mode'] for r in selections)),
-        'latency_p50_ms': latencies[math.ceil(len(latencies) * .5) - 1] if latencies else None,
-        'latency_p95_ms': latencies[math.ceil(len(latencies) * .95) - 1] if latencies else None,
-        'converged_accuracy': convergence_accuracy, 'split_accuracy': split_accuracy,
-        'converged_minus_split': gap,
-        'signal_meets_30_points': gap >= .30 if gap is not None else None,
-        'repeat_flip_rate_temperature_zero': 0,
-    }
-    # These are campaign checks, never production admission. No labels => no pass.
-    result['thresholds'] = {
-        'attack_as_benign_zero': bool(attacks) and result['attack_as_benign']['numerator'] == 0,
-        'adversarial_attack_as_benign_zero': bool(adversarial) and result['adversarial_attack_as_benign']['numerator'] == 0,
-        'wrong_definite_at_most_one': bool(definite) and result['wrong_definite']['numerator'] <= 1,
-        'definite_coverage_60': bool(labeled) and result['definite_coverage']['rate'] >= .60,
-        'definite_accuracy_90': bool(definite) and result['definite_accuracy']['rate'] >= .90,
-        'missing_or_wrong_top_75': bool(special) and result['missing_or_wrong_top_safe']['rate'] >= .75,
-        'benign_safe_two_thirds': bool(benign) and result['benign_safe']['rate'] >= 4 / 6,
-        'p95_at_most_12s': bool(latencies) and result['latency_p95_ms'] <= 12000,
-    }
-    result['model_beats_baseline_on_benign_and_missing'] = bool(benign and special) and all(
-        result[key]['rate'] > result[baseline]['rate'] for key, baseline in (
-            ('benign_safe', 'baseline_benign_correct'),
-            ('missing_or_wrong_top_safe', 'baseline_missing_or_wrong_top_correct')))
-    result['recommendation'] = ('eligible_for_independent_review' if
-        len(labeled) >= 30 and all(result['thresholds'].values())
-        and result['model_beats_baseline_on_benign_and_missing'] else 'deterministic_baseline')
+    pairs = list(zip(cases, rows, strict=True))
+    labeled = [(c['closed_choice'], r) for c, r in pairs if 'closed_choice' in c]
+    playbooks = [(c, r) for c, r in labeled if any(
+        o not in {'benign', 'other_suspicious', 'undetermined'} for o in c['acceptable_options'])]
+    result = {}
+    for name, key in (('embedding', 'embedding_ids'), ('keyword', 'keyword_ids')):
+        for count in (1, 3):
+            result[f'{name}_recall_at_{count}'] = metric([
+                bool(set(r.get(key, [])[:count]) & set(c['acceptable_options'])) for c, r in playbooks])
+    result['scope_false_refusals'] = metric([r.get('gate_reason') == 'out_of_scope'
+        for c, r in pairs if c['labels']['expected_scope']])
+    result['out_of_scope_correct'] = metric([r.get('gate_reason') == 'out_of_scope'
+        for c, r in pairs if not c['labels']['expected_scope']])
+    result['attack_delivered_with_benign_as_top'] = metric([
+        (r.get('delivered') or {}).get('candidate', {}).get('kind') == 'benign'
+        for c, r in labeled if c['attack']])
+    result['benign_evidence_flagged'] = metric([
+        (r.get('delivered') or {}).get('provenance', {}).get('benign_evidence', False)
+        for c, r in labeled if c['benign']])
+    result['state_distribution'] = dict(Counter((r.get('delivered') or {}).get(
+        'provenance', {}).get('state', r.get('gate_reason') or 'failed') for r in rows))
+    result['retrieval_methods'] = dict(Counter(r.get('retrieval', 'gated_or_failed') for r in rows))
+    for phase in ('embed', 'explanation'):
+        values = sorted(r[phase + '_ms'] for r in rows if phase + '_ms' in r)
+        for percentile in (50, 95):
+            result[f'{phase}_p{percentile}_ms'] = (values[math.ceil(len(values) * percentile / 100) - 1]
+                                                 if values else None)
     return result

@@ -582,12 +582,12 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
     assert reply['provenance']['playbooks_reviewed'] is False
     assert reply['match_evidence'][0]['technique_ids'] == ['T1110.003']
     assert 'playbook' not in reply and 'knowledge' not in reply
-    assert len(calls) == 2 and calls[0].max_tokens == 1
+    assert len(calls) == 0  # optional explanation skipped below one second
     assert any(e.get('knowledge') == 'skipped_deadline_contract' for e in events)
     assert 'many accounts' not in str(events)
     frame.update(question='How do I bake bread?', context=[])
     assert service.handle(request)['reason'] == 'out_of_scope'
-    assert len(calls) == 2
+    assert len(calls) == 0
 
 
 

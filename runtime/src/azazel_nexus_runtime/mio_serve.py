@@ -33,16 +33,10 @@ class LocalInferenceRequest:
     prompt_messages: tuple[tuple[str, str], ...] = field(repr=False)
     max_tokens: int = 256
     temperature: float = 0.0
-    grammar: str | None = None
     response_format: dict | None = None
-    top_logprobs: int = 0
 
     def __post_init__(self) -> None:
-        if (type(self.top_logprobs) is not int or not 0 <= self.top_logprobs <= 20
-                or (self.grammar is not None and (type(self.grammar) is not str
-                                                  or len(self.grammar) > 256))
-                or (self.response_format is not None and type(self.response_format) is not dict)
-                or (self.grammar is not None and self.response_format is not None)):
+        if self.response_format is not None and type(self.response_format) is not dict:
             raise LocalServerRefused("invalid inference constraint")
         if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 32768:
             raise LocalServerRefused("invalid token limit")
@@ -72,13 +66,8 @@ def inference_document(request: LocalInferenceRequest, *, stream: bool = False) 
         "stream": stream, "response_format": advisory_response_format(),
         "cache_prompt": False,
     }
-    if request.grammar is not None:
-        document.pop("response_format")
-        document["grammar"] = request.grammar
-    elif request.response_format is not None:
-        document["response_format"] = request.response_format
-    if request.top_logprobs:
-        document.update(logprobs=True, top_logprobs=request.top_logprobs)
+    if request.response_format is not None:
+        document['response_format'] = request.response_format
     if stream:
         document["stream_options"] = {"include_usage": True}
     return document
@@ -90,7 +79,6 @@ class LocalInferenceResult:
     tokens_in: int
     tokens_out: int
     timings: dict[str, float]
-    logprobs: dict | None = field(default=None, repr=False)
 
 
 def _deadline(seconds: float) -> float:
@@ -136,11 +124,14 @@ class LocalServer:
                 self.on_budget_spent("mio-local")
             raise LocalServerRefused("restart budget spent; provider fenced")
 
-    def start(self) -> None:
+    def start(self, deadline_s: float | None = None) -> None:
+        end = _deadline(self.start_deadline_s)
+        if deadline_s is not None:
+            end = min(end, _deadline(deadline_s))
         if self.budget.fenced:
             self.state = LifecycleState.FENCED
             raise LocalServerRefused("provider fenced")
-        if self._child.alive and self.health():
+        if self._child.alive and self.health(deadline_s=min(0.2, max(0.001, end - time.monotonic()))):
             return
         if self._child.process is not None:
             self.stop()
@@ -151,7 +142,6 @@ class LocalServer:
         if self.socket_path.exists() or self.socket_path.is_symlink():
             raise LocalServerRefused("serving socket already exists")
         self._started = True
-        end = _deadline(self.start_deadline_s)
         try:
             self._child.start()
             self.state = LifecycleState.STARTED
@@ -204,10 +194,31 @@ class LocalServer:
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError
                     timings[key] = float(value)
-            return LocalInferenceResult(text, tokens_in, tokens_out, timings,
-                                        data["choices"][0].get("logprobs"))
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LocalServerRefused("invalid inference response") from None
+
+    def embed(self, texts, deadline_s):
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        if (type(texts) is not list or not 1 <= len(texts) <= 8
+                or any(type(t) is not str or not t for t in texts)):
+            raise LocalServerRefused("invalid embedding input")
+        body = json.dumps({'input': texts}, ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_REQUEST_BYTES:
+            raise LocalServerRefused("request exceeds byte ceiling")
+        try:
+            data = json.loads(self._http("POST", "/v1/embeddings", body, end))['data']
+            if (type(data) is not list or len(data) != len(texts)
+                    or any(type(item['index']) is not int for item in data)
+                    or sorted(item['index'] for item in data) != list(range(len(texts)))):
+                raise ValueError
+            from .mio_embedding import normalized
+
+            return [normalized(item['embedding']) for item in sorted(data, key=lambda i: i['index'])]
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid embedding response") from None
 
     def _http(self, method: str, path: str, body: bytes, end: float) -> bytes:
         def remaining() -> float:

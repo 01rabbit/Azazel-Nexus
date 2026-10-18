@@ -117,13 +117,13 @@ keyword hits, then entry ID. Default limit is three. Every `Match.evidence` expo
 exact `keywords`, `technique_ids`, and sorted `context_kinds` that contributed.
 `benign` and `undetermined` are reserved entry IDs to avoid machine-option collisions.
 
-The [closed-choice local pipeline](mio-local-runtime.md) gives each candidate its
-own title/one-line interpretation budget, then adds suspicious-outside-classes and
-benign hypotheses. Two reversed-order letter selections yield a system candidate;
-only a definite candidate receives a conditioned explanation. Guidance remains
-trusted labeled text, separate from all model prose. An unreviewed-template banner
-appears if any used match has template status. Matching and model candidates are
-operator aids, not conclusions or calibrated confidence.
+The [local retrieval pipeline](mio-local-runtime.md) ranks bilingual document
+embeddings by cosine similarity. Keyword matching remains the displayed evidence
+and explicit fallback. All three candidates retain their own title and
+interpretation budgets; the model may only explain the top candidate. Benign is
+an alternative hypothesis and cannot replace attack candidates. Guidance remains
+trusted labeled text, separate from model prose, with the template notice and
+local-inference provenance banner. Similarity does not establish correctness.
 
 ## Production integration boundary
 
@@ -131,7 +131,7 @@ operator aids, not conclusions or calibrated confidence.
 `main()` wires the runtime `knowledge_client.lookup_context`, using
 `KnowledgeRef` from the library's `lite_import`; locald has no structural duplicate.
 
-The closed-choice path skips this optional synchronous lookup until its callable
+The retrieval path skips this optional synchronous lookup until its callable
 accepts a remaining deadline; benchmark fixtures can still supply references.
 
 `main()` now resolves the ACTIVE Mission Pack's `reasoning_playbook` components
@@ -169,7 +169,7 @@ fails to no playbooks with an audited reason, as with unavailable Knowledge sock
 access. The consumer reads the existing configuration subset needed for selection;
 it does not run CLI LUKS/resource probes or perform admission/activation writes.
 
-`LocalSocketClient` and `mio_entryd` strictly validate the new closed-choice machine
+`LocalSocketClient` and `mio_entryd` strictly validate the retrieval machine
 contract (`candidate`, `alternatives`, `match_evidence`, `provenance`,
 `explanation_source`). The former `playbook` and `knowledge` reply envelopes are
 removed. Missing or malformed machine fields refuse a local advisory; gated replies
@@ -178,54 +178,32 @@ path, command-line authority or environment bypass exists in locald.
 
 ## Offline quality evaluation
 
-The runner accepts `--eval-set PATH` (any positive number of unique frames),
-`--playbooks PATH[,PATH...]` and `--knowledge-fixture PATH`. The existing 14-frame
-file is development data only. Runner and runtime use the same two-pass and
-conditioned-explanation orchestration. Container scripts forward `--eval-set`;
-use an existing read-only `/src` or `/models` path. Outputs remain `quality.json`
-and Japanese `summary.md`, with hashes and fixed deployment temperature zero.
+The runner accepts `--eval-set PATH`, `--embedding-model PATH`,
+`--playbooks PATH[,PATH...]` and `--knowledge-fixture PATH`. The embedding server
+is separate from the optional explanation server, with the same pinned binary
+and AF_UNIX transport. It stops in cleanup; cache files contain playbook vectors
+only. No model weights are copied into the repository. Output is JSON plus a
+Japanese summary. Both runtime and bench use the same deterministic decision and
+optional-explanation pipeline.
 
-For candidate scoring, each case optionally adds this top-level truth annotation,
-authored independently for held-out evaluation (the existing `labels` remain):
+The existing 14 frames and former `heldout_set.json` (30 frames) are now dev data.
+Thresholds are provisional: SIM_MIN=0.55, GAP_MIN=0.09, SCOPE_MIN=0.40. The supplied
+probe covers only the latter 30; missing real-model measurements for the 14 must
+be reported as unmeasured. Final pass/fail requires a NEW supplied held-out set.
 
-```json
-{
-  "closed_choice": {
-    "acceptable_options": ["auth-password-spraying"],
-    "attack": true,
-    "benign": false,
-    "adversarial": false,
-    "missing_or_wrong_top": false
-  }
-}
-```
+Existing truth annotations named `closed_choice` remain compatible data:
+`acceptable_options`, `attack`, `benign`, `adversarial`, `missing_or_wrong_top`.
+They no longer cause model selection. Recall@1/@3 is scored only for frames with
+a playbook label; missing or failed retrieval stays in its denominator. Keyword
+baseline recall is reported alongside embedding recall. Other metrics are scope
+false refusals, out-of-scope correct, attack delivered with benign as primary
+(structurally zero), benign evidence flagged, state/method distributions, and
+embedding/explanation p50/p95 latency separately. No truth is inferred from prose.
+No letter probabilities, order-swap or model verdict accuracy is measured.
 
-Unannotated data has zero truth denominators and cannot pass candidate evaluation.
-The evaluator never invents truth from model prose. Supply about 30 independently
-authored held-out frames: about 10 attacks with the right playbook, 6 benign hard
-negatives (including no lexicon cue), 4 missing/right-class-or-wrong-top cases,
-4 ambiguous and 6 adversarial cases (planted benign log text and injection).
-Do not tune `MARGIN_MIN=0.10` on held-out data. External held-out authorship cannot
-be established by the runner; campaign owners must document it separately.
-
-Metrics include attack delivered as benign (target zero, including adversarial),
-wrong definite (at most one), definite coverage (at least 60%), definite accuracy
-(at least 90%), missing/wrong-top correct-or-undetermined (at least 3/4), benign
-benign-or-undetermined (at least 4/6), and total pipeline latency p50/p95 (p95 at
-most 12 seconds on aarch64 4 CPU / 8 GiB). Failures stay in denominators. Deterministic
-baseline is top match, never benign, or `other_suspicious` without a match; both
-baseline accuracy and special-row correctness are recorded. Guard counts,
-explanation-drop counts, probability modes and order-swap disagreement are explicit.
-At temperature zero run-to-run flip rate is trivially zero. Converged-minus-split
-accuracy uses the pre-abstention suggested candidate and must reach 30 percentage
-points before that signal can be retained; otherwise drop the signal.
-
-With about 20 attacks, zero errors still gives only about a 14% one-sided 95%
-upper error bound. The Japanese summary records this limitation. If the model
-fails zero-attack-as-benign or does not beat baseline on benign and missing/wrong-top
-rows, the campaign recommendation remains `deterministic_baseline`. No deployment
-or admission changes occur automatically. Independent evaluation and a real image
-run remain necessary; these tests do not claim measured improvement or HG-05.
+Collector-controlled kinds are a trust assumption; planted system-item text
+remains a risk even after negation and injection guards. Retrieval scores and
+fake endpoint latency do not provide admission or hardware evidence.
 
 ## Attribution and limits
 

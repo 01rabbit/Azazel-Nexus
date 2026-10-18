@@ -144,6 +144,7 @@ def llama_server_record(
     ctx: int = 2048,
     threads: int = 2,
     max_tokens: int = 256,
+    embedding: bool = False,
 ) -> RuntimeBinary:
     """Freeze benchmark/harness inputs into a record; grant no admission.
 
@@ -165,7 +166,9 @@ def llama_server_record(
         version=binary.version,
         digest=binary.digest,
         argv=(binary.executable, "-m", str(model_path), "--host", str(socket_path),
-              "-c", str(ctx), "-t", str(threads), "--no-webui", "-n", str(max_tokens)),
+              "-c", str(ctx), "-t", str(threads), "--no-webui", "-n", str(max_tokens),
+              *(("--embedding", "--pooling", "cls", "-ub", str(ctx), "-b", str(ctx), "-ngl", "0")
+                if embedding else ())),
     )
 
 

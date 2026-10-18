@@ -212,107 +212,88 @@ The M.I.O. status expression is unchanged:
 > execution unavailable pending hardware evidence and provider integration
 
 
-## 8. Closed-choice local advice
+## 8. Local embedding retrieval (v3)
 
 Production admission remains closed: `RUNTIMES` is empty and HG-05 is unmeasured.
-The following pipeline runs only with explicitly injected admitted test/bench
-components. It adds no authority, environment settings or remote route. P2/P3
-frames remain NEVER_REMOTE, including when a local attempt fails.
+Injected test/bench components grant no production authority. P2/P3 remain
+NEVER_REMOTE. There is no model verdict or letter selection.
 
-After the existing scope/information gate and admission checks, deterministic
-matching supplies at most three playbooks. Each option has its own 160-character
-title and 160-character first interpretation line, independent of the separate
-1200-character reference cap. `other_suspicious` and `benign` are always options;
-`undetermined` is system-derived and never offered to the model.
+A second `LocalServer` uses the same pinned llama-server binary over AF_UNIX,
+with `--embedding --pooling cls`, CPU execution and no network. It embeds bge-m3
+Q8_0 documents: Japanese/English titles, first interpretation in each language,
+and all Japanese/English keywords, exactly matching the development probe.
+Queries are question + newline + context texts separated by newlines. Normalized
+cosine similarity supplies at most three candidates, with entry ID as a stable
+tie-break. Keyword/technique/context-kind hits are displayed as 照合の根拠 only.
 
-Two temperature-zero requests use a grammar permitting exactly one A–E letter,
-with the options reversed on the second pass. The user message and selection
-instructions are otherwise identical. Letter probabilities are mapped back to
-option IDs and averaged. Disagreeing argmax selections or a top-minus-runner-up
-margin below `MARGIN_MIN=0.10` produce `undetermined`. This threshold is provisional,
-not tuned on held-out data and not a precision claim. Without a complete usable
-single-token probability distribution on both passes, only selection agreement
-is used; no margin is invented. Invalid letters fail the request safely.
+The locald-owned writable directory holds a document-vector cache keyed by
+composed library content/layer digests and embedding model digest. It contains no
+situation text. Reloading changed libraries invalidates the in-memory key; the
+first admitted retrieval prepares documents, loading a bounded integrity-checked
+cache or recomputing it in batches. Writes stage in a private temporary file,
+fsync, then atomically promote. Invalid checksums, dimensions or vectors cause
+recomputation. The checksum detects corruption; locald ownership is the cache's
+trust boundary. An unavailable embedding runtime uses the keyword baseline,
+with audited method `keyword` and visible 「照合は簡易方式」. Such fallback has no
+fabricated similarity and can never produce a clear state.
 
-Benign is retained only without an injection marker in the question or context,
-and with affirmative evidence in a system-sourced kind: `change_record`,
-`change_ticket`, `maintenance_window`, `asset_inventory`, `baseline`, `schedule`,
-`approval_record`. Alert, log and telemetry kinds cannot establish benign.
-English terms require token boundaries; Japanese terms require term boundaries.
-Simple negations such as 未承認 / 不承認 / 承認なし / not approved / unapproved /
-unplanned / unscheduled veto that item. A failed guard yields `undetermined`,
-never an attack class. The integrating collector must assign `kind` from trusted
-configuration, never copy it from log content. Attacker text inside a legitimate
-system-sourced item remains a residual risk; these lexical guards do not establish
-semantic truth or authenticate a change approval.
+Scope rejects only when the existing security lexicon misses AND maximum cosine
+similarity is below SCOPE_MIN=0.40. The existing insufficient-information check
+is retained. Entryd defers scope to locald because it has no embedding scores;
+it still handles the existing insufficient-information gate. Runtime admission,
+reserve, artifact and provider gates must pass before embeddings can execute.
 
-For a definite candidate, a separate conditioned JSON generation returns only
-`reason`, `check_1..3`, `missing` (each at most 160 characters). Reason must contain
-an exact quoted situation phrase of at least three characters. Existing instruction,
-Unicode, language, lexical grounding and degenerate-output checks apply to every
-model field. Opposite-class reason vocabulary drops the explanation. Negation
-semantics are intentionally conservative: even a negated opposite term can drop
-it. Explanation failures preserve outcome `advisory`, the candidate and trusted
-text, with audit reason `explanation_dropped:<fixed reason>`. Undetermined skips
-explanation. Untrusted injection-bearing items cannot ground or supply quotations.
-The older advisory reader remains a shared lexical validator; its free verdict
-schema is no longer a local service response.
+Candidates are 「該当する可能性のある類型（類似度順の候補）」 with similarities
+rounded to two decimals. Deterministic states use provisional development values
+SIM_MIN=0.55 and GAP_MIN=0.09:
 
-One monotonic absolute deadline starts before frame processing. Each generation
-receives only the remaining budget, reserving 20 ms for delivery; explanation is
-skipped with less than one second left. An explanation timeout keeps the validated
-candidate. Optional Knowledge lookup is skipped as `skipped_deadline_contract`:
-its existing synchronous callable cannot accept a remaining budget. Bench fixtures
-can still supply bounded Knowledge references to explanation. As with existing
-HTTP transport, the injected server must honor the supplied deadline; no Python
-wrapper can cancel an arbitrary blocking injected callable.
+- 「候補が明確」: top1 >= SIM_MIN and top1 minus top2 >= GAP_MIN.
+- 「候補が拮抗」: other above-threshold cases; a lone candidate has no measured gap.
+- 「該当する類型なし」: top1 below SIM_MIN; generic trusted checks and
+  other_suspicious wording, with no model explanation.
+- 「正当な活動の根拠あり（要確認）」: affirmative, non-negated support in a
+  collector-controlled system item and no injection. Benign is first among
+  alternatives, never the primary candidate, and state cannot be clear.
 
-## 9. Delivered provenance and process boundary
+The system-kind allowlist is `change_record`, `change_ticket`,
+`maintenance_window`, `asset_inventory`, `baseline`, `schedule`, `approval_record`.
+Alert/log/telemetry cannot establish benign evidence. Boundaries and conservative
+item-wide negation guards remain. Collectors must assign kinds from trusted
+configuration, never from log text. Planted text inside a system-sourced item is
+a residual risk. Similarity is not correctness or calibrated confidence.
 
-Every document starts with the fixed Japanese or English local-small-model
-provenance banner, explicitly saying that candidates are not conclusions and an
-operator must verify evidence. Any template playbook adds the unreviewed-template
-notice. Candidate and other hypotheses use system-set labels. Matcher evidence
-lists keyword, technique-ID and context-kind hits. Other candidates retain equal
-title prominence, including benign as a hypothesis. State says converged or split;
-there are no high/medium/low confidence labels. Measuring precision before adding
-such labels remains follow-up work.
+## 9. Optional explanation and delivery
 
-`fields` contains system labels, separate trusted check/first-response/missing
-fields per playbook, and separate `model_reason`, `model_check_1..3`, `model_missing`
-fields only when the explanation passes. Without matches, fixed generic trusted
-checks/missing are supplied. Citations are deterministic whole fact tokens from
-retained situation text, capped at 512 characters and explicitly marked untrusted.
-The display evidence preview is capped at 1000 characters; full evidence is in
-machine fields. Trusted text is never joined with model text.
+At most one explanation generation is conditioned on the top candidate.
+`reason`, `check_1..3`, `missing` are <=160 characters and labeled モデル生成.
+Reason must quote retained situation text, with the existing language, grounding,
+instruction, degeneration and opposite-class checks. Any refusal, timeout or
+provider error drops model text and preserves candidate/trusted guidance.
+No-class results skip generation. The fixed provenance banner and template notice
+remain. Trusted procedures and model prose stay in visibly separate fields;
+citations are deterministic and marked as untrusted situation data.
 
-The machine contract is exactly `candidate` (`option_id`, `kind`), `alternatives`
-(option ID/kind/title), `match_evidence` (option ID/keywords/technique IDs/context
-kinds), `provenance` (`route: local`, `model_id`, `mode: closed_choice`,
-`playbooks_reviewed`, `state: converged|split`, `guard: null|fixed reason`), and
-`explanation_source: model|trusted`. Socket client and entry service independently
-validate bounds, exact keys, identities, evidence correspondence and state/guard
-consistency. Old `playbook` and `knowledge` envelopes are rejected and not forwarded.
-Gated replies keep their existing shape. Audit contains fixed reasons, IDs, scores,
-digests and counts, never situation or generated prose.
+One monotonic deadline covers retrieval and explanation, with 20 ms delivery
+reserve and explanation skipped below one second remaining. Optional synchronous
+Knowledge lookup remains skipped until it accepts a remaining deadline. Bench
+fixtures can provide references. Injected clients must honor their deadlines.
 
-## 10. b11716 probability compatibility and evaluation
+The strict machine fields remain `candidate`, `alternatives`, `match_evidence`,
+`provenance`, `explanation_source`. Provenance now uses `mode: embedding_retrieval`,
+`state: clear|split|none`, `retrieval: embedding|keyword`, ordered `similarities`,
+`benign_evidence`, `guard: null`, plus route/model/review metadata. Socket client
+and entryd independently validate exact keys, bounds, finite sorted scores,
+state/threshold consistency and the prohibition on benign primary candidates.
+Old model-pick documents are rejected. Maximum response is 48 KiB; audit contains
+fixed symbols, IDs, digests and counts, never situation or generated prose.
 
-The pinned upstream [server-task.cpp](https://github.com/ggml-org/llama.cpp/blob/b11716/tools/server/server-task.cpp)
-serializes chat `logprobs.content[].top_logprobs`; the
-[server context](https://github.com/ggml-org/llama.cpp/blob/b11716/tools/server/server-context.cpp)
-has pre-sampling and post-sampling probability paths. Pre-sampling probabilities
-are vocabulary probabilities, so top 20 may omit some grammar letters. Post-sampling
-probabilities can lose alternatives at temperature zero. Source inspection therefore
-establishes endpoint support, not usable probabilities for this particular model
-and image. Docker/image execution was unavailable in the implementation sandbox.
-The actual request asks for `logprobs=true`, `top_logprobs=20` plus per-request
-GBNF. The parser accepts only all option letters, finite nonpositive logprobs,
-positive non-one-hot probabilities, and a single token matching the delivered
-letter. Missing/incomplete/malformed probabilities use agreement fallback. Fake
-endpoint tests cover both response paths without needing a socket bind.
+## 10. Evaluation limits
 
-See [Reasoning playbooks](reasoning-playbooks.md) for the offline evaluation contract.
-No measured quality improvement, target-machine latency, or precision is claimed.
-Online re-review is deferred: P2/P3 never leave the node; P0/P1 would require remote
-opt-in/trust and a frame-retention design absent from this build.
+See [Reasoning playbooks](reasoning-playbooks.md) for the benchmark contract and
+[model catalog](model-catalog.md#embedding-retrieval-development-artifact) for the
+embedding artifact declaration. Existing 14 cases and the former heldout 30 are
+now development data; a NEW independently supplied set is required for final
+pass/fail. Fake-server checks establish mechanics, not model accuracy or device
+latency. No target-machine precision, quality improvement or admission is claimed.
+Online re-review stays deferred: P2/P3 never leave; P0/P1 require opt-in/trust and
+a retention design absent from this build.

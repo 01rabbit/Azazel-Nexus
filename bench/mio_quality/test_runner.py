@@ -35,11 +35,6 @@ class FakeServer:
         assert request.temperature == 0
         if self.failure == 'infer':
             raise TimeoutError('sensitive diagnostic')
-        if request.grammar:
-            # Select the same first candidate after order reversal.
-            count = request.grammar.count('"') // 2
-            picks = sum(bool(c.grammar) for c in self.calls)
-            return SimpleNamespace(text='A' if picks % 2 else chr(64 + count))
         return SimpleNamespace(text=self.text)
 
     def stop(self):
@@ -158,7 +153,7 @@ def test_public_api_adapter_contract(monkeypatch):
 
     frame = load_cases(EVAL_SET)[0]['frame']
     gate = None
-    monkeypatch.setattr(local_advisory, 'gate_frame', lambda value: gate, raising=False)
+    monkeypatch.setattr(local_advisory, 'gate_frame', lambda value, *args: gate, raising=False)
     monkeypatch.setattr(local_advisory, 'read_local_advisory',
                         lambda text, *, frame, reference_text: read_advisory(text.encode()))
     contract = LocalContract()
@@ -200,7 +195,7 @@ def test_playbook_coverage_and_fixture_prompt(tmp_path):
     result = evaluate(server, cases, contract=contract)
     assert result['rows'][0]['playbook_ids'] == ['auth-password-spraying']
     assert 'プレイブック一致率: 1/1 (100.0%)' in summarize(result)
-    assert 'fixture-claim' in server.calls[2].prompt_messages[1][1]
+    assert 'fixture-claim' in server.calls[0].prompt_messages[1][1]
     fixture.write_text(json.dumps([dict(ref, technique_id='invalid')]))
     with pytest.raises(ValueError, match='invalid knowledge fixture'):
         load_knowledge_fixture(fixture)
@@ -213,11 +208,9 @@ def test_benchmark_passes_the_reference_sent_to_reader():
     text = json.dumps({'reason': 'Review "host-1" event 4625.',
                        'check_1': 'Review logs.', 'check_2': 'Review logs.',
                        'check_3': 'Review logs.', 'missing': 'Time is needed.'})
-    with_reference = evaluate(FakeServer(text), [case], contract=LocalContract(knowledge=(ref,)))
-    without = evaluate(FakeServer(text), [case], contract=LocalContract())
-    assert with_reference['rows'][0]['delivered']['explanation_source'] == 'model'
-    assert without['rows'][0]['delivered']['explanation_source'] == 'trusted'
-    assert without['rows'][0]['explanation_dropped'] == 'ungrounded_facts'
+    # No candidate means no model explanation, even with optional references.
+    result = evaluate(FakeServer(text), [case], contract=LocalContract(knowledge=(ref,)))
+    assert result['rows'][0]['delivered']['explanation_source'] == 'trusted'
 
 
 def test_japanese_trusted_token_citation_is_not_language_prose():
@@ -231,7 +224,7 @@ def test_japanese_trusted_token_citation_is_not_language_prose():
 
 
 def test_external_evaluation_size_labels_and_metrics(tmp_path):
-    from .scoring import closed_choice_metrics
+    from .scoring import retrieval_metrics
     document = json.loads(EVAL_SET.read_text())
     document['cases'] = document['cases'][:1]
     case = document['cases'][0]
@@ -240,13 +233,56 @@ def test_external_evaluation_size_labels_and_metrics(tmp_path):
     path = tmp_path / 'held-out.json'
     path.write_text(json.dumps(document))
     assert len(load_cases(path)) == 1
-    row = {'delivered': {'candidate': {'option_id': 'benign'},
-                         'provenance': {'state': 'converged'}},
-           'baseline_candidate': 'other_suspicious', 'latency_ms': 100,
-           'swap_disagreement': False, 'guard': None, 'probability_mode': 'agreement'}
-    metrics = closed_choice_metrics([case], [row])
-    assert metrics['benign_safe']['rate'] == 1
-    assert metrics['baseline_benign_correct']['rate'] == 0
-    assert metrics['latency_p50_ms'] == metrics['latency_p95_ms'] == 100
-    assert metrics['recommendation'] == 'deterministic_baseline'
-    assert metrics['swap_disagreement']['rate'] == 0
+    row = {'delivered': {'candidate': {'option_id': 'other_suspicious', 'kind': 'other_suspicious'},
+                         'provenance': {'state': 'none', 'benign_evidence': True}},
+           'embed_ms': 100, 'explanation_ms': 0}
+    metrics = retrieval_metrics([case], [row])
+    assert metrics['benign_evidence_flagged']['rate'] == 1
+    assert metrics['embed_p50_ms'] == metrics['embed_p95_ms'] == 100
+    assert metrics['embedding_recall_at_1']['denominator'] == 0
+
+
+def test_embedding_benchmark_recall_baseline_and_scope(tmp_path):
+    from pathlib import Path
+
+    from azazel_nexus_runtime.mio_embedding import EmbeddingRetriever
+
+    from azazel_nexus.reasoning_playbook import read_library
+
+    library = read_library((Path(__file__).parents[2] / 'tests/fixtures/reasoning-playbook.json').read_bytes())
+    class Embedding:
+        def start(self, deadline_s=None):
+            pass
+        def embed(self, texts, deadline_s):
+            return [[1., 0.] for _ in texts]
+    case = load_cases(EVAL_SET)[0]
+    case['frame'].update(question='What changed on host-1?',
+                         context=[{'kind': 'log', 'text': 'unusual behavior'}])
+    case['closed_choice'] = {'acceptable_options': [library.entries[0].id], 'attack': True,
+                             'benign': False, 'adversarial': False, 'missing_or_wrong_top': False}
+    retriever = EmbeddingRetriever(Embedding(), model_digest='sha256:' + '0' * 64, cache_dir=tmp_path)
+    result = evaluate(FakeServer(), [case], contract=LocalContract(library, retriever=retriever))
+    row = result['rows'][0]
+    assert row['outcome'] == 'advisory' and row['gate_reason'] is None
+    metrics = result['metrics']['retrieval']
+    assert metrics['embedding_recall_at_1']['rate'] == 1
+    assert metrics['keyword_recall_at_3']['rate'] == 0
+    assert metrics['attack_delivered_with_benign_as_top']['numerator'] == 0
+    assert metrics['scope_false_refusals']['numerator'] == 0
+    assert metrics['embed_p95_ms'] >= 0
+
+
+def test_explanation_can_be_disabled():
+    from pathlib import Path
+
+    from azazel_nexus.reasoning_playbook import read_library
+
+    library = read_library((Path(__file__).parents[2] / 'tests/fixtures/reasoning-playbook.json').read_bytes())
+    case = load_cases(EVAL_SET)[0]
+    case['frame'].update(question='Password spray T1110.003',
+                         context=[{'kind': 'auth_log', 'text': 'many accounts'}])
+    row = evaluate(None, [case], contract=LocalContract(library))['rows'][0]
+    assert row['outcome'] == 'advisory'
+    assert row['delivered']['candidate']['kind'] == 'playbook'
+    assert row['delivered']['explanation_source'] == 'trusted'
+    assert row['generations'] == []

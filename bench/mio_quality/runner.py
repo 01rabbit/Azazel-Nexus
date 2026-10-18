@@ -26,25 +26,31 @@ def advisory_document(advisory):
 
 
 class LocalContract:
-    """Bench adapter for the runtime's closed-choice pipeline."""
+    """Bench adapter for deterministic retrieval and optional explanation."""
 
-    def __init__(self, playbooks=None, knowledge=()):
+    def __init__(self, playbooks=None, knowledge=(), retriever=None):
         from azazel_nexus import local_advisory
 
+        self.retriever = retriever
+        self.retrievals = {}
         self.api = local_advisory
         self.playbooks = playbooks
         self.knowledge = knowledge
         if not hasattr(self.api, 'gate_frame'):
             raise RuntimeError('Lane A gate_frame API is required')
 
-    def gate(self, frame):
-        result = self.api.gate_frame(frame)
+    def gate(self, frame, deadline_s=120):
+        from azazel_nexus_runtime.mio_embedding import retrieve
+
+        values = retrieve(frame, self.playbooks, self.retriever, end=time.monotonic() + deadline_s)
+        self.retrievals[frame['request_id']] = values
+        result = self.api.gate_frame(frame, max(values[1], default=-1.0))
         if result is None:
             return frame, None, None
         return frame, {'advice': result['advice'], 'fields': result['fields']}, result['reason']
 
     def matches(self, frame):
-        return match(frame, self.playbooks, limit=3) if self.playbooks is not None else ()
+        return self.retrievals[frame['request_id']][0]
 
     def prompt(self, frame):
         ids = technique_ids(frame)
@@ -52,13 +58,14 @@ class LocalContract:
         return self.api.build_prompt(frame, playbooks=self.matches(frame), knowledge=knowledge)
 
     def pipeline(self, server, frame, deadline_s):
-        from azazel_nexus_runtime.mio_locald import closed_choice_pipeline
+        from azazel_nexus_runtime.mio_locald import retrieval_pipeline
 
-        end = time.monotonic() + deadline_s
+        end = time.monotonic() + deadline_s - self.retrievals[frame['request_id']][3] / 1000
         ids = technique_ids(frame)
         knowledge = tuple(ref for ref in self.knowledge if ref.technique_id in ids)[:16]
-        return closed_choice_pipeline(server, frame, self.matches(frame), knowledge,
-                                      end=end)
+        books, similarities, method, embed_ms = self.retrievals[frame['request_id']]
+        return retrieval_pipeline(server, frame, books, knowledge, end=end,
+                                  similarities=similarities, retrieval=method, embed_ms=embed_ms)
 
     def read(self, text, frame, *, reference_text=''):
         return self.api.read_local_advisory(text, frame=frame, reference_text=reference_text)
@@ -72,10 +79,11 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
     """
     from azazel_nexus_runtime.mio_serve import LocalInferenceRequest, inference_document
 
-    prepared = [(case, contract.gate(case['frame'])) for case in cases]
+    prepared = [(case, contract.gate(case['frame'], deadline_s=deadline_s)
+                 if isinstance(contract, LocalContract) else contract.gate(case['frame'])) for case in cases]
     rows = []
     startup_error = None
-    needs_server = any(advice is None for _, (_, advice, _) in prepared)
+    needs_server = server is not None and any(advice is None for _, (_, advice, _) in prepared)
     try:
         if needs_server:
             try:
@@ -89,7 +97,7 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
                    'outcome': 'error', 'error': None, 'refusal': None,
                    'raw_text': None, 'raw_document': None, 'delivered': None, 'playbook_ids': []}
             began = time.monotonic()
-            if reason is None and hasattr(contract, 'matches'):
+            if hasattr(contract, 'matches'):
                 row['playbook_ids'] = [entry.id for entry in contract.matches(frame)]
             if fixed_advisory is not None:
                 row.update(outcome='gated', delivered=fixed_advisory)
@@ -110,13 +118,13 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
                             generations.append({'request': inference_document(request),
                                                 'raw_text': result.text,
                                                 'raw_document': raw_document,
-                                                'logprobs': getattr(result, 'logprobs', None)})
+                                                'phase': 'explanation'})
                             row['raw_text'] = '\n'.join(g['raw_text'] for g in generations)
                             row['raw_document'] = {'generations': [g['raw_document'] for g in generations]}
                             return result
 
                         delivered, telemetry = contract.pipeline(
-                            SimpleNamespace(infer=infer), frame,
+                            SimpleNamespace(infer=infer) if server is not None else None, frame,
                             deadline_s - (time.monotonic() - began))
                         row.update(outcome='advisory', delivered=delivered, **telemetry)
                     else:
@@ -139,7 +147,14 @@ def evaluate(server, cases, *, contract, max_tokens=1024, deadline_s=120):
                 except Exception as exc:  # noqa: BLE001 - retain failed attempts in denominator
                     row['error'] = type(exc).__name__
             row['latency_ms'] = (time.monotonic() - began) * 1000
-            row['baseline_candidate'] = row['playbook_ids'][0] if row['playbook_ids'] else 'other_suspicious'
+            baseline = match(frame, contract.playbooks) if getattr(contract, 'playbooks', None) else ()
+            row['keyword_ids'] = [p.id for p in baseline]
+            row['baseline_candidate'] = baseline[0].id if baseline else 'other_suspicious'
+            if hasattr(contract, 'retrievals'):
+                values = contract.retrievals[frame['request_id']]
+                row['retrieval'] = values[2]
+                row['embed_ms'] = values[3]
+                row['embedding_ids'] = row['playbook_ids'] if values[2] == 'embedding' else []
             row['scores'] = score(case, row)
             rows.append(row)
     finally:
@@ -207,7 +222,8 @@ def load_knowledge_fixture(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', required=True, type=Path)
+    parser.add_argument('--embedding-model', type=Path)
+    parser.add_argument('--model', type=Path, help='optional explanation model')
     parser.add_argument('--binary', type=Path, default=Path('/usr/libexec/azazel/llama-server'))
     parser.add_argument('--eval-set', type=Path, default=EVAL_SET)
     parser.add_argument('--output', required=True, type=Path)
@@ -238,11 +254,36 @@ def main(argv=None):
         with tempfile.TemporaryDirectory(prefix='mq-', dir='/tmp') as directory:
             server = runtime_server(args.binary, args.model, Path(directory) / 's.sock',
                                     threads=args.threads, context=args.context,
-                                    max_tokens=args.max_tokens, start_deadline_s=120)
-            result = evaluate(server, cases, contract=contract, max_tokens=args.max_tokens,
-                              deadline_s=args.deadline_s)
+                                    max_tokens=args.max_tokens, start_deadline_s=120) if args.model else None
+            embedding_server = None
+            if args.embedding_model:
+                from azazel_nexus_runtime.mio_embedding import EmbeddingRetriever
+
+                from azazel_nexus.model_runtime import llama_server_record
+
+                embedding_server = runtime_server(args.binary, args.embedding_model, Path(directory) / 'e.sock',
+                                                   threads=args.threads, context=4096,
+                                                   max_tokens=1, start_deadline_s=120)
+                embedding_server.record = llama_server_record(
+                    embedding_server.record, model_path=args.embedding_model.resolve(),
+                    socket_path=Path(directory) / 'e.sock', ctx=4096, threads=args.threads, embedding=True)
+                from azazel_nexus_runtime.mio_serve import LocalServer
+
+                embedding_server = LocalServer(embedding_server.record, root=Path('/'),
+                                               socket_path=Path(directory) / 'e.sock', start_deadline_s=120)
+                contract.retriever = EmbeddingRetriever(embedding_server,
+                    model_digest=digest(args.embedding_model), cache_dir=args.output.parent / 'embedding-cache')
+            try:
+                result = evaluate(server, cases, contract=contract, max_tokens=args.max_tokens,
+                                  deadline_s=args.deadline_s)
+            finally:
+                if embedding_server is not None:
+                    embedding_server.stop()
         result.update(eval_set_digest=digest(args.eval_set),
-                      model={'name': args.model.name, 'digest': digest(args.model)},
+                      model={'name': args.model.name, 'digest': digest(args.model)} if args.model else None,
+                      embedding_model=({'name': args.embedding_model.name, 'digest': digest(args.embedding_model),
+                                        'pooling': 'cls', 'context': 4096, 'gpu_layers': 0}
+                                       if args.embedding_model else None),
                       binary_digest=digest(args.binary), llama_cpp_version='b11716',
                       runtime_options={'threads': args.threads, 'context': args.context,
                                        'max_tokens': args.max_tokens, 'temperature': 0,
@@ -277,15 +318,13 @@ def summarize(result):
               '| フレーム | 結果 | エラー / 拒否 |', '| --- | --- | --- |']
     for row in result['rows']:
         lines.append(f"| {row['frame_id']} | {row['outcome']} | {row['error'] or row['refusal'] or '—'} |")
-    closed = result['metrics']['closed_choice']
-    lines += ['', '## 閉じた候補選択の評価', '',
-              '既存14件は開発用です。独立著者による約30件の未使用評価セットが必要です。',
-              'temperature=0 の反復 flip 率は自明に0です。順序反転の不一致率を報告します。',
-              '攻撃約20件で誤 benign が0件でも、誤り率の上限は約14%です（95%片側）。',
-              '基準: top match, never benign。未計測・閾値未達ならモデル判定の改善を主張せず、決定的基準を採用します。',
-              '', '```json', json.dumps(closed, ensure_ascii=False, indent=2), '```',
-              '', '確率差の閾値 MARGIN_MIN=0.10（暫定、開発セットのみで調整可）。',
-              '収束と分裂の正答率差が30ポイント未満なら、この信号を採用しません。',
+    retrieval = result['metrics']['retrieval']
+    lines += ['', '## 類似度による候補検索', '',
+              '既存14件と旧heldout 30件は開発用です。新しい未使用セットで最終評価が必要です。',
+              'モデル判定は行いません。類似度は正確性を示しません。',
+              'SIM_MIN=0.55 / GAP_MIN=0.09 / SCOPE_MIN=0.40（暫定開発値）。',
+              '埋め込みが使えない場合は「照合は簡易方式」と明示します。',
+              '', '```json', json.dumps(retrieval, ensure_ascii=False, indent=2), '```',
               '本番 admission は閉鎖のまま、RUNTIMES は空、HG-05 は未計測です。']
     return '\n'.join(lines) + '\n'
 

@@ -89,7 +89,7 @@ class MioEntryService:
             privacy = PrivacyClass(frame["privacy_class"])
             self.router._record(request_event(frame))
             gated = gate_frame(frame)
-            if gated is not None:
+            if gated is not None and gated["reason"] == "insufficient_information":
                 self.router._record({"event_type": "mio.local.gated", "reason": gated["reason"]})
                 return {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
                         "ledger_seq": self.router.ledger.head()[0]}

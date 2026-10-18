@@ -246,7 +246,7 @@ def _keyword_hit(word: str, text: str) -> bool:
     return folded in text
 
 
-def match(frame, library: Library, *, limit=3) -> tuple[Match, ...]:
+def match(frame, library: Library, *, limit=3, include_unmatched=False) -> tuple[Match, ...]:
     _require(type(limit) is int and 0 <= limit <= 512, 'invalid_limit')
     checked = read_frame(frame)
     language = 'ja' if _JAPANESE.search(checked['question']) else 'en'
@@ -261,7 +261,7 @@ def match(frame, library: Library, *, limit=3) -> tuple[Match, ...]:
         keyword_hits = sum(_keyword_hit(word, text) for word in rules['keywords'][language])
         score = (3 * technique_hits + keyword_hits
                  + int(bool(kinds.intersection(rules['context_kinds']))))
-        if score >= rules['min_score']:
+        if include_unmatched or score >= rules['min_score']:
             result = Match(entry.id, score, entry.status, entry.title[language],
                            entry.references, MappingProxyType({
                                key: value[language] for key, value in entry.guidance.items()}),

@@ -21,20 +21,16 @@ from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
     build_options,
-    decide_pick,
     delivered_document,
     delivered_event,
     explanation_prompt,
     explanation_response_format,
     gate_frame,
-    letter_probabilities,
-    pick_grammar,
-    pick_prompt,
     read_delivered,
     read_explanation,
     read_frame,
-    read_pick,
     request_event,
+    retrieval_decision,
 )
 from azazel_nexus.model_runtime import (
     RuntimeRefused,
@@ -48,7 +44,7 @@ from azazel_nexus.playbook_selection import (
     retained_paths,
     selection_context,
 )
-from azazel_nexus.reasoning_playbook import Library, match, technique_ids
+from azazel_nexus.reasoning_playbook import Library, technique_ids
 
 from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
@@ -129,6 +125,7 @@ class LocalRuntimeService:
         self,
         *,
         staging: Path = STAGING,
+        retriever=None,
         reserve: Any | None = None,
         admitted: Callable[[str], bool] = lambda model_id: False,
         model_id: str = "uncommissioned",
@@ -138,6 +135,7 @@ class LocalRuntimeService:
         playbooks: Library | None = None,
         knowledge_lookup: Callable[[tuple[str, ...]], Sequence[KnowledgeRef]] | None = None,
     ) -> None:
+        self._retriever = retriever
         self._staging = staging
         # Supplied, never discovered. The library reads the record; this
         # service is handed the result, so that a node whose reserve record
@@ -203,7 +201,11 @@ class LocalRuntimeService:
         if not 0 < deadline_ms <= 60_000:
             return refuse("invalid_deadline")
         audit(request_event(frame))
-        gated = gate_frame(frame)
+        # Embeddings may only run after the existing admission gates. Lexical
+        # insufficient-information checks remain available without a provider.
+        initial_gate = gate_frame(frame)
+        gated = initial_gate if self._retriever is None or (
+            initial_gate and initial_gate['reason'] == 'insufficient_information') else None
         if gated is not None:
             audit({"event_type": "mio.local.gated", "reason": gated["reason"]})
             return gated
@@ -216,9 +218,17 @@ class LocalRuntimeService:
         except RuntimeRefused:
             return refuse("runtime_unavailable")
         artifact = inspect_artifact(self._staging / f"{self._model_id}.model")
-        if not artifact.is_data or self._server is None:
+        if not artifact.is_data or (self._server is None and self._retriever is None):
             return refuse("provider_unavailable")
-        playbooks = match(frame, self._playbooks) if self._playbooks is not None else ()
+        from .mio_embedding import retrieve
+
+        playbooks, similarities, retrieval, embed_ms = retrieve(
+            frame, self._playbooks, self._retriever, end=began + deadline_ms / 1000)
+        audit({'event_type': 'mio.local.retrieval', 'method': retrieval})
+        gated = gate_frame(frame, max(similarities, default=-1.0))
+        if gated is not None:
+            audit({'event_type': 'mio.local.gated', 'reason': gated['reason']})
+            return gated
         knowledge = ()
         knowledge_state = "unused"
         ids = technique_ids(frame)
@@ -230,9 +240,10 @@ class LocalRuntimeService:
                "playbook_count": len(playbooks), "knowledge": knowledge_state,
                "knowledge_count": len(knowledge)})
         try:
-            reply, telemetry = closed_choice_pipeline(
+            reply, telemetry = retrieval_pipeline(
                 self._server, frame, playbooks, knowledge, self._model_id,
-                end=began + deadline_ms / 1000, audit=audit,
+                end=began + deadline_ms / 1000, audit=audit, similarities=similarities,
+                retrieval=retrieval, embed_ms=embed_ms,
             )
         except TimeoutError:
             return refuse("deadline", "timed_out")
@@ -250,8 +261,8 @@ DELIVERY_RESERVE_S = 0.02
 EXPLANATION_MIN_S = 1.0
 
 
-def closed_choice_pipeline(server, frame, playbooks=(), knowledge=(), model_id="bench", *,
-                           end, audit=lambda event: None):
+def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="bench", *,
+                           end, audit=lambda event: None, similarities=(), retrieval="keyword", embed_ms=0):
     """Shared runtime/bench orchestration, with one absolute deadline."""
     from .mio_serve import LocalInferenceRequest
 
@@ -261,19 +272,15 @@ def closed_choice_pipeline(server, frame, playbooks=(), knowledge=(), model_id="
             raise TimeoutError("local pipeline deadline")
         return budget
 
+    remaining()
     options = build_options(frame, playbooks)
-    picks, probabilities = [], []
-    for order in (options, tuple(reversed(options))):
-        result = server.infer(LocalInferenceRequest(
-            pick_prompt(frame, order), max_tokens=1, temperature=0,
-            grammar=pick_grammar(order), top_logprobs=20), deadline_s=remaining())
-        remaining()
-        picks.append(read_pick(result.text, order))
-        probabilities.append(letter_probabilities(getattr(result, "logprobs", None), order, result.text))
-    candidate, ranked, guard, margin = decide_pick(frame, options, picks, probabilities)
+    candidate, state, support = retrieval_decision(frame, playbooks, similarities)
+    ranked = list(options)
+    guard = None
     explanation = None
     dropped = None
-    if candidate["kind"] != "undetermined":
+    explanation_began = time.monotonic()
+    if state != "none" and server is not None:
         if remaining() < EXPLANATION_MIN_S:
             dropped = "deadline_short"
         else:
@@ -300,11 +307,14 @@ def closed_choice_pipeline(server, frame, playbooks=(), knowledge=(), model_id="
                 dropped = "runtime_failed"
     if dropped:
         audit({"event_type": "mio.local.explanation", "reason": "explanation_dropped:" + dropped})
-    reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation)
+    reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation,
+                               similarities=similarities, state=state, retrieval=retrieval,
+                               benign_evidence=support)
     read_delivered(reply)
-    return reply, {"suggested_option": ranked[0]["option_id"], "swap_disagreement": picks[0] != picks[1], "margin": margin,
-                   "probability_mode": "logprobs" if all(p is not None for p in probabilities)
-                   else "agreement", "guard": guard, "explanation_dropped": dropped}
+    return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
+                   "explanation_ms": (time.monotonic() - explanation_began) * 1000,
+                   "retrieval": retrieval, "benign_evidence": support}
+
 
 
 class PlaybookSelectionHolder:
