@@ -61,6 +61,7 @@ from azazel_nexus.runtime_lifecycle import (
 
 __all__ = [
     "ProcessReport",
+    "ServingProcess",
     "SupervisorRefused",
     "Supervision",
     "run_once",
@@ -473,3 +474,39 @@ def start_for(
     except RuntimeRefused as exc:
         raise SupervisorRefused(str(exc)) from exc
     return run_once(record, root=root, deadline_seconds=deadline_seconds)
+
+
+class ServingProcess:
+    """Long-lived process handle. Output is discarded, never piped or logged."""
+
+    def __init__(self, record: RuntimeBinary, *, root: Path) -> None:
+        self.record = record
+        self.root = root
+        self.process: subprocess.Popen | None = None
+
+    def start(self) -> None:
+        if self.process is not None:
+            raise SupervisorRefused("stop the previous process group before starting")
+        binary = (self.root / self.record.executable.lstrip("/")).resolve()
+        try:
+            self.process = subprocess.Popen(
+                [str(binary), *self.record.argv[1:]],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={"PATH": "/nonexistent", "LC_ALL": "C"},
+                cwd=str(self.root),
+                start_new_session=True,
+                close_fds=True,
+            )
+        except (OSError, ValueError):
+            raise SupervisorRefused("the serving process did not start") from None
+
+    @property
+    def alive(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def stop(self) -> None:
+        if self.process is not None:
+            _terminate_group(self.process, group=self.process.pid)
+            self.process = None
