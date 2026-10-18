@@ -200,3 +200,30 @@ not claim physical power-cut or hardware measurement evidence.
 
 See [Reasoning playbooks](reasoning-playbooks.md) for baseline/site data layers
 and the signed component digest required when loading their installed bytes.
+
+## Local advisory consumption
+
+Locald now reads the active `reasoning_playbook` selection using the existing
+commissioned configuration and encrypted store paths. The read-only
+`playbook_selection.active_playbooks` resolver accepts a commissioned PackContext
+(or its read-only selection subset), requires active status, verifies retained
+generation/admission integrity, and additionally verifies the retained signature,
+current trusted signer, signing epoch and validity interval. It resolves only
+installed inventory paths and loads the exact selected digest, size and version.
+It composes one baseline followed by site layers in manifest order; no baseline,
+multiple baselines, missing assets or verification failures remove all playbooks.
+
+Locald caches successful composition and stable failures, checks pointer/configuration/retained-file/
+asset metadata on each request and reloads on changes or expiry. Failures discard
+the cached library; verification retries when watched metadata changes. Audits report fixed reason
+and ordered library IDs/versions/digests only. This consumer never writes pack
+state or promotes a generation; existing model admission remains closed.
+
+Packaging must provision `azmio` read/traverse access to the configuration,
+private generation files and selected assets, preserving commissioned root-only
+write authority and encrypted storage. This change adds no users/groups,
+permission changes or unit-hardening exceptions. Unreadable state gives an
+audited `store_unreadable` fallback with no playbooks; an absent current pointer is
+`no_pack`. See [Reasoning playbooks](reasoning-playbooks.md) for cache behavior
+and the complete reason vocabulary. The existing runtime root convention applies;
+there is no new path override or environment variable.

@@ -33,6 +33,8 @@ __all__ = [
     "ledger_dir",
     "lite_trust_root",
     "mio_state_dir",
+    "mission_pack_config",
+    "mission_pack_root",
     "models_root",
     "socket_path",
     "state_dir",
@@ -176,3 +178,13 @@ def lite_trust_root() -> Path:
 def commission_ledger_path() -> Path:
     """Commissiond's own append-only chain, separate from auditd and refusals."""
     return state_dir() / "commission" / "commission.jsonl"
+
+
+def mission_pack_config() -> Path:
+    """Existing operator-commissioned Mission Pack trust and inventory."""
+    return _under("/etc/azazel/mission-pack.json")
+
+
+def mission_pack_root() -> Path:
+    """Existing encrypted Mission Pack store; optional read access for locald."""
+    return _under("/data/azazel/mission-packs")

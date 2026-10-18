@@ -664,6 +664,71 @@ def test_accepted_reply_without_references_has_null_playbook(tmp_path):
     assert service.handle(request)['playbook'] is None
 
 
+def test_main_refreshes_optional_selection_before_each_request(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import runtime_paths
+
+    from azazel_nexus.playbook_selection import PlaybookSelection
+
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    libraries = [object(), object(), None]
+    observed = []
+
+    class Holder:
+        def __init__(self, *, config, root):
+            assert config == tmp_path / 'etc/azazel/mission-pack.json'
+            assert root == tmp_path / 'data/azazel/mission-packs'
+            self.selection = PlaybookSelection(None, 'no_pack')
+
+        def refresh(self, *, audit):
+            return libraries.pop(0)
+
+    class Service:
+        def __init__(self, *, playbooks, knowledge_lookup):
+            self._playbooks = playbooks
+            observed.append(playbooks)
+
+        def set_playbooks(self, library):
+            self._playbooks = library
+
+        def handle(self, request, *, audit):
+            observed.append(self._playbooks)
+            return {'outcome': 'failed'}
+
+    monkeypatch.setattr(mio_locald, 'PlaybookSelectionHolder', Holder)
+    monkeypatch.setattr(mio_locald, 'LocalRuntimeService', Service)
+    monkeypatch.setattr(mio_locald.PrincipalPolicy, 'resolve', lambda **kw: 'policy')
+
+    def serve(**kwargs):
+        kwargs['handler'](object())
+        kwargs['handler'](object())
+        return 0
+
+    monkeypatch.setattr(mio_locald, 'serve_forever', serve)
+    assert mio_locald.main([]) == 0
+    assert observed[0] is not observed[1] and observed[1] is not None
+    assert observed[2] is None
+
+
+def test_selection_holder_unreadable_state_and_audit_failure(tmp_path, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    root = tmp_path / 'packs'
+    root.mkdir()
+    (root / 'current').write_text('1\n')
+    holder = mio_locald.PlaybookSelectionHolder(config=tmp_path / 'absent-config', root=root)
+    events = []
+    assert holder.refresh(audit=events.append) is None
+    assert events[-1]['reason'] == 'pack_degraded'
+
+    def broken_audit(event):
+        raise AuditUnavailable('injected audit failure')
+
+    holder = mio_locald.PlaybookSelectionHolder(config=tmp_path / 'absent-config', root=root)
+    with pytest.raises(AuditUnavailable):
+        holder.refresh(audit=broken_audit)
+
+
 @pytest.mark.parametrize('with_reference', [False, True])
 def test_infer_validates_against_exact_sent_reference(tmp_path, with_reference):
     import json
