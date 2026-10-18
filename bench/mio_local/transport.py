@@ -13,12 +13,18 @@ from azazel_nexus_runtime.mio_serve import LocalInferenceRequest, inference_docu
 
 
 class UnixHTTP(http.client.HTTPConnection):
+    # The socket path is not a host name: sending it as the Host header makes
+    # llama-server answer 400. Connect to the path, announce "localhost".
+    def __init__(self, socket_path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.peer = self.sock
         self.sock.settimeout(self.timeout)
         try:
-            self.sock.connect(self.host)
+            self.sock.connect(self.socket_path)
         except BaseException:
             self.sock.close()
             raise

@@ -301,3 +301,12 @@ def test_stream_rejects_malformed_usage(monkeypatch, usage):
     monkeypatch.setattr("bench.mio_local.transport.UnixHTTP", lambda *args, **kwargs: http)
     with pytest.raises(ValueError):
         stream("/fake.sock", (("user", "question"),), max_tokens=12, deadline_s=1)
+
+
+def test_unix_http_announces_localhost_not_the_socket_path():
+    # llama-server answers 400 to a Host header carrying a filesystem path.
+    from bench.mio_local.transport import UnixHTTP
+
+    connection = UnixHTTP("/tmp/mb-x/s.sock", timeout=1)
+    assert connection.host == "localhost"
+    assert connection.socket_path == "/tmp/mb-x/s.sock"
