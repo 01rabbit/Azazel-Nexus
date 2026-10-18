@@ -51,7 +51,6 @@ from typing import Optional, Sequence
 
 from azazel_nexus.activation import (
     ARTIFACT_TRANSPORT,
-    LOCAL_MODEL_PROVIDER,
     REMOTE_INFERENCE_TRANSPORT,
     ActivationController,
     ActivationLease,
@@ -68,8 +67,6 @@ from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
-
-from azazel_nexus.model_runtime import RUNTIMES
 
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
@@ -139,7 +136,9 @@ def wired_capabilities() -> frozenset:
 
     Artifact transport requires a nonempty legacy endpoint table or fully
     loadable fetch commissioning. Merely having a signed registry is insufficient.
-    A fresh node has neither and keeps the unit withheld.
+    A fresh node has neither and keeps the unit withheld. Local model wiring
+    requires an admitted provider; no production admission-evidence loader
+    exists in this build, so locald is never granted.
     """
 
     wired = set()
@@ -148,8 +147,9 @@ def wired_capabilities() -> frozenset:
     commissioned = _fetch_commissioned(fetch_commission_dir())
     if ENDPOINT_FOR or commissioned:
         wired.add(ARTIFACT_TRANSPORT)
-    if RUNTIMES:
-        wired.add(LOCAL_MODEL_PROVIDER)
+    # LOCAL_MODEL_PROVIDER requires an admitted model provider. This build
+    # has no production admission-evidence loader and admission refuses, so
+    # the unit stays withheld even when a pinned runtime resolves.
     if TRANSPORT is not None:
         wired.add(REMOTE_INFERENCE_TRANSPORT)
     return frozenset(wired)

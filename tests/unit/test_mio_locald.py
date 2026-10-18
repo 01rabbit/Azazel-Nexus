@@ -311,7 +311,7 @@ def test_default_service_serves_refusals_with_only_entry_service_policy(tmp_path
 # -- three refusals, and each covers what the others do not ---------------
 
 
-def test_the_unit_is_not_granted_while_no_runtime_is_wired():
+def test_the_unit_requires_an_admitted_provider():
     definition = next(d for d in CORE_UNITS if d.name == UNIT)
     assert definition.wiring == LOCAL_MODEL_PROVIDER
     assert definition.wiring != ARTIFACT_TRANSPORT, (
@@ -323,16 +323,23 @@ def test_the_unit_is_not_granted_while_no_runtime_is_wired():
 def test_a_wired_transport_does_not_wire_a_provider(monkeypatch):
     from azazel_nexus_runtime import activated
 
-    monkeypatch.setattr(activated, "RUNTIMES", {})
     monkeypatch.setattr(activated, "ENDPOINT_FOR", {"vendor-primary": object()})
     assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT})
 
 
-def test_a_wired_provider_does_not_wire_a_transport(monkeypatch):
+def test_a_resolvable_runtime_does_not_wire_an_admitted_provider(monkeypatch):
     from azazel_nexus_runtime import activated
 
-    monkeypatch.setattr(activated, "RUNTIMES", {"fixture": object()})
-    assert activated.wired_capabilities() == frozenset({LOCAL_MODEL_PROVIDER})
+    from azazel_nexus import model_runtime
+
+    fixture = model_runtime.RuntimeBinary(
+        runtime_id="fixture", executable="/usr/libexec/azazel/fixture",
+        version="test", digest="sha256:" + "0" * 64,
+        argv=("/usr/libexec/azazel/fixture",),
+    )
+    monkeypatch.setattr(model_runtime, "RUNTIMES", {"fixture": fixture})
+    assert model_runtime.resolve_runtime("fixture") is fixture
+    assert activated.wired_capabilities() == frozenset()
 
 
 def test_a_request_for_an_unwired_runtime_is_answered_not_acted_on(tmp_path):

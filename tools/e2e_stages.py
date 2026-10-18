@@ -245,7 +245,8 @@ def _activation(harness: Harness) -> str:
     )
     # Not "everything governed". A unit naming a capability this build does
     # not wire is withheld for that -- `azazel-model-fetchd.service` has no
-    # transport here, and granting it would enable a unit that starts and
+    # transport here; locald has no admitted model provider. Granting either
+    # would enable a unit that starts and
     # exits at the next boot. Checked as two statements rather than one count,
     # so that a pass which granted the wrong set cannot satisfy it.
     expected = {d.name for d in CORE_UNITS if d.wiring is None}
@@ -272,7 +273,7 @@ def _activation(harness: Harness) -> str:
     harness.manager = manager  # type: ignore[attr-defined]
     return (
         f"{len(outcome.granted)} supporting units granted; "
-        f"{len(unwired)} withheld for having no transport wired in this "
+        f"{len(unwired)} withheld for having no provider or transport wired in this "
         "build; edge-baseline-ready correctly withheld"
     )
 

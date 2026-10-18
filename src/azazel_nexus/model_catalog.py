@@ -315,8 +315,12 @@ class ModelEntry:
             )
         if not _DIGEST.match(self.digest):
             raise CatalogRefused(f"{self.model_id}: {self.digest!r} is not a sha256 digest")
-        for name in ("size_bytes", "context_limit", "declared_min_ram_mib", "declared_min_disk_mib"):
-            value = getattr(self, name)
+        for name, value in (
+            ("size_bytes", self.size_bytes),
+            ("context_limit", self.context_limit),
+            ("declared_min_ram_mib", self.declared_min_ram_mib),
+            ("declared_min_disk_mib", self.declared_min_disk_mib),
+        ):
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise CatalogRefused(f"{self.model_id}: {name} is a positive whole number")
         if self.source_id is not None and not _SOURCE_ID.match(self.source_id):
@@ -325,8 +329,8 @@ class ModelEntry:
                 "A source is named, never located: a catalog that could spell "
                 "a host could point this node anywhere"
             )
-        for name in ("provenance", "purpose"):
-            if not str(getattr(self, name)).strip():
+        for name, value in (("provenance", self.provenance), ("purpose", self.purpose)):
+            if not str(value).strip():
                 raise CatalogRefused(
                     f"{self.model_id}: {name} is recorded. An entry that cannot "
                     "say where it came from or what it is for is one nobody can "

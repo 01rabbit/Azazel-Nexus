@@ -19,7 +19,9 @@ is the shipped state, not a limitation being worked around.
 
 RUNTIMES pins exactly one runtime, llama.cpp b11716. Resolving it refuses a
 missing/nonregular binary, wrong digest, pending digest or unknown architecture.
-Installing a binary or wiring the locald unit grants no model admission.
+Installing a binary grants no model admission. The locald unit is not granted
+by activation until a model is admitted. This build has no production
+admission-evidence loader, so `local_model_provider` remains unwired.
 Admission remains closed in this build, including after a supplied reserve:
 the existing approval gate still refuses. No model is started by default.
 

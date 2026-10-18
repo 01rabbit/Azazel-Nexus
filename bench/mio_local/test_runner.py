@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from azazel_nexus.local_advisory import build_prompt, read_local_advisory
+from azazel_nexus.local_advisory import FIELD_NAMES, build_prompt, read_local_advisory
 from bench.mio_local.load import EdgeLoad, LoadConfig
 from bench.mio_local.metrics import distribution, memory_limit, percentile
 from bench.mio_local.runner import FRAMES, SCHEMA, Condition, run_cell
@@ -39,7 +39,10 @@ class FakeServer:
 
 
 FRAMES_DATA = json.loads(FRAMES.read_text())
-GOOD = Observation('{"advice":"Further context may clarify the pattern."}', 5, 20, 8, 4, 10)
+GOOD = Observation(json.dumps({
+    "advice": "Further context may clarify the pattern.",
+    "fields": dict.fromkeys(FIELD_NAMES, "More context would help."),
+}), 5, 20, 8, 4, 10)
 
 
 def run(server=None, condition=None, observer=None):
