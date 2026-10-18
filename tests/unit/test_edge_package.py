@@ -992,3 +992,17 @@ def test_a_state_file_that_exists_and_is_garbage_raises(tmp_path):
 def test_a_result_round_trips_through_its_own_event(tmp_path):
     original = _result(package_digest=_digest_of(tmp_path))
     assert parse_probe_result(json.dumps(original.as_event())) == original
+
+
+def test_a_probe_that_checked_nothing_may_omit_the_package_digest():
+    """No package on the node: nothing checked, nothing claimed, no refusal noise."""
+    result = _result(package_digest="", health=Evidence.NOT_CHECKED,
+                     running=Evidence.NOT_CHECKED)
+    assert result.package_digest == ""
+
+
+@pytest.mark.parametrize("checked", ["health", "running"])
+@pytest.mark.parametrize("value", [Evidence.PASSED, Evidence.FAILED])
+def test_a_checked_outcome_must_name_its_package(checked, value):
+    with pytest.raises(EdgePackageRefused, match="package_digest"):
+        _result(package_digest="", **{checked: value})

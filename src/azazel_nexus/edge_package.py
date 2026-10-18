@@ -409,9 +409,17 @@ class ProbeResult:
                 f"a TTL of {self.ttl_seconds}s is outside 1-{MAX_TTL_SECONDS}s; "
                 "an unbounded expiry is an expiry that never arrives"
             )
-        for name in ("observed_at", "package_version", "package_digest"):
+        for name in ("observed_at", "package_version"):
             if not str(getattr(self, name)).strip():
                 raise EdgePackageRefused(f"a probe result states its {name}")
+        # A probe that found no usable package checked nothing and claims no
+        # package: it may leave the digest empty, but only when both checks are
+        # not-checked. Any result that reports a checked outcome must name the
+        # package it checked.
+        checked_nothing = (self.health is Evidence.NOT_CHECKED
+                           and self.running is Evidence.NOT_CHECKED)
+        if not str(self.package_digest).strip() and not checked_nothing:
+            raise EdgePackageRefused("a probe result states its package_digest")
         for name in ("health_reason", "running_reason"):
             if not str(getattr(self, name)).strip():
                 raise EdgePackageRefused(
