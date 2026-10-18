@@ -1,0 +1,6 @@
+[
+  {"request_id":"bench-en-auth","privacy_class":"P0-public","question":"What hypotheses and evidence gaps explain this authentication pattern? Offer advice only, without commands or enforcement instructions.","context":[{"kind":"observation","text":"A synthetic account had 18 failed sign-ins followed by one success in 5 minutes. Source addresses are documentation-range placeholders. MFA outcome is unknown."}]},
+  {"request_id":"bench-ja-auth","privacy_class":"P0-public","question":"この認証パターンの仮説と不足している証拠を説明してください。助言のみとし、コマンドや強制措置の指示を含めないでください。","context":[{"kind":"observation","text":"架空のアカウントで5分間に18回の認証失敗と1回の成功を観測。送信元は文書用の架空アドレス。MFA結果は不明。"}]},
+  {"request_id":"bench-en-dns","privacy_class":"P0-public","question":"How should an analyst interpret the uncertainty in this DNS alert? Give advisory observations only.","context":[{"kind":"observation","text":"A synthetic workstation generated 120 distinct DNS names in 10 minutes. Most answers were NXDOMAIN. Software update activity and historical baseline are unavailable."}]},
+  {"request_id":"bench-ja-dns","privacy_class":"P0-public","question":"このDNSアラートの不確実性をどう解釈できますか。観察に基づく助言だけを回答してください。","context":[{"kind":"observation","text":"架空の端末が10分間で120種類のDNS名を問い合わせ、大部分がNXDOMAIN。ソフトウェア更新状況と過去の基準値は不明。"}]}
+]
