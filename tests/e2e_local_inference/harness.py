@@ -1,0 +1,366 @@
+"""One isolated real-model scenario. See README.md for integration seams.
+
+Only constructor injection is used. No production attribute, allowlist, path
+constant, parser, transport, or process launcher is replaced at runtime.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import signal
+import sys
+import time
+from dataclasses import replace
+from pathlib import Path
+
+QUESTION = "QUESTION_SENTINEL_72ef"
+CONTEXT = "CONTEXT_SENTINEL_a41b"
+RESPONSE = "RESPONSE_SENTINEL_b3ce"
+MODEL_ID = "e2e-model"
+RUNTIME_ID = "e2e-llama"
+
+
+def stage(source: Path, destination: Path) -> None:
+    """Keep the actual GGUF, with no multi-GiB copy on the same filesystem."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copyfile(source, destination)
+
+
+def record_for(root: Path, binary: Path, model: Path, sock: Path):
+    from azazel_nexus.model_runtime import RuntimeBinary
+
+    executable = "/usr/libexec/azazel/llama-server"
+    target = root / executable.lstrip("/")
+    target.parent.mkdir(parents=True)
+    # Preserve the real executable and adjacent shared-library lookup. The
+    # container supplies the plan's static b11716 binary.
+    target.symlink_to(binary)
+    artifact = root / "var/lib/azazel/mio" / f"{MODEL_ID}.model"
+    stage(model, artifact)
+    with binary.open("rb") as stream:
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    return RuntimeBinary(
+        runtime_id=RUNTIME_ID, executable=executable, version="b11716",
+        digest=digest,
+        argv=(executable, "-m", str(artifact), "--host", str(sock),
+              "-c", "2048", "-t", "2", "-ngl", "0", "--no-webui",
+              "--jinja", "--reasoning-budget", "0"),
+    )
+
+
+class ObservedServer:
+    """Documented server injection; corrupt only a REAL inference result.
+
+    This is fault evidence at the server/result boundary, not evidence that
+    a particular model naturally emits an instruction or 64 KiB response.
+    """
+
+    def __init__(self, server):
+        self.server = server
+        self.mode = "advice"
+        self.results = []
+        self.emitted_text = []
+        self.calls = 0
+
+    def start(self):
+        return self.server.start()
+
+    def health(self):
+        return self.server.health()
+
+    def stop(self):
+        return self.server.stop()
+
+    def infer(self, request, deadline_s):
+        self.calls += 1
+        # Force a deadline against the actual Unix HTTP client. No sleep and
+        # no synthetic TimeoutError. Selection still sees a viable deadline.
+        result = self.server.infer(
+            request, deadline_s=0.000001 if self.mode == "deadline" else deadline_s,
+        )
+        self.results.append(result)
+        faults = {
+            "instruction": json.dumps({"advice": "block host 192.0.2.1", "fields": {}}),
+            "oversized": json.dumps({"advice": "x" * (65 * 1024), "fields": {}}),
+            "broken_json": '{"advice": "' + RESPONSE,
+        }
+        if self.mode in faults:
+            result = replace(result, text=faults[self.mode])
+        self.emitted_text.append(result.text)
+        return result
+
+
+class NoRemote:
+    """Fail loudly if a local-only scenario dispatches remote content."""
+
+    def observe(self):
+        return "remote_unavailable"
+
+    def handle(self, *args, **kwargs):
+        raise AssertionError("local-only E2E attempted remote inference")
+
+
+def compose(root: Path, record, observed):
+    """A/B integration seam: only their documented constructor injections.
+
+    These keyword names are intentionally explicit; an unavailable seam must
+    fail opt-in tests instead of falling back to patching module globals.
+    """
+    from azazel_nexus_runtime.mio_entryd import MioEntryService
+    from azazel_nexus_runtime.mio_locald import LocalRuntimeService
+    from azazel_nexus_runtime.mio_router import MioRouter
+
+    from azazel_nexus.core_reserve import CoreReserve
+    from azazel_nexus.mio_profile import MioProfile
+    from azazel_nexus.resource_profile import ResourceProfile
+    from azazel_nexus.route_evidence import Prediction
+    from azazel_nexus.routing import Route
+
+    reserve = CoreReserve(
+        profile=ResourceProfile.STANDARD, reserve_mib=512,
+        host_digest="sha256:" + "0" * 64,
+        harness_version="e2e-fixture-not-HG-05", sample_count=64, duration_seconds=3600,
+    )
+
+    def runtime(runtime_id):
+        assert runtime_id == RUNTIME_ID
+        return record
+
+    local = LocalRuntimeService(
+        staging=root / "var/lib/azazel/mio", reserve=reserve,
+        admitted=lambda model_id: model_id == MODEL_ID,
+        runtime=runtime, server=observed,
+    )
+    router = MioRouter(local=local, remote=NoRemote())
+    entry = MioEntryService(
+        router=router, profile_reader=lambda: MioProfile.LOCAL_ONLY,
+        local_admitted=True, local_refusal="e2e fixture admission only",
+        predictions={Route.LOCAL: Prediction(
+            Route.LOCAL.value, True, 100, 64, 100, False, "e2e fixture prediction",
+        )},
+    )
+    return entry, router
+
+
+def frame(privacy):
+    return {
+        "request_id": "e2e-request", "privacy_class": privacy,
+        "question": QUESTION + ': Return exactly {"advice":"Observation may help.","fields":{}}',
+        "context": [{"kind": "observation", "text": CONTEXT + ": the node is quiet."}],
+    }
+
+
+def invoke(entry, privacy):
+    from azazel_nexus_runtime.mio_entryd import REGISTRY
+    from azazel_nexus_runtime.principal import Principal, PrincipalClass
+    from azazel_nexus_runtime.transport import Request
+
+    principal = Principal(os.getuid(), os.getgid(), os.getpid(),
+                          frozenset({PrincipalClass.OPERATOR}))
+    verb = REGISTRY.resolve("mio.advise", principal)
+    assert verb.accepts_payload and verb.payload_contract
+    values = {
+        "model_id": MODEL_ID, "runtime_id": RUNTIME_ID,
+        "request_id": "e2e-request", "privacy_class": privacy,
+        "deadline_ms": 60_000,
+    }
+    arguments = verb.bind({argument.name: values[argument.name] for argument in verb.arguments})
+    return entry.handle(Request(
+        verb=verb, arguments=arguments, payload=frame(privacy), principal=principal,
+    ))
+
+
+def events(router):
+    from azazel_nexus.audit import AuditLedger
+
+    ledger = AuditLedger(router.ledger.path)
+    ledger.verify()
+    return [item.event for item in ledger]
+
+
+def assert_terminal(recorded, terminal):
+    from azazel_nexus.routing import Route
+
+    local = [e for e in recorded if e["event_type"] == "mio.route.terminal"
+             and e["route"] == Route.LOCAL.value]
+    assert local and local[-1]["terminal_event"] == terminal.value, recorded
+
+
+def assert_fallback(recorded):
+    from azazel_nexus.routing import Route
+
+    fallbacks = [e for e in recorded if e["event_type"] == "mio.route.fallback"]
+    assert len(fallbacks) == 1, recorded
+    assert fallbacks[0]["spent"] is True
+    terminals = [e for e in recorded if e["event_type"] == "mio.route.terminal"]
+    assert terminals[-1]["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert not any(e.get("outcome") == "answered" for e in terminals)
+
+
+def assert_no_content(root: Path, observed):
+    # Scan every persisted file except immutable runtime/model assets. This
+    # catches service refusals as well as the verified route chain.
+    needles = [QUESTION, CONTEXT, RESPONSE]
+    needles.extend(result.text for result in observed.results if result.text)
+    needles.extend(observed.emitted_text)
+    paths = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()
+             and p.suffix != ".model"]
+    assert paths, "no persisted audit evidence"
+    for path in paths:
+        content = path.read_bytes()
+        for needle in needles:
+            assert needle.encode() not in content, f"content persisted in {path.name}"
+
+
+def edge_reading():
+    from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
+
+    return CognitionReading(
+        state=CognitionState.CORE_ONLY, remote=RemoteState.DISABLED,
+        resource_reason="fixture", topology_reason="fixture",
+        asset_reason="fixture", trust_health_reason="fixture",
+    )
+
+
+def authority_snapshot(root):
+    """Observe actual persistent state outside the model and M.I.O. ledgers."""
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (root / "var/lib/azazel/state").rglob("*")
+        if path.is_file() and "mio" not in path.relative_to(root / "var/lib/azazel/state").parts
+    }
+
+
+def kill_real_server(sock):
+    # Observe the PID from an actual kernel peer, rather than accessing the
+    # LocalServer's private Popen. Linux is the declared execution container.
+    import socket
+    import struct
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(sock))
+        pid, uid, _ = struct.unpack("3i", connection.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"),
+        ))
+    assert uid == os.getuid() and pid != os.getpid()
+    command = Path(f"/proc/{pid}/cmdline").read_bytes()
+    assert b"llama-server" in command and str(sock).encode() in command
+    os.kill(pid, signal.SIGKILL)
+
+
+def crash_scenario(root, record, observed, sock):
+    from azazel_nexus.route_selection import TerminalEvent
+    from azazel_nexus.runtime_lifecycle import BudgetLedger
+
+    entry, router = compose(root, record, observed)
+    invoke(entry, "P0-public")
+    assert_terminal(events(router), TerminalEvent.ANSWERED)
+    ledger = BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json")
+    budget = ledger.load(generation=1, runtime_id=RUNTIME_ID, limit=1)
+    crashes = 0
+    while True:
+        kill_real_server(sock)
+        crashes += 1
+        until = time.monotonic() + 5
+        while observed.health() and time.monotonic() < until:
+            time.sleep(0.01)
+        assert not observed.health(), "SIGKILL did not remove health"
+        verdict = budget.spend()
+        ledger.save(budget, runtime_id=record.runtime_id)
+        observed.stop()
+        if not verdict.may_restart:
+            break
+        observed.start()
+        assert observed.health()
+    assert crashes == 2
+    reloaded = ledger.load(generation=1, runtime_id=RUNTIME_ID, limit=1)
+    assert reloaded.fenced and reloaded.remaining == 0
+    assert not reloaded.spend().may_restart
+    assert not observed.health()
+
+
+def main():
+    from azazel_nexus_runtime.mio_serve import LocalServer
+
+    from azazel_nexus.route_selection import TerminalEvent
+
+    def terminate(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminate)
+    scenario, privacy, binary, model = sys.argv[1:]
+    root = Path(os.environ["AZAZEL_ROOT"])
+    sock = root / "llama.sock"
+    (root / "var/lib/azazel/state/mio").mkdir(parents=True)
+    record = record_for(root, Path(binary), Path(model), sock)
+    observed = ObservedServer(LocalServer(
+        record, root=root, socket_path=sock, start_deadline_s=90,
+    ))
+    before = edge_reading()
+    authority = root / "var/lib/azazel/state/activation/e2e-authority.json"
+    authority.parent.mkdir(parents=True)
+    authority.write_text(json.dumps({
+        "fixture": True, "edge_authority": "deterministic-arbiter",
+        "lease_expires_at": "2000-01-01T00:00:00Z", "enforcement": False,
+    }))
+    before_authority = authority_snapshot(root)
+    try:
+        observed.start()
+        assert observed.health(), "real llama-server did not become healthy"
+        if scenario == "crash":
+            crash_scenario(root, record, observed, sock)
+        else:
+            modes = ["advice", "deadline", "instruction"] if scenario == "edge" else [scenario]
+            for mode in modes:
+                entry, router = compose(root, record, observed)
+                prior = len(events(router))
+                prior_calls = observed.calls
+                observed.mode = mode
+                if mode == "socket_absent":
+                    observed.stop()
+                    # A missing socket after a real successful health probe.
+                    sock.unlink(missing_ok=True)
+                reply = invoke(entry, privacy)
+                assert observed.calls == prior_calls + 1, "local provider retried"
+                recorded = events(router)[prior:]
+                expected = {
+                    "deadline": TerminalEvent.TIMED_OUT,
+                    "instruction": TerminalEvent.NOT_ADVICE,
+                    "oversized": TerminalEvent.NOT_ADVICE,
+                    "broken_json": TerminalEvent.NOT_ADVICE,
+                    "socket_absent": TerminalEvent.FAILED,
+                }.get(mode, TerminalEvent.ANSWERED)
+                assert_terminal(recorded, expected)
+                if expected is TerminalEvent.ANSWERED:
+                    assert reply["outcome"] == "answered", reply
+                    assert observed.results and observed.results[-1].tokens_out > 0
+                    assert any(e["event_type"] == "mio.local.request" for e in recorded)
+                    assert any(e["event_type"] == "mio.local.advisory.read" for e in recorded)
+                else:
+                    assert_fallback(recorded)
+                assert_no_content(root, observed)
+                assert edge_reading() == before
+                assert authority_snapshot(root) == before_authority
+                assert before.blocks_deterministic_path() is False
+                if mode == "deadline":
+                    # A timed-out client can leave generation running briefly;
+                    # stop before the next Edge scenario to bound resource use.
+                    observed.stop()
+                    if scenario == "edge":
+                        observed.start()
+        assert edge_reading() == before
+        assert authority_snapshot(root) == before_authority
+        assert_no_content(root, observed)
+        print(f"PASS real llama-server: {scenario}/{privacy}")
+    finally:
+        observed.stop()
+
+
+if __name__ == "__main__":
+    main()
