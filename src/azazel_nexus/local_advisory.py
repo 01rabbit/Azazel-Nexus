@@ -191,7 +191,10 @@ def read_local_advisory(text: str, frame: Mapping | None = None) -> Advisory:
                 or (facts and any(fact not in source_facts for fact in facts))
                 or (not facts and _overlap(cited, source) < _MIN_OVERLAP)):
             raise AdvisoryRefused(AdvisoryRefusal.UNGROUNDED_FACTS, 'ungrounded_facts')
-        texts = [advisory.text.text, *fields.values()]
+        # cited_facts quotes the source verbatim (often English logs), so the
+        # language rule applies to the answer's own prose only.
+        texts = [advisory.text.text, *(value for name, value in fields.items()
+                                       if name != 'cited_facts')]
         japanese = bool(_JAPANESE.search(checked['question']))
         if any((not _KANA.search(value)) if japanese else
                (not re.search(r'[A-Za-z]', value) or _JAPANESE.search(value))

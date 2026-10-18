@@ -620,3 +620,10 @@ def test_grounded_japanese_citations_accepted(cited):
     item = japanese_frame()
     item['context'][0]['text'] = 'ホストws-112から4800件が出ています。ホストから大量の問い合わせが出ています'
     assert read_local_advisory(japanese_response(cited), item).text is not None
+
+
+def test_english_log_quoted_in_cited_facts_does_not_fail_japanese_language_check():
+    item = japanese_frame()
+    item['context'][0]['text'] = 'host=ws-112, 4800 TXT queries/hour'
+    advisory = read_local_advisory(japanese_response('host=ws-112, 4800 TXT queries/hour'), item)
+    assert advisory.text is not None
