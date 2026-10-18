@@ -58,6 +58,18 @@ invalid identifiers and references, oversized content, and forbidden prose.
 It is a structural development check, not signature verification or admission.
 It uses the authoritative library validator. Runtime loading must separately verify the Mission Pack component digest and trust.
 
+To read a layer as a page (search, category filter, Japanese/English toggle), render it
+to a single self-contained HTML file:
+
+```sh
+python3 tools/render_playbook_page.py -o /tmp/azazel-playbooks.html
+python3 tools/render_playbook_page.py path/to/site-layer.json -o /tmp/site-playbooks.html
+```
+
+The renderer runs the same structural check first and writes nothing for an invalid
+layer. It is a review aid only; it does not compose layers, verify signatures or
+admit anything.
+
 ## Attribution and limits
 
 All guidance and keyword wording here is original. No framework descriptions,
