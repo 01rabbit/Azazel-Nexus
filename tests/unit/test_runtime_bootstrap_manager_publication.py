@@ -263,7 +263,7 @@ def _transaction(approval):
 
 
 def _manager_fixture(env, monkeypatch, *, fault=None, policy_change=False,
-                     manager_type=BootstrapNarrowingManager):
+                     manager_type=BootstrapNarrowingManager, job_timeout_seconds=0.05):
     monkeypatch.setattr(manager_module, "current_bootstrap_controller_identity",
                         lambda: CONTROLLER_IDENTITY)
     approval = _approval()
@@ -280,7 +280,7 @@ def _manager_fixture(env, monkeypatch, *, fault=None, policy_change=False,
         return session
 
     manager = manager_type(
-        job_timeout_seconds=0.05,
+        job_timeout_seconds=job_timeout_seconds,
         session_factory=session_factory,
     )
     checks = []
