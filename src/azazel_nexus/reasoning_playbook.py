@@ -119,6 +119,7 @@ class Match:
     title: str
     references: tuple[Mapping, ...]
     guidance: Mapping
+    evidence: Mapping | None = None
 
 
 def _pairs(pairs):
@@ -159,6 +160,7 @@ def _read(doc, raw):
     for entry in doc['entries']:
         _fields(entry, ('id', 'status', 'category', 'title', 'references', 'match', 'guidance'))
         _pattern(entry['id'], _ID)
+        _require(entry['id'] not in {'benign', 'undetermined'}, 'reserved_id')
         _require(entry['status'] in ('template', 'reviewed'))
         _require(doc['layer'] != 'baseline' or entry['status'] == 'template')
         _require(type(entry['category']) is str and entry['category'] in _CATEGORIES)
@@ -244,7 +246,7 @@ def _keyword_hit(word: str, text: str) -> bool:
     return folded in text
 
 
-def match(frame, library: Library, *, limit=2) -> tuple[Match, ...]:
+def match(frame, library: Library, *, limit=3, include_unmatched=False) -> tuple[Match, ...]:
     _require(type(limit) is int and 0 <= limit <= 512, 'invalid_limit')
     checked = read_frame(frame)
     language = 'ja' if _JAPANESE.search(checked['question']) else 'en'
@@ -259,9 +261,17 @@ def match(frame, library: Library, *, limit=2) -> tuple[Match, ...]:
         keyword_hits = sum(_keyword_hit(word, text) for word in rules['keywords'][language])
         score = (3 * technique_hits + keyword_hits
                  + int(bool(kinds.intersection(rules['context_kinds']))))
-        if score >= rules['min_score']:
+        if include_unmatched or score >= rules['min_score']:
             result = Match(entry.id, score, entry.status, entry.title[language],
                            entry.references, MappingProxyType({
-                               key: value[language] for key, value in entry.guidance.items()}))
+                               key: value[language] for key, value in entry.guidance.items()}),
+                           MappingProxyType({
+                               "keywords": tuple(w for w in rules["keywords"][language]
+                                                 if _keyword_hit(w, text)),
+                               "technique_ids": tuple(t for t in rules["attack_techniques"]
+                                                      if t.casefold() in ids),
+                               "context_kinds": tuple(sorted(kinds.intersection(
+                                   rules["context_kinds"]))),
+                           }))
             matches.append(((-score, -technique_hits, -keyword_hits, entry.id), result))
     return tuple(result for _, result in sorted(matches, key=lambda item: item[0])[:limit])

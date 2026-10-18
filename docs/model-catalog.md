@@ -226,3 +226,15 @@ Nothing, yet — and by contract, never more than advise:
 Each is named, each is reported on its own, and each is reachable by a test
 that reaches only it. A refusal that could only be observed in combination
 with another would be a refusal nobody could act on.
+
+## Embedding retrieval development artifact
+
+| Name | License | SHA-256 | Bytes |
+| --- | --- | --- | ---: |
+| bge-m3-Q8_0.gguf | MIT | `950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167` | 634553760 |
+
+This is a development artifact declaration, not a signed commissioned catalog,
+import, admission or RUNTIMES entry. Use the existing model-catalog domain-tagged
+signature and staging-to-promotion model-import flow for any later commissioned
+artifact. The supplied external model file is not copied into this repository.
+Retrieval uses a separate AF_UNIX embedding server; production gates remain closed.

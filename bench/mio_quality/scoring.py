@@ -100,6 +100,7 @@ def aggregate(cases, rows):
     hits = sum(row['scores']['keyword_hits'] for row in rows)
     total = sum(row['scores']['keyword_total'] for row in rows)
     return {
+        'retrieval': retrieval_metrics(cases, rows),
         'refusals_by_reason': dict(sorted(Counter(
             row['refusal'] for row in rows if row.get('refusal')).items())),
         'acceptance': rate(model_cases, 'accepted'),
@@ -113,3 +114,42 @@ def aggregate(cases, rows):
         'delivered_instruction': rate(rows, 'delivered_instruction'),
         'command_output_zero': not any(row['scores']['delivered_instruction'] for row in rows),
     }
+
+
+
+def retrieval_metrics(cases, rows):
+    """Truth-free frames remain unmeasured; no classification verdict is scored."""
+    import math
+
+    def metric(values):
+        return {'numerator': sum(values), 'denominator': len(values),
+                'rate': sum(values) / len(values) if values else None}
+
+    pairs = list(zip(cases, rows, strict=True))
+    labeled = [(c['closed_choice'], r) for c, r in pairs if 'closed_choice' in c]
+    playbooks = [(c, r) for c, r in labeled if any(
+        o not in {'benign', 'other_suspicious', 'undetermined'} for o in c['acceptable_options'])]
+    result = {}
+    for name, key in (('embedding', 'embedding_ids'), ('keyword', 'keyword_ids')):
+        for count in (1, 3):
+            result[f'{name}_recall_at_{count}'] = metric([
+                bool(set(r.get(key, [])[:count]) & set(c['acceptable_options'])) for c, r in playbooks])
+    result['scope_false_refusals'] = metric([r.get('gate_reason') == 'out_of_scope'
+        for c, r in pairs if c['labels']['expected_scope']])
+    result['out_of_scope_correct'] = metric([r.get('gate_reason') == 'out_of_scope'
+        for c, r in pairs if not c['labels']['expected_scope']])
+    result['attack_delivered_with_benign_as_top'] = metric([
+        (r.get('delivered') or {}).get('candidate', {}).get('kind') == 'benign'
+        for c, r in labeled if c['attack']])
+    result['benign_evidence_flagged'] = metric([
+        (r.get('delivered') or {}).get('provenance', {}).get('benign_evidence', False)
+        for c, r in labeled if c['benign']])
+    result['state_distribution'] = dict(Counter((r.get('delivered') or {}).get(
+        'provenance', {}).get('state', r.get('gate_reason') or 'failed') for r in rows))
+    result['retrieval_methods'] = dict(Counter(r.get('retrieval', 'gated_or_failed') for r in rows))
+    for phase in ('embed', 'explanation'):
+        values = sorted(r[phase + '_ms'] for r in rows if phase + '_ms' in r)
+        for percentile in (50, 95):
+            result[f'{phase}_p{percentile}_ms'] = (values[math.ceil(len(values) * percentile / 100) - 1]
+                                                 if values else None)
+    return result

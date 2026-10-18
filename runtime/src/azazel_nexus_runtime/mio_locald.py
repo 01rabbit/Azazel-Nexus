@@ -8,24 +8,31 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 from __future__ import annotations
 
 import sys
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
-    build_prompt,
+    build_options,
+    delivered_document,
+    delivered_event,
+    explanation_prompt,
+    explanation_response_format,
     gate_frame,
+    read_delivered,
+    read_explanation,
     read_frame,
-    read_local_advisory,
     request_event,
+    retrieval_decision,
 )
 from azazel_nexus.model_runtime import (
-    ActivationReadiness,
     RuntimeRefused,
     inspect_artifact,
     readiness,
@@ -37,7 +44,7 @@ from azazel_nexus.playbook_selection import (
     retained_paths,
     selection_context,
 )
-from azazel_nexus.reasoning_playbook import Library, match, technique_ids
+from azazel_nexus.reasoning_playbook import Library, technique_ids
 
 from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
@@ -54,10 +61,10 @@ from .systemd_notify import runtime_ready_callback
 __all__ = [
     "ACTIVATE_VERB",
     "INFER_VERB",
-    "LocalRuntimeService",
     "REGISTRY",
     "SOCKET_NAME",
     "STAGING",
+    "LocalRuntimeService",
     "main",
 ]
 
@@ -118,7 +125,8 @@ class LocalRuntimeService:
         self,
         *,
         staging: Path = STAGING,
-        reserve: Optional[Any] = None,
+        retriever=None,
+        reserve: Any | None = None,
         admitted: Callable[[str], bool] = lambda model_id: False,
         model_id: str = "uncommissioned",
         runtime_id: str = "uncommissioned",
@@ -127,6 +135,7 @@ class LocalRuntimeService:
         playbooks: Library | None = None,
         knowledge_lookup: Callable[[tuple[str, ...]], Sequence[KnowledgeRef]] | None = None,
     ) -> None:
+        self._retriever = retriever
         self._staging = staging
         # Supplied, never discovered. The library reads the record; this
         # service is handed the result, so that a node whose reserve record
@@ -178,6 +187,8 @@ class LocalRuntimeService:
         ).as_document()
 
     def _infer(self, request: Any, *, audit: Callable[[dict], None]) -> dict:
+        began = time.monotonic()
+
         def refuse(reason, outcome="failed"):
             audit({"event_type": "mio.local.refused", "refusal": reason})
             return {"outcome": outcome, "refusal": reason}
@@ -190,7 +201,11 @@ class LocalRuntimeService:
         if not 0 < deadline_ms <= 60_000:
             return refuse("invalid_deadline")
         audit(request_event(frame))
-        gated = gate_frame(frame)
+        # Embeddings may only run after the existing admission gates. Lexical
+        # insufficient-information checks remain available without a provider.
+        initial_gate = gate_frame(frame)
+        gated = initial_gate if self._retriever is None or (
+            initial_gate and initial_gate['reason'] == 'insufficient_information') else None
         if gated is not None:
             audit({"event_type": "mio.local.gated", "reason": gated["reason"]})
             return gated
@@ -203,63 +218,103 @@ class LocalRuntimeService:
         except RuntimeRefused:
             return refuse("runtime_unavailable")
         artifact = inspect_artifact(self._staging / f"{self._model_id}.model")
-        if not artifact.is_data or self._server is None:
+        if not artifact.is_data or (self._server is None and self._retriever is None):
             return refuse("provider_unavailable")
-        playbooks = match(frame, self._playbooks) if self._playbooks is not None else ()
+        from .mio_embedding import retrieve
+
+        playbooks, similarities, retrieval, embed_ms = retrieve(
+            frame, self._playbooks, self._retriever, end=began + deadline_ms / 1000)
+        audit({'event_type': 'mio.local.retrieval', 'method': retrieval})
+        gated = gate_frame(frame, max(similarities, default=-1.0))
+        if gated is not None:
+            audit({'event_type': 'mio.local.gated', 'reason': gated['reason']})
+            return gated
         knowledge = ()
         knowledge_state = "unused"
         ids = technique_ids(frame)
         if self._knowledge_lookup is not None and ids:
-            try:
-                knowledge = tuple(self._knowledge_lookup(ids)[:16])
-                knowledge_state = "available"
-            except Exception as error:
-                # Optional client failures are fixed metadata, as for inference.
-                if isinstance(error, AuditUnavailable):
-                    raise
-                knowledge_state = "unavailable"
+            # Existing lookup has no remaining-budget argument. Skip rather than
+            # allowing an optional synchronous call to overrun the whole deadline.
+            knowledge_state = "skipped_deadline_contract"
         audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
                "playbook_count": len(playbooks), "knowledge": knowledge_state,
                "knowledge_count": len(knowledge)})
-        # Runtime dependency stays in the runtime distribution. Tests inject a
-        # fake server; the request contract is shared with the serving lane.
         try:
-            from .mio_serve import LocalInferenceRequest
-
-            messages = build_prompt(frame, playbooks=playbooks, knowledge=knowledge)
-            reference_text = messages[1][1] if len(messages) == 3 else ""
-            inference = LocalInferenceRequest(
-                prompt_messages=messages, max_tokens=1024, temperature=0.0,
+            reply, telemetry = retrieval_pipeline(
+                self._server, frame, playbooks, knowledge, self._model_id,
+                end=began + deadline_ms / 1000, audit=audit, similarities=similarities,
+                retrieval=retrieval, embed_ms=embed_ms,
             )
-            result = self._server.infer(inference, deadline_s=deadline_ms / 1000)
         except TimeoutError:
             return refuse("deadline", "timed_out")
         except Exception as error:
-            # Provider failures become fixed metadata. Audit failures must
-            # remain fatal even when raised inside a composed runtime.
             if isinstance(error, AuditUnavailable):
                 raise
             return refuse("runtime_failed")
-        try:
-            advisory = read_local_advisory(result.text, frame, reference_text=reference_text)
-        except AdvisoryRefused as exc:
-            return refuse(exc.refusal.value, "not_advice")
-        audit(advisory.as_event(local=True))
-        reply = {
-            "outcome": "advisory", "refusal": None,
-            "response_digest": advisory.digest,
-            "advice": advisory.text.text if advisory.text else None,
-            "fields": dict(advisory.data.fields) if advisory.data else {},
-            "playbook": {
-                "ids": [p.id for p in playbooks],
-                "status": [p.status for p in playbooks],
-                "references": [dict(ref) for p in playbooks for ref in p.references],
-                "first_response": [text for p in playbooks for text in p.guidance["first_response"]],
-            } if playbooks else None,
-        }
-        if knowledge:
-            reply["knowledge"] = {"claim_ids": [ref.claim_id for ref in knowledge]}
-        return reply
+        audit({"event_type": "mio.local.selection", **telemetry})
+        audit(delivered_event(reply))
+        return {"outcome": "advisory", "refusal": None, **reply}
+
+
+# Reserve delivery time; optional Knowledge must never consume the inference budget.
+DELIVERY_RESERVE_S = 0.02
+EXPLANATION_MIN_S = 1.0
+
+
+def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="bench", *,
+                           end, audit=lambda event: None, similarities=(), retrieval="keyword", embed_ms=0):
+    """Shared runtime/bench orchestration, with one absolute deadline."""
+    from .mio_serve import LocalInferenceRequest
+
+    def remaining():
+        budget = end - time.monotonic() - DELIVERY_RESERVE_S
+        if budget <= 0:
+            raise TimeoutError("local pipeline deadline")
+        return budget
+
+    remaining()
+    options = build_options(frame, playbooks)
+    candidate, state, support = retrieval_decision(frame, playbooks, similarities)
+    ranked = list(options)
+    guard = None
+    explanation = None
+    dropped = None
+    explanation_began = time.monotonic()
+    if state != "none" and server is not None:
+        if remaining() < EXPLANATION_MIN_S:
+            dropped = "deadline_short"
+        else:
+            chosen = next(o for o in options if o["option_id"] == candidate["option_id"])
+            messages = explanation_prompt(frame, chosen, playbooks, knowledge)
+            try:
+                result = server.infer(LocalInferenceRequest(
+                    messages, max_tokens=512, temperature=0,
+                    response_format=explanation_response_format()), deadline_s=remaining())
+                remaining()
+                explanation = read_explanation(result.text, frame, candidate, messages[1][1])
+            except TimeoutError:
+                dropped = "deadline"
+            except (ValueError, AdvisoryRefused) as exc:
+                dropped = str(exc) if type(exc) is ValueError else exc.refusal.value
+                if dropped not in {"explanation_schema", "duplicate_key", "reason_without_quote",
+                                   "opposite_class", "degenerate", "ungrounded_facts",
+                                   "language_mismatch", "looks_like_an_instruction", "not_text",
+                                   "control_characters", "empty"}:
+                    dropped = "explanation_schema"
+            except Exception as error:
+                if isinstance(error, AuditUnavailable):
+                    raise
+                dropped = "runtime_failed"
+    if dropped:
+        audit({"event_type": "mio.local.explanation", "reason": "explanation_dropped:" + dropped})
+    reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation,
+                               similarities=similarities, state=state, retrieval=retrieval,
+                               benign_evidence=support)
+    read_delivered(reply)
+    return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
+                   "explanation_ms": (time.monotonic() - explanation_began) * 1000,
+                   "retrieval": retrieval, "benign_evidence": support}
+
 
 
 class PlaybookSelectionHolder:
@@ -332,10 +387,10 @@ class PlaybookSelectionHolder:
 
 
 def main(
-    argv: Optional[Sequence[str]] = None,
+    argv: Sequence[str] | None = None,
     *,
     stop: Callable[[], bool] = lambda: False,
-    ready: Optional[Callable[[], None]] = None,
+    ready: Callable[[], None] | None = None,
 ) -> int:
     """Serve. Takes no arguments, by design.
 

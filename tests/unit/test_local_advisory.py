@@ -20,7 +20,9 @@ from azazel_nexus.local_advisory import (
     MAX_FRAME_BYTES,
     FrameRefused,
     advisory_response_format,
+    build_options,
     build_prompt,
+    delivered_document,
     gate_frame,
     read_frame,
     read_local_advisory,
@@ -50,6 +52,19 @@ def request(payload=None):
                            arguments={'deadline_ms': 1000}, payload=payload or frame())
 
 
+def explanation_request(local):
+    from pathlib import Path
+
+    from azazel_nexus.reasoning_playbook import read_library
+
+    local.set_playbooks(read_library((Path(__file__).parents[1] / 'fixtures/reasoning-playbook.json').read_bytes()))
+    payload = frame()
+    payload['question'] += ' Password spray T1110.003'
+    req = request(payload)
+    req.arguments['deadline_ms'] = 5000
+    return req
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
@@ -57,7 +72,7 @@ def service(tmp_path, monkeypatch):
 
     def infer(req, *, deadline_s):
         calls.append((req, deadline_s))
-        return SimpleNamespace(text=response())
+        return SimpleNamespace(text="A" if len(calls) % 2 else "B")
 
     local = mio_locald.LocalRuntimeService(
         staging=tmp_path, reserve=object(), admitted=lambda _: True,
@@ -125,9 +140,8 @@ def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch
         verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(privacy),
     ))
     assert reply['outcome'] == 'answered'
-    assert reply['advice'] == SENTINEL
-    assert len(calls) == 1
-    assert calls[0][1] == 1.0
+    assert reply['candidate']['kind'] == 'other_suspicious'
+    assert calls == []  # no class: no model generation
     text = entry.router.ledger.path.read_text()
     assert SENTINEL not in text
     events = [item.event for item in entry.router.ledger]
@@ -135,27 +149,30 @@ def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch
     assert events[-1]['terminal_event'] == 'answered'
 
 
-@pytest.mark.parametrize(('failure', 'outcome', 'terminal'), [
-    (TimeoutError(SENTINEL), 'timed_out', 'timed_out'),
-    (RuntimeError(SENTINEL), 'failed', 'failed'),
-    ('{"advice":"block host now"}', 'not_advice', 'not_advice'),
-    ('{"' + SENTINEL + '":1}', 'not_advice', 'not_advice'),
-    ('broken ' + SENTINEL, 'not_advice', 'not_advice'),
+@pytest.mark.parametrize('failure', [
+    TimeoutError(SENTINEL), RuntimeError(SENTINEL),
+    '{"advice":"block host now"}', '{"' + SENTINEL + '":1}', 'broken ' + SENTINEL,
 ])
-def test_runtime_failure_and_refusal_do_not_log_text(service, failure, outcome, terminal):
+def test_optional_explanation_failure_preserves_candidate_and_does_not_log_text(service, failure):
     local, _calls = service
 
+    attempted = []
+
     def infer(*args, **kwargs):
+        attempted.append(True)
         if isinstance(failure, Exception):
             raise failure
         return SimpleNamespace(text=failure)
 
     local._server.infer = infer
     events = []
-    reply = local.handle(request(), audit=events.append)
-    assert reply['outcome'] == outcome
+    reply = local.handle(explanation_request(local), audit=events.append)
+    assert reply['outcome'] == 'advisory'  # optional model failure cannot change retrieval
     from azazel_nexus_runtime.mio_router import terminal_for
-    assert terminal_for(reply).name.lower() == terminal
+    assert terminal_for(reply).name.lower() == 'answered'
+    assert attempted == [True]
+    assert reply['explanation_source'] == 'trusted'
+    assert any(e.get('reason', '').startswith('explanation_dropped:') for e in events)
     assert SENTINEL not in json.dumps(events)
 
 
@@ -219,12 +236,12 @@ def test_socket_client_forwards_payload_and_sanitizes_response(monkeypatch):
 
     def exchange(*args, **kwargs):
         calls.append((args, kwargs))
-        return {'outcome': 'advisory', 'advice': SENTINEL, 'fields': json.loads(response())['fields']}
+        return {**delivered_fixture(), 'outcome': 'advisory'}
 
     monkeypatch.setattr(mio_socket_client, '_exchange', exchange)
     events = []
     reply = mio_socket_client.LocalSocketClient().handle(request(), audit=events.append)
-    assert reply['advice'] == SENTINEL
+    assert reply['candidate']['kind'] == 'other_suspicious'
     assert calls[0][1] == {'payload': frame(), 'deadline_s': 1.0}
     assert calls[0][0][2] == 'mio.local.infer'
     assert SENTINEL not in json.dumps(events)
@@ -232,7 +249,7 @@ def test_socket_client_forwards_payload_and_sanitizes_response(monkeypatch):
 
 def test_socket_audit_failure_is_not_a_provider_failure(monkeypatch):
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
-        'outcome': 'advisory', 'advice': SENTINEL, 'fields': json.loads(response())['fields'],
+        **delivered_fixture(), 'outcome': 'advisory',
     })
 
     def fail(event):
@@ -243,7 +260,7 @@ def test_socket_audit_failure_is_not_a_provider_failure(monkeypatch):
 
 
 @pytest.mark.parametrize(('reply', 'outcome'), [
-    ({'outcome': 'advisory', 'advice': 'block host now'}, 'not_advice'),
+    ({'outcome': 'advisory', 'advice': 'block host now'}, 'failed'),
     ({'outcome': 'not_advice', 'refusal': SENTINEL}, 'not_advice'),
     ({'outcome': 'timed_out', 'refusal': SENTINEL}, 'timed_out'),
     ({'outcome': SENTINEL, 'refusal': SENTINEL}, 'failed'),
@@ -304,13 +321,11 @@ def test_payload_wire_encoding_uses_event_and_bounds_before_send(monkeypatch):
     assert len(connection.sent) == 1
 
 
-@pytest.mark.parametrize(('failure', 'terminal'), [
-    (TimeoutError(SENTINEL), 'TIMED_OUT'),
-    (RuntimeError(SENTINEL), 'FAILED'),
-    ('{"advice":"block host now"}', 'NOT_ADVICE'),
+@pytest.mark.parametrize('failure', [
+    TimeoutError(SENTINEL), RuntimeError(SENTINEL), '{"advice":"block host now"}',
 ])
-def test_router_records_local_terminal_and_one_private_handoff(
-    service, tmp_path, monkeypatch, failure, terminal,
+def test_router_keeps_local_advisory_after_explanation_failure(
+    service, tmp_path, monkeypatch, failure,
 ):
     from azazel_nexus_runtime.mio_router import MioRouter
 
@@ -329,17 +344,17 @@ def test_router_records_local_terminal_and_one_private_handoff(
     remote = SimpleNamespace(handle=lambda *a, **k: pytest.fail('private remote dispatch'))
     router = MioRouter(local=local, remote=remote)
     reply = router.handle(
-        local_request=request(), remote_request=None,
+        local_request=explanation_request(local), remote_request=None,
         profile=MioProfile.FASTEST_PERMITTED, privacy_class=PrivacyClass.P2_MISSION,
         remote=RemoteAdmission(False, Exclusion.PRIVACY_CLASS, 'fixture privacy'),
         local_admitted=True, local_refusal='fixture',
         predictions={Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture')},
-        deadline_ms=1000,
+        deadline_ms=5000,
     )
-    assert reply.route is Route.DETERMINISTIC_HANDOFF
+    assert reply.route is Route.LOCAL
     events = [item.event for item in router.ledger]
-    assert sum(e['event_type'] == 'mio.route.fallback' for e in events) == 1
-    assert any(e.get('terminal_event') == TerminalEvent[terminal].value for e in events)
+    assert sum(e['event_type'] == 'mio.route.fallback' for e in events) == 0
+    assert any(e.get('terminal_event') == TerminalEvent.ANSWERED.value for e in events)
     assert SENTINEL not in router.ledger.path.read_text()
 
 
@@ -362,7 +377,7 @@ def test_entry_advisory_defaults_to_refused_and_malformed_payload_is_safe(tmp_pa
 
 def test_socket_cannot_claim_an_empty_advisory(monkeypatch):
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {'outcome': 'advisory'})
-    assert mio_socket_client.LocalSocketClient().handle(request())['outcome'] == 'not_advice'
+    assert mio_socket_client.LocalSocketClient().handle(request())['outcome'] == 'failed'
 
 
 def test_runtime_audit_failure_stays_fatal(service):
@@ -373,14 +388,10 @@ def test_runtime_audit_failure_stays_fatal(service):
 
     local._server.infer = infer
     with pytest.raises(AuditUnavailable):
-        local.handle(request(), audit=lambda event: None)
+        local.handle(request(), audit=lambda event: infer())
 
 
-@pytest.mark.parametrize(('text', 'terminal'), [
-    (response(), 'answered'),
-    ('{"advice":"block host now"}', 'not_advice'),
-])
-def test_e2e_composition_uses_real_local_server_contract(tmp_path, monkeypatch, text, terminal):
+def test_e2e_no_class_skips_real_local_server_endpoint(tmp_path, monkeypatch):
     import importlib.util
     from pathlib import Path
 
@@ -407,14 +418,8 @@ def test_e2e_composition_uses_real_local_server_contract(tmp_path, monkeypatch, 
     server.state = LifecycleState.SERVING
     sent = []
 
-    def http(method, path, body, end):
-        sent.append(json.loads(body))
-        return json.dumps({
-            'choices': [{'message': {'content': text}}],
-            'usage': {'prompt_tokens': 10, 'completion_tokens': 12},
-            'timings': {'prompt_n': 10, 'prompt_ms': 1, 'predicted_n': 12,
-                        'predicted_ms': 2, 'predicted_per_second': 6000},
-        }).encode()
+    def http(*args):
+        pytest.fail('no-class result must not invoke the explanation endpoint')
 
     monkeypatch.setattr(server, '_http', http)
     observed = harness.ObservedServer(server)
@@ -422,23 +427,9 @@ def test_e2e_composition_uses_real_local_server_contract(tmp_path, monkeypatch, 
     reply = harness.invoke(entry, 'P0-public')
     events = harness.events(router)
     from azazel_nexus.route_selection import TerminalEvent
-    harness.assert_terminal(events, TerminalEvent[terminal.upper()])
-    if terminal == 'answered':
-        assert reply['outcome'] == 'answered'
-    else:
-        harness.assert_fallback(events)
-    assert len(sent) == 1
-    assert sent[0]['messages'] == [
-        {'role': role, 'content': content}
-        for role, content in build_prompt(harness.frame('P0-public'))
-    ]
-    schema = sent[0]['response_format']['json_schema']['schema']
-    assert schema['required'] == ['advice', 'fields']
-    fields = schema['properties']['fields']
-    assert fields['additionalProperties'] is False
-    assert fields['required'] == list(FIELD_NAMES)
-    assert set(fields['properties']) == set(FIELD_NAMES)
-    assert observed.results[0].timings['predicted_per_second'] == 6000
+    harness.assert_terminal(events, TerminalEvent.ANSWERED)
+    assert reply['outcome'] == 'answered'
+    assert sent == []  # no class: the optional explanation endpoint is not invoked
     harness.assert_no_content(tmp_path, observed)
 
 
@@ -461,10 +452,10 @@ def test_content_gate(question, context, reason):
         assert result['advice']
 
 
-@pytest.mark.parametrize('entry_boundary', [False, True])
-@pytest.mark.parametrize(('question', 'reason'), [
-    ('今日の夕飯は何がいいですか？', 'out_of_scope'),
-    ('We saw an alert. What should we do?', 'insufficient_information'),
+@pytest.mark.parametrize(('entry_boundary', 'question', 'reason'), [
+    (False, '今日の夕飯は何がいいですか？', 'out_of_scope'),
+    (False, 'We saw an alert. What should we do?', 'insufficient_information'),
+    (True, 'We saw an alert. What should we do?', 'insufficient_information'),
 ])
 def test_gates_skip_provider_and_audit_fixed_reason(
     service, tmp_path, monkeypatch, entry_boundary, question, reason,
@@ -597,18 +588,16 @@ def test_plain_account_identifier_cannot_be_fabricated():
     assert exc.value.refusal.value == 'ungrounded_facts'
 
 
-@pytest.mark.parametrize(('body', 'reason'), [
-    (response(fields={}), 'local_schema'),
-    (japanese_response(), 'ungrounded_facts'),
-    (response(advice='確認します'), 'language_mismatch'),
-])
-def test_runtime_quality_refusals_have_fixed_audit_codes(service, body, reason):
+@pytest.mark.parametrize('body', [response(fields={}), japanese_response(), response(advice='確認します')])
+def test_runtime_explanation_schema_refusals_have_fixed_audit_codes(service, body):
     local, _ = service
     local._server.infer = lambda *a, **k: SimpleNamespace(text=body)
     events = []
-    reply = local.handle(request(), audit=events.append)
-    assert reply == {'outcome': 'not_advice', 'refusal': reason}
-    assert events[-1] == {'event_type': 'mio.local.refused', 'refusal': reason}
+    reply = local.handle(explanation_request(local), audit=events.append)
+    assert reply['outcome'] == 'advisory'
+    assert reply['explanation_source'] == 'trusted'
+    assert {'event_type': 'mio.local.explanation',
+            'reason': 'explanation_dropped:explanation_schema'} in events
     assert SENTINEL not in json.dumps(events)
 
 
@@ -667,28 +656,25 @@ def trusted_metadata():
     }
 
 
-def test_metadata_crosses_socket_router_and_operator_entry(tmp_path, monkeypatch, trusted_metadata):
+def test_metadata_crosses_socket_router_and_operator_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    document = delivered_fixture()
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
-        **json.loads(response()), **trusted_metadata, 'outcome': 'advisory',
+        **document, 'outcome': 'advisory',
     })
     entry = mio_entryd.MioEntryService(
-        profile_reader=lambda: MioProfile.FASTEST_PERMITTED,
-        local_admitted=lambda: True,
+        profile_reader=lambda: MioProfile.FASTEST_PERMITTED, local_admitted=lambda: True,
         predictions_reader=lambda: {
-            Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture'),
-        },
-    )
+            Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture')})
     monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
     monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
-    reply = entry.handle(SimpleNamespace(
-        verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(),
-    ))
-    assert reply['route'] == Route.LOCAL.value
+    reply = entry.handle(SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
+                         arguments={'deadline_ms': 1000}, payload=frame()))
     assert reply['outcome'] == 'answered'
-    assert {key: reply[key] for key in trusted_metadata} == trusted_metadata
-    ledger = entry.router.ledger.path.read_text()
-    assert '担当者' not in ledger and 'first_response' not in ledger
+    for key in ('candidate', 'alternatives', 'match_evidence', 'provenance', 'explanation_source'):
+        assert reply[key] == document[key]
+    assert SENTINEL not in entry.router.ledger.path.read_text()
+
 
 
 @pytest.mark.parametrize(('path', 'bad'), [
@@ -730,23 +716,15 @@ def test_malformed_process_metadata_refuses_reply(monkeypatch, trusted_metadata,
     assert events == []
 
 
-def test_metadata_maximum_and_absence(monkeypatch, trusted_metadata):
-    playbook = trusted_metadata['playbook']
-    playbook.update(ids=['auth-one', 'auth-two'], status=['template', 'reviewed'],
-                    references=playbook['references'] * 16,
-                    first_response=['確認' * 80] * 10)
-    trusted_metadata['knowledge']['claim_ids'] *= 16
+def test_metadata_maximum_and_absence(monkeypatch):
+    document = delivered_fixture()
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
-        **json.loads(response()), **trusted_metadata, 'outcome': 'advisory',
+        **document, 'outcome': 'advisory',
     })
-    reply = mio_socket_client.LocalSocketClient().handle(request())
-    assert reply['playbook'] == playbook
-    assert reply['knowledge'] == trusted_metadata['knowledge']
-    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
-        **json.loads(response()), 'outcome': 'advisory', 'playbook': None,
-    })
-    reply = mio_socket_client.LocalSocketClient().handle(request())
-    assert reply['playbook'] is None and 'knowledge' not in reply
+    assert mio_socket_client.LocalSocketClient().handle(request())['candidate'] == document['candidate']
+    del document['provenance']
+    assert mio_socket_client.LocalSocketClient().handle(request())['outcome'] == 'failed'
+
 
 
 def test_remote_entry_has_null_playbook_and_no_knowledge(tmp_path, monkeypatch, trusted_metadata):
@@ -762,7 +740,7 @@ def test_remote_entry_has_null_playbook_and_no_knowledge(tmp_path, monkeypatch, 
     reply = entry.handle(SimpleNamespace(
         verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(),
     ))
-    assert reply['playbook'] is None and 'knowledge' not in reply
+    assert 'playbook' not in reply and 'knowledge' not in reply
 
 
 @pytest.mark.parametrize('field', ['advice', *FIELD_NAMES])
@@ -987,3 +965,11 @@ def test_cap_fragment_is_trimmed_to_whole_sentences(value, kept):
     value = value[:_FIELD_CAP]
     assert _trim_at_cap(value, _FIELD_CAP) == (kept if kept is not None else value)
     assert _trim_at_cap('Short. And cut', _FIELD_CAP) == 'Short. And cut'
+
+
+
+def delivered_fixture():
+    options = build_options(frame())
+    return delivered_document(frame(), (), options,
+                              {'option_id': 'other_suspicious', 'kind': 'other_suspicious'},
+                              list(options), None, 'fixture')

@@ -26,15 +26,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "runtime" / "src"))
 
-from azazel_nexus.activation import (  # noqa: E402
+from azazel_nexus_runtime import mio_locald
+from azazel_nexus_runtime.hardening import PROFILES, SYSTEM_ACCOUNTS, render_unit
+from azazel_nexus_runtime.principal import PrincipalClass
+from azazel_nexus_runtime.protocol import ArgumentKind
+
+from azazel_nexus.activation import (
     ARTIFACT_TRANSPORT,
     CORE_UNITS,
     LOCAL_MODEL_PROVIDER,
 )
-from azazel_nexus_runtime import mio_locald  # noqa: E402
-from azazel_nexus_runtime.hardening import PROFILES, SYSTEM_ACCOUNTS, render_unit  # noqa: E402
-from azazel_nexus_runtime.principal import PrincipalClass  # noqa: E402
-from azazel_nexus_runtime.protocol import ArgumentKind  # noqa: E402
 
 UNIT = "azazel-mio-locald.service"
 MODULE = REPO_ROOT / "runtime" / "src" / "azazel_nexus_runtime" / "mio_locald.py"
@@ -320,14 +321,14 @@ def test_the_unit_is_not_granted_while_no_runtime_is_wired():
 
 
 def test_a_wired_transport_does_not_wire_a_provider(monkeypatch):
-    import azazel_nexus_runtime.activated as activated
+    from azazel_nexus_runtime import activated
 
     monkeypatch.setattr(activated, "ENDPOINT_FOR", {"vendor-primary": object()})
     assert activated.wired_capabilities() == frozenset({ARTIFACT_TRANSPORT})
 
 
 def test_a_wired_provider_does_not_wire_a_transport(monkeypatch):
-    import azazel_nexus_runtime.activated as activated
+    from azazel_nexus_runtime import activated
 
     monkeypatch.setattr(activated, "RUNTIMES", {"fixture": object()})
     assert activated.wired_capabilities() == frozenset({LOCAL_MODEL_PROVIDER})
@@ -555,113 +556,57 @@ def test_the_state_list_covers_a_crash_and_a_rollback():
     assert len(LOCAL_RUNTIME_STATES) == len(set(LOCAL_RUNTIME_STATES))
 
 
-@pytest.mark.parametrize('lookup_state', ['available', 'failed', 'timeout', 'permission'])
-def test_trusted_reference_delivery_and_lookup_failures(tmp_path, lookup_state, monkeypatch):
-    import json
+def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
     from types import SimpleNamespace
 
-    from azazel_nexus.lite_import import KnowledgeRef
-    from azazel_nexus.local_advisory import FIELD_NAMES
     from azazel_nexus.reasoning_playbook import read_library
-
     library = read_library((REPO_ROOT / 'tests/fixtures/reasoning-playbook.json').read_bytes())
     frame = {'request_id': 'reference-fixture', 'privacy_class': 'P2-mission',
              'question': 'Password spray T1110.003',
              'context': [{'kind': 'auth_log', 'text': 'many accounts'}]}
-    text = json.dumps({'advice': 'Review authentication activity.', 'fields': {
-        key: 'Review authentication activity.' if key != 'cited_facts' else 'T1110.003'
-        for key in FIELD_NAMES}})
     calls = []
-    def infer(request, *, deadline_s):
+    def infer(request, **kwargs):
         calls.append(request)
-        return SimpleNamespace(text=text)
-
-    lookups = []
-    def lookup(ids):
-        lookups.append(ids)
-        if lookup_state == 'failed':
-            raise ValueError('SECRET_DIAGNOSTIC')
-        if lookup_state == 'timeout':
-            raise TimeoutError('SECRET_DIAGNOSTIC')
-        if lookup_state == 'permission':
-            from azazel_nexus_runtime import knowledge_client
-
-            def denied(*args, **kwargs):
-                raise PermissionError('group-protected socket')
-
-            monkeypatch.setattr(knowledge_client, '_exchange', denied)
-            return knowledge_client.lookup_context(ids)
-        return (KnowledgeRef(technique_id='T1110.003', name='Spraying', summary='Context',
-                                claim_id='T1110.003', bundle_digest='sha256:' + '0' * 64,
-                                freshness='static'),)
-
+        return SimpleNamespace(text='A' if len(calls) % 2 else 'C')
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
     service = mio_locald.LocalRuntimeService(
         staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
         runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
-        playbooks=library, knowledge_lookup=lookup)
+        playbooks=library, knowledge_lookup=lambda _: pytest.fail('unbounded lookup'))
     request = SimpleNamespace(verb=mio_locald.INFER_VERB, payload=frame,
                               arguments={'deadline_ms': 1000})
     events = []
     reply = service.handle(request, audit=events.append)
     assert reply['outcome'] == 'advisory'
-    assert reply['playbook']['ids'] == ['auth-password-spraying']
-    assert reply['playbook']['status'] == ['template']
-    assert reply['playbook']['first_response'] == list(library.entries[0].guidance['first_response']['en'])
-    assert reply['playbook']['references'] == [dict(ref) for ref in library.entries[0].references]
-    assert lookups == [('T1110.003',)]
-    assert len(calls[0].prompt_messages) == 3
-    assert calls[0].max_tokens == 1024
-    original_reader = mio_locald.read_local_advisory
-    captured = []
-
-    def read_with_reference(text, frame, *, reference_text):
-        captured.append(reference_text)
-        return original_reader(text, frame, reference_text=reference_text)
-
-    monkeypatch.setattr(mio_locald, 'read_local_advisory', read_with_reference)
-    if lookup_state == 'available':
-        assert reply['knowledge'] == {'claim_ids': ['T1110.003']}
-    else:
-        assert 'knowledge' not in reply
-        assert any(event.get('knowledge') == 'unavailable' for event in events)
-    rendered = json.dumps(events)
-    for secret in ('SECRET_DIAGNOSTIC', 'many accounts', 'Password spraying', 'preserving evidence'):
-        assert secret not in rendered
-
-    # A model cannot supply metadata through the unchanged response schema.
-    document = json.loads(text)
-    document['playbook'] = {'ids': ['model-forged-entry']}
-    text = json.dumps(document)
-    forged = service.handle(request)
-    assert captured == [calls[1].prompt_messages[1][1]]
-    assert forged['outcome'] == 'not_advice'
-    assert 'playbook' not in forged
-
-    # Gates short-circuit references and preserve the original reply shape.
+    assert reply['candidate'] == {'option_id': 'auth-password-spraying', 'kind': 'playbook'}
+    assert reply['provenance']['playbooks_reviewed'] is False
+    assert reply['match_evidence'][0]['technique_ids'] == ['T1110.003']
+    assert 'playbook' not in reply and 'knowledge' not in reply
+    assert len(calls) == 0  # optional explanation skipped below one second
+    assert any(e.get('knowledge') == 'skipped_deadline_contract' for e in events)
+    assert 'many accounts' not in str(events)
     frame.update(question='How do I bake bread?', context=[])
-    gated = service.handle(request)
-    assert gated['reason'] == 'out_of_scope'
-    assert 'playbook' not in gated and len(lookups) == 2 and len(calls) == 2
+    assert service.handle(request)['reason'] == 'out_of_scope'
+    assert len(calls) == 0
+
 
 
 def test_accepted_reply_without_references_has_null_playbook(tmp_path):
-    import json
     from types import SimpleNamespace
-
-    from azazel_nexus.local_advisory import FIELD_NAMES
-
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
-    text = json.dumps({'advice': 'Review the logs.', 'fields': {
-        key: 'Review the logs.' if key != 'cited_facts' else 'host-1' for key in FIELD_NAMES}})
+    letters = iter(['A', 'B'])
     service = mio_locald.LocalRuntimeService(
         staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
         runtime_id='fixture', runtime=lambda _: object(),
-        server=SimpleNamespace(infer=lambda *a, **kw: SimpleNamespace(text=text)))
+        server=SimpleNamespace(infer=lambda *a, **kw: SimpleNamespace(text=next(letters))))
     request = SimpleNamespace(verb=mio_locald.INFER_VERB, arguments={'deadline_ms': 1000},
                               payload={'request_id': 'fixture', 'privacy_class': 'P2-mission',
                                        'question': 'SSH host-1', 'context': []})
-    assert service.handle(request)['playbook'] is None
+    reply = service.handle(request)
+    assert reply['match_evidence'] == []
+    assert reply['candidate']['kind'] == 'other_suspicious'
+    assert 'playbook' not in reply
+
 
 
 def test_main_refreshes_optional_selection_before_each_request(tmp_path, monkeypatch):
@@ -732,37 +677,16 @@ def test_selection_holder_unreadable_state_and_audit_failure(tmp_path, monkeypat
 @pytest.mark.parametrize('with_reference', [False, True])
 def test_infer_validates_against_exact_sent_reference(tmp_path, with_reference):
     import json
-    from types import SimpleNamespace
 
-    from azazel_nexus.local_advisory import FIELD_NAMES
-
-    (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
-    fields = {key: 'Review the logs.' for key in FIELD_NAMES}
-    fields['interpretation'] = 'Review event 4625.'
-    fields['cited_facts'] = 'The situation suggests an authentication issue.'
-    text = json.dumps({'advice': 'Review authentication activity.', 'fields': fields})
-    calls = []
-
-    def infer(request, **kwargs):
-        calls.append(request)
-        return SimpleNamespace(text=text)
-
-    service = mio_locald.LocalRuntimeService(
-        staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
-        runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
-        knowledge_lookup=(lambda ids: (SimpleNamespace(
-            technique_id='T1110', name='Event 4625', claim_id='T1110'),))
-        if with_reference else None)
-    request = SimpleNamespace(verb=mio_locald.INFER_VERB, arguments={'deadline_ms': 1000},
-                              payload={'request_id': 'fixture', 'privacy_class': 'P2-mission',
-                                       'question': 'SSH host-1 T1110', 'context': []})
-    reply = service.handle(request)
-    assert calls[0].max_tokens == 1024
+    from azazel_nexus.local_advisory import read_explanation
+    frame = {'request_id': 'reference', 'privacy_class': 'P2-mission',
+             'question': 'SSH host-1', 'context': []}
+    text = json.dumps({'reason': 'Review "host-1" event 4625.',
+                       'check_1': 'Review logs.', 'check_2': 'Review logs.',
+                       'check_3': 'Review logs.', 'missing': 'Time is needed.'})
+    candidate = {'option_id': 'other_suspicious', 'kind': 'other_suspicious'}
     if with_reference:
-        assert '4625' in calls[0].prompt_messages[1][1]
-        assert reply['outcome'] == 'advisory'
-        assert reply['fields']['cited_facts'] == 'No specific facts quoted from the situation.'
-        assert reply['knowledge'] == {'claim_ids': ['T1110']}
+        assert read_explanation(text, frame, candidate, 'reference Event 4625')
     else:
-        assert len(calls[0].prompt_messages) == 2
-        assert reply == {'outcome': 'not_advice', 'refusal': 'ungrounded_facts'}
+        with pytest.raises(ValueError, match='ungrounded_facts'):
+            read_explanation(text, frame, candidate)
