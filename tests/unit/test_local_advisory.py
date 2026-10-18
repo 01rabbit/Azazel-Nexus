@@ -936,3 +936,28 @@ def test_short_bilingual_reference_instruction_applies_without_references():
     assert 'copy exact short phrases from the situation only' in system
     assert '状況に合わせ' in system
     assert '正確に引用' in system
+
+
+@pytest.mark.parametrize('prose', [
+    'command-and-control traffic', 'per-user lockout', 'an out-of-office login',
+    'e.g. the backup window', '1. first check 2. second check', 'a 60-second interval',
+])
+def test_prose_shapes_are_not_facts(prose):
+    item = {**frame(), 'question': 'Why did SSH fail?',
+            'context': [{'kind': 'log', 'text': 'user=deploy saw 18 failures every 60 seconds'}]}
+    fields = {name: 'Check ' + prose + '.' for name in FIELD_NAMES}
+    fields['cited_facts'] = '18 failures'
+    advisory = read_local_advisory(response(fields=fields), item)
+    # "60-second" grounds as the number 60 and is cited as such.
+    assert advisory.data.fields['cited_facts'] == ('18, 60' if '60-' in prose else '18')
+
+
+@pytest.mark.parametrize('invented', ['10GB', '192.0', '45-second', '7 hosts', 'mx1-backup'])
+def test_prose_filter_keeps_digit_facts(invented):
+    item = {**frame(), 'question': 'Why did SSH fail?',
+            'context': [{'kind': 'log', 'text': 'user=deploy saw 18 failures every 60 seconds'}]}
+    fields = {name: 'Check the login history.' for name in FIELD_NAMES}
+    fields['interpretation'] = 'Seen ' + invented + ' in the log'
+    with pytest.raises(AdvisoryRefused) as exc:
+        read_local_advisory(response(fields=fields), item)
+    assert exc.value.refusal.value == 'ungrounded_facts'

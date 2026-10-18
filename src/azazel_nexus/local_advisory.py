@@ -176,17 +176,46 @@ def reference_message(playbooks=(), knowledge=()) -> str:
     return ('reference\n' + '\n'.join(references))[:1200] if references else ''
 
 
+_DOMAIN = re.compile(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}')
+_UNIT_NUMBER = re.compile(r'(\d+)-[A-Za-z]+')
+
+
+def _prose_filter(text: str, start: int, end: int, token: str):
+    """Treat ordinary prose shapes as prose, not as facts to ground.
+
+    Hyphenated or dotted words without digits ("command-and-control", "e.g")
+    are prose unless they carry address structure (@, /, :) or are domain
+    names. "60-second" grounds as its number. List enumerators ("1. ") are
+    layout. Anything with digits otherwise stays a fact.
+    """
+    if not re.search(r'[0-9]', token):
+        if re.search(r'[@/:]', token) or _DOMAIN.fullmatch(token):
+            return (start, end, token)
+        return None
+    unit = _UNIT_NUMBER.fullmatch(token)
+    if unit:
+        return (start, start + len(unit.group(1)), unit.group(1))
+    if (token.isdigit() and len(token) <= 2 and text[end:end + 1] in ('.', ')')
+            and not text[end + 1:end + 2].isdigit()
+            and (start == 0 or text[start - 1] in ' \t\n、。:：(')):
+        return None
+    return (start, end, token)
+
+
 def _fact_tokens(text: str) -> list[tuple[int, int, str]]:
     # Positions refer to normalized text. Pure unlabelled words without digits
     # remain outside lexical grounding; this does not verify prose semantics.
     text = unicodedata.normalize('NFKC', text)
-    tokens = [(m.start(), m.end(), m.group()) for m in _FACT.finditer(text)]
+    tokens = [_prose_filter(text, m.start(), m.end(), m.group())
+              for m in _FACT.finditer(text)]
+    tokens = [token for token in tokens if token is not None]
     for match in _LABELLED_FACT.finditer(text):
         token = match.group(1).rstrip('.')
         if token:
             tokens.append((match.start(1), match.start(1) + len(token), token))
-    tokens += [(m.start(), m.end(), m.group()) for m in _IDENTIFIER.finditer(text)
-               if re.search(r'[A-Za-z]', m.group()) and re.search(r'[0-9]', m.group())]
+    tokens += [token for m in _IDENTIFIER.finditer(text)
+               if re.search(r'[A-Za-z]', m.group()) and re.search(r'[0-9]', m.group())
+               and (token := _prose_filter(text, m.start(), m.end(), m.group())) is not None]
     for match in _IPV6.finditer(text):
         token = match.group().rstrip('.')
         try:
@@ -194,7 +223,8 @@ def _fact_tokens(text: str) -> list[tuple[int, int, str]]:
         except ValueError:
             continue
         tokens.append((match.start(), match.start() + len(token), token))
-    tokens += [(m.start(), m.end(), m.group()) for m in _NUMBER.finditer(text)]
+    tokens += [token for m in _NUMBER.finditer(text)
+               if (token := _prose_filter(text, m.start(), m.end(), m.group())) is not None]
     # A containing identifier/address owns its entire span. Its numeric (or
     # structured) fragments must never substantiate separate model assertions.
     whole = []
