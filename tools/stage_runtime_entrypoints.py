@@ -26,18 +26,17 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LIBEXEC_RELATIVE = Path("usr/libexec/azazel")
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
+from azazel_nexus_runtime import startup_wrapper  # noqa: E402
 from azazel_nexus_runtime.install_platform import (  # noqa: E402
     CURRENT_INSTALL_PLATFORM_PROFILES,
     InstallPlatformProfile,
 )
 from azazel_nexus_runtime.launch_environment import staging_environment  # noqa: E402
-from azazel_nexus_runtime import startup_wrapper  # noqa: E402
 
 
 def declared_daemons(root: Path = ROOT) -> dict[str, str]:
@@ -50,9 +49,13 @@ def declared_daemons(root: Path = ROOT) -> dict[str, str]:
     executable_paths: set[str] = set()
     for unit in sorted((root / "packaging" / "systemd").glob("*.service")):
         for line in unit.read_text(encoding="utf-8").splitlines():
-            if not line.startswith("ExecStart="):
+            if line.startswith("ExecStartPre=+"):
+                value = line.removeprefix("ExecStartPre=+")
+            elif line.startswith("ExecStart="):
+                value = line.removeprefix("ExecStart=")
+            else:
                 continue
-            fields = shlex.split(line.removeprefix("ExecStart="))
+            fields = shlex.split(value)
             if len(fields) != 1 or not fields[0].startswith("/"):
                 raise ValueError(
                     f"unit must declare one fixed absolute executable: {unit.name}"

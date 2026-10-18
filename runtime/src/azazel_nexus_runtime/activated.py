@@ -152,12 +152,12 @@ def wired_capabilities() -> frozenset:
     from .model_admission_evidence import (
         MAX_SNAPSHOT_RETRIES,
         Admitted,
+        decide_embedding_admission,
         fingerprint,
-        read_admissions,
     )
 
     for _ in range(MAX_SNAPSHOT_RETRIES):
-        reading = read_admissions(now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        reading = decide_embedding_admission(now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
         try:
             if type(reading.embedding) is not Admitted:
                 break

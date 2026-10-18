@@ -51,14 +51,16 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from azazel_nexus.model_runtime import (
-    RuntimeBinary, RuntimeRefused, resolve_runtime, verify_runtime_binary, open_verified_runtime,
+    RuntimeBinary,
+    RuntimeRefused,
+    resolve_runtime,
 )
 from azazel_nexus.runtime_lifecycle import (
+    STDIO_BYTE_CEILING,
     BudgetLedger,
     LifecycleState,
     Readiness,
     RestartBudget,
-    STDIO_BYTE_CEILING,
 )
 
 __all__ = [
@@ -488,45 +490,29 @@ class ServingProcess:
         self.process: subprocess.Popen | None = None
 
     def start(self) -> None:
+        from azazel_nexus import model_admission
+
+        if model_admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
+            raise SupervisorRefused("ADMISSION_DISABLED")
+        if self.descriptors is None:
+            raise SupervisorRefused("held verified descriptors required")
         if self.process is not None:
             raise SupervisorRefused("stop the previous process group before starting")
-        binary = (self.root / self.record.executable.lstrip("/")).absolute()
-        descriptor = None
-        executable = str(binary)
+        self.descriptors.recheck(full=True)
+        executable = f"/proc/self/fd/{self.descriptors.binary_fd}"
+        argv = [executable, *self.record.argv[1:]]
+        index = argv.index("-m") + 1
+        argv[index] = f"/proc/self/fd/{self.descriptors.model_fd}"
         try:
-            argv = [str(binary), *self.record.argv[1:]]
-            pass_fds = ()
-            if self.descriptors is not None:
-                self.descriptors.recheck()
-                executable = f"/proc/self/fd/{self.descriptors.binary_fd}"
-                argv[0] = executable
-                index = argv.index("-m") + 1
-                argv[index] = f"/proc/self/fd/{self.descriptors.model_fd}"
-                pass_fds = (self.descriptors.binary_fd, self.descriptors.model_fd)
-            elif self.record.architecture_digests is not None:
-                descriptor = open_verified_runtime(self.record, binary)
-                if Path("/proc/self/fd").is_dir():
-                    executable = f"/proc/self/fd/{descriptor}"
-                else:
-                    # Non-Linux fallback: repeat verification immediately before exec.
-                    verify_runtime_binary(self.record, binary)
             self.process = subprocess.Popen(
-                argv,
-                executable=executable,
-                pass_fds=pass_fds if descriptor is None else (descriptor,),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env={"PATH": "/nonexistent", "LC_ALL": "C"},
-                cwd=str(self.root),
-                start_new_session=True,
-                close_fds=True,
+                argv, executable=executable,
+                pass_fds=(self.descriptors.binary_fd, self.descriptors.model_fd),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env={"PATH": "/nonexistent", "LC_ALL": "C"}, cwd=str(self.root),
+                start_new_session=True, close_fds=True,
             )
         except (OSError, ValueError):
             raise SupervisorRefused("the serving process did not start") from None
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
 
     @property
     def alive(self) -> bool:

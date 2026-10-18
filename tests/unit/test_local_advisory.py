@@ -973,3 +973,10 @@ def delivered_fixture():
     return delivered_document(frame(), (), options,
                               {'option_id': 'other_suspicious', 'kind': 'other_suspicious'},
                               list(options), None, 'fixture')
+
+
+@pytest.fixture(autouse=True)
+def explicit_fake_serving(monkeypatch):
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)

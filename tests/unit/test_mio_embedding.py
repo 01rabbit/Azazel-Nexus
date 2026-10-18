@@ -186,3 +186,10 @@ def test_embedding_startup_uses_remaining_deadline(monkeypatch, tmp_path):
     assert deadlines and 0 < deadlines[0] <= .01
     with pytest.raises(LocalServerRefused):
         server.start(deadline_s=0)
+
+
+@pytest.fixture(autouse=True)
+def explicit_fake_serving(monkeypatch):
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)

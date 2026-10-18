@@ -300,7 +300,15 @@ def admit_local_model(
         return refuse(AdmissionGate.APPROVAL, "approval binding mismatch")
     # Runtime owns the held descriptor checks; this pure gate cannot spawn or
     # manufacture them. Locald calls readiness for these same inodes before start.
-    if approval.descriptors is None:
+    import os
+    import stat
+
+    try:
+        held = approval.descriptors
+        if held is None or any(not stat.S_ISREG(os.fstat(fd).st_mode)
+                               for fd in (held.binary_fd, held.model_fd)):
+            raise ValueError("held descriptors required")
+    except (AttributeError, OSError, TypeError, ValueError):
         return refuse(AdmissionGate.STAGED_ACTIVATION, "held verified descriptors required")
     return ProviderAdmission(provider.name, True, None, "")
 

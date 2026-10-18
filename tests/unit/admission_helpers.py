@@ -46,3 +46,48 @@ def inputs(*, component=D, model_id="local-model", need=3000, version="1.4.0",
 def evidence(**kwargs):
     values, _, _ = inputs(**kwargs)
     return admission.verify_local_model_admission(**values)
+
+
+def _read_at(root_fd, owner, *, now, trust=None):
+    from azazel_nexus_runtime import model_admission_evidence as loader
+
+    class TestTree(loader.ProtectedTree):
+        def read(self, path, limit=65536):
+            if path == "/etc/azazel/operator-trust/operators.json" and trust is not None:
+                return admission.canonical({"schema": "azazel-nexus/operator-trust/v1",
+                                            "keys": {name: key.hex() for name, key in trust.public_keys.items()},
+                                            "revoked": sorted(trust.revoked)})
+            return super().read(path, limit)
+
+    return loader._read_tree(TestTree(root_fd, owner), now=now)
+
+
+def install_fake_serving(monkeypatch):
+    """Explicit test-only process adapter for inert fixture executables on macOS."""
+    import subprocess
+
+    from azazel_nexus_runtime import mio_serve, mio_supervisor
+
+    monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    original_init = mio_serve.LocalServer.__init__
+
+    class FakeDescriptors:
+        def recheck(self):
+            pass
+
+    class FakeProcess(mio_supervisor.ServingProcess):
+        def start(self):
+            binary = (self.root / self.record.executable.lstrip("/")).absolute()
+            self.process = subprocess.Popen(
+                [str(binary), *self.record.argv[1:]], cwd=str(self.root),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env={"PATH": "/nonexistent", "LC_ALL": "C"}, start_new_session=True,
+                close_fds=True,
+            )
+
+    def initialize(self, *args, **kwargs):
+        kwargs.setdefault("descriptors", FakeDescriptors())
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(mio_serve, "ServingProcess", FakeProcess)
+    monkeypatch.setattr(mio_serve.LocalServer, "__init__", initialize)

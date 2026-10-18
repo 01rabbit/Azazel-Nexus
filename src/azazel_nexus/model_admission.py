@@ -57,7 +57,7 @@ def digest(raw: bytes) -> str:
 
 
 def utc(value: str) -> datetime:
-    if type(value) is not str or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value):
+    if type(value) is not str or not re.fullmatch(r"[0-9]{4}-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z", value):
         raise ApprovalRefused("MALFORMED")
     try:
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)

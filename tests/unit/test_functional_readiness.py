@@ -18,11 +18,6 @@ import re
 
 import pytest
 
-# One source of truth for which module may reach the network. Imported
-# rather than restated: two copies of an exemption list is one copy that
-# stops matching, and the one that stops matching is the one nobody reads.
-from tests.unit.test_runtime_boundary import EGRESS_EXEMPT
-
 from azazel_nexus import decoy as decoy_module
 from azazel_nexus.cognition import AdmissionGate, LocalModelProvider, admit_local_model
 from azazel_nexus.compatibility import (
@@ -39,6 +34,11 @@ from azazel_nexus.functional_readiness import (
 )
 from azazel_nexus.lite_service import KnowledgeLite, no_claim_reader
 from azazel_nexus.resource_profile import ResourceProfile
+
+# One source of truth for which module may reach the network. Imported
+# rather than restated: two copies of an exemption list is one copy that
+# stops matching, and the one that stops matching is the one nobody reads.
+from tests.unit.test_runtime_boundary import EGRESS_EXEMPT
 
 
 def test_the_three_embedded_features_are_tracked() -> None:
@@ -171,6 +171,7 @@ def test_mio_is_not_functional_without_minted_admission_evidence() -> None:
         [
             TestedTuple(
                 component_digest=digest,
+                model_role="embedding",
                 adapter_digest=digest,
                 renderer_digest=digest,
                 toolchain_digest=digest,
@@ -184,24 +185,29 @@ def test_mio_is_not_functional_without_minted_admission_evidence() -> None:
             )
         ]
     )
-    outcome = admit_local_model(
-        LocalModelProvider(
-            name="fully-evidenced",
-            component_digest=digest,
-            declared_format="gguf",
-            tokenizer_format="sentencepiece",
-            runtime_version="1.4.0",
-            quantization="q4_k_m",
-            context_size=4096,
-            memory_need_mib=1,
-            evidence=None,
-        ),
-        host=host,
-        tested=tested,
-    )
-    assert outcome.admitted is False
-    assert outcome.failed_gate is AdmissionGate.AUTHENTICITY
-    assert "not a pass" in outcome.reason
+    from admission_helpers import evidence
+
+    from azazel_nexus.cognition import ResourceEvidence
+    from azazel_nexus.core_reserve import CoreReserve
+    from azazel_nexus.model_admission import canonical
+    from azazel_nexus.model_admission import digest as hash_bytes
+
+    matched, _ = tested.admits(digest, host, model_role="embedding")
+    proof = evidence(component=digest, model_id="fully-evidenced", need=1,
+                     tuple_digest=hash_bytes(canonical(matched.as_record())))
+    provider = LocalModelProvider(
+        "fully-evidenced", digest, "gguf", "sentencepiece", "1.4.0", "q4_k_m",
+        2048, 1, evidence=proof, role="embedding")
+    outcome = admit_local_model(provider, host=host, tested=tested)
+    assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
+    assert "unmeasured" in outcome.reason
+    reserve = CoreReserve(host.profile, 2000, "test-host", "test-only", 60, 600)
+    outcome = admit_local_model(provider, host=host, tested=tested,
+                               resources=ResourceEvidence(reserve, 64000))
+    assert outcome.failed_gate is AdmissionGate.APPROVAL
+    outcome = admit_local_model(provider, host=host, tested=tested,
+                               resources=ResourceEvidence(reserve, 2000))
+    assert outcome.failed_gate is AdmissionGate.RESOURCE_TOPOLOGY
 
     assert readiness_for("mio").functional is False, (
         "the resource gate still refuses every provider; if HG-05 has closed, "
@@ -349,14 +355,14 @@ def test_the_loopback_runtime_really_binds_so_the_word_is_not_control_plane_only
     was written to prevent, in the opposite direction.
     """
 
+    import tempfile
+
     from azazel_nexus_runtime.decoy_loopback import (
         LoopbackCatalogue,
         LoopbackDecoy,
         LoopbackRuntime,
         ResponderState,
     )
-
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         runtime = LoopbackRuntime(

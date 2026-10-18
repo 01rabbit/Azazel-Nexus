@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from admission_helpers import END, NOW, H, evidence, inputs
+from admission_helpers import END, NOW, H, _read_at, evidence, inputs
 from azazel_nexus_runtime import model_admission_evidence as loader
 
 from azazel_nexus import model_admission as admission
@@ -21,6 +21,18 @@ from azazel_nexus.model_runtime import (
 )
 
 
+@pytest.fixture(autouse=True)
+def enabled(monkeypatch, request):
+    if request.node.name != "test_disabled_is_first_and_does_no_io":
+        monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+        from azazel_nexus_runtime import virtualization_observation
+
+        from azazel_nexus.virtualization import SENSORS
+
+        monkeypatch.setattr(virtualization_observation, "observe_virtualization",
+                            lambda: dict.fromkeys(SENSORS, "clear"))
+
+
 def admitted_candidate():
     from test_cognition import COMPONENT, a_catalogue, a_host
     from test_model_catalog import an_entry
@@ -28,7 +40,16 @@ def admitted_candidate():
     host, tested = a_host(), a_catalogue()
     matched, _ = tested.admits(COMPONENT, host, model_role="embedding")
     binary = RuntimeBinary(LLAMA_RUNTIME_ID, LLAMA_EXECUTABLE, "b11716", COMPONENT, (LLAMA_EXECUTABLE,))
-    held = SimpleNamespace(recheck=lambda: binary, model_fd=12, binary_fd=13, close=lambda: None)
+    import tempfile
+
+    # The candidate owns these files until collected; closing on function exit
+    # would turn this into a fake-descriptor test rather than a held-fd test.
+    binary_file, model_file = tempfile.TemporaryFile(), tempfile.TemporaryFile()  # noqa: SIM115
+    model_file.write(b"GGUF" + bytes(32))
+    model_file.flush()
+    held = SimpleNamespace(recheck=lambda **kw: binary, model_fd=model_file.fileno(),
+                           binary_fd=binary_file.fileno(), close=lambda: None,
+                           files=(binary_file, model_file))
     record = llama_server_record(binary, model_path=Path("/var/lib/azazel/models/store/test.gguf"),
                                  socket_path=Path("/var/lib/azazel/mio/embedding.sock"), embedding=True)
     proof = evidence(component=COMPONENT, model_id="local-model", version="b11716", need=1000,
@@ -61,7 +82,7 @@ def store(tmp_path, kwargs):
 def read_test(root, *, trust, now=NOW):
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        return loader._read_at(fd, os.getuid(), now=now, trust=trust)
+        return _read_at(fd, os.getuid(), now=now, trust=trust)
     finally:
         os.close(fd)
 
@@ -169,9 +190,23 @@ def test_expiry_withdraws_without_file_change(monkeypatch):
 
 
 def test_private_seam_not_imported_by_production_and_no_legacy_reserve():
+    assert not hasattr(loader, "_read_at")
     root = Path(__file__).resolve().parents[2]
-    for path in (root / "runtime/src/azazel_nexus_runtime").glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+    for path in (p for folder in ("src", "runtime/src", "tools") for p in (root / folder).rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        aliases = {"loader", "model_admission_evidence"}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                aliases.update(alias.asname or alias.name for alias in node.names
+                               if alias.name.endswith("model_admission_evidence"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert not ((ast.unparse(node.value).endswith("model_admission_evidence")
+                             or isinstance(node.value, ast.Name) and node.value.id in aliases)
+                            and node.attr == "_read_at")
+            if (isinstance(node, ast.Call) and (isinstance(node.func, ast.Name) and node.func.id == "getattr"
+                                              or isinstance(node.func, ast.Attribute) and node.func.attr == "getattr")):
+                assert not (len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == "_read_at")
             if isinstance(node, ast.ImportFrom) and node.module and node.module.endswith("model_admission_evidence"):
                 assert all(alias.name != "_read_at" for alias in node.names)
     source = (root / "runtime/src/azazel_nexus_runtime/model_admission_evidence.py").read_text()
@@ -218,7 +253,11 @@ def collected_store(tmp_path, monkeypatch):
     """
     from dataclasses import asdict
 
-    from azazel_nexus_runtime import hil_readiness, virtualization_observation
+    from azazel_nexus_runtime import (
+        hil_readiness,
+        model_identity,
+        virtualization_observation,
+    )
     from nacl.signing import SigningKey
     from test_cognition import a_catalogue, a_host
     from test_hil_records import fixture_campaign
@@ -243,6 +282,7 @@ def collected_store(tmp_path, monkeypatch):
     monkeypatch.setattr(loader, "procfs_available", lambda: True)
     monkeypatch.setattr(loader.os, "uname", lambda: SimpleNamespace(machine="x86_64"))
     monkeypatch.setattr(hil_readiness, "run_identity", lambda: {"host_digest": H})
+    monkeypatch.setattr(model_identity, "read_identity", lambda: {"host_digest": H})
     monkeypatch.setattr(virtualization_observation, "observe_virtualization", lambda: observations)
     from azazel_nexus import model_paths
     monkeypatch.setattr(model_paths, "bounded_read", lambda *a: b"MemTotal:       16777216 kB\n")
@@ -447,7 +487,7 @@ def test_protected_walk_refuses_links_and_wrong_owner(tmp_path, mutation):
         owner += 1
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        reading = loader._read_at(fd, owner, now=NOW, trust=kwargs["trust"])
+        reading = _read_at(fd, owner, now=NOW, trust=kwargs["trust"])
         assert reading.embedding == loader.Refused("EVIDENCE_UNPROTECTED")
     finally:
         os.close(fd)
@@ -463,13 +503,15 @@ def test_public_loader_ignores_environment_root(tmp_path, monkeypatch):
     monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
     opened = []
 
-    def check_root(fd, owner, *, now):
+    def check_root(tree, *, now):
+        fd, owner = tree.root_fd, tree.owner
         assert os.fstat(fd).st_ino == os.stat("/").st_ino
         assert owner == 0
         opened.append(1)
         return loader.AdmissionReading(loader.Refused("NODE_MISMATCH"))
 
-    monkeypatch.setattr(loader, "_read_at", check_root)
+    monkeypatch.setattr(loader, "ProtectedTree", lambda fd, owner: SimpleNamespace(root_fd=fd, owner=owner))
+    monkeypatch.setattr(loader, "_read_tree", check_root)
     assert loader.read_admissions(now=NOW).embedding == loader.Refused("NODE_MISMATCH")
     assert opened == [1]
 
@@ -482,3 +524,124 @@ def test_locald_refuses_record_argv_not_bound_by_evidence(tmp_path, monkeypatch)
     monkeypatch.setattr(mio_serve, "LocalServer", lambda *a, **kw: pytest.fail("unbound argv reached spawn"))
     assert mio_locald.prepare_local_models([replace(candidate, record=bad_record)],
                                            staging=tmp_path, audit=lambda e: None) == ({}, [])
+
+
+@pytest.mark.parametrize("failure", [None, "argv", "descriptors", "reserve", "readiness"])
+def test_activation_and_locald_share_full_decision(tmp_path, monkeypatch, failure):
+    from azazel_nexus_runtime import activated, mio_locald, mio_serve
+
+    from azazel_nexus import model_runtime
+    from azazel_nexus.activation import LOCAL_MODEL_PROVIDER
+
+    candidate = admitted_candidate()
+    if failure == "argv":
+        candidate = replace(candidate, record=replace(candidate.record, argv=(*candidate.record.argv, "bad")))
+    elif failure == "descriptors":
+        candidate = replace(candidate, evidence=replace(candidate.evidence, descriptors=object()))
+    elif failure == "reserve":
+        candidate = replace(candidate, resources=replace(candidate.resources, envelope_mib=2000))
+    elif failure == "readiness":
+        monkeypatch.setattr(model_runtime, "readiness", lambda **kw: SimpleNamespace(readiness=None))
+    monkeypatch.setattr(loader, "read_admissions", lambda **kw: loader.AdmissionReading(candidate, ("/test",), (1,)))
+    monkeypatch.setattr(loader, "fingerprint", lambda paths: (1,))
+    monkeypatch.setattr(activated, "_fetch_commissioned", lambda path: False)
+
+    class TestServer:
+        def __init__(self, *args, **kw):
+            pass
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mio_serve, "LocalServer", TestServer)
+    wired = LOCAL_MODEL_PROVIDER in activated.wired_capabilities()
+    providers, _ = mio_locald.prepare_local_models([candidate], staging=tmp_path, audit=lambda e: None)
+    assert wired == bool(providers) == (failure is None)
+
+
+def test_request_recheck_never_hashes_content(tmp_path, monkeypatch):
+    trust, _, _ = collected_store(tmp_path, monkeypatch)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _, held, *_ = loader._collect(loader.ProtectedTree(fd, os.getuid()), trust=trust,
+                                      policy=None, operator="approver")
+        monkeypatch.setattr(loader, "runtime_from_fd", lambda *a, **kw: pytest.fail("request hashed binary"))
+        monkeypatch.setattr(loader, "verify_artifact_fd", lambda *a, **kw: pytest.fail("request hashed model"))
+        assert held.recheck() is held.binary
+        os.chmod(held.model_fd, 0o600)
+        with pytest.raises(loader.RuntimeRefused, match="EVIDENCE_CHANGED"):
+            held.recheck()
+        held.close()
+    finally:
+        os.close(fd)
+
+
+def test_virtualization_content_changes_with_stable_fingerprint(monkeypatch):
+    from azazel_nexus_runtime import virtualization_observation
+
+    assert not any(p.startswith(("/proc", "/sys")) for p in loader._FIXED)
+    candidate = admitted_candidate()
+    monkeypatch.setattr(loader, "read_admissions", lambda **kw: loader.AdmissionReading(candidate))
+    monkeypatch.setattr(loader, "fingerprint", lambda paths: (1,))
+    from azazel_nexus.virtualization import SENSORS
+
+    observation = [dict.fromkeys(SENSORS, "clear")]
+    monkeypatch.setattr(virtualization_observation, "observe_virtualization", lambda: observation[0])
+    holder = loader.AdmissionHolder(clock=lambda: NOW)
+    holder.start(audit=lambda e: None)
+    stops = []
+    holder.refresh(withdraw=lambda: stops.append(True), audit=lambda e: None)
+    assert stops == []
+    observation[0] = {"sensor": "observed"}
+    holder.refresh(withdraw=lambda: stops.append(True), audit=lambda e: None)
+    assert stops == [True]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_production_layers_refuse_disabled_or_missing_descriptors(tmp_path, monkeypatch, enabled):
+    from azazel_nexus_runtime import mio_locald, mio_serve, mio_supervisor
+
+    monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", enabled)
+    candidate = admitted_candidate()
+    candidate = replace(candidate, evidence=replace(candidate.evidence, descriptors=None))
+    assert mio_locald.prepare_local_models([candidate], staging=tmp_path, audit=lambda e: None) == ({}, [])
+    with pytest.raises(mio_serve.LocalServerRefused):
+        mio_serve.LocalServer(candidate.record, root=Path("/"), socket_path=tmp_path / "test.sock")
+    with pytest.raises(mio_supervisor.SupervisorRefused):
+        mio_supervisor.ServingProcess(candidate.record, root=Path("/")).start()
+
+
+def test_root_and_locald_collect_same_node_binding(tmp_path, monkeypatch):
+    trust, _, _ = collected_store(tmp_path, monkeypatch)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        contexts = []
+        for uid in (0, 501):
+            monkeypatch.setattr(loader.os, "geteuid", lambda uid=uid: uid)
+            context, held, *_ = loader._collect(loader.ProtectedTree(fd, os.getuid()),
+                                               trust=trust, policy=None, operator="approver")
+            contexts.append(context.bindings["node"])
+            held.close()
+        assert contexts[0] == contexts[1]
+    finally:
+        os.close(fd)
+
+
+def test_e2e_reserve_cases_reach_resource_and_approval_gates(tmp_path):
+    from tools.e2e_stages import _core_reserve_path
+
+    assert "resource and approval gates" in _core_reserve_path(SimpleNamespace(root=tmp_path))
+
+
+def test_local_server_rechecks_kill_switch_after_construction(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import mio_serve
+
+    candidate = admitted_candidate()
+    server = mio_serve.LocalServer(candidate.record, root=Path("/"), socket_path=tmp_path / "test.sock",
+                                   descriptors=candidate.evidence.descriptors)
+    monkeypatch.setattr(admission, "LOCAL_MODEL_ADMISSION_ENABLED", False)
+    with pytest.raises(mio_serve.LocalServerRefused, match="ADMISSION_DISABLED"):
+        server.start()
+    with pytest.raises(mio_serve.LocalServerRefused, match="ADMISSION_DISABLED"):
+        server._http("GET", "/health", b"", 1)

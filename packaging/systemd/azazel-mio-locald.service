@@ -21,6 +21,7 @@ SupplementaryGroups=azknowledge-read azmission-read
 ExecStart=/usr/libexec/azazel/az-mio-locald
 RuntimeDirectory=azazel/mio
 RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/libexec/azazel/az-mio-identity
 ReadOnlyPaths=-/etc/azazel/model-admission
 ReadOnlyPaths=-/etc/azazel/operator-trust
 ReadOnlyPaths=-/var/lib/azazel/models

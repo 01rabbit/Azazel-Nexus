@@ -319,12 +319,22 @@ artifact/runtime resolution or LocalServer construction, audits refusals,
 loads separate persistent restart budgets, and stops owned children on exit.
 Each startup is bounded at 120 seconds; the generated unit allows 300 seconds
 for two startups plus verification before readiness.
-No production candidate/approval evidence loader is implemented: the default
-candidate set is empty and audited. The approval gate remains closed even if
-candidates are supplied internally. Future loader work must bind the verified
-catalog, promoted artifact, tested tuple, reserve and operator approval.
-An admitted embedding role injects EmbeddingRetriever. Explanation has no
-server by default; only a separately admitted generative role supplies one.
+The protected embedding evidence loader is implemented but disabled by the code
+kill switch. Both activation wiring and locald use the same admission decision,
+including resource containment and readiness checks. Without admission locald
+continues serving keyword retrieval from verified playbooks. Explanation has no
+server; generative admission remains future work.
+
+At every locald start, the fixed `az-mio-identity` pre-start helper runs as root
+via the unit's `ExecStartPre=+` directive. It observes the node identity again
+and writes only the host HMAC to `/run/azazel/mio/node-identity`, root:azmio
+0640. locald opens this bounded file without following symlinks and checks its
+owner, group, mode and link count. The commissioning secret stays root-only;
+copying `/etc` cannot replay a prior machine's observation. Activation observes
+the same identity directly as root. The helper accepts no arguments or environment
+inputs. A failed identity observation removes the previous digest and lets
+locald serve keyword retrieval with admission refused. Its wrapper is staged with the other fixed unit executables.
+
 The recommended configuration remains retrieval + trusted text, per the
 [container development results](evidence/mio-candidates-2026-10-18.md).
 
@@ -356,9 +366,11 @@ Real x86_64 hardware remains part of the HIL campaign.
 Runtime verification requires root ownership and no group/other write bits on
 the executable and every parent through `/`, rejecting symlinked parents.
 Linux hashes an O_NOFOLLOW descriptor and executes that same descriptor via
-`/proc/self/fd` with `pass_fds`. On platforms without procfs, verification is
-repeated immediately before Popen; a residual pathname replacement window
-remains there. Root can still modify an open inode; root is the trust boundary.
+`/proc/self/fd` with `pass_fds`. Embedding admission refuses on platforms without procfs. Binary and model
+content are re-hashed before each spawn; per-request checks compare held-fd
+identity, validity and the kill switch. Every request or one-second poll also
+re-observes virtualization content; procfs and sysfs inode churn is not an
+admission change. Root can still modify an open inode; root is the trust boundary.
 Installation inputs may reside in untrusted directories: their digest is checked
 before and after copying, ownership/mode are set on staging, and promotion fsyncs
 the destination directory.

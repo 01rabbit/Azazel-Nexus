@@ -221,10 +221,11 @@ def _generation(harness: Harness) -> str:
 
 
 def _activation(harness: Harness) -> str:
-    from azazel_nexus.activation import CORE_UNITS, ActivationLease
-    from azazel_nexus.audit import AuditLedger
     from azazel_nexus_runtime.activated import ActivationDaemon
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+
+    from azazel_nexus.activation import CORE_UNITS, ActivationLease
+    from azazel_nexus.audit import AuditLedger
 
     manager = RecordingUnitManager(UNIT_NAMES.values())
     daemon = ActivationDaemon(
@@ -299,9 +300,10 @@ def _health(harness: Harness) -> str:
 def _failure(harness: Harness) -> str:
     """Inject a daemon failure and confirm it is detected, not assumed away."""
 
-    from azazel_nexus.audit import AuditLedger
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
     from azazel_nexus_runtime.watchdog import FenceStore, WatchdogService
+
+    from azazel_nexus.audit import AuditLedger
 
     ticks = iter([0, 10, 20, 30])
     service = WatchdogService(
@@ -339,10 +341,11 @@ def _failure(harness: Harness) -> str:
 
 
 def _rollback(harness: Harness) -> str:
-    from azazel_nexus.activation import ActivationLease, UnitState
-    from azazel_nexus.audit import AuditLedger
     from azazel_nexus_runtime.activated import ActivationDaemon
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
+
+    from azazel_nexus.activation import ActivationLease, UnitState
+    from azazel_nexus.audit import AuditLedger
 
     manager = RecordingUnitManager(
         UNIT_NAMES.values(), fail_on="azazel-watchdog.service"
@@ -602,13 +605,14 @@ def _loopback_decoys(harness: Harness) -> str:
 
     import socket
 
-    from azazel_nexus.functional_readiness import LOOPBACK_ONLY, readiness_for
     from azazel_nexus_runtime.decoy_loopback import (
         LoopbackCatalogue,
         LoopbackDecoy,
         LoopbackRuntime,
         ResponderState,
     )
+
+    from azazel_nexus.functional_readiness import LOOPBACK_ONLY, readiness_for
 
     generation = "sha256:" + "cd" * 32
     instants = iter(f"2026-09-21T01:00:{second:02d}Z" for second in range(60))
@@ -692,6 +696,8 @@ def _edge_probe(harness: Harness) -> str:
     import hashlib
     import json
 
+    from azazel_nexus_runtime import edge_probed
+
     from azazel_nexus.edge_package import (
         PIN,
         Evidence,
@@ -699,7 +705,6 @@ def _edge_probe(harness: Harness) -> str:
         load_probe_result,
     )
     from azazel_nexus.integration import EdgePresence
-    from azazel_nexus_runtime import edge_probed
 
     root = harness.root / "edge-core"
     (root / "bin").mkdir(parents=True, exist_ok=True)
@@ -968,7 +973,13 @@ def _core_reserve_path(harness: Harness) -> str:
     import json
     from pathlib import Path as _Path
 
-    from azazel_nexus.cognition import AdmissionGate, ResourceEvidence, admit_local_model
+    from azazel_nexus_runtime.core_reserve_probe import HARNESS_VERSION
+
+    from azazel_nexus.cognition import (
+        AdmissionGate,
+        ResourceEvidence,
+        admit_local_model,
+    )
     from azazel_nexus.compatibility import (
         ADMITTED_ARCHITECTURE,
         HostFacts,
@@ -986,7 +997,6 @@ def _core_reserve_path(harness: Harness) -> str:
         reserve_from,
     )
     from azazel_nexus.resource_profile import ResourceProfile
-    from azazel_nexus_runtime.core_reserve_probe import HARNESS_VERSION
 
     SYNTHETIC = "e2e-synthetic/0"
     if SYNTHETIC == HARNESS_VERSION:
@@ -1009,6 +1019,7 @@ def _core_reserve_path(harness: Harness) -> str:
         [
             TestedTuple(
                 component_digest=component,
+                model_role="embedding",
                 adapter_digest=digest,
                 renderer_digest=digest,
                 toolchain_digest=digest,
@@ -1022,7 +1033,19 @@ def _core_reserve_path(harness: Harness) -> str:
             )
         ]
     )
-    provider = _reserve_provider(component)
+    # Ephemeral test evidence lives outside the shipped packages.
+    import importlib.util
+    from dataclasses import replace
+
+    spec = importlib.util.spec_from_file_location("admission_test_evidence", ROOT / "tests/unit/admission_helpers.py")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    def evidenced(need=1000):
+        provider = _reserve_provider(component, memory_need_mib=need)
+        return replace(provider, evidence=helper.evidence(component=component, need=need))
+
+    provider = evidenced()
 
     room = harness.root / "core-reserve"
     room.mkdir(parents=True, exist_ok=True)
@@ -1033,10 +1056,10 @@ def _core_reserve_path(harness: Harness) -> str:
     if absent is not None:
         raise RuntimeError("a node with no record produced a reserve")
     unmeasured = admit_local_model(provider, host=host, tested=tested, resources=None)
-    if unmeasured.failed_gate is not AdmissionGate.AUTHENTICITY:
+    if unmeasured.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
         raise RuntimeError(f"with no reserve the gate was {unmeasured.failed_gate}")
-    if "minted" not in unmeasured.reason:
-        raise RuntimeError("the refusal does not name missing verification evidence")
+    if "unmeasured" not in unmeasured.reason:
+        raise RuntimeError("the refusal does not name the unmeasured reserve")
 
     samples = tuple(
         Sample(offset_seconds=i * 10, resident_mib=2000) for i in range(MIN_SAMPLES + 1)
@@ -1086,18 +1109,18 @@ def _core_reserve_path(harness: Harness) -> str:
         tested=tested,
         resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
     )
-    if fits.admitted or fits.failed_gate is not AdmissionGate.AUTHENTICITY:
+    if fits.admitted or fits.failed_gate is not AdmissionGate.APPROVAL:
         raise RuntimeError(f"with a reserve the answer was {fits.failed_gate}, admitted={fits.admitted}")
 
     too_large = admit_local_model(
-        _reserve_provider(component, memory_need_mib=14000),
+        evidenced(3000),
         host=host,
         tested=tested,
-        resources=ResourceEvidence(reserve=reserve, envelope_mib=15000),
+        resources=ResourceEvidence(reserve=reserve, envelope_mib=4500),
     )
-    if too_large.failed_gate is not AdmissionGate.AUTHENTICITY:
-        raise RuntimeError("an unverified provider was not refused")
-    if reserve.fits(memory_need_mib=14000, envelope_mib=15000):
+    if too_large.failed_gate is not AdmissionGate.RESOURCE_TOPOLOGY:
+        raise RuntimeError("an oversized provider was not refused by the resource gate")
+    if reserve.fits(memory_need_mib=3000, envelope_mib=4500):
         raise RuntimeError("a provider larger than headroom fits the reserve")
 
     # And the node's own record path on this machine is still empty.
@@ -1108,8 +1131,8 @@ def _core_reserve_path(harness: Harness) -> str:
 
     return (
         "no measurement was taken: fixture reserve records refused, synthetic "
-        "reserve arithmetic exercised, and providers without minted admission "
-        "evidence refused at authenticity. No provider was admitted"
+        "test-minted providers reached resource and approval gates. "
+        "No provider was admitted"
     )
 
 
@@ -1123,9 +1146,10 @@ def _reserve_provider(component: str, memory_need_mib: int = 1000):
         tokenizer_format="sentencepiece",
         runtime_version="1.4.0",
         quantization="q4_k_m",
-        context_size=4096,
+        context_size=2048,
         memory_need_mib=memory_need_mib,
         evidence=None,
+        role="embedding",
     )
 
 

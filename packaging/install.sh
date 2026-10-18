@@ -178,7 +178,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-remoted az-mio-entryd az-knowledge-lited; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-knowledge-lited; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2

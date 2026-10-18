@@ -105,8 +105,9 @@ def test_admitted_embedding_uses_pinned_argv_and_generation_budget(tmp_path, mon
     from azazel_nexus_runtime import mio_serve
     from test_model_admission_evidence import admitted_candidate
 
+    from azazel_nexus import model_admission
     from azazel_nexus.model_runtime import ArtifactDisposition, ArtifactInspection
-
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
     candidate = admitted_candidate()
     monkeypatch.setattr(mio_locald, "inspect_artifact_fd", lambda fd: ArtifactInspection(ArtifactDisposition.DATA, ""))
     started = []
@@ -155,8 +156,9 @@ def test_failed_embedding_start_stops_handle_and_keeps_daemon_available(tmp_path
     from azazel_nexus_runtime import mio_serve
     from test_model_admission_evidence import admitted_candidate
 
+    from azazel_nexus import model_admission
     from azazel_nexus.model_runtime import ArtifactDisposition, ArtifactInspection
-
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
     stopped = []
     monkeypatch.setattr(mio_locald, "inspect_artifact_fd", lambda fd: ArtifactInspection(ArtifactDisposition.DATA, ""))
 
@@ -248,24 +250,22 @@ def test_runtime_walk_checks_every_parent_and_file(monkeypatch, bad_index):
     assert all(flag & os.O_NOFOLLOW for flag in flags)
 
 
-def test_linux_exec_uses_hashed_descriptor_and_closes_it(monkeypatch):
+def test_serving_process_refuses_without_held_descriptors(monkeypatch):
     from pathlib import Path
 
     from azazel_nexus_runtime import mio_supervisor
 
-    closed, calls = [], []
-    record = runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID]
-    monkeypatch.setattr(mio_supervisor, "open_verified_runtime", lambda *a: 99)
-    monkeypatch.setattr(Path, "is_dir", lambda p: str(p) == "/proc/self/fd")
-    monkeypatch.setattr(mio_supervisor.os, "close", closed.append)
-    monkeypatch.setattr(mio_supervisor.subprocess, "Popen", lambda *a, **k: calls.append(k) or object())
-    mio_supervisor.ServingProcess(record, root=Path("/")).start()
-    assert calls[0]["executable"] == "/proc/self/fd/99"
-    assert calls[0]["pass_fds"] == (99,)
-    assert closed == [99]
+    from azazel_nexus import model_admission
+
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    with pytest.raises(mio_supervisor.SupervisorRefused, match="held verified descriptors"):
+        mio_supervisor.ServingProcess(runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID], root=Path("/")).start()
 
 
 def test_local_server_stop_is_idempotent_without_socket_bind(tmp_path, monkeypatch):
+    from admission_helpers import install_fake_serving
+
+    install_fake_serving(monkeypatch)
     from azazel_nexus_runtime.mio_serve import LocalServer
 
     from azazel_nexus.runtime_lifecycle import LifecycleState
@@ -320,34 +320,14 @@ def test_runtime_refuses_symlinked_parent(tmp_path, monkeypatch):
                                       path / "link" / "llama-server")
 
 
-@pytest.mark.parametrize("refuse", [False, True])
-def test_non_proc_fallback_reverifies_before_popen_and_closes_fd(monkeypatch, refuse):
+def test_non_procfs_serving_refuses_without_held_descriptors(monkeypatch):
     from pathlib import Path
 
     from azazel_nexus_runtime import mio_supervisor
 
-    events = []
-    record = runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID]
-    monkeypatch.setattr(mio_supervisor, "open_verified_runtime", lambda *a: 99)
-    monkeypatch.setattr(Path, "is_dir", lambda p: False)
-    monkeypatch.setattr(mio_supervisor.os, "close", lambda fd: events.append(("close", fd)))
+    from azazel_nexus import model_admission
 
-    def verify(*args):
-        events.append("verify")
-        if refuse:
-            raise runtime.RuntimeRefused("TEST substituted binary")
-
-    def popen(*args, **kwargs):
-        assert kwargs["executable"] == runtime.LLAMA_EXECUTABLE
-        events.append("exec")
-        return object()
-
-    monkeypatch.setattr(mio_supervisor, "verify_runtime_binary", verify)
-    monkeypatch.setattr(mio_supervisor.subprocess, "Popen", popen)
-    process = mio_supervisor.ServingProcess(record, root=Path("/"))
-    if refuse:
-        with pytest.raises(runtime.RuntimeRefused):
-            process.start()
-    else:
-        process.start()
-    assert events == ["verify", *([] if refuse else ["exec"]), ("close", 99)]
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    monkeypatch.setattr(Path, "is_dir", lambda path: False)
+    with pytest.raises(mio_supervisor.SupervisorRefused, match="held verified descriptors"):
+        mio_supervisor.ServingProcess(runtime.RUNTIMES[runtime.LLAMA_RUNTIME_ID], root=Path("/")).start()

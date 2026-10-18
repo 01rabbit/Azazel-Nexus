@@ -287,13 +287,14 @@ def test_a_measured_reserve_reaches_approval_and_stops_there() -> None:
     assert "not implemented" in outcome.reason
 
 
-def test_staged_activation_requires_held_verified_descriptors():
+@pytest.mark.parametrize("descriptors", [None, object()])
+def test_staged_activation_requires_held_verified_descriptors(descriptors):
     from admission_helpers import H, evidence
 
     from azazel_nexus.model_admission import canonical, digest
 
     matched, _ = a_catalogue().admits(COMPONENT, a_host(), model_role="embedding")
-    proof = evidence(component=COMPONENT, need=1000,
+    proof = evidence(component=COMPONENT, need=1000, descriptors=descriptors,
                      tuple_digest=digest(canonical(matched.as_record())))
     provider = a_provider(memory_need_mib=1000, evidence=proof)
     result = admit_local_model(provider, host=a_host(), tested=a_catalogue(), approval=proof,

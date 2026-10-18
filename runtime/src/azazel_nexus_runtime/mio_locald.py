@@ -17,7 +17,6 @@ from typing import Any
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
-from azazel_nexus.cognition import admit_local_model
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     FrameRefused,
@@ -33,12 +32,9 @@ from azazel_nexus.local_advisory import (
     request_event,
     retrieval_decision,
 )
-from azazel_nexus.model_admission import canonical, digest
 from azazel_nexus.model_runtime import (
     LLAMA_RUNTIME_ID,
-    ActivationReadiness,
     RuntimeRefused,
-    containment_for,
     inspect_artifact,
     inspect_artifact_fd,
     readiness,
@@ -414,7 +410,11 @@ def prepare_local_models(candidates, *, staging, audit):
 
     from .mio_embedding import EmbeddingRetriever
     from .mio_serve import LocalServer
-    from .model_admission_evidence import Admitted
+    from .model_admission_evidence import (
+        AdmissionReading,
+        Admitted,
+        decide_embedding_admission,
+    )
 
     handles = []
     for candidate in candidates:
@@ -424,28 +424,14 @@ def prepare_local_models(candidates, *, staging, audit):
         evidence = candidate.evidence
         server = None
         try:
-            verdict = admit_local_model(candidate.provider, host=candidate.host,
-                                        tested=candidate.tested, resources=candidate.resources,
-                                        approval=evidence)
-            audit(verdict.as_event())
-            if not verdict.admitted:
+            decision = decide_embedding_admission(
+                now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                reading=AdmissionReading(candidate))
+            if type(decision.embedding) is not Admitted:
+                audit(decision.as_event())
                 continue
             held = evidence.descriptors
             binary = held.recheck()
-            bindings = evidence.context.bindings
-            if (digest(canonical(list(candidate.record.argv))) != bindings["settings"]["argv_digest"]
-                    or binary.digest != bindings["runtime"]["binary_digest"]
-                    or binary.runtime_id != bindings["runtime"]["runtime_id"]
-                    or binary.version != bindings["runtime"]["version"]):
-                raise RuntimeRefused("runtime or argv binding mismatch")
-            ready = readiness(admitted=True, runtime_id=binary.runtime_id,
-                              artifact=inspect_artifact_fd(held.model_fd),
-                              reserve=candidate.resources.reserve, held_runtime=binary)
-            if ready.readiness is not ActivationReadiness.READY:
-                raise RuntimeRefused("staged readiness refused")
-            containment_for(memory_need_mib=candidate.provider.memory_need_mib + 256,
-                            reserve=candidate.resources.reserve,
-                            envelope_mib=candidate.resources.envelope_mib)
             endpoint = staging / "embedding.sock"
             ledger = BudgetLedger(staging / "embedding-budget.json")
             generation = evidence.context.bindings["generation"]["number"]

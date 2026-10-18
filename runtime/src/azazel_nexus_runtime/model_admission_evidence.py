@@ -47,12 +47,11 @@ DIRECTORY = "/etc/azazel/model-admission"
 POLL_INTERVAL_SECONDS = 1.0
 MAX_SNAPSHOT_RETRIES = 3
 _FIXED = (DIRECTORY, DIRECTORY + "/embedding.approval", DIRECTORY + "/policy.json",
-          DIRECTORY + "/evidence", "/etc/azazel/operator-trust",
+          DIRECTORY + "/evidence", "/run/azazel/mio/node-identity", "/etc/azazel/operator-trust",
           "/etc/azazel/operator-trust/operators.json", "/etc/azazel/mission-pack.json",
           "/etc/azazel/node.yaml", "/var/lib/azazel/models", "/var/lib/azazel/models/trust/trust.json",
           "/var/lib/azazel/models/trust/catalog.signed", "/var/lib/azazel/models/state/current",
-          "/sys/hypervisor/type", "/proc/cpuinfo", "/run/systemd/container", "/.dockerenv",
-          "/sys/class/dmi/id/sys_vendor", "/sys/class/dmi/id/product_name", "/proc/1/cgroup",
+          "/run/systemd/container", "/.dockerenv",
           "/var/lib/azazel/secrets/commissioning.key", "/etc/machine-id", "/usr/share/azazel/build-commit", LLAMA_EXECUTABLE)
 
 
@@ -85,7 +84,9 @@ class AdmissionReading:
 
     def close(self):
         if type(self.embedding) is Admitted:
-            self.embedding.evidence.descriptors.close()
+            close = getattr(self.embedding.evidence.descriptors, "close", None)
+            if close is not None:
+                close()
 
     def as_event(self):
         result = self.embedding
@@ -226,8 +227,12 @@ class HeldDescriptors:
         self.owner = owner
         self.watch_paths = ()
         self.snapshot = None
+        self.identities = tuple(_stamp(os.fstat(fd)) for fd in (binary_fd, model_fd))
+        self.binary = None
 
-    def recheck(self):
+    def recheck(self, *, full=False):
+        if admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
+            raise RuntimeRefused("ADMISSION_DISABLED")
         if self.closed or not procfs_available():
             raise RuntimeRefused("PROCFS_REQUIRED")
         if self.snapshot is not None and fingerprint(self.watch_paths) != self.snapshot:
@@ -240,11 +245,25 @@ class HeldDescriptors:
             now = datetime.now(UTC)
             if not admission.utc(self.validity[0]) <= now < admission.utc(self.validity[1]):
                 raise RuntimeRefused("EXPIRED")
+        if not full:
+            if tuple(_stamp(os.fstat(fd)) for fd in (self.binary_fd, self.model_fd)) != self.identities:
+                raise RuntimeRefused("EVIDENCE_CHANGED")
+            return self.binary
+        return self.verify_content()
+
+    def verify_content(self):
+        """Hash for initial collection (also used by the disabled request rehearsal)."""
+        before = tuple(_stamp(os.fstat(fd)) for fd in (self.binary_fd, self.model_fd))
         binary = runtime_from_fd(self.binary_fd, architecture=self.architecture)
         try:
             verify_artifact_fd(self.entry, self.model_fd, license=self.license)
         except Exception as exc:
             raise ApprovalRefused("ARTIFACT_REFUSED") from exc
+        after = tuple(_stamp(os.fstat(fd)) for fd in (self.binary_fd, self.model_fd))
+        if before != after:
+            raise RuntimeRefused("EVIDENCE_CHANGED")
+        self.binary = binary
+        self.identities = after
         return binary
 
     def close(self):
@@ -287,7 +306,12 @@ def _collect(tree, *, trust, policy, operator):
     architecture = os.uname().machine
     if architecture != ADMITTED_ARCHITECTURE or host.architecture != architecture:
         raise ApprovalRefused("WRONG_ARCHITECTURE")
-    identity = run_identity()
+    if os.geteuid() == 0:
+        identity = run_identity()
+    else:
+        from .model_identity import read_identity
+
+        identity = read_identity()
     observed = observe_virtualization()
     if not virtualization_not_observed(observed):
         raise ApprovalRefused("RESERVE_VIRTUALIZATION_OBSERVED")
@@ -401,7 +425,7 @@ def _collect(tree, *, trust, policy, operator):
         license = "acknowledged" if entry.license_acknowledgement_required else "not-required"
         held = HeldDescriptors(binary_fd, model_fd, architecture, entry, license, tree.owner)
         try:
-            binary = held.recheck()
+            binary = held.verify_content()
         except RuntimeRefused as exc:
             raise ApprovalRefused("RUNTIME_MISMATCH") from exc
         record = llama_server_record(binary, model_path=Path("/var/lib/azazel/models/store") / artifact_filename(entry),
@@ -453,9 +477,8 @@ def _collect(tree, *, trust, policy, operator):
         raise
 
 
-def _read_at(root_fd, owner, *, now, trust=None):
-    """Private test seam; production callers must use read_admissions()."""
-    tree = ProtectedTree(root_fd, owner)
+def _read_tree(tree, *, now):
+    root_fd, owner = tree.root_fd, tree.owner
     held = None
     stage = "EVIDENCE_UNPROTECTED"
     try:
@@ -479,7 +502,7 @@ def _read_at(root_fd, owner, *, now, trust=None):
         if operator not in policy.operators:
             raise ApprovalRefused("POLICY_REFUSED")
         stage = "SIGNATURE_REFUSED"
-        trust = trust if trust is not None else operator_trust_bytes(tree.read("/etc/azazel/operator-trust/operators.json"))
+        trust = operator_trust_bytes(tree.read("/etc/azazel/operator-trust/operators.json"))
         trust.verify(operator=operator, purpose=admission.ApprovalPurpose.LOCAL_MODEL_ADMISSION,
                      payload=payload, signature=signature)
         if doc.get("model", {}).get("role") != "embedding":
@@ -528,7 +551,7 @@ def read_admissions(*, now):
     fd = None
     try:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        return _read_at(fd, 0, now=now)
+        return _read_tree(ProtectedTree(fd, 0), now=now)
     except Exception:  # noqa: BLE001 - an unexpected reader failure is a refusal
         return AdmissionReading(Refused("EVIDENCE_UNPROTECTED"))
     finally:
@@ -543,15 +566,19 @@ class AdmissionHolder:
         self.reading = AdmissionReading(Refused("NOT_STARTED"))
         self._started = False
         self._revision = None
+        self._virtualization = None
 
     def start(self, *, audit):
-        self.reading = read_admissions(now=self.clock())
+        self.reading = decide_embedding_admission(now=self.clock())
         if self.reading.embedding == Refused("ADMISSION_DISABLED"):
             audit(self.reading.as_event())
             return self.reading
         paths = tuple(sorted(set(_FIXED) | set(self.reading.watch_paths)))
         self.reading = AdmissionReading(self.reading.embedding, paths,
                                         self.reading.snapshot or fingerprint(paths))
+        from .virtualization_observation import observe_virtualization
+
+        self._virtualization = observe_virtualization()
         self._revision = self.reading.snapshot
         self._started = True
         audit(self.reading.as_event())
@@ -563,15 +590,26 @@ class AdmissionHolder:
         if type(result) is not Admitted:
             return
         expired = not admission.utc(result.evidence.issued_at) <= admission.utc(now) < admission.utc(result.evidence.expires_at)
-        changed = fingerprint(self.reading.watch_paths) != self._revision
+        from .virtualization_observation import observe_virtualization
+
+        observed = observe_virtualization()
+        changed = (fingerprint(self.reading.watch_paths) != self._revision
+                   or observed != self._virtualization
+                   or not virtualization_not_observed(observed))
+        try:
+            result.evidence.descriptors.recheck()
+        except Exception:  # noqa: BLE001 - failed held-fd checks withdraw the role
+            changed = True
         if expired or changed or admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
-            fresh = read_admissions(now=now)
+            fresh = decide_embedding_admission(now=now)
             # Even valid replacements cannot replace a running model implicitly.
             withdraw()
             self.reading.close()
-            self.reading = AdmissionReading(Refused("EXPIRED" if expired else "EVIDENCE_CHANGED"))
+            self.reading = (fresh if type(fresh.embedding) is not Admitted else
+                            AdmissionReading(Refused("EXPIRED" if expired else "EVIDENCE_CHANGED")))
             audit(self.reading.as_event())
-            fresh.close()
+            if self.reading is not fresh:
+                fresh.close()
 
     def close(self):
         self.reading.close()
@@ -590,3 +628,49 @@ def request_context(*, operator):
         return policy, collected
     finally:
         os.close(fd)
+
+
+def decide_embedding_admission(*, now, reading=None):
+    """Own the complete admission decision shared by activation and locald."""
+    from azazel_nexus.cognition import admit_local_model
+    from azazel_nexus.model_runtime import (
+        ActivationReadiness,
+        containment_for,
+        inspect_artifact_fd,
+        readiness,
+    )
+
+    if admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
+        if reading is not None:
+            reading.close()
+        return AdmissionReading(Refused("ADMISSION_DISABLED"))
+    reading = read_admissions(now=now) if reading is None else reading
+    candidate = reading.embedding
+    if type(candidate) is not Admitted:
+        return reading
+    try:
+        verdict = admit_local_model(candidate.provider, host=candidate.host,
+                                    tested=candidate.tested, resources=candidate.resources,
+                                    approval=candidate.evidence)
+        if not verdict.admitted:
+            raise RuntimeRefused("ADMISSION_GATE_REFUSED")
+        held = candidate.evidence.descriptors
+        binary = held.recheck()
+        bindings = candidate.evidence.context.bindings
+        if (admission.digest(admission.canonical(list(candidate.record.argv))) != bindings["settings"]["argv_digest"]
+                or binary.digest != bindings["runtime"]["binary_digest"]
+                or binary.runtime_id != bindings["runtime"]["runtime_id"]
+                or binary.version != bindings["runtime"]["version"]):
+            raise RuntimeRefused("SETTINGS_MISMATCH")
+        ready = readiness(admitted=True, runtime_id=binary.runtime_id,
+                          artifact=inspect_artifact_fd(held.model_fd),
+                          reserve=candidate.resources.reserve, held_runtime=binary)
+        if ready.readiness is not ActivationReadiness.READY:
+            raise RuntimeRefused("READINESS_REFUSED")
+        containment_for(memory_need_mib=candidate.provider.memory_need_mib + 256,
+                        reserve=candidate.resources.reserve,
+                        envelope_mib=candidate.resources.envelope_mib)
+        return reading
+    except Exception:  # noqa: BLE001 - any failed precondition refuses admission
+        reading.close()
+        return AdmissionReading(Refused("PRECONDITIONS_REFUSED"))
