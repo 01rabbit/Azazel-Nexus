@@ -134,10 +134,13 @@ HEALTH_ARGV = ("bin/azazel-edge-core", "--health")
 #: The state file the probe writes and this module reads.
 #:
 #: `/var/lib/azazel/run` rather than a tmpfs of its own: it is the directory
-#: `layout.py` already declares for the operator plane -- mode 0750, group
-#: `azazel-operator` -- so the operator who runs `azazel-nexus status` can
-#: read the result without anybody inventing a second answer to "who may see
-#: this". Durability across a reboot is not a problem the location has to
+#: `layout.py` already declares for runtime records (root-owned, 0711
+#: traversal-only), so the operator who runs `azazel-nexus status` can read
+#: the result by name without anybody inventing a second answer to "who may
+#: see this". The probe's unit is the only unprivileged one whose
+#: `ReadWritePaths` still covers this directory, because the result is
+#: renamed into place here; `docs/edge-package-verification.md` records why,
+#: and that installed DAC currently refuses the probe's temporary file. Durability across a reboot is not a problem the location has to
 #: solve; the TTL solves it, and a result from before a reboot is stale by
 #: exactly the rule that makes any other old result stale.
 PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe.json")

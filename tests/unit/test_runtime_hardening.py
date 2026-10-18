@@ -230,10 +230,10 @@ def test_the_artifact_fetcher_still_denies_every_address():
     assert settings["IPAddressDeny"] == ["any"]
     assert "IPAddressAllow" not in settings
     assert fetcher.account != "root"
-    # It writes its staging area and its socket directory. Nothing else.
+    # It writes its staging area and its own socket leaf. Nothing else.
     assert set(fetcher.read_write_paths) == {
         "/var/lib/azazel/fetch",
-        "/var/lib/azazel/run",
+        "/var/lib/azazel/run/fetch",
     }
     assert "/etc/systemd/system" not in fetcher.read_write_paths
 
@@ -609,6 +609,51 @@ def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
     assert "/var/lib/azazel/run" not in written
     assert not any("/var/lib/azazel/run/core-reserve.json".startswith(path + "/")
                    for path in written)
+
+
+@pytest.mark.parametrize(
+    ("unit", "socket", "paths"),
+    [
+        ("azazel-model-fetchd.service", "fetch",
+         ["/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"]),
+        ("azazel-auditd.service", "audit",
+         ["/var/lib/azazel/run/audit", "/var/lib/azazel/state/audit",
+          "/var/lib/azazel/state/auditd"]),
+        ("azazel-watchdog.service", "watchdog",
+         ["/var/lib/azazel/run/watchdog", "/var/lib/azazel/state/watchdog"]),
+    ],
+)
+def test_socket_daemons_write_only_their_own_run_leaf(unit, socket, paths):
+    """Each of these creates exactly one thing under the run tree -- its
+    socket, in its installer-owned leaf -- so that leaf is the whole of its
+    run-tree grant."""
+
+    from azazel_nexus_runtime.runtime_paths import socket_path
+
+    written = _settings(unit)["ReadWritePaths"]
+    assert written == paths
+    run_grants = [p for p in written if p == "/var/lib/azazel/run"
+                  or p.startswith("/var/lib/azazel/run/")]
+    assert run_grants == ["/var/lib/azazel/run/" + socket_path(socket).parent.name]
+
+
+def test_only_the_edge_probe_keeps_the_run_root_writable():
+    """The Edge probe writes `run/edge-probe.json` by temp file and rename in
+    the run root itself, which needs the directory writable. Every other
+    unprivileged unit writes only its own leaf; the root controller's grant
+    is `/var/lib/azazel` as a whole and is not this test's subject."""
+
+    from azazel_nexus.edge_package import PROBE_STATE_PATH
+
+    holders = {
+        profile.unit for profile in PROFILES
+        if "/var/lib/azazel/run" in profile.read_write_paths
+    }
+    assert holders == {"azazel-edge-probed.service"}
+    assert str(PROBE_STATE_PATH.parent) == "/var/lib/azazel/run"
+    assert _settings("azazel-edge-probed.service")["ReadWritePaths"] == [
+        "/var/lib/azazel/run",
+    ]
 
 
 def test_entry_can_traverse_and_connect_to_provider_socket_leaves():

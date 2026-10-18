@@ -343,7 +343,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus artifact fetch service",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/source-registry.md",
         address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
-        read_write_paths=("/var/lib/azazel/fetch", "/var/lib/azazel/run"),
+        # Its staging tree and its own socket leaf (installer-owned
+        # azfetch:azazel-operator 2710), never the whole run tree: partials,
+        # ready handoffs and refusals all live under /var/lib/azazel/fetch,
+        # and fetch.sock is the only thing it creates under run.
+        read_write_paths=("/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         is_artifact_fetcher=True,
@@ -513,8 +517,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus audit ledger",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         address_families=("AF_UNIX",),
+        # Its socket leaf (azaudit:azazel-operator 2710), its chain and its
+        # refusal records. Nothing else under the run tree is its to write.
         read_write_paths=(
-            "/var/lib/azazel/run",
+            "/var/lib/azazel/run/audit",
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),
@@ -546,8 +552,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus degradation coordinator",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/capability-model.md",
         address_families=("AF_UNIX",),
+        # Its socket leaf (azwatch:azazel-operator 2710) and its fence and
+        # refusal records. Masking is brokered over the controller's socket,
+        # which is a connect, not a write.
         read_write_paths=(
-            "/var/lib/azazel/run",
+            "/var/lib/azazel/run/watchdog",
             "/var/lib/azazel/state/watchdog",
         ),
         after=("azazel-auditd.service",),
@@ -565,6 +574,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus Edge health and running probe",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/edge-package-verification.md",
         address_families=("AF_UNIX",),
+        # The one remaining run-tree grant, kept on purpose: the result is
+        # `edge_package.PROBE_STATE_PATH` (run/edge-probe.json, at the run
+        # root), written as a temporary file in the same directory and moved
+        # into place. A rename needs the directory, not the file, writable,
+        # so no narrower mount target exists without moving the record into
+        # a leaf of its own -- a data-location change, not a sandbox one.
         read_write_paths=("/var/lib/azazel/run",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),

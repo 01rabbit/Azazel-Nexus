@@ -15,7 +15,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "runtime" / "src"))
-from azazel_nexus_runtime import model_fetchd  # noqa: E402
+from azazel_nexus_runtime import model_fetchd, runtime_paths  # noqa: E402
 from azazel_nexus_runtime.hardening import PROFILES  # noqa: E402
 from azazel_nexus_runtime.model_fetchd import (  # noqa: E402
     FETCH_VERB,
@@ -206,8 +206,12 @@ def test_it_has_its_own_unit_account_socket_and_directory() -> None:
     assert profile.runtime_directory == "azazel/fetch"
     assert SOCKET_NAME == "fetch"
     assert set(profile.read_write_paths) == {
-        "/var/lib/azazel/fetch", "/var/lib/azazel/run"
+        "/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"
     }
+    # The socket it binds is inside its leaf; nothing else under run is its.
+    leaf = runtime_paths.socket_path(SOCKET_NAME).parent
+    assert (leaf.parent.name, leaf.name) == ("run", "fetch")
+    assert "/var/lib/azazel/run" not in profile.read_write_paths
 
 
 def test_it_is_governed_and_therefore_masked_after_installation() -> None:

@@ -187,6 +187,21 @@ it may be granted, and this is the unit that establishes whether one is
 healthy and running. A probe that could only run once Edge was established
 could never establish it.
 
+Its `ReadWritePaths` is `/var/lib/azazel/run`, the one unprivileged unit that
+still holds the run root at the mount layer. That is deliberate rather than
+left over: the result is `/var/lib/azazel/run/edge-probe.json`, written as a
+temporary file in the same directory and renamed into place, and a rename
+needs the directory -- not the file -- writable. Every other unprivileged unit
+writes only its own run leaf. Narrowing this one means giving the record a
+leaf of its own (moving `edge_package.PROBE_STATE_PATH`, which `status` reads),
+which is a data-location change and not part of the sandbox.
+
+**Known limitation.** On an installed node the run root is `root:root 0711`,
+so file-system permissions refuse `azprobe` the temporary file: the probe
+exits 2 with `refused: the probe result could not be written: … Permission
+denied` and `status` keeps reporting `not-checked`. A dedicated, installer-owned
+leaf for the record is the fix and remains a follow-up.
+
 ## 7b. No network-configuration path exists on this node
 
 Edge's manifest carries `startup.command` and `startup.observe_only_env`.

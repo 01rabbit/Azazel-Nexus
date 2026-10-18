@@ -23,7 +23,7 @@ LogRateLimitBurst=50
 LogExtraFields=AZ_SERVICE=model-fetch
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/azazel/fetch
-ReadWritePaths=/var/lib/azazel/run
+ReadWritePaths=/var/lib/azazel/run/fetch
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

@@ -280,6 +280,11 @@ have at most 64 keys each; consent has at most 256 source items.
 directory remain root-owned. Fetch refusal records live in
 `partial/refusals.jsonl`. The socket follows the runtime's fixed layout at
 `/var/lib/azazel/run/fetch/fetch.sock`, in an azfetch-owned setgid leaf.
+The unit's `ReadWritePaths` is exactly `/var/lib/azazel/fetch` and that leaf,
+`/var/lib/azazel/run/fetch`: partials, ready handoffs and refusals all live
+under the staging tree, and the socket is the only thing it creates under the
+run tree, so the rest of `/var/lib/azazel/run` -- other daemons' leaves and
+records such as `core-reserve.json` -- is read-only inside its sandbox.
 The models root is `/var/lib/azazel/models`, 0750 root:azmio; azfetch has no
 access. Root separately commissions its `trust/trust.json` (catalog keys and
 commissioning digest) and `trust/catalog.signed`. The fetch catalog cannot
