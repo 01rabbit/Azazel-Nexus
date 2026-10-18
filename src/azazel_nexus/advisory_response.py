@@ -136,11 +136,11 @@ class Advisory:
     #: storing it.
     digest: str
 
-    def as_event(self) -> dict:
+    def as_event(self, *, local: bool = False) -> dict:
         """Audit metadata: a digest and counts. Never the response."""
 
         return {
-            "event_type": "mio.remote.advisory.read",
+            "event_type": "mio.local.advisory.read" if local else "mio.remote.advisory.read",
             "digest": self.digest,
             "text_characters": len(self.text.text) if self.text else 0,
             "field_count": len(self.data.fields) if self.data else 0,

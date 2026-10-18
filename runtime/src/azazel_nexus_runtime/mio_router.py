@@ -121,28 +121,32 @@ class MioRouter:
                     "advisory_fields": reply.get("advisory_fields", 0),
                 })
             elif route is Route.LOCAL:
-                reply = self._local.handle(local_request)
-                self._record({
-                    "event_type": "mio.local.readiness",
-                    "readiness": reply["readiness"],
-                    "reason": reply["reason"],
-                })
-                if reply["readiness"] != "refused":
-                    # Readiness supplies no answer. Only an explicit refusal
-                    # justifies falling back; missing assessment is no failure.
-                    reason = {
-                        "ready": "local_ready_no_answer",
-                        "not_assessed": "local_not_assessed_no_answer",
-                    }.get(reply["readiness"], "local_unknown_readiness_no_answer")
-                    outcome = outcome_and_record(
-                        ledger=self.ledger,
-                        occurred_at=self._clock(),
-                        route=route,
-                        terminal_event=TerminalEvent.NO_ANSWER,
-                        fallback_available=False,
-                        reason=reason,
-                    )
-                    return RouterReply(selection, route, outcome, reply)
+                if getattr(getattr(local_request, "verb", None), "name", None) == "mio.local.infer":
+                    reply = self._local.handle(local_request, audit=self._record)
+                else:
+                    reply = self._local.handle(local_request)
+                if "readiness" in reply:
+                    self._record({
+                        "event_type": "mio.local.readiness",
+                        "readiness": reply["readiness"],
+                        "reason": reply["reason"],
+                    })
+                    if reply["readiness"] != "refused":
+                        # Readiness supplies no answer. Only an explicit refusal
+                        # justifies falling back; missing assessment is no failure.
+                        reason = {
+                            "ready": "local_ready_no_answer",
+                            "not_assessed": "local_not_assessed_no_answer",
+                        }.get(reply["readiness"], "local_unknown_readiness_no_answer")
+                        outcome = outcome_and_record(
+                            ledger=self.ledger,
+                            occurred_at=self._clock(),
+                            route=route,
+                            terminal_event=TerminalEvent.NO_ANSWER,
+                            fallback_available=False,
+                            reason=reason,
+                        )
+                        return RouterReply(selection, route, outcome, reply)
             else:
                 reply = {"outcome": "handoff"}
             outcome = outcome_and_record(
@@ -160,7 +164,7 @@ class MioRouter:
                 already_spent=False,
             )
             event = fallback.as_event()
-            if route is Route.LOCAL:
+            if route is Route.LOCAL and "readiness" in reply:
                 event["reason"] = "local readiness refused: " + reply["reason"] + "; " + fallback.reason
             self._record(event)
             route = fallback.route

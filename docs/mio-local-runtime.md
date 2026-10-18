@@ -18,7 +18,8 @@ is the shipped state, not a limitation being worked around.
 | the Core reserve is unmeasured | `model_runtime.readiness` | taking the measurement (`HG-05`) |
 
 Wire a runtime and the reserve still refuses. Measure the reserve and the
-empty allowlist still refuses. Grant the unit by hand and `main` still exits.
+empty allowlist still refuses. Grant the unit by hand and inference still
+refuses; the service starts only after its installer-owned audit leaf is writable.
 
 Each answers a different question, so none substitutes for another:
 *is there a binary here*, *may this node run it at boot*, and *is this node
@@ -52,7 +53,7 @@ neither egress exception.
 
 ## 3. What a caller may say: two symbols
 
-One verb, `model.activate`, and its arguments are `model_id` and
+The metadata verb `model.activate` takes `model_id` and
 `runtime_id` — both `IDENTIFIER`.
 
 `protocol.ArgumentKind` has **no free-text member**, so there is no way to
@@ -209,3 +210,29 @@ The M.I.O. status expression is unchanged:
 
 > M.I.O. routing and commissioning control plane implemented; provider
 > execution unavailable pending hardware evidence and provider integration
+
+
+## 8. Bounded local advice (Milestone 3)
+
+The separate payload verb `mio.local.infer` accepts the situation frame
+specified in [the entry contract](mio-runtime.md#local-advisory-payload-path-milestone-3).
+It has one bounded ordinal argument, `deadline_ms`; the caller cannot choose
+a model, runtime, path or option. It admits SERVICE only, and the daemon's
+`PrincipalPolicy` resolves only `azmioentry`. `model.activate` retains its
+existing principal and identifier contract.
+
+`LocalRuntimeService` has trusted composition points for admission, reserve,
+model/runtime IDs, runtime resolution and a server implementing the
+`mio_serve.LocalServer.infer` contract. Inference checks admission, the reserve,
+runtime resolution and the inspected model before calling the server. The
+production defaults refuse. The prompt uses fixed generation limits (512
+output tokens, temperature 0); callers cannot override them.
+
+Advice is returned to the caller only after the bounded advisory reader
+accepts it. Malformed JSON, instruction shapes and oversized output become
+NOT_ADVICE; timeout becomes TIMED_OUT; runtime exceptions become FAILED.
+Exception messages and advisory-refusal details are never recorded. The
+router owns terminal outcomes and the existing fallback/privacy rules.
+`local.jsonl` contains only request digests/counts, advisory digests/counts
+and fixed refusal codes, plus the shared protocol's bounded refusal metadata.
+Tests use fake servers and sentinel text; they do not require llama-server.

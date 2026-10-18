@@ -1,0 +1,374 @@
+"""Situation bounds, fake-runtime path and audit content sentinels."""
+
+import json
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pytest
+from azazel_nexus_runtime import (
+    mio_entryd,
+    mio_locald,
+    mio_socket_client,
+    runtime_paths,
+)
+from azazel_nexus_runtime.principal import Principal, PrincipalClass
+from azazel_nexus_runtime.protocol import RequestRefused
+
+from azazel_nexus.advisory_response import AdvisoryRefused
+from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.local_advisory import (
+    MAX_FRAME_BYTES,
+    FrameRefused,
+    build_prompt,
+    read_frame,
+    read_local_advisory,
+)
+from azazel_nexus.mio_profile import MioProfile
+from azazel_nexus.model_runtime import RUNTIMES
+from azazel_nexus.route_evidence import Prediction
+from azazel_nexus.routing import Route
+from azazel_nexus.sanitizer import PrivacyClass
+
+SENTINEL = 'SITUATION_AND_REPLY_SENTINEL'
+
+
+def frame(privacy=PrivacyClass.P2_MISSION):
+    return {'request_id': SENTINEL, 'privacy_class': privacy.value,
+            'question': SENTINEL, 'context': [{'kind': 'observation', 'text': SENTINEL}]}
+
+
+def request(payload=None):
+    return SimpleNamespace(verb=mio_locald.INFER_VERB,
+                           arguments={'deadline_ms': 1000}, payload=payload or frame())
+
+
+@pytest.fixture
+def service(tmp_path, monkeypatch):
+    # Only the runtime request data contract is needed in Lane A's worktree.
+    # When Lane B is present use its real dataclass, never a llama-server.
+    try:
+        from azazel_nexus_runtime import mio_serve  # noqa: F401
+    except ImportError:
+        module = ModuleType('azazel_nexus_runtime.mio_serve')
+        module.LocalInferenceRequest = SimpleNamespace
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    calls = []
+
+    def infer(req, *, deadline_s):
+        calls.append((req, deadline_s))
+        return SimpleNamespace(text=json.dumps({'advice': SENTINEL, 'fields': {'count': 1}}))
+
+    local = mio_locald.LocalRuntimeService(
+        staging=tmp_path, reserve=object(), admitted=lambda _: True,
+        model_id='fixture', runtime_id='fixture', runtime=lambda _: object(),
+        server=SimpleNamespace(infer=infer),
+    )
+    return local, calls
+
+
+@pytest.mark.parametrize('privacy', list(PrivacyClass))
+def test_prompt_and_local_advisory(privacy):
+    messages = build_prompt(frame(privacy))
+    assert [role for role, _ in messages] == ['system', 'user']
+    assert 'advice only' in messages[0][1]
+    assert json.loads(messages[1][1]) == frame(privacy)
+    advisory = read_local_advisory(json.dumps({'advice': SENTINEL}))
+    assert advisory.as_event()['event_type'] == 'mio.remote.advisory.read'
+    assert advisory.as_event(local=True)['event_type'] == 'mio.local.advisory.read'
+    assert SENTINEL not in json.dumps(advisory.as_event(local=True))
+
+
+@pytest.mark.parametrize('change', [
+    {'unknown': SENTINEL}, {'question': ''}, {'question': 'x' * 4097},
+    {'request_id': '../bad/name'}, {'privacy_class': 'unknown'},
+    {'context': [{'kind': 'unknown/key', 'text': SENTINEL}]},
+    {'context': [{'kind': 'observation', 'text': SENTINEL, 'extra': SENTINEL}]},
+    {'context': [{'kind': 'observation', 'text': SENTINEL}] * 17},
+    {'question': '\ud800'}, {'question': True},
+    {'context': [{'kind': 'observation', 'text': 'x' * 4000}] * 16},
+])
+def test_frame_bounds(change):
+    with pytest.raises(FrameRefused) as exc:
+        read_frame({**frame(), **change})
+    assert SENTINEL not in str(exc.value)
+    assert MAX_FRAME_BYTES < 64 * 1024
+
+
+@pytest.mark.parametrize('body', [
+    'not JSON ' + SENTINEL, '{"advice":"block host now"}',
+    json.dumps({SENTINEL: 'unknown'}), json.dumps({'advice': 'x' * 65537}),
+    json.dumps({'advice': ['nested']}),
+])
+def test_non_advice_is_refused(body):
+    with pytest.raises(AdvisoryRefused):
+        read_local_advisory(body)
+
+
+@pytest.mark.parametrize('privacy', list(PrivacyClass))
+def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch, privacy):
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    local, calls = service
+    entry = mio_entryd.MioEntryService(
+        profile_reader=lambda: MioProfile.FASTEST_PERMITTED,
+        local_admitted=lambda: True,
+        predictions_reader=lambda: {
+            Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture'),
+        },
+    )
+    entry.router._local = local
+    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    reply = entry.handle(SimpleNamespace(
+        verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(privacy),
+    ))
+    assert reply['outcome'] == 'answered'
+    assert reply['advice'] == SENTINEL
+    assert len(calls) == 1
+    assert calls[0][1] == 1.0
+    text = entry.router.ledger.path.read_text()
+    assert SENTINEL not in text
+    events = [item.event for item in entry.router.ledger]
+    assert any(e['event_type'] == 'mio.local.advisory.read' for e in events)
+    assert events[-1]['terminal_event'] == 'answered'
+
+
+@pytest.mark.parametrize(('failure', 'outcome', 'terminal'), [
+    (TimeoutError(SENTINEL), 'timed_out', 'timed_out'),
+    (RuntimeError(SENTINEL), 'failed', 'failed'),
+    ('{"advice":"block host now"}', 'not_advice', 'not_advice'),
+    ('{"' + SENTINEL + '":1}', 'not_advice', 'not_advice'),
+    ('broken ' + SENTINEL, 'not_advice', 'not_advice'),
+])
+def test_runtime_failure_and_refusal_do_not_log_text(service, failure, outcome, terminal):
+    local, _calls = service
+
+    def infer(*args, **kwargs):
+        if isinstance(failure, Exception):
+            raise failure
+        return SimpleNamespace(text=failure)
+
+    local._server.infer = infer
+    events = []
+    reply = local.handle(request(), audit=events.append)
+    assert reply['outcome'] == outcome
+    from azazel_nexus_runtime.mio_router import terminal_for
+    assert terminal_for(reply).name.lower() == terminal
+    assert SENTINEL not in json.dumps(events)
+
+
+def test_default_refuses_without_touching_runtime():
+    events = []
+    reply = mio_locald.LocalRuntimeService().handle(request(), audit=events.append)
+    assert reply == {'outcome': 'failed', 'refusal': 'not_admitted'}
+    assert not RUNTIMES
+    assert SENTINEL not in json.dumps(events)
+
+
+@pytest.mark.parametrize('gate', ['admission', 'reserve', 'runtime', 'artifact', 'server'])
+def test_independent_gates_prevent_inference(service, gate):
+    local, calls = service
+    if gate == 'admission':
+        local._admitted = lambda _: False
+    elif gate == 'reserve':
+        local._reserve = None
+    elif gate == 'runtime':
+        from azazel_nexus.model_runtime import RuntimeRefused
+
+        def refuse(_):
+            raise RuntimeRefused(SENTINEL)
+
+        local._runtime = refuse
+    elif gate == 'artifact':
+        (local._staging / 'fixture.model').unlink()
+    else:
+        local._server = None
+    events = []
+    assert local.handle(request(), audit=events.append)['outcome'] == 'failed'
+    assert calls == []
+    assert SENTINEL not in json.dumps(events)
+
+
+def test_audit_failure_prevents_inference(service):
+    local, calls = service
+
+    def fail(event):
+        raise AuditUnavailable('fixture')
+
+    with pytest.raises(AuditUnavailable):
+        local.handle(request(), audit=fail)
+    assert calls == []
+
+
+def test_local_infer_only_admits_service():
+    for kind in PrincipalClass:
+        principal = Principal(1000, 1000, 1, frozenset({kind}))
+        if kind is PrincipalClass.SERVICE:
+            assert mio_locald.REGISTRY.resolve('mio.local.infer', principal)
+        else:
+            with pytest.raises(RequestRefused):
+                mio_locald.REGISTRY.resolve('mio.local.infer', principal)
+    for verb in (mio_locald.INFER_VERB, mio_entryd.ADVISE_VERB):
+        assert verb.accepts_payload and verb.payload_contract.endswith('read_frame')
+
+
+def test_socket_client_forwards_payload_and_sanitizes_response(monkeypatch):
+    calls = []
+
+    def exchange(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {'outcome': 'advisory', 'advice': SENTINEL, 'fields': {}}
+
+    monkeypatch.setattr(mio_socket_client, '_exchange', exchange)
+    events = []
+    reply = mio_socket_client.LocalSocketClient().handle(request(), audit=events.append)
+    assert reply['advice'] == SENTINEL
+    assert calls[0][1] == {'payload': frame(), 'deadline_s': 1.0}
+    assert calls[0][0][2] == 'mio.local.infer'
+    assert SENTINEL not in json.dumps(events)
+
+
+def test_socket_audit_failure_is_not_a_provider_failure(monkeypatch):
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
+        'outcome': 'advisory', 'advice': SENTINEL,
+    })
+
+    def fail(event):
+        raise AuditUnavailable('fixture')
+
+    with pytest.raises(AuditUnavailable):
+        mio_socket_client.LocalSocketClient().handle(request(), audit=fail)
+
+
+@pytest.mark.parametrize(('reply', 'outcome'), [
+    ({'outcome': 'advisory', 'advice': 'block host now'}, 'not_advice'),
+    ({'outcome': 'not_advice', 'refusal': SENTINEL}, 'not_advice'),
+    ({'outcome': 'timed_out', 'refusal': SENTINEL}, 'timed_out'),
+    ({'outcome': SENTINEL, 'refusal': SENTINEL}, 'failed'),
+])
+def test_socket_response_refusals_are_fixed(monkeypatch, reply, outcome):
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: reply)
+    result = mio_socket_client.LocalSocketClient().handle(request())
+    assert result['outcome'] == outcome
+    assert SENTINEL not in json.dumps(result)
+
+
+def test_payload_wire_encoding_uses_event_and_bounds_before_send(monkeypatch):
+    from azazel_nexus_runtime.transport import _HEADER, MAX_FRAME_BYTES
+
+    response = json.dumps({'ok': True, 'result': {'outcome': 'failed'}}).encode()
+
+    class Connection:
+        def __init__(self):
+            self.incoming = _HEADER.pack(len(response)) + response
+            self.sent = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            assert 0 < timeout <= 1
+
+        def connect(self, path):
+            pass
+
+        def sendall(self, raw):
+            self.sent.append(raw)
+
+        def shutdown(self, how):
+            pass
+
+        def recv(self, size):
+            chunk, self.incoming = self.incoming[:size], self.incoming[size:]
+            return chunk
+
+    connection = Connection()
+    monkeypatch.setattr(mio_socket_client.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=123))
+    monkeypatch.setattr(mio_socket_client.grp, 'getgrnam', lambda _: SimpleNamespace(gr_gid=123))
+    monkeypatch.setattr(mio_socket_client, 'verify_socket', lambda *a, **k: None)
+    monkeypatch.setattr(mio_socket_client, 'peer_credentials', lambda _: (1, 123, 123))
+    monkeypatch.setattr(mio_socket_client.socket, 'socket', lambda *a: connection)
+    mio_socket_client._exchange('mio', 'azmio', 'mio.local.infer', {'deadline_ms': 1000},
+                               payload=frame(), deadline_s=1)
+    raw = connection.sent[0]
+    assert _HEADER.unpack(raw[:_HEADER.size])[0] == len(raw) - _HEADER.size
+    assert json.loads(raw[_HEADER.size:])['event'] == frame()
+    with pytest.raises(ValueError, match='request bound'):
+        mio_socket_client._exchange('mio', 'azmio', 'mio.local.infer', {},
+                                   payload={'text': 'x' * MAX_FRAME_BYTES})
+    assert len(connection.sent) == 1
+
+
+@pytest.mark.parametrize(('failure', 'terminal'), [
+    (TimeoutError(SENTINEL), 'TIMED_OUT'),
+    (RuntimeError(SENTINEL), 'FAILED'),
+    ('{"advice":"block host now"}', 'NOT_ADVICE'),
+])
+def test_router_records_local_terminal_and_one_private_handoff(
+    service, tmp_path, monkeypatch, failure, terminal,
+):
+    from azazel_nexus_runtime.mio_router import MioRouter
+
+    from azazel_nexus.remote_trust import Exclusion, RemoteAdmission
+    from azazel_nexus.route_selection import TerminalEvent
+
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    local, _calls = service
+
+    def infer(*args, **kwargs):
+        if isinstance(failure, Exception):
+            raise failure
+        return SimpleNamespace(text=failure)
+
+    local._server.infer = infer
+    remote = SimpleNamespace(handle=lambda *a, **k: pytest.fail('private remote dispatch'))
+    router = MioRouter(local=local, remote=remote)
+    reply = router.handle(
+        local_request=request(), remote_request=None,
+        profile=MioProfile.FASTEST_PERMITTED, privacy_class=PrivacyClass.P2_MISSION,
+        remote=RemoteAdmission(False, Exclusion.PRIVACY_CLASS, 'fixture privacy'),
+        local_admitted=True, local_refusal='fixture',
+        predictions={Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture')},
+        deadline_ms=1000,
+    )
+    assert reply.route is Route.DETERMINISTIC_HANDOFF
+    events = [item.event for item in router.ledger]
+    assert sum(e['event_type'] == 'mio.route.fallback' for e in events) == 1
+    assert any(e.get('terminal_event') == TerminalEvent[terminal].value for e in events)
+    assert SENTINEL not in router.ledger.path.read_text()
+
+
+def test_entry_advisory_defaults_to_refused_and_malformed_payload_is_safe(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
+    entry = mio_entryd.MioEntryService()
+    monkeypatch.setattr(entry.local, 'observe', lambda: 'local_unavailable')
+    monkeypatch.setattr(entry.remote, 'observe', lambda: 'remote_unavailable')
+    req = SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
+                          arguments={'deadline_ms': 1000}, payload=frame())
+    result = entry.handle(req)
+    assert result['outcome'] != 'answered'
+    assert 'advice' not in result
+    assert SENTINEL not in entry.router.ledger.path.read_text()
+    req.payload = {SENTINEL: SENTINEL}
+    with pytest.raises(RequestRefused) as exc:
+        entry.handle(req)
+    assert SENTINEL not in str(exc.value)
+
+
+def test_socket_cannot_claim_an_empty_advisory(monkeypatch):
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {'outcome': 'advisory'})
+    assert mio_socket_client.LocalSocketClient().handle(request())['outcome'] == 'not_advice'
+
+
+def test_runtime_audit_failure_stays_fatal(service):
+    local, _calls = service
+
+    def infer(*args, **kwargs):
+        raise AuditUnavailable('fixture')
+
+    local._server.infer = infer
+    with pytest.raises(AuditUnavailable):
+        local.handle(request(), audit=lambda event: None)

@@ -223,8 +223,8 @@ def test_an_operator_cannot_reach_past_the_admission_decision():
     assert PrincipalClass.OPERATOR not in mio_locald.ACTIVATE_VERB.admits
 
 
-def test_only_one_verb_exists():
-    assert mio_locald.REGISTRY.names() == ("model.activate",)
+def test_readiness_and_advisory_verbs_exist():
+    assert mio_locald.REGISTRY.names() == ("mio.local.infer", "model.activate")
 
 
 def test_the_staging_directory_is_fixed_in_code():
@@ -277,10 +277,20 @@ def test_the_executable_takes_no_arguments():
     assert "takes no arguments" in str(caught.value)
 
 
-def test_it_refuses_to_start_with_no_provider_wired():
-    with pytest.raises(SystemExit) as caught:
-        mio_locald.main([])
-    assert "no provider wired" in str(caught.value)
+def test_default_service_serves_refusals_with_only_entry_service_policy(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    captured = {}
+    policies = []
+    monkeypatch.setattr(mio_locald, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(mio_locald.PrincipalPolicy, "resolve",
+                        lambda **kw: policies.append(kw) or "policy")
+    assert mio_locald.main([]) == 0
+    assert policies == [{"service_accounts": ("azmioentry",)}]
+    assert captured["registry"] is mio_locald.REGISTRY
+    assert captured["path"] == runtime_paths.socket_path("mio")
 
 
 # -- three refusals, and each covers what the others do not ---------------
