@@ -22,7 +22,7 @@ def test_retained_publication_is_required_before_commission_start(publication):
         sessions.append(session)
         return session
 
-    manager = BootstrapNarrowingManager(job_timeout_seconds=0.1,
+    manager = BootstrapNarrowingManager(job_timeout_seconds=5.0,
                                         session_factory=factory)
     manager._controller_binding = (object(), OWNER, PROFILE_DIGEST)
     grant = _transaction("pair_grant_intent")

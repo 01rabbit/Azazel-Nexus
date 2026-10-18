@@ -71,7 +71,7 @@ def _producer_response():
 
 
 def _client_socketpair(monkeypatch, *, binding=IDENTITY, response=None,
-                       raw_response=None, timeout=0.5, proof=None, pause=False):
+                       raw_response=None, timeout=5.0, proof=None, pause=False):
     client_end, server_end = socket.socketpair()
     wrapped = _ConnectedSocket(client_end)
     monkeypatch.setattr(

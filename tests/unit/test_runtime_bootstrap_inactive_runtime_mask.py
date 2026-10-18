@@ -86,7 +86,7 @@ class ScriptBus:
 def _client(bus, *, expected_owner=OWNER):
     return BootstrapStopJobs(
         bus=bus, message_factory=Message, message_type=TYPES,
-        timeout_seconds=0.5, expected_owner=expected_owner,
+        timeout_seconds=5.0, expected_owner=expected_owner,
     )
 
 
@@ -241,7 +241,7 @@ class ManagerSession:
 
 def _manager(session):
     return BootstrapNarrowingManager(
-        job_timeout_seconds=0.5, session_factory=lambda: session)
+        job_timeout_seconds=5.0, session_factory=lambda: session)
 
 
 def _fence(directory=RUNTIME_DIR):

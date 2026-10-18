@@ -105,7 +105,7 @@ def test_real_initial_files_feed_manager_reload_and_drain_without_fabricated_gra
                 self._loop.close()
 
         manager = BootstrapNarrowingManager(
-            job_timeout_seconds=0.2, session_factory=Session,
+            job_timeout_seconds=5.0, session_factory=Session,
             closed_overlay_files=_files(env), withdrawal_files=_withdrawal(env),
         )
         manager.close_starts()

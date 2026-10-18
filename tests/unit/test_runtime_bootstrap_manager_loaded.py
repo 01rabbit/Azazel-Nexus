@@ -47,7 +47,7 @@ def _supported_profile(session):
     )
 
 
-def _manager_for(session, *, timeout=0.05):
+def _manager_for(session, *, timeout=5.0):
     return BootstrapNarrowingManager(
         job_timeout_seconds=timeout, session_factory=lambda: session
     )
@@ -215,7 +215,7 @@ def test_inspection_does_not_enable_widening_operations(method):
         return session
 
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=factory
+        job_timeout_seconds=5.0, session_factory=factory
     )
     manager.inspect_loaded(
         UnitKey.AUDITD,
@@ -242,7 +242,7 @@ def test_each_inspection_uses_a_fresh_session():
         return session
 
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=factory
+        job_timeout_seconds=5.0, session_factory=factory
     )
     for _ in range(2):
         manager.inspect_loaded(

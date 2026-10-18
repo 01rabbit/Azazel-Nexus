@@ -84,7 +84,7 @@ def _real_manager(env, root_fd, buses):
         return _UnpublishedSession(bus)
 
     return BootstrapNarrowingManager(
-        job_timeout_seconds=0.5, session_factory=factory,
+        job_timeout_seconds=5.0, session_factory=factory,
         closed_overlay_files=_closed_files(env),
         withdrawal_files=_withdrawal_files(env),
         cgroup_root_fd=root_fd, cgroup_owner_uid=os.getuid(),

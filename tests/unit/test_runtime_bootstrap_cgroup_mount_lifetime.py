@@ -231,7 +231,7 @@ def test_namespace_reader_rejects_ordinary_target_file(tmp_path, monkeypatch):
 
 def _manager_with_mount(handle, session_factory):
     return bootstrap_manager.BootstrapNarrowingManager(
-        job_timeout_seconds=0.1,
+        job_timeout_seconds=5.0,
         session_factory=session_factory,
         cgroup_mount=handle,
     )

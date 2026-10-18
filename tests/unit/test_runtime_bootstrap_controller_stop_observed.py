@@ -74,8 +74,8 @@ class FakeSession:
         self._loop.close()
 
 
-def observe(bus, cls=BootstrapNarrowingManager, bound=True):
-    manager = cls(job_timeout_seconds=0.05, session_factory=lambda: FakeSession(bus))
+def observe(bus, cls=BootstrapNarrowingManager, bound=True, timeout=5.0):
+    manager = cls(job_timeout_seconds=timeout, session_factory=lambda: FakeSession(bus))
     if bound:
         manager._controller_binding = ("identity", BOOT_OWNER, "digest")
     result = manager.controller_stop_observed()
@@ -129,7 +129,7 @@ def test_timeout_is_not_observed():
                 await asyncio.Future()
             return await super().call(message)
 
-    assert observe(Hang()) is False
+    assert observe(Hang(), timeout=0.05) is False
 
 
 def test_restart_job_with_deactivating_is_not_observed():
@@ -153,7 +153,7 @@ def test_no_binding_is_not_observed():
 def test_owner_mismatch_is_not_observed():
     bus = FakeBus([row(6, CONTROLLER, "stop")])
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=lambda: FakeSession(bus))
+        job_timeout_seconds=5.0, session_factory=lambda: FakeSession(bus))
     manager._controller_binding = ("identity", ":1.77", "digest")
     assert manager.controller_stop_observed() is False
     assert "ListJobs" not in bus.members

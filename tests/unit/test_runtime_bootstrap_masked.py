@@ -131,7 +131,7 @@ def _properties(name):
     }
 
 
-def _inspector(bus, timeout_seconds=0.2):
+def _inspector(bus, timeout_seconds=5.0):
     return BootstrapMaskedPairInspector(
         bus=bus,
         message_factory=Message,

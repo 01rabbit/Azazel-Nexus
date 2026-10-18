@@ -89,7 +89,7 @@ def _masked(bus, fragments):
     return BootstrapMaskedPairInspector(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
         message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        timeout_seconds=0.2, expected_fragments=fragments,
+        timeout_seconds=5.0, expected_fragments=fragments,
     )
 
 

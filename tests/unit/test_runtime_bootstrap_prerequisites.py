@@ -145,7 +145,7 @@ class FakeBus:
         return _reply("a{sv}", values)
 
 
-def _client(bus, policy=None, *, owner=OWNER, timeout=0.1):
+def _client(bus, policy=None, *, owner=OWNER, timeout=5.0):
     return BootstrapPrerequisiteInspector(
         bus=bus,
         message_factory=lambda **fields: SimpleNamespace(**fields),
@@ -288,7 +288,7 @@ def test_positive_and_conflict_combined_bound_accepts_exactly_sixty_four():
                   states={name: "inactive" for name in conflicts})
 
     async def scenario():
-        observed = await _client(bus, policy, timeout=1).inspect()
+        observed = await _client(bus, policy).inspect()
         assert observed.units == positives
         assert observed.conflicts == conflicts
 

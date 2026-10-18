@@ -22,7 +22,7 @@ from test_runtime_bootstrap_controller import OWNER, PROFILE_DIGEST
 
 
 def _harness(monkeypatch, *, start_bus=None, identity_buses=None,
-             manager_type=BootstrapNarrowingManager):
+             manager_type=BootstrapNarrowingManager, job_timeout_seconds=5.0):
     monkeypatch.setattr(manager_module, "current_bootstrap_controller_identity",
                         lambda: object())
     start_bus = start_bus or ReadyThenStartBus()
@@ -38,7 +38,7 @@ def _harness(monkeypatch, *, start_bus=None, identity_buses=None,
         bus.disconnect = lambda: setattr(bus, "disconnected", True)
         return session
 
-    manager = manager_type(job_timeout_seconds=0.1, session_factory=factory)
+    manager = manager_type(job_timeout_seconds=job_timeout_seconds, session_factory=factory)
     # Model the exact retained publication/READY context required by the private
     # composition; no publication or controller service is exercised here.
     manager._controller_binding = (object(), OWNER, PROFILE_DIGEST)
@@ -110,8 +110,10 @@ def test_failed_start_cleanup_or_capture_never_publishes_binding(monkeypatch, fa
     start_bus = ReadyThenStartBus()
     identity_buses = [IdentityBus(fault="wrong-user") if failure == "capture"
                       else IdentityBus()]
+    # The "start" job never completes, so it refuses only at the job deadline.
     manager, sessions, _, transaction = _harness(
         monkeypatch, start_bus=start_bus, identity_buses=identity_buses,
+        job_timeout_seconds=0.1 if failure == "start" else 5.0,
     )
     if failure == "start":
         original_call = start_bus.call

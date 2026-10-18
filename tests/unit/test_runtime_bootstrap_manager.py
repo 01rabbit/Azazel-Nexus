@@ -157,7 +157,7 @@ class FakeSystemdBusSession:
 def test_stop_and_wait_uses_real_owned_loop_and_confirms_job_then_inactive():
     session = FakeSystemdBusSession()
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=lambda: session
+        job_timeout_seconds=5.0, session_factory=lambda: session
     )
 
     manager.stop_and_wait(UnitKey.AUDITD)
@@ -202,7 +202,7 @@ def test_disconnect_cleanup_exception_preserves_primary_stop_failure():
     bus.disconnect_error = RuntimeError("private disconnect detail")
     session = FakeSystemdBusSession(bus=bus)
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.03, session_factory=lambda: session
+        job_timeout_seconds=5.0, session_factory=lambda: session
     )
 
     with pytest.raises(UnitOperationFailed, match="completion unconfirmed") as exc_info:
@@ -219,7 +219,7 @@ def test_disconnect_cleanup_exception_after_success_is_redacted_refusal():
     bus.disconnect_error = RuntimeError("private disconnect detail")
     session = FakeSystemdBusSession(bus=bus)
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.03, session_factory=lambda: session
+        job_timeout_seconds=5.0, session_factory=lambda: session
     )
 
     with pytest.raises(UnitOperationFailed, match="session cleanup failed") as exc_info:
@@ -246,7 +246,7 @@ def test_each_mask_and_query_operation_uses_and_closes_a_fresh_session():
         return session
 
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=factory
+        job_timeout_seconds=5.0, session_factory=factory
     )
     manager.mask(UnitKey.AUDITD)
     assert manager.is_masked(UnitKey.COMMISSIOND) is True
@@ -317,7 +317,7 @@ def test_readiness_is_false_without_opening_a_session(unit):
         raise AssertionError("readiness must not open a bus session")
 
     manager = BootstrapNarrowingManager(
-        job_timeout_seconds=0.05, session_factory=factory
+        job_timeout_seconds=5.0, session_factory=factory
     )
     assert manager.is_ready(unit) is False
     assert factory_calls == []

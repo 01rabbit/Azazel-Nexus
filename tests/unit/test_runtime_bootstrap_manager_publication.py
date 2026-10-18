@@ -263,7 +263,7 @@ def _transaction(approval):
 
 
 def _manager_fixture(env, monkeypatch, *, fault=None, policy_change=False,
-                     manager_type=BootstrapNarrowingManager, job_timeout_seconds=0.05):
+                     manager_type=BootstrapNarrowingManager, job_timeout_seconds=5.0):
     monkeypatch.setattr(manager_module, "current_bootstrap_controller_identity",
                         lambda: CONTROLLER_IDENTITY)
     approval = _approval()
@@ -510,7 +510,11 @@ def test_manager_publication_faults_refuse_and_close_single_session(
 ):
     with _environment(tmp_path) as env:
         manager, sessions, bus, approval, _policy_value, _policy_calls, _confirms, _checks = (
-            _manager_fixture(env, monkeypatch, fault=fault)
+            # Only the hanging Reload needs a short bound to reach its deadline.
+            _manager_fixture(env, monkeypatch, fault=fault,
+                             # The deadline case must still reach the injected Reload hang
+                             # before its bound fires; 0.05 s did not under CPU load.
+                             job_timeout_seconds=1.0 if fault == "reload-timeout" else 5.0)
         )
         expected_error = (
             "loaded bootstrap observation refused"

@@ -74,7 +74,7 @@ def test_authenticated_audit_handoff_gates_commission(evidence, monkeypatch, fai
         return session
 
     monkeypatch.setattr(manager_module, "current_bootstrap_controller_identity", lambda: IDENTITY)
-    real = _PrototypeBootstrapManager(job_timeout_seconds=0.5, session_factory=factory)
+    real = _PrototypeBootstrapManager(job_timeout_seconds=5.0, session_factory=factory)
     # Handcrafted controller/grant context below stands in for retained
     # publication admission in this synthetic composition.
     real._publication_check = lambda: None

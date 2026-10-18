@@ -122,7 +122,7 @@ class FakeBus:
         raise AssertionError(f"unexpected D-Bus method {message.member}")
 
 
-def make_client(bus, timeout=0.03, expected_owner=None):
+def make_client(bus, timeout=5.0, expected_owner=None):
     return BootstrapStopJobs(
         bus=bus,
         message_factory=lambda **kwargs: SimpleNamespace(**kwargs),

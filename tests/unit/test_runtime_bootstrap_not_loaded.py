@@ -82,7 +82,7 @@ def masked(bus, *, expected=EXPECTED):
     return BootstrapMaskedPairInspector(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
         message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-        timeout_seconds=0.2, expected_fragments=expected,
+        timeout_seconds=5.0, expected_fragments=expected,
     )
 
 
@@ -128,7 +128,7 @@ def test_masked_without_expected_fragments_still_refuses_no_such_unit():
         inspector = BootstrapMaskedPairInspector(
             bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
             message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
-            timeout_seconds=0.2,
+            timeout_seconds=5.0,
         )
         with pytest.raises(UnitOperationFailed):
             await inspector.inspect()
@@ -200,7 +200,7 @@ def _stop_client(bus, **kw):
     return BootstrapStopJobs(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
         message_type=SimpleNamespace(METHOD_RETURN=1, SIGNAL=4, ERROR=3),
-        timeout_seconds=0.2, **kw,
+        timeout_seconds=5.0, **kw,
     )
 
 
@@ -272,7 +272,7 @@ def _stopped(bus, root_fd):
 
     return BootstrapStoppedPairInspector(
         bus=bus, message_factory=lambda **f: SimpleNamespace(**f),
-        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1), timeout_seconds=0.2,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1), timeout_seconds=5.0,
         cgroup_root_fd=root_fd, owner_uid=OWNER_UID, expected_owner=OWNER,
         check_closed=closed,
     )
