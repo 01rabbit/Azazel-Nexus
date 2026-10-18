@@ -514,12 +514,13 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
     ja = bool(_JAPANESE.search(frame['question']))
     title = next((o['title'] for o in options if o['option_id'] == candidate['option_id']),
                  '判定保留' if ja else 'Undetermined')
-    reviewed = all(p.status == 'reviewed' for p in playbooks)
+    # Nothing used is nothing reviewed: an empty selection must not read as reviewed.
+    reviewed = bool(playbooks) and all(p.status == 'reviewed' for p in playbooks)
     banner = ('ローカル簡易推論（端末内の小型モデル）による候補の提示です。結論ではありません。'
               '重要な判断は担当者が根拠を確認してから行ってください。' if ja else
               'Candidates from local lightweight inference (a small on-device model). '
               'This is not a conclusion. A responsible operator must verify the evidence before important decisions.')
-    if not reviewed:
+    if playbooks and not reviewed:
         banner += (' 使用した手順はテンプレート（未レビュー）' if ja
                    else ' Procedures used are templates (unreviewed).')
     alternatives = [{k: o[k] for k in ('option_id', 'kind', 'title')}
@@ -541,8 +542,9 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
                  + (('。照合は簡易方式' if ja else '. Simplified keyword matching') if retrieval == 'keyword' else ''),
         'match_evidence': ('照合の根拠: ' if ja else 'Match evidence: ') + json.dumps(evidence, ensure_ascii=False)[:1000],
     }
-    fields['candidate'] += '\n' + '\n'.join(
-        f'{p.title}: {score:.2f}' for p, score in zip(playbooks, similarities, strict=False))
+    scored = '\n'.join(f'{p.title}: {score:.2f}' for p, score in zip(playbooks, similarities, strict=False))
+    if scored:
+        fields['candidate'] += '\n' + scored
     guidance_books = playbooks if state != 'none' else ()
     for i, p in enumerate(guidance_books):
         for key, label in (('checks', '確認手順'), ('first_response', '初動対応'), ('missing', '不足情報')):
