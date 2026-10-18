@@ -1,0 +1,196 @@
+<title>Azazel 既定プレイブック</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Zen+Kaku+Gothic+New:wght@700;900&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: runbook binder — summary band, category tabs, then one folded sheet per scenario */
+:root {
+  --bg: #f3f5f4;
+  --sheet: #ffffff;
+  --ink: #17201d;
+  --muted: #5b6763;
+  --line: #d6ddda;
+  --accent: #0f6b5c;
+  --accent-soft: #dcefe9;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d6;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --font-body: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --sheet: #172019; --ink: #e5ece9; --muted: #9aa8a3; --line: #2b3732;
+    --accent: #5cc9b3; --accent-soft: #1b3a33; --warn: #e8b453; --warn-soft: #3a2e14; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --sheet: #172019; --ink: #e5ece9; --muted: #9aa8a3; --line: #2b3732;
+  --accent: #5cc9b3; --accent-soft: #1b3a33; --warn: #e8b453; --warn-soft: #3a2e14; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 64px;
+}
+.wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 24px; }
+h1 { font-family: var(--font-display); font-weight: 900; font-size: clamp(26px, 4vw, 36px); line-height: 1.25; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
+.notice {
+  background: var(--warn-soft); color: var(--ink); border-left: 4px solid var(--warn);
+  padding: 12px 16px; border-radius: 6px; display: grid; gap: 4px;
+}
+.notice b { color: var(--warn); }
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.how div { background: var(--sheet); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.how h3 { font-family: var(--font-display); font-size: 14px; margin: 0 0 4px; letter-spacing: .02em; }
+.how p { margin: 0; color: var(--muted); font-size: 13.5px; }
+.controls { display: grid; gap: 12px; position: sticky; top: env(safe-area-inset-top, 0px); background: var(--bg); padding-block: 10px; z-index: 5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input[type="search"] {
+  flex: 1 1 260px; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--sheet); color: var(--ink);
+}
+input[type="search"]:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip {
+  font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
+  padding: 4px 10px; border-radius: 999px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center;
+}
+.chip .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--sheet); }
+.chip[aria-pressed="true"] .n { color: var(--sheet); }
+.lang { margin-left: auto; display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.lang button { font: inherit; font-size: 13px; border: 0; background: var(--sheet); color: var(--ink); padding: 5px 12px; cursor: pointer; }
+.lang button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.count { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.list { display: grid; gap: 10px; }
+details.pb { background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+details.pb[open] { border-color: var(--accent); }
+summary { list-style: none; cursor: pointer; padding: 12px 16px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: baseline; }
+summary::-webkit-details-marker { display: none; }
+.t { font-family: var(--font-display); font-weight: 700; font-size: 16.5px; min-width: 0; }
+.t small { font-family: var(--font-body); font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
+.cat { font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.refs { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.ref { font-family: var(--font-mono); font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+.ref a { color: inherit; text-decoration: none; }
+.ref a:hover { color: var(--accent); text-decoration: underline; }
+.body { padding: 4px 16px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px 22px; border-top: 1px solid var(--line); }
+.sec { min-width: 0; }
+.sec h4 { margin: 12px 0 4px; font-size: 12px; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
+.sec ul { margin: 0; padding-left: 1.2em; }
+.sec li { margin: 2px 0; }
+.sec.first h4 { color: var(--accent); }
+.kw { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); }
+.kw code { font-family: var(--font-mono); font-size: 12px; background: var(--bg); border-radius: 3px; padding: 0 4px; margin: 0 2px; display: inline-block; }
+.meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); grid-column: 1 / -1; }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+footer { color: var(--muted); font-size: 12.5px; max-width: 80ch; }
+@media (prefers-reduced-motion: no-preference) { details.pb { transition: border-color .15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Azazel 既定プレイブック</h1>
+    <p class="lede">M.I.O. が状況に合わせて候補として示す「セキュリティ事象ごとの模範的な対応メモ」です。全 __N__ 種類（ライブラリ版 __VER__）。</p>
+  </header>
+
+  <div class="notice" role="note">
+    <span><b>すべて「テンプレート（未レビュー）」です。</b>MITRE ATT&amp;CK・D3FEND・OWASP・NIST SP 800-61 の識別番号を出典にした一般的な模範解答で、文章は独自に書いています。</span>
+    <span>組織の実際の手順とは異なるため、使う前に担当者が確認し、必要に応じて「サイト層」で差し替え・無効化・追加してください（Mission Pack で配布）。</span>
+  </div>
+
+  <section class="how" aria-label="見かた">
+    <div><h3>何が疑われるか</h3><p>この事象が一般に意味すること。M.I.O. は状況との意味の近さで候補を選びます。</p></div>
+    <div><h3>確認手順</h3><p>先に見るべき事実の順番。攻撃か正当な活動かを見分ける手がかりです。</p></div>
+    <div><h3>初動対応</h3><p>担当者が判断する対応の候補。コマンドや自動遮断は含みません。</p></div>
+    <div><h3>確認の観点</h3><p>手順が自組織の運用に合うか、誤検知の例が現実的か、不足情報の依頼先が正しいか。</p></div>
+  </section>
+
+  <div class="controls">
+    <div class="row">
+      <input type="search" id="q" placeholder="検索（例: SSH、ランサム、T1110、phishing）" aria-label="プレイブックを検索">
+      <div class="lang" role="group" aria-label="表示言語">
+        <button type="button" id="lang-ja" aria-pressed="true">日本語</button>
+        <button type="button" id="lang-en" aria-pressed="false">English</button>
+      </div>
+    </div>
+    <div class="row" id="cats" role="group" aria-label="分野で絞り込み"></div>
+    <div class="count" id="count" aria-live="polite"></div>
+  </div>
+
+  <main class="list" id="list"></main>
+
+  <footer>出典表示: MITRE ATT&amp;CK® および D3FEND™ は The MITRE Corporation の登録商標・商標です。OWASP は OWASP Foundation の商標です。NIST SP 800-61 Rev. 3 は米国立標準技術研究所の公開文書です。本一覧は識別番号のみを参照し、各文書の本文は転載していません。</footer>
+</div>
+
+<script>
+const DATA = __DATA__;
+const LABELS = {
+  ja: { interpretation: "何が疑われるか", checks: "確認手順（順番に）", first_response: "初動対応（担当者が判断）", benign: "よくある誤検知・正当な理由", missing: "追加で必要な情報", kw: "照合の目印", status: { template: "テンプレート（未レビュー）", reviewed: "レビュー済み" } },
+  en: { interpretation: "What it usually means", checks: "Checks (in order)", first_response: "First response (operator decides)", benign: "Common benign explanations", missing: "Information to request", kw: "Matching cues", status: { template: "Template (unreviewed)", reviewed: "Reviewed" } }
+};
+let lang = "ja", cat = "all";
+try { lang = localStorage.getItem("pb-lang") || "ja"; } catch (e) {}
+const list = document.getElementById("list"), q = document.getElementById("q"), countEl = document.getElementById("count");
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function refHtml(r) {
+  if (r.src === "mitre-attack" && /^T\d{4}(\.\d{3})?$/.test(r.id)) {
+    const url = "https://attack.mitre.org/techniques/" + r.id.replace(".", "/") + "/";
+    return `<span class="ref"><a href="${url}" target="_blank" rel="noopener">${esc(r.s)} ${esc(r.id)}</a></span>`;
+  }
+  return `<span class="ref">${esc(r.s)} ${esc(r.id)}</span>`;
+}
+function sec(e, key, first) {
+  const items = e.g[key][lang] || [];
+  return `<div class="sec${first ? " first" : ""}"><h4>${LABELS[lang][key]}</h4><ul>${items.map(i => `<li>${esc(i)}</li>`).join("")}</ul></div>`;
+}
+function card(e) {
+  const other = lang === "ja" ? e.title.en : e.title.ja;
+  return `<details class="pb"><summary>
+      <span class="t">${esc(e.title[lang])}<small>${esc(other)}</small></span>
+      <span class="cat">${esc(e.catja)}</span>
+      <span class="refs">${e.refs.map(refHtml).join("")}</span>
+    </summary>
+    <div class="body">
+      ${sec(e, "interpretation")}${sec(e, "checks")}${sec(e, "first_response", true)}${sec(e, "benign")}${sec(e, "missing")}
+      <div class="kw">${LABELS[lang].kw}: ${(e.kw[lang] || []).map(k => `<code>${esc(k)}</code>`).join("")}</div>
+      <div class="meta">${esc(e.id)} · ${LABELS[lang].status[e.status] || esc(e.status)}</div>
+    </div></details>`;
+}
+function matches(e, term) {
+  if (!term) return true;
+  const hay = [e.id, e.title.ja, e.title.en, e.catja, ...e.refs.map(r => r.id), ...e.kw.ja, ...e.kw.en,
+    ...Object.values(e.g).flatMap(v => [...v.ja, ...v.en])].join(" ").toLowerCase();
+  return term.toLowerCase().split(/\s+/).every(t => hay.includes(t));
+}
+function render() {
+  const term = q.value.trim();
+  const shown = DATA.entries.filter(e => (cat === "all" || e.cat === cat) && matches(e, term));
+  list.innerHTML = shown.length ? shown.map(card).join("") : `<p class="empty">条件に合うプレイブックはありません。検索語や分野を変えてください。</p>`;
+  countEl.textContent = `${shown.length} / ${DATA.entries.length} 件を表示`;
+  document.getElementById("lang-ja").setAttribute("aria-pressed", lang === "ja");
+  document.getElementById("lang-en").setAttribute("aria-pressed", lang === "en");
+}
+const cats = document.getElementById("cats");
+const allBtn = document.createElement("button");
+allBtn.type = "button"; allBtn.className = "chip"; allBtn.dataset.cat = "all";
+allBtn.innerHTML = `すべて <span class="n">${DATA.entries.length}</span>`;
+cats.appendChild(allBtn);
+for (const [id, name, n] of DATA.cats) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip"; b.dataset.cat = id;
+  b.innerHTML = `${esc(name)} <span class="n">${n}</span>`;
+  cats.appendChild(b);
+}
+function syncChips() { for (const b of cats.children) b.setAttribute("aria-pressed", b.dataset.cat === cat); }
+cats.addEventListener("click", ev => { const b = ev.target.closest(".chip"); if (!b) return; cat = b.dataset.cat; syncChips(); render(); });
+q.addEventListener("input", render);
+for (const l of ["ja", "en"]) document.getElementById("lang-" + l).addEventListener("click", () => {
+  lang = l; try { localStorage.setItem("pb-lang", l); } catch (e) {} render();
+});
+syncChips(); render();
+</script>
