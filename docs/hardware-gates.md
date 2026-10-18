@@ -15,6 +15,10 @@ that the argument vector is right. It is not evidence that systemd masked
 anything, that a unit refused to start, that an observation interface emitted
 zero frames, or that the node booted inside a time budget.
 
+The [campaign](hil-campaign.md) fixes ownership and execution order;
+[HIL evidence records](hil-evidence-records.md) separates field records from CI.
+No gate state changes in this preparation.
+
 Every gate names four things: what is claimed, what CI actually executed, why
 that is not the claim, and what would settle it.
 
@@ -48,6 +52,8 @@ the extra hazard that it looks like hardware.
 | `HG-07` | A real Edge Core package on a real host verifies, answers its health contract and runs | `hardware-unverified` |
 
 ## `HG-01` — installation leaves nothing running
+
+**Owner issue:** #115 pilot; #4 campaign parent. **Procedure:** [installation runbook](hil-runbooks/hg-01.md).
 
 **Claimed.** After `packaging/install.sh`, `azazel-commissiond`, `azazel-auditd`
 and `azazel-watchdog` are masked and disabled, and no operational network
@@ -85,6 +91,8 @@ stage `not_executed`, with the reason, and does not count it as a pass. See
 
 ## `HG-02` — the privilege boundary on a running host
 
+**Owner issue:** #115 pilot; #4 campaign parent. **Procedure:** [expected-refusal runbook](hil-runbooks/hg-02.md).
+
 **Claimed.** Only `azazel-activated.service` can unmask an operational unit.
 
 **What CI executed.** `tests/unit/test_activation.py` proves the *design*
@@ -99,15 +107,19 @@ the operating system's: root-owned unit files, a controller that runs as root,
 and daemons under their own non-login accounts (`IMPLEMENTATION_SPEC.md` §3).
 None of that exists on a CI runner.
 
-**What would settle it.** On the target image, run each daemon under its own
-account and attempt `systemctl unmask` from it; record the refusal and the
-account. Repeat after the accounts are created by the package, not by hand.
+**What would settle it.** On the target image, use each package-created daemon
+account to attempt `systemctl unmask` against a verified masked target, with
+**refusal as the expected outcome**. Read back the mask after each attempt.
+The linked runbook specifies noninteractive identity switching, invalid-test
+conditions and root-console stop/disable/re-mask recovery if it succeeds.
 
 Since #42 the accounts are separate and declared — `azcommission`, `azaudit`,
 `azwatch`, and `root` for the activation controller alone — so the experiment
 is now well defined. It has not been run.
 
 ## `HG-03` — an observation interface transmits nothing
+
+**Owner issue:** #17 / SO-10, linked by #4. **Procedure:** [SO-10 field exercise](service-objectives.md#so-10-field-exercise--hardware-only), with driver reload added for HG-03.
 
 **Claimed.** Outside the bounded `ASSET_ACQUISITION` state, an interface in an
 observation role emits zero frames (`docs/commissioning.md` §5).
@@ -121,6 +133,8 @@ observing host rather than on the node under test. A frame count reported by
 the node that is supposed to be silent is the node grading its own silence.
 
 ## `HG-04` — commissioning completes on a real host
+
+**Owner issue:** #115 pilot; #4 campaign parent. **Procedure:** [commissioning runbook](hil-runbooks/hg-04.md).
 
 **Claimed.** `azazel-nexus commission` takes an operator from an installed
 node to a commissioning record without hand-editing a file (#29).
@@ -160,6 +174,8 @@ result: `IFLA_PERM_ADDRESS` arrived in Linux 5.6, and a driver may omit it at
 any version.
 
 ## `HG-05` — the Core reserve
+
+**Owner issue:** #115 8 GiB pilot; #4 campaign parent; #100 admission consumer; #68 downstream consumer. **Procedure:** [reserve procedure](core-reserve-measurement.md#5-the-procedure) and [campaign validation](hil-evidence-records.md#tools-and-trust).
 
 **Claimed.** Nothing, yet. That is the point of this entry.
 
@@ -231,6 +247,8 @@ missing is the measurement, not the means of taking it.
 
 ## `HG-06` — the decoy bridge refuses to forward
 
+**Owner issue:** #4, explicit child work (child issue number unassigned). **Procedure:** [isolation runbook](hil-runbooks/hg-06.md).
+
 **Claimed.** Nothing, yet.
 
 `docs/IMPLEMENTATION_SPEC.md` §9 is unusually specific about what has to
@@ -275,6 +293,8 @@ fail, from inside the namespace, with the result recorded and the probe
 re-run before every exposure rather than once at install.
 
 ## `HG-07` — a real Edge Core, verified on a real host
+
+**Owner issue:** #4, explicit child work (child issue number unassigned). **Procedure:** [real-package runbook](hil-runbooks/hg-07.md).
 
 **Claimed.** Azazel-Nexus can verify a locally installed Edge Core package —
 presence, version, digest, health and running state — and claims

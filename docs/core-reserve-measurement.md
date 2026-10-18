@@ -88,7 +88,16 @@ the samples is a measurement of a shorter run that does not say so.
    workstation may exercise the harness; a record from one is a development
    reference and is not admissible as this class's reserve, because the
    resident set it measures is another machine's.
-2. Bring up the node's own subsystems and confirm all five are `active
+2. **Edge Core must already be installed and running through the approved
+   deployment path.** `azazel-arbiter`, `azazel-evidence`,
+   `azazel-leasejournal`, `azazel-operator` and `azazel.slice` are supplied by
+   the Edge Core deployment; installing Nexus alone does not provide them.
+   The Nexus `azazel-auditd` unit is also mandatory. Use the read-only readiness command **added in this change**
+   ([integration references](hil-evidence-records.md#tools-and-trust)) to identify
+   missing units, slice, commissioning key or target class. A ready result
+   establishes presence/readiness only, not load or a reserve. Do not remove a
+   required unit, create dummy units or bypass activation to make the probe run.
+   Bring up the node's own subsystems and confirm all five are `active
    (running)`: `azazel-arbiter`, `azazel-auditd`, `azazel-evidence`,
    `azazel-leasejournal`, `azazel-operator`.
 3. Put the node **under load** — the reserve is what it needs while working,
@@ -145,7 +154,16 @@ of policy, and it changes no number this build has.
 
 ## 8. Where an admissible record goes
 
-`/var/lib/azazel/run/core-reserve.json`. Runtime state, never a packaged file:
+The existing consumer path is `/var/lib/azazel/run/core-reserve.json`.
+Probe v2 **added in this change** retains a distinct file for each run rather
+than overwriting previous observations, with boot HMAC fingerprint, sequence,
+commit and protected kernel context. See [HIL evidence records](hil-evidence-records.md)
+for archive, confidentiality, attestation and campaign validation. Do not copy
+an arbitrary run to the consumer path: first validate at least three attested
+runs on distinct boots of the same class/harness with workload notes and select
+the maximum of their maxima, then use the integrated approved consumption path.
+The reader continues to support v1; that alone does not establish v2 campaign
+provenance. Runtime state, never a packaged file:
 `tests/unit/test_core_reserve.py::test_no_measurement_is_committed_anywhere`
 offers every JSON file in the distribution to the reader and fails if one is
 accepted as a `measured` record.
