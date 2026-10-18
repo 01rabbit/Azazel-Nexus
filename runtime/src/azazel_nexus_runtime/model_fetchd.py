@@ -251,6 +251,7 @@ def main(
         socket_path,
     )
     from .serve import serve_forever
+    from .systemd_notify import runtime_ready_callback
 
     try:
         commissioned = load_fetch_commissioning(fetch_commission_dir())
@@ -273,7 +274,9 @@ def main(
     )
     return serve_forever(path=socket_path("fetch"), registry=REGISTRY,
                          policy=PrincipalPolicy.resolve(), audit=audit_sink("fetch"),
-                         handler=service.handle, stop=stop, ready=ready)
+                         handler=service.handle, stop=stop,
+                         # Type=notify: READY=1 only after the socket is bound.
+                         ready=ready if ready is not None else runtime_ready_callback())
 
 
 if __name__ == "__main__":  # pragma: no cover

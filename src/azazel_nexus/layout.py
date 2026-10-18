@@ -126,6 +126,14 @@ LAYOUT = (
         group="azazel-operator",
     ),
     PathSpec(
+        "/var/lib/azazel/run/edge-probe",
+        0o2750,
+        "Edge probe result leaf; the probe owns it so its temp-file rename "
+        "stays inside it, and the operator group may read the result",
+        owner="azprobe",
+        group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/watchdog",
         0o2710,
         "watchdog socket leaf; daemon-owned with operator-group socket inheritance",

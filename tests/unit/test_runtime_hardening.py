@@ -637,23 +637,34 @@ def test_socket_daemons_write_only_their_own_run_leaf(unit, socket, paths):
     assert run_grants == ["/var/lib/azazel/run/" + socket_path(socket).parent.name]
 
 
-def test_only_the_edge_probe_keeps_the_run_root_writable():
-    """The Edge probe writes `run/edge-probe.json` by temp file and rename in
-    the run root itself, which needs the directory writable. Every other
-    unprivileged unit writes only its own leaf; the root controller's grant
-    is `/var/lib/azazel` as a whole and is not this test's subject."""
-
-    from azazel_nexus.edge_package import PROBE_STATE_PATH
+def test_no_unprivileged_unit_holds_the_run_root():
+    """Every unprivileged unit writes only its own run leaf. The root
+    controller's grant is `/var/lib/azazel` as a whole and is not this test's
+    subject."""
 
     holders = {
         profile.unit for profile in PROFILES
         if "/var/lib/azazel/run" in profile.read_write_paths
     }
-    assert holders == {"azazel-edge-probed.service"}
-    assert str(PROBE_STATE_PATH.parent) == "/var/lib/azazel/run"
-    assert _settings("azazel-edge-probed.service")["ReadWritePaths"] == [
-        "/var/lib/azazel/run",
-    ]
+    assert holders == set()
+
+
+def test_the_edge_probe_writes_only_its_result_leaf():
+    """The Edge probe writes its result by temp file and rename, which needs
+    the directory writable -- so the directory is a leaf of its own, owned by
+    the probe's account and group-readable by operators (who run `status`)."""
+
+    from azazel_nexus.edge_package import PROBE_STATE_PATH
+    from azazel_nexus.layout import spec_for
+
+    leaf = "/var/lib/azazel/run/edge-probe"
+    assert str(PROBE_STATE_PATH.parent) == leaf
+    assert _settings("azazel-edge-probed.service")["ReadWritePaths"] == [leaf]
+    spec = spec_for(leaf)
+    assert (spec.owner, spec.group, spec.mode) == ("azprobe", "azazel-operator", 0o2750)
+    assert spec.mode & 0o007 == 0
+    run = spec_for("/var/lib/azazel/run")
+    assert (run.owner, run.mode) == ("root", 0o711)
 
 
 def test_entry_can_traverse_and_connect_to_provider_socket_leaves():

@@ -323,6 +323,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/audit",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
+        "/var/lib/azazel/run/edge-probe",
         "/var/lib/azazel/run/fetch",
         "/var/lib/azazel/run/mio-entry",
         "/var/lib/azazel/run/mio",

@@ -636,3 +636,88 @@ def test_restart_details_are_bounded_and_printable(tmp_path, method):
     getattr(service, method)("auditd", now=NOW, detail="restart\n\x00\t\u2603" + "x" * 1000)
     [event] = _events(tmp_path)
     assert event["detail"] == "restart    " + "x" * (watchdog_module.DETAIL_MAX_LENGTH - 11)
+
+
+# -- watchdog.probe is refused, never a crash ------------------------------
+
+ROOT_PRINCIPAL = Principal(uid=0, gid=0, pid=1, classes=frozenset({PrincipalClass.ROOT}))
+
+
+def test_root_probe_is_a_fixed_refusal_not_an_exception(tmp_path):
+    """`watchdog.probe` is declared but driven by #42's service loop. Until
+    then root's call is refused with a fixed reason; an exception escaping the
+    handler would take the daemon -- and the fences it holds -- down."""
+
+    from azazel_nexus_runtime.protocol import Refusal, RequestRefused
+
+    service = _service(tmp_path)
+    service.note_interrupted_restart("auditd", now=NOW, detail="interrupted")
+    fence_bytes = service.fences.path.read_bytes()
+    verb = REGISTRY.resolve("watchdog.probe", ROOT_PRINCIPAL)
+    request = Request(
+        verb=verb,
+        arguments=verb.bind({"unit": "auditd", "budget_ms": 100}),
+        principal=ROOT_PRINCIPAL,
+    )
+    with pytest.raises(RequestRefused) as refused:
+        service.handle(request)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert refused.value.detail == "watchdog.probe"
+    # Nothing was probed or fenced, and status still answers afterwards.
+    assert service.fences.path.read_bytes() == fence_bytes
+    status = Request(
+        verb=REGISTRY.resolve("watchdog.status", ROOT_PRINCIPAL),
+        arguments={}, principal=ROOT_PRINCIPAL,
+    )
+    assert service.handle(status) == {"fenced": service.fenced}
+
+
+def test_the_probe_refusal_does_not_widen_who_may_call_it():
+    """The fix changes the answer, not the policy: an operator is still denied
+    before the handler runs."""
+
+    from azazel_nexus_runtime.protocol import Refusal, RequestRefused
+
+    with pytest.raises(RequestRefused) as refused:
+        REGISTRY.resolve("watchdog.probe", OPERATOR)
+    assert refused.value.refusal is Refusal.PRINCIPAL_DENIED
+    probe = next(v for v in VERBS if v.name == "watchdog.probe")
+    assert probe.admits == frozenset({PrincipalClass.ROOT})
+
+
+def test_root_probe_over_the_socket_gets_a_refusal_reply_and_is_recorded(
+    tmp_path, monkeypatch
+):
+    """Through the real per-connection engine: the reply is a refusal frame,
+    the refusal is recorded, and `serve_connection` returns normally -- which
+    is what keeps `serve_forever` accepting the next connection."""
+
+    import socket
+
+    from azazel_nexus_runtime import transport
+    from azazel_nexus_runtime.transport import SocketServer, read_frame, send_frame
+
+    class RootPolicy:
+        operator_gid = None
+
+        def classify(self, uid, gid, pid, groups=()):
+            return ROOT_PRINCIPAL
+
+    monkeypatch.setattr(transport, "peer_credentials", lambda _c: (1, 0, 0))
+    monkeypatch.setattr(transport, "peer_supplementary_groups", lambda _c: ())
+    recorded: list[dict] = []
+    engine = SocketServer(registry=REGISTRY, policy=RootPolicy(),
+                          audit=recorded.append, deadline=0.5)
+    service = _service(tmp_path)
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    left.settimeout(5)
+    with left, right:
+        send_frame(left, {"verb": "watchdog.probe",
+                          "arguments": {"unit": "auditd", "budget_ms": 100}})
+        left.shutdown(socket.SHUT_WR)
+        engine.serve_connection(right, service.handle)
+        right.close()  # the server side ends the exchange, as serve_forever does
+        reply = read_frame(left)
+    assert json.loads(reply) == {"ok": False, "refusal": "verb_unavailable"}
+    assert [e["reason"] for e in recorded] == ["verb_unavailable"]
+    assert recorded[0].get("verb") == "watchdog.probe"

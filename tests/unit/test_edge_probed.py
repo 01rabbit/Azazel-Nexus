@@ -443,4 +443,4 @@ def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
 
 def test_the_defaults_are_the_fixed_locations():
     assert edge_probed.probe.__defaults__[0] == EDGE_PACKAGE_ROOT
-    assert PROBE_STATE_PATH == Path("/var/lib/azazel/run/edge-probe.json")
+    assert PROBE_STATE_PATH == Path("/var/lib/azazel/run/edge-probe/edge-probe.json")

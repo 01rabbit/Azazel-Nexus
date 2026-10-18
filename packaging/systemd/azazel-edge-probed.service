@@ -5,7 +5,7 @@
 # Runs once and exits.
 # It executes exactly two things -- the Edge health contract at a fixed path, and a read-only D-Bus property query -- and it writes one bounded file.
 # It is not root, it takes no argument that could redirect it, and `AF_UNIX` is all it needs: the D-Bus connection it reads unit state over is one.
-# It writes into the operator plane's own directory, which already answers who may read what is there, and the result holds no secret: a version, a digest, two verdicts and their reasons.
+# It writes only into its own result leaf, which the operator group may read, and the result holds no secret: a version, a digest, two verdicts and their reasons.
 
 [Unit]
 Description=Azazel-Nexus Edge health and running probe
@@ -20,7 +20,7 @@ ExecStart=/usr/libexec/azazel/az-edge-probed
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/azazel/run
+ReadWritePaths=/var/lib/azazel/run/edge-probe
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
