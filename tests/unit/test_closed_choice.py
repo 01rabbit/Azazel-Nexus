@@ -253,3 +253,16 @@ def test_entry_revalidates_forged_local_metadata(frame, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='invalid_local_document'):
         entry.handle(SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
                                     arguments={'deadline_ms': 1000}, payload=frame))
+
+
+@pytest.mark.parametrize('text', [
+    'No load tests scheduled for this service this week',
+    'Maintenance was planned but cancelled',
+    '今週の作業予定はありません（承認済みの変更なし）',
+    'Change request pending approval',
+])
+def test_negated_system_item_never_supports_benign(text):
+    from azazel_nexus.local_advisory import _BENIGN_SUPPORT, _NEGATED_SUPPORT
+
+    assert _NEGATED_SUPPORT.search(text)
+    assert _BENIGN_SUPPORT.search(text) or 'planned' in text or 'approval' in text

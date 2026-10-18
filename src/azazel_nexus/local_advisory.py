@@ -381,10 +381,13 @@ _BENIGN_SUPPORT = re.compile(
     r'(?<![A-Za-z0-9_])(?:approved|planned|scheduled|authorized|expected)(?![A-Za-z0-9_])|'
     r'(?<![一-鿿])(?:承認済み|承認済|計画済み|予定済み|定例|正規)(?![一-鿿])', re.IGNORECASE,
 )
+# Conservative: any negation, denial or non-final state anywhere in a
+# system-sourced item voids its benign support ("No load tests scheduled").
 _NEGATED_SUPPORT = re.compile(
-    r'未承認|不承認|承認なし|未予定|予定なし|計画なし|'
-    r'\b(?:not\s+(?:approved|planned|scheduled|authorized|expected)|unapproved|'
-    r'unplanned|unscheduled|unauthorized)\b', re.IGNORECASE,
+    r'未|不|無|ない|なし|ません|却下|取消|取り消|保留|期限切れ|中止|対象外|'
+    r"(?<![A-Za-z0-9_])(?:no|not|none|never|without|cancel+ed|denied|rejected|"
+    r"pending|expired|draft|unapproved|unplanned|unscheduled|unauthorized)(?![A-Za-z0-9_])|n't",
+    re.IGNORECASE,
 )
 _EXPLANATION_FIELDS = ('reason', 'check_1', 'check_2', 'check_3', 'missing')
 _DISMISSIVE = re.compile(r'誤検知|正当|正常|問題なし|\b(?:benign|false positive|legitimate|harmless)\b', re.IGNORECASE)
