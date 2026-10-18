@@ -213,7 +213,10 @@ class PrincipalPolicy:
             self.operator_gid is not None
             and uid not in self.service_uids
             and uid not in self.daemon_uids
-            and (gid == self.operator_gid or self.operator_gid in groups)
+            # Root's supplementary groups never make it an operator: a root unit
+            # carrying SupplementaryGroups=azazel-operator (activated) stays ROOT
+            # only, exactly as before supplementary groups were read.
+            and (gid == self.operator_gid or (uid != 0 and self.operator_gid in groups))
         ):
             classes.add(PrincipalClass.OPERATOR)
         if uid in self.service_uids:
@@ -282,7 +285,14 @@ def peer_supplementary_groups(connection) -> tuple[int, ...]:
         raw = connection.getsockopt(
             socket_module.SOL_SOCKET, option, _PEERGROUPS_BUFFER
         )
-    except OSError:
+    except OSError as exc:
+        # Fail toward fewer grants, but say so: an operator with more than 256
+        # groups (ERANGE) otherwise sees only a generic principal_denied.
+        # Fixed text and the errno name only; nothing the peer controls.
+        import errno
+        import sys
+        name = errno.errorcode.get(exc.errno, "unknown")
+        print(f"peer supplementary groups unavailable: {name}", file=sys.stderr)
         return ()
     if len(raw) % 4:
         raise SocketMisconfigured("kernel supplementary groups are malformed")

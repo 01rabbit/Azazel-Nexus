@@ -426,6 +426,46 @@ def test_every_installed_daemon_account_is_a_daemon_account():
     assert set(SERVICE_ACCOUNTS) <= set(DAEMON_ACCOUNTS)
 
 
+def test_every_unit_account_is_a_daemon_account():
+    """A new unit account cannot be forgotten: it would become an operator elsewhere."""
+    import re
+    from pathlib import Path
+
+    from azazel_nexus_runtime import hardening
+    from azazel_nexus_runtime.principal import DAEMON_ACCOUNTS
+
+    root = Path(__file__).resolve().parents[2]
+    unit_users = set()
+    for unit in sorted((root / "packaging/systemd").glob("*.service")):
+        unit_users |= set(re.findall(r"^User=(\S+)$", unit.read_text(encoding="utf-8"), re.MULTILINE))
+    profiles = hardening.PROFILES.values() if isinstance(hardening.PROFILES, dict) else hardening.PROFILES
+    profile_users = {profile.account for profile in profiles}
+    assert unit_users and profile_users
+    assert (unit_users | profile_users) - {"root"} <= set(DAEMON_ACCOUNTS)
+
+
+def test_root_supplementary_operator_group_never_makes_root_an_operator():
+    operator_gid = 4242
+    policy = PrincipalPolicy(operator_gid=operator_gid, service_uids=frozenset())
+    assert policy.classify(0, 0, 1, (operator_gid,)).classes == frozenset({PrincipalClass.ROOT})
+    # A root whose primary group is the operator group keeps the earlier behaviour.
+    assert PrincipalClass.OPERATOR in policy.classify(0, operator_gid, 1).classes
+
+
+def test_unavailable_peer_groups_are_reported_and_grant_nothing(capsys):
+    import errno
+
+    from azazel_nexus_runtime import principal
+
+    class Refusing:
+        def getsockopt(self, *args):
+            raise OSError(errno.ERANGE, "too many groups")
+    if principal._peergroups_option(__import__("socket")) is None:
+        pytest.skip("no SO_PEERGROUPS option on this platform")
+    assert principal.peer_supplementary_groups(Refusing()) == ()
+    assert "peer supplementary groups unavailable: ERANGE" in capsys.readouterr().err
+
+
 def test_resolve_marks_daemon_accounts_that_exist(monkeypatch):
     import types
 
