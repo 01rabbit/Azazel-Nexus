@@ -213,6 +213,17 @@ def test_restore_without_live_verified_lease_withdraws(state):
                           lease=lease).state is state
 
 
+@pytest.mark.parametrize("state", [
+    BrokerState.STAGED, BrokerState.ADMITTED, BrokerState.OBSERVE_ONLY,
+    BrokerState.APPROVAL_PENDING, BrokerState.ACTIVE_BOUNDED,
+])
+def test_restore_without_a_manifest_binding_is_disabled(state):
+    restored_record = restore_record("sensor-one", state, None, NOW, now=NOW,
+                                     lease=verified_lease())
+    assert restored_record.state is BrokerState.DISABLED
+    assert restored_record.manifest_digest is None
+
+
 def test_lease_watchdog_and_audit_binding():
     lease = verified_lease()
     record = restored(BrokerState.APPROVAL_PENDING)

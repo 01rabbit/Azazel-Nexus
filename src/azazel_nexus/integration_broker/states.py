@@ -199,6 +199,14 @@ def restore_record(adapter_id, state, manifest_digest, since, *, now, lease=None
     """Explicit persistence boundary; pending/active restore fails toward withdrawal."""
     if not _aware(now):
         raise TransitionRefused("invalid_time")
+    # A state that rests on an admitted manifest cannot be restored without
+    # one: with no binding there is nothing to stand on, so it is DISABLED.
+    if not manifest_digest and state in {
+        BrokerState.STAGED, BrokerState.ADMITTED, BrokerState.OBSERVE_ONLY,
+        BrokerState.APPROVAL_PENDING, BrokerState.ACTIVE_BOUNDED,
+    }:
+        return AdapterRecord(adapter_id, BrokerState.DISABLED, None, since,
+                             _authority=_CONSTRUCTION)
     if state in {BrokerState.ACTIVE_BOUNDED, BrokerState.APPROVAL_PENDING}:
         if not _valid_lease(lease, adapter_id, manifest_digest, now):
             state = BrokerState.WITHDRAWING
