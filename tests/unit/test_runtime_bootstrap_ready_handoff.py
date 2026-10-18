@@ -5,6 +5,7 @@ Publication, admission and containment are synthetic; this is not live systemd.
 
 import pytest
 
+import azazel_nexus_runtime.bootstrap_manager as manager_module
 from azazel_nexus_runtime.units import UnitKey, UnitOperationFailed
 import test_runtime_bootstrap as supervisor_tests
 from test_runtime_bootstrap import Harness
@@ -24,6 +25,9 @@ def test_supervisor_requires_real_ready_before_audit_intent_and_start(
         bus.owner_drift_at = 4
     elif failure == "pending":
         bus.ready_after = 10000
+        # READY never arrives; what matters is the refusal at the READY bound,
+        # not waiting the production 25 s for it.
+        monkeypatch.setattr(manager_module, "READY_TOTAL_SECONDS", 0.5)
     h = Harness(evidence)
     phases = []
     advance = h.supervisor._advance_grant
