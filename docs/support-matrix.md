@@ -219,10 +219,22 @@ over the behaviour it forbids.
 An entry may be added only when **every** field below is present and evidenced.
 A partial entry is not a provisional qualification; it is not an entry.
 
+[Inventory confidentiality](inventory-confidentiality.md) governs every field
+below. Composite identity is collected and verified **only in the encrypted
+commissioning record**; the matrix, repository, issue, audit and evidence bundle
+must not reproduce raw MACs, serials, asset numbers, detailed NIC/kernel
+inventory or other raw identities. An outward entry identifies the DUT only by
+an operator-approved anonymous host ID and, when correlation is necessary,
+TPM/commissioning-secret-bound HMAC fingerprints. A bare hash is not a substitute.
+Use protected references and sanitised class facts for the requirements below;
+the detailed source never becomes a public matrix row or a raw bundle attachment.
+See [HIL evidence records](hil-evidence-records.md) for the protected-source and
+export boundary. This changes no qualification requirement and adds no entry.
+
 ### 5.1 Composite identity
 
-The machine and its relevant devices are identified by composite identity — the
-same discipline [commissioning](commissioning.md) §3 requires for interfaces —
+Within that protected record, the machine and its relevant devices are
+identified by composite identity — the same discipline [commissioning](commissioning.md) §3 requires for interfaces —
 never by a marketing model name alone and never by a MAC address alone:
 
 - system vendor, product name, family, and firmware-reported SKU;
@@ -253,8 +265,8 @@ A machine whose firmware version differs is a **different** entry until tested.
 - the resource profile selected, and the capability the four-dimension
   intersection actually produced on this machine — including which capabilities
   were **unavailable** and why;
-- the interface inventory as observed, and which logical roles were
-  commissionable;
+- a protected reference to the interface inventory as observed, and a
+  sanitised summary of which logical roles were commissionable;
 - the observation interface's transmit count across link flap, suspend/resume,
   and driver reload — the required value is **zero**
   ([commissioning](commissioning.md) §5);
@@ -265,7 +277,8 @@ A machine whose firmware version differs is a **different** entry until tested.
 
 ### 5.4 Evidence link
 
-- a link to the hardware-in-the-loop record containing the measurements above;
+- a link to the sanitised hardware-in-the-loop report and attested bundle
+  referencing the protected evidence, never an attachment of raw inventory;
 - the date of the test and the exact artifact versions tested;
 - who performed it, and the independent confirmation the program requires;
 - the owner ratification record in which the entry was accepted;

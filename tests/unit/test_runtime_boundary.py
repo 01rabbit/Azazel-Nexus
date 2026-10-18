@@ -209,7 +209,10 @@ EXPECTED_SCRIPTS = (
 #: every node describing work no node performs.
 # az-nexus-bootstrap prepares only administrator-selected generation files;
 # it is not a daemon, unit, widening backend or service-start command.
-OPERATOR_TOOLS = ("az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap")
+OPERATOR_TOOLS = (
+    "az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap",
+    "az-hil-readiness", "az-hil-capture",
+)
 
 
 @pytest.mark.parametrize("option", ["--root", "--generation", "--expected-context"])

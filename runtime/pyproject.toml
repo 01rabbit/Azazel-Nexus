@@ -44,5 +44,8 @@ az-mio-entryd = "azazel_nexus_runtime.mio_entryd:main"
 az-knowledge-lited = "azazel_nexus_runtime.knowledge_lited:main"
 az-core-reserve-probe = "azazel_nexus_runtime.core_reserve_probe:main"
 
+az-hil-readiness = "azazel_nexus_runtime.hil_readiness:main"
+az-hil-capture = "azazel_nexus_runtime.hil_capture:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
