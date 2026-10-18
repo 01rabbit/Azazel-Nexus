@@ -81,6 +81,7 @@ __all__ = [
     "RESERVE_MAX_BYTES",
     "RESERVE_RECORD_PATH",
     "RESERVE_SCHEMA",
+    "RESERVE_SCHEMA_V2",
     "ReserveRecord",
     "ReserveRefused",
     "Sample",
@@ -94,6 +95,7 @@ __all__ = [
 #: refused rather than read leniently: a reader that guesses at an unknown
 #: version is a reader that will one day interpret a field it does not have.
 RESERVE_SCHEMA = "azazel-nexus/core-reserve/1"
+RESERVE_SCHEMA_V2 = "azazel-nexus/core-reserve/2"
 
 #: Where a measurement would live on a node. Runtime state, never packaged.
 RESERVE_RECORD_PATH = Path("/var/lib/azazel/run/core-reserve.json")
@@ -165,6 +167,10 @@ class ReserveRecord:
     #: The subsystems observed to be active for the whole run.
     subsystems_active: tuple[str, ...]
     samples: tuple[Sample, ...]
+    boot_fingerprint: str | None = None
+    run_sequence: int | None = None
+    build_commit: str | None = None
+    kernel_release: str | None = None
 
     @property
     def duration_seconds(self) -> int:
@@ -248,10 +254,10 @@ def parse_record(text: str) -> ReserveRecord:
     ]
     if missing:
         raise ReserveRefused(f"the reserve record is missing {missing}")
-    if document["schema"] != RESERVE_SCHEMA:
+    if document["schema"] not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2):
         raise ReserveRefused(
             f"the reserve record names schema {document['schema']!r} and this "
-            f"reader knows {RESERVE_SCHEMA!r}; a reader that guesses at an "
+            f"reader knows {RESERVE_SCHEMA!r} and {RESERVE_SCHEMA_V2!r}; a reader that guesses at an "
             "unknown version will one day interpret a field it does not have"
         )
     try:
@@ -293,7 +299,14 @@ def parse_record(text: str) -> ReserveRecord:
     for field in ("host_digest", "harness_version"):
         if not isinstance(document[field], str) or not document[field].strip():
             raise ReserveRefused(f"{field} is not a non-empty string")
+    metadata = {}
+    if document["schema"] == RESERVE_SCHEMA_V2:
+        metadata = {name: document.get(name) for name in (
+            "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
+        )}
+        _validate_v2_metadata(document)
     return ReserveRecord(
+        **metadata,
         schema=document["schema"],
         provenance=provenance,
         profile=profile,
@@ -308,6 +321,13 @@ def validate(record: ReserveRecord) -> Validation:
     """Every reason this record may not be used as the Core reserve."""
 
     refusals: list[str] = []
+    if record.schema not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2):
+        refusals.append("unknown reserve schema")
+    if record.schema == RESERVE_SCHEMA_V2:
+        try:
+            _validate_v2_metadata(vars(record))
+        except ReserveRefused as exc:
+            refusals.append(str(exc))
     if record.provenance is not Provenance.MEASURED:
         refusals.append(
             f"the record declares itself {record.provenance.value!r}; only a "
@@ -387,7 +407,13 @@ def load_reserve(path: Path = RESERVE_RECORD_PATH) -> Optional[CoreReserve]:
 def record_as_document(record: ReserveRecord) -> Mapping[str, object]:
     """The record as the harness writes it. The inverse of `parse_record`."""
 
+    metadata = {}
+    if record.schema == RESERVE_SCHEMA_V2:
+        metadata = {name: getattr(record, name) for name in (
+            "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
+        )}
     return {
+        **metadata,
         "schema": record.schema,
         "provenance": record.provenance.value,
         "profile": record.profile.value,
@@ -409,11 +435,21 @@ def build_record(
     harness_version: str,
     subsystems_active: Sequence[str],
     samples: Sequence[Sample],
+    boot_fingerprint: str | None = None,
+    run_sequence: int | None = None,
+    build_commit: str | None = None,
+    kernel_release: str | None = None,
 ) -> ReserveRecord:
-    """Assemble a record at the current schema. Used by the harness and by tests."""
+    """Assemble v2 with campaign metadata, or v1 for legacy callers."""
 
     return ReserveRecord(
-        schema=RESERVE_SCHEMA,
+        schema=(RESERVE_SCHEMA_V2 if any(value is not None for value in (
+            boot_fingerprint, run_sequence, build_commit, kernel_release
+        )) else RESERVE_SCHEMA),
+        boot_fingerprint=boot_fingerprint,
+        run_sequence=run_sequence,
+        build_commit=build_commit,
+        kernel_release=kernel_release,
         provenance=provenance,
         profile=profile,
         host_digest=host_digest,
@@ -421,3 +457,25 @@ def build_record(
         subsystems_active=tuple(subsystems_active),
         samples=tuple(samples),
     )
+
+
+def _validate_v2_metadata(document: Mapping[str, object]) -> None:
+    """V2 metadata must be complete; a v1 record retains its original rules."""
+
+    prefix = "hmac-sha256:"
+    for field in ("boot_fingerprint", "host_digest"):
+        fingerprint = document.get(field)
+        if (not isinstance(fingerprint, str) or not fingerprint.startswith(prefix)
+                or len(fingerprint.removeprefix(prefix)) != 64
+                or any(c not in "0123456789abcdef" for c in fingerprint.removeprefix(prefix))):
+            raise ReserveRefused(f"{field} is not a full HMAC fingerprint")
+    sequence = document.get("run_sequence")
+    if type(sequence) is not int or sequence < 1:
+        raise ReserveRefused("run_sequence is not a positive integer")
+    commit = document.get("build_commit")
+    if (not isinstance(commit, str) or len(commit) not in (40, 64)
+            or any(c not in "0123456789abcdef" for c in commit)):
+        raise ReserveRefused("build_commit is not a full commit identifier")
+    kernel = document.get("kernel_release")
+    if not isinstance(kernel, str) or not kernel.strip() or len(kernel) > 256:
+        raise ReserveRefused("kernel_release is not a non-empty bounded string")

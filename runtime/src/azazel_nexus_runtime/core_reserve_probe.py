@@ -59,7 +59,6 @@ writer of `MEASURED`, and `tests/unit/test_core_reserve.py` asserts that no
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -80,7 +79,7 @@ from azazel_nexus.core_reserve import (
     record_as_document,
     validate,
 )
-from azazel_nexus.resource_profile import ResourceProfile, read_usable_mib, select_profile
+from azazel_nexus.resource_profile import read_usable_mib, select_profile
 
 __all__ = [
     "CGROUP_CURRENT",
@@ -99,7 +98,7 @@ __all__ = [
 #: Identifies this sampler in every record it writes. A record from a harness
 #: whose sampling changed must be identifiable rather than silently comparable
 #: with one from another.
-HARNESS_VERSION = "core-reserve-probe/1"
+HARNESS_VERSION = "core-reserve-probe/2"
 
 #: The cgroup the Azazel units live in, and the kernel's own accounting. Both
 #: fixed in code; neither can be supplied.
@@ -149,6 +148,8 @@ class Readers:
     )
     usable_mib: Callable[[], int] = lambda: read_usable_mib(MEMINFO)
     sleep: Callable[[float], None] = time.sleep
+    identity: Callable[[], dict] = lambda: _identity()
+    run_sequence: Callable[[], int] = lambda: next_sequence()
 
 
 def _active(readers: Readers, unit: str) -> bool:
@@ -198,6 +199,11 @@ def measure(readers: Optional[Readers] = None) -> object:
     except Exception as exc:  # noqa: BLE001 - any read failure is a refusal
         raise MeasurementRefused(f"the memory class could not be read: {exc}") from exc
     profile = select_profile(usable_before)
+    try:
+        identity = readers.identity()
+        sequence = readers.run_sequence()
+    except Exception as exc:
+        raise MeasurementRefused("run identity/key/build metadata unavailable") from exc
 
     samples: list[Sample] = []
     for index in range(SAMPLE_COUNT):
@@ -232,10 +238,14 @@ def measure(readers: Optional[Readers] = None) -> object:
             "all of one class; the reserve is per class"
         )
 
+    if readers.identity() != identity:
+        raise MeasurementRefused("boot or build identity changed during the run")
+
     record = build_record(
         provenance=Provenance.MEASURED,
         profile=profile,
-        host_digest=_host_digest(usable_before, profile),
+        **identity,
+        run_sequence=sequence,
         harness_version=HARNESS_VERSION,
         subsystems_active=REQUIRED_SUBSYSTEMS,
         samples=samples,
@@ -252,21 +262,32 @@ def measure(readers: Optional[Readers] = None) -> object:
     return record
 
 
-def _host_digest(usable_mib: int, profile: ResourceProfile) -> str:
-    """Identify the node without describing it.
+def _identity() -> dict:
+    from .hil_readiness import run_identity
 
-    Enough to tell two hosts' records apart and to notice a record that
-    travelled, and no more: a record that carried a host's inventory would be
-    a record that leaks one when it is copied to a ticket.
-    """
+    return run_identity()
 
-    material = f"{usable_mib}:{profile.value}".encode("utf-8")
-    return "sha256:" + hashlib.sha256(material).hexdigest()
+
+def next_sequence(directory: Path = RESERVE_RECORD_PATH.parent) -> int:
+    """Read the immutable run archive; publication refuses a concurrent collision."""
+
+    sequences = [0]
+    for path in directory.glob("core-reserve-run-*.json"):
+        sequence = path.stem.removeprefix("core-reserve-run-")
+        if sequence.isdigit():
+            sequences.append(int(sequence))
+    return max(sequences) + 1
 
 
 def write_record(record, path: Path = RESERVE_RECORD_PATH) -> Path:
-    """Write the record atomically, with no window on a partial one."""
+    """Publish an immutable run; never overwrite a previous measurement.
 
+    The legacy admission path is deliberately not promoted by this sampler.
+    Campaign validation/attestation must precede operator promotion there.
+    """
+
+    if record.run_sequence is not None:
+        path = path.parent / f"core-reserve-run-{record.run_sequence:08d}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(record_as_document(record), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
@@ -278,7 +299,13 @@ def write_record(record, path: Path = RESERVE_RECORD_PATH) -> Path:
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
+        os.link(temporary, path)
+        os.unlink(temporary)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -305,11 +332,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.parse_args(argv)
     try:
-        record = measure()
-    except MeasurementRefused as refusal:
-        print(f"refused: {refusal}", file=sys.stderr)
+        from .hil_readiness import ReadOnlySystemd
+
+        with ReadOnlySystemd() as manager:
+            record = measure(Readers(call=manager))
+        path = write_record(record)
+    except Exception:  # noqa: BLE001 - no host details in terminal diagnostics
+        print("refused: subsystem observation, run identity, sampling or publication failed", file=sys.stderr)
         return 2
-    path = write_record(record)
     print(
         f"recorded {len(record.samples)} samples over {record.duration_seconds}s "
         f"on the {record.profile.value!r} class to {path}"
