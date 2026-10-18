@@ -193,7 +193,9 @@ def test_schema_names_exist_in_code():
     seen = set()
     for path, fenced, inline in _documents():
         for text in (*fenced, *inline):
-            for schema in re.findall(r"azazel-nexus/[a-z0-9][a-z0-9/._-]*[a-z0-9]", text):
+            # A schema/domain is never part of a filesystem path such as
+            # /opt/azazel-nexus/venv/bin/...; a preceding "/" or word char excludes it.
+            for schema in re.findall(r"(?<![/\w-])azazel-nexus/[a-z0-9][a-z0-9/._-]*[a-z0-9]", text):
                 seen.add(schema)
                 if schema in COMPOSED_DOMAINS:
                     key, value = b"k" * 32, "v"

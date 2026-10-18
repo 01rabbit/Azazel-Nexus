@@ -11,8 +11,9 @@ image, persistence mode, machine, or release has been tested.
 self-contained installer. The project has two Python distributions:
 
 - `azazel-nexus` provides the `azazel-nexus` operator CLI;
-- `azazel-nexus-runtime` provides the eight service entrypoints named by the
-  packaged systemd units and depends on `azazel-nexus`.
+- `azazel-nexus-runtime` provides the ten service entrypoints named by the
+  packaged systemd units, plus the `az-mio-identity` pre-start helper of
+  `azazel-mio-locald`, and depends on `azazel-nexus`.
 
 Both must already be installed in a Python environment. The systemd units
 execute fixed wrappers under `/usr/libexec/azazel`; ordinary Python installs
@@ -59,7 +60,8 @@ For a real host installation, all of the following must hold:
   `/opt/azazel-nexus/venv`;
 - root privileges, `useradd`, `groupadd`, `install`, and a running systemd
   manager at `/run/systemd/system`;
-- the runtime distribution and all eight module entrypoints are importable
+- the runtime distribution and all eleven module entrypoints (ten services and
+  the locald identity pre-start) are importable
   from that Python environment (the staging tool checks this before writing).
 
 The runtime distribution now includes a small Linux C extension for its fixed

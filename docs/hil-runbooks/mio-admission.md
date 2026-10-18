@@ -176,22 +176,47 @@ SOCK=/var/lib/azazel/mio/embedding.sock
 MODEL=/var/lib/azazel/models/store/<64-hex model digest>.gguf
 test ! -e "$SOCK"
 START=$(date +%s%N)
+# The full azazel-mio-locald hardening set, so the measurement runs under the
+# same sandbox the admitted server will get (seccomp, MDWE, namespaces, limits).
 systemd-run --unit=az-hil-embedding --uid=azmio --gid=azmio \
   -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=40% -p TasksMax=64 \
+  -p LimitFSIZE=16777216 -p UMask=0027 \
   -p PrivateNetwork=yes -p IPAddressDeny=any -p RestrictAddressFamilies=AF_UNIX \
-  -p NoNewPrivileges=yes -p UMask=0027 \
+  -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes \
+  -p PrivateDevices=yes -p ProtectKernelTunables=yes -p ProtectKernelModules=yes \
+  -p ProtectControlGroups=yes -p RestrictNamespaces=yes -p RestrictSUIDSGID=yes \
+  -p LockPersonality=yes -p MemoryDenyWriteExecute=yes -p SystemCallArchitectures=native \
+  -p SystemCallFilter=@system-service -p CapabilityBoundingSet= -p AmbientCapabilities= \
+  -p ReadWritePaths=/var/lib/azazel/mio -p ReadOnlyPaths=/var/lib/azazel/models \
   /usr/libexec/azazel/llama-server -m "$MODEL" --host "$SOCK" -c 2048 -t 2 --no-webui \
   -n 256 --embedding --pooling cls -ub 2048 -b 2048 -ngl 0
-until curl -sf --unix-socket "$SOCK" http://localhost/health | grep -Eq '"status": ?"ok"'; do
-  [ $(( ($(date +%s%N) - START) / 1000000 )) -lt 120000 ] || { echo startup-timeout; break; }
-  sleep 0.05
-done
-echo "startup_ms $(( ($(date +%s%N) - START + 999999) / 1000000 ))"
-while IFS= read -r query; do
-  body=$(python3 -c 'import json, sys; print(json.dumps({"input": [sys.argv[1]]}))' "$query")
-  curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --unix-socket "$SOCK" \
-    -H 'Content-Type: application/json' -d "$body" http://localhost/v1/embeddings
-done < queries.txt > retrieval-latency.txt
+# Debian minimal has no curl: a stdlib AF_UNIX HTTP client measures health and latency.
+python3 - "$SOCK" "$START" queries.txt > retrieval-latency.txt <<'PY'
+import json, socket, sys, time
+sock, start_ns, queries = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+def call(method, path, body=b""):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sock)
+    head = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
+    s.sendall(head + body); data = b""
+    while chunk := s.recv(65536):
+        data += chunk
+    s.close(); return int(data.split(b" ", 2)[1]), data
+while True:
+    try:
+        if call("GET", "/health")[0] == 200:
+            break
+    except OSError:
+        pass
+    if time.time_ns() - start_ns > 120_000_000_000:
+        print("startup-timeout", file=sys.stderr); sys.exit(1)
+    time.sleep(0.05)
+print("startup_ms", -(-(time.time_ns() - start_ns) // 1_000_000), file=sys.stderr)
+for query in open(queries, encoding="utf-8").read().splitlines():
+    t = time.perf_counter()
+    code, _ = call("POST", "/v1/embeddings", json.dumps({"input": [query]}).encode())
+    print(code, f"{time.perf_counter() - t:.6f}")
+PY
 PID=$(systemctl show -p MainPID --value az-hil-embedding.service)
 grep VmHWM "/proc/$PID/status"
 cat /sys/fs/cgroup/system.slice/az-hil-embedding.service/memory.peak
@@ -206,6 +231,14 @@ rm -f "$SOCK"
 - A run **fails** on `startup-timeout` (locald's 120-second startup bound), any
   response code other than `200`, any nonzero `oom`/`oom_kill`, a unit result
   other than success, or a mismatch of `sha256sum` of the binary or model.
+- Measure on a cold page cache: run 5.2 first after each boot, before anything
+  else reads the model (or `sync; echo 3 > /proc/sys/vm/drop_caches` as root
+  immediately before). With a warm cache the cgroup `memory.peak` under-counts
+  the mapped model (observed 143 MiB warm vs 759 MiB cold in a container
+  rehearsal), and §6.3 takes the larger of `VmHWM` and `memory.peak`.
+- Installed console scripts live in the venv (e.g.
+  `/opt/azazel-nexus/venv/bin/az-nexus-model-admission`); `sudo` does not search
+  it, so call them by full path.
 - What is measured: `startup_ms` is exec to first healthy `/health` over AF_UNIX;
   retrieval latency is the client-observed query-embedding request
   (`POST /v1/embeddings`) over AF_UNIX. Library cosine ranking is not included
@@ -530,10 +563,11 @@ never a node configuration. The pull request must attach, sanitized:
 3. `request.out`, the ceremony record with the §10 checklist sign-off by P and V,
    the OpenSSL verification line and `check-wrapper` output.
 4. The DUT `verify` output (`embedding -> refused:ADMISSION_DISABLED`).
-5. Evidence that `azazel-mio-locald` (user `azmio`) can read every loader input.
-   **Known blocker:** `operator_enrollment` writes `operators.json` root 0600,
-   which `azmio` cannot read, so locald would refuse; this needs its own
-   reviewed change first. Activation and the CLI run as root and are unaffected.
+5. Evidence that `azazel-mio-locald` (user `azmio`) can read every loader input:
+   `stat -c '%U:%G %a' /etc/azazel/operator-trust /etc/azazel/operator-trust/operators.json`
+   shows `root:azmission-read 750` / `640` (enrollment writes these modes and the
+   installer migrates older 0700/0600 stores), and the locald audit after a
+   restart reports the same per-role symbol as the root `verify` output.
 6. Confirmation that no measured record, key or approval is committed.
 
 After merge and installation on the DUT, `verify` must print
@@ -575,19 +609,29 @@ What may be rehearsed on an x86_64 VM:
 
 - `packaging/install.sh --llama-runtime` with the pinned amd64 binary
   (an aarch64 VM refuses the amd64 digest).
-- The identity pre-start: with a VM-only commissioning key,
+- The identity pre-start: with a VM-only commissioning key and a root-owned
+  `/usr/share/azazel/build-commit` (§3.2),
   `sudo /usr/libexec/azazel/az-mio-identity` writes
-  `/run/azazel-mio-identity/node-identity` (root:azmio 0640).
+  `/run/azazel-mio-identity/node-identity` (root:azmio 0640). Without either it
+  exits 0 and writes nothing while the kill switch is off.
 - `az-nexus-model-admission verify --role embedding` →
   `embedding -> refused:ADMISSION_DISABLED`.
 - `az-nexus-model-admission request --role embedding` refusals in check order:
-  `EVIDENCE_REFUSED` without a policy, `POLICY_REFUSED` for an unlisted or
+  `EVIDENCE_REFUSED` without a policy, a missing operator-trust store or a missing
+  Mission Pack file, `POLICY_REFUSED` for an unlisted or
   unenrolled operator, `WRONG_ARCHITECTURE`, `NODE_IDENTITY_UNAVAILABLE`
   without a commissioning key, then `RESERVE_VIRTUALIZATION_OBSERVED`.
 - `az-core-reserve-probe` refusing (missing subsystems, or
   `refused: RESERVE_VIRTUALIZATION_OBSERVED`).
 - `tools.hil_evidence` bundle/lint/sign/verify, the §11 OpenSSL commands and
   `check-wrapper` with throwaway keys and dummy payloads.
+
+The same mechanics can be rehearsed without a VM in a privileged Debian trixie
+container running systemd as PID 1 (aarch64 on Apple Silicon): there the loader
+stops at `WRONG_ARCHITECTURE`, and only with the admitted architecture changed in
+a throwaway installed copy does it reach `NODE_IDENTITY_UNAVAILABLE` and then
+`RESERVE_VIRTUALIZATION_OBSERVED`. Never change the architecture or the kill
+switch in the repository for a rehearsal.
 
 A VM that happens to report no virtualization signal is still a VM:
 `virtualization_not_observed` is a negative filter, not proof of hardware.
