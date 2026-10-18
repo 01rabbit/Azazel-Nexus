@@ -175,7 +175,7 @@ def test_json_and_next_registration(tmp_path, fixture_host, monkeypatch):
         assert doc["hg05"] == "unmeasured"
         assert doc["provider_admission"] == "blocked"
         assert doc["enforcement_readiness"] == "not-established"
-        assert len(doc["steps"]) == (1 if next_only else 13)
+        assert len(doc["steps"]) == (1 if next_only else 14)
         assert doc["steps"][0]["name"] == "installed-files"
     out = StringIO()
     assert main(["setup", "--next"], out=out) == 0

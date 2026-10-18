@@ -262,6 +262,10 @@ def _render_integration(view: IntegrationView, out: TextIO) -> None:
     print(f"enforcement capable: {'yes' if view.enforcement_capable else 'no'}", file=out)
     print(f"baseline ready: {'yes' if view.baseline_ready else 'no'}", file=out)
     print("continuing regardless: " + ", ".join(view.continues), file=out)
+    from .broker_cli import status_summary as broker_status
+    broker = broker_status(now=_now())
+    print("Integration broker (informational): " + broker["status_level"]
+          + "; Core deterministic; transport unavailable: Fabric#25", file=out)
 
 
 def _report(
@@ -718,6 +722,9 @@ def main(
     from .operator_flow_cli import add_parser as add_setup_parser
     add_setup_parser(sub)
 
+    from .broker_cli import add_parser as add_broker_parser
+    add_broker_parser(sub)
+
     sub.add_parser("inventory", help="read-only hardware and interface list")
     sub.add_parser("profile", help="measured RAM and the profile it selects")
     sub.add_parser("status", help="everything above, as it currently stands")
@@ -804,6 +811,10 @@ def main(
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command == "broker":
+        from .broker_cli import run as run_broker
+        return run_broker(args, now=_now(), out=stream)
 
     if args.command == "setup":
         from .operator_flow_cli import run as run_setup

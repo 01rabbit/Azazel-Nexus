@@ -213,6 +213,16 @@ def collect(args, *, now, root=None):
             + "; no enforcement readiness established", unit_command)
     unit_command = "systemctl status " + " ".join(units) + " --no-pager"
     _observation(observations, "activation-units", unit_state, unit_command)
+    from .broker_cli import status_summary as broker_status
+    try:
+        broker = broker_status(now=now, root=root)
+        detail = broker["status_level"]
+    except Exception:  # noqa: BLE001 - optional broker never blocks CORE
+        detail = "CORE; local broker state refused"
+    observations["integration-broker"] = Observation(
+        State.OPTIONAL, "Integration broker: " + detail
+        + "; informational; Core deterministic; no enforcement readiness",
+        "azazel-nexus broker status")
     return observations
 
 
