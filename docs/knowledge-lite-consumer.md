@@ -144,6 +144,13 @@ A caller supplies none of it.
 | `/data/azazel/knowledge-lite/quarantine` | refused artifacts, held | the import service | one file per refusal |
 | `/data/azazel/knowledge-lite/state/watermark` | the anti-rollback counter | the import service | one integer |
 
+The import creates `admitted/`, `state/` and `quarantine/` as `0750` (keeping
+an inherited setgid bit) and removes group/other write from any it finds
+loosened, whatever the importer's umask. Under the setgid operator-group store
+root, a group-writable `admitted/` or `state/` would let any member swap in an
+older validly signed bundle or remove the watermark: serving re-verifies the
+signature, not the version (#186). Files are written `0600`.
+
 ### The caller chooses an entry, and chooses nothing else
 
 `import_entry` takes an **inbox entry id** and an instant. Not a cache root,

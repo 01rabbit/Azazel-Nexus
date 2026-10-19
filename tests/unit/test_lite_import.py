@@ -618,3 +618,43 @@ def test_counting_quarantined_artifacts_never_opens_one(node) -> None:
     reading = service.read(query_as_of=FRESH)
     assert reading.overall == "quarantined"
     assert "2 artifact(s)" in reading.reason
+
+
+# -- store directory modes do not depend on the importer's umask (#186) -----
+
+
+def _write_bits(path: Path) -> int:
+    return path.stat().st_mode & 0o022
+
+
+@pytest.mark.parametrize("bundle,leaves", [
+    ("lite.tar.gz", ("admitted", "state")),
+    ("negative/corrupt-signature.tar.gz", ("quarantine",)),
+])
+def test_store_directories_are_not_group_writable_under_a_loose_umask(node, bundle, leaves) -> None:
+    # Debian's default user umask; an operator-run import used to inherit it.
+    import os
+
+    service, _, root = node(bundle)
+    previous = os.umask(0o002)
+    try:
+        _import_only_entry(service)
+    finally:
+        os.umask(previous)
+    for leaf in leaves:
+        assert (root / leaf).is_dir()
+        assert _write_bits(root / leaf) == 0, f"{leaf} is group/other-writable"
+    for written in root.rglob("*"):
+        if written.is_file() and written.parent.name in leaves:
+            assert written.stat().st_mode & 0o077 == 0
+
+
+def test_a_loosened_store_directory_is_tightened_and_keeps_setgid(node) -> None:
+    # A store left behind by an import before the fix.
+    service, _, root = node("lite.tar.gz")
+    (root / "admitted").mkdir()
+    (root / "admitted").chmod(0o2775)
+    _import_only_entry(service)
+    mode = (root / "admitted").stat().st_mode
+    assert mode & 0o022 == 0
+    assert mode & 0o2000, "setgid must be kept so the group can still read"
