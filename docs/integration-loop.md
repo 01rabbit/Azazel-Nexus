@@ -692,7 +692,8 @@ nothing in intake, detection or Edge's observe-only decisions.
   stop carry intake times and fall inside or outside the window together.
   A separate worker drains a 256-entry memory queue; full queues drop newest.
   Each exchange has a 2 s total deadline. A refusal from auditd
-  (`principal_denied`, `argument_*`, schema refusals and the like) is final
+  (`principal_denied`, `argument_*`, schema refusals, `rate_limited` and the
+  like; see "Audit chain limits" below) is final
   for that record: it is dropped at once and counted in
   `audit_forward_refused`. Only delivery failures (connection, timeout,
   malformed reply, auditd's read deadline) retry, after 0.5, 1 and 2 s; the
@@ -709,6 +710,82 @@ nothing in intake, detection or Edge's observe-only decisions.
   ledger consumption or explanations. Auditd's existing cross-segment verifier
   and CLI health ledger verification accept these typed records. No ledger
   events are manufactured for history skipped during initial seeding.
+
+#### Audit chain limits (#211 S3)
+
+auditd never deletes a segment: what the chain keeps, and for how long, is an
+owner decision that has not been made. What auditd does bound is how fast one
+writer can make it grow. Each `audit.append` from a non-root principal spends a
+token from a bucket keyed on the kernel-derived (`SO_PEERCRED`) uid, the event
+type and, for incident records, a tier: **severe** when `most_severe` is 2 or
+below (Edge's isolate/redirect range, as in intake), otherwise **ordinary**.
+Incident records also count against a per-uid daily cap (auditd's UTC day).
+Over either limit the request is refused with `rate_limited` (detail `rate` or
+`daily`) and nothing is appended. For the explainer that is a final refusal:
+it is dropped at once and counted in `audit_forward_refused`, not retried, and
+nothing latches.
+
+| Limit | Default | What it covers upstream |
+| --- | --- | --- |
+| Incident bucket, per (uid, `edge.incident.*` type, tier) | burst 2048, refill 10/s (600/min) | Openings: 60/min ordinary, 30/min severe. Escalations: at most seven ordinary falls per incident, so at most 420/min. Closes follow openings, plus a whole 1024-incident table closing at once |
+| Other non-root writers, per (uid, event type) | burst 256, refill 0.1/s (6/min) | Unit grants and commissioning reads are rare transitions; 256 covers every interface ordinal at once |
+| Incident daily cap, per uid | 524,288 records a UTC day | A whole day with every upstream budget saturated is about 330,000; the normal ~10–16 MiB/day is about 30,000–45,000 |
+| Severe reserve inside the daily cap | the last 65,536 | Ordinary records stop at 458,752; severe openings, escalations and closes can use the rest |
+| `audit.rate_limited` summaries | one per (uid, type, tier, limit) per 300 s; at most 1024 a day | — |
+| root (`audit.bootstrap.append`, root `audit.append`) | not limited | A handful of bootstrap records per start; root does not need this socket to fill a disk |
+
+- **No starvation.** Severe and ordinary records have separate buckets, and
+  openings, escalations and closes each have their own, so a flood of ordinary
+  openings exhausts only the ordinary-opening bucket: severe records, and the
+  closes of incidents already opened, are still written. At the daily cap the
+  ordinary records stop first and severe ones continue into the reserve. The
+  tier is the writer's own claim: a compromised explainer can call every
+  record severe, and then only the total cap bounds it. That is the cap's job.
+- **Non-binding in normal operation.** Each bucket refills well above the
+  upstream budget it receives, so the rolling intake budgets never meet it;
+  `tests/unit/test_runtime_auditd_limits.py` drives every budget at once
+  (through the real ledger, and for a whole simulated day through the
+  admission path) and asserts that nothing is refused. The root E2E run
+  (I5) records no `audit.rate_limited` entry.
+- **Visibility without amplification.** A refusal is not written to auditd's
+  `refusals.jsonl` one line at a time (that would move a flood from the chain
+  to that file). Instead auditd counts it, and writes one `audit.rate_limited`
+  chain record per (writer uid, event type, tier, limit) per 300 s carrying the
+  count. The first refusal of a key is summarized at once and the serve loop
+  flushes the rest when the window passes, even if the flood has stopped. At
+  most 1024 summaries a day are written (about 0.4 MiB); past that the counts
+  remain in `audit.verify` and in `rate_limit_summaries_dropped`. Summaries are
+  auditd's own records: `audit.rate_limited` is not a choice of
+  `audit.append`, so no caller can forge or bury one, and they never pass
+  through the limiter. `audit.verify` (operator) also returns the totals since
+  start as `rate_limited` (`<limit>:<event_type>:<tier>` → count).
+- **Restarts.** At startup auditd counts the incident records and summaries
+  already in today's segment, so a restart does not reopen the day's caps. The
+  token buckets restart full; their burst is the bound for that.
+- **Capacity warning, not deletion.** `audit.verify` returns `capacity`:
+  `chain_bytes` (the sum of segment sizes, by `stat`), `segments`,
+  `filesystem_free_bytes` and `warning`. The serve loop re-reads it hourly and,
+  while the chain is at least 1 GiB or the filesystem has less than 1 GiB
+  free, writes one line a day to the journal
+  (`azazel-auditd: audit chain capacity warning: ...`). Nothing is removed.
+  `azazel-nexus status` does not show this yet: it does not talk to auditd's
+  socket and cannot read its `0700` ledger, and a status line needs either a
+  status snapshot leaf (install/hardening change) or an auditd client in the
+  CLI. That remains open in #211.
+- **Not covered here.** Every daemon's `refusals.jsonl` (including auditd's,
+  for refusals other than `rate_limited`) is still unbounded: a writer that
+  sends malformed frames grows it at one line each. That is a runtime-wide
+  property, not the audit chain's, and is left to a separate change.
+
+`/var/lib` capacity estimate. The records with limits and retention total
+about 0.9 GiB (#211). The audit chain has no retention: in normal operation it
+grows about 10–16 MiB a day (roughly 4–6 GiB a year), and with the limits
+above a misbehaving explainer can add at most about 200 MiB a day (524,288
+records of about 400 bytes), plus at most about 3.4 MiB a day for each other
+non-root writer and event type and 0.4 MiB of summaries. The M.I.O. route
+ledger is the other unbounded store (#211 S4). Size `/var/lib` for the normal
+yearly growth plus headroom, and treat the capacity warning as the prompt for
+the owner's retention decision.
 
 ### I4 — redirect to Deception Lite (later)
 

@@ -310,7 +310,15 @@ Auditd accepts only azexplain's bounded incident openings, severity escalations
 and closes. The existing audit verifier accepts these events. Audit forwarding
 uses a separate worker, a 256-entry memory queue and 2 s exchanges. Transport
 failures are retried after 0.5, 1 and 2 s and then dropped; a refusal from
-auditd is dropped at once and counted separately (`audit_forward_refused`).
+auditd is dropped at once and counted separately (`audit_forward_refused`);
+that includes `rate_limited`, auditd's per-writer rate and daily limits, which
+normal operation never reaches. A rising `audit_forward_refused` together with
+`audit.rate_limited` records in the chain means the explainer is writing far
+more than the intake budgets allow: inspect it before anything else. auditd
+never deletes segments; when the chain reaches 1 GiB or its filesystem has
+less than 1 GiB free it logs `audit chain capacity warning` to the journal once
+a day, and `audit.verify` reports `capacity` (see `docs/integration-loop.md`,
+"Audit chain limits").
 Queue overflow, exhausted retries and clean-shutdown abandonment count as
 audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and

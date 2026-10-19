@@ -775,7 +775,9 @@ def test_failed_audit_delivery_backs_off_then_drops_the_head(tmp_path):
 
 
 @pytest.mark.parametrize("refusal", ["principal_denied", "argument_range", "argument_type",
-                                     "undeclared_argument", "missing_argument", "unknown_verb"])
+                                     "undeclared_argument", "missing_argument", "unknown_verb",
+                                     # auditd's rate/daily limit (#211): final, counted, not latched.
+                                     "rate_limited"])
 def test_audit_refusal_is_dropped_at_once_and_counted_apart(tmp_path, refusal):
     calls = []
     def refuse(event):
@@ -811,6 +813,7 @@ def test_server_read_deadline_refusal_is_retried(tmp_path):
 
 
 @pytest.mark.parametrize("reply,refused", [({"ok": False, "refusal": "principal_denied"}, True),
+                                           ({"ok": False, "refusal": "rate_limited"}, True),
                                            ({"ok": False, "refusal": "SECRET 192.0.2.1"}, False),
                                            ({"ok": False, "refusal": "principal_denied", "x": 1}, False)])
 def test_audit_client_carries_only_declared_refusal_reasons(tmp_path, monkeypatch, reply, refused):
@@ -852,7 +855,7 @@ def test_audit_client_carries_only_declared_refusal_reasons(tmp_path, monkeypatc
         assert isinstance(exc.value, client.ServiceRefused) is refused
         assert str(exc.value) == "M.I.O. service refused"
         if refused:
-            assert exc.value.refusal == "principal_denied"
+            assert exc.value.refusal == reply["refusal"]
 
 
 def test_recent_projection_failure_does_not_cost_the_audit_record(tmp_path, monkeypatch):

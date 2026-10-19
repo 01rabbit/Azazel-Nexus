@@ -104,6 +104,9 @@ class Refusal(str, Enum):
     #: A declared verb whose implementation this build does not provide yet.
     #: A fixed refusal rather than an exception, so the daemon keeps serving.
     VERB_UNAVAILABLE = "verb_unavailable"
+    #: The caller is over a declared rate or daily budget for this request
+    #: (auditd, #211). Final for that request; the detail is a fixed word.
+    RATE_LIMITED = "rate_limited"
 
 
 class RequestRefused(Exception):

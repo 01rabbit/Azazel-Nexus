@@ -97,6 +97,7 @@ connection.
 | `principal_denied` | The caller holds no class the verb admits |
 | `read_deadline` | The peer stopped sending and did not close |
 | `verb_unavailable` | The caller was admitted, but this build does not implement the verb yet (`watchdog.probe`, #42); the daemon keeps serving |
+| `rate_limited` | The caller is over auditd's per-writer rate or daily budget (detail `rate` or `daily`); final for that request, summarized in the chain rather than recorded per request (`docs/integration-loop.md`, "Audit chain limits") |
 
 `frame_too_large` is refused **before the body is read**. A ceiling enforced
 after reading everything has already spent the memory it exists to protect.
