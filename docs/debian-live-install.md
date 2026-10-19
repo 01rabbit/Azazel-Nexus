@@ -625,6 +625,10 @@ a malicious root administrator or filesystem rollback.
 Revocation persistence is not immediate withdrawal of an already running
 service. Fresh trust loading, authenticated input validation and the runtime
 narrowing path must still be integrated and tested before making that claim.
+After `revoke`, run `sudo systemctl restart azazel-mio-entryd.service`:
+entryd verifies the M.I.O. profile against a start-time credential copy of this
+store, so until it restarts a LITE/FULL selection signed by the revoked
+operator still applies (see [M.I.O. runtime](mio-runtime.md)).
 No real keys were registered and no host services were changed during tests.
 
 Enrollment validation (2026-10-13): local enrollment/store/trust/activation/
