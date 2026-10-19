@@ -164,7 +164,8 @@ def test_registration_and_only_allowed_connections():
     assert profile.account == "azexplain"
     assert profile.unit_type == "notify"
     assert profile.address_families == ("AF_UNIX",)
-    assert set(profile.supplementary_groups) == {"azincident-read", "azknowledge-read", "azazel-operator"}
+    assert set(profile.supplementary_groups) == {"azincident-read", "azknowledge-read",
+                                                 "azaudit-submit", "azmio-advise"}
     assert "azexplain" in DAEMON_ACCOUNTS and "azexplain" in SYSTEM_ACCOUNTS
     p = PrincipalPolicy(123, frozenset({42}), frozenset({42})).classify(42, 7, 1, (123,))
     assert p.classes == frozenset({PrincipalClass.SERVICE})
@@ -172,7 +173,7 @@ def test_registration_and_only_allowed_connections():
     text = Path(daemon.__file__).read_text()
     tree = ast.parse(text)
     exchanges = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_exchange"]
-    assert {n.args[0].value for n in exchanges} == {"mio-entry", "audit"}
+    assert {n.args[0].value for n in exchanges} == {"mio-advise", "audit-submit"}
     assert len(exchanges) == 2
     assert 'lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S)' in text
     assert not any(isinstance(n, ast.Attribute) and n.attr == "connect" for n in ast.walk(tree))
@@ -190,7 +191,7 @@ def test_fake_socket_servers(tmp_path, monkeypatch):
         monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
         monkeypatch.setattr(client, "peer_credentials", lambda _: (1, os.getuid(), os.getgid()))
         threads, listeners, requests, errors = [], [], [], []
-        for leaf, result in (("mio-entry", handoff()), ("knowledge-read", {"refs": [], "reason_code": "no_context"})):
+        for leaf, result in (("mio-advise", handoff()), ("knowledge-read", {"refs": [], "reason_code": "no_context"})):
             path = runtime_paths.socket_path(leaf)
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -298,6 +299,30 @@ def test_incident_leaf_is_independent_and_files_group_readable(tmp_path):
     assert (leaf.mode, leaf.owner, leaf.group) == (0o2750, "azintake", "azincident-read")
     assert str(incident_segments_dir()).endswith("/var/lib/azazel/edge-incidents")
     assert [p.unit for p in PROFILES if "azincident-read" in p.supplementary_groups] == ["azazel-incident-explaind.service"]
+
+
+def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
+    """#213 O1: azexplain holds no azazel-operator, so it reaches no operator
+    socket leaf and no 2750 operator read area. Its audit and M.I.O. entry
+    paths are dedicated, verb-restricted listeners no other unit can reach."""
+    from azazel_nexus.layout import LAYOUT
+    from azazel_nexus_runtime import auditd, mio_entryd
+    from azazel_nexus_runtime.runtime_paths import socket_group, socket_path
+    profile = next(p for p in PROFILES if p.unit == "azazel-incident-explaind.service")
+    assert "azazel-operator" not in profile.supplementary_groups
+    specs = {s.path: s for s in LAYOUT}
+    for name, owner, group, unit in (
+            ("audit-submit", "azaudit", "azaudit-submit", "azazel-auditd.service"),
+            ("mio-advise", "azmioentry", "azmio-advise", "azazel-mio-entryd.service")):
+        assert socket_path(name).parent.name == name
+        spec = specs[f"/var/lib/azazel/run/{name}"]
+        assert (spec.mode, spec.owner, spec.group) == (0o2710, owner, group)
+        assert socket_group(name) == group
+        # Only the explainer carries the client group; only the owning daemon writes the leaf.
+        assert [p.unit for p in PROFILES if group in p.supplementary_groups] == [profile.unit]
+        assert [p.unit for p in PROFILES if spec.path in p.read_write_paths] == [unit]
+    assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
+    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise",)
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -698,7 +723,7 @@ def test_audit_client_uses_shared_authenticated_bounded_transport(monkeypatch):
     event = {"event_type": "edge.incident.opened", "count": 1}
     receipt = daemon.append_audit(event)
     assert receipt.sequence == 1
-    assert calls == [(("audit", "azaudit", "audit.append", {"event_type": "edge.incident.opened"}),
+    assert calls == [(("audit-submit", "azaudit", "audit.append", {"event_type": "edge.incident.opened"}),
                       {"payload": {"count": 1}, "deadline_s": 2})]
     monkeypatch.setattr(daemon, "_exchange", lambda *a, **kw: {"sequence": True, "event_hash": "SECRET"})
     with pytest.raises(ValueError):
@@ -822,7 +847,7 @@ def test_audit_client_carries_only_declared_refusal_reasons(tmp_path, monkeypatc
         monkeypatch.setenv("AZAZEL_ROOT", directory)
         monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
         monkeypatch.setattr(client, "peer_credentials", lambda _: (1, os.getuid(), os.getgid()))
-        path = runtime_paths.socket_path("audit")
+        path = runtime_paths.socket_path("audit-submit")
         path.parent.mkdir(parents=True, exist_ok=True)
         # BSD gives new files the directory's group, so macOS sockets in /tmp
         # are not in the caller's primary group.

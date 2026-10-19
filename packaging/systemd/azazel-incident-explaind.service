@@ -13,7 +13,7 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azexplain
-SupplementaryGroups=azincident-read azknowledge-read azazel-operator
+SupplementaryGroups=azincident-read azknowledge-read azaudit-submit azmio-advise
 ExecStart=/usr/libexec/azazel/az-incident-explaind
 PrivateNetwork=yes
 TimeoutStartSec=30s

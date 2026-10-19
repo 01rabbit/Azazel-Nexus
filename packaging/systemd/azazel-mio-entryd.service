@@ -26,6 +26,7 @@ SetCredential=mio-node:absent
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/state/mio
 ReadWritePaths=/var/lib/azazel/run/mio-entry
+ReadWritePaths=/var/lib/azazel/run/mio-advise
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

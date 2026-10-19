@@ -212,6 +212,15 @@ if [ "$WITH_ACCOUNTS" = yes ]; then
     if ! getent group azmission-read >/dev/null 2>&1; then
         groupadd --system azmission-read
     fi
+    # The explainer's own audit and M.I.O. entry listeners. Nobody is added
+    # to them: the explainer unit carries them as SupplementaryGroups, so it
+    # needs no azazel-operator membership to reach those two daemons.
+    if ! getent group azaudit-submit >/dev/null 2>&1; then
+        groupadd --system azaudit-submit
+    fi
+    if ! getent group azmio-advise >/dev/null 2>&1; then
+        groupadd --system azmio-advise
+    fi
     if ! getent group azazel-operator >/dev/null 2>&1; then
         groupadd --system azazel-operator
     fi
@@ -253,6 +262,7 @@ make_dir 0711 root /var/lib/azazel/run
 # runtime verifies the resulting socket GID and refuses if the filesystem or
 # host does not provide the declared behavior.
 make_owned_dir 2710 azaudit azazel-operator /var/lib/azazel/run/audit
+make_owned_dir 2710 azaudit azaudit-submit /var/lib/azazel/run/audit-submit
 make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
 make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.
@@ -290,6 +300,7 @@ make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
 make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
 make_owned_dir 0700 azknowledge root /var/lib/azazel/state/knowledge
 make_owned_dir 2710 azmioentry azazel-operator /var/lib/azazel/run/mio-entry
+make_owned_dir 2710 azmioentry azmio-advise /var/lib/azazel/run/mio-advise
 make_owned_dir 2710 azmio azazel-operator /var/lib/azazel/run/mio
 make_owned_dir 2710 azremote azazel-operator /var/lib/azazel/run/remote
 make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge

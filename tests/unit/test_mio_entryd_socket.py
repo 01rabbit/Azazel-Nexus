@@ -32,7 +32,7 @@ def root(monkeypatch):
 
         path = runtime_paths.socket_path
 
-        for leaf in ("mio-entry", "mio", "remote"):
+        for leaf in ("mio-entry", "mio-advise", "mio", "remote"):
             path(leaf).parent.mkdir(parents=True)
         runtime_paths.mio_state_dir().mkdir(parents=True)
         monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
@@ -78,11 +78,22 @@ def test_main_real_round_trip_records_handoff(root):
         assert availability["local"] == "local_unavailable"
         assert availability["remote"] == "remote_unavailable"
         assert response["result"]["reason"]
+        # The explainer's listener registers mio.advise alone: routing is not a verb there.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(str(root("mio-advise")))
+            send_frame(connection, {"verb": "mio.route", "arguments": {
+                "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000,
+            }})
+            connection.shutdown(socket.SHUT_WR)
+            refused = json.loads(read_frame(connection))
+        assert refused == {"ok": False, "refusal": "unknown_verb"}
     finally:
         stop.set()
         thread.join(5)
     assert not thread.is_alive()
     assert not root("mio-entry").exists()
+    assert not root("mio-advise").exists()
 
 
 def test_fake_locald_not_admitted_is_recorded(root):

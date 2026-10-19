@@ -246,13 +246,32 @@ and operator-readable liveness under `run/edge-intake-status/status.json`.
 
 `azazel-incident-explaind.service` is the supporting local incident explainer,
 running as `azexplain`, masked and preset-disabled. It reads the incident
-chains as `azincident-read`, asks M.I.O. and Knowledge over their existing
-local sockets, and stores bounded explanations/cursor state privately under
+chains as `azincident-read`, asks M.I.O. and Knowledge over their
+explainer-only local listeners (`mio-advise`, `knowledge-read`), forwards
+incident records to auditd's `audit-submit` listener, and stores bounded explanations/cursor state privately under
 `/var/lib/azazel/incident-explain`. Liveness is operator-readable at
 `/var/lib/azazel/run/incident-explain-status/status.json`. It grants no Edge
 control or enforcement authority; optional advisory failures never stop Edge.
 See [integration loop I2](integration-loop.md#i2--explanation-explain--implemented)
 for privacy, deadlines, rate/retention limits and fixed refusal codes.
+
+**Upgrading to the explainer-only listeners (#213 O1).** The explainer no
+longer holds `azazel-operator`. auditd and M.I.O. entry each bind a second
+listener for it, in the `run/audit-submit` (`azaudit-submit`) and
+`run/mio-advise` (`azmio-advise`) leaves. The installer creates the groups,
+the leaves and the units' new `ReadWritePaths`. An upgraded runtime on a node
+where install.sh was not re-run refuses to start auditd and
+`azazel-mio-entryd` with `SocketMisconfigured` naming the missing group or
+leaf, before it binds anything or reports READY. To upgrade:
+
+1. Re-run `packaging/install.sh` (idempotent; existing accounts, groups and
+   data are kept).
+2. `systemctl daemon-reload`.
+3. Restart `azazel-auditd.service` and `azazel-mio-entryd.service`, then
+   `azazel-incident-explaind.service`.
+
+Operators' sockets, leaves and group membership do not change. Nobody is
+added to the two new groups; only the explainer unit carries them.
 
 For `chain_broken`, the explainer latches closed across polls, days and restarts.
 Status shows `inspect_incident_chain_then_remove_cursor_and_restart`. Stop

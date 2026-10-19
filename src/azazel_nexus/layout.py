@@ -126,6 +126,13 @@ LAYOUT = (
         group="azazel-operator",
     ),
     PathSpec(
+        "/var/lib/azazel/run/audit-submit",
+        0o2710,
+        "explainer's append-only audit socket; no operator socket access",
+        owner="azaudit",
+        group="azaudit-submit",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/commission",
         0o2710,
         "commission socket leaf; daemon-owned with operator-group socket inheritance",
@@ -277,6 +284,11 @@ LAYOUT = (
         "/var/lib/azazel/run/mio-entry", 0o2710,
         "M.I.O. entry socket with operator group inheritance",
         owner="azmioentry", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/mio-advise", 0o2710,
+        "explainer's advice-only M.I.O. entry socket; no operator socket access",
+        owner="azmioentry", group="azmio-advise",
     ),
     PathSpec(
         "/var/lib/azazel/run/knowledge", 0o2710,

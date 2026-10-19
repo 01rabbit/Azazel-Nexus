@@ -315,7 +315,8 @@ def integrated_loop(harness: Harness) -> str:
     prepare_accounts(harness)
     assert not (base / "incident-explain/cursor.json").exists(), "use a fresh harness root"
     expected = {base / "run" / name / f"{name}.sock" for name in
-                ("audit", "knowledge", "knowledge-read", "mio-entry", "edge-intake")}
+                ("audit", "audit-submit", "knowledge", "knowledge-read", "mio-entry", "mio-advise",
+                 "edge-intake")}
     # Earlier stages stop their subprocesses by SIGTERM and can leave socket
     # inodes. Remove only those known, dead endpoints, before readiness polling.
     for path in expected & sockets(harness.root):

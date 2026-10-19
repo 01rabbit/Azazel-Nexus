@@ -21,7 +21,7 @@ from azazel_nexus.local_advisory import read_delivered, read_reference
 
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
-from .runtime_paths import socket_path
+from .runtime_paths import socket_group, socket_path
 from .protocol import Refusal
 from .transport import _HEADER, MAX_FRAME_BYTES
 
@@ -49,7 +49,7 @@ def _exchange(
     deadline = time.monotonic() + deadline_s
     path = socket_path(leaf)
     uid = pwd.getpwnam(account).pw_uid
-    gid = grp.getgrnam("azknowledge-read" if leaf == "knowledge-read" else "azazel-operator").gr_gid
+    gid = grp.getgrnam(socket_group(leaf)).gr_gid
     verify_socket(path, expected_uid=uid, expected_gid=gid)
     document = {"verb": verb, "arguments": arguments}
     if payload is not None:
