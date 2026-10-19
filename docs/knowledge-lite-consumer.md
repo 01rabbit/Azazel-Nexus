@@ -156,7 +156,18 @@ with a bundle present makes the store untrusted and blocks import until an
 operator restores the state. Import inspects existing store files for regular
 file type, single link, effective-uid ownership and absence of group/other write;
 it records unsafe state as `lite.import.state_untrusted` and directory tightening
-as `lite.import.store_tightened`, naming only directory roles.
+as `lite.import.store_tightened`, naming only directory roles. The fixed codes
+are `WATERMARK_MISSING`, `WATERMARK_MALFORMED`, `WATERMARK_UNREADABLE` and
+`STORE_FILE_UNSAFE`.
+
+Imports run as the store owner (`azknowledge`, which owns
+`/var/lib/azazel/knowledge`); store files owned by anyone else are refused, not
+adopted. The bundle is renamed and its directory synced before the watermark
+is written, so a crash leaves a bundle at or above the watermark, never below.
+A crash during the very first import can leave `admitted/current.tar.gz`
+without a watermark. That state is refused like a deleted watermark. To
+recover, an operator moves `admitted/current.tar.gz` aside (keep it for review)
+and imports again; nothing repairs it automatically.
 
 ### The caller chooses an entry, and chooses nothing else
 

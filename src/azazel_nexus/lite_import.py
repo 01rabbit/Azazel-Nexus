@@ -83,7 +83,7 @@ from .lite_bundle import (
     refused_reading,
     verify_bundle,
 )
-from .store_dirs import store_directory
+from .store_dirs import fsync_directory, store_directory
 
 __all__ = [
     "CommissionedLite",
@@ -366,7 +366,8 @@ class LiteImport:
                          {"entry_id": entry_id, "at": now, "code": code})
             raise ImportRefused(
                 "The anti-rollback state cannot be trusted. An operator must restore "
-                "it (for example from backup) before importing. No bundle was changed."
+                "it (for example from backup) before importing; see "
+                "docs/knowledge-lite-consumer.md section 7. No bundle was changed."
             ) from None
         raw = (self.commissioned.inbox / entry.display_name).read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -567,6 +568,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        # The bundle's rename must reach the disk before the watermark's:
+        # otherwise a power loss can leave an old bundle under a new watermark.
+        fsync_directory(path.parent)
     except BaseException:
         try:
             os.unlink(temporary)

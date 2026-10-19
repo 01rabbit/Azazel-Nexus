@@ -759,14 +759,17 @@ def test_unreadable_watermark_is_not_zero(node, monkeypatch):
     service, log, root = node("lite.tar.gz")
     _import_only_entry(service)
     original = os.open
+    denied = []
     def deny(path, *args, **kwargs):
         if Path(path) == root / "state/watermark":
+            denied.append(path)
             raise PermissionError("private detail")
         return original(path, *args, **kwargs)
     monkeypatch.setattr(os, "open", deny)
     assert list(service.serve(query_as_of=FRESH)) == []
     with pytest.raises(ImportRefused):
         _import_only_entry(service)
+    assert len(denied) == 2
     assert log[-1][1]["code"] == "WATERMARK_UNREADABLE"
     assert "private detail" not in str(log)
 
@@ -798,3 +801,32 @@ def test_tightening_is_audited_even_when_a_later_directory_is_unsafe(node, tmp_p
                                          Transition.STATE_UNTRUSTED.value]
     assert log[1][1]["directories"] == ["admitted"]
     assert list(target.iterdir()) == []
+
+
+def test_crash_before_first_watermark_is_refused_not_served(node):
+    service, log, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    (root / "state/watermark").unlink()
+    assert list(service.serve(query_as_of=FRESH)) == []
+    with pytest.raises(ImportRefused):
+        _import_only_entry(service)
+    assert log[-1][1]["code"] == "WATERMARK_MISSING"
+
+
+def test_crash_between_bundle_and_watermark_still_serves(node):
+    service, _, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    (root / "state/watermark").write_text("0\n")
+    assert list(service.serve(query_as_of=FRESH))
+
+
+def test_store_ancestors_ignore_loose_umask(tmp_path):
+    from azazel_nexus.store_dirs import store_directory
+
+    previous = os.umask(0o002)
+    try:
+        store_directory(tmp_path / "a" / "b" / "c")
+    finally:
+        os.umask(previous)
+    for relative in ("a", "a/b", "a/b/c"):
+        assert (tmp_path / relative).stat().st_mode & 0o777 == 0o750

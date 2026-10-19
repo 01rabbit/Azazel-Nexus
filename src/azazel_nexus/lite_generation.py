@@ -40,7 +40,7 @@ from typing import Optional
 
 from .content_store import ContentStore, ContentTampered, parse_digest
 from .signature import PUBLIC_KEY_BYTES
-from .store_dirs import store_directory
+from .store_dirs import fsync_directory, store_directory
 
 __all__ = [
     "LiteGeneration",
@@ -258,6 +258,8 @@ class LiteGenerationStore:
             stream.write(json.dumps(asdict(generation), sort_keys=True, indent=2) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        fsync_directory(directory)
+        fsync_directory(self.generations)
         _atomic_write(self.live_pointer, f"{number}\n".encode("utf-8"))
         return generation
 
@@ -348,6 +350,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
