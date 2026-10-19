@@ -412,8 +412,13 @@ class AuditService:
         self.break_reason = None
 
     def handle(self, request) -> dict:
-        is_explainer = request.principal.uid == self._explainer_uid
-        incident = request.arguments.get("event_type", "").startswith("edge.incident.")
+        # No principal is never the explainer, so an incident event without
+        # one is refused below: the absent case fails closed.
+        principal = getattr(request, "principal", None)
+        is_explainer = (principal is not None and self._explainer_uid is not None
+                        and principal.uid == self._explainer_uid)
+        arguments = getattr(request, "arguments", None) or {}
+        incident = str(arguments.get("event_type", "")).startswith("edge.incident.")
         if ((is_explainer and (request.verb.name != "audit.append" or not incident))
                 or (incident and not is_explainer)):
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "incident_writer")
