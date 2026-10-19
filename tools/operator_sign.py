@@ -1,6 +1,7 @@
 """Off-host signer for the commissioning draft and full commissioning proposal.
 
-Run it on the operator's own workstation, from a reviewed checkout, for example
+Run it on the operator's own workstation, from a reviewed checkout (the seed
+shares this process with the imported code), with a pinned PyNaCl, for example
 ``PYTHONPATH=src uv run --no-project --with 'pynacl>=1.5' python -m tools.operator_sign ...``.
 It reads one payload file and one external seed file, and writes one raw
 64-byte detached signature. It sends nothing, prints no key material and grants
@@ -23,6 +24,7 @@ import argparse
 import hashlib
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -41,9 +43,25 @@ class SignRefused(Exception):
 
 
 def read_seed(path: Path) -> bytes:
-    """A 32-byte Ed25519 seed, stored raw or as 64 hex characters."""
+    """A 32-byte Ed25519 seed, stored raw or as 64 hex characters.
 
-    raw = path.read_bytes()
+    Only a regular, single-link file readable by its owner alone is accepted,
+    and at most 65 bytes are read, so a mistyped argument cannot block on a
+    FIFO, follow a link or pull in an unrelated file.
+    """
+
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SignRefused("seed must be a regular single-link file")
+        if info.st_mode & 0o077:
+            raise SignRefused("seed file must not be readable by group or other")
+        raw = os.read(fd, 66)
+    finally:
+        os.close(fd)
+    if len(raw) > 65:
+        raise SignRefused("seed must be 32 raw bytes or 64 hex characters")
     if len(raw) == 32:
         return raw
     try:
@@ -93,16 +111,21 @@ def main(argv=None) -> int:
     try:
         if args.out.exists() or args.out.is_symlink():
             raise SignRefused(f"{args.out} already exists; not overwritten")
-        if args.seed.stat().st_mode & 0o077:
-            print("warning: seed file is readable by group or other", file=sys.stderr)
         signature, facts = sign(
             purpose=args.purpose, payload=args.payload.read_bytes(),
             expect_payload_sha256=args.expect_payload_sha256,
             seed=read_seed(args.seed), expect_public=args.expect_public,
         )
         fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(signature)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(signature)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            # A partial signature would block the next attempt as "exists".
+            args.out.unlink(missing_ok=True)
+            raise
     except (SignRefused, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1

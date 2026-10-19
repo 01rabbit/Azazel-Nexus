@@ -90,3 +90,18 @@ def test_malformed_seed_is_refused_without_echo(tmp_path, key, capsys):
     assert "not-a-seed" not in capsys.readouterr().err
     assert not (tmp_path / "out.sig").exists()
 
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604])
+def test_seed_readable_by_others_is_refused(tmp_path, key, mode):
+    key[1].chmod(mode)
+    assert run(tmp_path, key) == 1
+    assert not (tmp_path / "out.sig").exists()
+
+
+def test_seed_symlink_is_refused(tmp_path, key):
+    signing, seed, payload = key
+    link = tmp_path / "seed-link"
+    link.symlink_to(seed)
+    assert run(tmp_path, (signing, link, payload)) == 1
+    assert not (tmp_path / "out.sig").exists()

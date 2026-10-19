@@ -18,16 +18,21 @@ is selected ([M.I.O. runtime](../mio-runtime.md), [operations §0](../operations
 
 ## 1. Keys and who does what
 
-- **Use a rehearsal operator.** Enroll a key generated for the VM only
+- **Use a rehearsal operator**, as §17 of the admission runbook requires for
+  any VM rehearsal: enroll a key generated for the VM only
   (`python -m azazel_nexus.operator_enrollment`, see
-  [Debian installation](../debian-live-install.md)) and never enroll it on a
-  real node. The 2026-10-19 run used the operator already enrolled on that VM
-  (`owner`); its commissioning signatures stay bound to the VM's node identity
-  and must not be reused anywhere.
+  [Debian installation](../debian-live-install.md)), never enroll it on a real
+  node, and destroy its seed when the rehearsal ends. The 2026-10-19 run used
+  `owner`, the operator already enrolled on that VM; this record does not
+  establish that the key was VM-only. If it is enrolled on any real node, that
+  run deviated from this rule. Either way, its commissioning signatures stay
+  bound to the VM's node identity and must not be reused anywhere.
 - **The operator signs on their own workstation.** The node prints a payload
   SHA-256; the operator fetches the payload, signs with
   [`tools/operator_sign.py`](../../tools/operator_sign.py), and copies back only
   the 64-byte signature. The assistant or any remote helper never reads the seed.
+  Run the signer from a reviewed checkout with a pinned, hash-verified PyNaCl:
+  the seed shares that process with the imported code.
 - **Confidentiality.** The draft and proposal contain raw interface identity.
   Keep workstation copies in a private `0700` directory, delete them after
   signing, and never paste them into issues, logs or chat
@@ -36,7 +41,8 @@ is selected ([M.I.O. runtime](../mio-runtime.md), [operations §0](../operations
   is the runtime module `azazel_nexus_runtime.commission_cli`; on an install
   without the console script, run
   `sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli ...`
-  from `/`. `commission` and `proposal-export` require an interactive terminal
+  from `/` (every node command below assumes `cd /`). `commission` and
+  `proposal-export` require an interactive terminal
   (`ssh -t`).
   Below, `PYTHON` stands for `/opt/azazel-nexus/venv/bin/python`, `NODE` for
   the SSH destination and `LABEL` for the enrolled operator label.
@@ -63,6 +69,9 @@ is selected ([M.I.O. runtime](../mio-runtime.md), [operations §0](../operations
    `azazel_nexus_lab` in the production interpreter, the operator moves it aside
    (do not delete it):
    `sudo install -d -m 0700 /root/azn-quarantine && sudo mv /etc/azazel-lab/LAB-HOST /root/azn-quarantine/`.
+   **This applies to a lab VM only.** A real node that carries the marker ran
+   lab code and is reinstalled, not cleaned; removing the marker grants nothing
+   and its output is still not evidence ([hardware gates](../hardware-gates.md)).
 5. **Commissionable interface.** `az-nexus-commission hardware-assess` must
    report `interfaces_observed` greater than `interfaces_refused`.
 
@@ -86,6 +95,9 @@ sudo chown root:azcommission /etc/azazel/commissioning && sudo chmod 0750 /etc/a
 ```
 
 Do not add it to `crypttab` or `fstab`; reopen it by hand after a reboot.
+The check cannot tell a loop file on an unencrypted disk from a real encrypted
+volume. The loop file substitutes for the mechanics only; a real node uses a
+real dm-crypt device ([HIL preflight](../hil-preflight.md)).
 
 **Commissioning key.** If `/var/lib/azazel/secrets/commissioning.key` is
 absent, create it with the root-only script in
@@ -120,18 +132,19 @@ sudo sha256sum /etc/azazel/commissioning/commissioning-draft.json   # on the nod
 On the workstation, in a private directory:
 
 ```sh
+umask 077
 ssh NODE 'sudo cat /etc/azazel/commissioning/commissioning-draft.json' > draft.json
 PYTHONPATH=src uv run --no-project --with 'pynacl>=1.5' python -m tools.operator_sign \
   --purpose commissioning --payload draft.json \
   --expect-payload-sha256 NODE_PRINTED_SHA256 --expect-public ENROLLED_PUBLIC_HEX \
   --seed /path/outside/any/checkout/operator.seed --out draft.sig
-scp draft.sig NODE:/tmp/azn-draft.sig
+scp draft.sig NODE:azn-draft.sig
 ```
 
 On the node, install it and review:
 
 ```sh
-sudo install -m 0600 -o root -g root /tmp/azn-draft.sig /etc/azazel/commissioning/commissioning-draft.sig
+sudo install -m 0600 -o root -g root ~/azn-draft.sig /etc/azazel/commissioning/commissioning-draft.sig && rm ~/azn-draft.sig
 sudo PYTHON -I -m azazel_nexus_runtime.commission_cli commission-review --operator LABEL
 ```
 
@@ -146,8 +159,9 @@ ssh -t NODE 'cd / && sudo PYTHON -I -m azazel_nexus_runtime.commission_cli propo
 Enter `CORE`, `LITE` or `FULL`, then `EXPORT`. The proposal (`schema`
 `azazel-nexus/commissioning-proposal/v2`) is written to the encrypted
 directory, and the two copies are published to `/etc/azazel/mio-profile/`.
-Sign `commissioning-proposal.json` exactly as in §4, with
-`--purpose commissioning-proposal`, install it as
+Print `sha256sum /etc/azazel/commissioning/commissioning-proposal.json` on the
+node, then sign that file exactly as in §4 with
+`--purpose commissioning-proposal` and the newly printed SHA-256, install it as
 `/etc/azazel/commissioning/commissioning-proposal.sig` (root `0600`), then:
 
 ```sh
@@ -184,7 +198,9 @@ sudo umount /data && sudo losetup -D
 sudo umount /etc/azazel/commissioning && sudo cryptsetup close azn-commissioning
 ```
 
-Delete the workstation copies of the draft and proposal. Revert to the
+Delete the workstation copies of the draft and proposal (`draft.json`,
+`proposal.json`); only the signatures ever return to the node. Destroy the
+rehearsal operator's seed. Revert to the
 snapshot to undo everything, including ledger appends. Without a snapshot,
 `mv` the lab marker back if the VM returns to lab use, and move the published
 proposal files out of `/etc/azazel/mio-profile/` while keeping the directory,
