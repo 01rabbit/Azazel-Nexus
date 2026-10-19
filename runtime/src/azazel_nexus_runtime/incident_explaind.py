@@ -321,8 +321,11 @@ class Explainer:
             try:
                 self.ingest(seeding=True)
             except FileNotFoundError:
-                if self.cursor["segment"] is not None:
-                    self.break_chain()
+                # Intake's retention can delete a segment while seeding walks
+                # it. That is a read that failed, not a broken chain: the
+                # next poll checks the gap against the retention boundary and
+                # latches only if the chain itself is missing a link.
+                self.refuse("read_failed")
                 return
             if self.chain_broken or self.cursor == before:
                 return
