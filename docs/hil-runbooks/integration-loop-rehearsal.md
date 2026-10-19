@@ -2,7 +2,13 @@
 
 Owner: [#195](https://github.com/01rabbit/Azazel-Nexus/issues/195) (I5 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **written, not run; hardware-unverified**.
+Status: **rehearsed once on a Debian 13 aarch64 VM (2026-10-20, main
+`f544893`); hardware-unverified**. The run, its deviations and the answers to
+the **要確認** points are recorded in
+[#195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6277975662).
+It found that the installed probe never read `running`, so `verified-ready`
+was unreachable; [#221](https://github.com/01rabbit/Azazel-Nexus/pull/221)
+fixed that.
 
 This runbook runs the [integrated defensive loop](../integration-loop.md) on
 the rehearsal VM with the installed units instead of the harness: a real
@@ -74,7 +80,9 @@ Build on a separate **x86_64** Linux host or container, for example a
 `debian:trixie` amd64 container, so that the binary matches the VM's
 architecture and C library. The packager labels every package `x86_64` and
 does not check the build host, so a build on another architecture produces a
-mislabelled package that the VM cannot run.
+mislabelled package that the VM cannot run. For an aarch64 VM, build on an
+aarch64 host instead; the package then carries an aarch64 binary under the
+packager's fixed `x86_64` name, which the run record must state.
 
 Revision: use an Azazel-Edge revision that includes Azazel-Edge#428 (rule
 technique ids in normalized events; merge commit `2e9aab8`), otherwise every
