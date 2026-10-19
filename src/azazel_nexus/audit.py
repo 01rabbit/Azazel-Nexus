@@ -118,21 +118,18 @@ class AuditLedger:
 
     def __iter__(self) -> Iterator[AuditEntry]:
         try:
-            text = self.path.read_text(encoding="utf-8")
+            # Keep read_text's universal-newline handling, without splitlines'
+            # extra Unicode separators inside JSON strings. One line in RAM.
+            with self.path.open("r", encoding="utf-8") as handle:
+                for number, line in enumerate(handle, start=1):
+                    if line.strip():
+                        yield self._parse(line, f"line {number}")
         except FileNotFoundError:
             return
         except UnicodeDecodeError as exc:
             raise AuditChainBroken(f"{self.path} is not UTF-8: {exc}") from exc
         except OSError as exc:  # pragma: no cover - surfaced by callers
             raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
-
-        # Split on the newline `append` writes and nothing else. `splitlines`
-        # also breaks on U+2028 and friends, which `ensure_ascii=False` leaves
-        # raw inside a string, so one valid record would read as two halves.
-        for number, line in enumerate(text.split("\n"), start=1):
-            if not line.strip():
-                continue
-            yield self._parse(line, f"line {number}")
 
     def head(self) -> tuple[int, str]:
         """`(last sequence, last hash)`, or `(0, GENESIS_HASH)` for an empty chain.
@@ -246,8 +243,12 @@ class AuditLedger:
         *,
         expected_head: Optional[str] = None,
         chain_from: Optional[tuple[int, str]] = None,
+        sync: bool = True,
     ) -> AuditEntry:
         """Add one entry, or add nothing and raise.
+
+        `sync=False` defers durability to a batching caller, which must fsync
+        the file before reporting the batch recorded. The default is durable.
 
         `expected_head` lets a caller say which chain state it believed it was
         extending. Supplying it turns a concurrent append from silent
@@ -316,7 +317,8 @@ class AuditLedger:
                   if self.private else self.path.open("a", encoding="utf-8")) as handle:
                 handle.write(line + "\n")
                 handle.flush()
-                os.fsync(handle.fileno())
+                if sync:
+                    os.fsync(handle.fileno())
         except OSError as exc:
             raise AuditUnavailable(
                 f"{self.path} could not be appended to ({exc}); the event was "

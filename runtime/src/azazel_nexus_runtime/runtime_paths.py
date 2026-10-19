@@ -23,6 +23,8 @@ from azazel_nexus.audit import AuditUnavailable
 __all__ = [
     "ROOT",
     "audit_sink",
+    "edge_intake_state_dir",
+    "edge_intake_status_path",
     "commission_ledger_path",
     "fetch_commission_dir",
     "fetch_dir",
@@ -54,6 +56,7 @@ _SOCKET_LEAVES = {
     "remote": "remote",
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
+    "edge-intake": "edge-intake",
 }
 _STATE_LEAVES = {
     "mio-entry": "mio",
@@ -195,3 +198,13 @@ def mission_pack_config() -> Path:
 def mission_pack_root() -> Path:
     """Existing encrypted Mission Pack store; optional read access for locald."""
     return _under("/data/azazel/mission-packs")
+
+
+def edge_intake_state_dir() -> Path:
+    """Private evidence and incident chain, outside operator-readable liveness."""
+    return _under("/var/lib/azazel/edge-intake")
+
+
+def edge_intake_status_path() -> Path:
+    """Only the dedicated status leaf is operator-readable."""
+    return _under("/var/lib/azazel/run/edge-intake-status/status.json")

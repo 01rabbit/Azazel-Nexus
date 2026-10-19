@@ -329,6 +329,8 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",
+        "/var/lib/azazel/run/edge-intake",
+        "/var/lib/azazel/run/edge-intake-status",
         "/var/lib/azazel/run/fetch",
         "/var/lib/azazel/run/mio-entry",
         "/var/lib/azazel/run/mio",
@@ -339,7 +341,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode
         assert spec.group == ("azknowledge-read" if spec.path.endswith("knowledge-read")
-                              else "azazel-operator")
+                              else "azedge" if spec.path.endswith("/edge-intake") else "azazel-operator")
         assert spec.mode & 0o007 == 0
 
 
@@ -356,7 +358,7 @@ def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
     expected_owner = {
         "audit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
         "fetch": "azfetch", "mio-entry": "azmioentry", "mio": "azmio",
-        "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge",
+        "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge", "edge-intake": "azintake",
     }
     owners = {spec.path: spec.owner for spec in LAYOUT}
     assert set(runtime_paths._SOCKET_LEAVES) == set(expected_owner)

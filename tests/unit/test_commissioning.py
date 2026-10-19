@@ -28,6 +28,11 @@ ROOT = Path(__file__).resolve().parents[2]
 #: legible instead of becoming invisible the moment it is made.
 RETIRED_ROLE_WORDS = ("protected", "egress", "decoy", "observe", "capture", "internal", "external")
 
+#: Not interface roles. Edge Core's defense actions are recorded verbatim as
+#: Edge's decision (docs/integration-loop.md §1), so its vocabulary is spelled
+#: as Edge spells it.
+EDGE_DECISION_VOCABULARY = {"edge_intake.py": {"observe"}}
+
 
 def a_readout(**overrides) -> InterfaceReadout:
     fields = {
@@ -214,6 +219,7 @@ def test_no_retired_role_word_survives_as_a_value(retired):
         path.name
         for path in sorted(package.rglob("*.py"))
         if retired in _string_values(path)
+        and retired not in EDGE_DECISION_VOCABULARY.get(path.name, ())
     ]
     assert offenders == [], (
         f"{offenders} use the retired role {retired!r} as a value; Nexus uses "

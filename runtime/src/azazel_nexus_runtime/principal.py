@@ -137,6 +137,7 @@ SERVICE_ACCOUNTS = (
 DAEMON_ACCOUNTS = tuple(dict.fromkeys((
     *SERVICE_ACCOUNTS,
     "azprobe",
+    "azintake",
     "azedge",
     "azfetch",
     "azmioentry",

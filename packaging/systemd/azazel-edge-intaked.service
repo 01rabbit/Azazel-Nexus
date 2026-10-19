@@ -1,0 +1,47 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Receives bounded observations; no Edge control or enforcement authority.
+
+[Unit]
+Description=Azazel-Nexus receive-only Edge findings intake
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/integration-loop.md
+After=azazel-activated.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azintake
+ExecStart=/usr/libexec/azazel/az-edge-intaked
+PrivateNetwork=yes
+TimeoutStartSec=30s
+MemoryMax=256M
+TasksMax=32
+LimitNOFILE=256
+LimitFSIZE=128M
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/edge-intake
+ReadWritePaths=/var/lib/azazel/run/edge-intake
+ReadWritePaths=/var/lib/azazel/run/edge-intake-status
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -240,6 +240,10 @@ CORE_UNITS = (
         "verified Edge Core payload; fixed observe-only posture",
     ),
     UnitDefinition(
+        "azazel-edge-intaked.service", UnitTier.SUPPORTING, "azintake",
+        "receives Edge observations before Edge admission; grants no authority",
+    ),
+    UnitDefinition(
         "azazel-edge-probed.service",
         # SUPPORTING, and deliberately **not** EDGE_BASELINE. An
         # `EDGE_BASELINE` unit needs a verified Edge package before it may be

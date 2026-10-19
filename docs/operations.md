@@ -237,3 +237,9 @@ the payload's running state and never starts it. See
 [Edge package verification](edge-package-verification.md#the-edge-core-payload-unit-i0)
 for fixed paths, posture, deployment-specific Suricata read permissions, and
 the unchanged first-start readiness limitation. Intake is implemented in I1.
+
+`azazel-edge-intaked.service` is the supporting receive-only Edge findings
+listener, running as `azintake`, masked and preset-disabled. It writes bounded
+private evidence and a local incident chain under `/var/lib/azazel/edge-intake`,
+and operator-readable liveness under `run/edge-intake-status/status.json`.
+See [integration loop I1](integration-loop.md#i1--intake-detect--understand).

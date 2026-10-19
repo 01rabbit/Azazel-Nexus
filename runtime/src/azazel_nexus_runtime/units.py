@@ -66,6 +66,7 @@ class UnitKey(str, Enum):
     WATCHDOG = "watchdog"
     EDGE_CORE = "edge-core"
     EDGE_PROBE = "edge-probe"
+    EDGE_INTAKE = "edge-intake"
     MODEL_FETCH = "model-fetch"
     MIO_LOCAL = "mio-local"
     MIO_REMOTE = "mio-remote"
@@ -84,6 +85,7 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.WATCHDOG: "azazel-watchdog.service",
     UnitKey.EDGE_CORE: "azazel-edge-core.service",
     UnitKey.EDGE_PROBE: "azazel-edge-probed.service",
+    UnitKey.EDGE_INTAKE: "azazel-edge-intaked.service",
     UnitKey.MODEL_FETCH: "azazel-model-fetchd.service",
     UnitKey.MIO_LOCAL: "azazel-mio-locald.service",
     UnitKey.MIO_REMOTE: "azazel-mio-remoted.service",
