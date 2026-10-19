@@ -11,6 +11,7 @@ from azazel_nexus.local_advisory import (
     FrameRefused,
     gate_frame,
     read_frame,
+    read_reference,
     request_event,
 )
 from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile, profile_in_force
@@ -18,7 +19,7 @@ from azazel_nexus.remote_trust import remote_admission, unchecked_reading
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
-from .mio_locald import INFER_VERB
+from .mio_locald import INFER_VERB, REFERENCE_DEADLINE_MS
 from .mio_router import MioRouter
 from .mio_socket_client import LocalSocketClient, RemoteSocketClient
 from .principal import PrincipalClass, PrincipalPolicy
@@ -131,6 +132,19 @@ class MioEntryService:
                 from azazel_nexus.local_advisory import read_delivered
 
                 reply.update(read_delivered(result.reply))
+        if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
+            # Optional and bounded by the caller's own budget; never replaces the
+            # routing reason (the ledger and the reply keep the true handoff cause).
+            budget = min(REFERENCE_DEADLINE_MS, request.arguments["deadline_ms"])
+            reference = self.local.reference(frame, deadline_ms=budget)
+            try:
+                if reference is None:
+                    raise ValueError("reference_unavailable")
+                reply["reference"] = read_reference(reference)
+                reply["reference_status"] = "attached"
+            except Exception:  # noqa: BLE001 - an optional reference never fails the request
+                reply.pop("reference", None)
+                reply["reference_status"] = "unavailable"
         return reply
 
 

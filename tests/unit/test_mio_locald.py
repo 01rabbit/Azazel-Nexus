@@ -236,7 +236,7 @@ def test_an_operator_cannot_reach_past_the_admission_decision():
 
 
 def test_readiness_and_advisory_verbs_exist():
-    assert mio_locald.REGISTRY.names() == ("mio.local.infer", "model.activate")
+    assert mio_locald.REGISTRY.names() == ("mio.local.infer", "mio.local.reference", "model.activate")
 
 
 def test_the_staging_directory_is_fixed_in_code():

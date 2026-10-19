@@ -348,8 +348,9 @@ call. An unassessed local route also ends without fallback. Only a real local
 readiness refusal permits one fallback within the original permitted set; its
 audit reason includes the local refusal that caused it. Malformed remote payloads
 record only the fixed `malformed_payload` reason, never parser exception text.
-A second failure ends without retry. Deterministic handoff invokes no
-provider and reports no advisory answer (`FAILED` / `REFUSED`); Edge continues.
+A second failure ends without retry. Deterministic handoff reports no advisory
+answer (`FAILED` / `REFUSED`); entry may subsequently fetch the deterministic
+playbook reference described below. Edge continues.
 
 This is software evidence for route audit production, not evidence of deployed
 M.I.O. inference or the whole audit list above. Per-claim response provenance,
@@ -388,15 +389,26 @@ to be measured against. It is not evidence that the control plane exists.
 ### What an operator receives today
 
 While local model admission is closed (`LOCAL_MODEL_ADMISSION_ENABLED = False`,
-and no admitted evidence), entryd's routing never selects LOCAL. Every
-`mio.advise` frame that passes the entry checks returns `route: deterministic
-handoff`, `outcome: refused`, with no advice, banner or playbook procedures; only
-the insufficient-information gate returns its fixed text. Out-of-scope frames
-are also returned as `refused`, because the combined scope decision lives in
-locald. The keyword-fallback candidates described in
-[local runtime](mio-local-runtime.md) are produced by locald itself and do not
-reach an operator through entryd in this state; a container rehearsal confirmed
-this (the in-process library path renders them as documented).
+and no admitted evidence), entryd's routing never selects LOCAL. A `mio.advise`
+frame that passes the entry checks still returns `route: deterministic handoff`
+and `outcome: refused`. After that decision, entryd requests a deterministic
+playbook reference from locald via `mio.local.reference`. A validated result is
+attached under `reference`, with `banner`, trusted `fields` and machine metadata;
+it is never attached as `advice` or counted as an advisory answer. Keyword banners
+identify deterministic matching and contain no model wording. Unreviewed
+playbooks retain the template notice.
+
+The reference exchange has its own fixed 500 ms ceiling, independent of routing
+and model admission. It uses keyword matching only: no embedding, explanation,
+Knowledge lookup or model startup. Locald's SERVICE policy admits only
+`azmioentry` to this verb. Entry and its socket client independently validate the
+reference schema, keyword provenance and trusted explanation source. Absent,
+slow, refused or malformed locald replies leave the handoff intact, omit
+`reference` and set `reference_status: unavailable`; the reply's routing reason
+is kept. Route, outcome
+and route-ledger decision bytes do not depend on reference availability. The
+insufficient-information gate retains its fixed response; out-of-scope frames
+receive no reference. No reference grants Edge authority or provider admission.
 
 No operator-facing client for `mio.advise` ships yet: the verb is reachable over
 the entry socket with the runtime's length-prefixed protocol. An operator Unix

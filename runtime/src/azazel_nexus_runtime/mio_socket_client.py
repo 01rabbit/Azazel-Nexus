@@ -17,7 +17,7 @@ import time
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditUnavailable
-from azazel_nexus.local_advisory import read_delivered
+from azazel_nexus.local_advisory import read_delivered, read_reference
 
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
@@ -95,6 +95,22 @@ def _reply_metadata(reply: dict) -> dict:
 class LocalSocketClient:
     def observe(self) -> str:
         return _probe("mio")
+
+    def reference(self, frame: dict, *, deadline_ms: int) -> dict | None:
+        began = time.monotonic()
+        try:
+            reply = _exchange(
+                "mio", "azmio", "mio.local.reference", {"deadline_ms": deadline_ms},
+                payload=frame, deadline_s=deadline_ms / 1000,
+            )
+            if set(reply) != {"outcome", "reference"} or reply["outcome"] != "reference":
+                return None
+            document = read_reference(reply["reference"])
+            if time.monotonic() - began >= deadline_ms / 1000:
+                return None
+            return document
+        except Exception:  # noqa: BLE001 - optional reference; any reply defect means none
+            return None
 
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":

@@ -254,8 +254,12 @@ At most one explanation generation is conditioned on the top candidate.
 Reason must quote retained situation text, with the existing language, grounding,
 instruction, degeneration and opposite-class checks. Any refusal, timeout or
 provider error drops model text and preserves candidate/trusted guidance.
-No-class results skip generation. The fixed provenance banner and template notice
-remain. Trusted procedures and model prose stay in visibly separate fields;
+No-class results skip generation. Fixed Japanese/English banners are selected
+by `provenance.source: model|embedding|keyword`: model explanation, embedding
+matching without explanation, or deterministic keyword matching. Keyword banners
+contain neither “model” nor “モデル”. The template notice remains whenever any
+selected playbook is unreviewed; an empty selection is never labeled reviewed.
+Trusted procedures and model prose stay in visibly separate fields;
 citations are deterministic and marked as untrusted situation data.
 
 One monotonic deadline covers retrieval and explanation, with 20 ms delivery
@@ -271,6 +275,27 @@ and entryd independently validate exact keys, bounds, finite sorted scores,
 state/threshold consistency and the prohibition on benign primary candidates.
 Old model-pick documents are rejected. Maximum response is 48 KiB; audit contains
 fixed symbols, IDs, digests and counts, never situation or generated prose.
+
+### Deterministic reference on handoff
+
+`mio.local.reference` is a separate payload verb for SERVICE `azmioentry` only,
+using the existing PrincipalPolicy and framing. Its `deadline_ms` is 1–500 ms,
+with 20 ms reserved for delivery. The handler calls the existing keyword matcher
+and deterministic delivery builder directly, without accessing a model, embedding
+retriever, server, admission gate or Knowledge client. The verified playbook
+selection remains the source of trusted procedures. Missing playbooks, gated
+frames or an exhausted deadline return fixed `reference_unavailable` refusal.
+
+A successful reply is `{outcome: reference, reference: {...}}`. Its document has
+`banner`, `fields` and the same strict machine metadata as delivery, with
+`provenance.source: keyword`, `model_id: deterministic` and
+`explanation_source: trusted`. Both the local socket client and entryd validate
+these constraints. Entry requests this only after a deterministic handoff, under
+a deadline of at most 500 ms and never more than the caller's `deadline_ms`, and
+attaches it under `reference`, never `advice`, with `reference_status: attached`.
+Failure preserves the handoff and its routing reason, omits `reference` and sets
+`reference_status: unavailable`. Neither success nor failure changes route, outcome, route-ledger
+records, Edge authority or `LOCAL_MODEL_ADMISSION_ENABLED = False`.
 
 ## 10. Evaluation limits
 
