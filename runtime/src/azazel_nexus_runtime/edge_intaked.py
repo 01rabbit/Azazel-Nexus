@@ -21,6 +21,7 @@ from pathlib import Path
 from azazel_nexus.audit import GENESIS_HASH, AuditChainBroken, AuditLedger
 from azazel_nexus.edge_intake import (
     MAX_LINE,
+    MAX_OPEN,
     SEVERE_SEVERITY,
     STATUS_SCHEMA,
     EdgeEventRefused,
@@ -51,11 +52,37 @@ INCIDENT_SEGMENT_BYTES = 16 * 1024 * 1024
 TRUNCATION_RESERVE = 1024
 # The tail of each incident segment is kept for severe incidents (severity <=
 # SEVERE_SEVERITY) and control records, so ordinary churn while evidence is
-# full cannot use up the day before a severity 1 incident arrives.
+# full cannot use up the day before a severity 1 incident arrives. Only a
+# severe opening, a fall in recorded severity, a severe close and control
+# records use it; a severe incident's routine refresh does not. A fall is
+# measured against the severity this ledger recorded for the incident, so an
+# incident it never recorded cannot claim the reserve with a severe update;
+# the tracker lets an ordinary incident's severity fall into the severe range
+# only after it took a severe opening.
 SEVERE_RESERVE = 1024 * 1024
 RESERVED_CONTROL = frozenset({"edge.incident.reset", "edge.incident.truncated",
                               "edge.incident.retention"})
 WORKER_JOIN_S = 20
+# How far a segment's day may run ahead of the clock. During a run the clock
+# is also held to monotonic elapsed time from the first write, so a forward
+# jump cannot create a future segment; one found anyway (written while the
+# clock was already wrong at start) is reported as segment_from_future.
+FUTURE_SEGMENT_S = 86400
+# A node without an RTC boots with its clock behind (the last shutdown time,
+# or earlier) and steps it forward once time sync arrives, usually within
+# minutes. While both the anchor and now are within this much elapsed time
+# since boot, a step past the bound re-anchors instead of being held, so the
+# whole run is not dated days behind. Later in uptime the bound holds; this
+# is chosen over ordering the unit after time-sync.target, which waits only
+# when a wait-sync service is enabled and then delays the intake that Edge
+# writes to for as long as an offline node has no time source.
+CLOCK_SETTLE_S = 900
+# Elapsed time that also counts a suspend, which CLOCK_MONOTONIC does not, so
+# a resumed node does not keep writing to a segment days behind.
+ELAPSED = (
+    (lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
+    if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic
+)
 
 
 class SegmentFull(Exception):
@@ -71,17 +98,36 @@ class DailySegments:
     def __init__(
         self, root, leaf, *, max_bytes=RETENTION_BYTES,
         days=RETENTION_DAYS, segment_bytes=SEGMENT_BYTES, mode=0o700,
+        monotonic=ELAPSED,
     ):
         self.directory = root / leaf
         store_directory(self.directory, mode)
         self.max_bytes, self.days = max_bytes, days
         self.segment_bytes = segment_bytes
+        self.monotonic = monotonic
         self.current = None
         self.age_anchor = None
+        self.clock_anchor = None
+        self.last_now = None
+        self.future_segment = False
 
     def path_at(self, now):
         day = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
         return self.directory / (day + ".jsonl")
+
+    def bounded(self, now):
+        """Hold a wall-clock time to monotonic elapsed time since the first one."""
+        instant = self.monotonic()
+        if self.clock_anchor is not None:
+            wall, anchor = self.clock_anchor
+            if (instant < CLOCK_SETTLE_S
+                    and now > wall + instant - anchor + FUTURE_SEGMENT_S):
+                self.clock_anchor = None
+        if self.clock_anchor is None:
+            self.clock_anchor = (now, instant)
+        wall, anchor = self.clock_anchor
+        self.last_now = min(now, wall + instant - anchor + FUTURE_SEGMENT_S)
+        return self.last_now
 
     def retain(self):
         segments = []
@@ -103,14 +149,23 @@ class DailySegments:
             return
         # received_at/wall-clock jumps alone cannot age out stored observations.
         newest_day = segments[-1][0]
+        # A segment dated beyond the clock was written while the clock ran
+        # ahead; it must not become the age reference after a restart.
+        self.future_segment = (self.last_now is not None
+                               and newest_day > self.last_now + FUTURE_SEGMENT_S)
         if self.age_anchor is None:
-            self.age_anchor = (newest_day, time.monotonic())
+            reference = newest_day
+            if self.last_now is not None:
+                reference = min(reference, self.last_now + FUTURE_SEGMENT_S)
+            self.age_anchor = (reference, self.monotonic())
         anchor_day, anchor_time = self.age_anchor
         # Allow a normal midnight rollover, but not years of ageing from a
         # single forward wall-clock jump during this run.
         age_day = min(
-            newest_day, anchor_day + time.monotonic() - anchor_time + 86400
+            newest_day, anchor_day + self.monotonic() - anchor_time + 86400
         )
+        if self.last_now is not None:
+            age_day = min(age_day, self.last_now + FUTURE_SEGMENT_S)
         total = sum(size for _, _, size in segments)
         for day, path, size in segments[:-1]:
             if path == self.current:
@@ -154,7 +209,7 @@ class EvidenceStore(DailySegments):
 
     def prepare(self, now):
         # Probe actual append access before READY, including an existing segment.
-        path = self.path_at(now)
+        path = self.path_at(self.bounded(now))
         self.current = path
         existed = path.exists()
         os.close(self.open_segment(path, 0o640))
@@ -163,7 +218,7 @@ class EvidenceStore(DailySegments):
         self.retain()
 
     def append(self, record):
-        path = self.path_at(record.received_at)
+        path = self.path_at(self.bounded(record.received_at))
         self.current = path
         self.retain()
         data = canonical(record.as_dict()) + b"\n"
@@ -190,6 +245,11 @@ class IncidentLedger(DailySegments):
         limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
         super().__init__(root, leaf, mode=0o2750, **limits)
         self.severe_reserve = severe_reserve
+        # Lowest severity recorded per open incident, so only a fall in
+        # severity (not a routine refresh or an unknown incident) may use the
+        # severe reserve. Closes remove entries even when they cannot be
+        # recorded, so this follows the tracker's bounded open set.
+        self.severities = {}
         self.ledger = None
         self.boundary = self.directory / "retained-boundary.json"
         self.head = (0, GENESIS_HASH)
@@ -263,8 +323,10 @@ class IncidentLedger(DailySegments):
                 os.unlink(name)
 
     def select(self, now):
-        path = self.path_at(now)
+        path = self.path_at(self.bounded(now))
         # A backwards clock must not insert entries before the chain head.
+        # This also keeps appending to a segment from the future: the chain
+        # continues only there, and status reports segment_from_future.
         if self.current is not None:
             path = max(path, self.current)
         if path == self.current and self.ledger is not None:
@@ -286,9 +348,14 @@ class IncidentLedger(DailySegments):
         self.select(now)
         # Keep room for one durable gap marker even when a transition is lost.
         required = len(canonical(event)) + 512
+        kind, ident = event.get("event_type"), event.get("incident_id")
         severity = event.get("most_severe")
-        if not (event.get("event_type") in RESERVED_CONTROL
-                or type(severity) is int and severity <= SEVERE_SEVERITY):
+        severe = type(severity) is int and severity <= SEVERE_SEVERITY
+        closed = kind == "edge.incident.closed"
+        recorded = (self.severities.pop if closed else self.severities.get)(ident, None)
+        reserved = kind in RESERVED_CONTROL or severe and (
+            kind != "edge.incident.updated" or recorded is not None and severity < recorded)
+        if not reserved:
             required += self.severe_reserve
         size = self.current.stat().st_size
         if size + required + TRUNCATION_RESERVE > self.segment_bytes:
@@ -300,6 +367,10 @@ class IncidentLedger(DailySegments):
                     self.truncated = True
             raise SegmentFull("incident_segment_full")
         self._append(event, sync=sync)
+        if not closed and ident is not None and type(severity) is int:
+            self.severities[ident] = severity if recorded is None else min(recorded, severity)
+            if len(self.severities) > MAX_OPEN:
+                del self.severities[next(iter(self.severities))]
         self.retain()
 
     def sync(self):
@@ -392,6 +463,12 @@ class IntakeServer:
         except SegmentFull as exc:
             self.refuse(exc.code)
         self.store, self.ledger = store, ledger
+        self._future()
+
+    def _future(self):
+        if self.store.future_segment or self.ledger.future_segment:
+            with self.lock:
+                self.refused["segment_from_future"] = 1
 
     def _transitions(self, transitions, *, batch=False):
         batch_time = self.clock() if batch else None
@@ -442,6 +519,7 @@ class IntakeServer:
                     else:
                         transitions = self.tracker.tick()
                     self._transitions(transitions)
+                    self._future()
                     with self.lock:
                         self.open_incidents = len(self.tracker.incidents)
                         if record is not None:
@@ -467,8 +545,9 @@ class IntakeServer:
         if not self.storage_failed:
             try:
                 try:
+                    closed_at = self.clock()
                     self._transitions([
-                        self.tracker._close(key, "shutdown")
+                        self.tracker._close(key, "shutdown", closed_at)
                         for key in list(self.tracker.incidents)
                     ], batch=True)
                 finally:

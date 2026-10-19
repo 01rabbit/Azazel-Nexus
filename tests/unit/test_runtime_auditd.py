@@ -756,6 +756,7 @@ def _incident_service(tmp_path, monkeypatch, uid=901):
 
 
 @pytest.mark.parametrize("occurred_at", ["9999-12-31T23:59:59Z", "2026-10-19T00:10:01Z",
+                                         "2026-10-19T00:00:06Z",
                                          "2026-10-18T23:49:59Z", "2001-01-01T00:00:00Z",
                                          "0000-01-01T00:00:00Z"])
 def test_incident_time_outside_the_window_is_refused_and_does_not_block(
@@ -767,12 +768,44 @@ def test_incident_time_outside_the_window_is_refused_and_does_not_block(
     assert exc.value.refusal is Refusal.ARGUMENT_RANGE and exc.value.detail == "occurred_at"
     assert service.ledger.segments() == ()
     # Neither the explainer nor another writer is stranded behind the refusal.
-    for edge in ("2026-10-18T23:50:00Z", "2026-10-19T00:10:00Z"):
+    for edge in ("2026-10-18T23:50:00Z", "2026-10-19T00:00:05Z"):
         service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
                                 _incident(edge), principal=_EXPLAINER))
     service.handle(_request("audit.append", {"event_type": "activation.unit_granted"},
                             _event(day="2026-10-19")))
     assert sum(c.entries for c in service.ledger.checkpoint()) == 3
+
+
+def test_incident_dated_tomorrow_cannot_strand_todays_writers(tmp_path, monkeypatch):
+    service = _incident_service(tmp_path, monkeypatch)
+    service.clock = lambda: _INCIDENT_AT - 2  # 2026-10-18T23:59:58Z
+    # Three seconds ahead is inside the future skew, but it is tomorrow's day.
+    with pytest.raises(RequestRefused) as exc:
+        service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                                _incident("2026-10-19T00:00:01Z"), principal=_EXPLAINER))
+    assert exc.value.refusal is Refusal.ARGUMENT_RANGE and exc.value.detail == "occurred_at"
+    assert service.ledger.segments() == ()
+    service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                            _incident("2026-10-18T23:59:59Z"), principal=_EXPLAINER))
+    service.handle(_request("audit.append", {"event_type": "activation.unit_granted"},
+                            _event(day="2026-10-18")))
+    assert [p.name for p in service.ledger.segments()] == ["2026-10-18.jsonl"]
+    assert sum(c.entries for c in service.ledger.checkpoint()) == 2
+
+
+def test_incident_from_before_midnight_after_todays_segment_is_refused(tmp_path, monkeypatch):
+    service = _incident_service(tmp_path, monkeypatch)
+    service.clock = lambda: _INCIDENT_AT + 5  # 2026-10-19T00:00:05Z
+    service.handle(_request("audit.append", {"event_type": "activation.unit_granted"},
+                            _event(day="2026-10-19")))
+    # Inside the window, but its day precedes the segment already opened: a
+    # final refusal, not a failed append.
+    with pytest.raises(RequestRefused) as exc:
+        service.handle(_request("audit.append", {"event_type": "edge.incident.closed"},
+                                dict(_incident("2026-10-18T23:59:58Z"), reason="idle"),
+                                principal=_EXPLAINER))
+    assert exc.value.refusal is Refusal.ARGUMENT_RANGE and exc.value.detail == "occurred_at"
+    assert [p.name for p in service.ledger.segments()] == ["2026-10-19.jsonl"]
 
 
 def test_other_event_times_keep_their_existing_admission(tmp_path, monkeypatch):

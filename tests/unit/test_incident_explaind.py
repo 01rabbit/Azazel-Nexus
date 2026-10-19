@@ -395,7 +395,8 @@ def test_control_records_are_validated_without_explanations(tmp_path):
 def test_missing_linked_segment_without_boundary_is_refused(tmp_path, missing_day):
     from azazel_nexus_runtime.edge_intaked import IncidentLedger
     e = make(tmp_path)
-    ledger = IncidentLedger(tmp_path, 0)
+    instant = iter(range(0, 10**7, 86400))
+    ledger = IncidentLedger(tmp_path, 0, monotonic=lambda: next(instant))
     for day in range(3):
         ledger.append(transition(incident_id=f"inc-{day+1:016x}"), day * 86400)
     ledger.path_at(missing_day * 86400).unlink()
@@ -953,3 +954,45 @@ def test_unexplained_incident_does_not_stay_awaiting_and_severe_escalation_is_ex
     e.poll()
     assert any(t["incident_id"] == transition()["incident_id"] and t["most_severe"] == 1
                for t, _ in e.selection.pending)
+
+
+def test_closed_audit_time_is_the_intake_close_time(tmp_path):
+    e = make(tmp_path)
+    e.clock = lambda: 5000
+    append(e, transition(last_update=100))
+    append(e, transition(1, "closed", reason="idle", last_update=1000))
+    e.poll()
+    # Both times come from intake, so a later replay keeps them together.
+    assert [v["occurred_at"] for v in e.audit_pending.queue] == [
+        "1970-01-01T00:01:40Z", "1970-01-01T00:16:40Z"]
+
+
+def test_explanation_store_is_held_to_monotonic_time_and_reports_future(tmp_path):
+    from datetime import UTC, datetime
+    jan20 = datetime(2026, 1, 20, tzinfo=UTC).timestamp()
+    e = make(tmp_path)
+    directory = e.store.directory
+    for day in ("2026-01-10", "2099-01-01"):
+        (directory / (day + ".jsonl")).write_text("")
+    # The store keeps its own elapsed clock, well past boot here.
+    restarted = make(tmp_path, prepare=False,
+                     store_limits={"monotonic": lambda: 10**7})
+    restarted.clock = lambda: jan20
+    restarted.prepare()
+    # The explainer's own clock only clears the restart's 60 s rate wait.
+    restarted.monotonic = lambda: 61
+    assert restarted.refused["segment_from_future"] == 1
+    assert (directory / "2026-01-10.jsonl").exists()
+    fresh = {"first_seen": jan20, "last_seen": jan20, "last_update": jan20}
+    append(restarted, transition(**fresh))
+    restarted.poll()
+    assert (directory / "2026-01-20.jsonl").exists()
+    # A forward jump during the run does not open a segment in 2098.
+    leap = datetime(2098, 1, 1, tzinfo=UTC).timestamp()
+    restarted.clock = lambda: leap
+    append(restarted, transition(incident_id="inc-2222222222222222",
+                                 **{k: leap for k in fresh}))
+    restarted.poll()
+    assert len(records(restarted)) == 2
+    assert not (directory / "2098-01-01.jsonl").exists()
+    assert (directory / "2026-01-10.jsonl").exists()

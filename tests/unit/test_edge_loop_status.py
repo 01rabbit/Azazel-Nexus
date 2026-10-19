@@ -216,11 +216,12 @@ def test_intake_line_shows_processed_and_never_hides_full_evidence(tmp_path, mon
     intake, _, _ = fixtures(tmp_path, monkeypatch)
     intake.update(last_accepted_at=0, last_processed_at=95, processed=40,
                   refused={"queue_full": 9, "read_deadline": 8, "overloaded": 7,
-                           "EDGE_SHAPE": 6, "evidence_segment_full": 1})
+                           "EDGE_SHAPE": 6, "evidence_segment_full": 1,
+                           "segment_from_future": 1})
     runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
     text = render(now=100)
     assert "last processed age: 5s; processed: 40; accepted: 12;" in text
-    assert "EDGE_SHAPE=6, evidence_segment_full=1" in text
+    assert "EDGE_SHAPE=6, evidence_segment_full=1, segment_from_future=1" in text
     assert text.count("evidence_segment_full") == 1
 
 

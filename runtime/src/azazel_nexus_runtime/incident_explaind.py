@@ -183,7 +183,7 @@ class Explainer:
         event = {"event_type": "edge.incident." + ("escalated" if kind == "updated" else kind),
                  **{k: t[k] for k in ("incident_id", "most_severe", "edge_would", "count")},
                  "technique_count": len(t["technique_ids"]),
-                 "occurred_at": datetime.fromtimestamp(self.clock() if kind == "closed" else t["last_update"], UTC).isoformat().replace("+00:00", "Z")}
+                 "occurred_at": datetime.fromtimestamp(t["last_update"], UTC).isoformat().replace("+00:00", "Z")}
         if kind == "closed":
             event["reason"] = t["reason"]
         try:
@@ -307,7 +307,12 @@ class Explainer:
         except Exception:  # noqa: BLE001 - corrupt durable state must not replay history
             self.refuse("cursor_refused")
             raise ValueError("cursor_refused") from None
+        self._future()
         self.checkpoint()
+
+    def _future(self):
+        if self.store.future_segment:
+            self.refused["segment_from_future"] = 1
 
     def seed(self):
         # Verify history without enqueueing it. Partial tails remain unconsumed.
@@ -503,6 +508,7 @@ class Explainer:
                              "technique_ids": t["technique_ids"], "mio": mio,
                              "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes})
         self.store.append_record(value)
+        self._future()
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:
                 row["explanation"] = explanation_summary(value)

@@ -17,6 +17,12 @@ from azazel_nexus.edge_intake import read_intake_status
 from azazel_nexus.incident_explain import read_transition
 
 
+def elapsed(step=86400):
+    """A monotonic clock that keeps up with test clocks jumping whole days."""
+    instant = iter(range(0, 2**40, step))
+    return lambda: next(instant)
+
+
 def wait_for(predicate, timeout=3):
     until = time.monotonic() + timeout
     while time.monotonic() < until:
@@ -410,20 +416,21 @@ def test_rate_limit_preserves_evidence_and_counts_status(tmp_path):
     server.finished.set()
     server._writer()
     assert server.accepted == 65
-    assert server.snapshot()["refused"]["incident_rate_limited"] == 35
+    # One source opens at most five severe incidents a minute.
+    assert server.snapshot()["refused"]["incident_rate_limited"] == 60
     assert len(next((tmp_path / "evidence").glob("*.jsonl")).read_text().splitlines()) == 65
     ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
     entries = [entry.event for entry in ledger]
     assert entries[0] == {"event_type": "edge.incident.reset", "at": 0,
                           "reason": "intake_started"}
-    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 30
+    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 5
     closed = [e for e in entries if e["event_type"] == "edge.incident.closed"]
-    assert len(closed) == 30 and all(e["reason"] == "shutdown" for e in closed)
+    assert len(closed) == 5 and all(e["reason"] == "shutdown" for e in closed)
     assert read_intake_status(server.status_path.read_bytes())["storage_failed"] is False
 
 
 def test_incident_segments_are_linked_capped_and_mark_truncation(tmp_path):
-    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=4096)
+    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=4096, monotonic=elapsed())
     event = {"event_type": "edge.incident.reset", "at": 0, "reason": "intake_started"}
     ledger.append(event, 0)
     previous = ledger.head
@@ -454,13 +461,15 @@ def test_incident_segments_are_linked_capped_and_mark_truncation(tmp_path):
 def test_received_time_leap_does_not_age_existing_segments(tmp_path, kind):
     jan20 = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
     future = daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp()
+    # Well past boot: the bound is not relaxed for time sync.
+    settled = lambda: daemon.CLOCK_SETTLE_S + 10**6  # noqa: E731
     if kind is daemon.EvidenceStore:
-        store = kind(tmp_path)
+        store = kind(tmp_path, monotonic=settled)
     else:
         directory = tmp_path / "incidents"
         directory.mkdir()
         AuditLedger(directory / "2026-01-10.jsonl", private=True).append({"at": jan20})
-        store = kind(tmp_path, jan20)
+        store = kind(tmp_path, jan20, monotonic=settled)
     old = store.directory / "2026-01-10.jsonl"
     if kind is daemon.EvidenceStore:
         old.write_text("retained evidence")
@@ -470,7 +479,55 @@ def test_received_time_leap_does_not_age_existing_segments(tmp_path, kind):
         store.append({"at": jan20}, jan20)
         store.append({"at": future}, future)
     assert old.exists()
-    assert store.path_at(future).exists()
+    # The leap is held to monotonic time: no segment is dated in 2099.
+    assert not store.path_at(future).exists()
+    assert not store.future_segment
+    # It is cut at one day past the elapsed time: the record is in Jan 21.
+    jan21 = store.path_at(jan20 + 86400)
+    assert jan21.name == "2026-01-21.jsonl"
+    if kind is daemon.EvidenceStore:
+        assert json.loads(jan21.read_text().splitlines()[-1])["received_at"] == future
+    else:
+        assert store.current == jan21
+        assert [entry.event for entry in AuditLedger(jan21)][-1] == {"at": future}
+
+
+@pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
+def test_clock_behind_at_boot_follows_time_sync(tmp_path, kind):
+    jan10 = daemon.datetime(2026, 1, 10, tzinfo=daemon.UTC).timestamp()
+    mar01 = daemon.datetime(2026, 3, 1, tzinfo=daemon.UTC).timestamp()
+    instant = [30]
+    store = (kind(tmp_path, monotonic=lambda: instant[0]) if kind is daemon.EvidenceStore
+             else kind(tmp_path, jan10, monotonic=lambda: instant[0]))
+
+    def write(now):
+        if kind is daemon.EvidenceStore:
+            store.append(record(now))
+        else:
+            store.append({"at": now}, now)
+        return store.current.name
+
+    # Booted without an RTC at the last shutdown time; time sync steps the
+    # clock forward minutes later, and segments follow it.
+    assert write(jan10) == "2026-01-10.jsonl"
+    instant[0] = 200
+    assert write(mar01) == "2026-03-01.jsonl"
+    # Past the settle window the bound holds again.
+    instant[0] = daemon.CLOCK_SETTLE_S + 200
+    assert write(mar01 + 300 * 86400) == "2026-03-02.jsonl"
+
+
+def test_clock_going_back_keeps_the_incident_chain_in_place(tmp_path):
+    jan20 = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
+    ledger = daemon.IncidentLedger(tmp_path, jan20, monotonic=lambda: 10**6)
+    ledger.append({"at": jan20}, jan20)
+    assert ledger.bounded(jan20 - 3 * 86400) == jan20 - 3 * 86400
+    ledger.append({"at": jan20 - 3 * 86400}, jan20 - 3 * 86400)
+    # A backwards clock never inserts entries before the chain head.
+    assert ledger.current == ledger.path_at(jan20)
+    assert not ledger.path_at(jan20 - 3 * 86400).exists()
+    assert [entry.event["at"] for entry in AuditLedger(ledger.current)][-2:] == [
+        jan20, jan20 - 3 * 86400]
 
 
 def test_writer_recovers_from_daily_ceiling_without_transport(tmp_path, monkeypatch):
@@ -574,7 +631,7 @@ def test_incident_retention_boundary_survives_restart_and_pending_unlink(tmp_pat
 
 @pytest.mark.parametrize("change", ["delete_first", "delete_middle", "edit_link"])
 def test_incident_missing_or_relinked_segment_refuses_startup(tmp_path, change):
-    ledger = daemon.IncidentLedger(tmp_path, 0)
+    ledger = daemon.IncidentLedger(tmp_path, 0, monotonic=elapsed())
     for day in range(3):
         ledger.append({"at": day * 86400}, day * 86400)
     if change == "edit_link":
@@ -812,3 +869,146 @@ def test_status_reader_checks_processed_fields(tmp_path):
     for key in ("processed", "last_processed_at"):
         assert read_intake_status(daemon.canonical(
             {k: v for k, v in value.items() if k != key})) is None
+
+
+def test_incident_reserve_is_not_spent_on_severe_refreshes(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=64 * 1024,
+                                   severe_reserve=16 * 1024)
+    def event(kind, severity, n):
+        return {"event_type": "edge.incident." + kind, "incident_id": f"inc-{n:016x}",
+                "most_severe": severity, "padding": "x" * 200}
+    ledger.append(event("opened", 2, 1), 0)
+    n = 1
+    while True:
+        n += 1
+        try:
+            ledger.append(event("opened", 3, n), 0)
+        except daemon.SegmentFull:
+            break
+    full = ledger.current.stat().st_size
+    # Routine refreshes of an open severe incident use the ordinary space.
+    for _ in range(200):
+        with pytest.raises(daemon.SegmentFull):
+            ledger.append(event("updated", 2, 1), 0)
+    assert ledger.current.stat().st_size - full < 1024
+    ledger.append(event("updated", 1, 1), 0)
+    with pytest.raises(daemon.SegmentFull):
+        ledger.append(event("updated", 1, 1), 0)
+    ledger.append(event("opened", 1, 10**6), 0)
+    # An ordinary incident becoming severe is a fall from its recorded
+    # severity; the tracker lets that happen only with a severe opening.
+    ledger.append(event("updated", 2, 5), 0)
+    # A severe update for an incident this ledger never recorded is not.
+    with pytest.raises(daemon.SegmentFull):
+        ledger.append(event("updated", 1, 10**7), 0)
+    ledger.append(event("closed", 1, 1), 0)
+    events = [entry.event for entry in ledger.ledger]
+    assert [(e["event_type"], e.get("most_severe")) for e in events[-4:]] == [
+        ("edge.incident.updated", 1), ("edge.incident.opened", 1),
+        ("edge.incident.updated", 2), ("edge.incident.closed", 1)]
+    ledger.ledger.verify()
+
+
+def test_severe_flood_from_one_source_does_not_hide_another_source(tmp_path):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server.tracker.monotonic = lambda: 0
+    value = edge_event()
+    # The writer runs after queueing, so stay within the 256-record queue.
+    for port in range(250):
+        value["normalized"].update(target_port=port, severity=1)
+        server.pending.put(daemon.EvidenceRecord.receive(
+            daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+    value["normalized"].update(src_ip="10.0.0.99")
+    server.pending.put(daemon.EvidenceRecord.receive(
+        daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+    server.finished.set()
+    server._writer()
+    entries = [e.event for e in AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))]
+    opened = [e["src_ip"] for e in entries if e["event_type"] == "edge.incident.opened"]
+    assert opened == ["10.0.0.8"] * 5 + ["10.0.0.99"]
+    assert server.refused["incident_rate_limited"] == 245
+
+
+def test_restart_after_future_segment_keeps_history_and_reports_it(tmp_path):
+    jan10 = daemon.datetime(2026, 1, 10, tzinfo=daemon.UTC).timestamp()
+    jan20 = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
+    future = daemon.datetime(2027, 6, 1, tzinfo=daemon.UTC).timestamp()
+    # As an earlier version did: a forward jump wrote a future segment, and
+    # that run's own retention left the history alone.
+    ledger = daemon.IncidentLedger(tmp_path, jan10, monotonic=elapsed(10**8), days=10**6)
+    for now in (jan10, jan20, future):
+        ledger.append({"at": now}, now)
+    evidence = daemon.EvidenceStore(tmp_path, monotonic=elapsed(10**8), days=10**6)
+    for now in (jan10, jan20, future):
+        evidence.append(record(now))
+    for store in (ledger, evidence):
+        assert store.path_at(future).exists()
+    # The clock is corrected: nothing within 14 days of today is aged out.
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: jan20)
+    server.pending.put(record(jan20))
+    server.finished.set()
+    server._writer()
+    for store in (server.ledger, server.store):
+        assert store.future_segment
+        assert store.path_at(jan10).exists() and store.path_at(jan20).exists()
+    # Evidence returns to today; the incident chain can only continue in
+    # the latest segment, so it stays there and the status says why.
+    assert len(server.store.path_at(jan20).read_text().splitlines()) == 2
+    assert server.ledger.current == server.ledger.path_at(future)
+    status = read_intake_status(server.status_path.read_bytes())
+    assert status["refused"]["segment_from_future"] == 1
+
+
+def test_incident_ledger_severities_follow_the_open_set(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0)
+
+    def event(kind, severity, n):
+        return {"event_type": "edge.incident." + kind, "incident_id": f"inc-{n:016x}",
+                "most_severe": severity}
+
+    ledger.append(event("opened", 3, 1), 0)
+    ledger.append(event("updated", 2, 1), 0)
+    ledger.append(event("opened", 1, 2), 0)
+    assert ledger.severities == {"inc-0000000000000001": 2, "inc-0000000000000002": 1}
+    ledger.append(event("closed", 2, 1), 0)
+    assert ledger.severities == {"inc-0000000000000002": 1}
+    for n in range(3, daemon.MAX_OPEN + 4):
+        ledger.append(event("opened", 4, n), 0)
+    # Bounded by the tracker's open limit, oldest first.
+    assert len(ledger.severities) == daemon.MAX_OPEN
+    assert "inc-0000000000000002" not in ledger.severities
+    assert f"inc-{daemon.MAX_OPEN + 3:016x}" in ledger.severities
+
+
+def test_escalation_flood_is_held_to_the_severe_budget(tmp_path):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server.tracker.monotonic = lambda: 0
+    value = edge_event()
+    # Ten sources each send ten ordinary findings, then the same ten severe
+    # (200 records, within the 256-record queue).
+    for severity in (5, 1):
+        for src in range(10):
+            for port in range(10):
+                value["normalized"].update(src_ip=f"10.0.{src}.1", target_port=port,
+                                           severity=severity)
+                server.pending.put(daemon.EvidenceRecord.receive(
+                    daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+    server.finished.set()
+    server._writer()
+    entries = [e.event for e in AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))]
+    severe = [e for e in entries if e["event_type"] == "edge.incident.updated"
+              and e["most_severe"] <= 2]
+    # The ordinary budget opened 60 (20 a source); escalating them takes
+    # severe openings, five a source and 30 a minute, so 30 become severe.
+    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 60
+    assert len(severe) == 30
+    assert {e["most_severe"] for e in entries
+            if e["event_type"] == "edge.incident.updated"} == {1, 3}
+    # 40 ordinary openings, 30 escalations and 40 severe openings refused.
+    assert server.refused["incident_rate_limited"] == 110
