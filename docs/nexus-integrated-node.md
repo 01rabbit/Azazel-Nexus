@@ -12,6 +12,9 @@ Detect -> Understand -> Decide -> Delay / Isolate / Redirect -> Explain -> Audit
 
 AZ-04 Azazel-Knowledge and AZ-06 Azazel-Deception are capacity extensions. They increase the depth, history, and engagement endurance of a complete Nexus; they do not supply capabilities that the core deployment lacks.
 
+How the pieces below are connected without moving any authority is planned in
+[the integrated defensive loop](integration-loop.md).
+
 ## Integrated topology
 
 ```text
