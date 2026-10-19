@@ -50,8 +50,9 @@ scope for this plan and needs its own decision.
   is down, Edge Core keeps detecting and deciding exactly as before; Nexus
   reports what it is missing. For intake, "down" here means its socket is
   absent or nothing listens on it. An intake process that is alive but has
-  stopped accepting (stopped by `SIGSTOP`, a frozen cgroup, or wedged) is the
-  exception: see "Never block Edge" under I1.
+  stopped accepting (stopped by `SIGSTOP`, a frozen cgroup, or wedged) is
+  covered only by an Edge Core that includes Azazel-Edge#431: see "Never block
+  Edge" under I1.
 
 ## 2. The loop, by phase
 
@@ -149,13 +150,15 @@ socket. Edge Core connects once per event and writes one line.
   does not accept (stopped by `SIGSTOP`, a frozen cgroup, a wedged process),
   the kernel queues connections until the 512-entry backlog is full, and then
   Edge's next `connect` blocks and Edge stops detecting. Nexus cannot fix that
-  from its side. The fix belongs to Edge: Azazel-Edge's intake sending is
-  being made non-blocking (sending moves to a separate thread behind a bounded
-  queue; when the queue is full Edge drops and counts the line instead of
-  waiting). Until an Edge with that change is the one packaged, an intake that
-  is alive and not accepting can stop Edge's detection, and the promise in
-  section 1 holds only while the intake socket is absent or its listener is
-  dead.
+  from its side. The fix belongs to Edge, and Edge has it
+  ([Azazel-Edge#431](https://github.com/01rabbit/Azazel-Edge/pull/431)):
+  sending moves to a separate thread behind a bounded queue of 1024 lines with
+  a 1 s write timeout, and when the queue is full Edge drops and counts the
+  line instead of waiting. An Edge Core built before that change, if it is the
+  one packaged, can still be stopped by an intake that is alive and not
+  accepting; with it, the promise in section 1 holds for a wedged intake too.
+  The pinned package version did not change with it, so check the producer
+  revision recorded with the package.
 - **Liveness.** Intake reports when it last accepted an event, and how many
   it refused, so the status screen can tell "Edge is quiet" from "Edge is not
   reaching us". It cannot tell a quiet Edge from a stopped one by itself; the
