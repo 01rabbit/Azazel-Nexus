@@ -29,6 +29,7 @@ from azazel_nexus.local_advisory import (
     read_delivered,
     read_explanation,
     read_frame,
+    read_reference,
     request_event,
     retrieval_decision,
 )
@@ -46,7 +47,7 @@ from azazel_nexus.playbook_selection import (
     retained_paths,
     selection_context,
 )
-from azazel_nexus.reasoning_playbook import Library, technique_ids
+from azazel_nexus.reasoning_playbook import Library, match, technique_ids
 
 from .knowledge_client import lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
@@ -63,6 +64,7 @@ from .systemd_notify import runtime_ready_callback
 __all__ = [
     "ACTIVATE_VERB",
     "INFER_VERB",
+    "REFERENCE_VERB",
     "REGISTRY",
     "SOCKET_NAME",
     "STAGING",
@@ -99,7 +101,16 @@ INFER_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB])
+# Separate from the route/advisory budget; callers cannot extend this ceiling.
+REFERENCE_DEADLINE_MS = 500
+REFERENCE_VERB = Verb(
+    name="mio.local.reference",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=REFERENCE_DEADLINE_MS),),
+    admits=frozenset({PrincipalClass.SERVICE}),
+    accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
+REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB, REFERENCE_VERB])
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,8 @@ class LocalRuntimeService:
         self._playbooks = library
 
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
+        if getattr(getattr(request, "verb", None), "name", None) == REFERENCE_VERB.name:
+            return self._reference(request)
         if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
             return self._infer(request, audit=audit)
         arguments = request.arguments
@@ -189,6 +202,35 @@ class LocalRuntimeService:
             readiness=verdict.readiness.value,
             reason=verdict.reason,
         ).as_document()
+
+    def _reference(self, request: Any) -> dict:
+        """Playbooks only: no provider, admission, runtime or Knowledge calls."""
+        began = time.monotonic()
+        unavailable = {"outcome": "failed", "refusal": "reference_unavailable"}
+        deadline_ms = request.arguments["deadline_ms"]
+        if not 0 < deadline_ms <= REFERENCE_DEADLINE_MS:
+            return unavailable
+        end = began + deadline_ms / 1000
+        try:
+            frame = read_frame(request.payload)
+            if self._playbooks is None or gate_frame(frame) is not None:
+                return unavailable
+            books = match(frame, self._playbooks)
+            if time.monotonic() >= end - DELIVERY_RESERVE_S:
+                return unavailable
+            options = build_options(frame, books)
+            candidate, state, support, record = retrieval_decision(frame, books, ())
+            body = delivered_document(
+                frame, books, options, candidate, options, None, "deterministic",
+                state=state, benign_evidence=support, system_record=record,
+                provenance="keyword",
+            )
+            document = read_reference({"banner": body.pop("advice"), **body})
+            if time.monotonic() >= end - DELIVERY_RESERVE_S:
+                return unavailable
+            return {"outcome": "reference", "reference": document}
+        except (FrameRefused, ValueError):
+            return unavailable
 
     def _infer(self, request: Any, *, audit: Callable[[dict], None]) -> dict:
         began = time.monotonic()
@@ -328,7 +370,8 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
         audit({"event_type": "mio.local.explanation", "reason": "explanation_dropped:" + dropped})
     reply = delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation,
                                similarities=similarities, state=state, retrieval=retrieval,
-                               benign_evidence=support, system_record=record)
+                               benign_evidence=support, system_record=record,
+                               provenance="model" if explanation else retrieval)
     read_delivered(reply)
     return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
                    "explanation_ms": (time.monotonic() - explanation_began) * 1000,
@@ -524,7 +567,8 @@ def main(
         return stop()
 
     def handle(request):
-        admissions.refresh(withdraw=withdraw, audit=ledger.append)
+        if getattr(getattr(request, "verb", None), "name", None) != REFERENCE_VERB.name:
+            admissions.refresh(withdraw=withdraw, audit=ledger.append)
         service.set_playbooks(selection.refresh(audit=ledger.append))
         return service.handle(request, audit=ledger.append)
 

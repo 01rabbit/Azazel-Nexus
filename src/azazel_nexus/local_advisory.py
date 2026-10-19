@@ -508,21 +508,42 @@ def read_explanation(text, frame, candidate, reference_text=''):
         raise ValueError('explanation_schema') from None
 
 
+# Fixed system text; never derived from provider prose or caller labels.
+_DELIVERY_BANNERS = {
+    'model': (
+        ('ローカル簡易推論（端末内の小型モデル）による候補の提示です。結論ではありません。'
+        '重要な判断は担当者が根拠を確認してから行ってください。'),
+        ('Candidates from local lightweight inference (a small on-device model). '
+        'This is not a conclusion. A responsible operator must verify the evidence before important decisions.'),
+    ),
+    'embedding': (
+        ('ローカル埋め込み照合による候補の提示です。結論ではありません。'
+        '重要な判断は担当者が根拠を確認してから行ってください。'),
+        ('Candidates from local embedding matching. This is not a conclusion. '
+        'A responsible operator must verify the evidence before important decisions.'),
+    ),
+    'keyword': (
+        ('決定論的な照合による候補の提示です。結論ではありません。'
+        '重要な判断は担当者が根拠を確認してから行ってください。'),
+        ('Candidates from deterministic keyword matching. This is not a conclusion. '
+        'A responsible operator must verify the evidence before important decisions.'),
+    ),
+}
+_TEMPLATE_NOTES = (' 使用した手順はテンプレート（未レビュー）',
+                   ' Procedures used are templates (unreviewed).')
+
+
 def delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation=None, *, similarities=(), state='none', retrieval='keyword', benign_evidence=False,
-                       system_record=False):
+                       system_record=False, provenance='keyword'):
     """System labels and trusted guidance are never concatenated with model prose."""
     ja = bool(_JAPANESE.search(frame['question']))
     title = next((o['title'] for o in options if o['option_id'] == candidate['option_id']),
                  '判定保留' if ja else 'Undetermined')
     # Nothing used is nothing reviewed: an empty selection must not read as reviewed.
     reviewed = bool(playbooks) and all(p.status == 'reviewed' for p in playbooks)
-    banner = ('ローカル簡易推論（端末内の小型モデル）による候補の提示です。結論ではありません。'
-              '重要な判断は担当者が根拠を確認してから行ってください。' if ja else
-              'Candidates from local lightweight inference (a small on-device model). '
-              'This is not a conclusion. A responsible operator must verify the evidence before important decisions.')
+    banner = _DELIVERY_BANNERS[provenance][0 if ja else 1]
     if playbooks and not reviewed:
-        banner += (' 使用した手順はテンプレート（未レビュー）' if ja
-                   else ' Procedures used are templates (unreviewed).')
+        banner += _TEMPLATE_NOTES[0 if ja else 1]
     alternatives = [{k: o[k] for k in ('option_id', 'kind', 'title')}
                     for o in ranked if o['option_id'] != candidate['option_id']]
     if benign_evidence:
@@ -579,7 +600,7 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
         fields['input_notice'] = (_INJECTION_NOTE if ja else 'Input contains untrusted instruction-like text.')
     return {'advice': banner, 'fields': fields, 'candidate': candidate, 'alternatives': alternatives,
             'match_evidence': evidence,
-            'provenance': {'route': 'local', 'model_id': model_id, 'mode': 'embedding_retrieval',
+            'provenance': {'source': provenance, 'route': 'local', 'model_id': model_id, 'mode': 'embedding_retrieval',
                            'playbooks_reviewed': reviewed, 'state': state, 'guard': None, 'retrieval': retrieval,
                            'similarities': list(similarities), 'benign_evidence': benign_evidence,
                            'system_record': system_record},
@@ -656,7 +677,7 @@ def read_delivered(reply):
     provenance = reply['provenance']
     require(type(provenance) is dict and set(provenance) == {
         'route', 'model_id', 'mode', 'playbooks_reviewed', 'state', 'guard',
-        'retrieval', 'similarities', 'benign_evidence', 'system_record'})
+        'retrieval', 'similarities', 'benign_evidence', 'system_record', 'source'})
     require(provenance['route'] == 'local' and provenance['mode'] == 'embedding_retrieval')
     require(type(provenance['playbooks_reviewed']) is bool)
     require(type(provenance['model_id']) is str
@@ -666,6 +687,13 @@ def read_delivered(reply):
     require(provenance['guard'] is None)
     require(provenance['state'] in {'clear', 'split', 'none'})
     require(provenance['retrieval'] in {'embedding', 'keyword'})
+    require(type(provenance['source']) is str and provenance['source'] in _DELIVERY_BANNERS)
+    expected_source = ('model' if reply['explanation_source'] == 'model'
+                       else provenance['retrieval'])
+    require(provenance['source'] == expected_source)
+    require(reply['advice'] in tuple(
+        banner + (_TEMPLATE_NOTES[i] if evidence and not provenance['playbooks_reviewed'] else '')
+        for i, banner in enumerate(_DELIVERY_BANNERS[provenance['source']])))
     scores = provenance['similarities']
     require(type(scores) is list and len(scores) == (len(evidence) if provenance['retrieval'] == 'embedding' else 0))
     require(all(type(v) in (int, float) and math.isfinite(v) and -1 <= v <= 1 for v in scores))
@@ -715,3 +743,19 @@ def delivered_event(reply):
     return {'event_type': 'mio.local.advisory.read',
             'digest': 'sha256:' + hashlib.sha256(raw).hexdigest(),
             'text_characters': len(reply['advice']), 'field_count': len(reply['fields'])}
+
+
+def read_reference(document):
+    """A reference is deterministic trusted guidance, never an advisory answer."""
+    if type(document) is not dict or set(document) != {'banner', 'fields', *MACHINE_FIELDS}:
+        raise ValueError('invalid_local_reference')
+    try:
+        body = read_delivered({**{k: v for k, v in document.items() if k != 'banner'},
+                               'advice': document['banner']})
+    except (KeyError, TypeError, UnicodeError) as error:
+        raise ValueError('invalid_local_reference') from error
+    if (body['provenance']['source'] != 'keyword'
+            or body['provenance']['model_id'] != 'deterministic'
+            or body['explanation_source'] != 'trusted'):
+        raise ValueError('invalid_local_reference')
+    return {'banner': body.pop('advice'), **body}

@@ -38,6 +38,8 @@ def deliver(frame, scores=(), server=None, **kw):
 def test_states_and_no_model_verdict(frame, scores, state):
     reply, _ = deliver(frame, scores)
     assert reply['provenance']['state'] == state
+    assert reply['provenance']['source'] == 'embedding'
+    assert 'local embedding matching' in reply['advice']
     assert reply['candidate']['kind'] != 'benign'
     assert read_delivered(reply)
     if state == 'none':
@@ -106,6 +108,8 @@ def test_optional_explanation_grounding_and_drop(frame):
 
     reply, _ = deliver(frame, (.8,), SimpleNamespace(infer=infer))
     assert reply['explanation_source'] == 'model' and len(calls) == 1
+    assert reply['provenance']['source'] == 'model'
+    assert 'a small on-device model' in reply['advice']
     assert read_delivered(reply)
     for reason in ('This is benign "host-1" activity.', 'Investigate host-999.', 'Run "curl -x" for host-1.'):
         with pytest.raises(ValueError):
