@@ -193,10 +193,25 @@ class Selection:
         self.attempts = deque()
         self.displaced = None
 
+    @staticmethod
+    def _selected(t, baseline):
+        """Openings, escalations past what was explained, and severe firsts.
+
+        An incident whose opening was dropped (queue full, displaced, stale)
+        has no baseline. An ordinary update of it stays unexplained, but one
+        that reaches the severe range is explained as the incident's first:
+        a severe escalation must not wait on an opening that will never come.
+        """
+        if t["event_type"] == "edge.incident.opened":
+            return baseline is None
+        if t["event_type"] != "edge.incident.updated":
+            return False
+        if baseline is None:
+            return t["most_severe"] <= SEVERE_SEVERITY
+        return t["most_severe"] < baseline
+
     def eligible(self, t):
-        old = self.explained.get(t["incident_id"])
-        return (t["event_type"] == "edge.incident.opened" and old is None
-                or t["event_type"] == "edge.incident.updated" and old is not None and t["most_severe"] < old)
+        return self._selected(t, self.explained.get(t["incident_id"]))
 
     def _priorities(self):
         severity = {}
@@ -213,10 +228,7 @@ class Selection:
             if queued["incident_id"] == t["incident_id"]:
                 baseline = (queued["most_severe"] if baseline is None
                             else min(baseline, queued["most_severe"]))
-        selected = (t["event_type"] == "edge.incident.opened" and baseline is None
-                    or t["event_type"] == "edge.incident.updated" and baseline is not None
-                    and t["most_severe"] < baseline)
-        if not selected:
+        if not self._selected(t, baseline):
             return "skipped"
         if len(self.pending) >= MAX_PENDING:
             if t["most_severe"] > SEVERE_SEVERITY:

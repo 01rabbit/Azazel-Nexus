@@ -346,7 +346,11 @@ nothing in intake, detection or Edge's observe-only decisions.
   `opened` entry more than one hour past `first_seen` is discarded as
   `stale_skipped` when drained. A displaced incident's recent row shows
   `queue_full` unless it already shows an explanation, which stays true for
-  the earlier severity and is kept.
+  the earlier severity and is kept. An incident whose opening was never
+  explained (dropped, displaced or stale) has no baseline: an ordinary update
+  of it is not explained and its row shows `queue_full` rather than awaiting
+  an explanation that will not come, while an update into the severe range is
+  explained as the incident's first.
   Entries are checkpointed in arrival order as before, so earlier cursors
   remain readable. Stale queued updates are
   checked again when drained. During outage replay and before draining, an

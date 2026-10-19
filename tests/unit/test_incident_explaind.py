@@ -932,3 +932,24 @@ def test_pending_order_survives_checkpoint_and_displaced_stays_gone(tmp_path):
     assert [o[:2] for o in order[1:3]] == [("inc-0000000000000001", "edge.incident.opened"),
                                            ("inc-0000000000000001", "edge.incident.updated")]
     assert displaced not in {o[0] for o in order}
+
+
+def test_unexplained_incident_does_not_stay_awaiting_and_severe_escalation_is_explained(tmp_path):
+    from azazel_nexus.incident_explain import MAX_PENDING
+    e = make(tmp_path)
+    for n in range(MAX_PENDING):
+        e.selection.enqueue(transition(5, incident_id=f"inc-{n:016x}"), n + 1)
+    append(e, transition(5))  # its opening finds the queue full
+    e.poll()
+    row = next(r for r in e.recent if r["incident_id"] == transition()["incident_id"])
+    assert row["explanation"]["state"] == "unavailable"
+    append(e, transition(4, "updated"))  # ordinary escalation: nothing will explain it
+    e.monotonic = lambda: 5
+    e.poll()
+    row = next(r for r in e.recent if r["incident_id"] == transition()["incident_id"])
+    assert row["explanation"]["state"] == "unavailable"
+    append(e, transition(1, "updated"))  # severe: explained as the first
+    e.monotonic = lambda: 10
+    e.poll()
+    assert any(t["incident_id"] == transition()["incident_id"] and t["most_severe"] == 1
+               for t, _ in e.selection.pending)

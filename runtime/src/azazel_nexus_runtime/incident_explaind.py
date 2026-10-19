@@ -433,7 +433,14 @@ class Explainer:
                                 self.explanation_unavailable(t["incident_id"], "stale_skipped")
                                 continue
                             result = self.selection.enqueue(t, entry.sequence)
-                            if result == "queue_full":
+                            if (result == "skipped"
+                                    and t["incident_id"] not in self.selection.explained):
+                                # An ordinary update of an incident whose opening
+                                # was never explained: nothing is coming, so the
+                                # row must not keep promising an explanation.
+                                self.explanation_unavailable(t["incident_id"], "queue_full",
+                                                             displaced=True)
+                            elif result == "queue_full":
                                 self.refuse(result)
                                 self.explanation_unavailable(t["incident_id"], result)
                             elif self.selection.displaced is not None:

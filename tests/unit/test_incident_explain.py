@@ -281,3 +281,17 @@ def test_recent_row_shows_unstored_evidence_and_keeps_it():
     for bad in (True, 0, None):
         value["incidents"][0]["evidence_stored"] = bad
         assert read_recent_incidents(json.dumps(value).encode()) is None
+
+
+def test_severe_escalation_of_an_unexplained_incident_is_explained():
+    # The opening was dropped (queue full, displaced or stale): there is no
+    # baseline. A severe escalation is still explained, as the first.
+    s = Selection()
+    assert s.enqueue(transition(4, "updated"), 1) == "skipped"
+    assert s.enqueue(transition(2, "updated"), 2) == "queued"
+    taken = s.take(0)[0]
+    assert (taken["event_type"], taken["most_severe"]) == ("edge.incident.updated", 2)
+    s.mark(taken)
+    # Once explained, further escalation needs to beat that baseline.
+    assert s.enqueue(transition(2, "updated"), 3) == "skipped"
+    assert s.enqueue(transition(1, "updated"), 4) == "queued"
