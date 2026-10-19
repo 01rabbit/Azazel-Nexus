@@ -284,11 +284,13 @@ INCIDENT_RATE = RateLimit(burst=2048, per_second=10.0)
 #: transitions (commissioning reads, unit grants); 256 covers every ordinal a
 #: commissioning read can name at once.
 SERVICE_RATE = RateLimit(burst=256, per_second=0.1)
-#: Incident records one uid may append per UTC day (auditd's clock). A whole
+#: Incident records one uid may append to one daily segment (the UTC day of
+#: `occurred_at`, the segment the record lands in). A whole
 #: day with every upstream budget saturated (60/min ordinary and 30/min severe
 #: openings and their closes, hourly whole-table closes, an escalation every
 #: other second) is about 330,000; normal operation is a tenth of that. At
-#: about 400 bytes a record this bounds a writer to roughly 200 MiB a day.
+#: about 450-500 bytes a record (20-digit counts, long close reasons) this
+#: bounds a writer to roughly 250 MiB a day.
 INCIDENT_DAILY_CAP = 524_288
 #: The last records of that day that only severe records may use.
 INCIDENT_DAILY_RESERVE = 65_536
@@ -407,12 +409,16 @@ class SegmentedLedger:
                 return head
         return 0, GENESIS_HASH
 
-    def verify(self) -> None:
+    def verify(self, *, observe: Callable[[Path, AuditEntry], None] | None = None) -> None:
         """Walk every segment in order. A boundary is not an exception.
 
         Each segment is verified against the head the previous one left, so a
         deleted or reordered file shows up as a break rather than as a chain
         that happens to start later.
+
+        `observe`, if given, sees each verified entry with its segment, so a
+        caller that needs to count something does it in this one pass instead
+        of reading the chain again.
         """
 
         expected_sequence, expected_hash = 0, GENESIS_HASH
@@ -435,6 +441,8 @@ class SegmentedLedger:
                         "to what it records"
                     )
                 expected_sequence, expected_hash = entry.sequence, entry.event_hash
+                if observe is not None:
+                    observe(segment, entry)
 
     def append(self, event: Mapping, *, day: str) -> AuditEntry:
         """One entry, at the head this ledger currently has.
@@ -520,11 +528,13 @@ class AuditService:
         self.warn = warn
         #: (uid, event_type, tier) -> [tokens, monotonic time of last refill]
         self._buckets: dict[tuple, list] = {}
-        #: The UTC day the daily counts below belong to, by this daemon's clock.
-        self._day: str | None = None
-        #: uid -> [ordinary, severe] incident records appended today.
-        self._incidents_today: dict[int, list] = {}
-        self._summaries_today = 0
+        #: segment day -> uid -> [ordinary, severe] incident records in it.
+        #: Keyed on the day a record is appended to (its segment), the same
+        #: basis the startup recount uses; days before yesterday are dropped.
+        self._incidents_by_day: dict[str, dict[int, list]] = {}
+        #: segment day -> `audit.rate_limited` records in it.
+        self._summaries_by_day: dict[str, int] = {}
+        self._recount_failed = False
         #: (uid, class, event_type, tier, limit) -> refusals not yet summarized.
         self._summary_pending: dict[tuple, int] = {}
         self._summary_last: dict[tuple, float] = {}
@@ -549,8 +559,10 @@ class AuditService:
         to report.
         """
 
+        self._incidents_by_day, self._summaries_by_day = {}, {}
+        self._recount_failed = False
         try:
-            self.ledger.verify()
+            self.ledger.verify(observe=self._recount)
             self.head_sequence, self.head_hash = self.ledger.head()
         except AuditChainBroken as exc:
             self.verified = False
@@ -558,51 +570,61 @@ class AuditService:
             return
         self.verified = True
         self.break_reason = None
-        self._seed_daily_counts()
+        if self._recount_failed:
+            # Fail open, and say so: the chain itself verified, so refusing
+            # every writer over a counting fault would turn a bookkeeping
+            # error into an audit outage. The token buckets still bound the
+            # rest of the day. No record content is logged.
+            self._incidents_by_day, self._summaries_by_day = {}, {}
+            self.warn("azazel-auditd: daily rate-limit counts could not be rebuilt "
+                      "at startup; they start from zero for this run")
+        self._today()
 
     # -- limits -----------------------------------------------------------
 
-    def _today(self) -> str:
-        day = datetime.fromtimestamp(self.clock(), UTC).strftime("%Y-%m-%d")
-        if day != self._day:
-            self._day = day
-            self._incidents_today = {}
-            self._summaries_today = 0
-        return day
+    def _recount(self, segment: Path, entry: AuditEntry) -> None:
+        """Rebuild the daily counts during the startup verify pass. Never raises.
 
-    def _seed_daily_counts(self) -> None:
-        """Count what today's segment already holds, so a restart is not a reset.
-
-        Only the explainer may write incident records, so every one of them in
-        today's segment is its. Unreadable or absent: the counts start at zero
-        and the token buckets still bound the rest of the day.
+        Only the explainer may write incident records, so every one of them is
+        its. A segment's name is the day its records were appended to, which
+        is the basis the running counts use too.
         """
 
-        try:
-            day = self._today()
-            segment = self.ledger.current_segment(day=day)
-            if not segment.exists():
-                return
-            ordinary = severe = summaries = 0
-            for entry in AuditLedger(segment):
-                kind = entry.event.get("event_type", "")
-                if kind == "audit.rate_limited":
-                    summaries += 1
-                elif kind.startswith("edge.incident."):
-                    if _severe(entry.event):
-                        severe += 1
-                    else:
-                        ordinary += 1
-        except (AuditUnavailable, AuditChainBroken, OSError, ValueError, TypeError):
+        if self._recount_failed:
             return
-        if self._explainer_uid is not None and (ordinary or severe):
-            self._incidents_today[self._explainer_uid] = [ordinary, severe]
-        self._summaries_today = summaries
+        try:
+            day = segment.stem
+            kind = entry.event.get("event_type", "")
+            if kind == "audit.rate_limited":
+                self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
+            elif kind.startswith("edge.incident.") and self._explainer_uid is not None:
+                counts = self._incidents_by_day.setdefault(day, {}).setdefault(
+                    self._explainer_uid, [0, 0])
+                counts[1 if _severe(entry.event) else 0] += 1
+        except Exception:  # noqa: BLE001 - reported once by start()
+            self._recount_failed = True
 
-    def _admit(self, principal, event_type: str, event: Mapping) -> tuple | None:
-        """Spend a token and, for an incident, a place in today's count.
+    def _today(self) -> str:
+        """auditd's current UTC day. Drops counts for days before yesterday.
 
-        Returns the daily-count slot to increment once the append succeeds, or
+        Only days strictly older than yesterday go, so a clock stepping
+        backwards keeps the counts of the day it stepped back from rather
+        than silently wiping them.
+        """
+
+        now = self.clock()
+        day = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+        oldest = datetime.fromtimestamp(now - 86400, UTC).strftime("%Y-%m-%d")
+        for counts in (self._incidents_by_day, self._summaries_by_day):
+            for stale in [d for d in counts if d < oldest]:
+                del counts[stale]
+        return day
+
+    def _admit(self, principal, event_type: str, event: Mapping, day: str) -> tuple | None:
+        """Spend a token and, for an incident, a place in `day`'s count.
+
+        `day` is the segment the record is about to be appended to. Returns
+        the daily-count slot to increment once the append succeeds, or
         `None`. Root is not limited: it writes the bootstrap records, which are
         a handful per start, and a root that wanted to fill the disk would not
         need this socket to do it.
@@ -614,7 +636,7 @@ class AuditService:
         tier = ("severe" if _severe(event) else "ordinary") if incident else "service"
         limit = INCIDENT_RATE if incident else SERVICE_RATE
         if incident:
-            counts = self._incidents_today.setdefault(principal.uid, [0, 0])
+            counts = self._incidents_by_day.get(day, {}).get(principal.uid, (0, 0))
             ceiling = (INCIDENT_DAILY_CAP if tier == "severe"
                        else INCIDENT_DAILY_CAP - INCIDENT_DAILY_RESERVE)
             if counts[0] + counts[1] >= ceiling:
@@ -631,7 +653,7 @@ class AuditService:
             self._refuse(principal, event_type, tier, "rate")
         bucket[0] -= 1.0
         if incident:
-            return (principal.uid, 1 if tier == "severe" else 0)
+            return (day, principal.uid, 1 if tier == "severe" else 0)
         return None
 
     def _refuse(self, principal, event_type: str, tier: str, limit: str) -> None:
@@ -658,26 +680,27 @@ class AuditService:
             count = self._summary_pending.get(key, 0)
             if not count or now - self._summary_last.get(key, float("-inf")) < SUMMARY_WINDOW_S:
                 continue
-            day = self._today()
-            if self._summaries_today >= SUMMARY_DAILY_CAP:
-                self.summaries_dropped += count
-                del self._summary_pending[key]
-                continue
-            uid, principal_class, event_type, tier, limit = key
-            occurred_at = datetime.fromtimestamp(self.clock(), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             try:
+                at = self.clock()
+                day = self._today()
+                if self._summaries_by_day.get(day, 0) >= SUMMARY_DAILY_CAP:
+                    self.summaries_dropped += count
+                    del self._summary_pending[key]
+                    continue
+                uid, principal_class, event_type, tier, limit = key
+                occurred_at = datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                 event = _bind_event("audit.rate_limited", {
                     "writer_uid": uid, "writer_class": principal_class,
                     "refused_event_type": event_type, "tier": tier, "limit": limit,
                     "refused": count, "occurred_at": occurred_at,
                 })
                 entry = self.ledger.append(event, day=day)
-            except (AuditUnavailable, RequestRefused, OSError):
+            except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
                 # Keep the count; a later tick tries again after the window.
                 self._summary_last[key] = now
                 continue
             self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
-            self._summaries_today += 1
+            self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
             self._summary_last[key] = now
             del self._summary_pending[key]
 
@@ -770,9 +793,9 @@ class AuditService:
         # is the day it happened, not the day it arrived.
         day = event["occurred_at"][:10]
         # Last, so only a record that would otherwise be appended spends a
-        # token or a place in the day.
+        # token or a place in the day. The day is the segment it lands in.
         self._today()
-        slot = self._admit(getattr(request, "principal", None), event_type, event)
+        slot = self._admit(getattr(request, "principal", None), event_type, event, day)
         try:
             entry = self.ledger.append(event, day=day)
         except AuditUnavailable:
@@ -780,7 +803,8 @@ class AuditService:
             # not would make the next entry's hash depend on that claim.
             raise
         if slot is not None:
-            self._incidents_today.setdefault(slot[0], [0, 0])[slot[1]] += 1
+            slot_day, uid, index = slot
+            self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
         self.head_sequence = entry.sequence
         self.head_hash = entry.event_hash
         return {"sequence": entry.sequence, "event_hash": entry.event_hash}

@@ -719,7 +719,9 @@ writer can make it grow. Each `audit.append` from a non-root principal spends a
 token from a bucket keyed on the kernel-derived (`SO_PEERCRED`) uid, the event
 type and, for incident records, a tier: **severe** when `most_severe` is 2 or
 below (Edge's isolate/redirect range, as in intake), otherwise **ordinary**.
-Incident records also count against a per-uid daily cap (auditd's UTC day).
+Incident records also count against a per-uid daily cap. The day is the
+segment the record lands in (the UTC day of its `occurred_at`), so a close
+from 23:59:58 delivered at 00:00:03 counts against yesterday's segment.
 Over either limit the request is refused with `rate_limited` (detail `rate` or
 `daily`) and nothing is appended. For the explainer that is a final refusal:
 it is dropped at once and counted in `audit_forward_refused`, not retried, and
@@ -729,7 +731,7 @@ nothing latches.
 | --- | --- | --- |
 | Incident bucket, per (uid, `edge.incident.*` type, tier) | burst 2048, refill 10/s (600/min) | Openings: 60/min ordinary, 30/min severe. Escalations: at most seven ordinary falls per incident, so at most 420/min. Closes follow openings, plus a whole 1024-incident table closing at once |
 | Other non-root writers, per (uid, event type) | burst 256, refill 0.1/s (6/min) | Unit grants and commissioning reads are rare transitions; 256 covers every interface ordinal at once |
-| Incident daily cap, per uid | 524,288 records a UTC day | A whole day with every upstream budget saturated is about 330,000; the normal ~10–16 MiB/day is about 30,000–45,000 |
+| Incident daily cap, per uid | 524,288 records a daily segment | A whole day with every upstream budget saturated is about 330,000; the normal ~10–16 MiB/day is about 30,000–45,000 |
 | Severe reserve inside the daily cap | the last 65,536 | Ordinary records stop at 458,752; severe openings, escalations and closes can use the rest |
 | `audit.rate_limited` summaries | one per (uid, type, tier, limit) per 300 s; at most 1024 a day | — |
 | root (`audit.bootstrap.append`, root `audit.append`) | not limited | A handful of bootstrap records per start; root does not need this socket to fill a disk |
@@ -738,7 +740,9 @@ nothing latches.
   openings, escalations and closes each have their own, so a flood of ordinary
   openings exhausts only the ordinary-opening bucket: severe records, and the
   closes of incidents already opened, are still written. At the daily cap the
-  ordinary records stop first and severe ones continue into the reserve. The
+  ordinary records stop first, **closes of ordinary incidents included**, and
+  severe ones continue into the reserve; the incident ledger still holds those
+  closes. The
   tier is the writer's own claim: a compromised explainer can call every
   record severe, and then only the total cap bounds it. That is the cap's job.
 - **Non-binding in normal operation.** Each bucket refills well above the
@@ -746,7 +750,11 @@ nothing latches.
   `tests/unit/test_runtime_auditd_limits.py` drives every budget at once
   (through the real ledger, and for a whole simulated day through the
   admission path) and asserts that nothing is refused. The root E2E run
-  (I5) records no `audit.rate_limited` entry.
+  (I5) records no `audit.rate_limited` entry. One exception: an explainer
+  catching up after a long stop reads the incident ledger at up to 64
+  transitions a second, faster than the 10/s refill, so once a bucket's
+  2048-record burst is spent some of its replayed ordinary records can be
+  refused (`audit_forward_refused`); the incident ledger keeps them.
 - **Visibility without amplification.** A refusal is not written to auditd's
   `refusals.jsonl` one line at a time (that would move a flood from the chain
   to that file). Instead auditd counts it, and writes one `audit.rate_limited`
@@ -759,9 +767,16 @@ nothing latches.
   `audit.append`, so no caller can forge or bury one, and they never pass
   through the limiter. `audit.verify` (operator) also returns the totals since
   start as `rate_limited` (`<limit>:<event_type>:<tier>` → count).
-- **Restarts.** At startup auditd counts the incident records and summaries
-  already in today's segment, so a restart does not reopen the day's caps. The
-  token buckets restart full; their burst is the bound for that.
+- **Restarts and clocks.** auditd rebuilds the per-segment counts of incident
+  records and summaries during the startup verification pass it already
+  makes (one read of the chain, no second scan), so a restart does not reopen
+  a day's caps. If that counting itself fails while the chain verifies, auditd
+  fails open: the counts start from zero and it logs one line,
+  `daily rate-limit counts could not be rebuilt at startup`, with no record
+  content; the token buckets still bound the rest of the day. Counts are kept
+  per segment day and only days before yesterday (by auditd's clock) are
+  dropped, so a clock stepping backwards does not wipe them. The token
+  buckets restart full; their burst is the bound for that.
 - **Capacity warning, not deletion.** `audit.verify` returns `capacity`:
   `chain_bytes` (the sum of segment sizes, by `stat`), `segments`,
   `filesystem_free_bytes` and `warning`. The serve loop re-reads it hourly and,
@@ -780,8 +795,8 @@ nothing latches.
 `/var/lib` capacity estimate. The records with limits and retention total
 about 0.9 GiB (#211). The audit chain has no retention: in normal operation it
 grows about 10–16 MiB a day (roughly 4–6 GiB a year), and with the limits
-above a misbehaving explainer can add at most about 200 MiB a day (524,288
-records of about 400 bytes), plus at most about 3.4 MiB a day for each other
+above a misbehaving explainer can add at most about 250 MiB a day (524,288
+records of about 450–500 bytes with full-width counts), plus at most about 3.4 MiB a day for each other
 non-root writer and event type and 0.4 MiB of summaries. The M.I.O. route
 ledger is the other unbounded store (#211 S4). Size `/var/lib` for the normal
 yearly growth plus headroom, and treat the capacity warning as the prompt for

@@ -147,8 +147,9 @@ def test_a_whole_day_at_the_upstream_budgets_is_never_refused(tmp_path, monkeypa
 
     def admit(event_type, severity):
         nonlocal admitted
-        slot = service._admit(EXPLAINER, event_type, {"most_severe": severity})
-        service._incidents_today.setdefault(slot[0], [0, 0])[slot[1]] += 1
+        day, uid, index = service._admit(EXPLAINER, event_type, {"most_severe": severity},
+                                         "2026-10-19")
+        service._incidents_by_day.setdefault(day, {}).setdefault(uid, [0, 0])[index] += 1
         admitted += 1
 
     service._today()
@@ -196,7 +197,7 @@ def test_a_capped_day_is_bounded_in_bytes(tmp_path, monkeypatch):
     segment = service.ledger.segments()[-1]
     widest = max(len(line) for line in segment.read_bytes().splitlines())
     # Counts are small here; a real count is up to 20 digits.
-    assert (widest + 20) * INCIDENT_DAILY_CAP < 210 * 2**20
+    assert (widest + 120) * INCIDENT_DAILY_CAP < 256 * 2**20
 
 
 # -- the rate limit --------------------------------------------------------
@@ -293,7 +294,7 @@ def test_a_restart_does_not_reset_the_daily_count(tmp_path, monkeypatch):
     _incident(service, clocks, "opened", 5)
     _incident(service, clocks, "opened", 1)
     restarted, _ = _service(tmp_path, monkeypatch, clocks)
-    assert restarted._incidents_today == {EXPLAINER.uid: [1, 1]}
+    assert restarted._incidents_by_day == {"2026-10-19": {EXPLAINER.uid: [1, 1]}}
     _incident(restarted, clocks, "opened", 5)
     assert _refused(lambda: _incident(restarted, clocks, "opened", 5)) == "daily"
     _incident(restarted, clocks, "opened", 1)
@@ -349,7 +350,7 @@ def test_summaries_have_a_daily_ceiling(tmp_path, monkeypatch):
     assert service.summaries_dropped == 3 * 3 + 2 * 2
     # A restart counts today's summaries, so it does not reopen the ceiling.
     restarted, _ = _service(tmp_path, monkeypatch, clocks)
-    assert restarted._summaries_today == 2
+    assert restarted._summaries_by_day == {"2026-10-19": 2}
     assert SUMMARY_DAILY_CAP * 400 < 1 * 2**20
 
 
@@ -376,6 +377,127 @@ def test_a_summary_that_cannot_be_appended_is_kept_not_raised(tmp_path, monkeypa
     clocks.advance(SUMMARY_WINDOW_S)
     service.tick()
     assert [s["refused"] for s in _summaries(service)] == [1]
+
+
+def test_a_summary_failing_unexpectedly_still_refuses_as_rate_limited(tmp_path, monkeypatch):
+    """Any fault writing the summary keeps the caller's answer `rate_limited`."""
+
+    monkeypatch.setattr(auditd, "INCIDENT_RATE", RateLimit(burst=0, per_second=0.0))
+    service, clocks = _service(tmp_path, monkeypatch)
+
+    def broken(*_, **__):
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(service.ledger, "append", broken)
+    assert _refused(lambda: _incident(service, clocks)) == "rate"
+    bind = auditd._bind_event
+
+    def bind_all_but_summaries(event_type, payload):
+        if event_type == "audit.rate_limited":
+            raise ValueError("unexpected")
+        return bind(event_type, payload)
+
+    monkeypatch.setattr(auditd, "_bind_event", bind_all_but_summaries)
+    clocks.advance(SUMMARY_WINDOW_S)
+    assert _refused(lambda: _incident(service, clocks)) == "rate"
+    assert sum(service._summary_pending.values()) == 2
+    service.tick()
+
+
+# -- the day a count belongs to --------------------------------------------
+
+
+def test_startup_recounts_in_the_verify_pass(tmp_path, monkeypatch):
+    """One read of the chain before READY, not a second scan of today."""
+
+    service, clocks = _service(tmp_path, monkeypatch)
+    _incident(service, clocks, "opened", 5)
+    _incident(service, clocks, "opened", 1)
+    reads = []
+    original = auditd.AuditLedger.__iter__
+
+    def counted(self):
+        reads.append(self.path.name)
+        return original(self)
+
+    monkeypatch.setattr(auditd.AuditLedger, "__iter__", counted)
+    observed = []
+    verify = SegmentedLedger.verify
+
+    def spy(self, **kwargs):
+        observed.append(kwargs.get("observe"))
+        return verify(self, **kwargs)
+
+    monkeypatch.setattr(SegmentedLedger, "verify", spy)
+    restarted, _ = _service(tmp_path, monkeypatch, clocks)
+    assert reads == ["2026-10-19.jsonl"]
+    assert len(observed) == 1 and observed[0] is not None
+    assert restarted._incidents_by_day == {"2026-10-19": {EXPLAINER.uid: [1, 1]}}
+
+
+def test_a_recount_fault_fails_open_and_is_logged_once(tmp_path, monkeypatch):
+    service, clocks = _service(tmp_path, monkeypatch)
+    _incident(service, clocks, "opened", 5)
+    _incident(service, clocks, "opened", 5)
+
+    def broken(_):
+        raise TypeError("unexpected")
+
+    monkeypatch.setattr(auditd, "_severe", broken)
+    warnings = []
+    restarted, _ = _service(tmp_path, monkeypatch, clocks, warnings=warnings)
+    assert restarted.verified and restarted._incidents_by_day == {}
+    assert len(warnings) == 1 and "could not be rebuilt" in warnings[0]
+    assert "inc-" not in warnings[0]
+
+
+def test_counts_follow_the_segment_a_record_lands_in_across_midnight(tmp_path, monkeypatch):
+    monkeypatch.setattr(auditd, "INCIDENT_DAILY_CAP", 2)
+    monkeypatch.setattr(auditd, "INCIDENT_DAILY_RESERVE", 0)
+    clocks = Clocks(at=START + 3)  # 2026-10-19T00:00:03Z
+    service, _ = _service(tmp_path, monkeypatch, clocks)
+
+    def late(second):
+        payload = {"incident_id": f"inc-{next(_COUNTER):016x}", "most_severe": 5,
+                   "edge_would": "notify", "count": 1, "technique_count": 1,
+                   "occurred_at": f"2026-10-18T23:59:{second:02d}Z"}
+        return service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                                       payload))
+
+    # Records from before midnight land in yesterday's segment, and count there.
+    late(57)
+    late(58)
+    assert [p.name for p in service.ledger.segments()] == ["2026-10-18.jsonl"]
+    assert _refused(lambda: late(59)) == "daily"
+    # Today's segment is a new count, even though the clock day did not change.
+    _incident(service, clocks, "opened", 5)
+    assert service._incidents_by_day == {"2026-10-18": {EXPLAINER.uid: [2, 0]},
+                                         "2026-10-19": {EXPLAINER.uid: [1, 0]}}
+    # A restart rebuilds the same counts on the same basis.
+    restarted, _ = _service(tmp_path, monkeypatch, clocks)
+    assert restarted._incidents_by_day == service._incidents_by_day
+
+
+def test_a_clock_stepping_backwards_does_not_wipe_the_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(auditd, "INCIDENT_DAILY_CAP", 2)
+    monkeypatch.setattr(auditd, "INCIDENT_DAILY_RESERVE", 0)
+    service, clocks = _service(tmp_path, monkeypatch)  # 2026-10-19T01:00:00Z
+    _incident(service, clocks)
+    _incident(service, clocks)
+    assert _refused(lambda: _incident(service, clocks)) == "daily"
+    clocks.wall -= 3 * 86400
+    service.tick()
+    service._today()
+    assert service._incidents_by_day == {"2026-10-19": {EXPLAINER.uid: [2, 0]}}
+    clocks.wall += 3 * 86400 + 60
+    assert _refused(lambda: _incident(service, clocks)) == "daily"
+    # Only days before yesterday go.
+    clocks.advance(86400)
+    service._today()
+    assert "2026-10-19" in service._incidents_by_day
+    clocks.advance(86400)
+    service._today()
+    assert service._incidents_by_day == {}
 
 
 def test_rate_limited_refusals_do_not_reach_the_refusal_file(tmp_path):
