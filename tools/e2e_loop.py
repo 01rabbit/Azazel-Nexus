@@ -14,11 +14,20 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
 
 from tools.e2e_harness import Daemon, Harness, NotExecuted, ROOT, account_credentials, request
+
+#: Edge's stdout for eve_events(): the two alerts' decisions, in order, and
+#: their Suricata severities (lower is more severe; the second escalates).
+EDGE_DECISIONS = ["notify", "isolate"]
+EDGE_SEVERITIES = [4, 1]
+#: Stopping intake makes the explainer forward a close; confirmed on its own
+#: budget, so a slow observation phase does not starve the shutdown check.
+CLOSE_SECONDS = 10
 
 
 def golden_lines() -> list[bytes]:
@@ -45,6 +54,13 @@ def eve_events() -> list[dict]:
 
 
 def edge_environment(harness: Harness, intake: Path, state: Path) -> dict:
+    """The unit profile's Environment= values, with test paths relocated.
+
+    Only the socket, eve and release ledger paths and AZAZEL_EVE_FROM_START
+    differ; with --edge-redirect-policy, so does AZAZEL_REDIRECT_POLICY_PATH
+    (a copy inside the root). Otherwise that path stays the shipped one, which
+    normally does not exist here, so Edge takes its no-policy default.
+    """
     from azazel_nexus_runtime.hardening import PROFILES
 
     profile = next(p for p in PROFILES if p.unit == "azazel-edge-core.service")
@@ -53,30 +69,67 @@ def edge_environment(harness: Harness, intake: Path, state: Path) -> dict:
     environment.update(AZAZEL_AI_SOCKET=str(intake), AZAZEL_EVE_PATH=str(state / "eve.json"),
                        AZAZEL_DEFENSE_RELEASE_LEDGER=str(state / "release-ledger.json"),
                        AZAZEL_EVE_FROM_START="true")
+    if harness.edge_redirect_policy is not None:
+        environment["AZAZEL_REDIRECT_POLICY_PATH"] = str(state / "redirect_policy.yaml")
     return environment
 
 
-def wait_until(deadline, check, processes=()):
-    """One shared 20-second budget for startup and all observation polling."""
+def wait_until(deadline, check, processes=(), what="observation"):
+    """Poll until check() passes or the deadline.
+
+    Only "not there yet" is retried: an assertion, or a file not yet created.
+    Live JSONL is read as complete lines (`complete`), and status snapshots are
+    replaced atomically, so a decode or chain error is a real defect and is
+    raised at once rather than waited out.
+    """
     last = "condition not reached"
     while time.monotonic() < deadline:
         for daemon in processes:
             assert daemon.process.poll() is None, f"{daemon.module} exited during the loop"
         try:
             return check()
-        except (AssertionError, FileNotFoundError, json.JSONDecodeError) as exc:
+        except (AssertionError, FileNotFoundError) as exc:
             last = str(exc)
         time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-    raise AssertionError(f"integrated loop observation deadline: {last}")
+    raise AssertionError(f"integrated loop {what} deadline: {last}")
+
+
+def complete(data: bytes) -> bytes:
+    """Up to the last newline: a writer may be mid-append while we poll."""
+    return data[:data.rfind(b"\n") + 1]
 
 
 def json_lines(directory: Path) -> list[dict]:
     return [json.loads(line) for path in sorted(directory.glob("*.jsonl"))
-            for line in path.read_text().splitlines()]
+            for line in complete(path.read_bytes()).splitlines()]
+
+
+def ledger_events(directory: Path) -> list[dict]:
+    """Verify and read a live ledger's complete records.
+
+    A torn final append is not a record yet; it is left out of a copy rather
+    than retried around. Every complete line is still verified strictly.
+    """
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+
+    with tempfile.TemporaryDirectory() as scratch:
+        for segment in sorted(directory.glob("*.jsonl")):
+            (Path(scratch) / segment.name).write_bytes(complete(segment.read_bytes()))
+        ledger = SegmentedLedger(Path(scratch))
+        ledger.verify()
+        return [entry.event for entry in ledger]
 
 
 def sockets(root: Path) -> set[Path]:
-    return {p for p in root.rglob("*") if stat.S_ISSOCK(p.lstat().st_mode)}
+    found = set()
+    for path in root.rglob("*"):
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            continue  # removed while walking: no longer a socket that exists
+        if stat.S_ISSOCK(mode):
+            found.add(path)
+    return found
 
 
 def prepare_accounts(harness: Harness):
@@ -114,7 +167,6 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
     from azazel_nexus.edge_intake import EvidenceRecord, parse_edge_event
     from azazel_nexus.incident_explain import read_record, read_recent_incidents
     from azazel_nexus.routing import Route
-    from azazel_nexus_runtime.auditd import SegmentedLedger
     from tools.e2e_stages import _cli
 
     base = harness.root / "var/lib/azazel"
@@ -128,9 +180,7 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
     evidence = json_lines(base / "edge-intake/evidence")
     assert [r["digest"] for r in evidence] == [r.digest for r in expected], "evidence digests"
     assert [r["event"] for r in evidence] == [r.event.as_dict() for r in expected]
-    incidents = SegmentedLedger(base / "edge-incidents")
-    incidents.verify()
-    transitions = [e.event for e in incidents if e.event["event_type"] in
+    transitions = [e for e in ledger_events(base / "edge-incidents") if e["event_type"] in
                    {"edge.incident.opened", "edge.incident.updated"}]
     assert len(transitions) == count, "opened/escalated intake transitions"
     ident = transitions[0]["incident_id"]
@@ -157,9 +207,9 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
     rows = [r for r in recent["incidents"] if r["incident_id"] == ident]
     assert len(rows) == 1 and rows[0]["count"] == count
     assert rows[0]["explanation"]["knowledge_refs"], "recent citations not published"
-    audit = SegmentedLedger(base / "state/audit")
-    audit.verify()
-    forwarded = [e.event for e in audit if e.event.get("incident_id") == ident]
+    assert any(r["technique_id"] == "T1110" for r in rows[0]["explanation"]["knowledge_refs"]), \
+        "T1110 citation"
+    forwarded = [e for e in ledger_events(base / "state/audit") if e.get("incident_id") == ident]
     assert [e["event_type"] for e in forwarded] == ["edge.incident.opened", "edge.incident.escalated"]
     assert [e["edge_would"] for e in forwarded] == [t["edge_would"] for t in transitions]
     # auditd authenticates the sole incident writer; unit tests cover every
@@ -175,6 +225,7 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
 
 
 def assert_private(harness: Harness, events: list[dict], status: str):
+    """No eve address in status, recent.json, explanation records or the audit chain."""
     base = harness.root / "var/lib/azazel"
     public = [status, (base / "run/incident-explain-status/recent.json").read_text()]
     for directory in (base / "incident-explain/explanations", base / "state/audit"):
@@ -184,20 +235,55 @@ def assert_private(harness: Harness, events: list[dict], status: str):
             assert all(event[field] not in text for text in public), "EVE address leaked"
 
 
+def joined_trace(trace: str) -> list[str]:
+    """strace -f lines, with each `<unfinished ...>` call joined to its resumption.
+
+    Another thread's syscall can interleave, so strace splits a call into
+    `PID connect(... <unfinished ...>` and `PID <... connect resumed>) = 0`.
+    """
+    import re
+    lines, pending = [], {}
+    for line in trace.splitlines():
+        line = line.rstrip()
+        resumed = re.match(r"(\d*)\s*<\.\.\. \w+ resumed>(.*)$", line)
+        if line.endswith("<unfinished ...>"):
+            pending[re.match(r"\d*", line).group()] = len(lines)
+            lines.append(line[:-len("<unfinished ...>")].rstrip())
+        elif resumed and resumed.group(1) in pending:
+            lines[pending.pop(resumed.group(1))] += resumed.group(2)
+        else:
+            lines.append(line)
+    return lines
+
+
 def assert_edge_trace(trace: str, intake: Path, count: int):
     import re
-    calls = [line for line in trace.splitlines() if re.search(r"\bconnect\(", line)]
-    assert len(calls) == count, "Edge connected more/less than once per alert"
+    lines = joined_trace(trace)
+    trace = "\n".join(lines)
+    calls = [line for line in lines if re.search(r"\bconnect\(", line)]
     assert all('sa_family=AF_UNIX' in line and f'sun_path="{intake}"' in line
-               and line.endswith("= 0") for line in calls), "Edge connected elsewhere"
+               for line in calls), "Edge connected elsewhere"
+    failed = [line for line in calls if not line.endswith("= 0")]
+    assert not failed, f"Edge's intake connect failed: {failed[0][-80:]}"
+    assert len(calls) == count, "Edge connected more/less than once per alert"
     assert not re.search(r"\b(bind|listen|accept4?|sendmsg|sendmmsg|socketpair)\(", trace), \
         "Edge network operation"
     # Rust writes to a connected stream with sendto(fd, ..., NULL, 0): data on
     # the intake connection. Any sendto naming a destination is a new peer.
-    assert all(re.search(r", NULL, 0\) = ", line) for line in trace.splitlines()
+    assert all(re.search(r", NULL, 0\) = ", line) for line in lines
                if re.search(r"\bsendto\(", line)), "Edge sent to an address"
-    assert all("AF_UNIX" in line for line in trace.splitlines()
+    assert all("AF_UNIX" in line for line in lines
                if re.search(r"\bsocket\(", line)), "Edge non-Unix socket"
+
+
+def assert_edge_decisions(stdout: bytes):
+    """Edge's own stdout: one dry-run decision per alert, escalating."""
+    lines = [json.loads(line) for line in complete(stdout).splitlines()]
+    assert len(lines) == 2, "non-alert produced output"
+    assert all(line["enforcement_status"]["dry_run"] is True for line in lines)
+    assert [line["defense"]["action"] for line in lines] == EDGE_DECISIONS, "Edge decisions"
+    assert [line["normalized"]["severity"] for line in lines] == EDGE_SEVERITIES, "severities"
+    return len(lines)
 
 
 def replay(harness: Harness, intake: Path, deadline: float):
@@ -245,6 +331,9 @@ def integrated_loop(harness: Harness) -> str:
     if harness.edge_core:
         shutil.copyfile(harness.edge_core.resolve(), state / "azazel-edge-core")
         (state / "azazel-edge-core").chmod(0o755)
+        if harness.edge_redirect_policy is not None:
+            shutil.copyfile(harness.edge_redirect_policy, state / "redirect_policy.yaml")
+            (state / "redirect_policy.yaml").chmod(0o644)
         (state / "eve.json").write_text("".join(json.dumps(e) + "\n" for e in events))
     deadline = time.monotonic() + 20
     daemons = []
@@ -281,7 +370,7 @@ def integrated_loop(harness: Harness) -> str:
             stack.callback(stop_producer)
             def observations():
                 assert producer.poll() is None, "Edge/strace exited before completing the loop"
-                return (state / "stdout.jsonl").read_bytes().splitlines()
+                return complete((state / "stdout.jsonl").read_bytes()).splitlines()
         else:
             replay(harness, intake, deadline)
             def observations():
@@ -290,22 +379,19 @@ def integrated_loop(harness: Harness) -> str:
             harness, observations(), events, baseline_sockets | expected), daemons)
         if producer:
             stop_producer()
-            lines = (state / "stdout.jsonl").read_bytes().splitlines()
-            assert len(lines) == 2, "non-alert produced output"
-            assert all(json.loads(line)["enforcement_status"]["dry_run"] is True for line in lines)
-            assert_edge_trace((state / "network.trace").read_text(), intake, len(lines))
+            count = assert_edge_decisions((state / "stdout.jsonl").read_bytes())
+            assert_edge_trace((state / "network.trace").read_text(), intake, count)
         # Stop intake first; let the still-live explainer forward its close.
         daemons[3].__exit__()
         assert daemons[3].process.returncode == 0, "intake did not shut down cleanly"
-        from azazel_nexus_runtime.auditd import SegmentedLedger
         def closed():
             for directory in (base / "edge-incidents", base / "state/audit"):
-                ledger = SegmentedLedger(directory)
-                ledger.verify()
-                assert any(e.event.get("incident_id") == ident and
-                           e.event["event_type"] == "edge.incident.closed" and
-                           e.event["reason"] == "shutdown" for e in ledger), "shutdown close missing"
-        wait_until(deadline, closed, [d for d in daemons if d is not daemons[3]])
+                assert any(e.get("incident_id") == ident and
+                           e["event_type"] == "edge.incident.closed" and
+                           e["reason"] == "shutdown" for e in ledger_events(directory)), \
+                    "shutdown close missing"
+        wait_until(time.monotonic() + CLOSE_SECONDS, closed,
+                   [d for d in daemons if d is not daemons[3]], what="shutdown close")
         assert_private(harness, events, _cli(harness, ["status"]))
     assert all(d.process.returncode == 0 for d in daemons), "daemon shutdown failed"
     assert sockets(harness.root) == baseline_sockets, "stage sockets remain after shutdown"
@@ -313,5 +399,6 @@ def integrated_loop(harness: Harness) -> str:
     return (f"{source}; azedge producer, azintake/azexplain/azaudit/azmioentry/azknowledge daemons "
             "with real uid/gid and unit supplementary groups; two alerts, escalation, evidence digests, "
             "deterministic handoff, T1110 citation, private status and verified audit; shutdown close. "
-            + ("Edge network syscalls: intake only." if producer else
+            + ("Edge decided notify then isolate (dry run); network syscalls: intake only."
+               if producer else
                "Replay sends only producer fixture lines; Edge's non-alert filtering is not exercised."))

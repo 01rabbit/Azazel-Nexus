@@ -124,6 +124,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--edge-core", type=Path, default=None,
         help="built azazel-edge-core binary for the integrated loop (test tooling only)",
     )
+    parser.add_argument(
+        "--edge-redirect-policy", type=Path, default=None,
+        help="redirect policy copied into the root for --edge-core (test tooling only)",
+    )
     arguments = parser.parse_args(argv)
 
     # The default is a dedicated directory; an explicit one is checked the
@@ -137,7 +141,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     from tools.e2e_stages import run_all  # noqa: PLC0415 - kept beside this file
 
-    harness = Harness(root, edge_core=arguments.edge_core)
+    harness = Harness(root, edge_core=arguments.edge_core,
+                      edge_redirect_policy=arguments.edge_redirect_policy)
     run_all(harness)
     text = harness.report.render()
     print(text)

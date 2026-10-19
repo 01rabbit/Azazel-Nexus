@@ -17,6 +17,7 @@ import grp
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,7 +108,8 @@ MAX_ROOT_BYTES = 107 - LONGEST_DECLARED_SOCKET
 
 
 class Harness:
-    def __init__(self, root: Path, *, edge_core: Path | None = None) -> None:
+    def __init__(self, root: Path, *, edge_core: Path | None = None,
+                 edge_redirect_policy: Path | None = None) -> None:
         encoded = str(root).encode("utf-8")
         if len(encoded) > MAX_ROOT_BYTES:
             raise ValueError(
@@ -118,6 +120,7 @@ class Harness:
             )
         self.root = root
         self.edge_core = edge_core
+        self.edge_redirect_policy = edge_redirect_policy
         self.report = Report()
         self.env = {
             **os.environ,
@@ -254,30 +257,37 @@ class Daemon:
                        "stopped = threading.Event(); "
                        "signal.signal(signal.SIGTERM, lambda *_: stopped.set()); "
                        "raise SystemExit(daemon.main(stop=stopped.is_set))"]
+        env = self.harness.env
+        if self.account:
+            # Only what a unit would set; not the caller's NOTIFY_SOCKET etc.
+            env = {k: env[k] for k in ("AZAZEL_ROOT", "PYTHONPATH", "PATH", "LANG") if k in env}
+        # A file, not an unread pipe a chatty daemon could fill and block on.
+        self.output = tempfile.TemporaryFile()
         self.process = subprocess.Popen(
             command,
-            env=self.harness.env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            env=env,
+            stdout=self.output,
+            stderr=subprocess.STDOUT,
             **(account_credentials(self.account) if self.account else {}),
         )
-        deadline = min(time.monotonic() + STARTUP_DEADLINE_SECONDS,
-                       self.deadline if self.deadline is not None else float("inf"))
+        own = time.monotonic() + STARTUP_DEADLINE_SECONDS
+        deadline = min(own, self.deadline if self.deadline is not None else float("inf"))
         while time.monotonic() < deadline:
             if (self.ready_path or self.path).exists():
                 return self
             if self.process.poll() is not None:
-                _, err = self.process.communicate()
+                self.output.seek(0)
+                err = self.output.read()
+                self.output.close()
                 raise RuntimeError(
                     f"{self.module} exited before binding: "
                     f"{err.decode('utf-8', 'replace').strip()[:400]}"
                 )
             time.sleep(0.02)
         self.__exit__()
-        raise RuntimeError(
-            f"{self.module} did not bind {self.path} within "
-            f"{STARTUP_DEADLINE_SECONDS:.0f}s"
-        )
+        limit = (f"within {STARTUP_DEADLINE_SECONDS:.0f}s" if deadline == own
+                 else "before the stage's shared deadline")
+        raise RuntimeError(f"{self.module} did not create {self.ready_path or self.path} {limit}")
 
     def __exit__(self, *exc) -> None:
         if self.process is None:
@@ -288,5 +298,7 @@ class Daemon:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=5)
+        finally:
+            self.output.close()
 
 

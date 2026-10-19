@@ -1,6 +1,6 @@
 # The integrated defensive loop
 
-Status: **I0–I3 and I5 (container) implemented; I4 waits for Edge; I5 on the VM pending**
+Status: **I0–I3 implemented; I5 harness stage implemented (container); I5 Edge packager x86_64 path and VM run remain; I4 waits for Edge**
 ([#190](https://github.com/01rabbit/Azazel-Nexus/issues/190): I0 #191, I1 #192,
 I2 #193, I3 #194, I4 #196, I5 #195).
 Related: [integrated-node doctrine](nexus-integrated-node.md) ·
@@ -506,17 +506,30 @@ the bundle the offline-import stage admitted), `mio-entryd` (azmioentry),
 `edge-intaked` (azintake) and `incident-explaind` (azexplain).
 
 ```text
-python tools/e2e.py --root <short dir> --edge-core <built azazel-edge-core>
+python tools/e2e.py --root <short dir> --edge-core <built azazel-edge-core> \
+    [--edge-redirect-policy <redirect_policy.yaml>]
 ```
 
-- **With `--edge-core`** the real Edge Core binary runs as `azedge` with exactly
-  the shipped unit's environment (read from the `azazel-edge-core` profile;
-  only the socket, eve and ledger paths are relocated into the harness root),
-  over a Suricata `eve.json` with two alerts on one incident (the second more
-  severe) and one non-alert event Edge must drop. It runs under `strace`: the
-  only connections are `AF_UNIX` to the intake socket, writes on that
-  connection carry no destination, and nothing binds, listens or opens another
-  family. Its stdout shows only `dry_run` decisions.
+The root is a scratch directory; remove it with `rm -rf <short dir>` afterwards
+(as root, since the stage chowns files to the service accounts).
+
+- **With `--edge-core`** the real Edge Core binary runs as `azedge`. Its
+  environment is the `Environment=` set of the `azazel-edge-core` profile with
+  exactly four keys changed: the intake socket, eve and release ledger paths
+  (relocated into the harness root) and `AZAZEL_EVE_FROM_START=true`. The
+  profile's `AZAZEL_REDIRECT_POLICY_PATH` is an installed path outside the
+  harness root that normally does not exist there, so Edge takes its
+  no-policy default; `--edge-redirect-policy` (test tooling, optional) copies
+  a policy into the root and points that key at the copy. The unit's sandbox
+  (`PrivateNetwork=` and the rest) is not reproduced and systemd does not
+  start it; instead it runs under `strace -f`. Calls strace splits across
+  threads (`<unfinished ...>` / `<... resumed>`) are joined per pid first.
+  The only connections are `AF_UNIX` to the intake socket and they succeed (a
+  failed connect is reported as such), writes on that connection carry no
+  destination, and nothing binds, listens or opens another family. The eve
+  file holds two alerts on one incident (the second more severe) and one
+  non-alert event Edge must drop; Edge's stdout holds exactly two `dry_run`
+  decisions, `notify` then `isolate`, at Suricata severity 4 then 1.
 - **Without it** the stage replays the golden fixture lines as the `azedge`
   peer would, and says so in its result; Edge's own filtering is then not
   exercised.
@@ -525,13 +538,31 @@ python tools/e2e.py --root <short dir> --edge-core <built azazel-edge-core>
   `opened` then `updated` (escalation) with Edge's decisions unchanged and the
   rule's technique ids; the explainer stored two explanations on the
   deterministic handoff with Knowledge `available` and a citation for one of
-  the event's techniques; `recent.json` lists the incident with citations;
-  `auditd`'s chain verifies and holds `edge.incident.opened` and
-  `edge.incident.escalated`; `azazel-nexus status` shows the incident with
-  "Edge would … (observe-only, not executed)" and the citation; no address from
-  the eve file appears in status, `recent.json`, explanation records or the
-  audit chain; no unexpected socket exists; on shutdown the incident is closed
-  (`shutdown`) in both ledgers.
+  the event's techniques; `recent.json` lists the incident with citations,
+  including T1110; `auditd`'s chain verifies and holds `edge.incident.opened`
+  and `edge.incident.escalated`; `azazel-nexus status` shows the incident with
+  "Edge would … (observe-only, not executed)" and the citation; neither eve
+  address appears in the four places checked: `azazel-nexus status` output,
+  `recent.json`, the explanation records and the audit chain (evidence and
+  the incident ledger are private and not checked); no unexpected socket was
+  newly created under the root (sockets present before the stage are the
+  baseline); on shutdown the incident is closed (`shutdown`) in both ledgers.
+- Live files are read while daemons append. Only newline-terminated lines
+  count (Edge stdout, evidence, explanations, and ledgers, whose complete
+  lines are verified in a copy), and status snapshots are replaced
+  atomically, so polling retries only an unmet assertion or a file not yet
+  created; a decode or chain error fails at once. Startup and observation
+  share one 20-second budget; the shutdown close has its own 10 seconds.
+- Shutdown. `edge-intaked` and `incident-explaind` handle `SIGTERM`
+  themselves. The product mains of `auditd`, `knowledge-lited` and
+  `mio-entryd` install no `SIGTERM` handler; their `main()` accepts a stop
+  predicate, so the harness starts them through `python -c` with a handler
+  that sets it. The clean shutdown asserted here (exit status 0, sockets
+  removed) is therefore the product's serve-loop cleanup reached through
+  that harness-supplied path, not a claim about how those three units react
+  to `SIGTERM` under systemd. Daemons run with only `AZAZEL_ROOT`,
+  `PYTHONPATH`, `PATH` and `LANG` from the caller (no `NOTIFY_SOCKET`), and
+  their output goes to a temporary file reported if they fail to start.
 - It needs Linux and root (real accounts and `SO_PEERCRED`); otherwise it is
   *not executed*, like the other account stages.
 

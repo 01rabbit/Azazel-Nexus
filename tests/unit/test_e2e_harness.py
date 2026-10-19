@@ -726,29 +726,42 @@ def test_integrated_loop_requires_import_and_accounts(short_root, monkeypatch):
         "Knowledge Lite offline import", "install accounts")
 
 
-@pytest.mark.parametrize("binary", [None, "/tmp/built-edge-core"])
-def test_edge_core_option_reaches_harness(short_root, monkeypatch, binary):
+@pytest.mark.parametrize("binary,policy", [(None, None), ("/tmp/built-edge-core", None),
+                                           ("/tmp/built-edge-core", "/tmp/redirect_policy.yaml")])
+def test_edge_core_option_reaches_harness(short_root, monkeypatch, binary, policy):
     from tools import e2e, e2e_stages
     found = []
-    monkeypatch.setattr(e2e_stages, "run_all", lambda harness: found.append(harness.edge_core))
+    monkeypatch.setattr(e2e_stages, "run_all", lambda harness: found.append(
+        (harness.edge_core, harness.edge_redirect_policy)))
     args = ["--root", str(short_root)] + (["--edge-core", binary] if binary else [])
+    args += ["--edge-redirect-policy", policy] if policy else []
     assert e2e.main(args) == 0
-    assert found == [Path(binary) if binary else None]
+    assert found == [(binary and Path(binary), policy and Path(policy))]
 
 
-def test_edge_environment_is_the_shipped_profile_with_only_test_paths(short_root, monkeypatch):
+@pytest.mark.parametrize("policy", [False, True])
+def test_edge_environment_is_the_shipped_profile_with_only_test_paths(short_root, monkeypatch,
+                                                                       policy):
     from tools.e2e_loop import edge_environment
     from azazel_nexus_runtime.hardening import PROFILES
     profile = next(p for p in PROFILES if p.unit == "azazel-edge-core.service")
-    expected = dict(v.split("=", 1) for k, v in profile.extra if k == "Environment")
+    shipped = dict(v.split("=", 1) for k, v in profile.extra if k == "Environment")
+    assert shipped["AZAZEL_DEFENSE_ENFORCE"] == "false"
+    assert shipped["AZAZEL_DEFENSE_DRY_RUN"] == "true"
     monkeypatch.setenv("AZAZEL_DEFENSE_ENFORCE", "true")
     monkeypatch.setenv("AZAZEL_FORWARD_LOG", "true")
     state, intake = short_root / "edge", short_root / "intake.sock"
-    actual = edge_environment(Harness(short_root), intake, state)
-    expected.update(AZAZEL_AI_SOCKET=str(intake), AZAZEL_EVE_PATH=str(state / "eve.json"),
-                    AZAZEL_DEFENSE_RELEASE_LEDGER=str(state / "release-ledger.json"),
-                    AZAZEL_EVE_FROM_START="true")
-    assert actual == expected
+    harness = Harness(short_root, edge_redirect_policy=Path("/elsewhere/p.yaml") if policy else None)
+    actual = edge_environment(harness, intake, state)
+    relocated = {"AZAZEL_AI_SOCKET": str(intake), "AZAZEL_EVE_PATH": str(state / "eve.json"),
+                 "AZAZEL_DEFENSE_RELEASE_LEDGER": str(state / "release-ledger.json"),
+                 "AZAZEL_EVE_FROM_START": "true"}
+    if policy:
+        relocated["AZAZEL_REDIRECT_POLICY_PATH"] = str(state / "redirect_policy.yaml")
+    # Any other key added, dropped or changed shows up in this difference.
+    changed = {k for k in actual.keys() | shipped.keys() if actual.get(k) != shipped.get(k)}
+    assert changed == relocated.keys()
+    assert {k: actual[k] for k in changed} == relocated
 
 
 @pytest.fixture
@@ -922,3 +935,115 @@ def test_activation_stage_uses_empty_edge_paths(tmp_path, monkeypatch):
     monkeypatch.setattr("azazel_nexus_runtime.activated.installed_baseline_state", host_read)
     assert "supporting units granted" in _activation(harness)
     assert len(seen) == 1
+
+
+def test_live_jsonl_is_read_as_complete_lines_only(tmp_path):
+    from tools.e2e_loop import complete, json_lines
+    assert complete(b"") == b"" and complete(b'{"a": 1') == b""
+    assert complete(b'{"a": 1}\n{"b"') == b'{"a": 1}\n'
+    (tmp_path / "x.jsonl").write_bytes(b'{"a": 1}\n{"b": ')
+    assert json_lines(tmp_path) == [{"a": 1}]
+
+
+def test_live_ledger_drops_a_torn_append_but_not_a_broken_chain(tmp_path):
+    from azazel_nexus.audit import AuditChainBroken
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+    from tools.e2e_loop import ledger_events
+    ledger = SegmentedLedger(tmp_path)
+    for n in range(2):
+        ledger.append({"event_type": "x", "n": n}, day="2026-10-20")
+    segment = tmp_path / "2026-10-20.jsonl"
+    whole = segment.read_bytes()
+    segment.write_bytes(whole + b'{"sequence": 3, "eve')
+    assert [e["n"] for e in ledger_events(tmp_path)] == [0, 1]
+    first, second = whole.splitlines(keepends=True)
+    segment.write_bytes(second + first)
+    with pytest.raises(AuditChainBroken):
+        ledger_events(tmp_path)
+
+
+def test_wait_until_retries_absence_but_raises_a_decode_error_at_once():
+    import json
+    import time
+    from tools.e2e_loop import wait_until
+    calls = []
+    def check():
+        calls.append(1)
+        if len(calls) == 1:
+            raise FileNotFoundError("not yet")
+        raise json.JSONDecodeError("torn", "", 0)
+    with pytest.raises(json.JSONDecodeError):
+        wait_until(time.monotonic() + 5, check)
+    assert len(calls) == 2
+    with pytest.raises(AssertionError, match="shutdown close deadline: never"):
+        wait_until(time.monotonic() + 0.1, lambda: (_ for _ in ()).throw(AssertionError("never")),
+                   what="shutdown close")
+
+
+def test_socket_scan_ignores_a_path_removed_while_walking(short_root, monkeypatch):
+    import socket as sockets_module
+    from tools import e2e_loop
+    live = short_root / "a.sock"
+    with sockets_module.socket(sockets_module.AF_UNIX) as server:
+        server.bind(str(live))
+        gone = short_root / "gone.sock"
+        real = Path.rglob
+        monkeypatch.setattr(Path, "rglob", lambda self, pattern: [*real(self, pattern), gone])
+        assert e2e_loop.sockets(short_root) == {live}
+
+
+INTAKE_CONNECT = 'connect(3, {sa_family=AF_UNIX, sun_path="/tmp/intake.sock"}, 20'
+
+
+def test_edge_connection_trace_joins_calls_strace_split_across_threads():
+    from tools.e2e_loop import assert_edge_trace, joined_trace
+    trace = ('7 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 3\n'
+             f'7 {INTAKE_CONNECT} <unfinished ...>\n'
+             '8 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 <unfinished ...>\n'
+             '7 <... connect resumed>) = 0\n'
+             '8 <... socket resumed>) = 4\n'
+             '7 sendto(3, "{}\\n", 3, MSG_NOSIGNAL, NULL, 0 <unfinished ...>\n'
+             '7 <... sendto resumed>) = 3\n')
+    assert joined_trace(trace)[1] == f"7 {INTAKE_CONNECT}) = 0"
+    assert_edge_trace(trace, Path("/tmp/intake.sock"), 1)
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_edge_connection_trace_names_a_failed_intake_connect(split):
+    from tools.e2e_loop import assert_edge_trace
+    result = ") = -1 ENOENT (No such file or directory)"
+    trace = (f"5 {INTAKE_CONNECT} <unfinished ...>\n5 <... connect resumed>{result}\n"
+             if split else f"5 {INTAKE_CONNECT}{result}\n")
+    with pytest.raises(AssertionError, match="intake connect failed"):
+        assert_edge_trace(trace, Path("/tmp/intake.sock"), 1)
+
+
+def test_edge_decisions_are_the_fixture_escalation():
+    import json
+    from tools.e2e_loop import EDGE_DECISIONS, EDGE_SEVERITIES, assert_edge_decisions, golden_lines
+    lines = [json.loads(line) for line in golden_lines()]
+    assert [line["defense"]["action"] for line in lines] == EDGE_DECISIONS
+    assert [line["normalized"]["severity"] for line in lines] == EDGE_SEVERITIES
+    for line in lines:
+        line["enforcement_status"]["dry_run"] = True
+    stdout = b"".join(json.dumps(line).encode() + b"\n" for line in lines)
+    assert assert_edge_decisions(stdout + b'{"torn') == 2
+    lines.reverse()
+    with pytest.raises(AssertionError):
+        assert_edge_decisions(b"".join(json.dumps(line).encode() + b"\n" for line in lines))
+
+
+def test_daemon_startup_reports_its_output_and_the_deadline_that_ran_out(short_root, monkeypatch):
+    import time
+    from tools import e2e_harness
+    real = e2e_harness.subprocess.Popen
+    code = []
+    monkeypatch.setattr(e2e_harness.subprocess, "Popen",
+                        lambda command, **kw: real([sys.executable, "-c", code[0]], **kw))
+    harness = Harness(short_root)
+    code[:] = ["import sys; print('chatty ' * 20000); sys.exit('broken config')"]
+    with pytest.raises(RuntimeError, match="exited before binding: chatty"):
+        e2e_harness.Daemon(harness, "auditd", "audit").__enter__()
+    code[:] = ["import time; time.sleep(30)"]
+    with pytest.raises(RuntimeError, match="before the stage's shared deadline"):
+        e2e_harness.Daemon(harness, "auditd", "audit", deadline=time.monotonic() + 0.3).__enter__()
