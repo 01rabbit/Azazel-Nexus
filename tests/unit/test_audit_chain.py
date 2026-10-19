@@ -207,3 +207,102 @@ def test_the_chain_needs_nothing_installed():
         "precisely because it is a product-local trust decision, and the CORE "
         "path must write a ledger with nothing installed"
     )
+
+
+# -- the head is read from the end (#175) -------------------------------------
+
+
+def test_the_head_reads_only_the_last_record(ledger):
+    # Everything before the last record is unreadable, so a head that walked
+    # the file would raise. One that reads from the end never reaches it, and
+    # so costs the same however long the ledger grows.
+    ledger.append({"event_type": "a"})
+    last = ledger.path.read_text(encoding="utf-8")
+    ledger.path.write_text("not a record\n" * 50_000 + last, encoding="utf-8")
+
+    assert ledger.head() == (1, json.loads(last)["event_hash"])
+    with pytest.raises(AuditChainBroken):
+        ledger.verify()
+
+
+def test_the_head_agrees_with_a_full_walk(ledger):
+    for index in range(40):
+        ledger.append({"event_type": "e", "n": index})
+    *_, final = ledger
+
+    assert ledger.head() == (final.sequence, final.event_hash) == (40, final.event_hash)
+
+
+def test_a_last_record_longer_than_one_read_is_found_whole(ledger):
+    ledger.append({"event_type": "a"})
+    entry = ledger.append({"event_type": "b", "blob": "x" * 200_000})
+
+    assert ledger.head() == (2, entry.event_hash)
+
+
+def test_trailing_blank_lines_do_not_hide_the_head(ledger):
+    entry = ledger.append({"event_type": "a"})
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write("\n  \n\n")
+
+    assert ledger.head() == (1, entry.event_hash)
+
+
+def test_a_blank_file_is_an_empty_chain(ledger):
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_text("\n\n", encoding="utf-8")
+
+    assert ledger.head() == (0, GENESIS_HASH)
+
+
+def test_a_torn_last_record_breaks_the_head(ledger):
+    ledger.append({"event_type": "a"})
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"sequence": 2, "previous')
+
+    with pytest.raises(AuditChainBroken):
+        ledger.head()
+    with pytest.raises(AuditChainBroken):
+        ledger.append({"event_type": "b"})
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"sequence": 1, "previous_hash": "0", "event": {}}',
+        '["sequence", 1]',
+        '"a string"',
+        '{"sequence": "1", "previous_hash": "0", "event_hash": "0", "event": {}}',
+        '{"sequence": 1, "previous_hash": "0", "event_hash": "0", "event": []}',
+    ],
+    ids=["missing-field", "array", "string", "string-sequence", "array-event"],
+)
+def test_a_malformed_record_is_a_broken_chain_not_a_crash(ledger, line):
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_text(line + "\n", encoding="utf-8")
+
+    with pytest.raises(AuditChainBroken):
+        ledger.head()
+    with pytest.raises(AuditChainBroken):
+        ledger.verify()
+
+
+def test_a_ledger_that_is_not_utf8_is_a_broken_chain(ledger):
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_bytes(b"\xff\xfe\n")
+
+    with pytest.raises(AuditChainBroken):
+        ledger.head()
+    with pytest.raises(AuditChainBroken):
+        ledger.verify()
+
+
+def test_a_line_separator_inside_an_event_is_not_a_record_boundary(ledger):
+    # `ensure_ascii=False` writes U+2028 raw. Splitting on it would cut one
+    # valid record in two and report the chain as broken.
+    ledger.append({"event_type": "a", "note": "one two\x85three"})
+    entry = ledger.append({"event_type": "b"})
+
+    ledger.verify()
+    assert [e.sequence for e in ledger] == [1, 2]
+    assert ledger.head() == (2, entry.event_hash)

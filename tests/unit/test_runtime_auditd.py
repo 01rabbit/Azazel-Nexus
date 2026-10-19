@@ -209,6 +209,23 @@ def test_the_first_entry_of_a_segment_chains_onto_the_previous_one(tmp_path):
     assert second_day[0].previous_hash == first_day[-1].event_hash
 
 
+def test_the_head_comes_from_the_latest_segment_with_a_record(tmp_path):
+    """An append reads one record, not every segment (#175)."""
+
+    service = _service(tmp_path)
+    _append(service, day="2026-09-20")
+    second = _append(service, day="2026-09-21")
+    # An empty later file, as a crash between create and write would leave.
+    (service.ledger.root / "2026-09-22.jsonl").write_text("", encoding="utf-8")
+    # An earlier segment the head no longer needs to read.
+    first = service.ledger.root / "2026-09-20.jsonl"
+    first.write_text("not a record\n" + first.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert service.ledger.head() == (2, second["event_hash"])
+    with pytest.raises(AuditChainBroken):
+        service.ledger.verify()
+
+
 def test_a_deleted_segment_is_a_break_rather_than_a_shorter_chain(tmp_path):
     """A set of short chains that each verify is what a deletion would leave."""
 

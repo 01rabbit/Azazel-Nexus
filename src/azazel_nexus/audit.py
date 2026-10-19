@@ -52,6 +52,9 @@ __all__ = [
 #: lost in a transcription.
 GENESIS_HASH = "0" * 64
 
+#: How far back `AuditLedger.head` reads at a time while looking for the last record.
+_TAIL_CHUNK = 64 * 1024
+
 
 class AuditChainBroken(Exception):
     """The chain does not continue from where the caller thinks it does."""
@@ -118,32 +121,82 @@ class AuditLedger:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
+        except UnicodeDecodeError as exc:
+            raise AuditChainBroken(f"{self.path} is not UTF-8: {exc}") from exc
         except OSError as exc:  # pragma: no cover - surfaced by callers
             raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
 
-        for number, line in enumerate(text.splitlines(), start=1):
+        # Split on the newline `append` writes and nothing else. `splitlines`
+        # also breaks on U+2028 and friends, which `ensure_ascii=False` leaves
+        # raw inside a string, so one valid record would read as two halves.
+        for number, line in enumerate(text.split("\n"), start=1):
             if not line.strip():
                 continue
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise AuditChainBroken(
-                    f"{self.path} line {number} is not a record: {exc}"
-                ) from exc
-            yield AuditEntry(
+            yield self._parse(line, f"line {number}")
+
+    def head(self) -> tuple[int, str]:
+        """`(last sequence, last hash)`, or `(0, GENESIS_HASH)` for an empty chain.
+
+        Only the last record is read, from the end of the file, so the cost of
+        asking does not grow with the ledger. It is still read from the file on
+        every call rather than remembered, for the reason the class gives.
+        Whether the records before it chain is `verify`'s question, not this one.
+        """
+
+        try:
+            with self.path.open("rb") as handle:
+                position = handle.seek(0, os.SEEK_END)
+                tail = b""
+                while True:
+                    stripped = tail.rstrip()
+                    cut = stripped.rfind(b"\n")
+                    if cut >= 0 or position == 0:
+                        last = stripped[cut + 1:]
+                        break
+                    step = min(_TAIL_CHUNK, position)
+                    position -= step
+                    handle.seek(position)
+                    tail = handle.read(step) + tail
+        except FileNotFoundError:
+            return 0, GENESIS_HASH
+        except OSError as exc:  # pragma: no cover - surfaced by callers
+            raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
+
+        if not last.strip():
+            return 0, GENESIS_HASH
+        try:
+            line = last.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AuditChainBroken(f"{self.path} last record is not UTF-8: {exc}") from exc
+        entry = self._parse(line, "last record")
+        return entry.sequence, entry.event_hash
+
+    def _parse(self, line: str, where: str) -> AuditEntry:
+        """One record, or `AuditChainBroken`. Never a `KeyError`.
+
+        Callers refuse on `AuditChainBroken`; a record missing a field is the
+        same broken chain and must reach them as the same refusal.
+        """
+
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AuditChainBroken(f"{self.path} {where} is not a record: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise AuditChainBroken(f"{self.path} {where} is not a JSON object")
+        try:
+            entry = AuditEntry(
                 sequence=raw["sequence"],
                 previous_hash=raw["previous_hash"],
                 event_hash=raw["event_hash"],
                 event=raw["event"],
             )
-
-    def head(self) -> tuple[int, str]:
-        """`(last sequence, last hash)`, or `(0, GENESIS_HASH)` for an empty chain."""
-
-        sequence, digest = 0, GENESIS_HASH
-        for entry in self:
-            sequence, digest = entry.sequence, entry.event_hash
-        return sequence, digest
+        except KeyError as exc:
+            raise AuditChainBroken(f"{self.path} {where} has no {exc.args[0]!r}") from None
+        if (type(entry.sequence) is not int or not isinstance(entry.previous_hash, str)
+                or not isinstance(entry.event_hash, str) or not isinstance(entry.event, dict)):
+            raise AuditChainBroken(f"{self.path} {where} has a field of the wrong type")
+        return entry
 
     def verify(self) -> None:
         """Walk the chain. Raise on the first link that does not hold.
@@ -200,8 +253,9 @@ class AuditLedger:
         It is the one way to write an entry at a position this file did not
         derive, so the caller supplying it is the caller responsible for
         having derived it from the whole chain.
-        `azazel_nexus_runtime.auditd.SegmentedLedger` is that caller, and it
-        reads every segment first.
+        `azazel_nexus_runtime.auditd.SegmentedLedger` is that caller: its
+        service verifies every segment at start and refuses while broken, and
+        each append then takes the head from the latest segment's last record.
         """
 
         sequence, previous_hash = (
