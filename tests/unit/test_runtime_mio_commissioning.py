@@ -258,3 +258,20 @@ def test_the_unit_fallback_value_is_core_without_verifying(credentials, monkeypa
     monkeypatch.setattr(mio_commissioning, "verify_retained_commissioning_proposal",
                         lambda **kw: pytest.fail("fallback reached verification"))
     assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+@pytest.mark.parametrize("uid,mode,accepted", [
+    (0, 0o100440, True),        # systemd 257: root:root 0440 + ACL for the unit user
+    ("self", 0o100400, True),   # older systemd: copy chowned to the unit user
+    (0, 0o100444, False),       # readable by others
+    (0, 0o100640, False),       # writable
+    ("other", 0o100440, False), # neither root nor this process
+])
+def test_systemd_credential_ownership_is_accepted_as_systemd_presents_it(uid, mode, accepted):
+    import os
+
+    info = SimpleNamespace(st_uid=os.geteuid() if uid == "self" else 0 if uid == 0 else os.geteuid() + 1,
+                           st_mode=mode)
+    assert commissioning_draft._credential_owner_ok(info) is accepted
+    # Ordinary private drafts keep the strict owner-only rule.
+    assert commissioning_draft._private_owner_ok(info) is (uid == "self" and mode == 0o100400)

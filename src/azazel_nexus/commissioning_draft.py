@@ -135,13 +135,29 @@ def _check_protection(directory_fd: int) -> None:
         raise DraftRefused("commissioning protection key is unavailable")
 
 
-def _read_private(directory_fd: int, name: str, *, maximum: int) -> bytes:
+def _private_owner_ok(info) -> bool:
+    return info.st_uid == os.geteuid() and not info.st_mode & 0o077
+
+
+def _credential_owner_ok(info) -> bool:
+    """A systemd credential copy, as the unit's user sees it.
+
+    systemd 257 presents each copy as root:root 0440 with an ACL granting the
+    service user read (observed on the Debian 13 test VM); older releases
+    chown a 0400 copy to the service user. Accept exactly those: never
+    writable, never readable by others, owned by root or by this process.
+    """
+    return (info.st_uid in (0, os.geteuid()) and not info.st_mode & 0o222
+            and not info.st_mode & 0o007)
+
+
+def _read_private(directory_fd: int, name: str, *, maximum: int, owner_ok=_private_owner_ok) -> bytes:
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                  dir_fd=directory_fd)
     try:
         before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
-                or before.st_mode & 0o077 or before.st_nlink != 1
+        if (not stat.S_ISREG(before.st_mode) or not owner_ok(before)
+                or before.st_nlink != 1
                 or not 0 < before.st_size <= maximum):
             raise DraftRefused("private draft input refused")
         result = bytearray()
@@ -343,21 +359,33 @@ def read_proposal_review_inputs() -> tuple[bytes, bytes, bytes]:
 _MIO_CREDENTIALS = Path("/run/credentials/azazel-mio-entryd.service")
 
 
+def _open_credentials() -> int:
+    """The fixed credential directory, which systemd creates root-owned 0550."""
+    fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    info = os.fstat(fd)
+    if info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022:
+        os.close(fd)
+        raise DraftRefused("credential directory refused")
+    return fd
+
+
 def read_mio_profile_review_inputs() -> tuple[bytes, bytes, bytes]:
     """Read the entry unit's private snapshot, never its protection key.
 
     systemd copies only the minimal profile directory for the unprivileged
-    unit as service-owned 0400 credentials. Sources remain root-owned 0600; only the existing signature verifier may
+    unit as read-only credentials (see `_credential_owner_ok`). Sources remain
+    root-owned 0600; only the existing signature verifier may
     establish a confirmed ceiling from these bounded bytes. No environment or
     caller-selected path may replace the system-unit credential directory.
     """
-    fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = _open_credentials()
     try:
         expected = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[0],
-                                 maximum=MAX_APPROVAL_BYTES)
+                                 maximum=MAX_APPROVAL_BYTES, owner_ok=_credential_owner_ok)
         payload = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[1],
-                                maximum=MAX_APPROVAL_BYTES)
-        signature = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[2], maximum=64)
+                                maximum=MAX_APPROVAL_BYTES, owner_ok=_credential_owner_ok)
+        signature = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[2], maximum=64,
+                                  owner_ok=_credential_owner_ok)
         if expected != payload or len(signature) != 64:
             raise DraftRefused("profile review inputs inconsistent")
         return expected, payload, signature
@@ -368,10 +396,12 @@ def read_mio_profile_review_inputs() -> tuple[bytes, bytes, bytes]:
 def read_mio_verification_inputs() -> tuple[bytes, ...]:
     """Bounded exact credential bytes, including public trust and declaration."""
     proposal = read_mio_profile_review_inputs()
-    fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = _open_credentials()
     try:
         return (*proposal,
-                _read_private(fd, "mio-trust", maximum=MAX_APPROVAL_BYTES),
-                _read_private(fd, "mio-node", maximum=MAX_APPROVAL_BYTES))
+                _read_private(fd, "mio-trust", maximum=MAX_APPROVAL_BYTES,
+                              owner_ok=_credential_owner_ok),
+                _read_private(fd, "mio-node", maximum=MAX_APPROVAL_BYTES,
+                              owner_ok=_credential_owner_ok))
     finally:
         os.close(fd)
