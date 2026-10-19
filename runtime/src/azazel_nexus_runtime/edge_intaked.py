@@ -659,7 +659,12 @@ class IntakeServer:
                             # from exhausting reader slots before the next select.
                             buffer = bytearray()
                             code = None
-                            if inline < MAX_INLINE:
+                            # Past the inline budget a connection is read only
+                            # when no reader slot is left: dropping one whose
+                            # line has already arrived would turn a burst from
+                            # Edge's forwarding thread into lost events. A full
+                            # backlog is never left for Edge to wait on.
+                            if inline < MAX_INLINE or len(clients) >= self.max_connections:
                                 inline += 1
                                 code = receive(incoming, buffer)
                             if code is not None:
