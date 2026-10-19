@@ -318,6 +318,7 @@ def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, 
 
     monkeypatch.setattr(Path, "is_file", is_file)
     monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 1000)
     facts = flow.collect(args(), now=NOW, root=tmp_path)
     assert facts["commissioning"].state is State.REFUSED
     assert facts["bootstrap-deployment"].state is State.REFUSED
@@ -429,3 +430,12 @@ def test_setup_redacts_malformed_mio_ledger_in_text_and_json(tmp_path, fixture_h
             reading = json.loads(text)["mio"]
             assert reading["state"] is None and reading["ceiling"] is None
             assert reading["reasons"] == {} and reading["observed_at"] is None
+
+
+def test_permission_denied_as_root_does_not_advise_running_as_root(monkeypatch):
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 0)
+    observation = flow._permission_denied()
+    assert observation.state is State.REFUSED
+    assert "as root" not in observation.command
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 1000)
+    assert "as root" in flow._permission_denied().command

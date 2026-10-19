@@ -32,6 +32,10 @@ KNOWLEDGE_ROOT = Path("/var/lib/azazel/knowledge")
 
 
 def _permission_denied():
+    # Root can be denied too (read-only mount, LSM); do not advise what it already is.
+    if os.geteuid() == 0:
+        return Observation(State.REFUSED, "permission denied even as root",
+                           "none available; inspect mount and security policy")
     return Observation(State.REFUSED, "not readable by this user (run as root)",
                        "none available; run this read-only command as root")
 
