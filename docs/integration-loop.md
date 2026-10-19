@@ -89,9 +89,15 @@ scope for this plan and needs its own decision.
   in the verified package (`/opt/azazel/edge-core/bin/azazel-edge-core`) with a
   fixed observe-only environment written in the unit, never one supplied by
   the package manifest. It forwards events to the intake socket
-  (`AZAZEL_AI_SOCKET=/run/azazel/edge-intake/edge.sock`) and keeps Edge's own
-  JSONL record. It is governed like every other unit: masked until activation,
-  started only through the existing activation path, and its own system user.
+  (`AZAZEL_AI_SOCKET=/var/lib/azazel/run/edge-intake/edge-intake.sock`); Edge's own JSONL copy
+  is off because it has no ceiling. It is governed like every other unit:
+  masked and preset-disabled, enabled only when activation admits it in the
+  `EDGE_BASELINE` tier, and run as its own system user.
+- **Known limit: first start.** `EDGE_BASELINE` admission needs all five Edge
+  checks, and one of them is "running", which a masked unit can never become.
+  I0 does not relax this. Resolving it, without weakening what
+  `edge-baseline-ready` means, is a separate design decision before I5
+  ([#198](https://github.com/01rabbit/Azazel-Nexus/issues/198)).
 
 ### I1 — intake (Detect → Understand)
 
@@ -117,6 +123,10 @@ socket. Edge Core connects once per event and writes one line.
   records incident transitions (`edge.incident.opened`, `edge.incident.updated`
   at bounded intervals, `edge.incident.closed`), not every packet. A flood of
   alerts cannot become a flood of audit records.
+- **Never block Edge.** Edge Core connects with a blocking `connect` and no
+  timeout, so a listener that stops accepting would stall detection. Intake
+  accepts continuously and reads with a bound; when it is overloaded it drops
+  and counts, it never stops accepting.
 - **Liveness.** Intake reports when it last accepted an event, and how many
   it refused, so the status screen can tell "Edge is quiet" from "Edge is not
   reaching us". It cannot tell a quiet Edge from a stopped one by itself; the

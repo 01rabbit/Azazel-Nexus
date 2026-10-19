@@ -274,19 +274,25 @@ observe-only posture: `AZAZEL_DEFENSE_ENFORCE=false`,
 `AZAZEL_DEFENSE_DRY_RUN=true`, `AZAZEL_DEFENSE_ENFORCE_LEVEL=advisory`, and
 `AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO=false`.
 
-It reads `/var/log/suricata/eve.json` through `ReadOnlyPaths=/var/log/suricata`
-and the packaged `config/redirect_policy.yaml`. Deployment must provide
+It reads `/var/log/suricata/eve.json` through the optional
+`ReadOnlyPaths=-/var/log/suricata` (a host without Suricata yet still starts
+it; Edge Core waits for the file) and the packaged `config/redirect_policy.yaml`. Deployment must provide
 `azedge` narrowly scoped read/search permission on the Suricata directory and
 file (including rotated files); the installer grants no broad group membership.
 The installer creates `/var/lib/azazel/edge-core` as `azedge:root 0700` for
-`normalized-events.jsonl` and `release-ledger.json`. Only that leaf is writable;
+`release-ledger.json`. Only that leaf is writable;
 no capabilities or internet address families are granted. The private ledger
 must not be populated from an enforcing deployment: Edge reconciles due
 releases at startup even when new enforcement is disabled.
 
 `AZAZEL_FORWARD_AI=true` sends events to
-`/run/azazel/edge-intake/edge.sock`; `AZAZEL_FORWARD_LOG=true` retains Edge's
-JSONL record. Intake and its socket permissions belong to I1. No intake
+`/var/lib/azazel/run/edge-intake/edge-intake.sock`. `AZAZEL_FORWARD_LOG=false`: Edge's own
+JSONL copy has no rotation and no ceiling, so the bounded record is the
+intake's; every event still reaches the journal through stdout, rate limited.
+The unit declares no `RuntimeDirectory` (it owns nothing under `/run`, and one
+would chown `/run/azazel` and remove it on stop; the intake socket
+follows the node's socket layout under `/var/lib/azazel/run`) and runs with
+`PrivateNetwork=yes`. Intake and its socket permissions belong to I1. No intake
 receiver ships in I0, and the unit adds no dependency on it.
 
 The installer masks the unit and its preset disables it. It is registered

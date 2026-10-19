@@ -110,6 +110,9 @@ class ServiceProfile:
     requires: tuple[str, ...] = ()
     binds_to: tuple[str, ...] = ()
     unit_type: str = "notify"
+    #: Empty for a unit that owns nothing under /run. systemd chowns a
+    #: runtime directory to the unit's user and removes it on stop, which a
+    #: unit that owns nothing there has no business doing.
     runtime_directory: str = "azazel"
     runtime_directory_mode: str = "0750"
     extra: tuple[tuple[str, str], ...] = ()
@@ -579,19 +582,29 @@ PROFILES: tuple[ServiceProfile, ...] = (
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         unit_type="exec",
+        # It only connects to the intake socket, which lives under
+        # /var/lib/azazel/run and belongs to the intake.
+        runtime_directory="",
         extra=(
-            ("ReadOnlyPaths", "/var/log/suricata"),
+            # Optional: Edge Core waits for eve.json, it does not need it to start.
+            ("ReadOnlyPaths", "-/var/log/suricata"),
             ("Environment", "AZAZEL_DEFENSE_ENFORCE=false"),
             ("Environment", "AZAZEL_DEFENSE_DRY_RUN=true"),
             ("Environment", "AZAZEL_DEFENSE_ENFORCE_LEVEL=advisory"),
             ("Environment", "AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO=false"),
             ("Environment", "AZAZEL_FORWARD_AI=true"),
-            ("Environment", "AZAZEL_AI_SOCKET=/run/azazel/edge-intake/edge.sock"),
-            ("Environment", "AZAZEL_FORWARD_LOG=true"),
-            ("Environment", "AZAZEL_NORMALIZED_EVENT_LOG=/var/lib/azazel/edge-core/normalized-events.jsonl"),
+            ("Environment", "AZAZEL_AI_SOCKET=/var/lib/azazel/run/edge-intake/edge-intake.sock"),
+            # Edge's own JSONL copy has no rotation and no ceiling. The intake
+            # keeps the bounded record; stdout still reaches the journal.
+            ("Environment", "AZAZEL_FORWARD_LOG=false"),
             ("Environment", "AZAZEL_REDIRECT_POLICY_PATH=/opt/azazel/edge-core/config/redirect_policy.yaml"),
             ("Environment", "AZAZEL_DEFENSE_RELEASE_LEDGER=/var/lib/azazel/edge-core/release-ledger.json"),
             ("Environment", "AZAZEL_EVE_PATH=/var/log/suricata/eve.json"),
+            # A path socket needs no network stack; IPAddressDeny is a filter,
+            # this is none at all.
+            ("PrivateNetwork", "yes"),
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "200"),
         ),
         rationale=(
             "The verified package path is fixed; no manifest supplies a command. "
@@ -722,9 +735,12 @@ def render_unit(profile: ServiceProfile) -> str:
         )
     lines += [
         f"ExecStart={profile.executable}",
-        f"RuntimeDirectory={profile.runtime_directory}",
-        f"RuntimeDirectoryMode={profile.runtime_directory_mode}",
     ]
+    if profile.runtime_directory:
+        lines += [
+            f"RuntimeDirectory={profile.runtime_directory}",
+            f"RuntimeDirectoryMode={profile.runtime_directory_mode}",
+        ]
     for key, value in profile.extra:
         lines.append(f"{key}={value}")
     lines.append(

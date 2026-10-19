@@ -518,7 +518,11 @@ def test_systemd_runtime_directory_is_separate_from_persistent_socket_tree():
     """systemd's `/run/azazel` is distinct from `/var/lib/azazel/run`."""
 
     for profile in PROFILES:
-        mode = _settings(profile.unit)["RuntimeDirectoryMode"][0]
+        settings = _settings(profile.unit)
+        if not profile.runtime_directory:
+            assert "RuntimeDirectory" not in settings
+            continue
+        mode = settings["RuntimeDirectoryMode"][0]
         assert int(mode, 8) == 0o750
 
 
@@ -755,13 +759,19 @@ def test_edge_core_posture_matches_the_packaged_health_contract():
     assert settings["ExecStart"] == [str(EDGE_PACKAGE_ROOT / HEALTH_ARGV[0])]
     assert settings["ExecStart"] == ["/opt/azazel/edge-core/bin/azazel-edge-core"]
     assert environment["AZAZEL_FORWARD_AI"] == "true"
-    assert environment["AZAZEL_AI_SOCKET"] == "/run/azazel/edge-intake/edge.sock"
-    assert environment["AZAZEL_FORWARD_LOG"] == "true"
-    assert environment["AZAZEL_NORMALIZED_EVENT_LOG"] == "/var/lib/azazel/edge-core/normalized-events.jsonl"
+    assert environment["AZAZEL_AI_SOCKET"] == "/var/lib/azazel/run/edge-intake/edge-intake.sock"
+    # Edge's own JSONL copy is unbounded; the intake keeps the bounded record.
+    assert environment["AZAZEL_FORWARD_LOG"] == "false"
+    assert "AZAZEL_NORMALIZED_EVENT_LOG" not in environment
     assert environment["AZAZEL_DEFENSE_RELEASE_LEDGER"] == "/var/lib/azazel/edge-core/release-ledger.json"
     assert environment["AZAZEL_REDIRECT_POLICY_PATH"] == str(EDGE_PACKAGE_ROOT / "config/redirect_policy.yaml")
     assert environment["AZAZEL_EVE_PATH"] == "/var/log/suricata/eve.json"
-    assert settings["ReadOnlyPaths"] == ["/var/log/suricata"]
+    # Optional, so a host without Suricata yet still starts the unit.
+    assert settings["ReadOnlyPaths"] == ["-/var/log/suricata"]
+    # It owns nothing under /run: a RuntimeDirectory would chown and, on
+    # stop, remove the /run/azazel the intake socket lives in.
+    assert "RuntimeDirectory" not in settings
+    assert settings["PrivateNetwork"] == ["yes"]
     assert settings["ReadWritePaths"] == ["/var/lib/azazel/edge-core"]
     assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
     assert settings["CapabilityBoundingSet"] == [""]
