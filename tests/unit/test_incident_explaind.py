@@ -846,3 +846,20 @@ def test_unchanged_recent_snapshot_is_rewritten_every_20_seconds(tmp_path, monke
     e.recent_status()
     assert writes == ["recent.json"]
     assert json.loads((tmp_path / "recent.json").read_text())["written_at"] == 20
+
+
+def test_unchanged_status_is_rewritten_every_20_seconds(tmp_path, monkeypatch):
+    e = make(tmp_path)
+    e.poll()
+    writes = []
+    original = daemon.atomic_json
+    monkeypatch.setattr(daemon, "atomic_json",
+                        lambda path, value, mode: (writes.append(path.name), original(path, value, mode)))
+    e.monotonic = lambda: 19
+    e.status()
+    assert "status.json" not in writes
+    e.clock = lambda: 20
+    e.monotonic = lambda: 20
+    e.status()
+    assert "status.json" in writes
+    assert json.loads((tmp_path / "status.json").read_text())["written_at"] == 20

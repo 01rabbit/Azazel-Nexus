@@ -497,6 +497,13 @@ nothing calls it in production, and key distribution to Nexus does not exist.
 This phase starts when Edge produces those decisions; until then a redirect
 decision is shown as "Edge would redirect to a decoy" and no decoy is started.
 
+**Edge Core's own output.** Edge Core prints each decision to stdout, which
+the unit sends to the journal. Those lines are Edge's record and carry the
+raw addresses, target and planned commands. The privacy checks in this loop
+cover what Nexus writes (status, `recent.json`, explanation records, the audit
+chain), not Edge's journal; a deployment that exports the journal must treat
+it as containing addresses.
+
 ### I5 — end to end
 
 The E2E harness stage **integrated defensive loop** (`tools/e2e_loop.py`) runs
