@@ -54,7 +54,11 @@ TRUNCATION_RESERVE = 1024
 # SEVERE_SEVERITY) and control records, so ordinary churn while evidence is
 # full cannot use up the day before a severity 1 incident arrives. Only a
 # severe opening, a fall in recorded severity, a severe close and control
-# records use it; a severe incident's routine refresh does not.
+# records use it; a severe incident's routine refresh does not. A fall is
+# measured against the severity this ledger recorded for the incident, so an
+# incident it never recorded cannot claim the reserve with a severe update;
+# the tracker lets an ordinary incident's severity fall into the severe range
+# only after it took a severe opening.
 SEVERE_RESERVE = 1024 * 1024
 RESERVED_CONTROL = frozenset({"edge.incident.reset", "edge.incident.truncated",
                               "edge.incident.retention"})
@@ -64,6 +68,15 @@ WORKER_JOIN_S = 20
 # jump cannot create a future segment; one found anyway (written while the
 # clock was already wrong at start) is reported as segment_from_future.
 FUTURE_SEGMENT_S = 86400
+# A node without an RTC boots with its clock behind (the last shutdown time,
+# or earlier) and steps it forward once time sync arrives, usually within
+# minutes. While both the anchor and now are within this much elapsed time
+# since boot, a step past the bound re-anchors instead of being held, so the
+# whole run is not dated days behind. Later in uptime the bound holds; this
+# is chosen over ordering the unit after time-sync.target, which waits only
+# when a wait-sync service is enabled and then delays the intake that Edge
+# writes to for as long as an offline node has no time source.
+CLOCK_SETTLE_S = 900
 # Elapsed time that also counts a suspend, which CLOCK_MONOTONIC does not, so
 # a resumed node does not keep writing to a segment days behind.
 ELAPSED = (
@@ -105,6 +118,11 @@ class DailySegments:
     def bounded(self, now):
         """Hold a wall-clock time to monotonic elapsed time since the first one."""
         instant = self.monotonic()
+        if self.clock_anchor is not None:
+            wall, anchor = self.clock_anchor
+            if (instant < CLOCK_SETTLE_S
+                    and now > wall + instant - anchor + FUTURE_SEGMENT_S):
+                self.clock_anchor = None
         if self.clock_anchor is None:
             self.clock_anchor = (now, instant)
         wall, anchor = self.clock_anchor
@@ -227,8 +245,10 @@ class IncidentLedger(DailySegments):
         limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
         super().__init__(root, leaf, mode=0o2750, **limits)
         self.severe_reserve = severe_reserve
-        # Lowest severity recorded per open severe incident, so only a fall
-        # in severity (not a routine refresh) may use the severe reserve.
+        # Lowest severity recorded per open incident, so only a fall in
+        # severity (not a routine refresh or an unknown incident) may use the
+        # severe reserve. Closes remove entries even when they cannot be
+        # recorded, so this follows the tracker's bounded open set.
         self.severities = {}
         self.ledger = None
         self.boundary = self.directory / "retained-boundary.json"
@@ -331,9 +351,10 @@ class IncidentLedger(DailySegments):
         kind, ident = event.get("event_type"), event.get("incident_id")
         severity = event.get("most_severe")
         severe = type(severity) is int and severity <= SEVERE_SEVERITY
-        recorded = self.severities.get(ident)
+        closed = kind == "edge.incident.closed"
+        recorded = (self.severities.pop if closed else self.severities.get)(ident, None)
         reserved = kind in RESERVED_CONTROL or severe and (
-            kind != "edge.incident.updated" or recorded is None or severity < recorded)
+            kind != "edge.incident.updated" or recorded is not None and severity < recorded)
         if not reserved:
             required += self.severe_reserve
         size = self.current.stat().st_size
@@ -346,9 +367,7 @@ class IncidentLedger(DailySegments):
                     self.truncated = True
             raise SegmentFull("incident_segment_full")
         self._append(event, sync=sync)
-        if kind == "edge.incident.closed":
-            self.severities.pop(ident, None)
-        elif severe:
+        if not closed and ident is not None and type(severity) is int:
             self.severities[ident] = severity if recorded is None else min(recorded, severity)
             if len(self.severities) > MAX_OPEN:
                 del self.severities[next(iter(self.severities))]

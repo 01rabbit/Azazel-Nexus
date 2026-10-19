@@ -472,8 +472,15 @@ class AuditService:
                 today = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
             except (ValueError, OverflowError, OSError):
                 skew = today = None
+            # TIMESTAMP admits only `Z`, so the first ten characters are the
+            # UTC day of the segment the record would open. A record from
+            # before midnight that arrives after another writer opened
+            # today's segment cannot be placed either; it is refused here
+            # rather than failing the ledger append.
+            segments = self.ledger.segments()
             if (skew is None or not -INCIDENT_CLOCK_SKEW_S <= skew <= INCIDENT_FUTURE_SKEW_S
-                    or event["occurred_at"][:10] > today):
+                    or event["occurred_at"][:10] > today
+                    or segments and event["occurred_at"][:10] + ".jsonl" < segments[-1].name):
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "occurred_at")
         # Every declared schema carries `occurred_at`, and `_bind_event` has
         # already refused a payload missing it. The segment a record lands in

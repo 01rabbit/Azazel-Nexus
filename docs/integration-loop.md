@@ -231,6 +231,20 @@ Concrete I1 limits and paths:
   (`incident_segment_full`); recovering earlier needs the operator. A run that
   starts with the clock already ahead still measures age by that clock, since
   nothing local says it is wrong.
+  *Clock behind.* A node without an RTC starts with its clock at the last
+  shutdown time (or earlier) and steps it forward when time sync arrives.
+  While the node has been up for less than 15 minutes (`CLOCK_SETTLE_S`,
+  measured by `CLOCK_BOOTTIME`), a step past the bound re-anchors it, so
+  segments follow the corrected clock. Later in uptime the bound holds: if
+  time sync first arrives after that, segments stay dated by the first
+  write's time plus elapsed time (plus one day) until the intake or
+  explainer restarts; records still carry their own times, and nothing is
+  aged out early. The price is that a wrong forward step in those first 15
+  minutes does create a future segment, which `segment_from_future` reports
+  after the next restart. Ordering the units after `time-sync.target` was not
+  chosen: it waits only when a wait-sync service is enabled, and then holds
+  the intake that Edge writes to for as long as an offline node has no time
+  source.
   A full daily evidence segment refuses appends with `evidence_segment_full`;
   it does not permanently fail storage, and the next day's segment resumes.
   The event still reaches the incident tracker and its transitions still reach
@@ -260,11 +274,22 @@ Concrete I1 limits and paths:
   isolate/redirect range) has a separate 30/min allowance with its own cap of
   5/min per source: one host showing more than five new severe
   `(sid, port)` pairs a minute is itself scanning, and five leaves 25 of the
-  30 to other sources. At most 256 (a quarter of 1024) open incidents may be
-  severe; a new severe opening beyond that closes the least recently seen
-  severe incident (reason `capacity`) rather than being refused, because the
-  displaced incident has already been opened, recorded and explained while a
-  refused one would never be recorded. Excess events still go to evidence and
+  30 to other sources. An ordinary incident whose severity falls to 2 or
+  below takes one of these severe openings (and its source's) at that moment,
+  exactly like a severe opening; without one, its recorded severity stops at
+  3, the refusal counts in `incident_rate_limited`, and its next severe event
+  tries again. Opening ordinary and escalating therefore gets no more severe
+  incidents than opening severe; the evidence record keeps the real severity.
+  At most 256 (a quarter of 1024) open incidents may be severe, however they
+  became severe; a new severe opening or escalation beyond that closes held
+  severe incidents (reason `capacity`) until it fits, rather than being
+  refused, because the displaced incident has already been opened, recorded
+  and explained while a refused one would never be recorded. Severity 2
+  incidents are displaced before severity 1, then the least recently seen,
+  so 256 fresh severity 2 incidents cannot push out a quiet severity 1 one.
+  A displaced or idle-closed incident is gone: the same key later opens a new
+  incident with a new `incident_id`, which needs a severe opening again.
+  Excess events still go to evidence and
   increment `incident_rate_limited`; existing incidents can still update.
   `accepted` includes these rate-limited events because their evidence was
   stored successfully. Technique unions retain a deterministic maximum of eight.
@@ -284,6 +309,17 @@ Concrete I1 limits and paths:
     incidents through the 256 cap; displaced incidents are closed and that
     close is recorded. Nothing here stops a large enough set of severe sources
     from hiding one more severe source for that minute.
+  - *Escalation flood* (ordinary incidents then made severe): each escalation
+    takes a severe opening, so it is held to the same 30/min and 5/min per
+    source, and to the 256 held severe incidents.
+  - *How long the reserve lasts.* The 1 MiB severe reserve is a reserve, not a
+    budget per minute: once the ordinary space of the day is full, each severe
+    opening, fall in severity and severe close uses it. A sustained severe
+    flood from six or more sources at the full 30/min, with displacement
+    closes, writes about 40 KB a minute into it and uses it up in roughly 25 to
+    40 minutes; after that, severe transitions are refused too
+    (`incident_segment_full`) until the next day's segment. Evidence still
+    keeps the events.
   `/var/lib/azazel/edge-incidents/YYYY-MM-DD.jsonl` (`0640`) holds one local `AuditLedger` chain
   across daily segments: the first entry uses `chain_from=(seq, hash)` from
   the previous segment's head, as auditd does. Each incident segment is at most
@@ -583,7 +619,11 @@ nothing in intake, detection or Edge's observe-only decisions.
   own current UTC day (`argument_range`, detail `occurred_at`). Incident times
   come from the same host and only age in transit; without the day check a
   record dated 00:00Z tomorrow sent after 23:50 would open tomorrow's segment
-  and refuse every writer's records for today until midnight. Other event
+  and refuse every writer's records for today until midnight. A record from
+  before midnight that arrives after another writer has opened today's
+  segment (a close at 23:59:58 delivered at 00:00:05) is refused the same way
+  rather than failing the append: it cannot be placed, so it is final and
+  counted in `audit_forward_refused`, not retried. Other event
   types keep their existing admission.
 - **Best-effort forwarding.** Openings, updates whose minimum severity falls,
   and closes become `edge.incident.opened|escalated|closed` via authenticated

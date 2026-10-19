@@ -974,9 +974,12 @@ def test_explanation_store_is_held_to_monotonic_time_and_reports_future(tmp_path
     directory = e.store.directory
     for day in ("2026-01-10", "2099-01-01"):
         (directory / (day + ".jsonl")).write_text("")
-    restarted = make(tmp_path, prepare=False)
+    # The store keeps its own elapsed clock, well past boot here.
+    restarted = make(tmp_path, prepare=False,
+                     store_limits={"monotonic": lambda: 10**7})
     restarted.clock = lambda: jan20
     restarted.prepare()
+    # The explainer's own clock only clears the restart's 60 s rate wait.
     restarted.monotonic = lambda: 61
     assert restarted.refused["segment_from_future"] == 1
     assert (directory / "2026-01-10.jsonl").exists()

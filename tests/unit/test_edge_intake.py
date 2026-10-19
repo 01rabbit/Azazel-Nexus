@@ -411,9 +411,9 @@ def test_open_severe_incidents_are_capped_by_displacing_the_least_recent():
     add(0, "10.0.0.1", 5)
     add(1, "10.0.0.2", 1)
     add(2, "10.0.0.3", 2)
-    assert add(3, "10.0.0.2", 1) == []
-    # Two of eight may be severe: the new one displaces the least recently
-    # seen severe incident, never the ordinary one, and is never refused.
+    # Two of eight may be severe: the new one displaces a held severe
+    # incident, never the ordinary one, and is never refused. Severity 2 goes
+    # before severity 1 even when the severity 1 incident was seen earlier.
     closed, opened = add(4, "10.0.0.4", 1)
     assert (closed["src_ip"], closed["reason"], closed["last_update"]) == (
         "10.0.0.3", "capacity", 4)
@@ -443,3 +443,52 @@ def test_edge_golden_events_parse():
     assert {"technique_ids" in e["normalized"] for e in events} == {True, False}
     for event in events:
         assert parsed(event).as_dict()["defense"] == event["defense"]
+
+
+def test_escalation_takes_a_severe_opening_and_held_severe_stays_capped():
+    instant = [0]
+    tracker = IncidentTracker(lambda: 0, max_open=40, monotonic=lambda: instant[0])
+
+    def add(i, severity):
+        value = edge_event()
+        value["normalized"].update(src_ip=f"10.0.{i}.1", target_port=i, severity=severity)
+        return tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))
+
+    for i in range(40):
+        assert add(i, 5)[0]["most_severe"] == 5
+
+    def held():
+        return sum(v["most_severe"] <= 2 for v in tracker.incidents.values())
+
+    for minute in range(1, 4):
+        instant[0] = 61 * minute
+        granted = 0
+        for i in range(40):
+            for transition in add(i, 1):
+                if transition["transition"] != "closed" and transition["most_severe"] == 1:
+                    granted += 1
+            # Ten of forty may be severe, however they became severe.
+            assert held() <= 10
+        # Openings and escalations share the 30 severe openings a minute.
+        assert granted <= 30
+    assert held() == 10
+    # A refused escalation stops just short of severe and is counted.
+    assert {v["most_severe"] for v in tracker.incidents.values()} <= {1, 3}
+    assert tracker.rate_limited >= 30
+
+
+def test_escalation_respects_the_per_source_severe_budget():
+    tracker = IncidentTracker(lambda: 0, monotonic=lambda: 0)
+
+    def add(port, severity):
+        value = edge_event()
+        value["normalized"].update(target_port=port, severity=severity)
+        return tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))
+
+    for port in range(10):
+        add(port, 4)
+    escalated = [add(port, 1)[0]["most_severe"] for port in range(10)]
+    assert escalated == [1] * 5 + [3] * 5
+    assert tracker.rate_limited == 5
+    # Only a further fall is recorded at once; repeats wait for the throttle.
+    assert add(9, 1) == []

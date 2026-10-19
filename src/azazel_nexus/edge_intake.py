@@ -388,10 +388,23 @@ class IncidentTracker:
     """Bound incident cardinality and transition frequency independently of traffic.
 
     At most a quarter of `max_open` incidents are severe. When that many are
-    open, a new severe incident closes the least recently seen severe one
-    (reason `capacity`) instead of being refused: the displaced incident was
+    open, a new severe incident closes held severe ones (reason `capacity`)
+    until it fits, instead of being refused: the displaced incident was
     already opened, recorded and queued for explanation, and its close is
-    recorded too, while a refused one would never be recorded at all.
+    recorded too, while a refused one would never be recorded at all. The
+    least severe (2 before 1) go first, then the least recently seen, so a
+    burst of new severity 2 incidents cannot push out a quiet severity 1 one.
+
+    An ordinary incident becoming severe takes a severe opening (the global
+    and per-source severe budgets) at that moment, and room among held severe
+    incidents, exactly as a severe opening does; otherwise opening ordinary
+    and escalating would bypass both. Without a severe opening the recorded
+    severity stops at SEVERE_SEVERITY + 1 and the refusal is counted as rate
+    limited. This falls closed: every severe privilege (the ledger's reserve,
+    a held severe place, explanation priority) follows `most_severe`, so none
+    is granted, and no marker beside the recorded severity is needed. It also
+    loses no severe evidence: the evidence record keeps its own severity, the
+    incident stays open, and its next severe event tries again.
     """
 
     def __init__(
@@ -417,6 +430,32 @@ class IncidentTracker:
         return dict(self.incidents.pop(key), transition="closed", reason=reason,
                     last_update=now)
 
+    def _opening(self, key, severe, now, transitions):
+        """Take an opening from the matching budget; a severe one also gets room."""
+        instant = self.monotonic()
+        for budget in (self.openings, self.severe_openings):
+            while budget and instant - budget[0][0] >= 60:
+                budget.popleft()
+        budget = self.severe_openings if severe else self.openings
+        limit = MAX_SEVERE_OPENINGS_PER_MINUTE if severe else MAX_OPENINGS_PER_MINUTE
+        source_limit = (MAX_SOURCE_SEVERE_OPENINGS_PER_MINUTE if severe
+                        else MAX_SOURCE_OPENINGS_PER_MINUTE)
+        source_count = sum(source == key[0] for _, source in budget)
+        if len(budget) >= limit or source_count >= source_limit:
+            return False
+        budget.append((instant, key[0]))
+        cap = self.max_open // 4
+        if severe and cap:
+            held = sorted(
+                (k for k, v in self.incidents.items()
+                 if k != key and v["most_severe"] <= SEVERE_SEVERITY),
+                key=lambda k: (-self.incidents[k]["most_severe"],
+                               self.incidents[k]["last_seen"]),
+            )
+            while len(held) >= cap:
+                transitions.append(self._close(held.pop(0), "capacity", now))
+        return True
+
     def add(self, record, *, evidence_stored=True):
         now = record.received_at
         transitions = self.tick(now)
@@ -424,27 +463,12 @@ class IncidentTracker:
         n, d = event["normalized"], event["defense"]
         key = (n["src_ip"], n["sid"], n["target_port"])
         opened = key not in self.incidents
+        severity = n["severity"]
         if opened:
-            instant = self.monotonic()
-            for budget in (self.openings, self.severe_openings):
-                while budget and instant - budget[0][0] >= 60:
-                    budget.popleft()
-            severe = n["severity"] <= SEVERE_SEVERITY
-            budget = self.severe_openings if severe else self.openings
-            limit = MAX_SEVERE_OPENINGS_PER_MINUTE if severe else MAX_OPENINGS_PER_MINUTE
-            source_limit = (MAX_SOURCE_SEVERE_OPENINGS_PER_MINUTE if severe
-                            else MAX_SOURCE_OPENINGS_PER_MINUTE)
-            source_count = sum(source == key[0] for _, source in budget)
-            if len(budget) >= limit or source_count >= source_limit:
+            severe = severity <= SEVERE_SEVERITY
+            if not self._opening(key, severe, now, transitions):
                 self.rate_limited += 1
                 return transitions
-            budget.append((instant, key[0]))
-            if severe:
-                held = [k for k, v in self.incidents.items()
-                        if v["most_severe"] <= SEVERE_SEVERITY]
-                if 0 < self.max_open // 4 <= len(held):
-                    oldest = min(held, key=lambda k: self.incidents[k]["last_seen"])
-                    transitions.append(self._close(oldest, "capacity", now))
             if len(self.incidents) >= self.max_open:
                 oldest = min(
                     self.incidents, key=lambda k: self.incidents[k]["last_seen"]
@@ -472,11 +496,15 @@ class IncidentTracker:
             # Sticky: the digests stay as correlation ids, but at least one of
             # this incident's evidence records is absent from the store.
             item["evidence_stored"] = False
-        escalated = not opened and n["severity"] < item["most_severe"]
+        if (not opened and severity <= SEVERE_SEVERITY < item["most_severe"]
+                and not self._opening(key, True, now, transitions)):
+            self.rate_limited += 1
+            severity = SEVERE_SEVERITY + 1
+        escalated = not opened and severity < item["most_severe"]
         item.update(
             count=item["count"] + 1,
             last_seen=now,
-            most_severe=min(item["most_severe"], n["severity"]),
+            most_severe=min(item["most_severe"], severity),
             edge_would=d["action"],
             policy_reason=d["policy_reason"],
             attack_type=n["attack_type"],
