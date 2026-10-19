@@ -125,9 +125,13 @@ socket. Edge Core connects once per event and writes one line.
   Under the observe-only posture the status is shown as "would", never as
   "did".
 - **Evidence.** Each accepted event becomes an evidence record with a content
-  digest and an optional Fabric `schema.evidence.EvidenceRef` (`source="edge-core"`).
-  The store is append-only with bounded retention (size and age), like the
-  audit segments.
+  digest. The store is append-only with bounded retention (size and age), like
+  the audit segments. A projection of a record onto Fabric
+  `schema.evidence.EvidenceRef` (`source="edge-core"`) exists
+  (`fabric_boundary.project_edge_evidence`) and is tested against the pin, but
+  nothing in production calls it yet: Fabric is an optional extra, and the
+  intake does not import it. Exporting evidence through Fabric is left to the
+  consumer that needs it.
 - **Incidents.** Events are grouped into incidents by a fixed key (source
   address, signature id, destination port) within a fixed window. The audit
   records incident transitions (`edge.incident.opened`, `edge.incident.updated`
