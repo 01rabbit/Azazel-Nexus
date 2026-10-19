@@ -19,7 +19,8 @@ campaign, it is not an [HG-07](hg-07.md) record, and every artefact is
 labelled `rehearsal`.
 
 **What this run cannot show today.** The production activation pass supplies
-no lease (§5), so no regular path admits the loop's units on this build. The
+no lease (§5), so no regular path admits the loop's units on this build
+([#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)). The
 loop is therefore started by the rehearsal-only procedure of §6, and the
 result says *activation admission: not exercised*. On real hardware that
 procedure is forbidden ([HG-07](hg-07.md) step 3).
@@ -43,7 +44,11 @@ answer with the run.
    records and the audit chain are append-only; a snapshot is the only
    complete restore. Also keep a root `0600` tarball of `/etc/azazel`,
    `/var/lib/azazel` and, if present, `/var/log/suricata` with its current
-   owners and modes.
+   owners and modes. `/etc/azazel` holds the node's commissioning material and
+   M.I.O. credentials: write the tarball only under `/root` (for example
+   `/root/azn-rehearsal/backup-<time>.tgz`, directory `0700`), never to a
+   shared or user directory and never off the VM, and delete it at the end of
+   the run (§10) once the VM is back in its intended state.
 3. **No keys, no approvals.** Do not create, copy or edit an operator seed,
    an activation approval, a lease or a bootstrap selection for this run, and
    do not bring a real one onto the VM. Signing stays on the operator's own
@@ -113,6 +118,17 @@ owned by root and writable by nobody else: a package an Edge or probe account
 could rewrite would be verified against a manifest the same account could
 rewrite.
 
+**Verify the archive before extracting it.** The manifest's `digest` is
+`sha256:<hex>`; `sha256sum` prints the bare hex, so compare without the
+prefix:
+
+```sh
+sha256sum ~/azazel-edge-core-0.1.0-x86_64.tar.gz
+/opt/azazel-nexus/venv/bin/python -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["digest"].removeprefix("sha256:"))' ~/azazel-edge-core-0.1.0-x86_64.manifest.json
+```
+
+The two hex strings must be equal. Stop here if they are not.
+
 ```sh
 sudo install -d -m 0755 -o root -g root /opt/azazel /opt/azazel/edge-core
 sudo install -m 0644 -o root -g root ~/azazel-edge-core-0.1.0-x86_64.manifest.json ~/azazel-edge-core-0.1.0-x86_64.tar.gz /opt/azazel/edge-core/
@@ -134,7 +150,7 @@ sudo /opt/azazel-nexus/venv/bin/azazel-nexus status
 ```
 
 The archive's SHA-256 must equal the manifest `digest`, and the binary's the
-`bin/azazel-edge-core` component digest. In `azazel-nexus status`, the
+`bin/azazel-edge-core` component digest (compare the hex after `sha256:`). In `azazel-nexus status`, the
 `edge core (local):` section must show `package_present`, `version_matches`
 and `digest_matches` passed, `health_endpoint_healthy` and `running`
 `not-checked`, and the unsigned-manifest caveat. A mismatch is a **security
@@ -165,10 +181,16 @@ and modes; the setgid bit makes files Suricata creates later inherit the group:
 
 ```sh
 sudo chgrp azedge /var/log/suricata /var/log/suricata/eve.json
-sudo chmod 2750 /var/log/suricata
+sudo chmod 2710 /var/log/suricata
 sudo chmod 0640 /var/log/suricata/eve.json
-sudo runuser -u azedge -- test -r /var/log/suricata/eve.json && echo readable
+sudo runuser -u azedge -- test -r /var/log/suricata/eve.json && echo readable || echo NOT-readable
 ```
+
+Edge Core opens the fixed `eve.json` path and never lists the directory, so
+the directory needs only search (`x`) for the group (`2710`): the other logs
+in it stay unreadable to `azedge`. An ACL (`setfacl -m u:azedge:x
+/var/log/suricata` and `setfacl -m u:azedge:r /var/log/suricata/eve.json`)
+is an alternative that leaves the group untouched.
 
 **要確認:** the mode Suricata gives a newly created `eve.json` and the
 `create` line of the distribution's logrotate rule for Suricata; both must
@@ -179,9 +201,9 @@ files, and a file it cannot read is silently not read.
 rehearsal; synthetic alerts are appended in §8.
 
 ```sh
-sudo install -d -m 2750 -o root -g azedge /var/log/suricata
+sudo install -d -m 2710 -o root -g azedge /var/log/suricata
 sudo install -m 0640 -o root -g azedge /dev/null /var/log/suricata/eve.json
-sudo runuser -u azedge -- test -r /var/log/suricata/eve.json && echo readable
+sudo runuser -u azedge -- test -r /var/log/suricata/eve.json && echo readable || echo NOT-readable
 ```
 
 Edge Core starts reading at the **end** of an existing file (the unit does not
@@ -307,7 +329,8 @@ digests, reads the payload unit's state over D-Bus, writes
 `0644`, 300 s TTL) and exits. Without unmasking the probe unit, the same
 installed wrapper can be run as its account outside the unit sandbox:
 `sudo runuser -u azprobe -- /usr/libexec/azazel/az-edge-probed --print`.
-Record which was used.
+**要確認:** that this gives the same result as the unit (its sandbox and
+D-Bus access differ outside the unit). Record which was used.
 
 Expected now: `health` `passed`, `running` `failed` (the payload unit is
 inactive), and in `status` the edge section reads `not-running` with
@@ -403,7 +426,7 @@ torn final line during an append is retried after a few seconds.
 **Edge decisions are dry runs.** Only Edge's journal holds its decisions:
 
 ```sh
-sudo journalctl -u azazel-edge-core.service --since "$START" -o cat | grep '^{' | /opt/azazel-nexus/venv/bin/python -I -c 'import json, sys; [print(d["defense"]["action"], "dry_run=%s" % d["enforcement_status"]["dry_run"]) for d in map(json.loads, sys.stdin)]'
+sudo journalctl -u azazel-edge-core.service --since "$START" -o cat | grep '^{' | /opt/azazel-nexus/venv/bin/python -I -c 'import json, sys; [print(d["defense"]["action"], "dry_run=%s" % d["enforcement_status"]["dry_run"]) for d in map(json.loads, sys.stdin) if "defense" in d]'
 ```
 
 Synthetic run: exactly `notify dry_run=True` then `isolate dry_run=True`; the
@@ -530,8 +553,13 @@ must then end with `az-activated completed safely: granted=0` and not with
 `RollbackFailed`; check it once after the next reboot with
 `journalctl -b -u azazel-activated.service`.
 
-Delete `~/azn-rehearsal-eve.jsonl` and `/tmp/azn-edge-contract` on the build
-host. Reverting to the snapshot undoes everything, including ledger appends.
+On the VM, delete `~/azn-rehearsal-eve.jsonl`, the copied
+`~/azazel-edge-core-0.1.0-x86_64.tar.gz` and `.manifest.json`, and the §1
+backup tarball under `/root/azn-rehearsal/` once the VM is in its intended
+state. On the build host, delete `/tmp/azn-edge-contract` (and `dist/` if it
+is not kept). The probe result and the status snapshots under
+`/var/lib/azazel/run` stay; they expire by their TTL and freshness checks.
+Reverting to the snapshot undoes everything, including ledger appends.
 Without a snapshot: restore `/var/log/suricata` to the recorded owner, group
 and modes (or remove it if this run created it, after stopping Edge), and
 either keep the verified package at `/opt/azazel/edge-core` or remove that
@@ -543,6 +571,8 @@ from its cursor next time. Never edit a ledger to remove the rehearsal.
 
 Record in issue #195, labelled `rehearsal`:
 
+- `activation admission: not exercised (#206)`, and the `missing_producers`
+  list from the activation ledger at the time of the run.
 - Nexus commit installed, Edge commit, the build host class (architecture,
   distribution, toolchain versions), and the `sha256sum` of the archive, the
   manifest and the unpacked binary.
@@ -572,8 +602,8 @@ activation admission, hardware behaviour or package authenticity.
 
 ## 12. Not covered on a VM
 
-- Activation admitting the loop's units (#198's grant path needs a lease
-  producer that does not exist yet).
+- Activation admitting the loop's units: #198's grant path needs a lease
+  producer that does not exist yet ([#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)).
 - HG-07 on real hardware with the real deployment path ([HG-07](hg-07.md)).
 - Enforcement by the shipped Edge Core (Azazel-Edge#412) and I4 decoys.
 - Real M.I.O. advice: admission is closed, so every frame is a deterministic
