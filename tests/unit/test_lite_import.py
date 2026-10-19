@@ -330,6 +330,8 @@ def test_reading_and_serving_write_nothing(node) -> None:
 def test_the_transitions_are_a_closed_set() -> None:
     assert {transition.value for transition in Transition} == {
         "lite.import.started",
+        "lite.import.state_untrusted",
+        "lite.import.store_tightened",
         "lite.import.admitted",
         "lite.import.quarantined",
         "lite.import.rolled_back",
@@ -658,6 +660,8 @@ def test_a_loosened_store_directory_is_tightened_and_keeps_setgid(node, bundle, 
     service, _, root = node(bundle)
     (root / leaf).mkdir()
     (root / leaf).chmod(0o2775)
+    if not (root / leaf).stat().st_mode & 0o2000:
+        pytest.skip("filesystem does not retain setgid on chmod")
     _import_only_entry(service)
     mode = (root / leaf).stat().st_mode
     assert mode & 0o022 == 0
@@ -670,7 +674,127 @@ def test_a_symlinked_store_directory_is_refused_and_its_target_untouched(node, t
     elsewhere.mkdir(mode=0o777)
     elsewhere.chmod(0o777)
     (root / "admitted").symlink_to(elsewhere, target_is_directory=True)
-    with pytest.raises(OSError):
+    with pytest.raises(ImportRefused):
         _import_only_entry(service)
     assert elsewhere.stat().st_mode & 0o777 == 0o777
     assert not any(elsewhere.iterdir())
+
+
+@pytest.mark.parametrize("delta, served", [(1, False), (0, True), (-1, True)])
+def test_serving_obeys_watermark(node, delta, served):
+    service, _, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    watermark = service.commissioned.watermark()
+    (root / "state/watermark").write_text(str(watermark + delta))
+    assert bool(list(service.serve(query_as_of=FRESH))) is served
+    assert (service.read(query_as_of=FRESH).overall == "available") is served
+    if not served:
+        assert service.read(query_as_of=FRESH).overall == "quarantined"
+        assert "watermark" in service.read(query_as_of=FRESH).reason
+
+
+@pytest.mark.parametrize("damage, code", [
+    ("missing", "WATERMARK_MISSING"), ("abc", "WATERMARK_MALFORMED"),
+    ("-1", "WATERMARK_MALFORMED"), ("9" * 100, "WATERMARK_MALFORMED"),
+    ("directory", "STORE_FILE_UNSAFE"), ("symlink", "STORE_FILE_UNSAFE"),
+])
+def test_untrusted_watermark_blocks_serving_and_import_without_quarantine(node, damage, code):
+    service, log, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    path = root / "state/watermark"
+    path.unlink()
+    if damage == "directory":
+        path.mkdir()
+    elif damage == "symlink":
+        path.symlink_to(root / "inbox/lite.tar.gz")
+    elif damage != "missing":
+        path.write_text(damage)
+    current = (root / "admitted/current.tar.gz").read_bytes()
+    inbox = (root / "inbox/lite.tar.gz").read_bytes()
+    assert list(service.serve(query_as_of=FRESH)) == []
+    assert service.read(query_as_of=FRESH).overall == "quarantined"
+    with pytest.raises(ImportRefused, match="operator must restore"):
+        _import_only_entry(service)
+    assert log[-1] == (Transition.STATE_UNTRUSTED.value, {
+        "entry_id": service.list_inbox()[0].entry_id, "at": FRESH, "code": code})
+    assert (root / "admitted/current.tar.gz").read_bytes() == current
+    assert (root / "inbox/lite.tar.gz").read_bytes() == inbox
+    assert not (root / "quarantine").exists()
+
+
+@pytest.mark.parametrize("role", ["admitted/current.tar.gz", "state/watermark"])
+@pytest.mark.parametrize("damage", ["hardlink", "writable", "symlink", "owner"])
+def test_unsafe_store_files_block_import(node, monkeypatch, role, damage):
+    service, log, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    path = root / role
+    if damage == "hardlink":
+        os.link(path, root / "extra-link")
+    elif damage == "writable":
+        path.chmod(0o660)
+    elif damage == "symlink":
+        path.rename(root / "original")
+        path.symlink_to(root / "original")
+    else:
+        monkeypatch.setattr(os, "geteuid", lambda: path.stat().st_uid + 1)
+    with pytest.raises(ImportRefused):
+        _import_only_entry(service)
+    assert log[-1][0] == Transition.STATE_UNTRUSTED.value
+    assert log[-1][1]["code"] == "STORE_FILE_UNSAFE"
+    assert not (root / "quarantine").exists()
+
+
+def test_import_audits_existing_directory_tightening(node):
+    service, log, root = node("lite.tar.gz")
+    (root / "admitted").mkdir(mode=0o750)
+    (root / "admitted").chmod(0o2770)
+    assert _import_only_entry(service).admitted
+    assert log[1] == (Transition.STORE_TIGHTENED.value, {
+        "entry_id": service.list_inbox()[0].entry_id, "at": FRESH,
+        "directories": ["admitted"]})
+    assert (root / "admitted").stat().st_mode & 0o022 == 0
+
+
+def test_unreadable_watermark_is_not_zero(node, monkeypatch):
+    service, log, root = node("lite.tar.gz")
+    _import_only_entry(service)
+    original = os.open
+    def deny(path, *args, **kwargs):
+        if Path(path) == root / "state/watermark":
+            raise PermissionError("private detail")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(os, "open", deny)
+    assert list(service.serve(query_as_of=FRESH)) == []
+    with pytest.raises(ImportRefused):
+        _import_only_entry(service)
+    assert log[-1][1]["code"] == "WATERMARK_UNREADABLE"
+    assert "private detail" not in str(log)
+
+
+@pytest.mark.parametrize("payload", [b"", b"abc", b"-1", b"1" * 33, b" 1", b"1\n2"])
+def test_malformed_watermark_alone_blocks_first_import(node, payload):
+    service, log, root = node("lite.tar.gz")
+    (root / "state").mkdir()
+    (root / "state/watermark").write_bytes(payload)
+    with pytest.raises(ImportRefused):
+        _import_only_entry(service)
+    assert log[-1][1]["code"] == "WATERMARK_MALFORMED"
+    assert (root / "state/watermark").read_bytes() == payload
+    assert not (root / "admitted").exists()
+    assert not (root / "quarantine").exists()
+
+
+def test_tightening_is_audited_even_when_a_later_directory_is_unsafe(node, tmp_path):
+    service, log, root = node("lite.tar.gz")
+    (root / "admitted").mkdir()
+    (root / "admitted").chmod(0o770)
+    target = tmp_path / "outside"
+    target.mkdir()
+    (root / "state").symlink_to(target, target_is_directory=True)
+    with pytest.raises(ImportRefused):
+        _import_only_entry(service)
+    assert [name for name, _ in log] == [Transition.IMPORT_STARTED.value,
+                                         Transition.STORE_TIGHTENED.value,
+                                         Transition.STATE_UNTRUSTED.value]
+    assert log[1][1]["directories"] == ["admitted"]
+    assert list(target.iterdir()) == []

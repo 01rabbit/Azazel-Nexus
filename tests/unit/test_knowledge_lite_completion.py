@@ -69,9 +69,11 @@ def test_reading_status_many_times_never_grows_the_audit_ledger(tmp_path) -> Non
 # 2 -----------------------------------------------------------------------
 
 
-def test_only_the_five_transitions_leave_an_event() -> None:
+def test_only_the_declared_transitions_leave_an_event() -> None:
     assert {t.value for t in Transition} == {
         "lite.import.started",
+        "lite.import.state_untrusted",
+        "lite.import.store_tightened",
         "lite.import.admitted",
         "lite.import.quarantined",
         "lite.import.rolled_back",
@@ -178,13 +180,13 @@ def test_the_directories_the_screen_and_the_docs_name_are_the_ones_used(tmp_path
 
     from azazel_nexus.lite_import import MAX_INBOX_BYTES, MAX_INBOX_ENTRIES
 
-    commissioned = CommissionedLite(root=Path("/data/azazel/knowledge-lite"))
+    commissioned = CommissionedLite(root=Path("/var/lib/azazel/knowledge"))
     doc = (ROOT / "docs" / "knowledge-lite-consumer.md").read_text(encoding="utf-8")
     for path in (
         commissioned.inbox,
         commissioned.quarantine,
         commissioned.admitted,
-        commissioned.anchors_path,
+        CommissionedLite(root=Path("/var/lib/azazel/lite-trust")).anchors_path,
     ):
         assert str(path) in doc, f"{path} is not named in the consumer document"
     assert str(MAX_INBOX_ENTRIES) in doc

@@ -46,10 +46,10 @@ material.**
 
 ## The audit records transitions, not reads
 
-`import started`, `admitted`, `quarantined`, `rolled back`, and
-`serving stopped by revocation`. A status read writes nothing: a ledger that
-grew every time somebody looked at a screen would be a ledger nobody can
-read, and looking is not a transition.
+`import started`, `admitted`, `quarantined`, `rolled back`, `state untrusted`,
+`store tightened`, and `serving stopped by revocation`. A status read writes
+nothing: a ledger that grew every time somebody looked at a screen would be
+a ledger nobody can read, and looking is not a transition.
 """
 
 from __future__ import annotations
@@ -83,6 +83,7 @@ from .lite_bundle import (
     refused_reading,
     verify_bundle,
 )
+from .store_dirs import store_directory
 
 __all__ = [
     "CommissionedLite",
@@ -119,6 +120,8 @@ class Transition(str, Enum):
     """The only things written to the audit. A read is not among them."""
 
     IMPORT_STARTED = "lite.import.started"
+    STATE_UNTRUSTED = "lite.import.state_untrusted"
+    STORE_TIGHTENED = "lite.import.store_tightened"
     ADMITTED = "lite.import.admitted"
     QUARANTINED = "lite.import.quarantined"
     ROLLED_BACK = "lite.import.rolled_back"
@@ -191,15 +194,56 @@ class CommissionedLite:
     def anchors(self) -> TrustAnchors:
         return read_anchors(self.anchors_path)
 
-    def watermark(self) -> int:
-        try:
-            text = self.state_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return 0
-        try:
-            return int(text)
-        except ValueError:
-            return 0
+    def watermark(self) -> Optional[int]:
+        return _read_watermark(self.state_path)
+
+
+class _StateUntrusted(ValueError):
+    """Fixed codes keep filesystem details out of audit and replies."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__("anti-rollback state untrusted")
+        self.code = code
+
+
+def _read_watermark(path: Path) -> Optional[int]:
+    """Absence is distinct from corrupt state; never follow a replacement link."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except PermissionError:
+        # Unreadable says nothing about tampering; status reports it as an
+        # unreadable store. Every caller still fails closed.
+        raise
+    except OSError:
+        raise _StateUntrusted("WATERMARK_MALFORMED") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 32:
+            raise _StateUntrusted("WATERMARK_MALFORMED")
+        raw = os.read(fd, 33)
+        if len(raw) > 32 or re.fullmatch(rb"[0-9]+\n?", raw) is None:
+            raise _StateUntrusted("WATERMARK_MALFORMED")
+        return int(raw)
+    except OSError:
+        raise _StateUntrusted("WATERMARK_MALFORMED") from None
+    finally:
+        os.close(fd)
+
+
+def _inspect_store_file(path: Path) -> bool:
+    """Import may replace only private, operator-owned regular files."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise _StateUntrusted("STORE_FILE_UNSAFE") from None
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or info.st_uid != os.geteuid() or info.st_mode & 0o022):
+        raise _StateUntrusted("STORE_FILE_UNSAFE")
+    return True
 
 
 @dataclass(frozen=True)
@@ -292,6 +336,38 @@ class LiteImport:
             )
 
         self._record(Transition.IMPORT_STARTED, {"entry_id": entry_id, "at": now})
+        tightened = []
+        try:
+            try:
+                for role in ("admitted", "state", "quarantine"):
+                    directory = self.commissioned.root / role
+                    try:
+                        directory.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if _store_directory(directory):
+                        tightened.append(role)
+            finally:
+                if tightened:
+                    self._record(Transition.STORE_TIGHTENED,
+                                 {"entry_id": entry_id, "at": now, "directories": tightened})
+            current_exists = _inspect_store_file(
+                self.commissioned.admitted / "current.tar.gz")
+            _inspect_store_file(self.commissioned.state_path)
+            try:
+                floor = self.commissioned.watermark()
+            except PermissionError:
+                raise _StateUntrusted("WATERMARK_UNREADABLE") from None
+            if floor is None and current_exists:
+                raise _StateUntrusted("WATERMARK_MISSING")
+        except (OSError, _StateUntrusted) as exc:
+            code = exc.code if isinstance(exc, _StateUntrusted) else "STORE_FILE_UNSAFE"
+            self._record(Transition.STATE_UNTRUSTED,
+                         {"entry_id": entry_id, "at": now, "code": code})
+            raise ImportRefused(
+                "The anti-rollback state cannot be trusted. An operator must restore "
+                "it (for example from backup) before importing. No bundle was changed."
+            ) from None
         raw = (self.commissioned.inbox / entry.display_name).read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
 
@@ -300,7 +376,7 @@ class LiteImport:
             accepted = verify_bundle(
                 raw,
                 anchors=anchors,
-                last_imported_version=self.commissioned.watermark(),
+                last_imported_version=floor if floor is not None else 0,
             )
             _refuse_trust_shaped_members(accepted)
         except BundleRefused as refusal:
@@ -345,8 +421,17 @@ class LiteImport:
         somebody looked at a screen would be a ledger nobody can read.
         """
 
-        accepted = self._admitted_bundle()
+        accepted, reason = self._admitted_state()
         if accepted is None:
+            if reason == "state_untrusted":
+                return KnowledgeReading(
+                    integrity=Integrity.QUARANTINED,
+                    time_bound=TimeBound.ABSENT,
+                    static_reference=StaticReference.ABSENT,
+                    reason=("The admitted bundle is not served: it is older than "
+                            "the anti-rollback watermark, or the "
+                            "watermark is missing/malformed."),
+                )
             held = self._quarantined()
             if held:
                 # "We do not have it" and "we had it and it is not
@@ -394,22 +479,30 @@ class LiteImport:
             return 0
 
     def _admitted_bundle(self) -> Optional[BundleAccepted]:
+        return self._admitted_state()[0]
+
+    def _admitted_state(self) -> tuple[Optional[BundleAccepted], str]:
         path = self.commissioned.admitted / "current.tar.gz"
         try:
             raw = path.read_bytes()
         except OSError:
-            return None
+            return None, ""
         try:
-            return verify_bundle(
+            accepted = verify_bundle(
                 raw,
                 anchors=self.commissioned.anchors(),
                 last_imported_version=0,
             )
         except BundleRefused:
-            # Re-verified on every read. A bundle that stopped verifying --
-            # a revoked key, a rotated anchor -- stops being served without
-            # waiting for the next import.
-            return None
+            # Re-verification makes revocation effective before the next import.
+            return None, ""
+        try:
+            watermark = self.commissioned.watermark()
+        except (_StateUntrusted, OSError):
+            return None, "state_untrusted"
+        if watermark is None or accepted.bundle_version < watermark:
+            return None, "state_untrusted"
+        return accepted, ""
 
     def _promote(self, raw: bytes, accepted: BundleAccepted, *, now: str) -> None:
         """Atomic. A reader never sees half an artifact."""
@@ -459,27 +552,8 @@ def _refuse_trust_shaped_members(accepted: BundleAccepted) -> None:
             )
 
 
-def _store_directory(path: Path) -> None:
-    """Create or tighten a store directory; never leave it group/other-writable.
-
-    `mkdir` alone takes its mode from the caller's umask. An operator import
-    under Debian's default 0002, beneath the setgid azazel-operator store root,
-    made `admitted/` and `state/` writable by that group (#186). Serving
-    re-verifies signatures but not the watermark, so such a member could swap
-    in an older, validly signed bundle or remove the anti-rollback watermark.
-    The setgid bit is kept so the group can still read.
-    """
-
-    path.mkdir(mode=0o750, parents=True, exist_ok=True)
-    # Check and change the directory that was opened, never a path that could
-    # be swapped for a symlink in between.
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        info = os.fstat(fd)
-        if info.st_mode & 0o022:
-            os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o022)
-    finally:
-        os.close(fd)
+def _store_directory(path: Path) -> bool:
+    return store_directory(path)
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -569,6 +643,12 @@ def _read_trusted(*, root: Path, trust_root: Path,
                 or any(revocations.revokes_key(anchors.keys[name])
                        for name in accepted.signers)):
             return summary("quarantined", "revoked", generation)
+        try:
+            watermark = CommissionedLite(root).watermark()
+        except _StateUntrusted:
+            return summary("quarantined", "state_untrusted")
+        if watermark is None or generation < watermark:
+            return summary("quarantined", "state_untrusted")
         result = reader(accepted)
         # A repin observed during the read cannot yield an available answer.
         if trust.path != trust_path or bounded_read(trust_path, 65536) != trust_bytes:

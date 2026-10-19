@@ -31,7 +31,7 @@ def lookup_context(technique_ids: tuple[str, ...], *,
         if (set(result) != {"refs", "reason_code"} or type(result["refs"]) is not list
                 or len(result["refs"]) > 16
                 or result["reason_code"] not in {
-                    "available", "no_context", "no_bundle", "quarantined", "bundle_refused",
+                    "available", "no_context", "no_bundle", "quarantined", "bundle_refused", "state_untrusted",
                     "revoked", "unverified", "trust_unreadable", "store_unreadable",
                 }):
             raise ValueError

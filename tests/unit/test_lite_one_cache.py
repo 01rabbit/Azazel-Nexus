@@ -216,3 +216,37 @@ def test_lite_cache_still_never_raises_for_the_node(tmp_path: Path) -> None:
     assert decision.admission is Admission.ADMITTED
     assert decision.blocks_core() is False
     assert (root / "live").read_text(encoding="utf-8") == "1\n", "the pointer was not touched"
+
+
+def test_staged_cache_directories_ignore_loose_umask(tmp_path):
+    import os
+    reader = StagedReader(root=tmp_path / "cache")
+    previous = os.umask(0o002)
+    try:
+        reader._reset_staging()
+        reader._promote()
+    finally:
+        os.umask(previous)
+    for directory in (reader.root, reader.staging, reader.live):
+        assert directory.stat().st_mode & 0o022 == 0
+
+
+@pytest.mark.parametrize("operation", ["reset", "promote"])
+def test_staged_cache_refuses_symlinked_directory(tmp_path, operation):
+    target = tmp_path / "outside"
+    target.mkdir()
+    reader = StagedReader(root=tmp_path / "cache")
+    if operation == "reset":
+        reader.root.mkdir()
+        reader.staging.symlink_to(target, target_is_directory=True)
+    else:
+        reader.root.symlink_to(target, target_is_directory=True)
+        reader.staging.mkdir()
+        (reader.staging / "claims").write_bytes(b"{}")
+    before = sorted(path.relative_to(target) for path in target.rglob("*"))
+    with pytest.raises(OSError):
+        if operation == "reset":
+            reader._reset_staging()
+        else:
+            reader._promote()
+    assert sorted(path.relative_to(target) for path in target.rglob("*")) == before

@@ -41,6 +41,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .store_dirs import store_directory
+
 __all__ = [
     "DEGRADED_CAPABILITY",
     "Admission",
@@ -323,12 +325,12 @@ class StagedReader:
     def _reset_staging(self) -> None:
         if self.staging.exists():
             shutil.rmtree(self.staging)
-        self.staging.mkdir(parents=True, exist_ok=True)
+        store_directory(self.staging)
 
     def _promote(self) -> None:
         """Replace live with staging by rename. No partial state is observable."""
 
-        self.root.mkdir(parents=True, exist_ok=True)
+        store_directory(self.root)
         retired = self.root / "retired"
         if retired.exists():
             shutil.rmtree(retired)
@@ -337,4 +339,4 @@ class StagedReader:
         os.rename(self.staging, self.live)
         if retired.exists():
             shutil.rmtree(retired)
-        self.staging.mkdir(parents=True, exist_ok=True)
+        store_directory(self.staging)
