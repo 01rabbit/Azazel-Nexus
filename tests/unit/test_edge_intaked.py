@@ -916,7 +916,7 @@ def test_severe_flood_from_one_source_does_not_hide_another_source(tmp_path):
                                  clock=lambda: 0)
     server.tracker.monotonic = lambda: 0
     value = edge_event()
-    # The writer runs after queueing, so stay within the 256-record queue.
+    # The writer runs after queueing, so stay within the record queue.
     for port in range(250):
         value["normalized"].update(target_port=port, severity=1)
         server.pending.put(daemon.EvidenceRecord.receive(
@@ -992,7 +992,7 @@ def test_escalation_flood_is_held_to_the_severe_budget(tmp_path):
     server.tracker.monotonic = lambda: 0
     value = edge_event()
     # Ten sources each send ten ordinary findings, then the same ten severe
-    # (200 records, within the 256-record queue).
+    # (200 records, within the record queue).
     for severity in (5, 1):
         for src in range(10):
             for port in range(10):
@@ -1013,3 +1013,9 @@ def test_escalation_flood_is_held_to_the_severe_budget(tmp_path):
             if e["event_type"] == "edge.incident.updated"} == {1, 3}
     # 40 ordinary openings, 30 escalations and 40 severe openings refused.
     assert server.refused["incident_rate_limited"] == 110
+
+
+def test_queue_holds_a_resumed_burst():
+    # Edge's forwarding queue (1024) plus a full listen backlog (512) can
+    # arrive at once when the intake resumes; the record queue must hold it.
+    assert daemon.QUEUE_SIZE >= 1024 + daemon.LISTEN_BACKLOG
