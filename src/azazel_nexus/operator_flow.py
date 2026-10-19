@@ -18,6 +18,7 @@ class Observation:
     state: State
     reason: str
     command: str
+    details: Mapping | None = None
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ ORDER = (
     "installed-files", "host-preflight", "commissioning", "commission-review",
     "bootstrap-deployment", "bootstrap-selection", "knowledge-store", "knowledge-trust",
     "mission-pack", "fetch-commissioning", "model-import-fetched", "provider-admission",
-    "activation-units", "integration-broker",
+    "activation-units", "integration-broker", "mio-configuration",
 )
 
 NOTICE = (
@@ -41,7 +42,7 @@ NOTICE = (
 )
 
 
-def evaluate(observations: Mapping[str, Observation]) -> tuple[Step, ...]:
+def evaluate(observations: Mapping[str, Observation], *, lab_host: bool = False) -> tuple[Step, ...]:
     """Evaluate all steps in order, retaining explicit uncertainty and scope.
 
     COMPLETE means only the named read succeeded. Missing evidence cannot be
@@ -54,11 +55,17 @@ def evaluate(observations: Mapping[str, Observation]) -> tuple[Step, ...]:
     steps = []
     for name in ORDER:
         if name == "provider-admission":
-            steps.append(Step(name, "blocked", "HG-05: unmeasured; provider admission blocked",
-                              "azazel-nexus hil-preflight"))
+            steps.append(Step(name, "blocked", "HG-05: unmeasured; provider admission blocked"
+                              + ("; unavailable on a lab host (LAB_HOST_MARKER)" if lab_host else ""),
+                              "none available; unavailable on a lab host (LAB_HOST_MARKER)" if lab_host
+                              else "azazel-nexus hil-preflight"))
             continue
         observation = observations.get(name, Observation(
-            State.UNKNOWN, "observation unavailable; inspect local state", "azazel-nexus setup"))
+            State.UNKNOWN, "observation unavailable; inspect local state", "none available; requires readable local evidence"))
+        if lab_host and name in {"host-preflight", "commissioning", "commission-review", "model-import-fetched"}:
+            observation = Observation(
+                State.REFUSED, observation.reason + "; unavailable on a lab host (LAB_HOST_MARKER)",
+                "none available; requires a non-lab deployment")
         steps.append(Step(name, statuses[observation.state], observation.reason, observation.command))
     return tuple(steps)
 

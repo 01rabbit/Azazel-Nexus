@@ -370,7 +370,7 @@ def test_status_never_prints_a_kernel_name(tmp_path):
 
 
 def test_health_reports_the_service_manager_as_unknown_not_healthy(tmp_path):
-    """This build ships no daemon and speaks to no service manager.
+    """This status read does not query the service manager.
 
     Reporting that as healthy would be the absence of evidence rendered as
     health, which is the failure the hardware-gate register exists for.
@@ -1097,3 +1097,36 @@ def test_a_defect_row_is_marked_on_the_screen(tmp_path):
     assert text.count("DEFECT") == 1, "only the absent embedded feature is a defect"
     # The peer rows are on the same screen and are not marked.
     assert "AZ-04 peer is a capability extension" in text
+
+
+def test_status_vm_lab_guidance_and_unknown_mio(tmp_path, monkeypatch):
+    from azazel_nexus import lab_host
+    marker = tmp_path / "LAB-HOST"
+    marker.touch()
+    monkeypatch.setattr(lab_host, "LAB_HOST_MARKER", marker)
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    code, text = _run(["status"], tmp_path)
+    assert code == 0
+    assert "M.I.O.: commissioned ceiling: unknown; capability state: unknown" in text
+    assert "not a grant or admission" in text
+    assert "azazel-nexus commission" not in text
+    assert "step unavailable on a lab host" in text
+    assert "ships no daemon" not in text
+    assert "no --ledger path supplied" in text
+    assert "the path given" not in text
+
+
+def test_status_reports_recorded_mio_ceiling_without_raising_capability(tmp_path, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    path = tmp_path / ROUTE_LEDGER.lstrip("/")
+    path.parent.mkdir(parents=True)
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "reasons": {"profile": "LITE", "resource": "core_reserve_unmeasured"}})
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    code, text = _run(["status"], tmp_path)
+    assert code == 0
+    assert "commissioned ceiling: LITE; capability state: CORE" in text
+    assert "core_reserve_unmeasured" in text
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before

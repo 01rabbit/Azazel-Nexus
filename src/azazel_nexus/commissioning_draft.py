@@ -26,6 +26,14 @@ class DraftRefused(Exception):
     """Draft export failed; no signature or activation was attempted."""
 
 
+class DraftInputRefused(DraftRefused):
+    """Safe reason for unavailable signed-draft input."""
+
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
 def draft_bytes(record: CommissioningRecord) -> bytes:
     document = dict(record_as_document(record))
     # record_as_document is also used by an unrelated HIL workflow whose
@@ -186,10 +194,12 @@ def read_draft_review_inputs() -> tuple[bytes, bytes]:
         payload = _read_private(directory_fd, "commissioning-draft.json", maximum=MAX_APPROVAL_BYTES)
         signature = _read_private(directory_fd, "commissioning-draft.sig", maximum=64)
         if len(signature) != 64:
-            raise DraftRefused("draft signature must have exactly 64 bytes")
+            raise DraftInputRefused("draft signature refused (invalid length)")
         return payload, signature
+    except FileNotFoundError:
+        raise DraftInputRefused("no signed draft present (draft or detached signature missing)") from None
     except OSError:
-        raise DraftRefused("protected draft input unavailable") from None
+        raise DraftInputRefused("signed draft unreadable") from None
     finally:
         if directory_fd is not None:
             os.close(directory_fd)

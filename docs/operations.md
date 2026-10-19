@@ -13,21 +13,34 @@ azazel-nexus setup --next --json
 ```
 
 Every row contains a step name, `done`, `needed`, `blocked`, or
-`not-applicable`, a reason, and an exact next command. `--next` selects the
+`not-applicable`, a reason, and a next command or an explicit statement that no action is available. `--next` selects the
 first `needed` or `blocked` row. It only prints guidance: even commands naming
 `sudo`, publication, recovery, import, or `systemctl` are never executed.
 Setup creates no files, audit entries, directories, or service-manager jobs.
 Exit 0 means the guide was read, **not** that setup or activation succeeded;
 incomplete paired manifest arguments return 2. JSON uses schema
 `azazel-nexus/setup/1` with `steps`, `read_only`, `hg05`,
-`provider_admission`, and `enforcement_readiness` fields.
+`provider_admission`, `enforcement_readiness`, `lab_host`, and `mio` fields.
 
 The order is installed files → host preflight → commissioning presence →
 signed draft review → bootstrap deployment and current-boot selection →
 Knowledge Lite store and trust → Mission Pack selection → fetch commissioning
 presence → fetched model candidates → provider admission → activation/unit
-state. `done` applies only to the fact named in that row. It does not grant
+state → integration broker → M.I.O. configuration. `done` applies only to the fact named in that row. It does not grant
 capabilities or certify later steps.
+On a LAB HOST, next steps that would be refused by LAB_HOST_MARKER are
+reported as unavailable. Bootstrap diagnostics distinguish boot-binding mismatch
+from missing or unreadable inputs; retained state requires administrator review,
+not another invocation of setup. No state is repaired by these displays.
+
+Both setup and status show the recorded M.I.O. ceiling (CORE/LITE/FULL), capability
+state and reasons from the latest verified `mio.capability.transition` in
+`/var/lib/azazel/state/mio/route.jsonl`. This is the last recorded observation,
+not a live probe or a freshness guarantee. Without readable ledger evidence the
+values are unknown; operator commands do not read entryd credentials or infer
+LITE/FULL from RAM. The ceiling is not a grant or admission. Status does not
+query systemd, and audit-chain health is unknown without an explicit `--ledger`.
+
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
 Installation creates `/etc/azazel/mio-profile/` as root:root 0700 even before
 commissioning. Keep it limited to the two retained proposal copies and the

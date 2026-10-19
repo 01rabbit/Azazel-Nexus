@@ -175,7 +175,7 @@ def test_json_and_next_registration(tmp_path, fixture_host, monkeypatch):
         assert doc["hg05"] == "unmeasured"
         assert doc["provider_admission"] == "blocked"
         assert doc["enforcement_readiness"] == "not-established"
-        assert len(doc["steps"]) == (1 if next_only else 14)
+        assert len(doc["steps"]) == (1 if next_only else 15)
         assert doc["steps"][0]["name"] == "installed-files"
     out = StringIO()
     assert main(["setup", "--next"], out=out) == 0
@@ -322,3 +322,56 @@ def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, 
     assert facts["bootstrap-deployment"].state is State.REFUSED
     assert facts["bootstrap-selection"].state is State.REFUSED
     assert "sentinel" not in repr(facts)
+
+
+def test_vm_lab_stale_boot_hg05_json_is_read_only(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus import lab_host
+    from azazel_nexus.bootstrap_selection_store import SelectionReadRefused
+    marker = put(tmp_path, "/etc/azazel-lab/LAB-HOST")
+    monkeypatch.setattr(lab_host, "LAB_HOST_MARKER", marker)
+    monkeypatch.setattr(flow, "is_lab_host", lab_host.is_lab_host)
+    put(tmp_path, "/etc/azazel/bootstrap/selection.json")
+    def stale():
+        raise SelectionReadRefused("boot binding differs from the current boot")
+    monkeypatch.setattr(flow, "load_bootstrap_selection", stale)
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    before = snapshot(tmp_path)
+    out = StringIO()
+    assert main(["setup", "--json"], out=out) == 0
+    doc = json.loads(out.getvalue())
+    assert doc["lab_host"] is True
+    steps = {s["name"]: s for s in doc["steps"]}
+    assert "boot binding differs" in steps["bootstrap-selection"]["reason"]
+    assert all(s["next_command"] != "azazel-nexus setup" for s in steps.values())
+    for name in ("host-preflight", "commissioning", "commission-review", "model-import-fetched", "provider-admission"):
+        assert steps[name]["next_command"].startswith("none available")
+        assert "LAB_HOST_MARKER" in steps[name]["reason"]
+    assert doc["mio"]["ceiling"] is None
+    assert "route ledger unreadable" in doc["mio"]["availability"]
+    assert steps["provider-admission"]["status"] == "blocked"
+    assert snapshot(tmp_path) == before
+
+
+def test_setup_reports_recorded_mio_in_text_and_json(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    path = put(tmp_path, ROUTE_LEDGER, b"")
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "reasons": {"profile": "FULL", "resource": "core_reserve_unmeasured"}})
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    before = snapshot(tmp_path)
+    for options in (["setup"], ["setup", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "not a grant or admission" in text
+        if "--json" in options:
+            reading = json.loads(text)["mio"]
+            assert reading["ceiling"] == "FULL"
+            assert reading["state"] == "CORE"
+        else:
+            assert "commissioned ceiling: FULL; capability state: CORE" in text
+        assert "core_reserve_unmeasured" in text
+    assert snapshot(tmp_path) == before
