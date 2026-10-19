@@ -109,7 +109,7 @@ class LocalSocketClient:
             if time.monotonic() - began >= deadline_ms / 1000:
                 return None
             return document
-        except (OSError, KeyError, ValueError, SocketMisconfigured):
+        except Exception:  # noqa: BLE001 - optional reference; any reply defect means none
             return None
 
     def handle(self, request, *, audit=None) -> dict:
