@@ -87,9 +87,11 @@ def test_event_stored_chain_verifies_and_status_is_readable(running):
     stored = json.loads(path.read_text())
     assert stored["event"]["defense"] == edge_event()["defense"]
     assert path.stat().st_mode & 0o777 == 0o640
-    ledger = AuditLedger(server.state / "incidents.jsonl")
+    ledger = AuditLedger(next((server.state / "incidents").glob("*.jsonl")))
     ledger.verify()
-    assert [entry.event["event_type"] for entry in ledger] == ["edge.incident.opened"]
+    assert [entry.event["event_type"] for entry in ledger] == [
+        "edge.incident.reset", "edge.incident.opened"
+    ]
     server._status()
     value = read_intake_status(server.status_path.read_bytes())
     assert value["accepted"] == 1
@@ -179,7 +181,8 @@ def test_bad_connection_is_counted_without_content(running, data, code):
     wait_for(lambda: server.refused[code] == 1)
     assert server.accepted == 0
     assert list((server.state / "evidence").glob("*.jsonl")) == []
-    assert not (server.state / "incidents.jsonl").exists()
+    ledger = AuditLedger(next((server.state / "incidents").glob("*.jsonl")))
+    assert [entry.event["event_type"] for entry in ledger] == ["edge.incident.reset"]
 
 
 def test_storage_failure_stays_closed_but_listener_survives(running, monkeypatch):
@@ -207,7 +210,9 @@ def test_retention_deletes_whole_oldest_segments_and_refuses_links(tmp_path):
         "2026-01-03",
     ]
     store.retain(now + 20 * 86400)
-    assert list(store.directory.iterdir()) == []
+    assert sorted(p.stem for p in store.directory.iterdir()) == [
+        "2026-01-02", "2026-01-03",
+    ]
     victim = tmp_path / "victim"
     victim.write_text("SECRET")
     (store.directory / "1970-01-01.jsonl").symlink_to(victim)
@@ -260,6 +265,11 @@ def test_socket_equals_fixed_i0_destination_and_registration():
     assert intake.address_families == ("AF_UNIX",)
     assert not intake.capability_bounding_set
     assert ("PrivateNetwork", "yes") in intake.extra
+    assert dict(intake.extra) == {
+        "PrivateNetwork": "yes", "Restart": "no", "TimeoutStartSec": "30s",
+        "MemoryMax": "256M", "TasksMax": "32", "LimitNOFILE": "256",
+        "LimitFSIZE": "128M",
+    }
     assert (
         next(u for u in CORE_UNITS if u.name == intake.unit).tier is UnitTier.SUPPORTING
     )
@@ -280,20 +290,23 @@ def test_writer_persists_transitions_without_transport(tmp_path):
     server._writer()
     assert server.accepted == 4
     assert not server.storage_failed
-    ledger = AuditLedger(tmp_path / "incidents.jsonl")
+    ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
     ledger.verify()
     assert [entry.event["event_type"] for entry in ledger] == [
+        "edge.incident.reset",
         "edge.incident.opened",
         "edge.incident.updated",
         "edge.incident.closed",
         "edge.incident.opened",
+        "edge.incident.closed",
     ]
     server._status()
     assert read_intake_status(server.status_path.read_bytes())["accepted"] == 4
 
 
 def test_broken_chain_refuses_new_records_without_content(tmp_path):
-    (tmp_path / "incidents.jsonl").write_text("SECRET")
+    (tmp_path / "incidents").mkdir()
+    (tmp_path / "incidents/1970-01-01.jsonl").write_text("SECRET")
     server = daemon.IntakeServer(
         path=tmp_path / "unused.sock",
         state=tmp_path,
@@ -301,10 +314,222 @@ def test_broken_chain_refuses_new_records_without_content(tmp_path):
         edge_uid=123,
         clock=lambda: 100,
     )
-    server.pending.put(record(100))
-    server.finished.set()
-    server._writer()
+    ready = []
+    assert server.serve(ready=lambda: ready.append(True)) == 1
+    assert not ready
+    assert not server.path.exists()
     assert server.accepted == 0
     assert server.storage_failed
     assert "SECRET" not in server.status_path.read_text()
     assert list((tmp_path / "evidence").glob("*.jsonl")) == []
+
+
+@pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
+def test_retention_keeps_newest_over_total_ceiling_and_ignores_wall_jump(tmp_path, kind):
+    now = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
+    if kind is daemon.EvidenceStore:
+        store = kind(tmp_path, max_bytes=1)
+    else:
+        store = kind(tmp_path, now, max_bytes=1)
+    for day in ("2026-01-01", "2026-01-10", "2026-01-20"):
+        (store.directory / (day + ".jsonl")).write_bytes(b"1234")
+    store.retain(daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp())
+    assert sorted(p.stem for p in store.directory.iterdir()) == ["2026-01-20"]
+    store.max_bytes = 100
+    for day in ("2026-01-01", "2026-01-10"):
+        (store.directory / (day + ".jsonl")).write_bytes(b"1234")
+    store.retain(daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp())
+    assert sorted(p.stem for p in store.directory.iterdir()) == ["2026-01-10", "2026-01-20"]
+
+
+def test_evidence_ceiling_refuses_append_and_resumes_next_day(tmp_path):
+    item = record(0)
+    size = max(len(daemon.canonical(record(now).as_dict())) + 1 for now in (0, 86400))
+    store = daemon.EvidenceStore(tmp_path, max_bytes=1, segment_bytes=size)
+    store.append(item)
+    path = store.path_at(0)
+    before = path.read_bytes()
+    with pytest.raises(daemon.SegmentFull) as caught:
+        store.append(item)
+    assert caught.value.code == "evidence_segment_full"
+    assert path.read_bytes() == before
+    store.append(record(86400))
+    assert store.path_at(86400).exists()
+
+
+def test_segment_full_keeps_listener_and_next_day_writer(running, monkeypatch):
+    original = daemon.EvidenceStore.append
+    def full_once(self, item):
+        monkeypatch.setattr(daemon.EvidenceStore, "append", original)
+        raise daemon.SegmentFull("evidence_segment_full")
+    monkeypatch.setattr(daemon.EvidenceStore, "append", full_once)
+    server = running()
+    send(server)
+    wait_for(lambda: server.refused["evidence_segment_full"] == 1)
+    assert not server.snapshot()["storage_failed"]
+    send(server)
+    wait_for(lambda: server.accepted == 1)
+
+
+def test_startup_evidence_failure_is_before_ready_and_bind(tmp_path, monkeypatch):
+    def failed(*_):
+        raise OSError("SECRET")
+    monkeypatch.setattr(daemon.EvidenceStore, "prepare", failed)
+    server = daemon.IntakeServer(path=tmp_path / "in.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123)
+    ready = []
+    assert server.serve(ready=lambda: ready.append(True)) == 1
+    assert not ready and not server.path.exists()
+    assert server.snapshot()["storage_failed"]
+    assert "SECRET" not in json.dumps(server.snapshot())
+
+
+def test_status_failure_does_not_poison_storage(tmp_path, monkeypatch):
+    def failed(*_):
+        raise OSError("SECRET")
+    monkeypatch.setattr(daemon.IntakeServer, "_status", failed)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123)
+    server.pending.put(record(0))
+    server.finished.set()
+    server._writer()
+    assert server.accepted == 1
+    assert server.refused["status_write_failed"] > 0
+    assert not server.storage_failed
+    assert server.refused["storage_failed"] == 0
+
+
+def test_rate_limit_preserves_evidence_and_counts_status(tmp_path):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server.tracker.monotonic = lambda: 0
+    for sid in range(65):
+        server.pending.put(record(0, sid=sid))
+    server.finished.set()
+    server._writer()
+    assert server.accepted == 65
+    assert server.snapshot()["refused"]["incident_rate_limited"] == 5
+    assert len(next((tmp_path / "evidence").glob("*.jsonl")).read_text().splitlines()) == 65
+    ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
+    entries = [entry.event for entry in ledger]
+    assert entries[0] == {"event_type": "edge.incident.reset", "at": 0,
+                          "reason": "intake_started"}
+    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 60
+    closed = [e for e in entries if e["event_type"] == "edge.incident.closed"]
+    assert len(closed) == 60 and all(e["reason"] == "shutdown" for e in closed)
+    assert read_intake_status(server.status_path.read_bytes())["storage_failed"] is False
+
+
+def test_incident_segments_are_capped_and_only_current_verified(tmp_path):
+    directory = tmp_path / "incidents"
+    directory.mkdir()
+    (directory / "1970-01-01.jsonl").write_text("old unverified data")
+    ledger = daemon.IncidentLedger(tmp_path, 86400, segment_bytes=1024)
+    event = {"event_type": "edge.incident.reset", "at": 86400, "reason": "intake_started"}
+    ledger.append(event, 86400)
+    before = ledger.current.read_bytes()
+    ledger.segment_bytes = len(before)
+    with pytest.raises(daemon.SegmentFull) as caught:
+        ledger.append(event, 86400)
+    assert caught.value.code == "incident_segment_full"
+    assert ledger.current.read_bytes() == before
+    ledger.segment_bytes = 1024
+    ledger.append(event, 2 * 86400)
+    ledger.ledger.verify()
+    assert ledger.ledger.head()[0] == 1
+
+
+@pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
+def test_received_time_leap_does_not_age_existing_segments(tmp_path, kind):
+    jan20 = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
+    future = daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp()
+    if kind is daemon.EvidenceStore:
+        store = kind(tmp_path)
+    else:
+        store = kind(tmp_path, jan20)
+    old = store.directory / "2026-01-10.jsonl"
+    if kind is daemon.EvidenceStore:
+        old.write_text("retained evidence")
+        store.append(record(jan20))
+        store.append(record(future))
+    else:
+        AuditLedger(old, private=True).append({"at": jan20})
+        store.append({"at": jan20}, jan20)
+        store.append({"at": future}, future)
+    assert old.exists()
+    assert store.path_at(future).exists()
+
+
+def test_writer_recovers_from_daily_ceiling_without_transport(tmp_path, monkeypatch):
+    original = daemon.EvidenceStore.append
+    def full_once(self, item):
+        monkeypatch.setattr(daemon.EvidenceStore, "append", original)
+        raise daemon.SegmentFull("evidence_segment_full")
+    monkeypatch.setattr(daemon.EvidenceStore, "append", full_once)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 86400)
+    server.pending.put(record(0))
+    server.pending.put(record(86400))
+    server.finished.set()
+    server._writer()
+    assert server.accepted == 1
+    assert server.refused["evidence_segment_full"] == 1
+    assert not server.storage_failed
+
+
+def test_status_reader_requires_boolean_storage_failure(tmp_path):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123)
+    value = server.snapshot()
+    assert read_intake_status(daemon.canonical(value))["storage_failed"] is False
+    value["storage_failed"] = 1
+    assert read_intake_status(daemon.canonical(value)) is None
+    value.pop("storage_failed")
+    assert read_intake_status(daemon.canonical(value)) is None
+
+
+@pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
+def test_retention_keeps_active_segment_when_clock_moves_back(tmp_path, kind):
+    if kind is daemon.EvidenceStore:
+        store = kind(tmp_path, max_bytes=1)
+        store.append(record(20 * 86400))
+        store.append(record(0))
+    else:
+        store = kind(tmp_path, 20 * 86400, max_bytes=1)
+        store.append({"at": 0}, 0)
+    assert store.path_at(0).exists()
+    assert store.path_at(20 * 86400).exists()
+
+
+def test_restart_marks_previous_open_incidents_reset(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0)
+    ledger.append({"event_type": "edge.incident.opened", "incident_id": "inc-old"}, 0)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server._open_storage()
+    events = [entry.event for entry in server.ledger.ledger]
+    assert events[-1] == {"event_type": "edge.incident.reset", "at": 0,
+                          "reason": "intake_started"}
+    assert server.tracker.incidents == {}
+
+
+@pytest.mark.parametrize("writer", ["store", "ledger"])
+def test_runtime_writer_failure_stays_closed_without_transport(tmp_path, monkeypatch, writer):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server._open_storage()
+    def failed(*_):
+        raise OSError("SECRET")
+    monkeypatch.setattr(getattr(server, writer), "append", failed)
+    for _ in range(2):
+        server.pending.put(record(0))
+    server.finished.set()
+    server._writer()
+    assert server.accepted == 0
+    assert server.snapshot()["storage_failed"] is True
+    assert server.refused["storage_failed"] == 2
+    assert "SECRET" not in server.status_path.read_text()

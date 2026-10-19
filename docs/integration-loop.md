@@ -108,8 +108,8 @@ socket. Edge Core connects once per event and writes one line.
   `normalized`, `defense`, `enforcement`, `enforcement_status`, `source` and
   `pipeline`. Intake accepts exactly that, with every field typed and bounded
   (addresses parse as addresses, ports are 0–65535, severity 0–10 because
-  Edge can emit zero, strings have length limits). Anything else is counted and refused; its content is
-  not logged.
+  Edge can emit zero; lower numbers are more severe, and strings have length
+  limits). Anything else is counted and refused; its content is not logged.
 - **Record Edge's decision as Edge's.** `defense.action` and
   `enforcement_status` are stored verbatim as an *Edge decision observation*.
   Under the observe-only posture the status is shown as "would", never as
@@ -149,28 +149,65 @@ Concrete I1 limits and paths:
   disabled-enforcement, dry-run, no-high-impact-auto observations are accepted.
   Other postures or applied outcomes produce `EDGE_NOT_OBSERVE_ONLY`.
   Other parser codes are `EDGE_TOO_LARGE`, `EDGE_JSON`, `EDGE_SHAPE`,
-  `EDGE_TYPE`, `EDGE_RANGE`. Transport/storage codes are `peer_refused`,
-  `overloaded`, `queue_full`, `read_deadline`, `read_error`, `storage_failed`.
+  `EDGE_TYPE`, `EDGE_RANGE`, plus fixed per-field `EDGE_TYPE_attack_type`,
+  `EDGE_RANGE_attack_type`, `EDGE_TYPE_category`, `EDGE_RANGE_category`.
+  Rule messages (`attack_type`) and categories accept up to 1024 characters,
+  including tabs; other control characters and NUL are refused.
+  Transport/storage codes are `peer_refused`, `overloaded`, `queue_full`,
+  `read_deadline`, `read_error`, `storage_failed`, `status_write_failed`,
+  `evidence_segment_full`, `incident_segment_full`, `incident_rate_limited`.
   Only fixed codes are counted; refused content and exception text are never
-  recorded. Empty addresses are absent; signature ids are bounded unsigned
+  recorded. Empty addresses remain empty strings (the absent-address sentinel);
+  nonempty source and destination addresses use `ipaddress(...).compressed`.
+  Signature ids are bounded unsigned
   64-bit values. Optional rule-supplied `technique_ids` accepts at most eight
   `T1234` or `T1234.567` identifiers, refusing the whole event on malformed ids.
 - Private state `/var/lib/azazel/edge-intake` (`azintake:root 0700`): evidence
-  in `evidence/YYYY-MM-DD.jsonl` (`0640`, append/no-follow), capped at 256 MiB
-  and 14 days by deleting oldest whole segments. Canonical validated JSON
-  determines the SHA-256 digest; received time is separate.
+  in `evidence/YYYY-MM-DD.jsonl` (`0640`, append/no-follow), with a 64 MiB
+  per-segment ceiling and a 256 MiB / 14-day retention budget. Retention deletes
+  oldest whole segments, always keeping the newest and the active segment,
+  even if these alone exceed the total budget. Age is relative to the newest
+  stored segment's UTC day, never `received_at` or wall clock alone. During a
+  run, that age reference advances by at most monotonic elapsed time plus one
+  day for midnight rollover, so a forward clock jump cannot age out history.
+  A full daily evidence segment refuses appends with `evidence_segment_full`;
+  it does not permanently fail storage, and the next day's segment resumes.
+  The SHA-256 digest covers canonical JSON of the validated, normalized event
+  (including address normalization and reduced enforcement observations),
+  not Edge's raw line; received time is separate. New segment creation fsyncs
+  the containing directory.
 - Incidents key on `(src_ip, sid, target_port)`, idle after 900 s, update at
-  most every 60 s. At most 1024 remain open; capacity closes the oldest idle
-  incident first. Technique unions retain a deterministic maximum of eight.
-  `incidents.jsonl` is a private local `AuditLedger` hash chain. Forwarding
-  these transitions to auditd remains I3. Writer failure closes record
+  most every 60 s. `most_severe` is the minimum severity seen, initialized
+  from the first event. At most 1024 remain open; capacity closes the oldest
+  idle incident first. New openings are limited to 60 per rolling minute on
+  a monotonic clock; excess events still go to evidence and increment
+  `incident_rate_limited`, while existing incidents can still update.
+  Technique unions retain a deterministic maximum of eight.
+  `incidents/YYYY-MM-DD.jsonl` (`0600`) holds independent daily local
+  `AuditLedger` hash chains, each at most 64 MiB (with envelope space reserved),
+  with the same 256 MiB / 14-day retention and newest/active-segment protection
+  as evidence. Only the current segment is verified at startup; older retained
+  chains are not startup-verified. A full daily ledger counts
+  `incident_segment_full` and omits transitions until the next segment, while
+  evidence intake continues. Startup writes `edge.incident.reset` with `at`
+  and reason `intake_started`, closing the interpretation of previous runs'
+  open incidents. Clean shutdown writes `closed` with reason `shutdown` for
+  each open incident (at most 1024). Forwarding to auditd remains I3.
+  An evidence or ledger open/verification failure at startup exits nonzero
+  before binding or signalling READY. Later writer failures close record
   acceptance until restart while the listener keeps accepting and dropping.
 - Liveness `/var/lib/azazel/run/edge-intake-status/status.json` (`0644`) has a
   separate `azintake:azazel-operator 2750` leaf. Atomic snapshots are written
-  at most every 5 s. The pure `read_intake_status` decoder supplies no readiness or enforcement authority.
+  at most every 5 s, with a final shutdown snapshot. A separate boolean
+  `storage_failed` reports permanent record-writer failure; status-file write
+  failures only increment `status_write_failed`. The pure `read_intake_status`
+  decoder supplies no readiness or enforcement authority.
 - `azazel-edge-intaked.service`: `azintake`, `Type=notify`, AF_UNIX only,
   `PrivateNetwork=yes`, no capabilities; only the three leaves above are
   writable. Supporting-tier admission lets it listen before Edge admission.
+  Startup timeout is 30 s; `Restart=no` matches auditd's explicit setting and
+  knowledge-lited's systemd default. Limits are `MemoryMax=256M`, `TasksMax=32`,
+  `LimitNOFILE=256`, `LimitFSIZE=128M` (above the 64 MiB segment ceiling).
   It is installed masked and preset-disabled, with no dependency on Edge.
 
 ### I2 — explanation (Explain)

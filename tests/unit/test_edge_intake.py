@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_producer_shape_and_digest_and_detached_event():
         ("normalized", "src_ip", "SECRET", "EDGE_RANGE"),
         ("normalized", "dst_ip", "fe80::1%SECRET", "EDGE_RANGE"),
         ("normalized", "ts", "SECRET", "EDGE_RANGE"),
-        ("normalized", "attack_type", "SECRET\n", "EDGE_RANGE"),
+        ("normalized", "attack_type", "SECRET\n", "EDGE_RANGE_attack_type"),
         ("normalized", "protocol", "x" * 257, "EDGE_RANGE"),
         ("normalized", "technique_ids", ["T1234.567", "SECRET"], "EDGE_RANGE"),
         ("normalized", "technique_ids", ["T1234"] * 9, "EDGE_RANGE"),
@@ -195,7 +196,7 @@ def test_tracker_open_throttle_update_idle_and_ids():
     assert opened["edge_would"] == "isolate"
     assert tracker.add(record(59)) == []
     (updated,) = tracker.add(record(60, ids=["T1234.567"], severity=8))
-    assert (updated["count"], updated["max_severity"]) == (3, 8)
+    assert (updated["count"], updated["most_severe"]) == (3, 1)
     assert updated["technique_ids"] == ["T1234", "T1234.567"]
     assert updated["first_evidence"] == first.digest
     assert tracker.tick(960) == []
@@ -292,3 +293,67 @@ def test_suricata_compact_timezone_is_rfc3339_ish():
     value = edge_event()
     value["normalized"]["ts"] = "2026-01-01T00:00:00.123456+0000"
     assert parsed(value).as_dict()["normalized"]["ts"] == value["normalized"]["ts"]
+
+
+@pytest.mark.parametrize("severities", [(8, 4, 1, 0), (0, 1, 4, 8)])
+def test_severity_tracks_lowest_value_from_first_event(severities):
+    tracker = IncidentTracker(lambda: 0)
+    for i, severity in enumerate(severities):
+        (transition,) = tracker.add(record(i * 60, severity=severity))
+        assert transition["most_severe"] == min(severities[:i + 1])
+
+
+def test_equivalent_ipv6_addresses_share_an_incident_key():
+    tracker = IncidentTracker(lambda: 0)
+    for address in ("2001:0DB8:0000::1", "2001:db8::1"):
+        value = edge_event()
+        value["normalized"].update(src_ip=address, dst_ip="2001:0DB8::2")
+        event = parsed(value)
+        assert event.as_dict()["normalized"]["dst_ip"] == "2001:db8::2"
+        tracker.add(EvidenceRecord.receive(event, lambda: 0))
+    assert len(tracker.incidents) == 1
+    assert next(iter(tracker.incidents.values()))["count"] == 2
+
+
+@pytest.mark.parametrize("field", ["attack_type", "category"])
+def test_rule_text_limits_and_fixed_field_codes(field):
+    value = edge_event()
+    value["normalized"][field] = "a" * 1023 + "\t"
+    assert parsed(value).as_dict()["normalized"][field] == value["normalized"][field]
+    for refused in ("a" * 1025, "secret\x00", "secret\n", "secret\x7f"):
+        value["normalized"][field] = refused
+        with pytest.raises(EdgeEventRefused, match="^EDGE_RANGE_" + field + "$"):
+            parsed(value)
+    value["normalized"][field] = 1
+    with pytest.raises(EdgeEventRefused, match="^EDGE_TYPE_" + field + "$"):
+        parsed(value)
+
+
+def test_timestamp_refuses_unicode_digits():
+    value = edge_event()
+    value["normalized"]["ts"] = "2026-01-01T00:00:00.１２３Z"
+    with pytest.raises(EdgeEventRefused, match="^EDGE_RANGE$"):
+        parsed(value)
+
+
+def test_opening_rate_is_bounded_and_existing_incidents_still_update():
+    instant = [0]
+    tracker = IncidentTracker(lambda: 0, monotonic=lambda: instant[0])
+    for sid in range(60):
+        assert tracker.add(record(0, sid=sid))[0]["transition"] == "opened"
+    assert tracker.add(record(0, sid=60)) == []
+    assert tracker.rate_limited == 1
+    assert tracker.add(record(60, sid=0))[0]["transition"] == "updated"
+    instant[0] = 60
+    assert tracker.add(record(60, sid=60))[0]["transition"] == "opened"
+
+
+def test_edge_golden_events_parse():
+    # Refresh from Edge process_line whenever Edge's event contract changes.
+    # Derived from origin/main main.rs and origin/work/issue-427 (technique_ids).
+    fixture = Path(__file__).parents[1] / "fixtures/edge/rust_event_engine_v1.jsonl"
+    events = [json.loads(line) for line in fixture.read_bytes().splitlines()]
+    assert {e["defense"]["action"] for e in events} == {"notify", "redirect", "isolate"}
+    assert {"technique_ids" in e["normalized"] for e in events} == {True, False}
+    for event in events:
+        assert parsed(event).as_dict()["defense"] == event["defense"]

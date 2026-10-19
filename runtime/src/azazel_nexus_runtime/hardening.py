@@ -625,7 +625,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
                           "/var/lib/azazel/run/edge-intake-status"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
-        extra=(("PrivateNetwork", "yes"),),
+        extra=(("PrivateNetwork", "yes"), ("Restart", "no"),
+               ("TimeoutStartSec", "30s"), ("MemoryMax", "256M"),
+               ("TasksMax", "32"), ("LimitNOFILE", "256"),
+               ("LimitFSIZE", "128M")),
         rationale="Receives bounded observations; no Edge control or enforcement authority.",
     ),
     ServiceProfile(

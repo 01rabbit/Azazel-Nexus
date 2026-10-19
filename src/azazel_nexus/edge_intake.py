@@ -7,6 +7,8 @@ import ipaddress
 import json
 import math
 import re
+import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +17,7 @@ MAX_LINE = 16 * 1024
 INCIDENT_IDLE_S = 900
 UPDATE_INTERVAL_S = 60
 MAX_OPEN = 1024
+MAX_OPENINGS_PER_MINUTE = 60
 ACTIONS = frozenset({"observe", "notify", "throttle", "redirect", "isolate"})
 STATUS_SCHEMA = "azazel-nexus/edge-intake-status/v1"
 REFUSAL_CODES = frozenset(
@@ -31,6 +34,14 @@ REFUSAL_CODES = frozenset(
         "read_deadline",
         "read_error",
         "storage_failed",
+        "status_write_failed",
+        "evidence_segment_full",
+        "incident_segment_full",
+        "incident_rate_limited",
+        "EDGE_TYPE_attack_type",
+        "EDGE_RANGE_attack_type",
+        "EDGE_TYPE_category",
+        "EDGE_RANGE_category",
     }
 )
 
@@ -53,9 +64,14 @@ def _shape(value, keys, optional=()):
     _require(set(keys) <= set(value) <= set(keys) | set(optional))
 
 
-def _text(value, limit=256):
-    _require(type(value) is str, "EDGE_TYPE")
-    _require(len(value) <= limit and (not value or value.isprintable()), "EDGE_RANGE")
+def _text(value, limit=256, *, field=None):
+    suffix = "_" + field if field else ""
+    _require(type(value) is str, "EDGE_TYPE" + suffix)
+    printable = value.replace("\t", " ") if field else value
+    _require(
+        len(value) <= limit and (not printable or printable.isprintable()),
+        "EDGE_RANGE" + suffix,
+    )
 
 
 def _int(value, maximum, minimum=0):
@@ -86,6 +102,7 @@ def _timestamp(value):
                 re.fullmatch(
                     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)",
                     value,
+                    re.ASCII,
                 )
             ),
             "EDGE_RANGE",
@@ -184,10 +201,12 @@ def parse_edge_event(raw: bytes) -> EdgeEvent:
         try:
             if n[key]:
                 _require("%" not in n[key], "EDGE_RANGE")
-                ipaddress.ip_address(n[key])
+                n[key] = ipaddress.ip_address(n[key]).compressed
         except ValueError:
             raise EdgeEventRefused("EDGE_RANGE") from None
-    for key in ("attack_type", "category", "protocol", "action", "event_type"):
+    for key in ("attack_type", "category"):
+        _text(n[key], 1024, field=key)
+    for key in ("protocol", "action", "event_type"):
         _text(n[key])
     for key, upper in (
         ("severity", 10),
@@ -354,9 +373,14 @@ class EvidenceRecord:
 class IncidentTracker:
     """Bound incident cardinality and transition frequency independently of traffic."""
 
-    def __init__(self, clock: Callable[[], float], max_open=MAX_OPEN):
+    def __init__(
+        self, clock: Callable[[], float], max_open=MAX_OPEN, *, monotonic=time.monotonic
+    ):
         self.clock, self.max_open = clock, max_open
         self.incidents = {}
+        self.monotonic = monotonic
+        self.openings = deque()
+        self.rate_limited = 0
 
     def tick(self, now=None):
         now = self.clock() if now is None else now
@@ -377,6 +401,13 @@ class IncidentTracker:
         key = (n["src_ip"], n["sid"], n["target_port"])
         opened = key not in self.incidents
         if opened:
+            instant = self.monotonic()
+            while self.openings and instant - self.openings[0] >= 60:
+                self.openings.popleft()
+            if len(self.openings) >= MAX_OPENINGS_PER_MINUTE:
+                self.rate_limited += 1
+                return transitions
+            self.openings.append(instant)
             if len(self.incidents) >= self.max_open:
                 oldest = min(
                     self.incidents, key=lambda k: self.incidents[k]["last_seen"]
@@ -393,7 +424,7 @@ class IncidentTracker:
                 "count": 0,
                 "first_seen": now,
                 "last_seen": now,
-                "max_severity": 0,
+                "most_severe": n["severity"],
                 "technique_ids": [],
                 "first_evidence": record.digest,
                 "latest_evidence": record.digest,
@@ -403,7 +434,7 @@ class IncidentTracker:
         item.update(
             count=item["count"] + 1,
             last_seen=now,
-            max_severity=max(item["max_severity"], n["severity"]),
+            most_severe=min(item["most_severe"], n["severity"]),
             edge_would=d["action"],
             policy_reason=d["policy_reason"],
             attack_type=n["attack_type"],
@@ -434,9 +465,11 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "refused",
                 "open_incidents",
                 "queue_drops",
+                "storage_failed",
             ),
         )
         _require(value["schema"] == STATUS_SCHEMA)
+        _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
         _number(value["written_at"])
         if value["last_accepted_at"] is not None:
             _number(value["last_accepted_at"])
