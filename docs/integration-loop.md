@@ -124,7 +124,8 @@ socket. Edge Core connects once per event and writes one line.
 - **Incidents.** Events are grouped into incidents by a fixed key (source
   address, signature id, destination port) within a fixed window. The audit
   records incident transitions (`edge.incident.opened`, `edge.incident.updated`
-  at bounded intervals, `edge.incident.closed`), not every packet. A flood of
+  at bounded intervals and at once when the incident becomes more severe,
+  `edge.incident.closed`), not every packet. A flood of
   alerts cannot become a flood of audit records.
 - **Never block Edge.** Edge Core connects with a blocking `connect` and no
   timeout, so a listener that stops accepting would stall detection. Intake
