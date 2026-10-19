@@ -183,6 +183,16 @@ same shape `units.DbusUnitManager` uses: a typed parameter, no `systemctl`, no
 both read-only. With no D-Bus connection — a container, a host without
 systemd, a permission refusal — `running` is `not-checked` with that reason.
 
+The installed probe gets `systemd_bus.EdgeUnitStateReader`: the controller's
+fixed system-bus transport (fixed socket, manager-identity check, timeouts),
+narrowed to `GetUnit` plus `LoadState`/`ActiveState`/`SubState` of
+`azazel-edge-core.service`'s object, connected on first read and closed after.
+It has no mask, unmask or enable verb. `active`/`running` passes; any other
+state, or systemd holding no unit object (`NoSuchUnit`), is `failed` because
+nothing is running it; an unreachable bus or an unreadable reply is
+`not-checked`. Until #195 the installed probe supplied no reader at all, so
+`running` was always `not-checked` and `edge-baseline-ready` was unreachable.
+
 `az-edge-probed` is the **one** module in the runtime distribution permitted
 to start a process, contained the way `fabric_boundary.py` contains the Fabric
 import. `tests/unit/test_runtime_activated.py` exempts it by name and asserts
