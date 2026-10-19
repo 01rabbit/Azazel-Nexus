@@ -304,9 +304,11 @@ or malformed recent snapshots show unavailable while other sections continue.
 
 Auditd accepts only azexplain's bounded incident openings, severity escalations
 and closes. The existing audit verifier accepts these events. Audit forwarding
-uses a separate worker, a 256-entry memory queue, 250 ms exchanges and five
-attempts per event with one-second retry intervals. Queue overflow, exhausted
-retries and clean-shutdown abandonment count as audit drops. Crashes can lose
+uses a separate worker, a 256-entry memory queue and 2 s exchanges. Transport
+failures are retried after 0.5, 1 and 2 s and then dropped; a refusal from
+auditd is dropped at once and counted separately (`audit_forward_refused`).
+Queue overflow, exhausted retries and clean-shutdown abandonment count as
+audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and
 ledger reads continue through an audit outage. `recent.json` is a projection,
 not a replacement for either verified ledger.
