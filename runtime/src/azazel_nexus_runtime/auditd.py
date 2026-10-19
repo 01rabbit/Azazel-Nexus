@@ -339,6 +339,10 @@ VERBS = (
 )
 
 REGISTRY = VerbRegistry(VERBS)
+#: The explainer's own listener (`audit-submit`, group azaudit-submit): append
+#: only. Its client holds that group and not the operator group, so it reaches
+#: no other daemon socket; `handle` still admits only edge.incident.* from it.
+SUBMIT_REGISTRY = VerbRegistry(VERBS[:1])
 
 
 @dataclass(frozen=True)
@@ -884,8 +888,10 @@ def main(
     ready audit service; ``AuditService`` continues to refuse appends.
     """
 
+    import grp
+
     from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
-    from .runtime_paths import audit_sink, ledger_dir, socket_path
+    from .runtime_paths import audit_sink, ledger_dir, socket_group, socket_path
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
 
@@ -901,6 +907,8 @@ def main(
     return serve_forever(
         path=socket_path("audit"),
         registry=REGISTRY,
+        additional_sockets=((socket_path("audit-submit"),
+                             grp.getgrnam(socket_group("audit-submit")).gr_gid, SUBMIT_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=SERVICE_ACCOUNTS + ("azexplain",)),
         audit=summarized_refusals(audit_sink("audit")),
         handler=service.handle,

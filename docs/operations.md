@@ -246,8 +246,9 @@ and operator-readable liveness under `run/edge-intake-status/status.json`.
 
 `azazel-incident-explaind.service` is the supporting local incident explainer,
 running as `azexplain`, masked and preset-disabled. It reads the incident
-chains as `azincident-read`, asks M.I.O. and Knowledge over their existing
-local sockets, and stores bounded explanations/cursor state privately under
+chains as `azincident-read`, asks M.I.O. and Knowledge over their
+explainer-only local listeners (`mio-advise`, `knowledge-read`), forwards
+incident records to auditd's `audit-submit` listener, and stores bounded explanations/cursor state privately under
 `/var/lib/azazel/incident-explain`. Liveness is operator-readable at
 `/var/lib/azazel/run/incident-explain-status/status.json`. It grants no Edge
 control or enforcement authority; optional advisory failures never stop Edge.

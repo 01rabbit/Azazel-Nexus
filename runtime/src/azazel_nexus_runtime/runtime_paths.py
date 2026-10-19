@@ -44,6 +44,7 @@ __all__ = [
     "mission_pack_config",
     "mission_pack_root",
     "models_root",
+    "socket_group",
     "socket_path",
     "state_dir",
     "watchdog_state_dir",
@@ -53,15 +54,27 @@ __all__ = [
 ROOT = Path(os.environ.get("AZAZEL_ROOT", "/"))
 _SOCKET_LEAVES = {
     "audit": "audit",
+    "audit-submit": "audit-submit",
     "commission": "commission",
     "watchdog": "watchdog",
     "fetch": "fetch",
     "mio-entry": "mio-entry",
+    "mio-advise": "mio-advise",
     "mio": "mio",
     "remote": "remote",
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
     "edge-intake": "edge-intake",
+}
+#: Leaves whose socket inherits a dedicated client group instead of the
+#: operator group. Each one is a second, verb-restricted listener of a daemon
+#: that also serves the operator leaf; a daemon client is given the dedicated
+#: group alone, so it never reaches an operator socket (#213 O1).
+_SOCKET_GROUPS = {
+    "audit-submit": "azaudit-submit",
+    "mio-advise": "azmio-advise",
+    "knowledge-read": "azknowledge-read",
+    "edge-intake": "azedge",
 }
 _STATE_LEAVES = {
     "mio-entry": "mio",
@@ -76,6 +89,14 @@ _STATE_LEAVES = {
 
 def _under(absolute: str) -> Path:
     return ROOT / absolute.lstrip("/")
+
+
+def socket_group(name: str) -> str:
+    """The group a declared socket leaf hands its socket (setgid inheritance)."""
+
+    if name not in _SOCKET_LEAVES:
+        raise ValueError("socket name is not declared by this runtime")
+    return _SOCKET_GROUPS.get(name, "azazel-operator")
 
 
 def socket_path(name: str) -> Path:

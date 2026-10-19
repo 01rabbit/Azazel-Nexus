@@ -537,15 +537,19 @@ nothing in intake, detection or Edge's observe-only decisions.
   inference/reference remains possible, while routing and sanitizer each
   prohibit remote egress regardless of profile or commissioning.
 - **Clients and validation.** The sole advisory request is `mio.advise` to
-  the fixed `mio-entry` socket. Deadline is **500 ms**, the existing
+  entryd's fixed explainer listener, `mio-advise`. Deadline is **500 ms**, the existing
   `REFERENCE_DEADLINE_MS`, for both the verb and the entire client exchange.
   `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
   service allowlists, never the shared SERVICE list. Entryd identifies its
   kernel-derived UID and permits only `mio.advise` with P3-restricted frames;
   `mio.route` and less restrictive privacy classes are refused before routing.
-  `azazel-operator` supplementary membership gives socket
-  traversal; `classify()` explicitly excludes service/daemon UIDs from
-  OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
+  `mio-advise` is entryd's second listener, in its own leaf
+  `/var/lib/azazel/run/mio-advise` (`2710 azmioentry:azmio-advise`), and it
+  registers `mio.advise` alone; the operator `mio-entry` socket is unchanged.
+  `azexplain` reaches it through `azmio-advise` membership. It does **not**
+  hold `azazel-operator`, so it reaches no operator socket leaf and no
+  `2750` operator read area (#213 O1); `classify()` also excludes
+  service/daemon UIDs from OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
   the `knowledge-read` socket, `azknowledge-read` membership and locald's
   existing **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip the lookup.
   No signature-to-technique mapping is invented. Both sockets authenticate
@@ -665,9 +669,17 @@ nothing in intake, detection or Edge's observe-only decisions.
   `edge.incident.*` types; every other uid, including root, is refused for
   those types (`principal_denied`, fixed detail `incident_writer`). Bootstrap
   and root-only verbs keep their existing admission. DAEMON classification
-  prevents azexplain's supplementary operator group from granting OPERATOR.
-  Existing `azazel-operator` membership traverses audit's `2710` leaf and
-  reaches its `0660` socket; no new groups or socket permissions are needed.
+  would keep any operator group azexplain carried from granting OPERATOR,
+  but it carries none. Auditd serves azexplain on a second listener,
+  `/var/lib/azazel/run/audit-submit/audit-submit.sock`, in its own `2710
+  azaudit:azaudit-submit` leaf; that listener registers `audit.append`
+  alone and the handler above still limits azexplain to the incident types.
+  The socket inherits `azaudit-submit` from the setgid leaf, auditd verifies
+  that GID before READY, and the client verifies owner, GID and `0660` before
+  connecting, exactly as for the operator socket. Only the explainer unit
+  carries `azaudit-submit` (as `SupplementaryGroups`, never by enrolment),
+  so no operator and no other daemon reaches this listener, and operators'
+  reach to `run/audit` is unchanged.
   An incident record's `occurred_at` names its daily segment and segments
   only move forward, so auditd refuses an `edge.incident.*` record more than
   ten minutes before or five seconds after its own clock, or dated after its

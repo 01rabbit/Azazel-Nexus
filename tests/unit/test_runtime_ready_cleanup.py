@@ -1,5 +1,8 @@
 """Readiness callback ordering, daemon wiring, and listener cleanup."""
 
+import grp
+from types import SimpleNamespace
+
 import pytest
 
 from azazel_nexus_runtime import auditd, commissiond, principal, runtime_paths, serve, systemd_notify
@@ -72,6 +75,10 @@ def _capture_serve(monkeypatch, module):
 
     target = serve if module is auditd else module
     monkeypatch.setattr(target, "serve_forever", fake_serve_forever)
+    if module is auditd:
+        # The explainer's append-only listener is grouped azaudit-submit.
+        monkeypatch.setattr(grp, "getgrnam", lambda name: SimpleNamespace(
+            gr_gid={"azaudit-submit": 4321}[name]))
     return calls
 
 
@@ -173,6 +180,10 @@ def test_auditd_unverified_chain_keeps_diagnostics_but_withholds_readiness(
     assert auditd.main() == 17
     kwargs = calls[0]
     assert kwargs["ready"] is None
+    # The explainer's listener is served (append only) even while unverified;
+    # appends there are refused by the same handler as on the operator socket.
+    assert kwargs["additional_sockets"] == (
+        (tmp_path / "audit-submit.sock", 4321, auditd.SUBMIT_REGISTRY),)
     diagnostic = kwargs["handler"](
         type("Request", (), {"verb": type("Verb", (), {"name": "audit.verify"})()})()
     )

@@ -326,6 +326,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
     }
     assert set(socket_dirs) == {
         "/var/lib/azazel/run/audit",
+        "/var/lib/azazel/run/audit-submit",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",
@@ -334,16 +335,32 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/incident-explain-status",
         "/var/lib/azazel/run/fetch",
         "/var/lib/azazel/run/mio-entry",
+        "/var/lib/azazel/run/mio-advise",
         "/var/lib/azazel/run/mio",
         "/var/lib/azazel/run/remote",
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
     }
+    dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge",
+                 "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise"}
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode
-        assert spec.group == ("azknowledge-read" if spec.path.endswith("knowledge-read")
-                              else "azedge" if spec.path.endswith("/edge-intake") else "azazel-operator")
+        assert spec.group == dedicated.get(spec.path.rsplit("/", 1)[1], "azazel-operator")
         assert spec.mode & 0o007 == 0
+
+
+def test_dedicated_socket_groups_match_the_runtime_and_the_installer():
+    """The client verifies the socket GID the leaf hands it, so the runtime's
+    group for each leaf must be the group the layout and installer give it."""
+
+    from azazel_nexus_runtime import runtime_paths
+
+    specs = {spec.path: spec for spec in LAYOUT}
+    for name, leaf in runtime_paths._SOCKET_LEAVES.items():
+        spec = specs[f"/var/lib/azazel/run/{leaf}"]
+        assert runtime_paths.socket_group(name) == spec.group, name
+        assert (f"make_owned_dir {spec.mode:o} {spec.owner} {spec.group} "
+                f"/var/lib/azazel/run/{leaf}\n") in _installer(), leaf
 
 
 def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
@@ -357,8 +374,8 @@ def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
     from azazel_nexus_runtime import runtime_paths
 
     expected_owner = {
-        "audit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
-        "fetch": "azfetch", "mio-entry": "azmioentry", "mio": "azmio",
+        "audit": "azaudit", "audit-submit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
+        "fetch": "azfetch", "mio-entry": "azmioentry", "mio-advise": "azmioentry", "mio": "azmio",
         "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge", "edge-intake": "azintake",
     }
     owners = {spec.path: spec.owner for spec in LAYOUT}

@@ -342,7 +342,8 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         elif profile.unit == "azazel-mio-locald.service":
             assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
         elif profile.unit == "azazel-incident-explaind.service":
-            assert settings["SupplementaryGroups"] == ["azincident-read azknowledge-read azazel-operator"]
+            assert settings["SupplementaryGroups"] == [
+                "azincident-read azknowledge-read azaudit-submit azmio-advise"]
         else:
             assert "SupplementaryGroups" not in settings
 
@@ -576,7 +577,8 @@ def test_the_units_say_they_are_generated():
     [
         (
             "azazel-mio-entryd.service", "azmioentry",
-            ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry"],
+            ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
+             "/var/lib/azazel/run/mio-advise"],
             None,
         ),
         (
@@ -621,21 +623,21 @@ def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
 
 
 @pytest.mark.parametrize(
-    ("unit", "socket", "paths"),
+    ("unit", "sockets", "paths"),
     [
-        ("azazel-model-fetchd.service", "fetch",
+        ("azazel-model-fetchd.service", ("fetch",),
          ["/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"]),
-        ("azazel-auditd.service", "audit",
-         ["/var/lib/azazel/run/audit", "/var/lib/azazel/state/audit",
-          "/var/lib/azazel/state/auditd"]),
-        ("azazel-watchdog.service", "watchdog",
+        ("azazel-auditd.service", ("audit", "audit-submit"),
+         ["/var/lib/azazel/run/audit", "/var/lib/azazel/run/audit-submit",
+          "/var/lib/azazel/state/audit", "/var/lib/azazel/state/auditd"]),
+        ("azazel-watchdog.service", ("watchdog",),
          ["/var/lib/azazel/run/watchdog", "/var/lib/azazel/state/watchdog"]),
     ],
 )
-def test_socket_daemons_write_only_their_own_run_leaf(unit, socket, paths):
-    """Each of these creates exactly one thing under the run tree -- its
-    socket, in its installer-owned leaf -- so that leaf is the whole of its
-    run-tree grant."""
+def test_socket_daemons_write_only_their_own_run_leaf(unit, sockets, paths):
+    """Each of these creates only its sockets under the run tree, each in its
+    installer-owned leaf, so those leaves are the whole of its run-tree grant.
+    auditd has two: the operator socket and the explainer's append-only one."""
 
     from azazel_nexus_runtime.runtime_paths import socket_path
 
@@ -643,7 +645,7 @@ def test_socket_daemons_write_only_their_own_run_leaf(unit, socket, paths):
     assert written == paths
     run_grants = [p for p in written if p == "/var/lib/azazel/run"
                   or p.startswith("/var/lib/azazel/run/")]
-    assert run_grants == ["/var/lib/azazel/run/" + socket_path(socket).parent.name]
+    assert run_grants == ["/var/lib/azazel/run/" + socket_path(name).parent.name for name in sockets]
 
 
 def test_no_unprivileged_unit_holds_the_run_root():

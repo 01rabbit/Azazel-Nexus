@@ -177,6 +177,9 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: resolved.append(kw) or "policy")
     assert entry.main([], ready=lambda: None) == 0
     assert captured["path"] == runtime_paths.socket_path("mio-entry")
+    # The explainer's advice-only listener, grouped azmio-advise (patched gid).
+    assert captured["additional_sockets"] == (
+        (runtime_paths.socket_path("mio-advise"), os.getgid(), entry.ADVISE_REGISTRY),)
     assert captured["handler"].__self__.router.ledger.path == runtime_paths.mio_state_dir() / "route.jsonl"
     assert resolved == [{"service_accounts": ("azarbiter", "azexplain")}]
 

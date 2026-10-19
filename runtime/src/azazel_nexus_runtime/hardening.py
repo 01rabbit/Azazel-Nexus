@@ -523,10 +523,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus audit ledger",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         address_families=("AF_UNIX",),
-        # Its socket leaf (azaudit:azazel-operator 2710), its chain and its
-        # refusal records. Nothing else under the run tree is its to write.
+        # Its socket leaves (azaudit:azazel-operator 2710, and the explainer's
+        # append-only azaudit:azaudit-submit 2710), its chain and its refusal
+        # records. Nothing else under the run tree is its to write.
         read_write_paths=(
             "/var/lib/azazel/run/audit",
+            "/var/lib/azazel/run/audit-submit",
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),
@@ -648,7 +650,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         runtime_directory="",
         read_write_paths=("/var/lib/azazel/incident-explain",
                           "/var/lib/azazel/run/incident-explain-status"),
-        supplementary_groups=("azincident-read", "azknowledge-read", "azazel-operator"),
+        # Each group reaches exactly one thing: the incident chains, and the
+        # explainer-only listeners of Knowledge, auditd and M.I.O. entry. Not
+        # azazel-operator: that would reach every operator socket (#213 O1).
+        supplementary_groups=("azincident-read", "azknowledge-read", "azaudit-submit", "azmio-advise"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         # No Restart=: systemd's default is no, and only the bootstrap pair
@@ -702,6 +707,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         address_families=("AF_UNIX",),
         read_write_paths=(
             "/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
+            "/var/lib/azazel/run/mio-advise",
         ),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),

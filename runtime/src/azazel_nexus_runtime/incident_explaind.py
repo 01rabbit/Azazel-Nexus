@@ -69,7 +69,7 @@ def read_file(path, limit):
 def append_audit(event):
     from .bootstrap_audit_client import AuditAppendReceipt
     result = _exchange(
-        "audit", "azaudit", "audit.append", {"event_type": event["event_type"]},
+        "audit-submit", "azaudit", "audit.append", {"event_type": event["event_type"]},
         payload={k: v for k, v in event.items() if k != "event_type"}, deadline_s=AUDIT_DEADLINE_S)
     if set(result) != {"sequence", "event_hash"}:
         raise ValueError("audit_receipt_refused")
@@ -98,7 +98,7 @@ class Explainer:
         self.incidents, self.state, self.status_path = incidents, state, status_path
         self.clock, self.monotonic = clock, monotonic
         self.mio = mio or (lambda frame: _exchange(
-            "mio-entry", "azmioentry", "mio.advise", {"deadline_ms": REFERENCE_DEADLINE_MS},
+            "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": REFERENCE_DEADLINE_MS},
             payload=frame, deadline_s=REFERENCE_DEADLINE_MS / 1000))
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}

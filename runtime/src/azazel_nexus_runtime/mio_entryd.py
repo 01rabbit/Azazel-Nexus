@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import grp
 import pwd
 import sys
 import time
@@ -37,7 +38,7 @@ from .protocol import (
     Verb,
     VerbRegistry,
 )
-from .runtime_paths import socket_path
+from .runtime_paths import socket_group, socket_path
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
@@ -59,6 +60,9 @@ ADVISE_VERB = Verb(
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
 REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB])
+#: The explainer's own listener (`mio-advise`, group azmio-advise): advice
+#: only. Its client holds that group and not the operator group (#213 O1).
+ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 CAPABILITY_INTERVAL_SECONDS = 10
 
@@ -258,6 +262,8 @@ def main(
 
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
+        additional_sockets=((socket_path("mio-advise"),
+                             grp.getgrnam(socket_group("mio-advise")).gr_gid, ADVISE_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=("azarbiter", "azexplain")),
         audit=service.router._record, handler=service.handle, stop=tick,
         ready=ready if ready is not None else runtime_ready_callback(),
