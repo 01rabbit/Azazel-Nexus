@@ -771,9 +771,11 @@ The root is a scratch directory; remove it with `rm -rf <short dir>` afterwards
 What it does not establish: the x86_64 package path (the container binary is
 built for the host architecture, not packaged by Edge's packager, and not
 started by systemd); activation admitting the unit (#198); hardware behaviour.
-The same run on the rehearsal VM, through the installed units, is the next
-step. Neither is hardware evidence: HG-07 still needs the real host.
-The VM procedure is the [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md).
+The same run on the rehearsal VM, through the installed units and the Edge
+packager's package, followed the
+[integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md) once
+on an aarch64 VM (#195), with activation admission not exercised (#206).
+Neither is hardware evidence: HG-07 still needs the real host.
 
 ## 3. What is out of scope
 
