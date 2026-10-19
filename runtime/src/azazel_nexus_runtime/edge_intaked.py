@@ -29,9 +29,10 @@ from azazel_nexus.edge_intake import (
     STATUS_SCHEMA,
     EdgeEventRefused,
     EvidenceRecord,
+    ForwardStats,
     IncidentTracker,
     canonical,
-    parse_edge_event,
+    parse_edge_line,
 )
 from azazel_nexus.store_dirs import store_directory
 
@@ -595,6 +596,23 @@ class IntakeServer:
         self.storage_failed = False
         self.open_incidents = 0
         self.ledger_recovered = 0
+        # Edge's latest forward counts, as Edge reported them; None until the
+        # first report this run.
+        self.edge_forward = None
+
+    def forward_stats(self, stats: ForwardStats):
+        """Keep Edge's latest report; it is neither evidence nor an event."""
+        with self.lock:
+            previous = self.edge_forward
+            restarts = 0 if previous is None else previous["restarts"]
+            # A new process start, or counts that went back, is an Edge
+            # restart: its counts began again at zero.
+            if previous is not None and (
+                    stats.since != previous["since"]
+                    or any(getattr(stats, k) < previous[k] for k in ("dropped", "failed", "sent"))):
+                restarts += 1
+            self.edge_forward = dict(stats.as_dict(), reported_at=self.clock(),
+                                     restarts=restarts)
 
     def refuse(self, code):
         with self.lock:
@@ -614,7 +632,8 @@ class IntakeServer:
                 "queue_drops": self.refused["queue_full"],
                 "storage_failed": self.storage_failed,
                 "ledger_recovered": self.ledger_recovered,
-            }
+            } | ({} if self.edge_forward is None
+                 else {"edge_forward": dict(self.edge_forward)})
 
     def _status(self):
         fd, name = tempfile.mkstemp(dir=self.status_path.parent, prefix=".status-")
@@ -801,7 +820,10 @@ class IntakeServer:
                         return "EDGE_SHAPE"
                     if not data:
                         try:
-                            event = parse_edge_event(bytes(buffer[:-1]))
+                            event = parse_edge_line(bytes(buffer[:-1]))
+                            if type(event) is ForwardStats:
+                                self.forward_stats(event)
+                                return ""
                             record = EvidenceRecord.receive(event, self.clock)
                             self.pending.put_nowait(record)
                         except EdgeEventRefused as exc:

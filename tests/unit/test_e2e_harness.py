@@ -887,6 +887,47 @@ def test_edge_connection_trace_allows_writes_on_the_intake_connection():
     assert_edge_trace(trace, Path("/tmp/intake.sock"), 1)
 
 
+def test_edge_trace_counts_one_connection_per_forward_report():
+    from tools.e2e_loop import assert_edge_trace, forward_reports
+    intake = Path("/tmp/intake.sock")
+    connect = 'connect(3, {sa_family=AF_UNIX, sun_path="/tmp/intake.sock"}, 20) = 0\n'
+    event = 'sendto(3, "{\\"defense\\":{}}\\n", 14, MSG_NOSIGNAL, NULL, 0) = 14\n'
+    report = ('sendto(3, "{\\"dropped\\":0,\\"failed\\":0,\\"schema\\":\\"azazel-edge/'
+              'forward-stats/v1\\",\\"sent\\":1,\\"since\\":1}\\n", 80, MSG_NOSIGNAL, NULL, 0) = 80\n')
+    trace = connect + event + connect + report
+    assert forward_reports(trace) == 1
+    assert_edge_trace(trace, intake, 1)
+    with pytest.raises(AssertionError):
+        assert_edge_trace(trace + connect, intake, 1)
+    assert forward_reports(connect + event) == 0
+
+
+def test_forward_stats_assertion_needs_status_only_counts(replay_artifacts, monkeypatch):
+    import json
+    from azazel_nexus_runtime import edge_intaked
+    from azazel_nexus.edge_intake import parse_edge_line
+    from tools import e2e_loop
+    base = replay_artifacts.root / "var/lib/azazel"
+    path = base / "run/edge-intake-status/status.json"
+    with pytest.raises(AssertionError, match="not in intake status"):
+        e2e_loop.assert_forward_stats(replay_artifacts, 2)
+    value = json.loads(path.read_text())
+    server = edge_intaked.IntakeServer(path=base / "unused.sock", state=base / "unused",
+                                       status_path=path, edge_uid=123)
+    server.forward_stats(parse_edge_line(e2e_loop.forward_stats_line(2)))
+    value["edge_forward"] = server.edge_forward
+    path.write_text(json.dumps(value))
+    assert e2e_loop.assert_forward_stats(replay_artifacts, 2)["sent"] == 2
+    for change in ({"failed": 1}, {"sent": 3}, {"restarts": 1}):
+        path.write_text(json.dumps(dict(value, edge_forward=dict(server.edge_forward, **change))))
+        with pytest.raises(AssertionError, match="Edge forward counts"):
+            e2e_loop.assert_forward_stats(replay_artifacts, 2)
+    # Counted as an event (accepted grew) is a failure too.
+    path.write_text(json.dumps(dict(value, accepted=3, processed=3)))
+    with pytest.raises(AssertionError, match="taken as an event"):
+        e2e_loop.assert_forward_stats(replay_artifacts, 2)
+
+
 def test_replay_connects_one_line_per_connection_as_child(short_root, monkeypatch):
     import json
     from tools import e2e_loop
@@ -897,8 +938,12 @@ def test_replay_connects_one_line_per_connection_as_child(short_root, monkeypatc
         assert "with socket.socket" in command[2]
         assert "connection.sendall(line)" in command[2]
         lines = kwargs["input"].splitlines()
-        assert lines == e2e_loop.golden_lines()
-        assert [json.loads(line)["normalized"]["severity"] for line in lines] == [4, 1]
+        assert lines[:-1] == e2e_loop.golden_lines()
+        assert [json.loads(line)["normalized"]["severity"] for line in lines[:-1]] == [4, 1]
+        # Then Edge's forward counts for those two, as Edge would report them.
+        stats = json.loads(lines[-1])
+        assert (stats["schema"], stats["dropped"], stats["failed"], stats["sent"]) == (
+            "azazel-edge/forward-stats/v1", 0, 0, 2)
         return type("Result", (), {"returncode": 0, "stderr": b""})()
     monkeypatch.setattr(e2e_loop.subprocess, "run", run)
     import time

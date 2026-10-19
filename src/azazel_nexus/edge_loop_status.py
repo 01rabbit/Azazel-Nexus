@@ -5,9 +5,14 @@ import io
 import os
 import re
 import stat
+from datetime import UTC, datetime
 
 from .edge_intake import read_intake_status
 from .incident_explain import RECENT_BYTES, read_explainer_status, read_recent_incidents
+
+#: Edge reports its forward counts when they change and at least every five
+#: minutes; a report older than three of those is no longer current.
+FORWARD_STALE_S = 900
 
 
 def _read(path, reader, limit):
@@ -68,6 +73,7 @@ def _render_edge_loop(out, now):
                 # Each is a torn incident tail cut off at start and kept in
                 # the intake's private state; the ledger records the cut.
                 print(f"        ledger_recovered: {value['ledger_recovered']} (torn incident tail quarantined; see integration-loop.md)", file=out)
+            _render_edge_forward(out, value.get("edge_forward"), now)
         else:
             print(f"        explained: {value['explained']}; chain_broken: {value['chain_broken']}; storage_failed: {value['storage_failed']}", file=out)
             if value["chain_broken"]:
@@ -97,6 +103,24 @@ def _render_edge_loop(out, now):
         print(f"            {e['state']}{codes}: {summary}", file=out)
         for ref in e["knowledge_refs"]:
             print(f"            {ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]", file=out)
+
+
+def _render_edge_forward(out, forward, now):
+    """Edge's own claim about its forwarder, labelled as Edge's."""
+    if forward is None:
+        print("        Edge forward: not reported since the intake started "
+              "(an Edge without forward counts never reports them)", file=out)
+        return
+    age = now - forward["reported_at"]
+    since = datetime.fromtimestamp(forward["since"], UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale = ("; stale (no report for over "
+             f"{FORWARD_STALE_S}s)" if age > FORWARD_STALE_S or age < -5 else "")
+    print(f"        Edge forward: dropped {forward['dropped']}, failed {forward['failed']} "
+          f"(as reported by Edge); sent {forward['sent']} since Edge start {since}; "
+          f"last report {max(0, int(age))}s ago{stale}", file=out)
+    if forward["restarts"]:
+        print(f"            Edge restarted {forward['restarts']} time(s) since the intake "
+              "started; counts shown are the current Edge process's only", file=out)
 
 
 def render_fabric_status(report, out):

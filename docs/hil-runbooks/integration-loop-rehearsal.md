@@ -450,7 +450,10 @@ sudo journalctl -u azazel-edge-core.service --since "$START" -o cat | grep '^{' 
 
 Expect `accepted` 2 (synthetic run), an empty or all-zero `refused`,
 `storage_failed` false, and `digests match True`: the stored digests are
-re-derived from Edge's own lines, as the harness does.
+re-derived from Edge's own lines, as the harness does. With an Edge Core that
+includes Azazel-Edge#432, status also holds `edge_forward` with `dropped` 0,
+`failed` 0 and `sent` 2 (Edge's own count, not evidence); with an older one the
+key is absent.
 
 **Incident ledger and audit chain verify.**
 

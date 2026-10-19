@@ -7,11 +7,16 @@ from pathlib import Path
 import pytest
 
 from azazel_nexus.edge_intake import (
+    FORWARD_STATS_SCHEMA,
+    STATUS_SCHEMA,
+    EdgeEvent,
     EdgeEventRefused,
     EvidenceRecord,
+    ForwardStats,
     IncidentTracker,
     canonical,
     parse_edge_event,
+    parse_edge_line,
     read_intake_status,
 )
 
@@ -492,3 +497,60 @@ def test_escalation_respects_the_per_source_severe_budget():
     assert tracker.rate_limited == 5
     # Only a further fall is recorded at once; repeats wait for the throttle.
     assert add(9, 1) == []
+
+
+def forward_stats(**changes):
+    value = {"schema": FORWARD_STATS_SCHEMA, "dropped": 3, "failed": 2, "sent": 40,
+             "since": 1_790_000_000}
+    value.update(changes)
+    return json.dumps(value).encode()
+
+
+def test_forward_stats_is_its_own_closed_shape():
+    stats = parse_edge_line(forward_stats())
+    assert stats == ForwardStats(dropped=3, failed=2, sent=40, since=1_790_000_000)
+    assert stats.as_dict() == {"dropped": 3, "failed": 2, "sent": 40, "since": 1_790_000_000}
+    # An event still parses through the same entry point, as an event.
+    assert isinstance(parse_edge_line(json.dumps(edge_event()).encode()), EdgeEvent)
+    # The event-only entry point never takes the counts.
+    with pytest.raises(EdgeEventRefused, match="^EDGE_SHAPE$"):
+        parse_edge_event(forward_stats())
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        (forward_stats(schema="azazel-edge/forward-stats/v2"), "EDGE_SHAPE"),
+        (forward_stats(extra=1), "EDGE_SHAPE"),
+        (b'{"schema": "azazel-edge/forward-stats/v1", "dropped": 1}', "EDGE_SHAPE"),
+        (forward_stats(dropped=-1), "EDGE_RANGE"),
+        (forward_stats(failed=2**63), "EDGE_RANGE"),
+        (forward_stats(sent=1.0), "EDGE_TYPE"),
+        (forward_stats(sent=True), "EDGE_TYPE"),
+        (forward_stats(dropped="1"), "EDGE_TYPE"),
+        (forward_stats(since=2**37 + 1), "EDGE_RANGE"),
+        (forward_stats(since=None), "EDGE_TYPE"),
+        (b'{"schema": "azazel-edge/forward-stats/v1", "dropped": 1, "dropped": 2,'
+         b' "failed": 0, "sent": 0, "since": 0}', "EDGE_JSON"),
+        # An event carrying a schema key is not an event either.
+        (json.dumps(dict(edge_event(), schema=FORWARD_STATS_SCHEMA)).encode(), "EDGE_SHAPE"),
+    ],
+)
+def test_forward_stats_refusals_are_fixed_codes(raw, code):
+    with pytest.raises(EdgeEventRefused, match="^" + code + "$"):
+        parse_edge_line(raw)
+
+
+def test_status_edge_forward_is_optional_and_closed():
+    status = {"schema": STATUS_SCHEMA, "written_at": 1, "last_accepted_at": None,
+              "accepted": 0, "processed": 0, "last_processed_at": None, "refused": {},
+              "open_incidents": 0, "queue_drops": 0, "storage_failed": False}
+    assert "edge_forward" not in read_intake_status(json.dumps(status).encode())
+    forward = {"dropped": 1, "failed": 2, "sent": 3, "since": 4, "reported_at": 5.5,
+               "restarts": 0}
+    status["edge_forward"] = forward
+    assert read_intake_status(json.dumps(status).encode())["edge_forward"] == forward
+    for key, bad in (("dropped", -1), ("since", 2**37 + 1), ("restarts", True),
+                     ("reported_at", "now"), ("extra", 1)):
+        status["edge_forward"] = dict(forward, **{key: bad})
+        assert read_intake_status(json.dumps(status).encode()) is None
