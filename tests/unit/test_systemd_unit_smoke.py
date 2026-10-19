@@ -120,6 +120,21 @@ def test_show_normalisation(key, declared, shown):
     assert smoke.compare_properties([(key, declared)], {key: shown}) == []
 
 
+def test_resource_directives_compare_under_their_shown_names():
+    # The installed mio-locald unit's resource directives, exactly as systemd
+    # 257 (Debian 13) reports them for a transient unit.
+    declared = [("TimeoutStartSec", "300s"), ("MemoryMax", "4G"), ("CPUQuota", "40%"),
+                ("LogRateLimitIntervalSec", "30"), ("LogRateLimitBurst", "50")]
+    shown = {"TimeoutStartUSec": "5min", "MemoryMax": "4294967296",
+             "CPUQuotaPerSecUSec": "400ms", "LogRateLimitIntervalUSec": "30s",
+             "LogRateLimitBurst": "50"}
+    assert smoke.compare_properties(declared, shown) == []
+    drifted = {**shown, "TimeoutStartUSec": "4min", "MemoryMax": "1073741824",
+               "CPUQuotaPerSecUSec": "1s"}
+    assert smoke.compare_properties(declared, drifted) == ["TimeoutStartSec", "MemoryMax", "CPUQuota"]
+    assert smoke.compare_properties([("CPUQuota", "40%")], {}) == ["CPUQuota"]
+
+
 @pytest.mark.parametrize("observed", [{}, {"CapabilityBoundingSet": "cap_chown"}])
 def test_empty_capability_must_really_be_empty(observed):
     assert smoke.compare_properties([("CapabilityBoundingSet", "")], observed) == ["CapabilityBoundingSet"]

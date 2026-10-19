@@ -1,6 +1,7 @@
 """Verify effective systemd service properties using the host syscall tables."""
 import ctypes
 import platform
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -14,7 +15,48 @@ SHOW = (
     "ProtectKernelModules", "ProtectControlGroups", "RestrictNamespaces",
     "RestrictSUIDSGID", "LockPersonality", "MemoryDenyWriteExecute",
     "SystemCallArchitectures", "SystemCallFilter", "UMask",
+    # Resource directives systemctl show reports under a different name.
+    "TimeoutStartUSec", "CPUQuotaPerSecUSec", "LogRateLimitIntervalUSec",
 )
+
+# Unit-file directive -> the property name systemctl show reports for it.
+SHOWN_AS = {
+    "TimeoutStartSec": "TimeoutStartUSec",
+    "CPUQuota": "CPUQuotaPerSecUSec",
+    "LogRateLimitIntervalSec": "LogRateLimitIntervalUSec",
+}
+TIMESPAN_KEYS = {"TimeoutStartSec", "TimeoutStartUSec", "LogRateLimitIntervalSec",
+                 "LogRateLimitIntervalUSec", "CPUQuotaPerSecUSec"}
+BYTE_KEYS = {"MemoryMax", "MemoryHigh", "MemorySwapMax"}
+_TIMESPAN_UNITS = {
+    "us": 1, "usec": 1, "ms": 1000, "msec": 1000, "": 1_000_000, "s": 1_000_000,
+    "sec": 1_000_000, "second": 1_000_000, "seconds": 1_000_000, "m": 60_000_000,
+    "min": 60_000_000, "minute": 60_000_000, "minutes": 60_000_000, "h": 3_600_000_000,
+    "hr": 3_600_000_000, "hour": 3_600_000_000, "hours": 3_600_000_000,
+    "d": 86_400_000_000, "day": 86_400_000_000, "days": 86_400_000_000,
+}
+_BYTE_UNITS = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
+
+
+def _timespan_us(value: str):
+    """systemd time span (bare numbers are seconds) -> microseconds."""
+    if value == "infinity":
+        return value
+    parts = re.findall(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([a-z]*)", value)
+    if not parts or "".join(n + u for n, u in parts) != value.replace(" ", ""):
+        raise ValueError("unrecognised time span")
+    if any(unit not in _TIMESPAN_UNITS for _, unit in parts):
+        raise ValueError("unrecognised time span unit")
+    return round(sum(float(number) * _TIMESPAN_UNITS[unit] for number, unit in parts))
+
+
+def _bytes(value: str):
+    if value == "infinity":
+        return value
+    match = re.fullmatch(r"([0-9]+)([KMGT]?)", value)
+    if not match:
+        raise ValueError("unrecognised byte size")
+    return int(match.group(1)) * _BYTE_UNITS[match.group(2)]
 
 
 # Occurrences stay ordered: systemd-run applies each assignment, including resets.
@@ -30,6 +72,13 @@ def normalise(key: str, value: str):
     """Normalise show's encodings, without erasing list inversion or path flags."""
     if key == "UMask" or key.endswith("DirectoryMode"):
         return int(value, 8)
+    if key == "CPUQuota" and value.endswith("%"):
+        # CPUQuota=40% is shown as CPUQuotaPerSecUSec=400ms.
+        return round(float(value[:-1]) * 10_000)
+    if key in TIMESPAN_KEYS:
+        return _timespan_us(value)
+    if key in BYTE_KEYS:
+        return _bytes(value)
     if key in BOOL_KEYS and value in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
         return value in {"1", "true", "yes", "on"}
     if key == "IPAddressDeny":
@@ -102,8 +151,10 @@ def compare_properties(properties: Properties, observed: dict[str, str],
                 evidence["system_call_filter"] = detail
             if key not in observed or not detail["ok"]:
                 mismatches.append(key)
-        elif key not in observed or normalise(key, value) != normalise(key, observed[key]):
-            mismatches.append(key)
+        else:
+            shown = SHOWN_AS.get(key, key)
+            if shown not in observed or normalise(key, value) != normalise(shown, observed[shown]):
+                mismatches.append(key)
     return mismatches
 
 
