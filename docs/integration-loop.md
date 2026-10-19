@@ -48,7 +48,10 @@ scope for this plan and needs its own decision.
   text never becomes an instruction, a path, or a unit name.
 - **Degradation keeps the deterministic path.** If intake, M.I.O. or Knowledge
   is down, Edge Core keeps detecting and deciding exactly as before; Nexus
-  reports what it is missing.
+  reports what it is missing. For intake, "down" here means its socket is
+  absent or nothing listens on it. An intake process that is alive but has
+  stopped accepting (stopped by `SIGSTOP`, a frozen cgroup, or wedged) is the
+  exception: see "Never block Edge" under I1.
 
 ## 2. The loop, by phase
 
@@ -141,7 +144,18 @@ socket. Edge Core connects once per event and writes one line.
 - **Never block Edge.** Edge Core connects with a blocking `connect` and no
   timeout, so a listener that stops accepting would stall detection. Intake
   accepts continuously and reads with a bound; when it is overloaded it drops
-  and counts, it never stops accepting.
+  and counts, it never stops accepting. That covers an intake that is slow or
+  flooded, not one that has stopped running: if the process stays alive but
+  does not accept (stopped by `SIGSTOP`, a frozen cgroup, a wedged process),
+  the kernel queues connections until the 512-entry backlog is full, and then
+  Edge's next `connect` blocks and Edge stops detecting. Nexus cannot fix that
+  from its side. The fix belongs to Edge: Azazel-Edge's intake sending is
+  being made non-blocking (sending moves to a separate thread behind a bounded
+  queue; when the queue is full Edge drops and counts the line instead of
+  waiting). Until an Edge with that change is the one packaged, an intake that
+  is alive and not accepting can stop Edge's detection, and the promise in
+  section 1 holds only while the intake socket is absent or its listener is
+  dead.
 - **Liveness.** Intake reports when it last accepted an event, and how many
   it refused, so the status screen can tell "Edge is quiet" from "Edge is not
   reaching us". It cannot tell a quiet Edge from a stopped one by itself; the
@@ -181,7 +195,7 @@ Concrete I1 limits and paths:
   Transport/storage codes are `peer_refused`, `overloaded`, `queue_full`,
   `read_deadline`, `read_error`, `storage_failed`, `status_write_failed`,
   `evidence_segment_full`, `incident_segment_full`, `incident_rate_limited`,
-  `incident_ledger_torn`.
+  `incident_ledger_torn`, `segment_from_future`.
   Only fixed codes are counted; refused content and exception text are never
   recorded. Empty addresses remain empty strings (the absent-address sentinel);
   nonempty source and destination addresses use `ipaddress(...).compressed`,
@@ -198,6 +212,22 @@ Concrete I1 limits and paths:
   stored segment's UTC day, never `received_at` or wall clock alone. During a
   run, that age reference advances by at most monotonic elapsed time plus one
   day for midnight rollover, so a forward clock jump cannot age out history.
+  The day a record is written to is held the same way: during a run the clock
+  used to name a segment is at most the first write's time plus elapsed
+  time (Linux `CLOCK_BOOTTIME`, which counts suspend) plus one day, so a
+  forward jump cannot create a future-dated
+  segment. A segment dated more than a day past the clock can still exist
+  (written by an earlier version, or by a run that started with the clock
+  already ahead). It is reported in status as `segment_from_future`, and
+  the status screen always shows it; it is never the age reference: on
+  restart, age is measured from the earlier of the newest segment's day and
+  the clock plus one day, so correcting the clock does not delete the last
+  14 days. Evidence then returns to today's segment. The incident chain can
+  only continue in its latest segment, so incident transitions keep going to
+  the future segment until its day arrives, and that segment can fill
+  (`incident_segment_full`); recovering earlier needs the operator. A run that
+  starts with the clock already ahead still measures age by that clock, since
+  nothing local says it is wrong.
   A full daily evidence segment refuses appends with `evidence_segment_full`;
   it does not permanently fail storage, and the next day's segment resumes.
   The event still reaches the incident tracker and its transitions still reach
@@ -224,11 +254,33 @@ Concrete I1 limits and paths:
   from the first event. At most 1024 remain open; capacity closes the oldest
   idle incident first. Ordinary new openings have a shared 60/min rolling
   monotonic budget and a 20/min cap per source. Severity <= 2 (Edge's
-  isolate/redirect range) has a separate 30/min allowance, so an ordinary
-  scanner flood cannot consume it. Excess events still go to evidence and
+  isolate/redirect range) has a separate 30/min allowance with its own cap of
+  5/min per source: one host showing more than five new severe
+  `(sid, port)` pairs a minute is itself scanning, and five leaves 25 of the
+  30 to other sources. At most 256 (a quarter of 1024) open incidents may be
+  severe; a new severe opening beyond that closes the least recently seen
+  severe incident (reason `capacity`) rather than being refused, because the
+  displaced incident has already been opened, recorded and explained while a
+  refused one would never be recorded. Excess events still go to evidence and
   increment `incident_rate_limited`; existing incidents can still update.
   `accepted` includes these rate-limited events because their evidence was
   stored successfully. Technique unions retain a deterministic maximum of eight.
+  What a flood leaves standing:
+  - *Ordinary flood* (severity > 2, any number of sources): it uses at most the
+    60/min ordinary budget and never the severe allowance, so every new severe
+    incident still opens, up to 30/min and 5/min per source. It cannot use the
+    ledger's severe reserve (below), so severe openings, escalations and
+    closes are still written the day it fills the ordinary space.
+  - *Severe flood from one source* (severity <= 2 to many ports or
+    signatures): that source opens 5/min and the rest are rate-limited; the
+    other 25/min remain for every other source, so another host's severity 1
+    still opens.
+  - *Severe flood from six or more sources*: it can use all 30/min, and a
+    genuine severe opening in the same minute is then rate-limited (counted,
+    evidence kept, no incident). Its incidents can also displace older severe
+    incidents through the 256 cap; displaced incidents are closed and that
+    close is recorded. Nothing here stops a large enough set of severe sources
+    from hiding one more severe source for that minute.
   `/var/lib/azazel/edge-incidents/YYYY-MM-DD.jsonl` (`0640`) holds one local `AuditLedger` chain
   across daily segments: the first entry uses `chain_from=(seq, hash)` from
   the previous segment's head, as auditd does. Each incident segment is at most
@@ -249,11 +301,16 @@ Concrete I1 limits and paths:
   deletion remains visible in the retained boundary, including after restart.
   A full daily ledger counts `incident_segment_full` and omits transitions
   while evidence intake continues. The last 1 MiB of each 16 MiB segment is
-  reserved: only transitions of incidents whose `most_severe` is <= 2 and the
-  `truncated`, `reset` and `retention` control records may use it, so ordinary
-  churn (for example while evidence is full and the ledger alone takes the
-  load) is refused with `incident_segment_full` before it can crowd out a
-  later severity 1 opening. The first ordinary refusal there writes the
+  reserved: only the opening and close of an incident whose `most_severe` is
+  <= 2, an update that lowers the `most_severe` this ledger last recorded for
+  it (including an ordinary incident becoming severe), and the `truncated`,
+  `reset` and `retention` control records may use it. Routine 60 s refreshes
+  of an open severe incident whose severity has not fallen use the ordinary
+  space, so up to 1024 open severe incidents refreshing cannot drain the
+  reserve; ordinary churn (for example while evidence is full and the ledger
+  alone takes the load) is likewise refused with `incident_segment_full`
+  before it can crowd out a later severity 1 opening. The first ordinary
+  refusal there writes the
   truncation marker. A further 1 KiB reserve permits one
   `edge.incident.truncated` marker per segment (also remembered across restart)
   when space allows. Tracker state continues to advance even when transitions
@@ -416,7 +473,8 @@ nothing in intake, detection or Edge's observe-only decisions.
   destination addresses, rule ids or evidence digests. It reuses intake's
   no-follow, fsynced append and retention:
   64 MiB per segment, 256 MiB total / 14 days, keeping newest and active
-  segments, with monotonic protection against forward clock jumps. Full daily
+  segments, with monotonic protection against forward clock jumps (including
+  the same `segment_from_future` report and restart age reference). Full daily
   segments drop explanations for that day; permanent storage failures stop
   explanation work until restart. Startup storage failure exits nonzero before
   READY. Nothing is sent back to Edge.
@@ -432,7 +490,8 @@ nothing in intake, detection or Edge's observe-only decisions.
   `knowledge_unavailable`, `knowledge_reply_refused`, `storage_failed`,
   `status_write_failed`, `explanation_segment_full`, `cursor_refused`,
   `read_failed`, `cursor_overtaken`, `stale_skipped`, `incident_segment_full`,
-  `ledger_tail_incomplete`, `mio_gated`, `mio_handoff`, `mio_local_non_advisory`.
+  `ledger_tail_incomplete`, `mio_gated`, `mio_handoff`, `mio_local_non_advisory`,
+  `segment_from_future`.
   Normal gated/handoff/local non-advisory replies have these outcome codes,
   rather than `mio_reply_refused`; reference banners are still validated.
   Knowledge transport failures (including peer, bounds, service refusal and
@@ -517,9 +576,12 @@ nothing in intake, detection or Edge's observe-only decisions.
   reaches its `0660` socket; no new groups or socket permissions are needed.
   An incident record's `occurred_at` names its daily segment and segments
   only move forward, so auditd refuses an `edge.incident.*` record more than
-  ten minutes from its own clock (`argument_range`, detail `occurred_at`):
-  one far-future record cannot strand every later writer. Other event types
-  keep their existing admission.
+  ten minutes before or five seconds after its own clock, or dated after its
+  own current UTC day (`argument_range`, detail `occurred_at`). Incident times
+  come from the same host and only age in transit; without the day check a
+  record dated 00:00Z tomorrow sent after 23:50 would open tomorrow's segment
+  and refuse every writer's records for today until midnight. Other event
+  types keep their existing admission.
 - **Best-effort forwarding.** Openings, updates whose minimum severity falls,
   and closes become `edge.incident.opened|escalated|closed` via authenticated
   `audit.append`, reusing the bounded AF_UNIX client and validated receipt.
@@ -527,8 +589,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   0–2^64−1, technique count 0–8, UTC occurred time, and for closes only reason
   `idle|capacity|shutdown`. Comparison state is bounded to 1024 ids and is
   independent of explanation attempt/rate limits. Occurrence time is the
-  intake update time for openings/escalations and close observation time for
-  closes (I1 has no separate close timestamp).
+  intake's `last_update` for every transition; on a close it is the time
+  intake closed the incident, so an opening and its close replayed after a
+  stop carry intake times and fall inside or outside the window together.
   A separate worker drains a 256-entry memory queue; full queues drop newest.
   Each exchange has a 2 s total deadline. A refusal from auditd
   (`principal_denied`, `argument_*`, schema refusals and the like) is final

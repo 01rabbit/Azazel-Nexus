@@ -20,7 +20,7 @@ CODES = frozenset({"transition_refused", "chain_broken", "queue_full", "mio_unav
                    "storage_failed", "status_write_failed", "explanation_segment_full",
                    "cursor_refused", "read_failed", "cursor_overtaken", "stale_skipped",
                    "incident_segment_full", "ledger_tail_incomplete", "mio_gated",
-                   "mio_handoff", "mio_local_non_advisory"})
+                   "mio_handoff", "mio_local_non_advisory", "segment_from_future"})
 QUESTION = ("Edge Core が次のセキュリティインシデントを検知しました。状況と、運用者が確認すべき点を説明してください。"
             "Edge の判断は観測のみで実行されていません。")
 FIELDS = {"incident_id", "src_ip", "sid", "target_port", "count", "first_seen", "last_seen",

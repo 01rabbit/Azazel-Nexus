@@ -45,7 +45,7 @@ import pwd
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
 
@@ -205,9 +205,14 @@ _INCIDENT_FIELDS = (
 )
 #: An incident record's day names its segment, and segments only move
 #: forward: one far-future record would refuse every later writer, and a
-#: replayed old one can never land. Incident times are the explainer's
-#: observation times, so a record outside this window is refused outright.
+#: replayed old one can never land. Incident times are the intake's
+#: transition times, so a record outside this window is refused outright.
 INCIDENT_CLOCK_SKEW_S = 600
+#: Incident times come from the same host's clock and only age in transit, so
+#: the future side is a few seconds, never past auditd's own UTC day: a record
+#: dated tomorrow would open tomorrow's segment and refuse every writer's
+#: records for today until midnight.
+INCIDENT_FUTURE_SKEW_S = 5
 
 for _kind in ("opened", "escalated", "closed"):
     EVENT_SCHEMAS["edge.incident." + _kind] = _INCIDENT_FIELDS + (
@@ -461,11 +466,14 @@ class AuditService:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "event writer")
         event = _bind_event(event_type, payload)
         if event_type.startswith("edge.incident."):
+            now = self.clock()
             try:
-                skew = abs(datetime.fromisoformat(event["occurred_at"]).timestamp() - self.clock())
-            except (ValueError, OverflowError):
-                skew = None
-            if skew is None or skew > INCIDENT_CLOCK_SKEW_S:
+                skew = datetime.fromisoformat(event["occurred_at"]).timestamp() - now
+                today = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+            except (ValueError, OverflowError, OSError):
+                skew = today = None
+            if (skew is None or not -INCIDENT_CLOCK_SKEW_S <= skew <= INCIDENT_FUTURE_SKEW_S
+                    or event["occurred_at"][:10] > today):
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "occurred_at")
         # Every declared schema carries `occurred_at`, and `_bind_event` has
         # already refused a payload missing it. The segment a record lands in

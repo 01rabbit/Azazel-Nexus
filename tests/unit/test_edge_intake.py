@@ -202,6 +202,8 @@ def test_tracker_open_throttle_update_idle_and_ids():
     assert tracker.tick(960) == []
     (closed,) = tracker.tick(961)
     assert (closed["transition"], closed["reason"]) == ("closed", "idle")
+    # A close carries the intake time it was observed, like other transitions.
+    assert (closed["last_seen"], closed["last_update"]) == (60, 961)
     assert (
         IncidentTracker(lambda: 0).add(first)[0]["incident_id"] == opened["incident_id"]
     )
@@ -378,8 +380,47 @@ def test_scanner_cannot_exhaust_ordinary_or_severe_budget():
     value["normalized"].update(src_ip="10.0.0.10", severity=1)
     assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))[0]["most_severe"] == 1
     for sid in range(29):
-        assert tracker.add(record(0, sid=sid))[0]["transition"] == "opened"
-    assert tracker.add(record(0, sid=30)) == []
+        value["normalized"].update(src_ip=f"10.0.1.{sid // 5}", sid=sid)
+        assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))[0]["transition"] == "opened"
+    value["normalized"].update(src_ip="10.0.2.1")
+    assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0)) == []
+
+
+def test_one_source_severe_flood_leaves_room_for_another_source():
+    tracker = IncidentTracker(lambda: 0, monotonic=lambda: 0)
+    value = edge_event()
+    for port in range(1000):
+        value["normalized"].update(target_port=port, severity=1)
+        tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))
+    assert len(tracker.incidents) == 5
+    assert tracker.rate_limited == 995
+    value["normalized"].update(src_ip="10.0.0.99")
+    (opened,) = tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))
+    assert (opened["transition"], opened["src_ip"], opened["most_severe"]) == (
+        "opened", "10.0.0.99", 1)
+
+
+def test_open_severe_incidents_are_capped_by_displacing_the_least_recent():
+    tracker = IncidentTracker(lambda: 0, max_open=8, monotonic=lambda: 0)
+
+    def add(now, src, severity):
+        value = edge_event()
+        value["normalized"].update(src_ip=src, severity=severity)
+        return tracker.add(EvidenceRecord.receive(parsed(value), lambda: now))
+
+    add(0, "10.0.0.1", 5)
+    add(1, "10.0.0.2", 1)
+    add(2, "10.0.0.3", 2)
+    assert add(3, "10.0.0.2", 1) == []
+    # Two of eight may be severe: the new one displaces the least recently
+    # seen severe incident, never the ordinary one, and is never refused.
+    closed, opened = add(4, "10.0.0.4", 1)
+    assert (closed["src_ip"], closed["reason"], closed["last_update"]) == (
+        "10.0.0.3", "capacity", 4)
+    assert (opened["transition"], opened["src_ip"]) == ("opened", "10.0.0.4")
+    assert sorted(v["src_ip"] for v in tracker.incidents.values()) == [
+        "10.0.0.1", "10.0.0.2", "10.0.0.4"]
+    assert tracker.rate_limited == 0
 
 
 @pytest.mark.parametrize("mapped", ["::ffff:10.0.0.8", "::ffff:a00:8"])

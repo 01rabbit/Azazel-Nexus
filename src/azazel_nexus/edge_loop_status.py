@@ -70,10 +70,12 @@ def _render_edge_loop(out, now):
                 print("        inspect_incident_chain_then_remove_cursor_and_restart", file=out)
             print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}; audit_forward_refused: {value['audit_forward_refused']}", file=out)
         refusals = sorted(value["refused"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
-        # Never let a full evidence day hide behind more frequent refusals.
-        full = value["refused"].get("evidence_segment_full")
-        if name == "intake" and full and ("evidence_segment_full", full) not in refusals:
-            refusals.append(("evidence_segment_full", full))
+        # Never let a full evidence day or a segment from the future hide
+        # behind more frequent refusals.
+        for code in ("evidence_segment_full", "segment_from_future"):
+            count = value["refused"].get(code)
+            if count and (code, count) not in refusals:
+                refusals.append((code, count))
         print("        refusals: " + (", ".join(f"{k}={v}" for k, v in refusals) or "none"), file=out)
     if recent is None:
         print("    recent incidents: unavailable (snapshot absent or refused)", file=out)

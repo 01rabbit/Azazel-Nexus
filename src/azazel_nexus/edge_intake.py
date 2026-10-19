@@ -20,6 +20,10 @@ MAX_OPEN = 1024
 MAX_OPENINGS_PER_MINUTE = 60
 MAX_SEVERE_OPENINGS_PER_MINUTE = 30
 MAX_SOURCE_OPENINGS_PER_MINUTE = 20
+# One host showing more than five new severe (sid, port) pairs in a minute is
+# itself scanning; five per source leaves 25 of the 30 severe openings to
+# others, so one source cannot hold the severe allowance alone.
+MAX_SOURCE_SEVERE_OPENINGS_PER_MINUTE = 5
 # Edge's isolate/redirect range; intake openings and explanation queueing
 # share it so a flood of ordinary events cannot crowd these out.
 SEVERE_SEVERITY = 2
@@ -44,6 +48,7 @@ REFUSAL_CODES = frozenset(
         "incident_segment_full",
         "incident_ledger_torn",
         "incident_rate_limited",
+        "segment_from_future",
         "EDGE_TYPE_attack_type",
         "EDGE_RANGE_attack_type",
         "EDGE_TYPE_category",
@@ -380,7 +385,14 @@ class EvidenceRecord:
 
 
 class IncidentTracker:
-    """Bound incident cardinality and transition frequency independently of traffic."""
+    """Bound incident cardinality and transition frequency independently of traffic.
+
+    At most a quarter of `max_open` incidents are severe. When that many are
+    open, a new severe incident closes the least recently seen severe one
+    (reason `capacity`) instead of being refused: the displaced incident was
+    already opened, recorded and queued for explanation, and its close is
+    recorded too, while a refused one would never be recorded at all.
+    """
 
     def __init__(
         self, clock: Callable[[], float], max_open=MAX_OPEN, *, monotonic=time.monotonic
@@ -397,11 +409,13 @@ class IncidentTracker:
         transitions = []
         for key, item in list(self.incidents.items()):
             if now - item["last_seen"] > INCIDENT_IDLE_S:
-                transitions.append(self._close(key, "idle"))
+                transitions.append(self._close(key, "idle", now))
         return transitions
 
-    def _close(self, key, reason):
-        return dict(self.incidents.pop(key), transition="closed", reason=reason)
+    def _close(self, key, reason, now):
+        # The close is recorded at intake time, like every other transition.
+        return dict(self.incidents.pop(key), transition="closed", reason=reason,
+                    last_update=now)
 
     def add(self, record, *, evidence_stored=True):
         now = record.received_at
@@ -418,17 +432,24 @@ class IncidentTracker:
             severe = n["severity"] <= SEVERE_SEVERITY
             budget = self.severe_openings if severe else self.openings
             limit = MAX_SEVERE_OPENINGS_PER_MINUTE if severe else MAX_OPENINGS_PER_MINUTE
+            source_limit = (MAX_SOURCE_SEVERE_OPENINGS_PER_MINUTE if severe
+                            else MAX_SOURCE_OPENINGS_PER_MINUTE)
             source_count = sum(source == key[0] for _, source in budget)
-            if (len(budget) >= limit or
-                    (not severe and source_count >= MAX_SOURCE_OPENINGS_PER_MINUTE)):
+            if len(budget) >= limit or source_count >= source_limit:
                 self.rate_limited += 1
                 return transitions
             budget.append((instant, key[0]))
+            if severe:
+                held = [k for k, v in self.incidents.items()
+                        if v["most_severe"] <= SEVERE_SEVERITY]
+                if 0 < self.max_open // 4 <= len(held):
+                    oldest = min(held, key=lambda k: self.incidents[k]["last_seen"])
+                    transitions.append(self._close(oldest, "capacity", now))
             if len(self.incidents) >= self.max_open:
                 oldest = min(
                     self.incidents, key=lambda k: self.incidents[k]["last_seen"]
                 )
-                transitions.append(self._close(oldest, "capacity"))
+                transitions.append(self._close(oldest, "capacity", now))
             identifier = hashlib.sha256(canonical([key, record.digest])).hexdigest()[
                 :16
             ]
