@@ -19,6 +19,23 @@ def expected_owner(target):
     return 0 if account is None else pwd.getpwnam(account).pw_uid
 
 
+def target_relative(root, target):
+    """The file a target names. The route ledger is its newest daily segment.
+
+    entryd writes `route/YYYY-MM-DD.jsonl` segments (#211 S4); before it has
+    migrated, the single `route.jsonl` is still the file. Only a segment name
+    is taken from the listing; lab_file still refuses links and owners.
+    """
+    from azazel_nexus.route_ledger import ROUTE_DIR, segment_paths
+
+    relative, _ = FILES[target]
+    if target == "audit-tamper":
+        segments = segment_paths(root / ROUTE_DIR.lstrip("/"))
+        if segments:
+            return ROUTE_DIR.lstrip("/") + "/" + segments[-1].name
+    return relative
+
+
 @contextmanager
 def lab_file(root, target, *, write=False):
     """Refuse links in every component and validate before any mutation.
@@ -26,7 +43,7 @@ def lab_file(root, target, *, write=False):
     Files must already exist. Never create or truncate by an unchecked path in
     a directory writable by a daemon. Keep the checked inode open for the I/O.
     """
-    relative, _ = FILES[target]
+    relative = target_relative(root, target)
     directory_fd = file_fd = None
     try:
         if not root.is_absolute() or ".." in root.parts:

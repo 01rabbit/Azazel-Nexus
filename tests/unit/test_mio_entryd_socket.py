@@ -16,7 +16,7 @@ from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.principal import PrincipalPolicy
 from azazel_nexus_runtime.transport import bind_socket, read_frame, send_frame
 
-from azazel_nexus.audit import AuditLedger
+from azazel_nexus.route_ledger import RouteChain
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
@@ -70,7 +70,7 @@ def test_main_real_round_trip_records_handoff(root):
             response = json.loads(read_frame(connection))
         assert response["ok"] is True
         assert response["result"]["route"] == Route.DETERMINISTIC_HANDOFF.value
-        ledger = AuditLedger(runtime_paths.mio_state_dir() / "route.jsonl")
+        ledger = RouteChain(runtime_paths.mio_state_dir() / "route")
         ledger.verify()
         events = [item.event for item in ledger]
         assert response["result"]["ledger_seq"] == len(events)
@@ -94,6 +94,53 @@ def test_main_real_round_trip_records_handoff(root):
     assert not thread.is_alive()
     assert not root("mio-entry").exists()
     assert not root("mio-advise").exists()
+
+
+def test_per_uid_rate_limit_spans_both_listeners(root):
+    # One kernel-reported uid has one bucket, whichever listener it reaches:
+    # the explainer's mio-advise listener cannot be used to bypass the limit
+    # on the operator listener, nor the other way round (#211 S4, #213 O1).
+    ready = threading.Event()
+    stop = threading.Event()
+    errors = []
+
+    def run():
+        try:
+            entry.main([], ready=ready.set, stop=stop.is_set)
+        except (OSError, ValueError, RuntimeError) as error:
+            errors.append(error)
+            ready.set()
+
+    def exchange(leaf, document):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(str(root(leaf)))
+            send_frame(connection, document)
+            connection.shutdown(socket.SHUT_WR)
+            return json.loads(read_frame(connection))
+
+    route = {"verb": "mio.route", "arguments": {
+        "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000}}
+    # Spends a token, then is refused as a malformed situation frame.
+    advise = {"verb": "mio.advise", "arguments": {"deadline_ms": 500}, "event": {"x": 1}}
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert ready.wait(5)
+        if errors:
+            raise errors[0]
+        for _ in range(entry.RATE_BURST):
+            assert exchange("mio-advise", advise) == {"ok": False, "refusal": "malformed_frame"}
+        assert exchange("mio-entry", route) == {"ok": False, "refusal": "rate_limited"}
+        assert exchange("mio-advise", advise) == {"ok": False, "refusal": "rate_limited"}
+        refusals = [item.event for item in RouteChain(runtime_paths.mio_state_dir() / "route")
+                    if item.event["event_type"] == "runtime.request_refused"]
+        # Aggregated per uid: the first refusal is recorded, the rest counted.
+        assert len(refusals) == 1 and refusals[0]["uid"] == os.getuid()
+    finally:
+        stop.set()
+        thread.join(5)
+    assert not thread.is_alive()
 
 
 def test_fake_locald_not_admitted_is_recorded(root):
@@ -123,7 +170,7 @@ def test_fake_locald_not_admitted_is_recorded(root):
             "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000,
         }))
         assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
-        ledger = AuditLedger(service.router.ledger.path)
+        ledger = RouteChain(service.router.ledger.directory)
         ledger.verify()
         events = [item.event for item in ledger]
         transition = next(e for e in events if e["event_type"] == "mio.capability.transition")

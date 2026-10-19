@@ -1211,7 +1211,7 @@ def _operator_setup(harness: Harness) -> str:
 
 
 def _mio_entry(harness: Harness) -> str:
-    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.route_ledger import ROUTE_DIR, RouteChain
     from azazel_nexus.routing import Route
 
     absent = [harness.root / "var/lib/azazel/run" / leaf / f"{leaf}.sock"
@@ -1221,7 +1221,7 @@ def _mio_entry(harness: Harness) -> str:
         replies = [request(daemon.path, {"verb": "mio.route", "arguments": {
             "privacy_class": "P0-public", "deadline_ms": 1000,
         }}) for _ in range(2)]
-    ledger = AuditLedger(harness.root / "var/lib/azazel/state/mio/route.jsonl")
+    ledger = RouteChain(harness.root / ROUTE_DIR.lstrip("/"))
     ledger.verify()
     events = [entry.event for entry in ledger]
     for reply in replies:

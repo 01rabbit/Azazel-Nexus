@@ -122,7 +122,7 @@ def test_failed_read_does_not_mask_other_dimension(owner):
 def test_audit_failure_never_advances_comparison_basis_or_dispatches(owner, monkeypatch):
     service, _ = owner
     original = service.router._record
-    def fail(event):
+    def fail(event, **kwargs):
         raise AuditUnavailable("full")
     monkeypatch.setattr(service.router, "_record", fail)
     with pytest.raises(AuditUnavailable):

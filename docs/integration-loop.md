@@ -559,6 +559,24 @@ nothing in intake, detection or Edge's observe-only decisions.
   citations pass `read_knowledge_refs`, including technique membership.
   Remote replies are refused. Without an admitted model, the record can hold
   a deterministic reference banner plus independently obtained Knowledge refs.
+- **Entry rate and route ledger capacity (#211 S4).** Entryd admits at most
+  **30 requests a minute per kernel-reported UID (burst 10)**, five times the
+  explainer's ceiling of six `mio.advise` a minute. Over the limit, and when
+  the caller's own share of the day's route segment is spent, it replies with
+  the bounded refusal `rate_limited` before routing or writing anything. The
+  explainer has its own 28 MiB daily share that no operator or other service
+  can spend, so a flooding caller cannot make the explainer's advice
+  unavailable. The
+  explainer treats that like any refusal from entryd: the explanation is
+  still recorded, with route `unavailable` and failure code `mio_unavailable`,
+  and the next explanation asks again; nothing latches. Six advice requests a
+  minute write about 20 MB a day to entryd's route ledger, which is now daily
+  segments with bounded retention (see `docs/mio-runtime.md`).
+  `/var/lib` capacity for it: at most about 238 MiB (46 MiB per day, 192 MiB
+  / 14 days retained plus the current segment), **plus** the
+  `legacy-route.jsonl` archive on nodes upgraded from the single file, whose
+  size is whatever `route.jsonl` had reached (about 20 MB per day the loop
+  ran) and which stays until the owner removes it.
 - **Records and retention.** Append-only daily
   `incident-explain/explanations/YYYY-MM-DD.jsonl` (`0640`, inside private
   `0700` parents) stores only validated records: incident id, explained time,
@@ -812,7 +830,11 @@ grows about 10–16 MiB a day (roughly 4–6 GiB a year), and with the limits
 above a misbehaving explainer can add at most about 250 MiB a day (524,288
 records of about 450–500 bytes with full-width counts), plus at most about 3.4 MiB a day for each other
 non-root writer and event type and 0.4 MiB of summaries. The M.I.O. route
-ledger is the other unbounded store (#211 S4). Size `/var/lib` for the normal
+ledger is now bounded (#211 S4): at most about 238 MiB of daily segments
+(46 MiB a day, 192 MiB / 14 days retained plus the current segment), plus, on
+a node upgraded from the single `route.jsonl`, the `legacy-route.jsonl`
+archive at whatever size that file had reached, kept until the owner removes
+it (`docs/mio-runtime.md`). Size `/var/lib` for the normal
 yearly growth plus headroom, and treat the capacity warning as the prompt for
 the owner's retention decision.
 
