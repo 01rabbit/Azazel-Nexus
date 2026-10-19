@@ -58,6 +58,7 @@ def test_mapping_plain_text_freshness_and_immutability(node):
     assert len(ref.summary) == 240
     assert ref.freshness == "static" and current.freshness == "current"
     assert ref.bundle_digest.startswith("sha256:")
+    assert (ref.source_kind, ref.generation, ref.trust_check) == ('knowledge_lite', 5, 'verified')
     assert reading(node, ("T1110", "T1110.001", "T1110")).refs == result.refs
     with pytest.raises(FrozenInstanceError):
         ref.name = "modified"
@@ -141,7 +142,8 @@ def test_repin_during_iteration_withholds_context(node, monkeypatch):
 def test_client_exchange_and_empty_result(monkeypatch):
     from azazel_nexus_runtime import knowledge_client as client
 
-    ref = KnowledgeRef("T1110", "Brute Force", "", "T1110", "sha256:" + "a" * 64, "static")
+    ref = KnowledgeRef("T1110", "Brute Force", "", "T1110", "sha256:" + "a" * 64, "static",
+                       "knowledge_lite", 5, "verified")
     calls = []
 
     def exchange(*args, **kwargs):
@@ -222,3 +224,118 @@ def test_client_checks_dedicated_socket_gid_before_connect(monkeypatch):
     assert groups == ['azknowledge-read']
     assert observed[0][0].name == 'knowledge-read.sock'
     assert observed[0][1] == {'expected_uid': 111, 'expected_gid': 222}
+
+
+def test_client_deadline_with_accepting_silent_server(monkeypatch):
+    import os
+    import socket
+    import threading
+    import tempfile
+    import time
+    from types import SimpleNamespace
+
+    from azazel_nexus_runtime import knowledge_client, mio_socket_client
+
+    accepted = threading.Event()
+    release = threading.Event()
+    errors = []
+    # macOS sockaddr_un cannot hold pytest's long temporary directory names.
+    with tempfile.TemporaryDirectory(dir='/tmp') as directory, \
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        from pathlib import Path
+        path = Path(directory) / 'k.sock'
+        try:
+            listener.bind(str(path))
+        except PermissionError:
+            pytest.skip('sandbox denies AF_UNIX bind')
+        listener.listen(1)
+        listener.settimeout(2)
+        def silent_server():
+            try:
+                with listener.accept()[0]:
+                    accepted.set()
+                    release.wait(2)
+            except Exception as error:
+                errors.append(error)
+        worker = threading.Thread(target=silent_server)
+        worker.start()
+        # Only identity/filesystem plumbing is replaced; connect, send and recv
+        # use a real socket, including its real monotonic timeout.
+        monkeypatch.setattr(mio_socket_client, 'socket_path', lambda _: path)
+        monkeypatch.setattr(mio_socket_client.pwd, 'getpwnam',
+                            lambda _: SimpleNamespace(pw_uid=os.getuid()))
+        monkeypatch.setattr(mio_socket_client.grp, 'getgrnam',
+                            lambda _: SimpleNamespace(gr_gid=os.getgid()))
+        monkeypatch.setattr(mio_socket_client, 'verify_socket', lambda *a, **k: None)
+        monkeypatch.setattr(mio_socket_client, 'peer_credentials',
+                            lambda _: (os.getpid(), os.getuid(), os.getgid()))
+        try:
+            began = time.monotonic()
+            with pytest.raises(knowledge_client.KnowledgeUnavailable):
+                knowledge_client.lookup_context(('T1110',), deadline_s=0.05)
+            elapsed = time.monotonic() - began
+            assert accepted.is_set()
+            # Allow scheduler jitter, but never wait for the server's 2 s guard.
+            assert 0.04 <= elapsed < 0.2
+        finally:
+            release.set()
+            worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert errors == []
+
+
+@pytest.mark.parametrize('field,value', [
+    ('freshness', 'expired'), ('trust_check', 'unverified'),
+    ('source_kind', 'model'), ('generation', True), ('generation', -1),
+    ('generation', 2**63),
+])
+def test_provenance_revalidated_at_client_and_delivery(monkeypatch, field, value):
+    from azazel_nexus.local_advisory import read_knowledge_refs
+    from azazel_nexus_runtime import knowledge_client
+
+    ref = KnowledgeRef('T1110', 'Brute Force', '', 'T1110', 'sha256:' + 'a' * 64,
+                       'static', 'knowledge_lite', 5, 'verified')
+    row = {**asdict(ref), field: value}
+    monkeypatch.setattr(knowledge_client, '_exchange',
+                        lambda *a, **k: {'refs': [row], 'reason_code': 'available'})
+    with pytest.raises(knowledge_client.KnowledgeUnavailable):
+        knowledge_client.lookup_context(('T1110',))
+    with pytest.raises(ValueError, match='invalid_knowledge_refs'):
+        read_knowledge_refs([row])
+
+
+def test_client_transport_uses_one_budget_for_connect_send_and_silent_recv(monkeypatch):
+    from types import SimpleNamespace
+
+    from azazel_nexus_runtime import knowledge_client, mio_socket_client
+
+    clock = [10.0]
+    timeouts = []
+    class SilentSocket:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def settimeout(self, timeout):
+            timeouts.append(timeout)
+        def connect(self, path):
+            clock[0] += 0.01
+        def sendall(self, data):
+            clock[0] += 0.02
+        def shutdown(self, mode):
+            pass
+        def recv(self, size):
+            clock[0] += timeouts[-1]
+            raise TimeoutError('silent peer')
+    monkeypatch.setattr(mio_socket_client.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(mio_socket_client.pwd, 'getpwnam',
+                        lambda _: SimpleNamespace(pw_uid=111))
+    monkeypatch.setattr(mio_socket_client.grp, 'getgrnam',
+                        lambda _: SimpleNamespace(gr_gid=222))
+    monkeypatch.setattr(mio_socket_client, 'verify_socket', lambda *a, **k: None)
+    monkeypatch.setattr(mio_socket_client, 'peer_credentials', lambda _: (1, 111, 222))
+    monkeypatch.setattr(mio_socket_client.socket, 'socket', lambda *a: SilentSocket())
+    with pytest.raises(knowledge_client.KnowledgeUnavailable):
+        knowledge_client.lookup_context(('T1110',), deadline_s=0.05)
+    assert timeouts == pytest.approx([0.05, 0.04, 0.02])
+    assert clock[0] == pytest.approx(10.05)

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
-
-from azazel_nexus.lite_import import TECHNIQUE_ID, KnowledgeRef
+from azazel_nexus.lite_import import TECHNIQUE_ID, KnowledgeRef, read_knowledge_refs
 
 from .mio_socket_client import _exchange
 
@@ -40,21 +38,9 @@ def lookup_context(technique_ids: tuple[str, ...], *,
         # Missing/untrusted context must reach locald's unavailable audit path.
         if result["reason_code"] not in {"available", "no_context"}:
             raise ValueError
-        refs = []
-        fields = {"technique_id", "name", "summary", "claim_id", "bundle_digest", "freshness"}
-        for row in result["refs"]:
-            if type(row) is not dict or set(row) != fields:
-                raise ValueError
-            if any(type(value) is not str for value in row.values()):
-                raise ValueError
-            if (row["technique_id"] not in technique_ids
-                    or not 0 < len(row["name"]) <= 120 or len(row["summary"]) > 240
-                    or row["claim_id"] != row["technique_id"]
-                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", row["bundle_digest"])
-                    or row["freshness"] not in {"current", "static"}
-                    or any(not c.isprintable() for key in ("name", "summary") for c in row[key])):
-                raise ValueError
-            refs.append(KnowledgeRef(**row))
+        refs = read_knowledge_refs(result["refs"])
+        if any(ref.technique_id not in technique_ids for ref in refs):
+            raise ValueError
         if bool(refs) != (result["reason_code"] == "available"):
             raise ValueError
         return tuple(refs)
