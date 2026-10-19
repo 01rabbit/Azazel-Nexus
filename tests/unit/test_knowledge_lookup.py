@@ -1,5 +1,6 @@
 """Trusted streaming context and the bounded local socket client."""
 
+import json
 from dataclasses import FrozenInstanceError, asdict
 
 import pytest
@@ -167,11 +168,16 @@ def test_client_malformed_or_unavailable_fixed_exception(monkeypatch, response):
     from azazel_nexus_runtime import knowledge_client as client
 
     monkeypatch.setattr(client, "_exchange", lambda *a, **k: response)
-    with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$"):
+    with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
         client.lookup_context(("T1110",))
+    assert caught.value.code == ("knowledge_unavailable" if response.get("reason_code") == "revoked"
+                                 else "knowledge_reply_refused")
 
 
-@pytest.mark.parametrize("error", [TimeoutError("secret"), PermissionError("secret"), ValueError("secret")])
+@pytest.mark.parametrize("error", [TimeoutError("secret"), PermissionError("secret"), ValueError("secret"),
+                                       ValueError("M.I.O. peer refused"), ValueError("M.I.O. response bound refused"),
+                                       ValueError("M.I.O. service refused"),
+                                       json.JSONDecodeError("secret", "", 0)])
 def test_client_transport_failure_fixed_exception(monkeypatch, error):
     from azazel_nexus_runtime import knowledge_client as client
 
@@ -179,8 +185,9 @@ def test_client_transport_failure_fixed_exception(monkeypatch, error):
         raise error
 
     monkeypatch.setattr(client, "_exchange", exchange)
-    with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$"):
+    with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
         client.lookup_context(("T1110",))
+    assert caught.value.code == "knowledge_unavailable"
 
 
 def test_stream_stops_at_sixteen_and_empty_query_still_checks_trust(node, monkeypatch):

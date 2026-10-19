@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import deque
 
 from .edge_intake import ACTIONS, _object, _shape, _text, _int, _number
@@ -17,7 +18,9 @@ MAX_LINE = 64 * 1024
 CODES = frozenset({"transition_refused", "chain_broken", "queue_full", "mio_unavailable",
                    "mio_reply_refused", "knowledge_unavailable", "knowledge_reply_refused",
                    "storage_failed", "status_write_failed", "explanation_segment_full",
-                   "cursor_refused", "read_failed"})
+                   "cursor_refused", "read_failed", "cursor_overtaken", "stale_skipped",
+                   "incident_segment_full", "ledger_tail_incomplete", "mio_gated",
+                   "mio_handoff", "mio_local_non_advisory"})
 QUESTION = ("Edge Core が次のセキュリティインシデントを検知しました。状況と、運用者が確認すべき点を説明してください。"
             "Edge の判断は観測のみで実行されていません。")
 FIELDS = {"incident_id", "src_ip", "sid", "target_port", "count", "first_seen", "last_seen",
@@ -101,28 +104,71 @@ def read_control(value):
     return True
 
 
-def private_text(text, limit=256):
-    """Free-form producer words may themselves contain network identifiers.
+# Edge Core main.rs decide_defense: producer values never extend this vocabulary.
+POLICY_REASONS = frozenset({
+    "severity_critical_contains_immediately", "severity_high_redirect_to_decoy",
+    "severity_elevated_throttle_reversible", "severity_moderate_operator_notification",
+    "baseline_observe_only",
+})
+CATEGORIES = frozenset({"Attempted Administrator Privilege Gain", "Attempted User Privilege Gain",
+                        "Attempted Information Leak", "Potentially Bad Traffic",
+                        "Misc Attack", "Misc activity", "Web Application Attack"})
+PENDING_FIELDS = {"incident_id", "event_type", "first_seen", "target_port", "count",
+                  "most_severe", "technique_ids", "edge_would", "policy_reason",
+                  "attack_type", "category", "protocol"}
 
-    Retain descriptive words; remove address literals, dotted names, URLs,
-    email and mixed identifier tokens. Never insert a producer identifier as a kind.
+
+def private_text(text, limit=160):
+    """NFKC then ASCII letters/spaces only; drop removed characters, bound words.
+
+    This reduces syntax and identifier exposure, not prose injection in general.
+    Plain alphabetic hostnames are indistinguishable from words: keep these local.
     """
-    text = text[:limit]
-    return re.sub(r"\S+", lambda m: "[redacted]" if (
-        any(c in m[0] for c in '.:@/\\-_') or any(c.isdigit() for c in m[0])
-    ) else m[0], text) or "(absent)"
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(c for c in text if c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz ")
+    return " ".join(token[:32] for token in text.split())[:limit].strip() or "absent"
+
+
+def explanation_input(t):
+    """The only durable pending fields: no addresses, evidence or numeric rule ids."""
+    t = read_transition(t)
+    return {**{k: t[k] for k in PENDING_FIELDS - {"attack_type", "category", "protocol", "policy_reason"}},
+            "attack_type": private_text(t["attack_type"]),
+            "category": t.get("category") if t.get("category") in CATEGORIES else "other",
+            "protocol": t.get("protocol") if t.get("protocol") in {"tcp", "udp", "icmp"} else "other",
+            "policy_reason": t["policy_reason"] if t["policy_reason"] in POLICY_REASONS else "other"}
+
+
+def read_pending(t):
+    _shape(t, PENDING_FIELDS)
+    if type(t["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", t["incident_id"]):
+        raise ValueError("pending_refused")
+    if t["event_type"] not in {"edge.incident." + kind for kind in ("opened", "updated", "closed")}:
+        raise ValueError("pending_refused")
+    _number(t["first_seen"])
+    for key, cap in (("target_port", 65535), ("count", 2**64-1), ("most_severe", 10)):
+        _int(t[key], cap)
+    ids = t["technique_ids"]
+    if type(ids) is not list or len(ids) > 8 or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids):
+        raise ValueError("pending_refused")
+    _text(t["attack_type"], 160)
+    if (private_text(t["attack_type"]) != t["attack_type"] or t["edge_would"] not in ACTIONS
+            or t["policy_reason"] not in POLICY_REASONS | {"other"}
+            or t["category"] not in CATEGORIES | {"other"}
+            or t["protocol"] not in {"tcp", "udp", "icmp", "other"}):
+        raise ValueError("pending_refused")
+    return json.loads(json.dumps(t, allow_nan=False))
 
 
 def build_frame(transition, sequence):
-    t = read_transition(transition)
+    t = explanation_input(transition) if "src_ip" in transition else read_pending(transition)
     _int(sequence, 2**63-1, 1)
     context = [
         {"kind": "edge_alert", "text": (
-            f"incident={t['incident_id']}; signature={private_text(t['attack_type'])}; "
-            f"category={private_text(t.get('category', 'unknown'))}; "
-            f"protocol={private_text(t.get('protocol', 'unknown'))}; "
+            f"incident={t['incident_id']}; signature={t['attack_type']}; "
+            f"category={t['category']}; protocol={t['protocol']}; "
             f"destination_port={t['target_port']}; severity={t['most_severe']}; count={t['count']}")},
-        {"kind": "edge_decision", "text": f"Edge would {t['edge_would']}; policy_reason={private_text(t['policy_reason'])}"},
+        {"kind": "edge_decision", "text": f"Edge would {t['edge_would']}; policy_reason={t['policy_reason']}"},
     ]
     context.extend({"kind": "technique", "text": t_id} for t_id in t["technique_ids"])
     return read_frame({"request_id": f"{t['incident_id']}:{sequence}",
@@ -143,6 +189,7 @@ class Selection:
                 or t["event_type"] == "edge.incident.updated" and old is not None and t["most_severe"] < old)
 
     def enqueue(self, t, sequence):
+        t = explanation_input(t) if "src_ip" in t else read_pending(t)
         baseline = self.explained.get(t["incident_id"])
         for queued, _ in self.pending:
             if queued["incident_id"] == t["incident_id"]:
@@ -179,11 +226,20 @@ def read_mio_reply(reply):
     base = {"route", "outcome", "reason", "ledger_seq"}
     if type(reply) is not dict or not base <= set(reply):
         raise ValueError("mio_reply_refused")
+    if (reply["route"] == "deterministic handoff" and reply["outcome"] == "insufficient_information"
+            and set(reply) == base | {"refusal", "advice", "fields"}
+            and reply["reason"] == "insufficient_information" and reply["refusal"] is None
+            and reply["fields"] == {}):
+        _text(reply["advice"], 4096)
+        _int(reply["ledger_seq"], 2**63-1)
+        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None}
     if reply["route"] not in {"local", "deterministic handoff"} or reply["outcome"] not in {o.value for o in RequestOutcome}:
         raise ValueError("mio_reply_refused")
     _text(reply["reason"], 2048)
     _int(reply["ledger_seq"], 2**63-1)
     advice = None
+    if set(reply) == base and reply["route"] == "local" and reply["outcome"] != "answered":
+        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory", "text": None}
     if reply["route"] == "local":
         body_keys = {"advice", "fields", "knowledge", *MACHINE_FIELDS}
         if not set(reply) <= base | body_keys:
@@ -197,7 +253,8 @@ def read_mio_reply(reply):
             advice = read_reference(reply["reference"])["banner"]
         elif reply["reference_status"] != "unavailable" or "reference" in reply:
             raise ValueError("mio_reply_refused")
-    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reply["reason"], "text": advice}
+    reason = "mio_handoff" if reply["route"] == "deterministic handoff" else reply["reason"]
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice}
 
 
 RECORD_FIELDS = {"incident_id", "explained_at", "transition", "edge_would", "policy_reason",
@@ -212,7 +269,10 @@ def read_record(value):
     if value["transition"] not in {"opened", "updated"} or value["edge_would"] not in ACTIONS:
         raise ValueError("record_refused")
     _text(value["policy_reason"], 256)
-    _text(value["attack_type"], 1024, field="attack_type")
+    _text(value["attack_type"], 160, field="attack_type")
+    if (private_text(value["attack_type"]) != value["attack_type"]
+            or value["policy_reason"] not in POLICY_REASONS | {"other"}):
+        raise ValueError("record_refused")
     ids = value["technique_ids"]
     if type(ids) is not list or len(ids) > 8 or any(type(t) is not str or not TECHNIQUE_ID.fullmatch(t) for t in ids):
         raise ValueError("record_refused")

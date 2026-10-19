@@ -254,4 +254,30 @@ control or enforcement authority; optional advisory failures never stop Edge.
 See [integration loop I2](integration-loop.md#i2--explanation-explain--implemented)
 for privacy, deadlines, rate/retention limits and fixed refusal codes.
 
+For `chain_broken`, the explainer latches closed across polls, days and restarts.
+Status shows `inspect_incident_chain_then_remove_cursor_and_restart`. Stop
+`azazel-incident-explaind.service` before recovery. Inspect the incident segment
+named by `/var/lib/azazel/incident-explain/cursor.json`, its byte offset and
+sequence/hash, the adjacent retained segments, and `retained-boundary.json`.
+Check for missing segments, truncation, changed hashes and an incomplete final
+line; compare against intake's own status and storage health. Preserve suspect
+files for investigation and restore a valid chain or validated retention boundary
+before resetting the reader. Do not edit ledger lines to bypass verification.
+
+After resolving the cause, remove only
+`/var/lib/azazel/incident-explain/cursor.json` and restart the explainer. This
+clears its latch, pending work, remembered severities and counters, but preserves
+explanation records. With a missing cursor it verifies retained history and
+seeds at the current end; it does not replay the previous 14 days. If integrity
+is still broken it latches again. First installation uses the same seeding rule.
+A checkpoint from the earlier I2 format containing full pending transitions is
+refused at startup; inspect it and use this reset procedure after upgrading.
+
+Normal retention overtaking a cursor reports `cursor_overtaken` and resumes from
+the oldest retained segment without operator reset. Outage replay drops `opened`
+transitions older than one hour (`stale_skipped`). A valid segment-full marker
+reports `incident_segment_full`; a torn final line reports
+`ledger_tail_incomplete` and waits for completion without advancing its cursor.
+These counters describe missing context, not Edge control or enforcement.
+
 See [integration loop I1](integration-loop.md#i1--intake-detect--understand).

@@ -17,7 +17,7 @@ from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
 from azazel_nexus.incident_explain import (
     CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
-    closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition,
+    closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -94,6 +94,8 @@ class Explainer:
         self.chain_broken = self.storage_failed = False
         self.cursor_lag = 0
         self.mio_available = self.knowledge_available = None
+        self._checkpoint_value = self._status_value = None
+        self._status_at = float("-inf")
 
     def refuse(self, code):
         assert code in CODES
@@ -104,31 +106,45 @@ class Explainer:
                 "last_explained_at": self.last_explained_at, "explained": self.explained,
                 "refused": dict(self.refused), "pending": len(self.selection.pending),
                 "cursor_lag": self.cursor_lag, "chain_broken": self.chain_broken,
+                "recovery_hint": "inspect_incident_chain_then_remove_cursor_and_restart" if self.chain_broken else None,
                 "storage_failed": self.storage_failed, "mio_available": self.mio_available,
                 "knowledge_available": self.knowledge_available}
 
     def status(self):
+        value = self.snapshot()
+        content = {k: v for k, v in value.items() if k != "written_at"}
+        now = self.monotonic()
+        if content == self._status_value or now - self._status_at < 5:
+            return
+        self._status_at = now
         try:
-            atomic_json(self.status_path, self.snapshot(), 0o644)
+            atomic_json(self.status_path, value, 0o644)
+            self._status_value = content
         except Exception:  # noqa: BLE001 - fixed code only
             self.refuse("status_write_failed")
 
     def checkpoint(self):
-        atomic_json(self.state / "cursor.json", {
+        value = {
             "cursor": self.cursor, "pending": list(self.selection.pending),
             "explained_ids": self.selection.explained, "explained": self.explained,
             "last_explained_at": self.last_explained_at, "refused": dict(self.refused),
             "chain_broken": self.chain_broken,
             "mio_available": self.mio_available, "knowledge_available": self.knowledge_available,
-        }, 0o600)
+        }
+        encoded = canonical(value)
+        if encoded != self._checkpoint_value:
+            atomic_json(self.state / "cursor.json", value, 0o600)
+            self._checkpoint_value = encoded
 
     def restore(self):
         path = self.state / "cursor.json"
         if not path.exists():
+            self.seed()
             return
         v = decode_checkpoint(read_file(path, CHECKPOINT_BYTES))
+        self._checkpoint_value = canonical(v)
         self.cursor = v["cursor"]
-        self.selection.pending = deque((read_transition(t), s) for t, s in v["pending"])
+        self.selection.pending = deque((read_pending(t), s) for t, s in v["pending"])
         self.selection.explained = v["explained_ids"]
         self.explained, self.last_explained_at = v["explained"], v["last_explained_at"]
         self.refused, self.chain_broken = Counter(v["refused"]), v["chain_broken"]
@@ -147,6 +163,19 @@ class Explainer:
             raise ValueError("cursor_refused") from None
         self.checkpoint()
 
+    def seed(self):
+        # Verify history without enqueueing it. Partial tails remain unconsumed.
+        while True:
+            before = dict(self.cursor)
+            try:
+                self.ingest(seeding=True)
+            except FileNotFoundError:
+                if self.cursor["segment"] is not None:
+                    self.break_chain()
+                return
+            if self.chain_broken or self.cursor == before:
+                return
+
     def segments(self):
         result = []
         with os.scandir(self.incidents) as entries:
@@ -159,7 +188,7 @@ class Explainer:
                     result.append(Path(entry.path))
         return sorted(result)
 
-    def ingest(self):
+    def ingest(self, *, seeding=False):
         c = self.cursor
         if c["broken"]:
             return
@@ -179,6 +208,8 @@ class Explainer:
                     if (boundary["sequence"] < c["sequence"] or
                             boundary["sequence"] == c["sequence"] and boundary["hash"] != c["last_hash"]):
                         raise ValueError("retention_refused")
+                    if c["segment"] is not None:
+                        self.refuse("cursor_overtaken")
                     c.update(segment=None, offset=0, sequence=boundary["sequence"], last_hash=boundary["hash"])
             if c["segment"] is not None and not any(p.name == c["segment"] for p in paths):
                 raise ValueError("segment_missing")
@@ -209,6 +240,8 @@ class Explainer:
                         break
                     if not raw.endswith(b"\n") and len(raw) <= MAX_LINE:
                         # The writer may still be appending. Never advance a partial line.
+                        if not self.refused["ledger_tail_incomplete"]:
+                            self.refuse("ledger_tail_incomplete")
                         return
                     budget -= len(raw)
                     lines += 1
@@ -230,8 +263,16 @@ class Explainer:
                     self.cursor_lag = max(0, self.cursor_lag - len(raw))
                     try:
                         event = entry.event
-                        if not read_control(event):
+                        if read_control(event):
+                            if event["event_type"] == "edge.incident.truncated":
+                                self.refuse("incident_segment_full")
+                        else:
                             t = read_transition(event)
+                            if seeding:
+                                continue
+                            if t["event_type"] == "edge.incident.opened" and self.clock() - t["first_seen"] > 3600:
+                                self.refuse("stale_skipped")
+                                continue
                             result = self.selection.enqueue(t, entry.sequence)
                             if result == "queue_full":
                                 self.refuse(result)
@@ -246,6 +287,7 @@ class Explainer:
 
     def explain(self, t, sequence):
         codes = []
+        t = read_pending(t)
         frame = build_frame(t, sequence)
         mio = {"route": "unavailable", "outcome": "unavailable", "reason": "mio_unavailable", "text": None}
         self.mio_available = False
@@ -257,6 +299,8 @@ class Explainer:
             try:
                 mio = read_mio_reply(reply)
                 self.mio_available = True
+                if mio["reason"] in {"mio_gated", "mio_handoff", "mio_local_non_advisory"}:
+                    codes.append(mio["reason"])
             except Exception:  # noqa: BLE001 - refuse entire reply
                 codes.append("mio_reply_refused")
                 mio["reason"] = "mio_reply_refused"
@@ -302,6 +346,10 @@ class Explainer:
                     self.refuse("read_failed")
                 self.checkpoint()
                 while item := self.selection.take(self.monotonic()):
+                    if item[0]["event_type"] == "edge.incident.opened" and self.clock() - item[0]["first_seen"] > 3600:
+                        self.refuse("stale_skipped")
+                        self.checkpoint()
+                        continue
                     try:
                         self.explain(*item)
                     except SegmentFull as exc:
@@ -363,7 +411,7 @@ def decode_checkpoint(raw):
     for row in v["pending"]:
         if type(row) is not list or len(row) != 2 or type(row[1]) is not int or not 1 <= row[1] < 2**63:
             raise ValueError
-        read_transition(row[0])
+        read_pending(row[0])
     ids = v["explained_ids"]
     if type(ids) is not dict or len(ids) > 1024 or any(not re.fullmatch(r"inc-[0-9a-f]{16}", k) or type(n) is not int or not 0 <= n <= 10 for k, n in ids.items()):
         raise ValueError

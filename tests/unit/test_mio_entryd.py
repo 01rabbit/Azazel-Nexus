@@ -179,3 +179,38 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     assert captured["path"] == runtime_paths.socket_path("mio-entry")
     assert captured["handler"].__self__.router.ledger.path == runtime_paths.mio_state_dir() / "route.jsonl"
     assert resolved == [{"service_accounts": ("azarbiter", "azexplain")}]
+
+
+@pytest.mark.parametrize("profile", list(MioProfile))
+@pytest.mark.parametrize("local_admitted", [False, True])
+def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypatch, profile, local_admitted):
+    from azazel_nexus.incident_explain import build_frame
+    from test_incident_explain import transition
+
+    service._explainer_uid = 4242
+    principal = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))
+    service._profile_reader = lambda: profile
+    service._local_admitted = lambda: local_admitted
+    monkeypatch.setattr(service.local, "observe", lambda: "local_not_admitted")
+    monkeypatch.setattr(service.remote, "observe", lambda: "remote_not_admitted")
+    monkeypatch.setattr(service.remote, "handle", lambda *a, **kw: pytest.fail("remote request"))
+    monkeypatch.setattr(service.local, "reference", lambda *a, **kw: None)
+    monkeypatch.setattr(service.local, "handle", lambda *a, **kw: {"outcome": "not_advice", "refusal": "not_advice"})
+    frame = build_frame(transition(), 1)
+    req = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500},
+                          payload=frame, principal=principal)
+    reply = service.handle(req)
+    assert reply["route"] in {"local", "deterministic handoff"}
+    selected = [event for event in recorded(service) if event["event_type"] == "mio.route.selected"]
+    assert selected and all(event["privacy_class"] == "P3-restricted" for event in selected)
+    for privacy in PrivacyClass:
+        if privacy is PrivacyClass.P3_RESTRICTED:
+            continue
+        req.payload = {**frame, "privacy_class": privacy.value}
+        with pytest.raises(RequestRefused) as refused:
+            service.handle(req)
+        assert refused.value.refusal.value == "principal_denied"
+    req.verb = entry.ROUTE_VERB
+    req.arguments["privacy_class"] = "P3-restricted"
+    with pytest.raises(RequestRefused):
+        service.handle(req)

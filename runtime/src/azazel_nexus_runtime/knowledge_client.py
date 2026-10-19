@@ -22,14 +22,17 @@ def lookup_context(technique_ids: tuple[str, ...], *,
     The shared AF_UNIX exchange verifies peer credentials and framing and uses
     one monotonic deadline across connect, send and receive. No retry or egress.
     """
+    if (type(technique_ids) is not tuple or len(technique_ids) > 8
+            or any(type(item) is not str or not TECHNIQUE_ID.fullmatch(item)
+                   for item in technique_ids)):
+        raise KnowledgeUnavailable()
     try:
-        if (type(technique_ids) is not tuple or len(technique_ids) > 8
-                or any(type(item) is not str or not TECHNIQUE_ID.fullmatch(item)
-                       for item in technique_ids)):
-            raise ValueError
         result = _exchange("knowledge-read", "azknowledge", "knowledge.lookup",
                            {"technique_ids": list(technique_ids)}, deadline_s=deadline_s)
-        if (set(result) != {"refs", "reason_code"} or type(result["refs"]) is not list
+    except Exception:  # noqa: BLE001 - transport ValueErrors are availability failures too
+        raise KnowledgeUnavailable() from None
+    try:
+        if (type(result) is not dict or set(result) != {"refs", "reason_code"} or type(result["refs"]) is not list
                 or len(result["refs"]) > 16
                 or result["reason_code"] not in {
                     "available", "no_context", "no_bundle", "quarantined", "bundle_refused", "state_untrusted",
@@ -38,15 +41,14 @@ def lookup_context(technique_ids: tuple[str, ...], *,
             raise ValueError
         # Missing/untrusted context must reach locald's unavailable audit path.
         if result["reason_code"] not in {"available", "no_context"}:
-            raise ValueError
+            raise KnowledgeUnavailable()
         refs = read_knowledge_refs(result["refs"])
         if any(ref.technique_id not in technique_ids for ref in refs):
             raise ValueError
         if bool(refs) != (result["reason_code"] == "available"):
             raise ValueError
         return tuple(refs)
-    except ValueError:
+    except KnowledgeUnavailable:
+        raise
+    except Exception:  # noqa: BLE001 - only reply validation happens in this block
         raise KnowledgeUnavailable("knowledge_reply_refused") from None
-    except Exception:  # noqa: BLE001 - one public refusal for this transport boundary
-        # Includes deadline, account/socket absence, malformed reply and refusal.
-        raise KnowledgeUnavailable() from None

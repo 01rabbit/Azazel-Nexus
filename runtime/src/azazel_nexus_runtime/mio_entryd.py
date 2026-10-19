@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pwd
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -71,6 +72,10 @@ class MioEntryService:
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ):
+        try:
+            self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
+        except KeyError:
+            self._explainer_uid = None
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
         self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
@@ -146,6 +151,12 @@ class MioEntryService:
         if request.arguments["deadline_ms"] == 0:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "deadline_ms")
         is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
+        principal = getattr(request, "principal", None)
+        explainer = (principal is not None and self._explainer_uid is not None
+                     and principal.uid == self._explainer_uid
+                     and PrincipalClass.SERVICE in principal.classes)
+        if explainer and not is_advice:
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
         if is_advice:
             try:
@@ -153,6 +164,8 @@ class MioEntryService:
             except FrameRefused:
                 raise RequestRefused(Refusal.MALFORMED_FRAME, "situation_frame") from None
             privacy = PrivacyClass(frame["privacy_class"])
+            if explainer and privacy is not PrivacyClass.P3_RESTRICTED:
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
             self.router._record(request_event(frame))
             gated = gate_frame(frame)
             if gated is not None and gated["reason"] == "insufficient_information":

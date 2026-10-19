@@ -269,14 +269,22 @@ nothing in intake, detection or Edge's observe-only decisions.
 - **Cursor and integrity.** Private `0700 azexplain:root`
   `/var/lib/azazel/incident-explain` holds `cursor.json` (`0600`), atomically
   replaced and fsynced with segment name, byte offset, sequence, last hash,
-  bounded pending work, last explained severities and counters. The reader
+  bounded address-free pending work, last explained severities and counters.
+  Checkpoints are written only when their content changes. The reader
   checks the closed audit envelope, consecutive sequence, previous hash and
   `AuditEntry.recomputed()` for every line, carrying the head across daily
-  segments. A new reader starts from genesis or the validated, unsigned local
-  `retained-boundary.json`; a lagging cursor can advance over an explicitly
-  retired prefix. Reset, truncation and retention control records are validated
+  segments. On first start or with a missing cursor, the reader verifies the
+  retained history from genesis or the validated, unsigned local
+  `retained-boundary.json` and seeds at the current end without explaining
+  history. Only new transitions are explained. A lagging cursor whose segment
+  was retired by a valid boundary resumes at the oldest retained segment and
+  counts `cursor_overtaken`; this does not latch `chain_broken`.
+  Reset, truncation and retention control records are validated
   without generating explanations. A broken chain is quarantined at its cursor
-  (`chain_broken`), including subsequent segments; a new day cannot hide a gap. Partial trailing lines wait for completion.
+  (`chain_broken`), including subsequent segments; a new day cannot hide a gap.
+  Status carries a fixed recovery hint; see [operator recovery](operations.md).
+  Partial trailing lines wait for completion and report `ledger_tail_incomplete`
+  once per cursor lifetime. Valid truncation markers count `incident_segment_full`.
   A poll reads at most 64 lines / 256 KiB, with a 64 KiB line ceiling and
   at most 256 directory entries. A corrupt checkpoint fails startup closed.
 - **Selection and load.** Explain `opened`, then `updated` only when its
@@ -284,7 +292,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   1024 incident severities; unknown updates are skipped. Pending work is a
   durable FIFO of 64 entries; full queues **drop newest**, counting
   `queue_full`, to preserve already accepted work. Stale queued updates are
-  checked again when drained. At most six attempts occur in any rolling
+  checked again when drained. During outage replay and before draining, an
+  `opened` transition more than one hour past `first_seen` is dropped and
+  counted as `stale_skipped`. At most six attempts occur in any rolling
   monotonic minute. A resumed cursor conservatively waits 60 seconds before
   further calls, so restarting cannot reset that budget. Record append precedes
   cursor checkpoint: a crash between the two can duplicate the last explanation
@@ -295,11 +305,22 @@ nothing in intake, detection or Edge's observe-only decisions.
   incident id, bounded signature/category/protocol, destination port, severity,
   count, “Edge would <action>”, policy reason and verbatim technique ids.
   Source/destination addresses, signature numeric ids, evidence digests, trace
-  ids, targets and timestamps are omitted. Producer prose is bounded to 256
-  characters per field, and tokens containing digits or network identifier
-  syntax (dot, colon, at-sign, slash, hyphen or underscore) are redacted before framing, including
-  addresses/hostnames embedded in rule descriptions. Producer strings appear
-  only as context text, never instructions, kinds, questions or request ids.
+  ids, targets and timestamps are omitted. The no-addresses rule covers both
+  frames and explainer records, including checkpoint pending entries.
+  The pseudonymous `incident_id` is the only incident/network identifier in
+  frames: intake hashes the incident key together with the evidence digest,
+  rather than encoding an address. It cannot be reversed to recover an address;
+  it is retained only for local correlation and is never sent remotely.
+  Technique ids describe public classifications, not network entities.
+  Signature text is NFKC-normalized, then only ASCII letters and spaces survive;
+  removed characters are dropped, whitespace is collapsed, tokens are capped at
+  32 characters and the field at 160. No producer punctuation survives.
+  Category is a closed list of common Suricata categories (unknown → `other`),
+  protocol is `tcp|udp|icmp|other`, and policy reason is one of Edge Core's five
+  `decide_defense` constants, verbatim (unknown → `other`). Signature prose can
+  still contain instructions or alphabetic hostnames without dots: the filter
+  cannot distinguish those from descriptive words. It is context data, never
+  kinds, questions or request ids, and is kept local under P3.
   The class is **P3-restricted**, the most restrictive enum member: local
   inference/reference remains possible, while routing and sanitizer each
   prohibit remote egress regardless of profile or commissioning.
@@ -307,7 +328,10 @@ nothing in intake, detection or Edge's observe-only decisions.
   the fixed `mio-entry` socket. Deadline is **500 ms**, the existing
   `REFERENCE_DEADLINE_MS`, for both the verb and the entire client exchange.
   `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
-  service allowlists. `azazel-operator` supplementary membership gives socket
+  service allowlists, never the shared SERVICE list. Entryd identifies its
+  kernel-derived UID and permits only `mio.advise` with P3-restricted frames;
+  `mio.route` and less restrictive privacy classes are refused before routing.
+  `azazel-operator` supplementary membership gives socket
   traversal; `classify()` explicitly excludes service/daemon UIDs from
   OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
   the `knowledge-read` socket, `azknowledge-read` membership and locald's
@@ -322,10 +346,14 @@ nothing in intake, detection or Edge's observe-only decisions.
 - **Records and retention.** Append-only daily
   `incident-explain/explanations/YYYY-MM-DD.jsonl` (`0640`, inside private
   `0700` parents) stores only validated records: incident id, explained time,
-  transition, Edge would action, bounded original signature and policy reason, technique
-  ids, M.I.O. route/outcome/reason and advice or reference banner, validated
+  transition, Edge would action, only the sanitized signature and closed policy
+  reason used in frames, technique ids, M.I.O. route/outcome/reason and advice
+  or reference banner, validated
   knowledge refs, state `available|no_context|unavailable|skipped` and fixed
-  failure codes. It reuses intake's no-follow, fsynced append and retention:
+  failure/outcome codes. Pending checkpoints retain only the fields needed for
+  selection and framing (including `first_seen` for freshness); no source or
+  destination addresses, rule ids or evidence digests. It reuses intake's
+  no-follow, fsynced append and retention:
   64 MiB per segment, 256 MiB total / 14 days, keeping newest and active
   segments, with monotonic protection against forward clock jumps. Full daily
   segments drop explanations for that day; permanent storage failures stop
@@ -336,11 +364,21 @@ nothing in intake, detection or Edge's observe-only decisions.
   azexplain:azazel-operator`) report last explained time/count, pending work,
   refusals/drops by code, cursor byte lag, sticky `chain_broken`,
   `storage_failed`, and M.I.O./Knowledge availability of the last attempt
-  (`null` when unattempted/skipped). Refusal codes are `transition_refused`,
+  (`null` when unattempted/skipped). Status is written only on content changes,
+  at most once every five seconds; `written_at` alone does not trigger a write.
+  Refusal/outcome codes are `transition_refused`,
   `chain_broken`, `queue_full`, `mio_unavailable`, `mio_reply_refused`,
   `knowledge_unavailable`, `knowledge_reply_refused`, `storage_failed`,
   `status_write_failed`, `explanation_segment_full`, `cursor_refused`,
-  `read_failed`. Neither rejected content nor exception text is logged.
+  `read_failed`, `cursor_overtaken`, `stale_skipped`, `incident_segment_full`,
+  `ledger_tail_incomplete`, `mio_gated`, `mio_handoff`, `mio_local_non_advisory`.
+  Normal gated/handoff/local non-advisory replies have these outcome codes,
+  rather than `mio_reply_refused`; reference banners are still validated.
+  Knowledge transport failures (including peer, bounds, service refusal and
+  JSON decode errors from the exchange) report `knowledge_unavailable`; only
+  malformed reply shapes/citations report `knowledge_reply_refused`. Valid
+  unavailable Knowledge states also remain `knowledge_unavailable`.
+  Neither rejected content nor exception text is logged.
 - **Registration.** `azazel-incident-explaind.service` is SUPPORTING,
   `azexplain`, `Type=notify`, AF_UNIX only, `PrivateNetwork=yes`, no
   capabilities, no `Restart=`. Limits match intake: 30 s startup, 256 MiB
