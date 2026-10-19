@@ -107,12 +107,16 @@ class AuditLedger:
     The second one finds the chain has moved and is refused.
 
     `private=True` creates/restricts the file to 0600 and refuses symlinks;
+    an explicitly declared `file_mode=0640` permits a dedicated read group;
     other callers retain their existing open and permission semantics.
     """
 
-    def __init__(self, path: Path, *, private: bool = False) -> None:
+    def __init__(self, path: Path, *, private: bool = False, file_mode: int = 0o600) -> None:
         self.path = path
         self.private = private
+        if file_mode not in {0o600, 0o640}:
+            raise ValueError("audit mode refused")
+        self.file_mode = file_mode
 
     # -- reading ---------------------------------------------------------
 
@@ -305,9 +309,9 @@ class AuditLedger:
             # process, because "recorded" is the claim the next entry's hash
             # will depend on.
             def opener(path, flags):
-                fd = os.open(path, flags | os.O_NOFOLLOW, 0o600)
+                fd = os.open(path, flags | os.O_NOFOLLOW, self.file_mode)
                 try:
-                    os.fchmod(fd, 0o600)
+                    os.fchmod(fd, self.file_mode)
                 except BaseException:
                     os.close(fd)
                     raise

@@ -560,7 +560,7 @@ def test_incident_retention_boundary_survives_restart_and_pending_unlink(tmp_pat
     boundary = json.loads(ledger.boundary.read_bytes())
     assert boundary == {"oldest": "1970-01-02.jsonl", "deleted": "1970-01-01.jsonl",
                         "sequence": retired_head[0], "hash": retired_head[1]}
-    assert ledger.boundary.stat().st_mode & 0o777 == 0o600
+    assert ledger.boundary.stat().st_mode & 0o777 == 0o640
     # Simulate power loss after boundary fsync and before the retired unlink.
     retired_path.write_bytes(retired)
     restarted = daemon.IncidentLedger(tmp_path, 86400, max_bytes=1)

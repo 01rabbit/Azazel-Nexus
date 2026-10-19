@@ -451,6 +451,8 @@ class IncidentTracker:
             edge_would=d["action"],
             policy_reason=d["policy_reason"],
             attack_type=n["attack_type"],
+            category=n["category"],
+            protocol=n["protocol"],
             latest_evidence=record.digest,
             technique_ids=sorted(
                 set(item["technique_ids"]) | set(n.get("technique_ids", []))

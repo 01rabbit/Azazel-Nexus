@@ -236,6 +236,10 @@ CORE_UNITS = (
         "verified Edge Core payload; fixed observe-only posture",
     ),
     UnitDefinition(
+        "azazel-incident-explaind.service", UnitTier.SUPPORTING, "azexplain",
+        "local incident explanations; grants no Edge authority",
+    ),
+    UnitDefinition(
         "azazel-edge-intaked.service", UnitTier.SUPPORTING, "azintake",
         "receives Edge observations before Edge admission; grants no authority",
     ),

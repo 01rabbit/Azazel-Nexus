@@ -23,6 +23,9 @@ from azazel_nexus.audit import AuditUnavailable
 __all__ = [
     "ROOT",
     "audit_sink",
+    "incident_segments_dir",
+    "incident_explain_state_dir",
+    "incident_explain_status_path",
     "edge_intake_state_dir",
     "edge_intake_status_path",
     "commission_ledger_path",
@@ -201,10 +204,22 @@ def mission_pack_root() -> Path:
 
 
 def edge_intake_state_dir() -> Path:
-    """Private evidence and incident chain, outside operator-readable liveness."""
+    """Private evidence, outside the separate incident and liveness leaves."""
     return _under("/var/lib/azazel/edge-intake")
 
 
 def edge_intake_status_path() -> Path:
     """Only the dedicated status leaf is operator-readable."""
     return _under("/var/lib/azazel/run/edge-intake-status/status.json")
+
+
+def incident_segments_dir() -> Path:
+    return _under("/var/lib/azazel/edge-incidents")
+
+
+def incident_explain_state_dir() -> Path:
+    return _under("/var/lib/azazel/incident-explain")
+
+
+def incident_explain_status_path() -> Path:
+    return _under("/var/lib/azazel/run/incident-explain-status/status.json")

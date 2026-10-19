@@ -109,6 +109,7 @@ class Principal:
 #: Listed rather than discovered so that an account created by something other
 #: than the package does not become a service principal by existing.
 SERVICE_ACCOUNTS = (
+    "azexplain",
     "azobs",
     "azevidence",
     "azeval",

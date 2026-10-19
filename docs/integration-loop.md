@@ -1,6 +1,6 @@
 # The integrated defensive loop
 
-Status: **I0 and I1 implemented; I2–I5 planned**
+Status: **I0–I2 implemented; I3–I5 planned**
 ([#190](https://github.com/01rabbit/Azazel-Nexus/issues/190): I0 #191, I1 #192,
 I2 #193, I3 #194, I4 #196, I5 #195).
 Related: [integrated-node doctrine](nexus-integrated-node.md) ·
@@ -192,7 +192,7 @@ Concrete I1 limits and paths:
   increment `incident_rate_limited`; existing incidents can still update.
   `accepted` includes these rate-limited events because their evidence was
   stored successfully. Technique unions retain a deterministic maximum of eight.
-  `incidents/YYYY-MM-DD.jsonl` (`0600`) holds one local `AuditLedger` chain
+  `/var/lib/azazel/edge-incidents/YYYY-MM-DD.jsonl` (`0640`) holds one local `AuditLedger` chain
   across daily segments: the first entry uses `chain_from=(seq, hash)` from
   the previous segment's head, as auditd does. Each incident segment is at most
   **16 MiB**; evidence remains 64 MiB and `MemoryMax=256M` is unchanged.
@@ -202,8 +202,8 @@ Concrete I1 limits and paths:
   the current segment against the previous retained head. A backwards clock
   keeps incident writes in the latest segment to preserve chain order.
   The same 256 MiB / 14-day retention budget applies. Unlike auditd (which
-  does not delete segments), intake durably writes a small `0600`
-  `incidents/retained-boundary.json` before deleting an oldest segment. It
+  does not delete segments), intake durably writes a small `0640`
+  `edge-incidents/retained-boundary.json` before deleting an oldest segment. It
   names the deleted segment and its last sequence/hash, and the next oldest
   retained segment, which must chain from that head. Replacement and directory
   are fsynced before unlink; a restart completes an interrupted prefix deletion.
@@ -244,36 +244,109 @@ Concrete I1 limits and paths:
   failures only increment `status_write_failed`. The pure `read_intake_status`
   decoder supplies no readiness or enforcement authority.
 - `azazel-edge-intaked.service`: `azintake`, `Type=notify`, AF_UNIX only,
-  `PrivateNetwork=yes`, no capabilities; only the three leaves above are
+  `PrivateNetwork=yes`, no capabilities; only its evidence, incident, socket and status leaves are
   writable. Supporting-tier admission lets it listen before Edge admission.
   Startup timeout is 30 s. It declares no `Restart=`: systemd's default does
   not restart it, and only the bootstrap pair declares lifecycle settings. Limits are `MemoryMax=256M`, `TasksMax=32`,
   `LimitNOFILE=256`, `LimitFSIZE=128M` (above the 64 MiB segment ceiling).
   It is installed masked and preset-disabled, with no dependency on Edge.
 
-### I2 — explanation (Explain)
+### I2 — explanation (Explain) — implemented
 
-For an incident that is opened, or that crosses a severity threshold, intake
-builds a situation frame in the existing `local_advisory.read_frame` shape
-(`request_id`, `privacy_class`, `question`, `context`) and sends `mio.advise`
-through `mio-entryd`, the same route an operator's request takes.
+`az-incident-explaind` independently polls the I1 incident chains every second.
+It has no Edge socket, no Edge dependency and no decision authority. M.I.O. or
+Knowledge failure produces an explanation of missing context; it changes
+nothing in intake, detection or Edge's observe-only decisions.
 
-- **Technique ids.** Knowledge lookups need MITRE technique ids. Edge Core
-  drops Suricata's `alert.metadata.mitre_technique_id` when it normalises an
-  event, so this needs a small Azazel-Edge change
-  ([Azazel-Edge#427](https://github.com/01rabbit/Azazel-Edge/issues/427)): carry the rule's own
-  technique ids through as `normalized.technique_ids`. Nexus never maps a
-  signature to a technique itself; a guessed mapping would be a claim with no
-  source. Without technique ids, the frame goes without knowledge context.
-- **When no model is admitted** (today, until HG-05), `mio.advise` already
-  answers with the deterministic handoff. The incident view then shows Edge's
-  own reason plus the Knowledge Lite references for its technique ids, which
-  is still an explanation with sources.
-- **Privacy.** Addresses in the frame are aliased by the existing sanitizer
-  before anything reaches a remote provider. The remote route stays governed
-  by the commissioned ceiling, unchanged.
-- **Advice is stored with the incident**, with its route, provider class and
-  knowledge citations. It is never sent to Edge.
+- **Read access.** Incident segments now live in their own leaf
+  `/var/lib/azazel/edge-incidents`, `2750 azintake:azincident-read`, with
+  `0640` files. `azexplain` is the only consumer granted `azincident-read`
+  (through its unit's supplementary groups). Evidence remains under the
+  unchanged `0700 azintake:root /var/lib/azazel/edge-intake` parent. Intake
+  can write the new leaf; the explainer can only read it. Previous I1 private
+  `edge-intake/incidents` history is not automatically moved by installation;
+  stop intake before an administrator migrates any retained historical chains.
+- **Cursor and integrity.** Private `0700 azexplain:root`
+  `/var/lib/azazel/incident-explain` holds `cursor.json` (`0600`), atomically
+  replaced and fsynced with segment name, byte offset, sequence, last hash,
+  bounded pending work, last explained severities and counters. The reader
+  checks the closed audit envelope, consecutive sequence, previous hash and
+  `AuditEntry.recomputed()` for every line, carrying the head across daily
+  segments. A new reader starts from genesis or the validated, unsigned local
+  `retained-boundary.json`; a lagging cursor can advance over an explicitly
+  retired prefix. Reset, truncation and retention control records are validated
+  without generating explanations. A broken chain is quarantined at its cursor
+  (`chain_broken`), including subsequent segments; a new day cannot hide a gap. Partial trailing lines wait for completion.
+  A poll reads at most 64 lines / 256 KiB, with a 64 KiB line ceiling and
+  at most 256 directory entries. A corrupt checkpoint fails startup closed.
+- **Selection and load.** Explain `opened`, then `updated` only when its
+  `most_severe` number falls below the last explained value. Remember at most
+  1024 incident severities; unknown updates are skipped. Pending work is a
+  durable FIFO of 64 entries; full queues **drop newest**, counting
+  `queue_full`, to preserve already accepted work. Stale queued updates are
+  checked again when drained. At most six attempts occur in any rolling
+  monotonic minute. A resumed cursor conservatively waits 60 seconds before
+  further calls, so restarting cannot reset that budget. Record append precedes
+  cursor checkpoint: a crash between the two can duplicate the last explanation
+  (at-least-once processing), without affecting Edge.
+- **Frame and privacy.** Frames use exactly `read_frame`'s four fields, with
+  request id `inc-<16 hex>:<ledger sequence>` and a fixed Japanese question.
+  Fixed context kinds `edge_alert`, `edge_decision`, `technique` carry the
+  incident id, bounded signature/category/protocol, destination port, severity,
+  count, “Edge would <action>”, policy reason and verbatim technique ids.
+  Source/destination addresses, signature numeric ids, evidence digests, trace
+  ids, targets and timestamps are omitted. Producer prose is bounded to 256
+  characters per field, and tokens containing digits or network identifier
+  syntax (dot, colon, at-sign, slash, hyphen or underscore) are redacted before framing, including
+  addresses/hostnames embedded in rule descriptions. Producer strings appear
+  only as context text, never instructions, kinds, questions or request ids.
+  The class is **P3-restricted**, the most restrictive enum member: local
+  inference/reference remains possible, while routing and sanitizer each
+  prohibit remote egress regardless of profile or commissioning.
+- **Clients and validation.** The sole advisory request is `mio.advise` to
+  the fixed `mio-entry` socket. Deadline is **500 ms**, the existing
+  `REFERENCE_DEADLINE_MS`, for both the verb and the entire client exchange.
+  `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
+  service allowlists. `azazel-operator` supplementary membership gives socket
+  traversal; `classify()` explicitly excludes service/daemon UIDs from
+  OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
+  the `knowledge-read` socket, `azknowledge-read` membership and locald's
+  existing **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip the lookup.
+  No signature-to-technique mapping is invented. Both sockets authenticate
+  their daemon owner and peer via the shared bounded AF_UNIX exchange.
+  Entry reply metadata is closed and bounded; local bodies pass
+  `read_delivered`, handoff references pass `read_reference`, and Knowledge
+  citations pass `read_knowledge_refs`, including technique membership.
+  Remote replies are refused. Without an admitted model, the record can hold
+  a deterministic reference banner plus independently obtained Knowledge refs.
+- **Records and retention.** Append-only daily
+  `incident-explain/explanations/YYYY-MM-DD.jsonl` (`0640`, inside private
+  `0700` parents) stores only validated records: incident id, explained time,
+  transition, Edge would action, bounded original signature and policy reason, technique
+  ids, M.I.O. route/outcome/reason and advice or reference banner, validated
+  knowledge refs, state `available|no_context|unavailable|skipped` and fixed
+  failure codes. It reuses intake's no-follow, fsynced append and retention:
+  64 MiB per segment, 256 MiB total / 14 days, keeping newest and active
+  segments, with monotonic protection against forward clock jumps. Full daily
+  segments drop explanations for that day; permanent storage failures stop
+  explanation work until restart. Startup storage failure exits nonzero before
+  READY. Nothing is sent back to Edge.
+- **Status and fixed codes.** Atomic `0644` snapshots in
+  `/var/lib/azazel/run/incident-explain-status` (`2750
+  azexplain:azazel-operator`) report last explained time/count, pending work,
+  refusals/drops by code, cursor byte lag, sticky `chain_broken`,
+  `storage_failed`, and M.I.O./Knowledge availability of the last attempt
+  (`null` when unattempted/skipped). Refusal codes are `transition_refused`,
+  `chain_broken`, `queue_full`, `mio_unavailable`, `mio_reply_refused`,
+  `knowledge_unavailable`, `knowledge_reply_refused`, `storage_failed`,
+  `status_write_failed`, `explanation_segment_full`, `cursor_refused`,
+  `read_failed`. Neither rejected content nor exception text is logged.
+- **Registration.** `azazel-incident-explaind.service` is SUPPORTING,
+  `azexplain`, `Type=notify`, AF_UNIX only, `PrivateNetwork=yes`, no
+  capabilities, no `Restart=`. Limits match intake: 30 s startup, 256 MiB
+  memory, 32 tasks, 256 descriptors and 128 MiB file size. Only its private
+  state and status leaves are writable. It is installed masked and
+  preset-disabled and is covered by the normal renderer and staging checks.
 
 ### I3 — operator view and audit (Explain → Audit)
 

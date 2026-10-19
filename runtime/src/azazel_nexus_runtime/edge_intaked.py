@@ -58,10 +58,10 @@ class DailySegments:
 
     def __init__(
         self, root, leaf, *, max_bytes=RETENTION_BYTES,
-        days=RETENTION_DAYS, segment_bytes=SEGMENT_BYTES,
+        days=RETENTION_DAYS, segment_bytes=SEGMENT_BYTES, mode=0o700,
     ):
         self.directory = root / leaf
-        store_directory(self.directory, 0o700)
+        store_directory(self.directory, mode)
         self.max_bytes, self.days = max_bytes, days
         self.segment_bytes = segment_bytes
         self.current = None
@@ -174,9 +174,9 @@ class IncidentLedgerTorn(Exception):
 class IncidentLedger(DailySegments):
     """One chain through retained daily segments, with a durable left boundary."""
 
-    def __init__(self, root, now, **limits):
+    def __init__(self, root, now, *, leaf="incidents", **limits):
         limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
-        super().__init__(root, "incidents", **limits)
+        super().__init__(root, leaf, mode=0o2750, **limits)
         self.ledger = None
         self.boundary = self.directory / "retained-boundary.json"
         self.head = (0, GENESIS_HASH)
@@ -200,7 +200,7 @@ class IncidentLedger(DailySegments):
                 raise AuditChainBroken("retained incident boundary does not match")
         for path in paths:
             self.check_segment(path)
-            for entry in AuditLedger(path, private=True):
+            for entry in AuditLedger(path, private=True, file_mode=0o640):
                 if (entry.sequence != self.head[0] + 1 or
                         entry.previous_hash != self.head[1] or
                         entry.recomputed() != entry.event_hash):
@@ -225,7 +225,7 @@ class IncidentLedger(DailySegments):
     def before_delete(self, path):
         paths = sorted(self.directory.glob("????-??-??.jsonl"))
         following = paths[paths.index(path) + 1]
-        head = AuditLedger(path, private=True).head()
+        head = AuditLedger(path, private=True, file_mode=0o640).head()
         # An empty segment contributes no link; preserve the prior boundary.
         if head == (0, GENESIS_HASH) and self.boundary.exists():
             previous = json.loads(self.boundary.read_bytes())
@@ -236,6 +236,7 @@ class IncidentLedger(DailySegments):
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(canonical(value) + b"\n")
+                os.fchmod(stream.fileno(), 0o640)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.boundary)
@@ -255,10 +256,10 @@ class IncidentLedger(DailySegments):
             path = max(path, self.current)
         if path == self.current and self.ledger is not None:
             return
-        fd = self.open_segment(path, 0o600)
+        fd = self.open_segment(path, 0o640)
         os.close(fd)
         self.check_segment(path)
-        self.current, self.ledger = path, AuditLedger(path, private=True)
+        self.current, self.ledger = path, AuditLedger(path, private=True, file_mode=0o640)
         self.truncated = any(
             entry.event.get("event_type") == "edge.incident.truncated"
             for entry in self.ledger
@@ -285,7 +286,7 @@ class IncidentLedger(DailySegments):
         self.retain()
 
     def sync(self):
-        fd = self.open_segment(self.current, 0o600)
+        fd = self.open_segment(self.current, 0o640)
         try:
             os.fsync(fd)
         finally:
@@ -302,6 +303,7 @@ class IntakeServer:
         state: Path,
         status_path: Path,
         edge_uid: int,
+        incident_root: Path | None = None,
         expected_gid=None,
         peer_uid=None,
         clock=time.time,
@@ -311,6 +313,7 @@ class IntakeServer:
     ):
         self.path, self.state, self.status_path = path, state, status_path
         self.edge_uid, self.expected_gid = edge_uid, expected_gid
+        self.incident_root = incident_root or state
         self.peer_uid = peer_uid or (lambda connection: peer_credentials(connection)[1])
         self.clock = clock
         self.max_connections, self.read_deadline = max_connections, read_deadline
@@ -355,7 +358,8 @@ class IntakeServer:
     def _open_storage(self):
         store = EvidenceStore(self.state)
         store.prepare(self.clock())
-        ledger = IncidentLedger(self.state, self.clock())
+        ledger = (IncidentLedger(self.incident_root.parent, self.clock(), leaf=self.incident_root.name)
+                  if self.incident_root != self.state else IncidentLedger(self.state, self.clock()))
         try:
             ledger.append(
                 {"event_type": "edge.incident.reset", "at": self.clock(),
@@ -560,6 +564,7 @@ def main(argv=None):
     """Resolve installation-owned identity before opening the receive socket."""
     from .runtime_paths import (
         edge_intake_state_dir,
+        incident_segments_dir,
         edge_intake_status_path,
         socket_path,
     )
@@ -578,6 +583,7 @@ def main(argv=None):
     server = IntakeServer(
         path=socket_path("edge-intake"),
         state=edge_intake_state_dir(),
+        incident_root=incident_segments_dir(),
         status_path=edge_intake_status_path(),
         edge_uid=uid,
         expected_gid=gid,

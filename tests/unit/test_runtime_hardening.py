@@ -341,6 +341,8 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
             assert settings["SupplementaryGroups"] == ["azazel-operator"]
         elif profile.unit == "azazel-mio-locald.service":
             assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+        elif profile.unit == "azazel-incident-explaind.service":
+            assert settings["SupplementaryGroups"] == ["azincident-read azknowledge-read azazel-operator"]
         else:
             assert "SupplementaryGroups" not in settings
 
@@ -359,6 +361,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     assert widened == {
         "azazel-activated.service", "azazel-commissiond.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
+        "azazel-incident-explaind.service",
     }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]

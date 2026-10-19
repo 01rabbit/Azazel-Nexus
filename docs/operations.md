@@ -240,6 +240,18 @@ the unchanged first-start readiness limitation. Intake is implemented in I1.
 
 `azazel-edge-intaked.service` is the supporting receive-only Edge findings
 listener, running as `azintake`, masked and preset-disabled. It writes bounded
-private evidence and a local incident chain under `/var/lib/azazel/edge-intake`,
+private evidence under `/var/lib/azazel/edge-intake`, a reader-group incident
+chain under `/var/lib/azazel/edge-incidents`,
 and operator-readable liveness under `run/edge-intake-status/status.json`.
+
+`azazel-incident-explaind.service` is the supporting local incident explainer,
+running as `azexplain`, masked and preset-disabled. It reads the incident
+chains as `azincident-read`, asks M.I.O. and Knowledge over their existing
+local sockets, and stores bounded explanations/cursor state privately under
+`/var/lib/azazel/incident-explain`. Liveness is operator-readable at
+`/var/lib/azazel/run/incident-explain-status/status.json`. It grants no Edge
+control or enforcement authority; optional advisory failures never stop Edge.
+See [integration loop I2](integration-loop.md#i2--explanation-explain--implemented)
+for privacy, deadlines, rate/retention limits and fixed refusal codes.
+
 See [integration loop I1](integration-loop.md#i1--intake-detect--understand).

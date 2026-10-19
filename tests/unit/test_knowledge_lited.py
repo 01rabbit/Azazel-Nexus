@@ -163,7 +163,7 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     assert captured["additional_sockets"] == ((root.parent / "run/knowledge-read/knowledge-read.sock", 123, daemon.READ_REGISTRY),)
     assert captured["audit"] == ("sink", "knowledge")
     assert captured["handler"].__self__.root == root
-    assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio")}]
+    assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio", "azexplain")}]
     monkeypatch.setattr(sys, "argv", ["az-knowledge-lited", "--path"])
     with pytest.raises(SystemExit, match="takes no arguments"):
         daemon.main()

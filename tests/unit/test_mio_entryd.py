@@ -178,4 +178,4 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     assert entry.main([], ready=lambda: None) == 0
     assert captured["path"] == runtime_paths.socket_path("mio-entry")
     assert captured["handler"].__self__.router.ledger.path == runtime_paths.mio_state_dir() / "route.jsonl"
-    assert resolved == [{"service_accounts": ("azarbiter",)}]
+    assert resolved == [{"service_accounts": ("azarbiter", "azexplain")}]

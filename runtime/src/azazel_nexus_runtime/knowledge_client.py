@@ -10,7 +10,8 @@ from .mio_socket_client import _exchange
 class KnowledgeUnavailable(Exception):
     """One fixed failure; callers must not expose transport or reply text."""
 
-    def __init__(self) -> None:
+    def __init__(self, code="knowledge_unavailable") -> None:
+        self.code = code if code in {"knowledge_unavailable", "knowledge_reply_refused"} else "knowledge_unavailable"
         super().__init__("knowledge unavailable")
 
 
@@ -44,6 +45,8 @@ def lookup_context(technique_ids: tuple[str, ...], *,
         if bool(refs) != (result["reason_code"] == "available"):
             raise ValueError
         return tuple(refs)
+    except ValueError:
+        raise KnowledgeUnavailable("knowledge_reply_refused") from None
     except Exception:  # noqa: BLE001 - one public refusal for this transport boundary
         # Includes deadline, account/socket absence, malformed reply and refusal.
         raise KnowledgeUnavailable() from None

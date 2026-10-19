@@ -21,6 +21,7 @@ TasksMax=32
 LimitNOFILE=256
 LimitFSIZE=128M
 RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/edge-incidents
 ReadWritePaths=/var/lib/azazel/edge-intake
 ReadWritePaths=/var/lib/azazel/run/edge-intake
 ReadWritePaths=/var/lib/azazel/run/edge-intake-status

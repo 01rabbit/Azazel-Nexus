@@ -245,7 +245,7 @@ def main(
 
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
-        policy=PrincipalPolicy.resolve(service_accounts=("azarbiter",)),
+        policy=PrincipalPolicy.resolve(service_accounts=("azarbiter", "azexplain")),
         audit=service.router._record, handler=service.handle, stop=tick,
         ready=ready if ready is not None else runtime_ready_callback(),
     )
