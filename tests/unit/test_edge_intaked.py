@@ -14,7 +14,7 @@ from test_edge_intake import edge_event, record
 
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.edge_intake import read_intake_status
-from azazel_nexus.incident_explain import read_transition
+from azazel_nexus.incident_explain import read_control, read_transition
 
 
 def elapsed(step=86400):
@@ -313,7 +313,8 @@ def test_writer_persists_transitions_without_transport(tmp_path):
 
 def test_broken_chain_refuses_new_records_without_content(tmp_path):
     (tmp_path / "incidents").mkdir()
-    (tmp_path / "incidents/1970-01-01.jsonl").write_text("SECRET")
+    # Terminated: an unterminated line alone would be a torn first record.
+    (tmp_path / "incidents/1970-01-01.jsonl").write_text("SECRET\n")
     server = daemon.IntakeServer(
         path=tmp_path / "unused.sock",
         state=tmp_path,
@@ -645,15 +646,107 @@ def test_incident_missing_or_relinked_segment_refuses_startup(tmp_path, change):
         daemon.IncidentLedger(tmp_path, 2 * 86400)
 
 
-def test_torn_incident_final_line_refuses_with_fixed_status(tmp_path):
-    ledger = daemon.IncidentLedger(tmp_path, 0)
-    ledger.append({"at": 0}, 0)
+TORN = b'{"event":{"SECRET":"10.0.0.8"'
+
+
+def torn_ledger(tmp_path, days=1, tail=TORN):
+    ledger = daemon.IncidentLedger(tmp_path, 0, monotonic=elapsed())
+    for day in range(days):
+        ledger.append({"at": day * 86400}, day * 86400)
+        ledger.append({"at": day * 86400 + 1}, day * 86400)
     with ledger.current.open("ab") as stream:
-        stream.write(b'{"SECRET":')
-    before = ledger.current.read_bytes()
-    server = daemon.IntakeServer(path=tmp_path / "in.sock", state=tmp_path,
-                                 status_path=tmp_path / "status.json", edge_uid=123,
-                                 clock=lambda: 0)
+        stream.write(tail)
+    return ledger
+
+
+def intake(tmp_path, now=0):
+    return daemon.IntakeServer(path=tmp_path / "in.sock", state=tmp_path,
+                               status_path=tmp_path / "status.json", edge_uid=123,
+                               clock=lambda: now)
+
+
+def quarantined(tmp_path):
+    directory = tmp_path / "incident-quarantine"
+    return sorted(p.name for p in directory.iterdir()) if directory.exists() else []
+
+
+def test_torn_tail_after_verified_chain_is_quarantined_cut_and_recorded(tmp_path):
+    ledger = torn_ledger(tmp_path)
+    segment = ledger.current
+    complete = segment.read_bytes()[:-len(TORN)]
+    head = ledger.head
+    server = intake(tmp_path)
+    server._open_storage()
+    # The complete prefix is untouched; the chain continues from its head.
+    data = segment.read_bytes()
+    assert data.startswith(complete) and b"SECRET" not in data
+    entries = list(AuditLedger(segment))
+    AuditLedger(segment).verify()
+    marker, reset = (entry.event for entry in entries[-2:])
+    assert entries[-2].previous_hash == head[1]
+    digest = daemon.hashlib.sha256(TORN).hexdigest()
+    assert marker == {"event_type": "edge.incident.ledger_recovered", "at": 0,
+                      "segment": segment.name, "offset": len(complete),
+                      "torn_bytes": len(TORN), "sha256": digest}
+    assert reset["event_type"] == "edge.incident.reset"
+    assert read_control(marker)
+    # The bytes are kept, owner-only, outside the incident leaf.
+    directory = tmp_path / "incident-quarantine"
+    name = f"{segment.name}.{len(complete)}.{digest}.torn"
+    assert quarantined(tmp_path) == [name]
+    assert (directory / name).read_bytes() == TORN
+    assert (directory / name).stat().st_mode & 0o777 == 0o600
+    assert directory.stat().st_mode & 0o777 == 0o700
+    assert not any(p.name.startswith(".torn-") for p in directory.iterdir())
+    server._status()
+    status = read_intake_status(server.status_path.read_bytes())
+    assert status["ledger_recovered"] == 1 and not status["storage_failed"]
+    assert "SECRET" not in server.status_path.read_text()
+    # A restart verifies the recovered chain and records nothing new.
+    restarted = intake(tmp_path)
+    restarted._open_storage()
+    assert restarted.ledger_recovered == 1
+    kinds = [e.event.get("event_type") for e in AuditLedger(segment)]
+    assert kinds.count("edge.incident.ledger_recovered") == 1
+
+
+def test_torn_tail_recovery_lets_serve_start():
+    # A short root: the socket path must fit a unix socket address.
+    with tempfile.TemporaryDirectory(prefix="i1-", dir="/tmp") as directory:
+        root = Path(directory)
+        torn_ledger(root)
+        server = intake(root)
+        stop, ready = threading.Event(), threading.Event()
+        result = []
+        thread = threading.Thread(target=lambda: result.append(
+            server.serve(stop=stop.is_set, ready=ready.set)))
+        thread.start()
+        try:
+            assert ready.wait(3)
+        finally:
+            stop.set()
+            thread.join(4)
+        assert result == [0]
+        status = read_intake_status(server.status_path.read_bytes())
+    assert status["ledger_recovered"] == 1
+    assert "incident_ledger_torn" not in status["refused"]
+
+
+def test_record_only_torn_segment_is_cut_to_empty(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0, monotonic=elapsed())
+    ledger.append({"at": 0}, 0)
+    head = ledger.head
+    today = ledger.path_at(86400)
+    today.write_bytes(TORN)
+    restarted = daemon.IncidentLedger(tmp_path, 86400, quarantine=tmp_path / "q")
+    entries = list(AuditLedger(today))
+    assert entries[0].previous_hash == head[1] and entries[0].sequence == head[0] + 1
+    assert entries[0].event["offset"] == 0
+    assert restarted.recovered == 1
+
+
+def refused(tmp_path, server=None):
+    server = server or intake(tmp_path)
     ready = []
     assert server.serve(ready=lambda: ready.append(True)) == 1
     assert not ready and not server.path.exists()
@@ -661,7 +754,146 @@ def test_torn_incident_final_line_refuses_with_fixed_status(tmp_path):
     assert status["refused"]["incident_ledger_torn"] == 1
     assert status["storage_failed"]
     assert "SECRET" not in server.status_path.read_text()
+    return status
+
+
+@pytest.mark.parametrize("damage", ["middle_line", "relinked", "oversize", "older_segment",
+                                    "cross_segment_link", "not_utf8"])
+def test_torn_tail_is_refused_unless_it_follows_a_verified_chain(tmp_path, damage):
+    tail = TORN
+    if damage == "oversize":
+        tail = b"x" * (daemon.TORN_TAIL_MAX + 1)
+    ledger = torn_ledger(tmp_path, days=2, tail=tail)
+    newest = ledger.current
+    oldest = ledger.path_at(0)
+    lines = newest.read_bytes().split(b"\n")
+    if damage == "middle_line":
+        lines[0] = lines[0].replace(b'"at":86400', b'"at":86401')
+        newest.write_bytes(b"\n".join(lines))
+    elif damage == "relinked":
+        value = json.loads(lines[1])
+        value["previous_hash"] = "0" * 64
+        lines[1] = json.dumps(value).encode()
+        newest.write_bytes(b"\n".join(lines))
+    elif damage == "older_segment":
+        newest.write_bytes(newest.read_bytes()[:-len(TORN)])
+        with oldest.open("ab") as stream:
+            stream.write(TORN)
+    elif damage == "cross_segment_link":
+        # Both segments chain, but the newest not onto the older one's head.
+        oldest.write_bytes(oldest.read_bytes().split(b"\n")[0] + b"\n")
+    elif damage == "not_utf8":
+        lines[0] = lines[0][:-1] + b"\xff}"
+        newest.write_bytes(b"\n".join(lines))
+    before = {path: path.read_bytes() for path in (oldest, newest)}
+    refused(tmp_path, intake(tmp_path, 86400))
+    assert {path: path.read_bytes() for path in (oldest, newest)} == before
+    assert quarantined(tmp_path) == []
+
+
+def test_torn_tail_without_quarantine_is_refused_as_before(tmp_path):
+    ledger = torn_ledger(tmp_path)
+    before = ledger.current.read_bytes()
+    with pytest.raises(daemon.IncidentLedgerTorn):
+        daemon.IncidentLedger(tmp_path, 0)
     assert ledger.current.read_bytes() == before
+
+
+def test_quarantine_is_bounded(tmp_path, monkeypatch):
+    ledger = torn_ledger(tmp_path)
+    before = ledger.current.read_bytes()
+    monkeypatch.setattr(daemon, "QUARANTINE_MAX", 0)
+    refused(tmp_path)
+    assert ledger.current.read_bytes() == before and quarantined(tmp_path) == []
+
+
+def test_same_bytes_torn_again_at_a_recovered_place_are_refused(tmp_path):
+    ledger = torn_ledger(tmp_path)
+    original = ledger.current.read_bytes()
+    intake(tmp_path)._open_storage()
+    ledger.current.write_bytes(original)
+    refused(tmp_path)
+    assert ledger.current.read_bytes() == original
+
+
+def crash(monkeypatch, name, when=lambda *args: True):
+    original = getattr(daemon.os, name)
+
+    def failing(*args):
+        if when(*args):
+            raise OSError("power cut")
+        return original(*args)
+    monkeypatch.setattr(daemon.os, name, failing)
+
+
+@pytest.mark.parametrize("step", ["quarantine_write", "before_truncate", "before_record",
+                                  "before_done"])
+def test_power_cut_during_recovery_is_redone_once(tmp_path, monkeypatch, step):
+    ledger = torn_ledger(tmp_path)
+    segment = ledger.current
+    original = segment.read_bytes()
+    complete = original[:-len(TORN)]
+    with monkeypatch.context() as patch:
+        if step == "quarantine_write":
+            crash(patch, "rename", lambda source, target: str(target).endswith(".pending"))
+        elif step == "before_truncate":
+            crash(patch, "ftruncate")
+        elif step == "before_record":
+            patch.setattr(daemon.IncidentLedger, "_record_recoveries",
+                          lambda *_: (_ for _ in ()).throw(OSError("power cut")))
+        else:
+            crash(patch, "rename", lambda source, target: str(target).endswith(".torn"))
+        assert intake(tmp_path).serve() == 1
+    held = quarantined(tmp_path)
+    if step == "quarantine_write":
+        assert held == [] and segment.read_bytes() == original
+    elif step == "before_truncate":
+        assert [n.rsplit(".", 1)[1] for n in held] == ["pending"]
+        assert segment.read_bytes() == original
+    elif step == "before_record":
+        assert segment.read_bytes() == complete
+    else:
+        assert [n.rsplit(".", 1)[1] for n in held] == ["pending"]
+        kinds = [e.event.get("event_type") for e in AuditLedger(segment)]
+        assert kinds.count("edge.incident.ledger_recovered") == 1
+    restarted = intake(tmp_path)
+    restarted._open_storage()
+    AuditLedger(segment).verify()
+    assert segment.read_bytes().startswith(complete)
+    kinds = [e.event.get("event_type") for e in AuditLedger(segment)]
+    assert kinds.count("edge.incident.ledger_recovered") == 1
+    assert [n.rsplit(".", 1)[1] for n in quarantined(tmp_path)] == ["torn"]
+    assert restarted.ledger_recovered == 1
+    assert (tmp_path / "incident-quarantine" / quarantined(tmp_path)[0]).read_bytes() == TORN
+
+
+def test_recovery_record_waits_for_room(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=4096, severe_reserve=0)
+    # Fill with records shorter than the recovery record until one is refused,
+    # so the recovery record cannot fit after the cut either.
+    with pytest.raises(daemon.SegmentFull):
+        while True:
+            ledger.append({"at": 0, "pad": "x" * 100}, 0)
+    with ledger.current.open("ab") as stream:
+        stream.write(b"x" * (4096 - ledger.current.stat().st_size))
+    restarted = daemon.IncidentLedger(tmp_path, 0, segment_bytes=4096, severe_reserve=0,
+                                      quarantine=tmp_path / "q")
+    # Cut, but the record does not fit today: it stays pending.
+    assert [p.suffix for p in (tmp_path / "q").iterdir()] == [".pending"]
+    assert restarted.recovered == 1
+    tomorrow = daemon.IncidentLedger(tmp_path, 86400, segment_bytes=4096, severe_reserve=0,
+                                     quarantine=tmp_path / "q", monotonic=elapsed())
+    assert [p.suffix for p in (tmp_path / "q").iterdir()] == [".torn"]
+    assert [e.event["event_type"] for e in AuditLedger(tomorrow.current)] == [
+        "edge.incident.ledger_recovered"]
+
+
+def test_stale_quarantine_temporary_is_removed(tmp_path):
+    directory = tmp_path / "q"
+    directory.mkdir()
+    (directory / ".torn-abc").write_bytes(b"partial")
+    ledger = daemon.IncidentLedger(tmp_path, 0, quarantine=directory)
+    assert list(directory.iterdir()) == [] and ledger.recovered == 0
 
 
 def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch):

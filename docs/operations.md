@@ -278,6 +278,10 @@ the oldest retained segment without operator reset. Outage replay drops `opened`
 transitions older than one hour (`stale_skipped`). A valid segment-full marker
 reports `incident_segment_full`; a torn final line reports
 `ledger_tail_incomplete` and waits for completion without advancing its cursor.
+When the intake instead cuts a tail torn by a power cut at its next start
+(`ledger_recovered` on the status intake line), the explainer reads on past
+the `edge.incident.ledger_recovered` record; see
+[the torn tail recovery](integration-loop.md).
 These counters describe missing context, not Edge control or enforcement.
 
 See [integration loop I1](integration-loop.md#i1--intake-detect--understand).

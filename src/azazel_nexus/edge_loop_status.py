@@ -64,6 +64,10 @@ def _render_edge_loop(out, now):
             at = value["last_processed_at"]
             age = "never" if at is None else f"{max(0, int(now-at))}s"
             print(f"        last processed age: {age}; processed: {value['processed']}; accepted: {value['accepted']}; storage_failed: {value['storage_failed']}", file=out)
+            if value["ledger_recovered"]:
+                # Each is a torn incident tail cut off at start and kept in
+                # the intake's private state; the ledger records the cut.
+                print(f"        ledger_recovered: {value['ledger_recovered']} (torn incident tail quarantined; see integration-loop.md)", file=out)
         else:
             print(f"        explained: {value['explained']}; chain_broken: {value['chain_broken']}; storage_failed: {value['storage_failed']}", file=out)
             if value["chain_broken"]:

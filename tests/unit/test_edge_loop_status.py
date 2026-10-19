@@ -225,6 +225,23 @@ def test_intake_line_shows_processed_and_never_hides_full_evidence(tmp_path, mon
     assert text.count("evidence_segment_full") == 1
 
 
+def test_intake_ledger_recovery_is_shown_only_when_it_happened(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    # A snapshot from an intake without the field still reads, as none.
+    assert "ledger_recovered" not in render()
+    assert "intake: running" in render()
+    intake["ledger_recovered"] = 0
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "ledger_recovered" not in render()
+    intake["ledger_recovered"] = 2
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "        ledger_recovered: 2 (torn incident tail quarantined;" in render()
+    for bad in (-1, True, "2"):
+        intake["ledger_recovered"] = bad
+        runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+        assert "intake: unavailable (snapshot absent or refused)" in render()
+
+
 def test_row_with_unstored_evidence_is_marked(tmp_path, monkeypatch):
     fixtures(tmp_path, monkeypatch)
     value = build_recent_incidents([build_recent_incident(transition(1, evidence_stored=False))], 0)

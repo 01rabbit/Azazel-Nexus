@@ -391,6 +391,39 @@ def test_control_records_are_validated_without_explanations(tmp_path):
     assert "SECRET" not in e.status_path.read_text()
 
 
+def test_explainer_continues_across_a_recovered_torn_tail(tmp_path):
+    from azazel_nexus_runtime.edge_intaked import IncidentLedger
+    e = make(tmp_path)
+    ledger = IncidentLedger(tmp_path, 0)
+    ledger.append(transition(), 0)
+    e.poll()
+    with ledger.current.open("ab") as stream:
+        stream.write(b'{"event":{"src_ip":"10.0.0.8"')
+    e.poll()
+    assert e.refused["ledger_tail_incomplete"] == 1
+    recovered = IncidentLedger(tmp_path, 0, quarantine=tmp_path / "private")
+    recovered.append(transition(incident_id="inc-2222222222222222"), 0)
+    e.poll()
+    assert len(records(e)) == 2
+    assert not e.chain_broken and not e.refused["transition_refused"]
+    assert e.cursor["last_hash"] == recovered.head[1]
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"content": "10.0.0.8"}, {"torn_bytes": 0}, {"torn_bytes": 64 * 1024 + 1},
+    {"segment": "../x"}, {"sha256": "A" * 64}, {"offset": -1}])
+def test_ledger_recovered_control_record_shape(change):
+    from azazel_nexus.incident_explain import read_control
+    value = {"event_type": "edge.incident.ledger_recovered", "at": 0,
+             "segment": "1970-01-01.jsonl", "offset": 10, "torn_bytes": 5,
+             "sha256": "a" * 64}
+    if not change:
+        assert read_control(value) is True
+        return
+    with pytest.raises(ValueError):
+        read_control({**value, **change})
+
+
 @pytest.mark.parametrize("missing_day", [0, 1])
 def test_missing_linked_segment_without_boundary_is_refused(tmp_path, missing_day):
     from azazel_nexus_runtime.edge_intaked import IncidentLedger
