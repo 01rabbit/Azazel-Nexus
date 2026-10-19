@@ -211,7 +211,8 @@ def run_bench(root, args):
         stream.write("\n")
     with text_path.open("x") as stream:
         stream.write(text)
-    print(text, end="")
+    # main() has already printed the banner; the saved summary keeps its own.
+    print(text.removeprefix(BANNER + "\n"), end="")
     return {**document, "saved_json": str(json_path), "saved_summary": str(text_path)}
 
 

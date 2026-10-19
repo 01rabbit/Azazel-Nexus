@@ -46,6 +46,23 @@ def test_states_and_no_model_verdict(frame, scores, state):
         assert 'trusted_checks' in reply['fields']
 
 
+def test_a_lone_split_class_is_not_shown_as_close(frame):
+    # The generic fallbacks are always listed; with no rival playbook a split
+    # state must not read as "candidates close".
+    frame['question'] = 'SSH host-1 T1110.003 のログを確認'
+    reply, _ = deliver(frame, (.8,))
+    assert reply['provenance']['state'] == 'split'
+    assert reply['fields']['state'].startswith('候補の類型は1件のみ（確定ではありません）')
+    assert '拮抗' not in reply['fields']['state']
+    p = books(frame)[0]
+    rivals = tuple(SimpleNamespace(id=f'book-{i}', title=p.title, status=p.status,
+                                   guidance=p.guidance, evidence=p.evidence) for i in range(2))
+    reply, _ = retrieval_pipeline(None, frame, rivals, end=time.monotonic() + 5,
+                                  similarities=(.8, .79), retrieval='embedding')
+    assert reply['fields']['state'].startswith('候補が拮抗')
+    assert read_delivered(reply)
+
+
 def test_gap_state_and_all_candidates(frame):
     p = books(frame)[0]
     candidates = tuple(SimpleNamespace(id=f'book-{i}', title=p.title, status=p.status,

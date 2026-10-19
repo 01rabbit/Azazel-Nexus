@@ -498,7 +498,7 @@ def test_bench_schema_refused_by_production_reserve():
     assert "unsupported versioned HIL record schema" in validate_record(document).reasons
 
 
-def test_bench_measures_and_saves_only_lab_outputs(tmp_path, monkeypatch):
+def test_bench_measures_and_saves_only_lab_outputs(tmp_path, monkeypatch, capsys):
     from argparse import Namespace
 
     from azazel_nexus_lab import bench
@@ -528,6 +528,10 @@ def test_bench_measures_and_saves_only_lab_outputs(tmp_path, monkeypatch):
         path = Path(result[key])
         assert path.is_relative_to(root / "bench")
         assert bench.LABEL in path.read_text() and "LAB" in path.read_text()
+    # main() prints the banner once; the printed summary must not repeat it,
+    # while the saved summary still starts with it.
+    assert artifacts.BANNER not in capsys.readouterr().out
+    assert Path(result["saved_summary"]).read_text().startswith(artifacts.BANNER)
     stored = json.loads(Path(result["saved_json"]).read_text())
     assert stored["not_hardware_evidence"] is True
 
