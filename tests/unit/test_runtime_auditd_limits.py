@@ -562,6 +562,9 @@ def test_the_serve_loop_ticks_and_filters_refusals(tmp_path, monkeypatch):
     from azazel_nexus_runtime import runtime_paths, serve
     monkeypatch.setattr(serve, "serve_forever", fake_serve)
     monkeypatch.setattr(runtime_paths, "ledger_dir", lambda: tmp_path)
+    # The explainer's listener needs its installed group and leaf (#213 O1).
+    monkeypatch.setattr(runtime_paths, "dedicated_listener",
+                        lambda name, registry: (tmp_path / f"{name}.sock", 0, registry))
     ticks = []
     monkeypatch.setattr(AuditService, "tick", lambda self: ticks.append(1))
     monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=EXPLAINER.uid))

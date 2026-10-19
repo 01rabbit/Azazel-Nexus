@@ -679,7 +679,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   connecting, exactly as for the operator socket. Only the explainer unit
   carries `azaudit-submit` (as `SupplementaryGroups`, never by enrolment),
   so no operator and no other daemon reaches this listener, and operators'
-  reach to `run/audit` is unchanged.
+  reach to `run/audit` is unchanged. A runtime upgraded without re-running
+  install.sh refuses to start auditd and entryd, naming the missing group or
+  leaf; see [the upgrade steps](operations.md#observe-only-edge-core-unit).
   An incident record's `occurred_at` names its daily segment and segments
   only move forward, so auditd refuses an `edge.incident.*` record more than
   ten minutes before or five seconds after its own clock, or dated after its

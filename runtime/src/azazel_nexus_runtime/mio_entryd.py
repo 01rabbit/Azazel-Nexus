@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import grp
 import pwd
 import sys
 import time
@@ -38,7 +37,7 @@ from .protocol import (
     Verb,
     VerbRegistry,
 )
-from .runtime_paths import socket_group, socket_path
+from .runtime_paths import dedicated_listener, socket_path
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
@@ -262,8 +261,7 @@ def main(
 
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
-        additional_sockets=((socket_path("mio-advise"),
-                             grp.getgrnam(socket_group("mio-advise")).gr_gid, ADVISE_REGISTRY),),
+        additional_sockets=(dedicated_listener("mio-advise", ADVISE_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=("azarbiter", "azexplain")),
         audit=service.router._record, handler=service.handle, stop=tick,
         ready=ready if ready is not None else runtime_ready_callback(),

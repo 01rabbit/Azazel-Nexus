@@ -99,6 +99,36 @@ def socket_group(name: str) -> str:
     return _SOCKET_GROUPS.get(name, "azazel-operator")
 
 
+def dedicated_listener(name: str, registry):
+    """`(path, gid, registry)` for a daemon's second, client-group listener.
+
+    The group and the leaf come from packaging/install.sh. A node whose
+    runtime was upgraded without re-running it has neither, and that is
+    reported as what it is -- before anything is bound or READY is sent --
+    rather than as a KeyError or a bind traceback.
+    """
+
+    import grp
+
+    from .principal import SocketMisconfigured
+
+    group = socket_group(name)
+    if name not in _SOCKET_GROUPS:
+        raise ValueError("socket name has no dedicated client group")
+    path = socket_path(name)
+    remedy = ("re-run packaging/install.sh, then `systemctl daemon-reload` and "
+              "restart azazel-auditd and azazel-mio-entryd")
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        raise SocketMisconfigured(
+            f"group {group} for the {name} listener does not exist; {remedy}") from None
+    if not path.parent.is_dir():
+        raise SocketMisconfigured(
+            f"socket leaf {path.parent} for the {name} listener does not exist; {remedy}")
+    return path, gid, registry
+
+
 def socket_path(name: str) -> Path:
     """Return the fixed daemon-owned leaf socket path under the root.
 

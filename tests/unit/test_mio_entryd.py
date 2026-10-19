@@ -175,6 +175,7 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     resolved = []
     monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
     monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: resolved.append(kw) or "policy")
+    runtime_paths.socket_path("mio-advise").parent.mkdir(parents=True)
     assert entry.main([], ready=lambda: None) == 0
     assert captured["path"] == runtime_paths.socket_path("mio-entry")
     # The explainer's advice-only listener, grouped azmio-advise (patched gid).

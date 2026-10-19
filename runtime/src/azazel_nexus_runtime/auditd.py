@@ -340,9 +340,12 @@ VERBS = (
 
 REGISTRY = VerbRegistry(VERBS)
 #: The explainer's own listener (`audit-submit`, group azaudit-submit): append
-#: only. Its client holds that group and not the operator group, so it reaches
-#: no other daemon socket; `handle` still admits only edge.incident.* from it.
-SUBMIT_REGISTRY = VerbRegistry(VERBS[:1])
+#: only, selected by name. Its client holds that group and not the operator
+#: group, so it reaches no other daemon socket; `handle` still admits only
+#: edge.incident.* from it. The verb's admission is unchanged (ROOT and
+#: SERVICE), so root -- which already reaches every socket -- gains nothing
+#: here; no operator reaches this leaf at all.
+SUBMIT_REGISTRY = VerbRegistry([verb for verb in VERBS if verb.name == "audit.append"])
 
 
 @dataclass(frozen=True)
@@ -888,10 +891,8 @@ def main(
     ready audit service; ``AuditService`` continues to refuse appends.
     """
 
-    import grp
-
     from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
-    from .runtime_paths import audit_sink, ledger_dir, socket_group, socket_path
+    from .runtime_paths import audit_sink, dedicated_listener, ledger_dir, socket_path
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
 
@@ -907,8 +908,7 @@ def main(
     return serve_forever(
         path=socket_path("audit"),
         registry=REGISTRY,
-        additional_sockets=((socket_path("audit-submit"),
-                             grp.getgrnam(socket_group("audit-submit")).gr_gid, SUBMIT_REGISTRY),),
+        additional_sockets=(dedicated_listener("audit-submit", SUBMIT_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=SERVICE_ACCOUNTS + ("azexplain",)),
         audit=summarized_refusals(audit_sink("audit")),
         handler=service.handle,
