@@ -322,6 +322,9 @@ def _publish_verified_approval_at(*, overlay_fd: int, masks_fd: int,
     The caller remains responsible for obtaining this approval from the
     verifier and proving freshness, admission, and the real systemd start fence.
     """
+    from azazel_nexus.lab_host import refuse_lab_host
+
+    refuse_lab_host(ApprovalRefused)
     if (type(approval) is not VerifiedBootstrapApproval
             or type(approval.context) is not BootstrapContext):
         raise ApprovalRefused("freshly verified bootstrap approval required")

@@ -108,7 +108,7 @@ class NoRemote:
         raise AssertionError("local-only E2E attempted remote inference")
 
 
-def compose(root: Path, record, observed):
+def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama"):
     """Compose the real A/B APIs using only trusted constructor injections."""
     from azazel_nexus_runtime.mio_entryd import MioEntryService
     from azazel_nexus_runtime.mio_locald import LocalRuntimeService
@@ -126,14 +126,14 @@ def compose(root: Path, record, observed):
         harness_version="e2e-fixture-not-HG-05", sample_count=64, duration_seconds=3600,
     )
 
-    def runtime(runtime_id):
-        assert runtime_id == RUNTIME_ID
+    def runtime(identity):
+        assert identity == runtime_id
         return record
 
     local = LocalRuntimeService(
         staging=root / "var/lib/azazel/mio", reserve=reserve,
-        admitted=lambda model_id: model_id == MODEL_ID,
-        runtime=runtime, server=observed, model_id=MODEL_ID, runtime_id=RUNTIME_ID,
+        admitted=lambda identity: identity == model_id,
+        runtime=runtime, server=observed, model_id=model_id, runtime_id=runtime_id,
     )
     router = MioRouter(local=local, remote=NoRemote())
     entry = MioEntryService(

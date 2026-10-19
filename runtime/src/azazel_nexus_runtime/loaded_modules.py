@@ -123,6 +123,10 @@ def _project_modules(registry, manifest, roots, main_path):
         raise ApprovalRefused("pinned controller wrapper required")
     if "etc/ld.so.preload" in selected or "etc/ld.so.preload" in links:
         raise ApprovalRefused("dynamic loader preload must remain absent")
+    if any(name == "azazel_nexus_lab" or name.startswith("azazel_nexus_lab.")
+           for name in registry):
+        raise ApprovalRefused("lab modules refused in daemon")
+
     files, absent, modules = set(), {"etc/ld.so.preload"}, []
     attribute_count = 0
     # One manifest validation per projection; never reused across projections.

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azazel-nexus-lab"
+version = "0.0.1.dev0"
+description = "Isolated VM demonstration, never hardware evidence or admission"
+requires-python = ">=3.11"
+dependencies = ["azazel-nexus", "azazel-nexus-runtime", "PyNaCl>=1.5"]
+
+[project.scripts]
+az-nexus-lab = "azazel_nexus_lab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+azazel_nexus_lab = ["data/*", "scenarios/*.json"]

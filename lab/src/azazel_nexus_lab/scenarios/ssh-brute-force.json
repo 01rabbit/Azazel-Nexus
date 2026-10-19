@@ -1,0 +1,16 @@
+{
+  "schema": "azazel-nexus-lab/scenario/1",
+  "lab": true,
+  "not_hardware_evidence": true,
+  "frame": {
+    "request_id": "lab-ssh-brute-force",
+    "privacy_class": "P0-public",
+    "question": "host=lab-ssh で SSH認証失敗が 60 秒に 120 回。確認の順序は？ / SSH brute force: which checks come first?",
+    "context": [
+      {
+        "kind": "observation",
+        "text": "host=lab-ssh source=192.0.2.10 account=demo; 120 failed SSH logins in 60 seconds."
+      }
+    ]
+  }
+}

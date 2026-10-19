@@ -78,6 +78,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="az-hil-capture", description=__doc__)
     parser.add_argument("gate", choices=("hg-01", "hg-04"))
     args = parser.parse_args(argv)
+    from azazel_nexus.lab_host import is_lab_host
+
+    if is_lab_host():
+        print("refused: LAB_HOST_MARKER", file=sys.stderr)
+        return 2
     try:
         observations = observe_virtualization()
         if not virtualization_not_observed(observations):

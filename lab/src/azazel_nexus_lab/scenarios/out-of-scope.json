@@ -1,0 +1,11 @@
+{
+  "schema": "azazel-nexus-lab/scenario/1",
+  "lab": true,
+  "not_hardware_evidence": true,
+  "frame": {
+    "request_id": "lab-out-of-scope",
+    "privacy_class": "P0-public",
+    "question": "明日の夕食の献立を考えて。 / Plan a dinner menu for tomorrow.",
+    "context": []
+  }
+}

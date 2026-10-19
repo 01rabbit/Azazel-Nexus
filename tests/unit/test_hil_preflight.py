@@ -463,7 +463,9 @@ def test_the_runbook_id_changes_with_the_generation():
 # -- what the module may not do -------------------------------------------
 
 
-ALLOWED_PACKAGE_IMPORTS = {"commissioning", "inventory", "resource_profile", "wizard"}
+# lab_host only reads the absolute refusal marker; it cannot grant admission,
+# activate a unit, write a measurement or import the separate lab distribution.
+ALLOWED_PACKAGE_IMPORTS = {"commissioning", "inventory", "resource_profile", "wizard", "lab_host"}
 
 
 def test_the_preflight_reaches_only_the_modules_it_reuses():

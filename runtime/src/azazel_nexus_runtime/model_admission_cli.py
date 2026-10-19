@@ -16,6 +16,9 @@ from .model_admission_evidence import read_admissions, request_context
 
 
 def run_request(*, stdin, stdout):
+    from azazel_nexus.lab_host import refuse_lab_host
+
+    refuse_lab_host(ApprovalRefused)
     raw = stdin.buffer.readline(65537) if hasattr(stdin, "buffer") else stdin.readline(65537).encode()
     if not raw.endswith(b"\n") or len(raw) > 65536:
         raise ApprovalRefused("MALFORMED")
@@ -65,6 +68,11 @@ def main(argv=None):
     verify = commands.add_parser("verify")
     verify.add_argument("--role", choices=("embedding",))
     args = parser.parse_args(argv)
+    from azazel_nexus.lab_host import is_lab_host
+
+    if is_lab_host():
+        print("refused: LAB_HOST_MARKER", file=sys.stderr)
+        return 2
     if os.geteuid() != 0:
         print("refused: ROOT_REQUIRED", file=sys.stderr)
         return 2

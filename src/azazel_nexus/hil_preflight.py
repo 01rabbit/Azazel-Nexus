@@ -799,6 +799,11 @@ def evaluate(
     disagree.
     """
 
+    from .lab_host import is_lab_host
+
+    if is_lab_host():
+        return PreflightResult(outcome=BLOCKED, missing=("LAB_HOST_MARKER",))
+
     commissionable = (
         len(proposal.commissionable)
         if proposal is not None

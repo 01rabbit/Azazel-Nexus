@@ -25,6 +25,11 @@ def run(operator: str, *, current_hardware: bool = False, addresses=None) -> int
     hardware check recollects the whole snapshot; it does not claim an atomic
     trusted-host state or current resource/capture/isolation readiness.
     """
+    from azazel_nexus.lab_host import is_lab_host
+
+    if is_lab_host():
+        print("refused: LAB_HOST_MARKER", file=sys.stderr)
+        return 2
     try:
         node = load_declared_node()
         trust = load_operator_trust()

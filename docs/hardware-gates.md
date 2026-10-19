@@ -334,3 +334,12 @@ fixed location on the target host, `az-edge-probed` run there against the real
 binary with a real D-Bus connection, and `azazel-nexus status` reading the
 result it wrote. Until that has happened on hardware, the software side is
 `software-complete, hardware-unverified` and nothing more.
+
+## Lab demonstration output
+
+[Lab demonstration](lab-demonstration.md) output never satisfies a hardware gate,
+model admission, acceptance, or production activation. VM output and
+`azazel-nexus-lab/` artifacts remain lab material regardless of signatures.
+The persistent `/etc/azazel-lab/LAB-HOST` marker narrows the host to refusals
+(`LAB_HOST_MARKER`) at HIL preflight/capture, Core reserve probing, model admission,
+commission, commission review, `model-import-fetched`, and bootstrap approval publication. Removing it grants nothing.

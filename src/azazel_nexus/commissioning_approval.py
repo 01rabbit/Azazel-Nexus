@@ -50,6 +50,9 @@ def verify_retained_commissioning_proposal(*, trust: OperatorTrust, payload: byt
     caller's responsibility. This is historical approval, not freshness or
     current-hardware/activation validation; no authorization token is returned.
     """
+    from .lab_host import refuse_lab_host
+
+    refuse_lab_host(ApprovalRefused)
     try:
         if (type(expected_payload) is not bytes
                 or not 0 < len(expected_payload) <= MAX_APPROVAL_BYTES):
