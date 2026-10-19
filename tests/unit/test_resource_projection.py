@@ -97,7 +97,12 @@ def test_input_observations_are_not_modified(inputs):
     assert inputs["observation"] == before
 
 
-@pytest.mark.parametrize("fabric", [None, SimpleNamespace(__version__="0.9.0rc5")])
+# A version that is never the pin: derived from it, so a pin bump cannot turn
+# the "wrong pin" case into the right one (it did once, rc5).
+WRONG_PIN = boundary.FABRIC_PIN.lstrip("v") + ".post-wrong"
+
+
+@pytest.mark.parametrize("fabric", [None, SimpleNamespace(__version__=WRONG_PIN)])
 def test_missing_or_wrong_fabric_pin_refused(inputs, monkeypatch, fabric):
     monkeypatch.setattr(boundary, "_import_fabric", lambda: (fabric, "missing or wrong pin"))
     with pytest.raises(boundary.CommissioningRecordUnavailable):
