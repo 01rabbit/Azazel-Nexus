@@ -13,6 +13,10 @@ from .node_config import _decode as declared_node_bytes
 
 _PROFILES = {"CORE": MioProfile.CORE, "LITE": MioProfile.LOCAL_ONLY,
              "FULL": MioProfile.FASTEST_PERMITTED}
+# The unit's SetCredential fallback when node.yaml or operators.json is
+# missing. systemd drops an empty `SetCredential=ID:` as invalid syntax, so the
+# fallback must be a non-empty value, and it means "no source": CORE.
+MISSING_CREDENTIAL = b"absent"
 _cache_key = None
 _cache_result = MioProfile.CORE
 _cache_lock = Lock()
@@ -39,6 +43,8 @@ def commissioned_profile() -> MioProfile:
             # Do not let an unexpected verification failure reuse old success.
             _cache_key, _cache_result = key, MioProfile.CORE
             expected, payload, signature, trust_raw, node_raw = inputs
+            if MISSING_CREDENTIAL in (trust_raw, node_raw):
+                return MioProfile.CORE
             node = declared_node_bytes(node_raw)
             trust = operator_trust_bytes(trust_raw)
             document = json.loads(expected)
