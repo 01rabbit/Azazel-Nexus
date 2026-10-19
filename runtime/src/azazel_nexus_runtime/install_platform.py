@@ -349,8 +349,14 @@ def build_install_plan(
     if enabled != ("azazel-activated.service",):
         raise ValueError("install plan must enable only the activation controller")
 
+    # Nexus stages Python wrappers; the separately verified Edge package owns its binary.
+    for service in PROFILES:
+        if (service.unit == "azazel-edge-core.service"
+                and service.executable != "/opt/azazel/edge-core/bin/azazel-edge-core"):
+            raise ValueError("Edge Core must use its fixed package executable")
     declared_exec_directories = {
         str(PurePosixPath(service.executable).parent) for service in PROFILES
+        if service.unit != "azazel-edge-core.service"
     }
     if declared_exec_directories != {profile.libexec_directory}:
         raise ValueError(

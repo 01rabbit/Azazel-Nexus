@@ -134,4 +134,4 @@ def test_the_fabric_pin_is_untouched_by_the_baseline():
 
     flat = _flat(DOCS / "adr" / "0002-debian-13-baseline.md")
     assert "The Fabric pin does not move" in flat
-    assert "v0.9.0rc2" in (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert "v0.9.0rc5" in (REPO / "pyproject.toml").read_text(encoding="utf-8")

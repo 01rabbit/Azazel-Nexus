@@ -486,7 +486,9 @@ def test_only_bootstrap_lifetime_units_clear_launcher_environment():
         else:
             assert "SetLoginEnvironment" not in extras
             assert "UnsetEnvironment" not in extras
-        assert not {"Environment", "EnvironmentFile", "DefaultDependencies"} & extras.keys()
+        assert not {"EnvironmentFile", "DefaultDependencies"} & extras.keys()
+        if profile.unit != "azazel-edge-core.service":
+            assert "Environment" not in extras
 
     authority = {
         profile.unit: (profile.account, profile.address_families)
@@ -723,3 +725,54 @@ def test_no_packaged_unit_has_an_empty_set_credential():
             if line.startswith("SetCredential="):
                 ident, _, value = line.partition("=")[2].partition(":")
                 assert ident and value.strip(), f"{unit.name}: {line!r}"
+
+
+def test_edge_core_posture_matches_the_packaged_health_contract():
+    """Health and daemon startup must describe the same observe-only posture."""
+    import json
+
+    from azazel_nexus.edge_package import EDGE_PACKAGE_ROOT, EDGE_UNIT, HEALTH_ARGV
+    from azazel_nexus.activation import UnitTier
+    from azazel_nexus_runtime.units import UnitKey, UNIT_NAMES
+
+    settings = _settings(EDGE_UNIT)
+    environment = dict(value.split("=", 1) for value in settings["Environment"])
+    schema = json.loads(
+        (REPO_ROOT / "contract/azazel-edge-core/manifest-schema.json").read_text()
+    )
+    prefix = "startup.observe_only_env."
+    posture_keys = {key.removeprefix(prefix) for key in schema["keys"]
+                    if key.startswith(prefix)}
+    posture = {
+        "AZAZEL_DEFENSE_ENFORCE": "false",
+        "AZAZEL_DEFENSE_DRY_RUN": "true",
+        "AZAZEL_DEFENSE_ENFORCE_LEVEL": "advisory",
+        "AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO": "false",
+    }
+    assert posture_keys == posture.keys()
+    assert {key: value for key, value in environment.items()
+            if key.startswith("AZAZEL_DEFENSE_") and key != "AZAZEL_DEFENSE_RELEASE_LEDGER"} == posture
+    assert settings["ExecStart"] == [str(EDGE_PACKAGE_ROOT / HEALTH_ARGV[0])]
+    assert settings["ExecStart"] == ["/opt/azazel/edge-core/bin/azazel-edge-core"]
+    assert environment["AZAZEL_FORWARD_AI"] == "true"
+    assert environment["AZAZEL_AI_SOCKET"] == "/run/azazel/edge-intake/edge.sock"
+    assert environment["AZAZEL_FORWARD_LOG"] == "true"
+    assert environment["AZAZEL_NORMALIZED_EVENT_LOG"] == "/var/lib/azazel/edge-core/normalized-events.jsonl"
+    assert environment["AZAZEL_DEFENSE_RELEASE_LEDGER"] == "/var/lib/azazel/edge-core/release-ledger.json"
+    assert environment["AZAZEL_REDIRECT_POLICY_PATH"] == str(EDGE_PACKAGE_ROOT / "config/redirect_policy.yaml")
+    assert environment["AZAZEL_EVE_PATH"] == "/var/log/suricata/eve.json"
+    assert settings["ReadOnlyPaths"] == ["/var/log/suricata"]
+    assert settings["ReadWritePaths"] == ["/var/lib/azazel/edge-core"]
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert settings["CapabilityBoundingSet"] == [""]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["IPAddressDeny"] == ["any"]
+    assert settings["User"] == ["azedge"]
+    assert "SupplementaryGroups" not in settings
+    assert "AZAZEL_DEFENSE_ENFORCE=true" not in _unit(EDGE_UNIT)
+    assert "EnvironmentFile" not in settings
+    spec = next(spec for spec in LAYOUT if spec.path == "/var/lib/azazel/edge-core")
+    assert (spec.owner, spec.mode) == ("azedge", 0o700)
+    definition = next(definition for definition in CORE_UNITS if definition.name == EDGE_UNIT)
+    assert definition.tier is UnitTier.EDGE_BASELINE
+    assert UNIT_NAMES[UnitKey.EDGE_CORE] == EDGE_UNIT

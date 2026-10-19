@@ -990,7 +990,7 @@ unknown-architecture correction.
 ### Fabric resource projection (2026-10-13)
 
 `fabric_boundary.project_resource_profile()` now maps the runtime resource
-observation to the pinned Fabric `ResourceProfile` (v0.9.0rc2). It requires an
+observation to the pinned Fabric `ResourceProfile` (v0.9.0rc5). It requires an
 actual Fabric `HardwareInventory`, revalidates the complete model and verifies
 its content digest with Fabric's helper. The interface-only composite digest
 is explicitly not accepted as the full hardware snapshot digest. This is

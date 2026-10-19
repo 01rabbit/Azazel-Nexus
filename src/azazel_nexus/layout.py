@@ -108,6 +108,12 @@ LAYOUT = (
     ),
     PathSpec("/var/lib/azazel", 0o711, "small mutable state; private traversal only"),
     PathSpec(
+        "/var/lib/azazel/edge-core",
+        0o700,
+        "private Edge event log and release ledger; no imported enforcement state",
+        owner="azedge",
+    ),
+    PathSpec(
         "/var/lib/azazel/run",
         0o711,
         "socket traversal only; daemon-specific leaves enforce socket access",

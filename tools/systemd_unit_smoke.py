@@ -67,7 +67,7 @@ def compare_properties(properties, observed, syscall_groups=None, evidence=None)
 REAL_DIRECTORIES = tuple(map(Path, (
     "/var/lib/azazel/state/mio", "/var/lib/azazel/state/knowledge",
     "/var/lib/azazel/run", "/var/lib/azazel/knowledge",
-    "/var/lib/azazel/lite-trust", "/run/azazel",
+    "/var/lib/azazel/lite-trust", "/var/lib/azazel/edge-core", "/run/azazel",
     "/data/azazel/mission-packs", "/etc/azazel/mission-pack.json",
 )))
 HASH_LIMIT = 8 * 1024 * 1024
@@ -186,7 +186,7 @@ def smoke(name: str) -> dict:
     private_runtime = Path("/run") / transient.removesuffix(".service")
     if private_runtime.exists():
         raise ValueError("private runtime directory already present")
-    real_units = tuple(unit + ".service" for unit in (*UNITS, "azazel-activated"))
+    real_units = tuple(unit + ".service" for unit in (*UNITS, "azazel-activated", "azazel-edge-core"))
     before = {unit: show(unit, ("ActiveState",)).get("ActiveState") for unit in real_units}
     require_strict(properties)
     snapshot_before = snapshot_directories()

@@ -4,7 +4,7 @@ Status: **target contract**. This document states where each record used by
 Azazel-Nexus is defined. It does not assert that Nexus implements any of them.
 It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a
 deliberately empty required-dependency list, a unit suite, and an exact
-**Azazel-Fabric pin as an optional extra** (`v0.9.0rc2`, ADR-0001), consumed
+**Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`, ADR-0001), consumed
 through one boundary module. One mapping is attested by that boundary —
 capability/mode publication; every other contract mapping remains a design
 assertion awaiting a conformance attestation, not verified evidence.
@@ -44,6 +44,10 @@ A record is therefore classified exactly one of:
   or a provisioning pin for it before Fabric releases it.
 - **Nexus-local** — a product-local record that never crosses a product
   boundary as a contract.
+
+The rc3/rc4 fixes to `effect_contracts` references and authority classes are
+already relied on by Edge and Deception; rc2 → rc5 changes only
+`effect_contracts`, which Nexus does not import yet.
 
 ## 2. Observed Fabric state
 
@@ -267,7 +271,7 @@ subsequent bootstrap work rather than as satisfied requirements:
 **Closed since this section was written.** The package layout, `pyproject.toml`
 and dependency manifest arrived with the Knowledge Lite consumer (#18), and the
 repository runs a unit suite rather than the documentation link check alone.
-The **Fabric pin** is now bound: `v0.9.0rc2` as the optional `fabric` extra,
+The **Fabric pin** is now bound: `v0.9.0rc5` as the optional `fabric` extra,
 consumed through one boundary module ([ADR-0001](adr/0001-fabric-pin.md)).
 
 One §3.1 row is attested by that boundary — capability/mode publication through

@@ -241,7 +241,7 @@ def test_installer_resolves_a_reviewed_os_profile_before_writing():
     assert "no reviewed install profile" in text
 
 
-def test_every_unit_names_an_executable_the_installer_checks_for():
+def test_every_nexus_unit_names_an_executable_the_installer_checks_for():
     # `az-[a-z]+` stopped at the first dash and read `az-edge-probed` as
     # `az-edge`, so the unit that most needed checking was the one the
     # assertion could not see.
@@ -250,6 +250,10 @@ def test_every_unit_names_an_executable_the_installer_checks_for():
         text = (UNIT_DIR / name).read_text(encoding="utf-8")
         exec_start = re.search(r"^ExecStart=(\S+)", text, re.M)
         assert exec_start, f"{name} has no ExecStart"
+        if name == "azazel-edge-core.service":
+            # Edge is installed separately and verified before baseline admission.
+            assert exec_start.group(1) == "/opt/azazel/edge-core/bin/azazel-edge-core"
+            continue
         binary = Path(exec_start.group(1)).name
         assert binary in checked, (
             f"{name} execs {binary}, which the installer's preflight does not "

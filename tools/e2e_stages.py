@@ -224,7 +224,7 @@ def _activation(harness: Harness) -> str:
     from azazel_nexus_runtime.activated import ActivationDaemon
     from azazel_nexus_runtime.units import UNIT_NAMES, RecordingUnitManager
 
-    from azazel_nexus.activation import CORE_UNITS, ActivationLease
+    from azazel_nexus.activation import CORE_UNITS, ActivationLease, UnitTier
     from azazel_nexus.audit import AuditLedger
 
     manager = RecordingUnitManager(UNIT_NAMES.values())
@@ -250,7 +250,8 @@ def _activation(harness: Harness) -> str:
     # would enable a unit that starts and
     # exits at the next boot. Checked as two statements rather than one count,
     # so that a pass which granted the wrong set cannot satisfy it.
-    expected = {d.name for d in CORE_UNITS if d.wiring is None}
+    expected = {d.name for d in CORE_UNITS
+                if d.wiring is None and d.tier is UnitTier.SUPPORTING}
     if set(outcome.granted) != expected:
         raise RuntimeError(
             f"granted {sorted(outcome.granted)}, expected {sorted(expected)}"
@@ -267,6 +268,9 @@ def _activation(harness: Harness) -> str:
                 f"{verdict.unit} was withheld for {verdict.reason!r}, not for "
                 "having nothing to serve"
             )
+    edge_verdict = next(v for v in outcome.verdicts if v.unit == "azazel-edge-core.service")
+    if edge_verdict.granted or not edge_verdict.reason.startswith("edge_unknown"):
+        raise RuntimeError("Edge Core must be withheld without baseline evidence")
     if outcome.edge_baseline_ready:
         raise RuntimeError(
             "edge-baseline-ready was claimed with no Edge Core established"
@@ -1008,7 +1012,7 @@ def _core_reserve_path(harness: Harness) -> str:
         os_abi="debian-13/linux-6.12",
         architecture=ADMITTED_ARCHITECTURE,
         cpu_features=frozenset({"avx2"}),
-        fabric_version="v0.9.0rc2",
+        fabric_version="v0.9.0rc5",
         fabric_features=frozenset(),
         schema_features=frozenset(),
         profile=ResourceProfile.LITE,
@@ -1025,7 +1029,7 @@ def _core_reserve_path(harness: Harness) -> str:
                 toolchain_digest=digest,
                 os_abi="debian-13/linux-6.12",
                 architecture=ADMITTED_ARCHITECTURE,
-                fabric_version="v0.9.0rc2",
+                fabric_version="v0.9.0rc5",
                 profile=ResourceProfile.LITE,
                 overlay_schema="3",
                 security_epoch=4,

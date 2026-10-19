@@ -60,6 +60,11 @@ def declared_daemons(root: Path = ROOT) -> dict[str, str]:
                 raise ValueError(
                     f"unit must declare one fixed absolute executable: {unit.name}"
                 )
+            if unit.name == "azazel-edge-core.service":
+                # Edge supplies this binary; Nexus must never generate a wrapper for it.
+                if line != "ExecStart=/opt/azazel/edge-core/bin/azazel-edge-core":
+                    raise ValueError("Edge Core must use its fixed package executable")
+                continue
             executable_paths.add(fields[0])
     if not executable_paths:
         raise ValueError("no packaged systemd runtime entrypoints were found")

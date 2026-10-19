@@ -89,6 +89,8 @@ def test_every_shipped_unit_is_one_the_runtime_provides():
         path.stem for path in sorted((REPO / "packaging" / "systemd").glob("*.service"))
     }
     entry_points = (REPO / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
+    assert "azazel-edge-core" in shipped
+    shipped.remove("azazel-edge-core")  # The verified Edge package supplies its binary.
     for unit in sorted(shipped):
         script = unit.replace("azazel-", "az-")
         assert f"{script} =" in entry_points, f"{unit} has no entry point"

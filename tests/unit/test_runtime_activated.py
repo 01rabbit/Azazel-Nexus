@@ -58,9 +58,7 @@ NOW = "2026-09-20T12:00:00Z"
 ACTOR = "operator@console"
 DIGEST = "sha256:" + "0" * 64
 
-EDGE_UNIT = UnitDefinition(
-    "azazel-edge-core.service", UnitTier.EDGE_BASELINE, "root", "the local Edge Core"
-)
+EDGE_UNIT = next(d for d in CORE_UNITS if d.tier is UnitTier.EDGE_BASELINE)
 ENFORCING = UnitDefinition(
     "azazel-enforced.service", UnitTier.ENFORCEMENT, "azenforce", "applies one intent"
 )
@@ -125,7 +123,8 @@ def test_supporting_units_run_before_anything_else_is_established(tmp_path):
     daemon, manager = _daemon(tmp_path)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert set(outcome.granted) == {
-        d.name for d in CORE_UNITS if d.wiring is None
+        d.name for d in CORE_UNITS
+        if d.wiring is None and d.tier is UnitTier.SUPPORTING
     }
 
 
@@ -151,14 +150,15 @@ def test_an_empty_edge_tier_is_not_vacuously_ready(tmp_path):
     unknown never grants.
     """
 
-    daemon, _ = _daemon(tmp_path)
+    supporting = tuple(d for d in CORE_UNITS if d.tier is UnitTier.SUPPORTING)
+    daemon, _ = _daemon(tmp_path, supporting)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=None)
-    assert not any(d.tier is UnitTier.EDGE_BASELINE for d in CORE_UNITS)
+    assert not any(d.tier is UnitTier.EDGE_BASELINE for d in supporting)
     assert outcome.edge_baseline_ready is False
 
 
 def test_an_edge_unit_is_withheld_while_nothing_is_known_about_edge(tmp_path):
-    daemon, _ = _daemon(tmp_path, CORE_UNITS + (EDGE_UNIT,))
+    daemon, _ = _daemon(tmp_path, CORE_UNITS)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=None)
     verdict = next(v for v in outcome.verdicts if v.unit == EDGE_UNIT.name)
     assert not verdict.granted
@@ -171,7 +171,7 @@ def test_an_edge_that_is_present_but_mismatched_names_which_check_failed(tmp_pat
     The second is a security finding, and an operator acts on it differently.
     """
 
-    daemon, _ = _daemon(tmp_path, CORE_UNITS + (EDGE_UNIT,))
+    daemon, _ = _daemon(tmp_path, CORE_UNITS)
     edge = EdgeBaselineState(
         package_present=True,
         version_matches=True,
@@ -198,7 +198,7 @@ def test_edge_baseline_ready_needs_all_five_checks(tmp_path):
 def test_an_enforcement_unit_needs_commissioning_that_edge_readiness_does_not(tmp_path):
     """A ready Edge does not make the node enforcement-ready."""
 
-    daemon, _ = _daemon(tmp_path, CORE_UNITS + (EDGE_UNIT, ENFORCING))
+    daemon, _ = _daemon(tmp_path, CORE_UNITS + (ENFORCING,))
     outcome = daemon.activate(
         now=NOW, actor=ACTOR, lease=_lease(), edge=_ready_edge(), record=_record()
     )

@@ -271,6 +271,7 @@ SYSTEM_ACCOUNTS = (
     "azaudit",
     "azwatch",
     "azprobe",
+    "azedge",
     "azfetch",
     "azmio",
     "azmioentry",
@@ -565,6 +566,37 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Can mask and cannot unmask. Masking a unit it does not own is "
             "brokered by the activation controller's socket, so it needs no "
             "privilege of its own."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-edge-core.service",
+        executable="/opt/azazel/edge-core/bin/azazel-edge-core",
+        account="azedge",
+        description="Azazel-Nexus observe-only Edge Core",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/edge-package-verification.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=("/var/lib/azazel/edge-core",),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        unit_type="exec",
+        extra=(
+            ("ReadOnlyPaths", "/var/log/suricata"),
+            ("Environment", "AZAZEL_DEFENSE_ENFORCE=false"),
+            ("Environment", "AZAZEL_DEFENSE_DRY_RUN=true"),
+            ("Environment", "AZAZEL_DEFENSE_ENFORCE_LEVEL=advisory"),
+            ("Environment", "AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO=false"),
+            ("Environment", "AZAZEL_FORWARD_AI=true"),
+            ("Environment", "AZAZEL_AI_SOCKET=/run/azazel/edge-intake/edge.sock"),
+            ("Environment", "AZAZEL_FORWARD_LOG=true"),
+            ("Environment", "AZAZEL_NORMALIZED_EVENT_LOG=/var/lib/azazel/edge-core/normalized-events.jsonl"),
+            ("Environment", "AZAZEL_REDIRECT_POLICY_PATH=/opt/azazel/edge-core/config/redirect_policy.yaml"),
+            ("Environment", "AZAZEL_DEFENSE_RELEASE_LEDGER=/var/lib/azazel/edge-core/release-ledger.json"),
+            ("Environment", "AZAZEL_EVE_PATH=/var/log/suricata/eve.json"),
+        ),
+        rationale=(
+            "The verified package path is fixed; no manifest supplies a command. "
+            "Observe-only detection needs no capabilities or internet sockets. "
+            "Only its private state leaf is writable; Suricata access is read-only."
         ),
     ),
     ServiceProfile(

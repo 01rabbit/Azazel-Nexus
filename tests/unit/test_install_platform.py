@@ -231,3 +231,16 @@ def test_installer_field_resolver_emits_plan_derived_current_paths(tmp_path):
     assert "useradd" not in resolve_profile_field(
         field="required_tools", os_release_path=os_release, with_accounts=False
     ).splitlines()
+
+
+def test_install_plan_refuses_a_moved_edge_package_executable(monkeypatch):
+    from azazel_nexus_runtime import install_platform
+
+    monkeypatch.setattr(install_platform, "PROFILES", tuple(
+        replace(service, executable="/tmp/azazel-edge-core")
+        if service.unit == "azazel-edge-core.service" else service
+        for service in PROFILES
+    ))
+    with pytest.raises(ValueError, match="fixed package executable"):
+        build_install_plan(CURRENT_INSTALL_PLATFORM_PROFILES[0],
+                           preset_declarations=parse_preset_declarations(PRESET_TEXT))

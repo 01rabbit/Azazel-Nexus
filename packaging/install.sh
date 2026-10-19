@@ -191,7 +191,7 @@ done
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azfetch azmio azmioentry azremote azknowledge; do
+    for account in azcommission azaudit azwatch azprobe azedge azfetch azmio azmioentry azremote azknowledge; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
         fi
@@ -236,6 +236,7 @@ make_dir 0755 root /etc/azazel/systemd
 # Common parents allow traversal only. Operators get to each socket by group;
 # daemon accounts write only their own service-owned leaf directory.
 make_dir 0711 root /var/lib/azazel
+make_owned_dir 0700 azedge root /var/lib/azazel/edge-core
 make_dir 0711 root /var/lib/azazel/run
 # Linux setgid-directory semantics make each service's socket inherit the
 # operator GID while retaining the daemon's primary GID for SO_PEERCRED. The
@@ -296,6 +297,7 @@ install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-commissiond.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-auditd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-watchdog.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-edge-core.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-probed.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-locald.service "$UNIT_DIR"
@@ -321,6 +323,7 @@ systemctl daemon-reload
 systemctl mask azazel-commissiond.service
 systemctl mask azazel-auditd.service
 systemctl mask azazel-watchdog.service
+systemctl mask azazel-edge-core.service
 systemctl mask azazel-edge-probed.service
 systemctl mask azazel-model-fetchd.service
 systemctl mask azazel-mio-locald.service

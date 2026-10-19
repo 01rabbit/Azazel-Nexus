@@ -13,8 +13,8 @@ wheels = [
 
 [[package]]
 name = "azazel-fabric"
-version = "0.9.0rc2"
-source = { git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.9.0rc2#59a546acc3f0cbec8b9510e8bc57f937ec7205f0" }
+version = "0.9.0rc5"
+source = { git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.9.0rc5#450d9502884ba533653210056a6fb85012b96b84" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -35,7 +35,7 @@ fabric = [
 
 [package.metadata]
 requires-dist = [
-    { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.9.0rc2" },
+    { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.9.0rc5" },
     { name = "pynacl", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
