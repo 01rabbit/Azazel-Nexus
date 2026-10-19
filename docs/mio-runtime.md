@@ -351,17 +351,21 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   today's segment survives any total-size pressure.
 - **Per-caller shares.** Each day's segment is divided into budgets that no
   other caller can spend: 28 MiB for the explainer (`azexplain`; its six
-  advice requests a minute write about 20 MB a day), 4 MiB for each other
-  kernel-reported UID (operators, `azarbiter`, root) within a 16 MiB pool for
-  all of them together, and a 2 MiB control reserve for start and capability
-  records. A request is admitted only with 64 KiB left in its caller's share;
+  advice requests a minute write about 20 MB a day), 4 MiB for the arbiter
+  (`azarbiter`), 4 MiB for each other kernel-reported UID (operators, root)
+  within a 12 MiB pool for all of them together, and a 2 MiB control reserve
+  for start and capability records. The arbiter's share is outside the pool,
+  so operators that spend the whole pool cannot refuse the arbiter's
+  `mio.route` (#227). A request is admitted only with 64 KiB left in its caller's share;
   otherwise it is refused with `rate_limited` (detail `route_budget`) until
   the next UTC day. A flooding caller therefore exhausts only its own share:
   at the 30-a-minute rate limit one caller would write about 100 MB a day,
   which the share, not the rate limit, stops at 4 MiB. Each request's records
   open with a small `mio.entry.request` record naming whose share they are
-  charged to, so a restart recounts today's shares from today's segment
-  rather than forgetting them.
+  charged to (`explainer`, `arbiter` or `uid:N`), so a restart recounts
+  today's shares from today's segment rather than forgetting them. A segment
+  written before the arbiter had its own share counts the arbiter's records
+  of that day in the pool.
 - **Boundary.** Before deleting a segment, the writer durably replaces
   `route/retained-boundary.json` with the deleted segment's last sequence and
   hash, the oldest retained segment and the retired name. Verification starts
@@ -381,7 +385,14 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   and use `observed_at`, so a reading restored after a restart or a day
   boundary is never presented as fresher than it is. A carried record that
   differs from the reading it carries (state, reasons or `observed_at`) is a
-  rewritten history: entryd refuses to start and status reads unknown.
+  rewritten history: entryd refuses to start and status reads unknown. The
+  reading a carried record repeats is the ledger's last capability record:
+  entryd remembers a capability record as soon as the segment holds it, even
+  when a later step of that append (the directory sync or retention) fails,
+  so such a failure cannot make the next carried record differ from the
+  transition before it (#227). A segment opens, and gets its carried record,
+  whenever it holds no record yet, so an empty segment left by a crash right
+  after it was created still opens with one.
 - **Migration.** On first start after upgrade, a pre-segment
   `state/mio/route.jsonl` is moved aside in bounded time: only its last
   record is read (from the end of the file), the boundary is written durably
@@ -408,7 +419,9 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   recorded at most once a minute per UID, carrying the counts by reason
   suppressed since and the in-memory refusal counters (entryd has no status
   surface), and is charged to that caller's share. A refusal record that no
-  longer fits is counted, not fatal: the refused request did nothing.
+  longer fits is counted, not fatal: the refused request did nothing. The
+  suppressed counts it would have carried are kept for that caller's next
+  refusal record rather than dropped.
 - **Clock.** Segments are named by the UTC wall-clock day, held by the same
   guards as the intake and explainer stores. A node without an RTC boots with
   its clock behind; until time sync steps it forward, records go into the

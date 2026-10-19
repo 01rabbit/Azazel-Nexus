@@ -11,6 +11,8 @@ from azazel_nexus_runtime import mio_entryd as entry
 from azazel_nexus_runtime import mio_socket_client as client
 from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.mio_route_ledger import (
+    ARBITER,
+    ARBITER_SHARE,
     CALLER_SHARE,
     CALLERS_POOL,
     CONTROL,
@@ -83,8 +85,10 @@ def test_defaults_are_bounded_and_cover_the_explainer_day():
     # About 20 MB a day at six advice requests a minute must fit its own share,
     # and the shares never add up to more than one segment.
     assert EXPLAINER_SHARE - REQUEST_HEADROOM > 20 * 1000 * 1000
-    assert EXPLAINER_SHARE + CALLERS_POOL + CONTROL_RESERVE == SEGMENT_BYTES
+    assert EXPLAINER_SHARE + ARBITER_SHARE + CALLERS_POOL + CONTROL_RESERVE == SEGMENT_BYTES
+    assert SEGMENT_BYTES == 46 * 1024 * 1024  # the documented segment size
     assert CALLER_SHARE < CALLERS_POOL
+    assert ARBITER_SHARE >= CALLER_SHARE  # the arbiter loses nothing by leaving the pool
     assert RETENTION_DAYS == 14
     assert RETENTION_BYTES <= 256 * 1024 * 1024
 
@@ -301,7 +305,8 @@ def test_empty_legacy_migrates_to_a_genesis_boundary(state):
 
 SMALL = {"explainer_share": REQUEST_HEADROOM + 16384, "caller_share": REQUEST_HEADROOM + 8192,
          "callers_pool": 2 * REQUEST_HEADROOM + 16384, "reserve": 8192,
-         "segment_bytes": 3 * REQUEST_HEADROOM + 40960}
+         "arbiter_share": REQUEST_HEADROOM + 8192,
+         "segment_bytes": 4 * REQUEST_HEADROOM + 49152}
 
 
 def fill(route, owner):
@@ -330,6 +335,38 @@ def test_a_spent_share_refuses_only_its_owner(state):
     route.verify()
     clock.advance(DAY)
     assert route.room("uid:1001") and route.room(EXPLAINER)  # a new day is a new budget
+
+
+def test_the_arbiter_has_its_own_share_outside_the_callers_pool(state):
+    clock = Clock()
+    route = ledger(state, clock, **SMALL)
+    fill(route, "uid:1001")
+    fill(route, "uid:1002")
+    assert not route.room("uid:1003")  # the operators have spent the pool
+    assert route.room(ARBITER)
+    fill(route, ARBITER)
+    assert not route.room(ARBITER)
+    assert route.room(EXPLAINER)
+    assert route.path.stat().st_size <= SMALL["segment_bytes"]
+
+
+def test_an_empty_segment_left_by_a_crash_still_opens_with_the_carried_reading(state):
+    clock = Clock()
+    route = ledger(state, clock)
+    carried = {"event_type": "mio.capability.carried", "to": "CORE", "reasons": {},
+               "observed_at": "x", "occurred_at": "y"}
+    route.on_new_segment = lambda: [carried]
+    route.append({"event_type": "a"})
+    clock.advance(DAY)
+    # A crash right after the day's segment was created leaves it empty.
+    route.path.touch(mode=0o600)
+    route.append({"event_type": "b"})
+    events = [item.event["event_type"] for item in AuditLedger(route.path)]
+    assert events == ["mio.capability.carried", "b"]
+    route.verify()
+    route.append({"event_type": "c"})  # a segment with records does not open again
+    assert [item.event["event_type"] for item in AuditLedger(route.path)][-1] == "c"
+    assert len(list(AuditLedger(route.path))) == 3
 
 
 def test_absent_state_directory_is_read_as_empty_and_not_created(tmp_path):
@@ -449,6 +486,36 @@ def test_spent_route_budget_is_a_bounded_refusal_and_refusals_never_crash(servic
     assert svc.refusals_unrecorded == 1
 
 
+@pytest.mark.parametrize("failure", [RouteSegmentFull, AuditUnavailable])
+def test_a_refusal_record_that_fails_keeps_the_suppressed_counts(service, monkeypatch, failure):
+    svc, clock = service
+    refusal = {"event_type": "runtime.request_refused", "request_bytes": 1,
+               "request_fingerprint": "x", "uid": 1001}
+    svc.record_refusal({**refusal, "reason": "rate_limited"})
+    for _ in range(3):
+        svc.record_refusal({**refusal, "reason": "malformed_frame"})
+    clock.advance(entry.REFUSAL_RECORD_INTERVAL_SECONDS)
+    real = svc.router.ledger.append
+
+    def fail(event, **kwargs):
+        raise failure("fixture")
+
+    monkeypatch.setattr(svc.router.ledger, "append", fail)
+    if failure is RouteSegmentFull:
+        svc.record_refusal({**refusal, "reason": "rate_limited"})
+    else:
+        with pytest.raises(AuditUnavailable):
+            svc.record_refusal({**refusal, "reason": "rate_limited"})
+    svc.record_refusal({**refusal, "reason": "principal_denied"})  # suppressed meanwhile
+    monkeypatch.setattr(svc.router.ledger, "append", real)
+    clock.advance(entry.REFUSAL_RECORD_INTERVAL_SECONDS)
+    svc.record_refusal({**refusal, "reason": "rate_limited"})
+    records = [item.event for item in svc.router.ledger
+               if item.event["event_type"] == "runtime.request_refused"]
+    assert len(records) == 2
+    assert records[-1]["suppressed"] == {"malformed_frame": 3, "principal_denied": 1}
+
+
 def test_each_new_segment_opens_with_the_capability_and_status_survives_retention(service, tmp_path):
     svc, clock = service
     svc.reconcile_capability()
@@ -502,6 +569,28 @@ def test_a_flooding_caller_cannot_spend_anothers_room(tmp_path, monkeypatch):
         restarted.handle(route_request(1001))
 
 
+def test_the_arbiters_route_survives_operators_spending_the_pool(tmp_path, monkeypatch):
+    svc, clock = compose(tmp_path, monkeypatch, rate=unlimited, **SMALL)
+    svc._explainer_uid, svc._arbiter_uid = 4242, 4343
+    svc.handle(route_request(1001))  # opens the day's segment
+    fill(svc.router.ledger, "uid:1001")
+    fill(svc.router.ledger, "uid:1002")
+    with pytest.raises(RequestRefused) as refused:  # the callers' pool is spent
+        svc.handle(route_request(1003))
+    assert refused.value.detail == "route_budget"
+    arbiter = Principal(4343, 4343, 1, frozenset({PrincipalClass.SERVICE}))
+    request = SimpleNamespace(arguments={"privacy_class": "P0-public", "deadline_ms": 1000},
+                              principal=arbiter)
+    assert svc.handle(request)["route"] == "deterministic handoff"
+    usage = dict(svc.router.ledger.usage)
+    assert 0 < usage[ARBITER] <= SMALL["arbiter_share"]
+    # A restart recounts the arbiter's share as its own, not the pool's.
+    restarted = restart(svc, clock)
+    restarted._arbiter_uid = 4343
+    restarted.router.ledger.rebuild_usage(restarted._attribution())
+    assert restarted.router.ledger.usage[ARBITER] == usage[ARBITER]
+
+
 def test_explainer_advice_survives_a_flooding_operator(tmp_path, monkeypatch):
     from test_incident_explain import transition
 
@@ -522,6 +611,65 @@ def test_explainer_advice_survives_a_flooding_operator(tmp_path, monkeypatch):
     assert reply["route"] == "deterministic handoff"
     usage = svc.router.ledger.usage
     assert usage[EXPLAINER] > 0 and usage["uid:1001"] <= SMALL["caller_share"]
+
+
+def flip(svc, monkeypatch):
+    """Make the next samples alternate between two capability readings."""
+    first = svc._sample()
+    second = ({**first[0], "reasons": {**first[0]["reasons"], "health": {
+        "local": "local_available", "remote": "remote_unavailable"}}}, first[1])
+    readings = {"value": first}
+    monkeypatch.setattr(svc, "_sample", lambda: readings["value"])
+    return first, second, readings
+
+
+@pytest.mark.parametrize("step", ["retain", "fsync"])
+def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
+        service, tmp_path, monkeypatch, step):
+    from azazel_nexus import audit
+
+    svc, clock = service
+    first, second, readings = flip(svc, monkeypatch)
+    svc.reconcile_capability()
+    clock.advance(entry.CAPABILITY_INTERVAL_SECONDS)
+    readings["value"] = second
+    real = {"retain": svc.router.ledger.retain, "fsync": audit.os.fsync}[step]
+    failed = []
+
+    def once(*args):
+        if not failed:
+            failed.append(step)
+            raise OSError(f"{step} fixture")
+        return real(*args)
+
+    if step == "retain":
+        monkeypatch.setattr(svc.router.ledger, "retain", once)
+    else:
+        monkeypatch.setattr(audit.os, "fsync", once)
+    # The transition is in the ledger although the append reported failure.
+    with pytest.raises(AuditUnavailable):
+        svc.reconcile_capability()
+    assert failed
+    last = [item.event for item in svc.router.ledger
+            if item.event["event_type"] == "mio.capability.transition"][-1]
+    assert last["to"] == second[0]["state"] and last["reasons"] == second[0]["reasons"]
+    assert svc._last_capability == second[0]
+    assert svc._observed_at == last["occurred_at"]
+    # The reading flips back: that is a transition, recorded as one.
+    clock.advance(entry.CAPABILITY_INTERVAL_SECONDS)
+    readings["value"] = first
+    svc.reconcile_capability()
+    clock.advance(DAY)
+    svc.handle(route_request(1001))
+    carried = [item.event for item in svc.router.ledger
+               if item.event["event_type"] == "mio.capability.carried"]
+    assert carried[-1]["reasons"] == first[0]["reasons"]
+    restarted = restart(svc, clock)  # the L4 carried check accepts the history
+    assert restarted._last_capability == first[0]
+    reading = status_summary(root=tmp_path)
+    assert reading["state"] == first[0]["state"]
+    assert reading["reasons"] == first[0]["reasons"]
+    assert reading["availability"] == "last recorded observation"
 
 
 def test_carried_reading_keeps_its_original_observation_time(service, tmp_path):

@@ -27,7 +27,13 @@ from azazel_nexus.sanitizer import PrivacyClass
 from .mio_capability import read_capability
 from .mio_commissioning import commissioned_profile
 from .mio_locald import INFER_VERB, REFERENCE_DEADLINE_MS
-from .mio_route_ledger import CONTROL, EXPLAINER, UNATTRIBUTED, RouteSegmentFull
+from .mio_route_ledger import (
+    ARBITER,
+    CONTROL,
+    EXPLAINER,
+    UNATTRIBUTED,
+    RouteSegmentFull,
+)
 from .mio_router import MioRouter
 from .mio_socket_client import LocalSocketClient, RemoteSocketClient
 from .principal import PrincipalClass, PrincipalPolicy
@@ -119,6 +125,10 @@ class MioEntryService:
             self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
         except KeyError:
             self._explainer_uid = None
+        try:
+            self._arbiter_uid = pwd.getpwnam("azarbiter").pw_uid
+        except KeyError:
+            self._arbiter_uid = None
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
         self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
@@ -146,6 +156,11 @@ class MioEntryService:
         self.router.ledger.verify(self._restore)
         if hasattr(self.router.ledger, "on_new_segment"):
             self.router.ledger.on_new_segment = self._carry
+        if hasattr(self.router.ledger, "on_written"):
+            # From here on the reading a carried record repeats is whatever
+            # capability record the ledger last holds, even when a later step
+            # of the append failed (#227).
+            self.router.ledger.on_written = self._written
         if hasattr(self.router.ledger, "rebuild_usage"):
             # Today's per-caller shares survive a restart.
             self.router.ledger.rebuild_usage(self._attribution())
@@ -155,6 +170,8 @@ class MioEntryService:
             return UNATTRIBUTED
         if self._explainer_uid is not None and uid == self._explainer_uid:
             return EXPLAINER
+        if self._arbiter_uid is not None and uid == self._arbiter_uid:
+            return ARBITER
         return f"uid:{uid}"
 
     def _attribution(self):
@@ -212,6 +229,27 @@ class MioEntryService:
                                stamp + CAPABILITY_INTERVAL_SECONDS - self._wall_clock()))
         self._next_capability_check = self._clock() + remaining
 
+    def _written(self, event) -> None:
+        """Remember a capability record the moment the ledger holds it.
+
+        Memory is what the next carried record repeats and what the next
+        sample is compared with. Taking it from the written record, rather
+        than after the whole append returns, keeps it equal to the ledger's
+        last capability record when retention or a directory sync fails
+        afterwards; otherwise the next day's carried record could differ
+        from the transition before it and refuse every restart.
+        """
+        kind = event.get("event_type")
+        if kind not in CAPABILITY_EVENTS:
+            return
+        try:
+            reading = {"state": event["to"], "reasons": event["reasons"]}
+            observed = event["observed_at" if kind == "mio.capability.carried" else "occurred_at"]
+        except KeyError:
+            # Entryd never writes one; the next start's verification refuses it.
+            return
+        self._last_capability, self._observed_at = reading, observed
+
     def _carry(self) -> list[dict]:
         """Open each daily segment with the current capability reading.
 
@@ -235,7 +273,8 @@ class MioEntryService:
         Every refusal reason is aggregated per kernel-reported uid: one record
         a minute, carrying the counts suppressed since, charged to that
         caller's share. A refused request did nothing, so a refusal record
-        that no longer fits is counted rather than fatal.
+        that no longer fits is counted rather than fatal. The suppressed
+        counts it would have carried are kept for the next record.
         """
         uid, now = event.get("uid"), self._clock()
         last = self._refusal_recorded.get(uid)
@@ -248,8 +287,9 @@ class MioEntryService:
             oldest = next(iter(self._refusal_recorded))
             del self._refusal_recorded[oldest]
             self._refusals_suppressed.pop(oldest, None)
+        suppressed = self._refusals_suppressed.pop(uid, Counter())
         event = {**event,
-                 "suppressed": dict(sorted(self._refusals_suppressed.pop(uid, Counter()).items())),
+                 "suppressed": dict(sorted(suppressed.items())),
                  "rate_limited": dict(sorted(self.rate_limited.items())),
                  "unrecorded": self.refusals_unrecorded}
         ledger = self.router.ledger
@@ -259,8 +299,17 @@ class MioEntryService:
             self.router._record(event)
         except RouteSegmentFull:
             self.refusals_unrecorded += 1
+            self._keep_suppressed(uid, suppressed)
+        except BaseException:
+            self._keep_suppressed(uid, suppressed)
+            raise
         finally:
             ledger.owner = previous
+
+    def _keep_suppressed(self, uid, suppressed: Counter) -> None:
+        """Return counts a failed refusal record did not write (#227)."""
+        if suppressed and uid in self._refusal_recorded:
+            self._refusals_suppressed.setdefault(uid, Counter()).update(suppressed)
 
     @staticmethod
     def _observe(reader):
@@ -302,6 +351,8 @@ class MioEntryService:
                 # Not recorded, so not accepted: the next sample retries.
                 self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
                 return observed
+            # Already remembered by `_written` for a segmented ledger; set
+            # here too for a ledger without that hook.
             self._last_capability = current
             self._observed_at = at
         self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS

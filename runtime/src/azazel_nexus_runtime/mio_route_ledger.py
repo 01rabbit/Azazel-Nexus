@@ -11,9 +11,10 @@ Bounds:
 
 * one segment per UTC day, at most `SEGMENT_BYTES`, divided into budgets
   that no other caller can spend: `EXPLAINER_SHARE` for the explainer,
-  `CALLER_SHARE` for each other caller within `CALLERS_POOL` for all of them
-  together, and `CONTROL_RESERVE` for start and capability records. A
-  caller's refusal records are charged to that caller;
+  `ARBITER_SHARE` for the arbiter, `CALLER_SHARE` for each other caller
+  within `CALLERS_POOL` for all of them together, and `CONTROL_RESERVE` for
+  start and capability records. A caller's refusal records are charged to
+  that caller;
 * at most `RETENTION_DAYS` days and `RETENTION_BYTES` in total, so start-up
   verification reads at most `RETENTION_BYTES` whatever the node's age.
 
@@ -60,14 +61,19 @@ from .edge_intaked import ELAPSED, DailySegments
 #: the 30-a-minute rate limit would write about 100 MB a day, so each share,
 #: not the rate limit, is what bounds one caller's daily growth.
 EXPLAINER_SHARE = 28 * 1024 * 1024
+#: The arbiter (`azarbiter`) has its own share, so operators spending the
+#: callers' pool cannot refuse its `mio.route` (#227). It is carved out of
+#: what was one pool, so the segment stays 46 MiB.
+ARBITER_SHARE = 4 * 1024 * 1024
 CALLER_SHARE = 4 * 1024 * 1024
-CALLERS_POOL = 16 * 1024 * 1024
+CALLERS_POOL = 12 * 1024 * 1024
 CONTROL_RESERVE = 2 * 1024 * 1024
-SEGMENT_BYTES = EXPLAINER_SHARE + CALLERS_POOL + CONTROL_RESERVE
+SEGMENT_BYTES = EXPLAINER_SHARE + ARBITER_SHARE + CALLERS_POOL + CONTROL_RESERVE
 RETENTION_DAYS = 14
 RETENTION_BYTES = 192 * 1024 * 1024
 #: Budget keys. Any other key is one ordinary caller.
 EXPLAINER = "explainer"
+ARBITER = "arbiter"
 CONTROL = "control"
 UNATTRIBUTED = "unattributed"
 #: What one request may write after admitting it. A request admitted with
@@ -108,6 +114,7 @@ class RouteLedger(DailySegments):
         days: int = RETENTION_DAYS, segment_bytes: int = SEGMENT_BYTES,
         reserve: int = CONTROL_RESERVE, explainer_share: int = EXPLAINER_SHARE,
         caller_share: int = CALLER_SHARE, callers_pool: int = CALLERS_POOL,
+        arbiter_share: int = ARBITER_SHARE,
     ) -> None:
         # DailySegments.__init__ would create the directory at composition.
         self.state_dir = state_dir
@@ -115,7 +122,7 @@ class RouteLedger(DailySegments):
         self.max_bytes, self.days = max_bytes, days
         self.segment_bytes, self.reserve = segment_bytes, reserve
         self.explainer_share, self.caller_share = explainer_share, caller_share
-        self.callers_pool = callers_pool
+        self.callers_pool, self.arbiter_share = callers_pool, arbiter_share
         #: Who ordinary records are charged to; set by the request owner.
         self.owner: str | None = None
         #: Bytes each budget key has written to `usage_segment`.
@@ -130,6 +137,10 @@ class RouteLedger(DailySegments):
         #: Called when an append opens a new segment; returns control events
         #: written first, so each segment carries what readers need.
         self.on_new_segment: Callable[[], list[Mapping[str, Any]]] | None = None
+        #: Called with each event once the segment holds it, before any later
+        #: step (directory sync, retention) that may still fail, so an owner's
+        #: memory of what it recorded follows the ledger exactly (#227).
+        self.on_written: Callable[[Mapping[str, Any]], None] | None = None
         self._prepared = False
 
     # -- preparation -----------------------------------------------------
@@ -296,7 +307,10 @@ class RouteLedger(DailySegments):
             return usage[CONTROL] + size <= self.reserve
         if key == EXPLAINER:
             return usage[EXPLAINER] + size <= self.explainer_share
-        callers = sum(value for name, value in usage.items() if name not in {CONTROL, EXPLAINER})
+        if key == ARBITER:
+            return usage[ARBITER] + size <= self.arbiter_share
+        callers = sum(value for name, value in usage.items()
+                      if name not in {CONTROL, EXPLAINER, ARBITER})
         return (usage[key] + size <= self.caller_share
                 and callers + size <= self.callers_pool)
 
@@ -304,7 +318,8 @@ class RouteLedger(DailySegments):
         """Whether `key` can make one more whole request in today's segment.
 
         Each caller spends only its own share, so a flooding caller exhausts
-        itself, never the explainer's or another caller's budget.
+        itself, never the explainer's, the arbiter's or another caller's
+        budget.
         """
 
         self._ensure()
@@ -342,8 +357,13 @@ class RouteLedger(DailySegments):
 
         self._ensure(create=True)
         path = self._target()
-        segments = self.chain.segments(read_boundary(self.directory))
-        opening = not segments or path != segments[-1]
+        # A segment opens when it holds no record yet, not when this call
+        # creates it: a crash right after creating it leaves it empty, and
+        # the next record must still carry the reading in (#227).
+        try:
+            opening = path.stat().st_size == 0
+        except FileNotFoundError:
+            opening = True
         head = self.chain.head()
         if opening and self.on_new_segment is not None:
             for carried in self.on_new_segment():
@@ -370,8 +390,21 @@ class RouteLedger(DailySegments):
         if size + need > self.segment_bytes or not self._fits(self.usage, key, need):
             raise RouteSegmentFull("today's route budget is spent; the event was not recorded")
         created = size == 0 and not path.exists()
-        entry = AuditLedger(path, private=True).append(event, chain_from=head)
+        try:
+            entry = AuditLedger(path, private=True).append(event, chain_from=head)
+        except AuditUnavailable:
+            # The line may be in the file although its sync failed; if so,
+            # the segment holds it and the owner must know.
+            try:
+                landed = AuditLedger(path).head()[0] == head[0] + 1
+            except (OSError, AuditUnavailable, AuditChainBroken):
+                landed = False
+            if landed and self.on_written is not None:
+                self.on_written(event)
+            raise
         self.usage[key] += line_bytes(entry)
+        if self.on_written is not None:
+            self.on_written(entry.event)
         if created:
             try:
                 fsync_directory(self.directory)
