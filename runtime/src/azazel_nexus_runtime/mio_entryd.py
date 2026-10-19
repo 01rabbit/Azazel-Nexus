@@ -133,13 +133,18 @@ class MioEntryService:
 
                 reply.update(read_delivered(result.reply))
         if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
-            reference = self.local.reference(frame, deadline_ms=REFERENCE_DEADLINE_MS)
+            # Optional and bounded by the caller's own budget; never replaces the
+            # routing reason (the ledger and the reply keep the true handoff cause).
+            budget = min(REFERENCE_DEADLINE_MS, request.arguments["deadline_ms"])
+            reference = self.local.reference(frame, deadline_ms=budget)
             try:
                 if reference is None:
                     raise ValueError("reference_unavailable")
                 reply["reference"] = read_reference(reference)
-            except ValueError:
-                reply["reason"] = "reference_unavailable"
+                reply["reference_status"] = "attached"
+            except Exception:  # noqa: BLE001 - an optional reference never fails the request
+                reply.pop("reference", None)
+                reply["reference_status"] = "unavailable"
         return reply
 
 

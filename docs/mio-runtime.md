@@ -404,7 +404,8 @@ Knowledge lookup or model startup. Locald's SERVICE policy admits only
 `azmioentry` to this verb. Entry and its socket client independently validate the
 reference schema, keyword provenance and trusted explanation source. Absent,
 slow, refused or malformed locald replies leave the handoff intact, omit
-`reference` and set the reply reason to `reference_unavailable`. Route, outcome
+`reference` and set `reference_status: unavailable`; the reply's routing reason
+is kept. Route, outcome
 and route-ledger decision bytes do not depend on reference availability. The
 insufficient-information gate retains its fixed response; out-of-scope frames
 receive no reference. No reference grants Edge authority or provider admission.

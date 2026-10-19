@@ -99,7 +99,8 @@ def test_absent_or_slow_locald_preserves_handoff(frame, tmp_path, monkeypatch, f
         verb=entry.ADVISE_VERB, arguments={"deadline_ms": 1000}, payload=frame))
     assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
     assert reply["outcome"] == "refused"
-    assert reply["reason"] == "reference_unavailable"
+    assert reply["reference_status"] == "unavailable"
+    assert reply["reason"] != "reference_unavailable"  # the routing reason is kept
     assert "reference" not in reply and "advice" not in reply
 
 
@@ -153,7 +154,7 @@ def test_entry_revalidates_reference(service, frame, tmp_path, monkeypatch):
     monkeypatch.setattr(target.local, "reference", lambda *a, **kw: doc)
     result = target.handle(SimpleNamespace(
         verb=entry.ADVISE_VERB, arguments={"deadline_ms": 1000}, payload=frame))
-    assert result["reason"] == "reference_unavailable" and "reference" not in result
+    assert result["reference_status"] == "unavailable" and "reference" not in result
 
 
 @pytest.mark.parametrize("deadline", [0, 501])
@@ -245,3 +246,21 @@ def test_unusable_reference_is_fixed_refusal(service, frame, condition):
         frame["extra"] = "untrusted"
     assert service.handle(request(frame)) == {
         "outcome": "failed", "refusal": "reference_unavailable"}
+
+
+def test_reference_budget_never_exceeds_the_callers_deadline(frame, tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    service = entry.MioEntryService()
+    monkeypatch.setattr(service.local, "observe", lambda: "fixture")
+    monkeypatch.setattr(service.remote, "observe", lambda: "fixture")
+    seen = []
+
+    def record(frame, *, deadline_ms):
+        seen.append(deadline_ms)
+
+    monkeypatch.setattr(service.local, "reference", record)
+    for deadline in (50, 5000):
+        reply = service.handle(SimpleNamespace(
+            verb=entry.ADVISE_VERB, arguments={"deadline_ms": deadline}, payload=frame))
+        assert reply["reference_status"] == "unavailable"
+    assert seen == [50, entry.REFERENCE_DEADLINE_MS]

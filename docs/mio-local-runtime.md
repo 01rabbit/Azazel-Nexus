@@ -291,9 +291,10 @@ A successful reply is `{outcome: reference, reference: {...}}`. Its document has
 `provenance.source: keyword`, `model_id: deterministic` and
 `explanation_source: trusted`. Both the local socket client and entryd validate
 these constraints. Entry requests this only after a deterministic handoff, under
-its own 500 ms deadline, and attaches it under `reference`, never `advice`.
-Failure preserves handoff with reply reason `reference_unavailable` and no
-reference. Neither success nor failure changes route, outcome, route-ledger
+a deadline of at most 500 ms and never more than the caller's `deadline_ms`, and
+attaches it under `reference`, never `advice`, with `reference_status: attached`.
+Failure preserves the handoff and its routing reason, omits `reference` and sets
+`reference_status: unavailable`. Neither success nor failure changes route, outcome, route-ledger
 records, Edge authority or `LOCAL_MODEL_ADMISSION_ENABLED = False`.
 
 ## 10. Evaluation limits
