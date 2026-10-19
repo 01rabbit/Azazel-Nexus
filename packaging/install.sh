@@ -230,6 +230,7 @@ make_owned_dir() {  # mode owner group path
 
 make_dir 0755 root /etc/azazel
 make_dir 0750 azcommission /etc/azazel/commissioning
+make_dir 0700 root /etc/azazel/mio-profile
 make_dir 0700 root /etc/azazel/bootstrap
 make_dir 0755 root /etc/azazel/systemd
 # Common parents allow traversal only. Operators get to each socket by group;

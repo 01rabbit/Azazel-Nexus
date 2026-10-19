@@ -4,7 +4,9 @@ import json
 import sys
 
 from azazel_nexus.commissioning_approval import verify_retained_commissioning_proposal
-from azazel_nexus.commissioning_draft import DraftRefused, read_proposal_review_inputs
+from azazel_nexus.commissioning_draft import (
+    DraftRefused, read_proposal_review_inputs, publish_mio_profile_signature,
+)
 from azazel_nexus.operator_store import load_operator_trust
 from azazel_nexus.operator_trust import ApprovalRefused
 from azazel_nexus.fabric_boundary import (
@@ -18,7 +20,7 @@ from .netlink import NetlinkMalformed, NetlinkUnavailable
 
 
 def run(operator: str, *, current_hardware: bool = False, addresses=None) -> int:
-    """Read only fixed protected originals and a detached 64-byte signature.
+    """Review fixed protected originals, then publish minimal profile credentials.
 
     External input supplies no record, node identity or enrolled key. Recheck
     protected state before publishing the approval result. An explicit current
@@ -60,6 +62,7 @@ def run(operator: str, *, current_hardware: bool = False, addresses=None) -> int
         if (load_declared_node() != node or load_operator_trust() != trust
                 or read_proposal_review_inputs() != (expected, payload, signature)):
             raise ApprovalRefused("protected proposal state changed")
+        publish_mio_profile_signature(expected, payload, signature)
     except (ApprovalRefused, DraftRefused, NodeConfigUnavailable, CommissioningRecordUnavailable,
             HardwareUnavailable, NetlinkMalformed, NetlinkUnavailable, OSError):
         print("Full proposal review refused. Check retained inputs and enrollment locally; nothing activated.",

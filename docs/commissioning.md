@@ -197,10 +197,30 @@ The v2 Nexus wrapper includes the explicit M.I.O. CORE / LITE / FULL ceiling
 in the same signed bytes; v1 remains reviewable but supplies no M.I.O. choice.
 `proposal-review --operator LABEL` validates a detached signature against those
 retained expectations and current node/trust, then rereads the protected inputs
-before reporting historical approval. There is no authoritative-record import
+before reporting historical approval. Retention also publishes the two proposal
+copies atomically into the installer-created root:root 0700
+`/etc/azazel/mio-profile/`; successful review publishes the detached signature
+there as well (all source files root-owned 0600). A publication failure is a
+refusal, never a successful review. Entryd receives only this minimal proposal
+projection, plus individual node and public-trust credentials; see
+[M.I.O. runtime](mio-runtime.md) for setup and restart/revocation requirements.
+There is no authoritative-record import
 or activation and no raw identity output. Old exports without retained context
 are refused, not migrated. See the [runtime adapter](../runtime/README.md) for
 prerequisites and the local privileged-owner/rollback limitations.
+
+An already commissioned v1 node cannot re-propose in place: the existing
+`proposal-export` and `proposal-review` commands do not provide a safe retirement
+or reset procedure for retained proposal state. Re-running export refuses;
+reviewing or re-signing v1 does not add a profile. There is no supported
+command-based migration to v2. The node stays CORE until administrator-led
+re-commissioning with newly provisioned protected commissioning storage and
+minimal profile directory, followed
+by the existing `az-nexus-commission proposal-export --operator LABEL`, separate
+full-proposal signing, and `az-nexus-commission proposal-review --operator LABEL`
+procedure. Preserve old evidence under site custody procedures; do not delete
+or hand-edit existing proposal files to bypass the refusal. No override flag,
+activation or admission is implied by re-commissioning.
 
 ## 5. Zero-transmit observation
 

@@ -65,6 +65,7 @@ def test_bootstrap_tmpfiles_rule_is_exact_and_does_not_clean_other_paths():
         EXPECTED_RULE.strip(),
         b"d /run/azazel-nexus-bootstrap :0700 :root :root - -",
         b"d /run/azazel-mio-identity 0750 root azmio - -",
+        b"d /etc/azazel/mio-profile 0700 root root - -",
     ]
 
 
@@ -119,3 +120,6 @@ def test_staged_install_copies_rule_without_running_tmpfiles(tmp_path):
     installed_rule = destdir / "usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
     assert installed_rule.read_bytes() == TMPFILES_RULE.read_bytes()
     assert not marker.exists(), "staged installation invoked systemd-tmpfiles"
+    profile = destdir / "etc/azazel/mio-profile"
+    assert profile.is_dir() and profile.stat().st_mode & 0o777 == 0o700
+    assert list(profile.iterdir()) == []

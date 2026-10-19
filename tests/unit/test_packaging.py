@@ -32,6 +32,7 @@ EXPECTED_BOOTSTRAP_TMPFILES = (
     b"d /run/systemd/system.control :0755 :root :root - -\n"
     b"d /run/azazel-nexus-bootstrap :0700 :root :root - -\n"
     b"d /run/azazel-mio-identity 0750 root azmio - -\n"
+    b"d /etc/azazel/mio-profile 0700 root root - -\n"
 )
 
 GOVERNED = tuple(d.name for d in CORE_UNITS)
@@ -479,3 +480,10 @@ def test_mission_reader_provisioning_is_part_of_installer():
         assert f'groupadd --system {group}' in text
     assert 'python_stager -IS "$REPO_ROOT/tools/provision_mission_read.py" "$@"' in text
     assert 'usermod' not in text
+
+
+def test_minimal_profile_directory_is_always_installed_root_private():
+    spec = next(s for s in LAYOUT if s.path == "/etc/azazel/mio-profile")
+    assert spec.mode == 0o700
+    assert spec.owner == "root" and spec.group == "root"
+    assert "make_dir 0700 root /etc/azazel/mio-profile" in _installer()

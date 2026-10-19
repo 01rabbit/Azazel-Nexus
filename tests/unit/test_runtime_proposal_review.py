@@ -41,6 +41,9 @@ def retained_proposal(monkeypatch, tmp_path):
     trust = OperatorTrust({"operator-a": bytes(key.verify_key)})
 
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -84,6 +87,9 @@ def test_proposal_review_cli_accepts_retained_historical_signature_without_activ
     assert proposal.read_bytes() == retained_proposal.payload
     assert signature.read_bytes() == retained_proposal.signature
     assert len(signature.read_bytes()) == 64
+    for name, value in zip(commissioning_draft._PROPOSAL_FILES,
+                           (retained_proposal.payload, retained_proposal.payload, retained_proposal.signature)):
+        assert (commissioning_draft.MIO_PROFILE_DIR / name).read_bytes() == value
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in (expected, proposal, signature))
     assert _names(retained_proposal.directory) == {
         "commissioning-proposal.expected.json",

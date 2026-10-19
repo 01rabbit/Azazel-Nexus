@@ -9,25 +9,28 @@ from nacl.signing import SigningKey
 from azazel_nexus import commissioning_draft
 from azazel_nexus.commissioning_approval import commissioning_proposal_payload
 from azazel_nexus.mio_profile import MioProfile
-from azazel_nexus.operator_trust import ApprovalPurpose, MAX_APPROVAL_BYTES, OperatorTrust, approval_message
+from azazel_nexus.operator_trust import ApprovalPurpose, MAX_APPROVAL_BYTES, approval_message
 from azazel_nexus_runtime import mio_commissioning, mio_entryd
 
 
 @pytest.fixture
 def credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(commissioning_draft, "_MIO_CREDENTIALS", tmp_path)
-    monkeypatch.setattr(mio_commissioning, "load_declared_node",
-                        lambda: SimpleNamespace(node_id="node-synthetic"))
+    monkeypatch.setattr(mio_commissioning, "_cache_key", None)
     key = SigningKey.generate()
-    monkeypatch.setattr(mio_commissioning, "load_operator_trust",
-                        lambda: OperatorTrust({"operator-a": bytes(key.verify_key)}))
+    (tmp_path / "mio-node").write_bytes(b"node_id: node-synthetic\n")
+    (tmp_path / "mio-trust").write_text(json.dumps({
+        "schema": "azazel-nexus/operator-trust/v1",
+        "keys": {"operator-a": bytes(key.verify_key).hex()}, "revoked": []}))
+    for name in ("mio-node", "mio-trust"):
+        (tmp_path / name).chmod(0o400)
 
     def save(payload, *, signature=None):
         values = (payload, payload, signature if signature is not None else key.sign(
             approval_message(ApprovalPurpose.COMMISSIONING_PROPOSAL, payload)).signature)
         for name, value in zip(("commissioning-proposal.expected.json",
                                 "commissioning-proposal.json", "commissioning-proposal.sig"), values):
-            path = tmp_path / ("mio-commissioning_" + name)
+            path = tmp_path / ("mio-profile_" + name)
             if path.exists():
                 path.chmod(0o600)
             path.write_bytes(value)
@@ -52,8 +55,10 @@ def context():
 
 
 def _node(monkeypatch, context):
-    monkeypatch.setattr(mio_commissioning, "load_declared_node",
-                        lambda: SimpleNamespace(node_id=context["inventory"].node_id))
+    path = commissioning_draft._MIO_CREDENTIALS / "mio-node"
+    path.chmod(0o600)
+    path.write_text("node_id: " + context["inventory"].node_id + "\n")
+    path.chmod(0o400)
 
 
 @pytest.mark.parametrize("selection,expected", [
@@ -77,24 +82,30 @@ def test_unverified_selection_is_core(credentials, context, monkeypatch, failure
     payload = commissioning_proposal_payload(**context, mio_profile="FULL")
     credentials.save(payload)
     if failure == "unsigned":
-        (credentials.directory / "mio-commissioning_commissioning-proposal.sig").unlink()
+        (credentials.directory / "mio-profile_commissioning-proposal.sig").unlink()
     elif failure in {"tampered", "changed-both"}:
         names = ["commissioning-proposal.json"]
         if failure == "changed-both":
             names.append("commissioning-proposal.expected.json")
         for name in names:
-            path = credentials.directory / ("mio-commissioning_" + name)
+            path = credentials.directory / ("mio-profile_" + name)
             path.chmod(0o600)
             path.write_bytes(payload.replace(b'"mio_profile":"FULL"', b'"mio_profile":"LITE"'))
     elif failure == "wrong-purpose":
         credentials.save(payload, signature=credentials.key.sign(
             approval_message(ApprovalPurpose.COMMISSIONING, payload)).signature)
     elif failure == "revoked":
-        monkeypatch.setattr(mio_commissioning, "load_operator_trust", lambda: OperatorTrust(
-            {"operator-a": bytes(credentials.key.verify_key)}, frozenset({"operator-a"})))
+        path = credentials.directory / "mio-trust"
+        path.chmod(0o600)
+        document = json.loads(path.read_bytes())
+        document["revoked"] = ["operator-a"]
+        path.write_text(json.dumps(document))
+        path.chmod(0o400)
     elif failure == "wrong-node":
-        monkeypatch.setattr(mio_commissioning, "load_declared_node",
-                            lambda: SimpleNamespace(node_id="other-node"))
+        path = credentials.directory / "mio-node"
+        path.chmod(0o600)
+        path.write_bytes(b"node_id: other-node\n")
+        path.chmod(0o400)
     elif failure == "lab-host":
         monkeypatch.setattr("azazel_nexus.lab_host.is_lab_host", lambda: True)
     else:
@@ -123,7 +134,7 @@ def test_missing_or_malformed_credentials_are_core(credentials, raw):
 def test_credential_storage_failure_is_core(credentials, context, failure, monkeypatch):
     _node(monkeypatch, context)
     credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
-    path = credentials.directory / "mio-commissioning_commissioning-proposal.expected.json"
+    path = credentials.directory / "mio-profile_commissioning-proposal.expected.json"
     if failure == "permissions":
         path.chmod(0o444)
     elif failure == "symlink":
@@ -140,20 +151,21 @@ def test_credential_storage_failure_is_core(credentials, context, failure, monke
     else:
         def refused():
             raise PermissionError("synthetic refusal")
-        monkeypatch.setattr(mio_commissioning, "read_mio_profile_review_inputs", refused)
+        monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", refused)
     assert mio_entryd.commissioned_profile() is MioProfile.CORE
 
 
-@pytest.mark.parametrize("changed", ["node", "trust", "inputs"])
+@pytest.mark.parametrize("changed", range(5))
 def test_protected_state_change_during_verification_is_core(
     credentials, context, monkeypatch, changed
 ):
     _node(monkeypatch, context)
     credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
-    name = {"node": "load_declared_node", "trust": "load_operator_trust", "inputs": "read_mio_profile_review_inputs"}[changed]
-    actual = getattr(mio_commissioning, name)
-    values = iter((actual(), None))
-    monkeypatch.setattr(mio_commissioning, name, lambda: next(values))
+    actual = mio_commissioning.read_mio_verification_inputs()
+    altered = list(actual)
+    altered[changed] += b" "
+    values = iter((actual, tuple(altered)))
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: next(values))
     assert mio_entryd.commissioned_profile() is MioProfile.CORE
 
 
@@ -162,8 +174,76 @@ def test_environment_cannot_supply_missing_credentials(credentials, context, mon
     credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
     alternate = tmp_path / "alternate"
     alternate.mkdir()
-    for path in credentials.directory.glob("mio-commissioning_*"):
+    for path in credentials.directory.glob("mio-profile_*"):
         path.rename(alternate / path.name)
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(alternate))
     monkeypatch.setenv("AZAZEL_ROOT", str(alternate))
     assert mio_entryd.commissioned_profile() is MioProfile.CORE
+
+
+@pytest.mark.parametrize("changed", range(5))
+def test_cache_reuses_only_identical_input_bytes(credentials, monkeypatch, changed):
+    # Exercise caching without requiring the optional Fabric extra.
+    inputs = [b'{"operator":"operator-a","schema":"azazel-nexus/commissioning-proposal/v2","mio_profile":"FULL"}',
+              b"payload", b"s" * 64, b"trust", b"node"]
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: tuple(inputs))
+    monkeypatch.setattr(mio_commissioning, "operator_trust_bytes", lambda raw: object())
+    monkeypatch.setattr(mio_commissioning, "declared_node_bytes", lambda raw: SimpleNamespace(node_id="synthetic"))
+    calls = []
+    monkeypatch.setattr(mio_commissioning, "verify_retained_commissioning_proposal", lambda **kw: calls.append(kw))
+    assert mio_commissioning.commissioned_profile() is MioProfile.FASTEST_PERMITTED
+    assert mio_commissioning.commissioned_profile() is MioProfile.FASTEST_PERMITTED
+    assert len(calls) == 1
+    inputs[changed] += b" "
+    assert mio_commissioning.commissioned_profile() is MioProfile.FASTEST_PERMITTED
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("stage", ["read_mio_verification_inputs", "declared_node_bytes",
+                                   "operator_trust_bytes", "verify_retained_commissioning_proposal"])
+def test_unexpected_exception_is_core(credentials, monkeypatch, stage):
+    inputs = (b'{"operator":"operator-a"}', b"payload", b"s" * 64, b"trust", b"node")
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: inputs)
+    monkeypatch.setattr(mio_commissioning, "declared_node_bytes", lambda raw: SimpleNamespace(node_id="synthetic"))
+    monkeypatch.setattr(mio_commissioning, "operator_trust_bytes", lambda raw: object())
+    def unexpected(*args, **kwargs):
+        raise RuntimeError("synthetic unexpected failure")
+    monkeypatch.setattr(mio_commissioning, stage, unexpected)
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+@pytest.mark.parametrize("name", ["mio-node", "mio-trust"])
+def test_missing_verification_credential_is_core(credentials, name):
+    credentials.save(b"synthetic")
+    (credentials.directory / name).unlink()
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+def test_lab_marker_still_narrows_a_cached_ceiling(credentials, monkeypatch):
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: (b"same",) * 5)
+    import hashlib
+    monkeypatch.setattr(mio_commissioning, "_cache_key", (hashlib.sha256(b"same").digest(),) * 5)
+    monkeypatch.setattr(mio_commissioning, "_cache_result", MioProfile.FASTEST_PERMITTED)
+    monkeypatch.setattr("azazel_nexus.lab_host.is_lab_host", lambda: True)
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+def test_changed_revocation_bytes_narrow_cached_verified_profile(credentials, context, monkeypatch):
+    _node(monkeypatch, context)
+    credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
+    assert mio_commissioning.commissioned_profile() is MioProfile.FASTEST_PERMITTED
+    path = credentials.directory / "mio-trust"
+    path.chmod(0o600)
+    document = json.loads(path.read_bytes())
+    document["revoked"] = ["operator-a"]
+    path.write_text(json.dumps(document))
+    path.chmod(0o400)
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+def test_absent_optional_fabric_is_core(credentials, context, monkeypatch):
+    _node(monkeypatch, context)
+    credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
+    monkeypatch.setattr("azazel_nexus.fabric_boundary._import_fabric", lambda: (None, "unavailable"))
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE

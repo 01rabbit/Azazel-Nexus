@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import uuid
 
 from .commissioning import (
     CommissioningRecord, CommissioningRefused, ConfirmedRole, Proposal,
@@ -229,8 +230,53 @@ def export_proposal(payload: bytes) -> None:
     )
 
 
+MIO_PROFILE_DIR = Path("/etc/azazel/mio-profile")
+
+
 _PROPOSAL_FILES = ("commissioning-proposal.expected.json", "commissioning-proposal.json",
                    "commissioning-proposal.sig")
+
+
+def _publish_mio_files(values: tuple[bytes, ...]) -> None:
+    """Atomically publish each fixed file; never replace preexisting state.
+
+    Only the retained proposal copies and reviewed signature belong here.
+    The installer creates this root-private directory, including before setup.
+    Partial publication fails closed and requires administrator inspection.
+    """
+    fd = os.open(MIO_PROFILE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise DraftRefused("profile directory protection refused")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name, value in zip(_PROPOSAL_FILES, values):
+            try:
+                existing = _read_private(fd, name, maximum=MAX_APPROVAL_BYTES)
+            except FileNotFoundError:
+                pass
+            else:
+                if existing != value:
+                    raise DraftRefused("existing profile state requires inspection")
+                continue
+            temporary = ".proposal-" + uuid.uuid4().hex
+            try:
+                _create_private_at(fd, temporary, value)
+                # link is an atomic no-replace publication, even for symlinks.
+                os.link(temporary, name, src_dir_fd=fd, dst_dir_fd=fd,
+                        follow_symlinks=False)
+            finally:
+                os.unlink(temporary, dir_fd=fd)
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def publish_mio_profile_signature(expected: bytes, payload: bytes, signature: bytes) -> None:
+    """Called only after successful full proposal review and input rechecks."""
+    if expected != payload or len(signature) != 64:
+        raise DraftRefused("profile publication inputs inconsistent")
+    _publish_mio_files((expected, payload, signature))
 
 
 def retain_proposal_context(*, inventory, resource_profile, topology_profile,
@@ -262,6 +308,7 @@ def retain_proposal_context(*, inventory, resource_profile, topology_profile,
             raise DraftRefused("existing proposal state requires inspection")
         _create_private_at(directory_fd, _PROPOSAL_FILES[0], payload)
         _create_private_at(directory_fd, _PROPOSAL_FILES[1], payload)
+        _publish_mio_files((payload, payload))
     except OSError:
         raise DraftRefused("proposal retention incomplete; inspect protected storage") from None
     finally:
@@ -299,20 +346,32 @@ _MIO_CREDENTIALS = Path("/run/credentials/azazel-mio-entryd.service")
 def read_mio_profile_review_inputs() -> tuple[bytes, bytes, bytes]:
     """Read the entry unit's private snapshot, never its protection key.
 
-    systemd copies the installed directory for the unprivileged unit. Original
-    files retain their private modes; only the existing signature verifier may
+    systemd copies only the minimal profile directory for the unprivileged
+    unit as service-owned 0400 credentials. Sources remain root-owned 0600; only the existing signature verifier may
     establish a confirmed ceiling from these bounded bytes. No environment or
     caller-selected path may replace the system-unit credential directory.
     """
     fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        expected = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[0],
+        expected = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[0],
                                  maximum=MAX_APPROVAL_BYTES)
-        payload = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[1],
+        payload = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[1],
                                 maximum=MAX_APPROVAL_BYTES)
-        signature = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[2], maximum=64)
+        signature = _read_private(fd, "mio-profile_" + _PROPOSAL_FILES[2], maximum=64)
         if expected != payload or len(signature) != 64:
             raise DraftRefused("profile review inputs inconsistent")
         return expected, payload, signature
+    finally:
+        os.close(fd)
+
+
+def read_mio_verification_inputs() -> tuple[bytes, ...]:
+    """Bounded exact credential bytes, including public trust and declaration."""
+    proposal = read_mio_profile_review_inputs()
+    fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        return (*proposal,
+                _read_private(fd, "mio-trust", maximum=MAX_APPROVAL_BYTES),
+                _read_private(fd, "mio-node", maximum=MAX_APPROVAL_BYTES))
     finally:
         os.close(fd)

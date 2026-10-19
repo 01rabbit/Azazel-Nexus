@@ -185,6 +185,9 @@ def test_cli_exports_to_real_private_fixed_file_and_refuses_overwrite(
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commission_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -233,6 +236,9 @@ def test_real_proposal_export_can_be_signed_and_reviewed_historically(
 ):
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -295,6 +301,9 @@ def signed_real_proposal(export_scope, monkeypatch, tmp_path):
     """A real exported proposal, signed ephemerally and retained privately."""
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -468,6 +477,9 @@ def test_protected_storage_failure_does_not_create_proposal(
 ):
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(
         proposal_export, "retain_proposal_context", commissioning_draft.retain_proposal_context
     )

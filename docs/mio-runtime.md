@@ -312,14 +312,39 @@ independently retained expected copy and current node/operator trust. A v1
 proposal, absent/unreadable input, unknown value, invalid signature or lab host
 selects CORE. RAM never substitutes for that selection.
 
-The entry unit uses a private [systemd credential snapshot](https://www.freedesktop.org/software/systemd/man/257/systemd.exec.html#Credentials)
-of the installed commissioning directory; original 0600 permissions stay intact
-and the protection key is not passed. No environment path override is read.
-Only the two proposal copies and signature are consumed. The directory must
-exist as required by installation; an empty directory supplies no choice and
-selects CORE. Proposal changes require an entry restart to refresh the snapshot;
-node/trust changes are rechecked on every read. This historical ceiling is no
-activation, current-hardware or provider-admission evidence.
+The entry unit uses a private [systemd credential snapshot](https://www.freedesktop.org/software/systemd/man/257/systemd.exec.html#Credentials).
+This setup requires directory-source support for `LoadCredential`; the target
+is Debian 13 with systemd 257, which supports it. The directory source is exactly
+`/etc/azazel/mio-profile/`, never
+`/etc/azazel/commissioning/`. Installation and tmpfiles always create this
+root:root 0700 directory, even when empty. Retention atomically publishes only
+`commissioning-proposal.expected.json` and `commissioning-proposal.json` there;
+a successful `az-nexus-commission proposal-review --operator LABEL` publishes
+`commissioning-proposal.sig` after verification and input rechecks. Source files
+are root-owned 0600. Do not place other files in this directory: systemd copies
+all its contents. Raw role drafts, commissioning records, active records and
+protection keys remain outside it.
+
+Two individual credentials supply `/etc/azazel/node.yaml` as `mio-node` and
+`/etc/azazel/operator-trust/operators.json` as `mio-trust`. The latter contains
+only enrolled public keys and revocations, never private signing keys. Provision
+these through the existing administrator setup without widening their source
+permissions. Empty `SetCredential` defaults let missing node/trust sources
+produce CORE. The proposal directory must exist and be readable by systemd;
+if it is removed or unreadable, credential setup can fail before entryd starts.
+An empty installed directory starts with CORE.
+
+The five credential copies are read-only 0400, owned by `azmioentry`; proposal
+names are prefixed `mio-profile_`. The reader uses the fixed system-unit
+credential directory, with no environment path override. All five exact byte
+strings are hashed on each read; YAML parsing, trust decoding, proposal rebuild
+and signature verification are cached until any bytes change. Unexpected reader
+exceptions also yield CORE. Without the optional Fabric extra verification yields
+CORE. Proposal, node and public-trust snapshots refresh on every entryd restart;
+**revocations take effect at the next entryd restart**, not during an existing
+snapshot's lifetime. Restart entryd through the existing operational procedure
+after any trust change. This historical ceiling supplies no activation,
+current-hardware or provider-admission evidence.
 Remote admission is computed by `remote_trust.remote_admission` with
 `unchecked_reading()`, no opt-in and no sanitised frame. Local admission is
 always false with the explicit HG-05 unmeasured Core reserve reason, and
