@@ -58,6 +58,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -413,10 +414,10 @@ class LiteImport:
     def _promote(self, raw: bytes, accepted: BundleAccepted, *, now: str) -> None:
         """Atomic. A reader never sees half an artifact."""
 
-        self.commissioned.admitted.mkdir(parents=True, exist_ok=True)
+        _store_directory(self.commissioned.admitted)
         target = self.commissioned.admitted / "current.tar.gz"
         _atomic_write(target, raw)
-        self.commissioned.state_path.parent.mkdir(parents=True, exist_ok=True)
+        _store_directory(self.commissioned.state_path.parent)
         _atomic_write(
             self.commissioned.state_path, f"{accepted.bundle_version}\n".encode("utf-8")
         )
@@ -426,7 +427,7 @@ class LiteImport:
     ) -> None:
         """Hold it. Do not run it, extract it, serve it, or retry it."""
 
-        self.commissioned.quarantine.mkdir(parents=True, exist_ok=True)
+        _store_directory(self.commissioned.quarantine)
         _atomic_write(self.commissioned.quarantine / f"{entry_id}.tar.gz", raw)
         self._record(
             Transition.QUARANTINED,
@@ -458,10 +459,33 @@ def _refuse_trust_shaped_members(accepted: BundleAccepted) -> None:
             )
 
 
+def _store_directory(path: Path) -> None:
+    """Create or tighten a store directory; never leave it group/other-writable.
+
+    `mkdir` alone takes its mode from the caller's umask. An operator import
+    under Debian's default 0002, beneath the setgid azazel-operator store root,
+    made `admitted/` and `state/` writable by that group (#186). Serving
+    re-verifies signatures but not the watermark, so such a member could swap
+    in an older, validly signed bundle or remove the anti-rollback watermark.
+    The setgid bit is kept so the group can still read.
+    """
+
+    path.mkdir(mode=0o750, parents=True, exist_ok=True)
+    # Check and change the directory that was opened, never a path that could
+    # be swapped for a symlink in between.
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if info.st_mode & 0o022:
+            os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o022)
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, payload: bytes) -> None:
     """Write through a temporary in the same directory, then move."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _store_directory(path.parent)
     handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".lite.")
     try:
         with os.fdopen(handle, "wb") as stream:
