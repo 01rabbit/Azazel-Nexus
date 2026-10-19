@@ -578,6 +578,7 @@ built for the host architecture, not packaged by Edge's packager, and not
 started by systemd); activation admitting the unit (#198); hardware behaviour.
 The same run on the rehearsal VM, through the installed units, is the next
 step. Neither is hardware evidence: HG-07 still needs the real host.
+The VM procedure is the [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md).
 
 ## 3. What is out of scope
 
