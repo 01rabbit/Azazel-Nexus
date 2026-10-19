@@ -29,7 +29,8 @@ ADMISSION = DOCS / "hil-runbooks" / "mio-admission.md"
 CODE_ROOTS = (REPO / "src", REPO / "runtime" / "src", REPO / "tools")
 
 #: Operator placeholders written in capitals; none of them names a code symbol.
-PLACEHOLDERS = {"DAEMON_ACCOUNT", "RUN_ID", "APPROVER_PUBLIC_HEX", "MODEL_ID", "DUT_ID"}
+PLACEHOLDERS = {"DAEMON_ACCOUNT", "RUN_ID", "APPROVER_PUBLIC_HEX", "MODEL_ID", "DUT_ID",
+                "NODE", "LABEL", "PYTHON", "NODE_PRINTED_SHA256", "ENROLLED_PUBLIC_HEX"}
 #: A file of Azazel-Edge, named by hg-07.md as the producer of the Edge package.
 EXTERNAL_REPOSITORY_PATHS = {"packaging/nexus-core/nexus_core_package.py"}
 #: Host paths owned by the code; anything else (/proc, /sys, media) is external.

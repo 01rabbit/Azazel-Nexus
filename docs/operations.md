@@ -45,6 +45,8 @@ profile is selected or its reader fails. Status does not
 query systemd, and audit-chain health is unknown without an explicit `--ledger`.
 
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
+The whole sequence, including off-host signing with `tools/operator_sign.py`, is
+rehearsed step by step in the [commissioning VM rehearsal](hil-runbooks/commissioning-rehearsal.md).
 Installation creates `/etc/azazel/mio-profile/` as root:root 0700 even before
 commissioning. Keep it limited to the two retained proposal copies and the
 reviewed detached signature (root-owned 0600). `proposal-export` publishes the
