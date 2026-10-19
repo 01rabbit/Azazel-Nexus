@@ -274,10 +274,17 @@ class SegmentedLedger:
             yield from AuditLedger(segment)
 
     def head(self) -> tuple[int, str]:
-        sequence, digest = 0, GENESIS_HASH
-        for entry in self:
-            sequence, digest = entry.sequence, entry.event_hash
-        return sequence, digest
+        """The last record of the latest segment that has one.
+
+        Read from the end, like `AuditLedger.head`, so an append does not
+        re-read every segment. Continuity across files is `verify`'s check.
+        """
+
+        for segment in reversed(self.segments()):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return 0, GENESIS_HASH
 
     def verify(self) -> None:
         """Walk every segment in order. A boundary is not an exception.

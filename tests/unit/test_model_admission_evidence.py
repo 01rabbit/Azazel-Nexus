@@ -776,3 +776,77 @@ def test_locald_tree_reads_reader_group_operator_trust(tmp_path, modes, readable
                 tree.read("/etc/azazel/operator-trust/operators.json")
     finally:
         os.close(fd)
+
+
+@pytest.mark.parametrize("mutation", ["wrapper_schema", "payload_schema", "domain", "lab_schema_and_domain"])
+def test_lab_admission_readers_refuse(tmp_path, monkeypatch, mutation):
+    from azazel_nexus.operator_trust import ApprovalRefused, approval_message
+    from tools.mio_admission_helper import check_wrapper
+
+    kwargs, signer, _ = inputs()
+    payload = admission.decode(kwargs["payload"])
+    if mutation in ("payload_schema", "lab_schema_and_domain"):
+        payload["schema"] = payload["schema"].replace("azazel-nexus/", "azazel-nexus-lab/", 1)
+    kwargs["payload"] = admission.canonical(payload)
+    message = (b"azazel-nexus-lab/v1\0" + kwargs["payload"]
+               if mutation in ("domain", "lab_schema_and_domain") else approval_message(
+                   admission.ApprovalPurpose.LOCAL_MODEL_ADMISSION, kwargs["payload"]))
+    kwargs["signature"] = signer.sign(message).signature
+    directory = store(tmp_path, kwargs)
+    path = directory / "embedding.approval"
+    if mutation == "wrapper_schema":
+        wrapper = admission.decode(path.read_bytes())
+        wrapper["schema"] = wrapper["schema"].replace("azazel-nexus/", "azazel-nexus-lab/", 1)
+        path.write_bytes(admission.canonical(wrapper))
+    else:
+        with pytest.raises(ApprovalRefused):
+            admission.verify_local_model_admission(**kwargs)
+    with pytest.raises(ApprovalRefused):
+        check_wrapper(path.read_bytes(), public_key_hex=bytes(signer.verify_key).hex())
+    candidate = admitted_candidate()
+    monkeypatch.setattr(loader, "_collect", lambda *a, **kw: (
+        kwargs["expected"], candidate.evidence.descriptors, candidate.entry, candidate.provider,
+        candidate.host, candidate.tested, candidate.resources, candidate.record))
+    result = read_test(tmp_path, trust=kwargs["trust"])
+    assert isinstance(result.embedding, loader.Refused)
+
+
+@pytest.mark.parametrize("mutation", ["record_schema", "manifest_schema", "domain", "lab_schema_and_domain"])
+def test_collector_refuses_lab_evidence(tmp_path, monkeypatch, mutation):
+    from nacl.signing import SigningKey
+
+    from azazel_nexus.hil_records.evidence import attestation_bytes
+    from azazel_nexus.operator_trust import ApprovalRefused, OperatorTrust
+
+    trust, _, write = collected_store(tmp_path, monkeypatch)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    policy = admission.AdmissionPolicy(frozenset({"approver"}), 86400, ("embedding",))
+    try:
+        # The same complete production fixture reaches collection successfully.
+        result = loader._collect(loader.ProtectedTree(fd, os.getuid()), trust=trust,
+                                 policy=policy, operator="approver")
+        result[1].close()
+        root = tmp_path / "etc/azazel/model-admission/evidence"
+        manifest = admission.decode((root / "manifest.json").read_bytes())
+        if mutation in ("record_schema", "lab_schema_and_domain"):
+            record_path = root / "artifacts/campaign.json"
+            record = admission.decode(record_path.read_bytes())
+            record["schema"] = record["schema"].replace("azazel-nexus/", "azazel-nexus-lab/", 1)
+            raw = admission.canonical(record)
+            write(loader.DIRECTORY + "/evidence/artifacts/campaign.json", raw)
+            manifest["A"]["artifacts"]["campaign.json"]["sha256"] = admission.digest(raw).removeprefix("sha256:")
+        if mutation == "manifest_schema":
+            manifest["schema"] = "azazel-nexus-lab/hil-evidence/v1"
+        key = SigningKey.generate()
+        trust = OperatorTrust({**trust.public_keys, "attester": bytes(key.verify_key)})
+        raw = admission.canonical(manifest)
+        message = (b"azazel-nexus-lab/v1\0" + raw if mutation in ("domain", "lab_schema_and_domain")
+                   else attestation_bytes(manifest))
+        write(loader.DIRECTORY + "/evidence/manifest.json", raw)
+        write(loader.DIRECTORY + "/evidence/manifest.sig", key.sign(message).signature.hex().encode())
+        symbol = "RUNTIME_EVIDENCE_MISSING" if mutation == "record_schema" else "RESERVE_UNATTESTED"
+        with pytest.raises(ApprovalRefused, match=symbol):
+            loader._collect(loader.ProtectedTree(fd, os.getuid()), trust=trust,
+                            policy=policy, operator="approver")
+    finally:
+        os.close(fd)

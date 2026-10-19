@@ -22,6 +22,7 @@ from azazel_nexus.hil_records import (
     validate_record,
 )
 from azazel_nexus.hil_records.contracts import anonymous_dut
+from azazel_nexus.virtualization import SENSORS
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -71,6 +72,7 @@ def fixture_envelope(schema):
 def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     gate, monkeypatch, capsys, tmp_path
 ):
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
     monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY))
     monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
     links = [SimpleNamespace(index=1, name="private-test-interface",
@@ -165,6 +167,7 @@ def test_probe_v3_is_campaign_measurement_shape_but_unattested_campaign_refused(
 def test_capture_confidentiality_guard_refuses_identity_in_platform_reply(
     gate, monkeypatch, capsys
 ):
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
     monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY, kernel_release="host.private"))
     monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
     monkeypatch.setattr(capture, "capture_hg04", lambda: {"interfaces": []})
