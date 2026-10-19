@@ -226,6 +226,7 @@ def _activation(harness: Harness) -> str:
 
     from azazel_nexus.activation import CORE_UNITS, ActivationLease, UnitTier
     from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.edge_package import installed_baseline_state
 
     manager = RecordingUnitManager(UNIT_NAMES.values())
     daemon = ActivationDaemon(
@@ -243,6 +244,10 @@ def _activation(harness: Harness) -> str:
             generation_digest=harness.store.current().digest,  # type: ignore[attr-defined]
         ),
         record=harness.record,  # type: ignore[attr-defined]
+        edge=installed_baseline_state(
+            now=NOW, package_root=harness.root / "empty-edge-package",
+            probe_path=harness.root / "empty-edge-probe.json",
+        ),
     )
     # Not "everything governed". A unit naming a capability this build does
     # not wire is withheld for that -- `azazel-model-fetchd.service` has no
@@ -269,8 +274,11 @@ def _activation(harness: Harness) -> str:
                 "having nothing to serve"
             )
     edge_verdict = next(v for v in outcome.verdicts if v.unit == "azazel-edge-core.service")
-    if edge_verdict.granted or not edge_verdict.reason.startswith("edge_unknown"):
-        raise RuntimeError("Edge Core must be withheld without baseline evidence")
+    # A lease-bearing pass now reads the installed package (#198); the
+    # harness installs none, so the package check itself must be what fails.
+    if (edge_verdict.granted or not edge_verdict.reason.startswith("edge_not_ready:")
+            or "package_present" not in edge_verdict.reason):
+        raise RuntimeError("Edge Core must be withheld without an installed package")
     if outcome.edge_baseline_ready:
         raise RuntimeError(
             "edge-baseline-ready was claimed with no Edge Core established"
@@ -350,6 +358,7 @@ def _rollback(harness: Harness) -> str:
 
     from azazel_nexus.activation import ActivationLease, UnitState
     from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.edge_package import installed_baseline_state
 
     manager = RecordingUnitManager(
         UNIT_NAMES.values(), fail_on="azazel-watchdog.service"
@@ -765,7 +774,10 @@ def _edge_probe(harness: Harness) -> str:
 
     state = harness.root / "run" / "edge-probe" / "edge-probe.json"
     edge_probed.write_result(outcome, state)
-    result = load_probe_result(state)
+    # The harness plays azprobe: it wrote the file, so it is the writer the
+    # reader is told to trust. An installed reader resolves the account.
+    writer = os.geteuid()
+    result = load_probe_result(state, owner_uid=writer)
     if result is None:
         raise RuntimeError("the state file the probe just wrote read back as absent")
 
@@ -793,7 +805,8 @@ def _edge_probe(harness: Harness) -> str:
     other_state = harness.root / "run" / "edge-probe-other.json"
     other_state.write_text(json.dumps(other), encoding="utf-8")
     mismatched_version = inspect(
-        root, probe=load_probe_result(other_state), now="2026-09-21T04:01:00Z"
+        root, probe=load_probe_result(other_state, owner_uid=writer),
+        now="2026-09-21T04:01:00Z"
     )
     if mismatched_version.ready:
         raise RuntimeError("a result about another version was promoted to ready")
