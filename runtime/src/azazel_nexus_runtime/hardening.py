@@ -607,6 +607,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
             ("PrivateNetwork", "yes"),
             ("LogRateLimitIntervalSec", "30"),
             ("LogRateLimitBurst", "200"),
+            # Detection comes first when the node is busy: a flood's parsing,
+            # explanation or a local model must not delay Edge's own loop.
+            # A weight, not a cap; an idle node runs everything as before.
+            ("CPUWeight", "400"),
         ),
         rationale=(
             "The verified package path is fixed; no manifest supplies a command. "

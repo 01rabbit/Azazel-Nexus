@@ -30,6 +30,7 @@ Environment=AZAZEL_EVE_PATH=/var/log/suricata/eve.json
 PrivateNetwork=yes
 LogRateLimitIntervalSec=30
 LogRateLimitBurst=200
+CPUWeight=400
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/edge-core
 NoNewPrivileges=yes
