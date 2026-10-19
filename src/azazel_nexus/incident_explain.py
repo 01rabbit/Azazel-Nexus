@@ -292,3 +292,161 @@ def read_record(value):
     if m["text"] is not None:
         _text(m["text"], 4096)
     return json.loads(json.dumps(value, allow_nan=False))
+
+
+RECENT_SCHEMA = "azazel-nexus/recent-incidents/v1"
+RECENT_BYTES = 256 * 1024
+RECOVERY_HINT = "inspect_incident_chain_then_remove_cursor_and_restart"
+CLOSE_REASONS = ("idle", "capacity", "shutdown")
+
+
+def build_recent_incident(transition, previous=None, record=None):
+    """Project a validated transition and optional validated explanation, without identities."""
+    t = read_transition(transition)
+    clean = explanation_input(t)
+    explanation = (previous["explanation"] if previous else
+                   {"state": "pending", "route": "unavailable", "outcome": "unavailable",
+                    "summary": "", "knowledge_refs": [], "failure_codes": []})
+    if record is not None:
+        r = read_record(record)
+        if r["incident_id"] != t["incident_id"]:
+            raise ValueError("recent_refused")
+        explanation = explanation_summary(r)
+    if (record is None and previous and t["event_type"] == "edge.incident.updated"
+            and t["most_severe"] < previous["most_severe"]):
+        explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
+                       "summary": "", "knowledge_refs": [], "failure_codes": []}
+    return {**{k: t[k] for k in ("incident_id", "first_seen", "last_seen", "count",
+                                "most_severe", "edge_would", "technique_ids")},
+            "state": "closed" if t["event_type"] == "edge.incident.closed" else "open",
+            "policy_reason": clean["policy_reason"], "explanation": explanation}
+
+
+def explanation_summary(record):
+    r = read_record(record)
+    refs = []
+    for ref in r["knowledge_refs"][:8]:
+        citation = {k: ref[k] for k in ("technique_id", "name", "claim_id")}
+        try:
+            _citation(citation, r["technique_ids"])
+        except ValueError:
+            continue
+        refs.append(citation)
+    return {"state": "explained" if r["mio"]["text"] else "unavailable",
+            "route": r["mio"]["route"], "outcome": r["mio"]["outcome"],
+            "summary": private_text(r["mio"]["text"][:280], 280) if r["mio"]["text"] else "",
+            "knowledge_refs": refs, "failure_codes": r["failure_codes"]}
+
+
+def build_recent_incidents(incidents, written_at):
+    value = {"schema": RECENT_SCHEMA, "written_at": written_at,
+             "incidents": sorted(incidents, key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]),
+                                 reverse=True)[:20]}
+    checked = read_recent_incidents(json.dumps(value, allow_nan=False).encode())
+    if checked is None:
+        raise ValueError("recent_refused")
+    return checked
+
+
+def _citation(row, ids):
+    _shape(row, ("technique_id", "name", "claim_id"))
+    if (row["technique_id"] not in ids or row["claim_id"] != row["technique_id"]):
+        raise ValueError("recent_refused")
+    _text(row["name"], 120)
+    # Citation names have already been validated by Knowledge. Reject address
+    # syntax here as well: signed content is still untrusted display data.
+    # A bare number token (a port, an integer address) is refused likewise.
+    name = unicodedata.normalize("NFKC", row["name"])
+    if not name or re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
+            token.isdecimal() for token in re.split(r"[^\w]+|_", name)):
+        raise ValueError("recent_refused")
+
+
+def read_recent_incidents(raw):
+    """Strict bounded operator boundary; never render partially valid content."""
+    try:
+        if type(raw) is not bytes or len(raw) > RECENT_BYTES:
+            return None
+        v = json.loads(raw.decode("utf-8"), object_pairs_hook=closed_pairs,
+                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        _shape(v, ("schema", "written_at", "incidents"))
+        if v["schema"] != RECENT_SCHEMA:
+            return None
+        _number(v["written_at"])
+        if type(v["incidents"]) is not list or len(v["incidents"]) > 20:
+            return None
+        seen = set()
+        for row in v["incidents"]:
+            _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
+                         "edge_would", "policy_reason", "technique_ids", "explanation"))
+            ident = row["incident_id"]
+            if type(ident) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", ident) or ident in seen:
+                return None
+            seen.add(ident)
+            if (row["state"] not in {"open", "closed"} or row["edge_would"] not in ACTIONS
+                    or row["policy_reason"] not in POLICY_REASONS | {"other"}):
+                return None
+            for key in ("first_seen", "last_seen"):
+                _number(row[key])
+            if row["last_seen"] < row["first_seen"]:
+                return None
+            _int(row["count"], 2**64-1)
+            _int(row["most_severe"], 10)
+            ids = row["technique_ids"]
+            if type(ids) is not list or len(ids) > 8 or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids):
+                return None
+            e = row["explanation"]
+            _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"))
+            if (e["state"] not in {"pending", "explained", "unavailable"}
+                    or e["route"] not in {"local", "deterministic handoff", "unavailable"}
+                    or e["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}):
+                return None
+            _text(e["summary"], 280)
+            if e["summary"] and private_text(e["summary"], 280) != e["summary"]:
+                return None
+            codes = e["failure_codes"]
+            if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
+                return None
+            refs = e["knowledge_refs"]
+            if type(refs) is not list or len(refs) > 8:
+                return None
+            for ref in refs:
+                _citation(ref, ids)
+        if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
+            return None
+        return v
+    except (ValueError, TypeError, UnicodeError, RecursionError, KeyError, OverflowError):
+        return None
+
+
+def read_explainer_status(raw):
+    try:
+        if type(raw) is not bytes or len(raw) > 8192:
+            return None
+        v = decode(raw)
+        _shape(v, ("schema", "written_at", "last_explained_at", "explained", "refused", "pending",
+                   "cursor_lag", "chain_broken", "recovery_hint", "storage_failed",
+                   "mio_available", "knowledge_available", "audit_forward_dropped",
+                   "audit_forward_refused"))
+        if v["schema"] != "azazel-nexus/incident-explain-status/v1":
+            return None
+        _number(v["written_at"])
+        if v["last_explained_at"] is not None:
+            _number(v["last_explained_at"])
+        for key in ("explained", "pending", "cursor_lag", "audit_forward_dropped", "audit_forward_refused"):
+            _int(v[key], 2**64-1)
+        for key in ("chain_broken", "storage_failed"):
+            if type(v[key]) is not bool:
+                return None
+        for key in ("mio_available", "knowledge_available"):
+            if v[key] is not None and type(v[key]) is not bool:
+                return None
+        if v["recovery_hint"] != (RECOVERY_HINT if v["chain_broken"] else None):
+            return None
+        if type(v["refused"]) is not dict or not set(v["refused"]) <= CODES:
+            return None
+        for n in v["refused"].values():
+            _int(n, 2**64-1)
+        return v
+    except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
+        return None

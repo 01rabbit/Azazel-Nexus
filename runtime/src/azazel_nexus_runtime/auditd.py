@@ -41,7 +41,11 @@ cheaper. It anchors nothing.
 
 from __future__ import annotations
 
+import pwd
+import re
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
 
@@ -52,6 +56,8 @@ from azazel_nexus.audit import (
     AuditLedger,
     AuditUnavailable,
 )
+from azazel_nexus.edge_intake import ACTIONS
+from azazel_nexus.incident_explain import CLOSE_REASONS
 
 from .principal import PrincipalClass
 from .protocol import (
@@ -180,6 +186,32 @@ EVENT_SCHEMAS: Mapping[str, tuple[Argument, ...]] = {
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
 }
+
+
+class _IncidentId(Argument):
+    def coerce(self, value):
+        if type(value) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value):
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, self.name)
+        return value
+
+
+_INCIDENT_FIELDS = (
+    _IncidentId("incident_id", ArgumentKind.IDENTIFIER),
+    Argument("most_severe", ArgumentKind.ORDINAL, maximum=10),
+    Argument("edge_would", ArgumentKind.ENUM, choices=tuple(sorted(ACTIONS))),
+    Argument("count", ArgumentKind.ORDINAL, maximum=2**64-1),
+    Argument("technique_count", ArgumentKind.ORDINAL, maximum=8),
+    Argument("occurred_at", ArgumentKind.TIMESTAMP),
+)
+#: An incident record's day names its segment, and segments only move
+#: forward: one far-future record would refuse every later writer, and a
+#: replayed old one can never land. Incident times are the explainer's
+#: observation times, so a record outside this window is refused outright.
+INCIDENT_CLOCK_SKEW_S = 600
+
+for _kind in ("opened", "escalated", "closed"):
+    EVENT_SCHEMAS["edge.incident." + _kind] = _INCIDENT_FIELDS + (
+        (Argument("reason", ArgumentKind.ENUM, choices=CLOSE_REASONS),) if _kind == "closed" else ())
 
 
 VERBS = (
@@ -359,8 +391,14 @@ class AuditService:
     that may already be broken.
     """
 
-    def __init__(self, ledger: SegmentedLedger) -> None:
+    def __init__(self, ledger: SegmentedLedger, *,
+                 clock: Callable[[], float] = time.time) -> None:
         self.ledger = ledger
+        self.clock = clock
+        try:
+            self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
+        except KeyError:
+            self._explainer_uid = None
         self.verified = False
         self.break_reason: Optional[str] = None
         self.head_sequence = 0
@@ -384,6 +422,16 @@ class AuditService:
         self.break_reason = None
 
     def handle(self, request) -> dict:
+        # No principal is never the explainer, so an incident event without
+        # one is refused below: the absent case fails closed.
+        principal = getattr(request, "principal", None)
+        is_explainer = (principal is not None and self._explainer_uid is not None
+                        and principal.uid == self._explainer_uid)
+        arguments = getattr(request, "arguments", None) or {}
+        incident = str(arguments.get("event_type", "")).startswith("edge.incident.")
+        if ((is_explainer and (request.verb.name != "audit.append" or not incident))
+                or (incident and not is_explainer)):
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "incident_writer")
         if request.verb.name == "audit.bootstrap.observe":
             if not self.verified:
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
@@ -412,6 +460,13 @@ class AuditService:
                 != (request.verb.name == "audit.bootstrap.append")):
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "event writer")
         event = _bind_event(event_type, payload)
+        if event_type.startswith("edge.incident."):
+            try:
+                skew = abs(datetime.fromisoformat(event["occurred_at"]).timestamp() - self.clock())
+            except (ValueError, OverflowError):
+                skew = None
+            if skew is None or skew > INCIDENT_CLOCK_SKEW_S:
+                raise RequestRefused(Refusal.ARGUMENT_RANGE, "occurred_at")
         # Every declared schema carries `occurred_at`, and `_bind_event` has
         # already refused a payload missing it. The segment a record lands in
         # is the day it happened, not the day it arrived.
@@ -473,7 +528,7 @@ def main(
     ready audit service; ``AuditService`` continues to refuse appends.
     """
 
-    from .principal import PrincipalPolicy
+    from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
     from .runtime_paths import audit_sink, ledger_dir, socket_path
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
@@ -490,7 +545,7 @@ def main(
     return serve_forever(
         path=socket_path("audit"),
         registry=REGISTRY,
-        policy=PrincipalPolicy.resolve(),
+        policy=PrincipalPolicy.resolve(service_accounts=SERVICE_ACCOUNTS + ("azexplain",)),
         audit=audit_sink("audit"),
         handler=service.handle,
         stop=stop,

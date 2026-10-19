@@ -152,3 +152,33 @@ def test_normal_non_advisory_reply_codes(reply, code):
     assert result["reason"] == code and result["text"] is None
     with pytest.raises(ValueError):
         read_mio_reply({**reply, "injected": "secret"})
+
+
+def test_recent_builder_bounds_privacy_and_closed_state():
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    rows = [build_recent_incident(transition(incident_id=f"inc-{i:016x}", last_seen=i,
+                                            attack_type="192.0.2.1", policy_reason="secret"))
+            for i in range(25)]
+    value = build_recent_incidents(rows, 25)
+    assert len(value["incidents"]) == 20
+    assert value["incidents"][0]["last_seen"] == 24
+    assert "192.0.2.1" not in json.dumps(value) and "secret" not in json.dumps(value)
+    assert read_recent_incidents(json.dumps(value).encode()) == value
+    closed = build_recent_incident(transition(event_type="closed", reason="idle"), rows[0])
+    assert closed["state"] == "closed"
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda v: v.update(extra=1),
+    lambda v: v["incidents"][0].update(count=True),
+    lambda v: v["incidents"][0].update(edge_would="isolated"),
+    lambda v: v["incidents"][0].update(technique_ids=["192.0.2.1"]),
+    lambda v: v["incidents"][0]["explanation"].update(summary="2001:db8::1"),
+    lambda v: v["incidents"][0]["explanation"].update(knowledge_refs=[{"technique_id": "T1059", "name": "192.0.2.1", "claim_id": "T1059"}]),
+    lambda v: v["incidents"].append(v["incidents"][0]),
+])
+def test_recent_strict_shape(mutation):
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    v = build_recent_incidents([build_recent_incident(transition())], 0)
+    mutation(v)
+    assert read_recent_incidents(json.dumps(v).encode()) is None

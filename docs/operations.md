@@ -281,3 +281,32 @@ reports `incident_segment_full`; a torn final line reports
 These counters describe missing context, not Edge control or enforcement.
 
 See [integration loop I1](integration-loop.md#i1--intake-detect--understand).
+
+
+### Reading the integrated loop (I3)
+
+`azazel-nexus status` now includes `edge loop:` after the six-axis integration
+view. Intake/explainer snapshots degrade independently to unavailable or stale
+(over 30 seconds); a quiet explainer's unchanged snapshot may become stale.
+Use the existing Edge probe to assess the payload itself. Status also shows
+accepted/explained counts, refusal counters, storage failure, last advisory
+availability, `audit_forward_dropped` (delivery gave up or queue full) and
+`audit_forward_refused` (auditd refused the record). A chain break shows
+`inspect_incident_chain_then_remove_cursor_and_restart`; follow the recovery
+procedure above before removing any cursor.
+
+The explainer's operator leaf also contains `recent.json` with up to 20 recent
+incidents; status renders five. Rows show pseudonymous ids, open/closed state,
+severity/count, technique ids, sanitized summaries and knowledge citations.
+`Edge would isolate (observe-only, not executed)` records the decision Edge
+reported. Closing an incident does not imply an action was executed. Missing
+or malformed recent snapshots show unavailable while other sections continue.
+
+Auditd accepts only azexplain's bounded incident openings, severity escalations
+and closes. The existing audit verifier accepts these events. Audit forwarding
+uses a separate worker, a 256-entry memory queue, 250 ms exchanges and five
+attempts per event with one-second retry intervals. Queue overflow, exhausted
+retries and clean-shutdown abandonment count as audit drops. Crashes can lose
+queued work; lost acknowledgements can duplicate events. Explanations and
+ledger reads continue through an audit outage. `recent.json` is a projection,
+not a replacement for either verified ledger.

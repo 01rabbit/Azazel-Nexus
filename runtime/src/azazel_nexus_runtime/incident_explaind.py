@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
 import signal
 import stat
@@ -17,6 +18,7 @@ from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
 from azazel_nexus.incident_explain import (
     CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
@@ -25,12 +27,16 @@ from azazel_nexus.store_dirs import fsync_directory, store_directory
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
 from .knowledge_client import lookup_context
 from .mio_locald import REFERENCE_DEADLINE_MS, KNOWLEDGE_MAX_S
-from .mio_socket_client import _exchange
+from .mio_socket_client import ServiceRefused, _exchange
 
 POLL_SECONDS = 1
 POLL_BYTES = 256 * 1024
 POLL_LINES = 64
 CHECKPOINT_BYTES = 2 * 1024 * 1024
+#: Delivery failures retry after these waits, then the head is dropped: with
+#: the exchange deadline, one record holds the queue head for about 12 s.
+AUDIT_BACKOFF_S = (0.5, 1, 2)
+AUDIT_DEADLINE_S = 2
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl", re.ASCII)
 
 
@@ -60,6 +66,16 @@ def read_file(path, limit):
     return raw
 
 
+def append_audit(event):
+    from .bootstrap_audit_client import AuditAppendReceipt
+    result = _exchange(
+        "audit", "azaudit", "audit.append", {"event_type": event["event_type"]},
+        payload={k: v for k, v in event.items() if k != "event_type"}, deadline_s=AUDIT_DEADLINE_S)
+    if set(result) != {"sequence", "event_hash"}:
+        raise ValueError("audit_receipt_refused")
+    return AuditAppendReceipt(**result)
+
+
 class ExplanationStore(EvidenceStore):
     def __init__(self, root, **limits):
         DailySegments.__init__(self, root, "explanations", **limits)
@@ -78,7 +94,7 @@ class ExplanationStore(EvidenceStore):
 
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
-                 monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None):
+                 monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         self.clock, self.monotonic = clock, monotonic
         self.mio = mio or (lambda frame: _exchange(
@@ -86,6 +102,14 @@ class Explainer:
             payload=frame, deadline_s=REFERENCE_DEADLINE_MS / 1000))
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}
+        self.recent = []
+        self.audit_severities = {}
+        self.audit_forward_dropped = self.audit_forward_refused = 0
+        self._audit_lock = threading.Lock()
+        self.audit_pending = queue.Queue(maxsize=256)
+        self.audit = audit or append_audit
+        self._recent_value = None
+        self._recent_at = float("-inf")
         self.selection = Selection()
         self.cursor = {"segment": None, "offset": 0, "sequence": 0, "last_hash": GENESIS_HASH, "broken": False}
         self.refused = Counter()
@@ -108,9 +132,109 @@ class Explainer:
                 "cursor_lag": self.cursor_lag, "chain_broken": self.chain_broken,
                 "recovery_hint": "inspect_incident_chain_then_remove_cursor_and_restart" if self.chain_broken else None,
                 "storage_failed": self.storage_failed, "mio_available": self.mio_available,
-                "knowledge_available": self.knowledge_available}
+                "knowledge_available": self.knowledge_available,
+                "audit_forward_dropped": self.audit_forward_dropped,
+                "audit_forward_refused": self.audit_forward_refused}
+
+    def count_audit(self, name, n=1):
+        # The poller and the forwarding worker both count; += is not atomic.
+        with self._audit_lock:
+            setattr(self, name, getattr(self, name) + n)
+
+    def recent_status(self):
+        value = build_recent_incidents(self.recent, self.clock())
+        now = self.monotonic()
+        # Rewrite unchanged rows every 20 s so a quiet node is not shown stale.
+        if now - self._recent_at < 5 or (value["incidents"] == self._recent_value
+                                         and now - self._recent_at < 20):
+            return
+        self._recent_at = now
+        try:
+            atomic_json(self.status_path.with_name("recent.json"), value, 0o644)
+            self._recent_value = value["incidents"]
+        except Exception:  # noqa: BLE001 - fixed code, independent snapshot
+            self.refuse("status_write_failed")
+
+    def observe_transition(self, t):
+        ident = t["incident_id"]
+        try:
+            previous = next((r for r in self.recent if r["incident_id"] == ident), None)
+            row = build_recent_incident(t, previous)
+            self.recent = build_recent_incidents(
+                [r for r in self.recent if r["incident_id"] != ident] + [row], self.clock())["incidents"]
+        except Exception:  # noqa: BLE001 - display projection must not cost the audit record
+            self.refuse("transition_refused")
+        old = self.audit_severities.get(ident)
+        kind = t["event_type"].removeprefix("edge.incident.")
+        selected = kind in {"opened", "closed"} or kind == "updated" and old is not None and t["most_severe"] < old
+        if kind == "closed":
+            self.audit_severities.pop(ident, None)
+        else:
+            self.audit_severities[ident] = t["most_severe"] if old is None else min(old, t["most_severe"])
+            if len(self.audit_severities) > 1024:
+                del self.audit_severities[next(iter(self.audit_severities))]
+        if not selected:
+            return
+        from datetime import datetime, UTC
+        from azazel_nexus.incident_explain import CLOSE_REASONS
+        if kind == "closed" and t["reason"] not in CLOSE_REASONS:
+            self.refuse("transition_refused")
+            return
+        event = {"event_type": "edge.incident." + ("escalated" if kind == "updated" else kind),
+                 **{k: t[k] for k in ("incident_id", "most_severe", "edge_would", "count")},
+                 "technique_count": len(t["technique_ids"]),
+                 "occurred_at": datetime.fromtimestamp(self.clock() if kind == "closed" else t["last_update"], UTC).isoformat().replace("+00:00", "Z")}
+        if kind == "closed":
+            event["reason"] = t["reason"]
+        try:
+            self.audit_pending.put_nowait(event)
+        except queue.Full:
+            self.count_audit("audit_forward_dropped")
+
+    def explanation_unavailable(self, ident, code):
+        for row in self.recent:
+            if row["incident_id"] == ident:
+                row["explanation"] = {"state": "unavailable", "route": "unavailable",
+                                      "outcome": "unavailable", "summary": "",
+                                      "knowledge_refs": [], "failure_codes": [code]}
+
+    def forward_audit(self, stopped):
+        # Keep the head inside the 256-entry queue during retries. This worker
+        # alone removes heads; polling only appends and never waits for auditd.
+        # A refusal is auditd's verdict on this record and retrying cannot
+        # change it, so it is dropped at once; only failed delivery retries.
+        attempts = 0
+        while not stopped.is_set():
+            with self.audit_pending.mutex:
+                event = self.audit_pending.queue[0] if self.audit_pending.queue else None
+            if event is None:
+                stopped.wait(0.1)
+                continue
+            try:
+                self.audit(event)
+            except ServiceRefused as exc:
+                if exc.refusal != "read_deadline":
+                    self.count_audit("audit_forward_refused")
+                elif self._audit_retry(stopped, attempts):
+                    attempts += 1
+                    continue
+            except Exception:  # noqa: BLE001 - no peer text escapes
+                if self._audit_retry(stopped, attempts):
+                    attempts += 1
+                    continue
+            self.audit_pending.get_nowait()
+            self.audit_pending.task_done()
+            attempts = 0
+
+    def _audit_retry(self, stopped, attempts):
+        if attempts < len(AUDIT_BACKOFF_S):
+            stopped.wait(AUDIT_BACKOFF_S[attempts])
+            return True
+        self.count_audit("audit_forward_dropped")
+        return False
 
     def status(self):
+        self.recent_status()
         value = self.snapshot()
         content = {k: v for k, v in value.items() if k != "written_at"}
         now = self.monotonic()
@@ -126,6 +250,10 @@ class Explainer:
     def checkpoint(self):
         value = {
             "cursor": self.cursor, "pending": list(self.selection.pending),
+            "recent": build_recent_incidents(self.recent, 0),
+            "audit_severities": self.audit_severities,
+            "audit_forward_dropped": self.audit_forward_dropped,
+            "audit_forward_refused": self.audit_forward_refused,
             "explained_ids": self.selection.explained, "explained": self.explained,
             "last_explained_at": self.last_explained_at, "refused": dict(self.refused),
             "chain_broken": self.chain_broken,
@@ -144,6 +272,10 @@ class Explainer:
         v = decode_checkpoint(read_file(path, CHECKPOINT_BYTES))
         self._checkpoint_value = canonical(v)
         self.cursor = v["cursor"]
+        self.recent = v.get("recent", {"incidents": []})["incidents"]
+        self.audit_severities = v.get("audit_severities", dict(v["explained_ids"]))
+        self.audit_forward_dropped = v.get("audit_forward_dropped", 0)
+        self.audit_forward_refused = v.get("audit_forward_refused", 0)
         self.selection.pending = deque((read_pending(t), s) for t, s in v["pending"])
         self.selection.explained = v["explained_ids"]
         self.explained, self.last_explained_at = v["explained"], v["last_explained_at"]
@@ -266,16 +398,30 @@ class Explainer:
                         if read_control(event):
                             if event["event_type"] == "edge.incident.truncated":
                                 self.refuse("incident_segment_full")
+                            elif event["event_type"] == "edge.incident.reset":
+                                self.audit_severities.clear()
+                                for row in self.recent:
+                                    row["state"] = "closed"
                         else:
                             t = read_transition(event)
                             if seeding:
+                                # Track comparison baselines without forwarding historical events.
+                                if t["event_type"] != "edge.incident.closed":
+                                    self.audit_severities[t["incident_id"]] = t["most_severe"]
+                                    if len(self.audit_severities) > 1024:
+                                        del self.audit_severities[next(iter(self.audit_severities))]
+                                else:
+                                    self.audit_severities.pop(t["incident_id"], None)
                                 continue
+                            self.observe_transition(t)
                             if t["event_type"] == "edge.incident.opened" and self.clock() - t["first_seen"] > 3600:
                                 self.refuse("stale_skipped")
+                                self.explanation_unavailable(t["incident_id"], "stale_skipped")
                                 continue
                             result = self.selection.enqueue(t, entry.sequence)
                             if result == "queue_full":
                                 self.refuse(result)
+                                self.explanation_unavailable(t["incident_id"], result)
                     except Exception:  # noqa: BLE001 - authenticated chain still contains untrusted data
                         self.refuse("transition_refused")
                 if budget <= MAX_LINE or lines >= POLL_LINES:
@@ -331,6 +477,9 @@ class Explainer:
                              "technique_ids": t["technique_ids"], "mio": mio,
                              "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes})
         self.store.append_record(value)
+        for row in self.recent:
+            if row["incident_id"] == t["incident_id"]:
+                row["explanation"] = explanation_summary(value)
         for code in codes:
             self.refuse(code)
         self.selection.mark(t)
@@ -348,12 +497,17 @@ class Explainer:
                 while item := self.selection.take(self.monotonic()):
                     if item[0]["event_type"] == "edge.incident.opened" and self.clock() - item[0]["first_seen"] > 3600:
                         self.refuse("stale_skipped")
+                        self.explanation_unavailable(item[0]["incident_id"], "stale_skipped")
                         self.checkpoint()
                         continue
                     try:
                         self.explain(*item)
                     except SegmentFull as exc:
                         self.refuse(exc.code)
+                        self.explanation_unavailable(item[0]["incident_id"], exc.code)
+                    except Exception:
+                        self.explanation_unavailable(item[0]["incident_id"], "storage_failed")
+                        raise
                     self.checkpoint()
             except Exception:  # noqa: BLE001 - storage fails closed, Edge remains independent
                 self.storage_failed = True
@@ -368,17 +522,28 @@ class Explainer:
             self.refuse("storage_failed")
             self.status()
             return 1
+        audit_stop = threading.Event()
+        audit_worker = threading.Thread(target=self.forward_audit, args=(audit_stop,), daemon=True)
+        audit_worker.start()
         if ready:
             ready()
         while not stop():
             self.poll()
-            # Interruptible shutdown; no worker or child process is created.
+            # Interruptible polling shutdown; the audit worker has its own stop event.
             for _ in range(10):
                 if stop():
                     break
                 time.sleep(POLL_SECONDS / 10)
+        audit_stop.set()
+        audit_worker.join(AUDIT_DEADLINE_S + 1)
+        self.count_audit("audit_forward_dropped", self.audit_pending.unfinished_tasks)
+        try:
+            self.checkpoint()
+        except Exception:  # noqa: BLE001 - fixed storage diagnosis at shutdown
+            self.storage_failed = True
+            self.refuse("storage_failed")
         self.status()
-        return 0
+        return 1 if self.storage_failed else 0
 
 
 def decode_checkpoint(raw):
@@ -386,8 +551,19 @@ def decode_checkpoint(raw):
     import math
 
     v = json.loads(raw.decode("utf-8"), object_pairs_hook=closed_pairs)
-    if type(v) is not dict or set(v) != {"cursor", "pending", "explained_ids", "explained", "last_explained_at", "refused", "chain_broken", "mio_available", "knowledge_available"}:
+    if type(v) is not dict or not {"cursor", "pending", "explained_ids", "explained", "last_explained_at", "refused", "chain_broken", "mio_available", "knowledge_available"} <= set(v) <= {"cursor", "pending", "explained_ids", "explained", "last_explained_at", "refused", "chain_broken", "mio_available", "knowledge_available", "recent", "audit_severities", "audit_forward_dropped", "audit_forward_refused"}:
         raise ValueError
+    if "recent" in v and read_recent_incidents(canonical(v["recent"])) is None:
+        raise ValueError
+    severities = v.get("audit_severities", {})
+    if (type(severities) is not dict or len(severities) > 1024 or any(
+            not re.fullmatch(r"inc-[0-9a-f]{16}", k) or type(n) is not int or not 0 <= n <= 10
+            for k, n in severities.items())):
+        raise ValueError
+    for key in ("audit_forward_dropped", "audit_forward_refused"):
+        n = v.get(key, 0)
+        if type(n) is not int or not 0 <= n < 2**64:
+            raise ValueError
     c = v["cursor"]
     if type(c) is not dict or set(c) != {"segment", "offset", "sequence", "last_hash", "broken"}:
         raise ValueError

@@ -83,7 +83,7 @@ def test_daemon_main_uses_default_readiness_callback(
     def expected_ready():
         pass
     monkeypatch.setattr(systemd_notify, "runtime_ready_callback", lambda: expected_ready)
-    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls: object()))
+    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: object()))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _service: object())
     monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
 
@@ -111,7 +111,7 @@ def test_daemon_main_preserves_explicit_readiness_callback(
         "runtime_ready_callback",
         lambda: pytest.fail("default callback must not replace explicit callback"),
     )
-    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls: object()))
+    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: object()))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _service: object())
     monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
 
@@ -163,7 +163,7 @@ def test_auditd_unverified_chain_keeps_diagnostics_but_withholds_readiness(
     monkeypatch.setattr(auditd.AuditService, "start", report_broken_chain)
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _service: object())
     monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
-    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls: object()))
+    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: object()))
     monkeypatch.setattr(
         systemd_notify,
         "runtime_ready_callback",
@@ -298,7 +298,7 @@ def test_notify_daemons_use_default_readiness_callback(monkeypatch, tmp_path, wi
         pass
 
     monkeypatch.setattr(systemd_notify, "runtime_ready_callback", lambda: expected_ready)
-    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls: object()))
+    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: object()))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _service: object())
     monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
 
@@ -319,7 +319,7 @@ def test_notify_daemons_preserve_explicit_readiness_callback(monkeypatch, tmp_pa
         "runtime_ready_callback",
         lambda: pytest.fail("default callback must not replace explicit callback"),
     )
-    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls: object()))
+    monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: object()))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _service: object())
     monkeypatch.setattr(runtime_paths, "socket_path", lambda name: tmp_path / f"{name}.sock")
 

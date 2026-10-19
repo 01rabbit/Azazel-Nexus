@@ -22,7 +22,22 @@ from azazel_nexus.local_advisory import read_delivered, read_reference
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
 from .runtime_paths import socket_path
+from .protocol import Refusal
 from .transport import _HEADER, MAX_FRAME_BYTES
+
+_REFUSALS = frozenset(r.value for r in Refusal)
+
+
+class ServiceRefused(ValueError):
+    """The peer answered with a declared refusal reason; text stays fixed.
+
+    A ValueError so existing callers keep treating it as any refusal; the
+    reason lets a forwarder tell a verdict from a failed delivery.
+    """
+
+    def __init__(self, refusal: str) -> None:
+        super().__init__("M.I.O. service refused")
+        self.refusal = refusal
 
 
 def _exchange(
@@ -60,6 +75,9 @@ def _exchange(
         _set_remaining_timeout(connection, deadline)
         if connection.recv(1):
             raise ValueError("M.I.O. trailing response refused")
+    if (type(response) is dict and set(response) == {"ok", "refusal"}
+            and response["ok"] is False and response["refusal"] in _REFUSALS):
+        raise ServiceRefused(response["refusal"])
     if (type(response) is not dict or set(response) != {"ok", "result"}
             or response["ok"] is not True or type(response["result"]) is not dict):
         raise ValueError("M.I.O. service refused")

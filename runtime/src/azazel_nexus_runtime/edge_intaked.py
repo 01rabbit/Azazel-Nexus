@@ -1,4 +1,4 @@
-"""Receive Edge observations only; auditd forwarding belongs to I3."""
+"""Receive Edge observations only; the explainer forwards selected audit transitions."""
 
 from __future__ import annotations
 
