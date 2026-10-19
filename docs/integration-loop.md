@@ -163,6 +163,40 @@ socket. Edge Core connects once per event and writes one line.
   it refused, so the status screen can tell "Edge is quiet" from "Edge is not
   reaching us". It cannot tell a quiet Edge from a stopped one by itself; the
   existing `edge-probed` running check answers that.
+- **Edge's own forward counts (#190, Azazel-Edge#432).** What Edge could not
+  deliver never reaches the intake, so the intake cannot count it. Edge
+  counts it: `dropped` (its forwarding queue was full) and `failed` (connect
+  or write to the intake socket failed), with `sent` for lines written. Its
+  only report used to be stderr, which the unit's `LogRateLimitBurst=200`
+  suppresses under exactly the load that drops lines (a load test lost about
+  460 lines and the journal kept no report of it). An Edge Core that includes
+  Azazel-Edge#432 also sends the counts over the same intake socket, in the
+  same one-line-per-connection framing and through the same bounded,
+  non-blocking queue as events: one line
+  `{"schema":"azazel-edge/forward-stats/v1","dropped":N,"failed":M,"sent":K,"since":S}`
+  at start, then at most every 10 s when the counts changed since the last
+  report Edge delivered, and at least every 5 minutes. Counts are cumulative
+  for one Edge process; `since` is its start in epoch seconds. A report that
+  is itself dropped or fails is not counted; the next one carries the totals.
+  Nothing flows from Nexus to Edge, and Edge's detection and decisions do not
+  depend on it.
+  The intake accepts this line as its own closed shape: exactly those five
+  keys, `schema` exactly that value, counts integers 0 to 2^63-1, `since` an
+  integer 0 to 2^37. A line with a `schema` key is held only to this shape,
+  and every other line to the event shape, so neither can pass as the other;
+  anything else is refused with the usual codes. The counts are never stored
+  as evidence, never tracked as an incident and never counted as `accepted`
+  or `processed`. Intake status carries the latest report as optional
+  `edge_forward` (`dropped`, `failed`, `sent`, `since`, `reported_at` (intake
+  receive time) and `restarts`, the number of reports this intake run whose
+  `since` changed or whose counts went back, that is Edge restarts), absent
+  until a report arrives in this intake run; readers that predate it are not
+  affected because it is optional. The peer is authenticated only as the
+  `azedge` account (`SO_PEERCRED`), so the values are Edge's claim, bounded
+  and shown as such, and nothing decides on them. They are lost when the
+  intake restarts until Edge's next report (at most 5 minutes). An Edge Core
+  without #432 never sends the line; status then says the counts were not
+  reported.
 
 Concrete I1 limits and paths:
 
@@ -648,7 +682,12 @@ nothing in intake, detection or Edge's observe-only decisions.
   row, unknown field or unsanitized/address-shaped summary; read bound 256 KiB.
 - **Liveness detail.** Intake shows last processed age, processed and
   accepted counts, the top four refusal counters (plus
-  `evidence_segment_full` whenever it is nonzero) and storage failure. Explainer shows explained count,
+  `evidence_segment_full` whenever it is nonzero) and storage failure, then
+  `Edge forward: dropped N, failed M (as reported by Edge); sent K since Edge
+  start <UTC time>; last report Ns ago`, marked `stale` once no report came
+  for 900 s (three of Edge's 5-minute reports), with a line counting Edge
+  restarts when there were any. Without a report it prints `Edge forward: not
+  reported since the intake started`. Explainer shows explained count,
   chain break and its fixed recovery hint, storage failure, last attempted
   M.I.O./Knowledge availability, `audit_forward_dropped` and
   `audit_forward_refused`. Unchanged
@@ -903,6 +942,16 @@ The root is a scratch directory; remove it with `rm -rf <short dir>` afterwards
   the incident ledger are private and not checked); no unexpected socket was
   newly created under the root (sockets present before the stage are the
   baseline); on shutdown the incident is closed (`shutdown`) in both ledgers.
+- Both also assert Edge's forward counts (Azazel-Edge#432): intake status
+  carries `edge_forward` with `dropped` 0, `failed` 0, `sent` equal to the
+  alerts and no restart; `accepted`, `processed` and the evidence lines stay
+  at the alert count, nothing is refused, and `azazel-nexus status` prints
+  `Edge forward: dropped 0, failed 0 (as reported by Edge); sent 2`. Replay
+  sends that line after the alerts as the `azedge` peer. The real binary
+  sends it itself, and its connections to the intake are counted as one per
+  alert plus one per forward-count write seen in the trace. A binary built
+  before Azazel-Edge#432 sends none: the stage then checks that status says
+  the counts were not reported and says so in its result, rather than failing.
 - Live files are read while daemons append. Only newline-terminated lines
   count (Edge stdout, evidence, explanations, and ledgers, whose complete
   lines are verified in a copy), and status snapshots are replaced

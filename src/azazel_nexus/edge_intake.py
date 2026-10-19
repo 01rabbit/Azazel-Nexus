@@ -29,6 +29,12 @@ MAX_SOURCE_SEVERE_OPENINGS_PER_MINUTE = 5
 SEVERE_SEVERITY = 2
 ACTIONS = frozenset({"observe", "notify", "throttle", "redirect", "isolate"})
 STATUS_SCHEMA = "azazel-nexus/edge-intake-status/v1"
+# Edge Core's own forwarding counts (#190, Edge#432). Counts are cumulative
+# for one Edge process, which `since` (its start, epoch seconds) names.
+FORWARD_STATS_SCHEMA = "azazel-edge/forward-stats/v1"
+FORWARD_COUNT_MAX = 2**63 - 1
+# Bounded so any reported start renders as a date (well before year 9999).
+FORWARD_SINCE_MAX = 2**37
 REFUSAL_CODES = frozenset(
     {
         "EDGE_TOO_LARGE",
@@ -154,12 +160,11 @@ def _object(pairs):
     return result
 
 
-def parse_edge_event(raw: bytes) -> EdgeEvent:
-    """Refuse whole events so partial observations cannot imply a safe posture."""
+def _decode(raw):
     _require(type(raw) is bytes, "EDGE_TYPE")
     _require(len(raw) <= MAX_LINE, "EDGE_TOO_LARGE")
     try:
-        event = json.loads(
+        return json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_object,
             parse_constant=lambda _: (_ for _ in ()).throw(
@@ -168,6 +173,54 @@ def parse_edge_event(raw: bytes) -> EdgeEvent:
         )
     except (UnicodeError, ValueError, RecursionError):
         raise EdgeEventRefused("EDGE_JSON") from None
+
+
+@dataclass(frozen=True)
+class ForwardStats:
+    """Edge's own count of what its forwarder could not deliver.
+
+    Reported by Edge over the intake socket, so it is a claim from the azedge
+    peer, not an observation Nexus made: bounded, shown as reported, never
+    stored as evidence and never counted as an accepted event.
+    """
+
+    dropped: int
+    failed: int
+    sent: int
+    since: int
+
+    def as_dict(self):
+        return {"dropped": self.dropped, "failed": self.failed,
+                "sent": self.sent, "since": self.since}
+
+
+def _forward_stats(value) -> ForwardStats:
+    _shape(value, ("schema", "dropped", "failed", "sent", "since"))
+    _require(value["schema"] == FORWARD_STATS_SCHEMA)
+    for key in ("dropped", "failed", "sent"):
+        _int(value[key], FORWARD_COUNT_MAX)
+    _int(value["since"], FORWARD_SINCE_MAX)
+    return ForwardStats(value["dropped"], value["failed"], value["sent"], value["since"])
+
+
+def parse_edge_line(raw: bytes) -> EdgeEvent | ForwardStats:
+    """One intake line: an Edge event, or Edge's forward counts; nothing else.
+
+    A line carrying ``schema`` is only ever the forward counts, in their own
+    closed shape; every other line is held to the event shape as before.
+    """
+    value = _decode(raw)
+    if type(value) is dict and "schema" in value:
+        return _forward_stats(value)
+    return _event(value)
+
+
+def parse_edge_event(raw: bytes) -> EdgeEvent:
+    """Refuse whole events so partial observations cannot imply a safe posture."""
+    return _event(_decode(raw))
+
+
+def _event(event) -> EdgeEvent:
     _shape(
         event,
         (
@@ -543,8 +596,9 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "queue_drops",
                 "storage_failed",
             ),
-            # Absent from a snapshot an older intake wrote.
-            ("ledger_recovered",),
+            # Absent from a snapshot an older intake wrote, and edge_forward
+            # also until Edge has reported its forward counts.
+            ("ledger_recovered", "edge_forward"),
         )
         _require(value["schema"] == STATUS_SCHEMA)
         _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
@@ -563,6 +617,14 @@ def read_intake_status(raw: bytes) -> dict | None:
         )
         for count in value["refused"].values():
             _int(count, 2**64 - 1)
+        if "edge_forward" in value:
+            forward = value["edge_forward"]
+            _shape(forward, ("dropped", "failed", "sent", "since", "reported_at", "restarts"))
+            for key in ("dropped", "failed", "sent"):
+                _int(forward[key], FORWARD_COUNT_MAX)
+            _int(forward["since"], FORWARD_SINCE_MAX)
+            _int(forward["restarts"], 2**64 - 1)
+            _number(forward["reported_at"])
         return value
     except (ValueError, TypeError, UnicodeError, RecursionError):
         return None

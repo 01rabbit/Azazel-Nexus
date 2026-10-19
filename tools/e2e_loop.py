@@ -28,12 +28,22 @@ EDGE_SEVERITIES = [4, 1]
 #: Stopping intake makes the explainer forward a close; confirmed on its own
 #: budget, so a slow observation phase does not starve the shutdown check.
 CLOSE_SECONDS = 10
+#: Edge reports its forward counts at start and then every 10 s when they
+#: changed; the intake publishes them in its next 5 s status snapshot.
+FORWARD_SECONDS = 16
 
 
 def golden_lines() -> list[bytes]:
     lines = (ROOT / "tests/fixtures/edge/rust_event_engine_v1.jsonl").read_bytes().splitlines()
     # Producer-shaped notify -> isolate, with verbatim rule-supplied techniques.
     return [lines[3], lines[5]]
+
+
+def forward_stats_line(sent: int) -> bytes:
+    """Edge's forward counts after delivering `sent` events and losing none."""
+    from azazel_nexus.edge_intake import FORWARD_STATS_SCHEMA
+    return json.dumps({"schema": FORWARD_STATS_SCHEMA, "dropped": 0, "failed": 0,
+                       "sent": sent, "since": int(time.time())}).encode()
 
 
 def eve_events() -> list[dict]:
@@ -224,6 +234,38 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
     return ident
 
 
+def assert_forward_stats(harness: Harness, sent: int) -> dict:
+    """Edge's forward counts reached status, and only status.
+
+    They are neither evidence nor an accepted event, nor a refusal, and the
+    operator sees them as Edge's own report.
+    """
+    from azazel_nexus.edge_intake import read_intake_status
+    from tools.e2e_stages import _cli
+
+    base = harness.root / "var/lib/azazel"
+    intake = read_intake_status((base / "run/edge-intake-status/status.json").read_bytes())
+    assert intake is not None, "intake status refused"
+    forward = intake.get("edge_forward")
+    assert forward is not None, "Edge forward counts not in intake status"
+    assert (forward["dropped"], forward["failed"], forward["sent"], forward["restarts"]) == \
+        (0, 0, sent, 0), f"Edge forward counts {forward}"
+    assert intake["accepted"] == intake["processed"] == sent, "forward counts taken as an event"
+    assert not any(intake["refused"].values()), "intake refused the forward counts"
+    assert len(json_lines(base / "edge-intake/evidence")) == sent, "forward counts stored as evidence"
+    status = _cli(harness, ["status"])
+    assert (f"Edge forward: dropped 0, failed 0 (as reported by Edge); sent {sent} "
+            "since Edge start ") in status, "status does not show Edge's forward counts"
+    return forward
+
+
+def forward_reports(trace: str) -> int:
+    """Lines Edge wrote carrying its forward counts (strace shows the bytes)."""
+    import re
+    return sum(bool(re.search(r"\bsendto\(.*forward-stats/v1", line))
+               for line in joined_trace(trace))
+
+
 def assert_private(harness: Harness, events: list[dict], status: str):
     """No eve address in status, recent.json, explanation records or the audit chain."""
     base = harness.root / "var/lib/azazel"
@@ -257,15 +299,17 @@ def joined_trace(trace: str) -> list[str]:
 
 
 def assert_edge_trace(trace: str, intake: Path, count: int):
+    """One connection per alert, plus one per forward-count report."""
     import re
     lines = joined_trace(trace)
+    count += forward_reports(trace)
     trace = "\n".join(lines)
     calls = [line for line in lines if re.search(r"\bconnect\(", line)]
     assert all('sa_family=AF_UNIX' in line and f'sun_path="{intake}"' in line
                for line in calls), "Edge connected elsewhere"
     failed = [line for line in calls if not line.endswith("= 0")]
     assert not failed, f"Edge's intake connect failed: {failed[0][-80:]}"
-    assert len(calls) == count, "Edge connected more/less than once per alert"
+    assert len(calls) == count, "Edge connected more/less than once per alert and report"
     assert not re.search(r"\b(bind|listen|accept4?|sendmsg|sendmmsg|socketpair)\(", trace), \
         "Edge network operation"
     # Rust writes to a connected stream with sendto(fd, ..., NULL, 0): data on
@@ -296,7 +340,8 @@ for line in sys.stdin.buffer:
         connection.sendall(line)
 """
     result = subprocess.run([sys.executable, "-c", code, str(intake)],
-                            input=b"\n".join(golden_lines()) + b"\n", capture_output=True,
+                            input=b"\n".join(golden_lines() + [forward_stats_line(len(golden_lines()))])
+                            + b"\n", capture_output=True,
                             timeout=max(0.1, deadline - time.monotonic()),
                             **account_credentials("azedge"))
     assert result.returncode == 0, f"azedge replay exited {result.returncode}: {result.stderr[:200]!r}"
@@ -378,10 +423,29 @@ def integrated_loop(harness: Harness) -> str:
                 return golden_lines()
         ident = wait_until(deadline, lambda: assert_observations(
             harness, observations(), events, baseline_sockets | expected), daemons)
+        forward_failure = None
+        alerts = sum(e["event_type"] == "alert" for e in events)
+        try:
+            wait_until(time.monotonic() + FORWARD_SECONDS,
+                       lambda: assert_forward_stats(harness, alerts), daemons,
+                       what="Edge forward counts")
+        except AssertionError as exc:
+            forward_failure = exc
+            if not producer:
+                raise
         if producer:
             stop_producer()
             count = assert_edge_decisions((state / "stdout.jsonl").read_bytes())
-            assert_edge_trace((state / "network.trace").read_text(), intake, count)
+            trace = (state / "network.trace").read_text()
+            assert_edge_trace(trace, intake, count)
+            # An Edge Core built before it reports forward counts never sends
+            # them; one that sent them must have had them accepted and shown.
+            reported = forward_reports(trace)
+            if forward_failure is not None and reported:
+                raise forward_failure
+            if forward_failure is not None:
+                status = _cli(harness, ["status"])
+                assert "Edge forward: not reported since the intake started" in status
         # Stop intake first; let the still-live explainer forward its close.
         daemons[3].__exit__()
         assert daemons[3].process.returncode == 0, "intake did not shut down cleanly"
@@ -404,7 +468,11 @@ def integrated_loop(harness: Harness) -> str:
     assert all(d.process.returncode == 0 for d in daemons), "daemon shutdown failed"
     assert sockets(harness.root) == baseline_sockets, "stage sockets remain after shutdown"
     source = "real Edge Core binary" if producer else "golden fixture replay"
-    return (f"{source}; azedge producer, azintake/azexplain/azaudit/azmioentry/azknowledge daemons "
+    forward = (f"Edge forward counts (0 dropped, 0 failed, {alerts} sent) reached intake status and "
+               "`azazel-nexus status`, not evidence. " if forward_failure is None else
+               "This Edge Core does not report forward counts (built before Azazel-Edge#432); "
+               "status says they were not reported. ")
+    return (f"{source}; {forward}azedge producer, azintake/azexplain/azaudit/azmioentry/azknowledge daemons "
             "with real uid/gid and unit supplementary groups; two alerts, escalation, evidence digests, "
             "deterministic handoff, T1110 citation, private status and verified audit; shutdown close. "
             + ("Edge decided notify then isolate (dry run); network syscalls: intake only."

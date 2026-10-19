@@ -1199,10 +1199,10 @@ def test_severe_flood_from_one_source_does_not_hide_another_source(tmp_path):
     for port in range(250):
         value["normalized"].update(target_port=port, severity=1)
         server.pending.put(daemon.EvidenceRecord.receive(
-            daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+            daemon.parse_edge_line(daemon.canonical(value)), lambda: 0))
     value["normalized"].update(src_ip="10.0.0.99")
     server.pending.put(daemon.EvidenceRecord.receive(
-        daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+        daemon.parse_edge_line(daemon.canonical(value)), lambda: 0))
     server.finished.set()
     server._writer()
     entries = [e.event for e in AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))]
@@ -1278,7 +1278,7 @@ def test_escalation_flood_is_held_to_the_severe_budget(tmp_path):
                 value["normalized"].update(src_ip=f"10.0.{src}.1", target_port=port,
                                            severity=severity)
                 server.pending.put(daemon.EvidenceRecord.receive(
-                    daemon.parse_edge_event(daemon.canonical(value)), lambda: 0))
+                    daemon.parse_edge_line(daemon.canonical(value)), lambda: 0))
     server.finished.set()
     server._writer()
     entries = [e.event for e in AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))]
@@ -1298,3 +1298,60 @@ def test_queue_holds_a_resumed_burst():
     # Edge's forwarding queue (1024) plus a full listen backlog (512) can
     # arrive at once when the intake resumes; the record queue must hold it.
     assert daemon.QUEUE_SIZE >= 1024 + daemon.LISTEN_BACKLOG
+
+
+def test_forward_stats_are_status_only_never_evidence_or_events(running):
+    from test_edge_intake import forward_stats
+
+    clock = iter(range(1000, 2000))
+    server = running(clock=lambda: float(next(clock)))
+    send(server, forward_stats() + b"\n")
+    wait_for(lambda: server.edge_forward is not None)
+    send(server)
+    wait_for(lambda: server.accepted == 1)
+    assert server.processed == 1
+    assert not any(server.refused.values())
+    (path,) = (server.state / "evidence").glob("*.jsonl")
+    assert len(path.read_text().splitlines()) == 1
+    ledger = AuditLedger(next((server.state / "incidents").glob("*.jsonl")))
+    assert [e.event["event_type"] for e in ledger] == ["edge.incident.reset", "edge.incident.opened"]
+    server._status()
+    value = read_intake_status(server.status_path.read_bytes())
+    assert value["accepted"] == 1
+    forward = value["edge_forward"]
+    assert {k: forward[k] for k in ("dropped", "failed", "sent", "since", "restarts")} == {
+        "dropped": 3, "failed": 2, "sent": 40, "since": 1_790_000_000, "restarts": 0}
+    assert type(forward["reported_at"]) is float
+    # Later counts replace earlier ones; the same process is not a restart.
+    send(server, forward_stats(sent=41) + b"\n")
+    wait_for(lambda: server.edge_forward["sent"] == 41)
+    assert server.edge_forward["restarts"] == 0
+    # A new process start, or counts that went back, is an Edge restart.
+    send(server, forward_stats(since=1_790_000_100, dropped=0, failed=0, sent=1) + b"\n")
+    wait_for(lambda: server.edge_forward["since"] == 1_790_000_100)
+    assert server.edge_forward["restarts"] == 1
+    send(server, forward_stats(since=1_790_000_100, dropped=0, failed=0, sent=0) + b"\n")
+    wait_for(lambda: server.edge_forward["sent"] == 0)
+    assert server.edge_forward["restarts"] == 2
+    assert server.accepted == 1 and server.processed == 1
+
+
+def test_malformed_forward_stats_are_refused_and_keep_the_last_report(running):
+    from test_edge_intake import forward_stats
+
+    server = running()
+    send(server, forward_stats() + b"\n")
+    wait_for(lambda: server.edge_forward is not None)
+    send(server, forward_stats(dropped=-1) + b"\n")
+    wait_for(lambda: server.refused["EDGE_RANGE"] == 1)
+    send(server, forward_stats(extra=1) + b"\n")
+    wait_for(lambda: server.refused["EDGE_SHAPE"] == 1)
+    # Two lines on one connection are refused whole, as for events.
+    send(server, forward_stats(sent=99) + b"\n" + forward_stats(sent=99) + b"\n")
+    wait_for(lambda: server.refused["EDGE_SHAPE"] == 2)
+    assert server.edge_forward["dropped"] == 3 and server.edge_forward["sent"] == 40
+    assert server.accepted == 0 and server.processed == 0
+    server.peer_uid = lambda _: 999
+    send(server, forward_stats(sent=77) + b"\n")
+    wait_for(lambda: server.refused["peer_refused"] == 1)
+    assert server.edge_forward["sent"] == 40

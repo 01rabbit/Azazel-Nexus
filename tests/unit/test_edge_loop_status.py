@@ -250,3 +250,32 @@ def test_row_with_unstored_evidence_is_marked(tmp_path, monkeypatch):
     value = build_recent_incidents([build_recent_incident(transition(1))], 0)
     runtime_paths.incident_recent_path().write_text(json.dumps(value))
     assert "evidence not stored" not in render()
+
+
+def test_edge_forward_counts_are_shown_as_edge_reported(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    # An intake (or Edge) without the counts: said so, nothing else hidden.
+    text = render()
+    assert "        Edge forward: not reported since the intake started" in text
+    assert "intake: running" in text and "Edge would isolate" in text
+    intake["edge_forward"] = {"dropped": 460, "failed": 7, "sent": 1200, "since": 1_790_000_000,
+                              "reported_at": 90.0, "restarts": 0}
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    text = render(now=100)
+    assert ("        Edge forward: dropped 460, failed 7 (as reported by Edge); sent 1200 since "
+            "Edge start 2026-09-21T") in text
+    assert "last report 10s ago" in text and "stale" not in text.split("Edge forward")[1].split("\n")[0]
+    assert "restarted" not in text
+    # Old report: kept, but marked as no longer current.
+    text = render(now=90 + 901)
+    assert "last report 901s ago; stale (no report for over 900s)" in text
+    intake["edge_forward"]["restarts"] = 2
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "            Edge restarted 2 time(s) since the intake started;" in render(now=100)
+    # The largest start the reader admits still renders.
+    intake["edge_forward"]["since"] = 2**37
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "Edge forward: dropped 460" in render(now=100)
+    intake["edge_forward"]["since"] = 2**37 + 1
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "intake: unavailable (snapshot absent or refused)" in render(now=100)
