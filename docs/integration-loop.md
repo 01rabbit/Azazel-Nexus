@@ -1,6 +1,6 @@
 # The integrated defensive loop
 
-Status: **I0–I3 implemented; I4–I5 planned**
+Status: **I0–I3 and I5 (container) implemented; I4 waits for Edge; I5 on the VM pending**
 ([#190](https://github.com/01rabbit/Azazel-Nexus/issues/190): I0 #191, I1 #192,
 I2 #193, I3 #194, I4 #196, I5 #195).
 Related: [integrated-node doctrine](nexus-integrated-node.md) ·
@@ -471,12 +471,47 @@ decision is shown as "Edge would redirect to a decoy" and no decoy is started.
 
 ### I5 — end to end
 
-A Linux-container stage builds the real Edge Core binary from a pinned
-Azazel-Edge revision, packages it with Edge's own packager, installs it, and
-feeds a fixed Suricata `eve.json` capture through the whole chain: Edge Core →
-intake → incident → `mio.advise` → Knowledge Lite lookup → status → audit
-verification. The same run is then repeated on the rehearsal VM. Neither is
-hardware evidence: HG-07 still needs the real host.
+The E2E harness stage **integrated defensive loop** (`tools/e2e_loop.py`) runs
+the whole chain with real daemons under their real service accounts and unit
+supplementary groups: `auditd` (azaudit), `knowledge-lited` (azknowledge, with
+the bundle the offline-import stage admitted), `mio-entryd` (azmioentry),
+`edge-intaked` (azintake) and `incident-explaind` (azexplain).
+
+```text
+python tools/e2e.py --root <short dir> --edge-core <built azazel-edge-core>
+```
+
+- **With `--edge-core`** the real Edge Core binary runs as `azedge` with exactly
+  the shipped unit's environment (read from the `azazel-edge-core` profile;
+  only the socket, eve and ledger paths are relocated into the harness root),
+  over a Suricata `eve.json` with two alerts on one incident (the second more
+  severe) and one non-alert event Edge must drop. It runs under `strace`: the
+  only connections are `AF_UNIX` to the intake socket, writes on that
+  connection carry no destination, and nothing binds, listens or opens another
+  family. Its stdout shows only `dry_run` decisions.
+- **Without it** the stage replays the golden fixture lines as the `azedge`
+  peer would, and says so in its result; Edge's own filtering is then not
+  exercised.
+- Both assert: intake accepted exactly the alerts with no refusal; evidence
+  digests match the validated events; the incident ledger verifies and holds
+  `opened` then `updated` (escalation) with Edge's decisions unchanged and the
+  rule's technique ids; the explainer stored two explanations on the
+  deterministic handoff with Knowledge `available` and a citation for one of
+  the event's techniques; `recent.json` lists the incident with citations;
+  `auditd`'s chain verifies and holds `edge.incident.opened` and
+  `edge.incident.escalated`; `azazel-nexus status` shows the incident with
+  "Edge would … (observe-only, not executed)" and the citation; no address from
+  the eve file appears in status, `recent.json`, explanation records or the
+  audit chain; no unexpected socket exists; on shutdown the incident is closed
+  (`shutdown`) in both ledgers.
+- It needs Linux and root (real accounts and `SO_PEERCRED`); otherwise it is
+  *not executed*, like the other account stages.
+
+What it does not establish: the x86_64 package path (the container binary is
+built for the host architecture, not packaged by Edge's packager, and not
+started by systemd); activation admitting the unit (#198); hardware behaviour.
+The same run on the rehearsal VM, through the installed units, is the next
+step. Neither is hardware evidence: HG-07 still needs the real host.
 
 ## 3. What is out of scope
 

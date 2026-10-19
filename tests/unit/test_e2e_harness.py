@@ -268,6 +268,7 @@ REQUIRED_STAGES = (
     "Operator setup flow",
     "Core reserve input path",
     "Integration broker",
+    "integrated defensive loop",
 )
 
 
@@ -589,7 +590,7 @@ def test_the_refusal_happens_before_the_harness_writes_anything():
     assert not target.exists(), "the harness wrote to a root it refused"
 
 
-@pytest.mark.parametrize("root,expected", [(True, (20, 1)), (False, (16, 5))])
+@pytest.mark.parametrize("root,expected", [(True, (21, 1)), (False, (16, 6))])
 def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
     from tools import e2e_stages as stages
 
@@ -605,13 +606,13 @@ def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
                  "_activation", "_health", "_failure", "_rollback", "_audit",
                  "_lite_matrix", "_edge_package", "_loopback_decoys", "_edge_probe",
                  "_lite_import", "_core_reserve_path", "_mio_entry", "_knowledge_status",
-                 "_operator_setup", "_integration_broker"):
+                 "_operator_setup", "_integration_broker", "_integrated_loop"):
         monkeypatch.setattr(stages, name, lambda h: "executed")
     harness = Harness(short_root)
     stages.run_all(harness)
     passed, skipped = expected
     assert harness.report.summary() == {
-        "passed": passed, "not_executed": skipped, "failed": 0, "total": 21}
+        "passed": passed, "not_executed": skipped, "failed": 0, "total": 22}
 
 
 def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):
@@ -713,3 +714,178 @@ def test_activation_stage_withholds_locald_without_model_admission(short_root):
     assert "azazel-mio-entryd.service" in granted
     assert "azazel-edge-core.service" not in granted
     assert "azazel-mio-locald.service" not in granted
+
+
+def test_integrated_loop_requires_import_and_accounts(short_root, monkeypatch):
+    from tools import e2e_stages
+    harness = Harness(short_root)
+    registrations = {}
+    monkeypatch.setattr(harness, "stage", lambda name, run, **kw: registrations.update({name: kw}))
+    e2e_stages.run_all(harness)
+    assert registrations["integrated defensive loop"]["requires"] == (
+        "Knowledge Lite offline import", "install accounts")
+
+
+@pytest.mark.parametrize("binary", [None, "/tmp/built-edge-core"])
+def test_edge_core_option_reaches_harness(short_root, monkeypatch, binary):
+    from tools import e2e, e2e_stages
+    found = []
+    monkeypatch.setattr(e2e_stages, "run_all", lambda harness: found.append(harness.edge_core))
+    args = ["--root", str(short_root)] + (["--edge-core", binary] if binary else [])
+    assert e2e.main(args) == 0
+    assert found == [Path(binary) if binary else None]
+
+
+def test_edge_environment_is_the_shipped_profile_with_only_test_paths(short_root, monkeypatch):
+    from tools.e2e_loop import edge_environment
+    from azazel_nexus_runtime.hardening import PROFILES
+    profile = next(p for p in PROFILES if p.unit == "azazel-edge-core.service")
+    expected = dict(v.split("=", 1) for k, v in profile.extra if k == "Environment")
+    monkeypatch.setenv("AZAZEL_DEFENSE_ENFORCE", "true")
+    monkeypatch.setenv("AZAZEL_FORWARD_LOG", "true")
+    state, intake = short_root / "edge", short_root / "intake.sock"
+    actual = edge_environment(Harness(short_root), intake, state)
+    expected.update(AZAZEL_AI_SOCKET=str(intake), AZAZEL_EVE_PATH=str(state / "eve.json"),
+                    AZAZEL_DEFENSE_RELEASE_LEDGER=str(state / "release-ledger.json"),
+                    AZAZEL_EVE_FROM_START="true")
+    assert actual == expected
+
+
+@pytest.fixture
+def replay_artifacts(short_root):
+    """Real stores/tracker/explainer + admitted bundle; injected transports.
+
+    No accounts, sockets or daemons. Runs the stage's assertions against actual
+    product artifacts; does not claim Linux peer/process evidence.
+    """
+    import json
+    import time
+    from azazel_nexus.edge_intake import EvidenceRecord, parse_edge_event
+    from azazel_nexus.lite_import import lookup_context_reading
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+    from azazel_nexus_runtime.edge_intaked import IntakeServer
+    from azazel_nexus_runtime.incident_explaind import Explainer
+    from tools.e2e_loop import golden_lines
+    from tools.e2e_stages import _lite_import
+
+    harness = Harness(short_root)
+    _lite_import(harness)
+    base = short_root / "var/lib/azazel"
+    for leaf in ("run/edge-intake-status", "run/incident-explain-status", "state/audit"):
+        (base / leaf).mkdir(parents=True, exist_ok=True)
+    server = IntakeServer(path=base / "unused.sock", state=base / "edge-intake",
+                          incident_root=base / "edge-incidents", edge_uid=123,
+                          status_path=base / "run/edge-intake-status/status.json")
+    server._open_storage()
+    instant = [time.monotonic()]
+    audit = SegmentedLedger(base / "state/audit")
+    def knowledge(ids):
+        return lookup_context_reading(root=base / "knowledge", trust_root=base / "lite-trust",
+                                      technique_ids=ids, query_as_of="2026-10-20T00:00:00Z").refs
+    explainer = Explainer(
+        incidents=base / "edge-incidents", state=base / "incident-explain",
+        status_path=base / "run/incident-explain-status/status.json",
+        monotonic=lambda: instant[0], knowledge=knowledge,
+        mio=lambda _: {"route": "deterministic handoff", "outcome": "answered",
+                       "reason": "no admitted model", "ledger_seq": 1,
+                       "reference_status": "unavailable"})
+    explainer.prepare()
+    for line in golden_lines():
+        record = EvidenceRecord.receive(parse_edge_event(line), time.time)
+        server.store.append(record)
+        server._transitions(server.tracker.add(record))
+        server.accepted += 1
+        server.last_accepted_at = record.received_at
+        instant[0] += 6
+        explainer.poll()
+        while not explainer.audit_pending.empty():
+            event = explainer.audit_pending.get_nowait()
+            audit.append(event, day=event["occurred_at"][:10])
+            explainer.audit_pending.task_done()
+    server._status()
+    assert not explainer.storage_failed
+    yield harness
+
+
+def test_replay_assertions_cover_real_artifacts_and_cli(replay_artifacts):
+    from tools.e2e_loop import assert_observations, eve_events, golden_lines
+    ident = assert_observations(replay_artifacts, golden_lines(), eve_events(), set())
+    assert ident.startswith("inc-")
+
+
+@pytest.mark.parametrize("damage", ["count", "digest", "decision", "citation", "audit", "privacy"])
+def test_replay_assertions_reject_missing_or_changed_evidence(replay_artifacts, damage):
+    import json
+    from tools.e2e_loop import assert_observations, eve_events, golden_lines
+    base = replay_artifacts.root / "var/lib/azazel"
+    if damage == "count":
+        path = base / "run/edge-intake-status/status.json"
+        value = json.loads(path.read_text())
+        value["accepted"] -= 1
+        path.write_text(json.dumps(value))
+    elif damage in {"digest", "decision"}:
+        path = next((base / "edge-intake/evidence").glob("*.jsonl"))
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        if damage == "digest":
+            rows[0]["digest"] = "sha256:" + "0" * 64
+        else:
+            rows[0]["event"]["defense"]["action"] = "isolate"
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    elif damage in {"citation", "privacy"}:
+        path = base / "run/incident-explain-status/recent.json"
+        value = json.loads(path.read_text())
+        explanation = value["incidents"][0]["explanation"]
+        if damage == "citation":
+            explanation["knowledge_refs"] = []
+        else:
+            explanation["summary"] = eve_events()[0]["src_ip"]
+        path.write_text(json.dumps(value))
+    else:
+        path = next((base / "state/audit").glob("*.jsonl"))
+        path.write_text(path.read_text().splitlines()[0] + "\n")
+    with pytest.raises(AssertionError):
+        assert_observations(replay_artifacts, golden_lines(), eve_events(), set())
+
+
+@pytest.mark.parametrize("extra", [
+    'connect(4, {sa_family=AF_INET, sin_port=htons(80)}, 16) = 0',
+    'bind(4, {sa_family=AF_UNIX, sun_path="other.sock"}, 20) = 0',
+    'listen(4, 16) = 0',
+    'sendto(4, "data", 4, 0, {sa_family=AF_UNIX, sun_path="other.sock"}, 20) = 4',
+    'socket(AF_INET, SOCK_STREAM, 0) = 4',
+])
+def test_edge_connection_trace_refuses_other_channels(extra):
+    from tools.e2e_loop import assert_edge_trace
+    intake = Path("/tmp/intake.sock")
+    trace = ('socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 3\n'
+             'connect(3, {sa_family=AF_UNIX, sun_path="/tmp/intake.sock"}, 20) = 0\n')
+    assert_edge_trace(trace, intake, 1)
+    with pytest.raises(AssertionError):
+        assert_edge_trace(trace + extra, intake, 1)
+
+
+def test_edge_connection_trace_allows_writes_on_the_intake_connection():
+    from tools.e2e_loop import assert_edge_trace
+    trace = ('socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 3\n'
+             'connect(3, {sa_family=AF_UNIX, sun_path="/tmp/intake.sock"}, 20) = 0\n'
+             'sendto(3, "{}\\n", 3, MSG_NOSIGNAL, NULL, 0) = 3\n')
+    assert_edge_trace(trace, Path("/tmp/intake.sock"), 1)
+
+
+def test_replay_connects_one_line_per_connection_as_child(short_root, monkeypatch):
+    import json
+    from tools import e2e_loop
+    captured = []
+    monkeypatch.setattr(e2e_loop, "account_credentials", lambda account: captured.append(account) or {})
+    def run(command, **kwargs):
+        assert command[:2] == [sys.executable, "-c"]
+        assert "with socket.socket" in command[2]
+        assert "connection.sendall(line)" in command[2]
+        lines = kwargs["input"].splitlines()
+        assert lines == e2e_loop.golden_lines()
+        assert [json.loads(line)["normalized"]["severity"] for line in lines] == [4, 1]
+        return type("Result", (), {"returncode": 0, "stderr": b""})()
+    monkeypatch.setattr(e2e_loop.subprocess, "run", run)
+    import time
+    e2e_loop.replay(Harness(short_root), short_root / "intake.sock", time.monotonic() + 1)
+    assert captured == ["azedge"]
