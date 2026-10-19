@@ -12,6 +12,7 @@ import sys
 
 from azazel_nexus.hil_records.confidentiality import lint_text
 from azazel_nexus.hil_records.contracts import anonymous_dut
+from azazel_nexus.virtualization import virtualization_not_observed
 
 from .hil_readiness import (
     CAPTURE_UNITS,
@@ -21,6 +22,7 @@ from .hil_readiness import (
     run_identity,
 )
 from .netlink import read_links
+from .virtualization_observation import observe_virtualization
 
 
 def capture_hg01(manager):
@@ -77,6 +79,10 @@ def main(argv=None):
     parser.add_argument("gate", choices=("hg-01", "hg-04"))
     args = parser.parse_args(argv)
     try:
+        observations = observe_virtualization()
+        if not virtualization_not_observed(observations):
+            print("refused: RESERVE_VIRTUALIZATION_OBSERVED", file=sys.stderr)
+            return 2
         identity = run_identity()
         if args.gate == "hg-01":
             with ReadOnlySystemd() as manager:
@@ -86,6 +92,8 @@ def main(argv=None):
         if run_identity() != identity:
             raise ValueError("run identity changed")
         report.update(identity)
+        report.update(virtualization_not_observed=True,
+                      virtualization_observations=observations)
         report["dut_fingerprint"] = report.pop("host_digest")
         report["dut_id"] = anonymous_dut(report["dut_fingerprint"])
         payload = json.dumps(report, sort_keys=True)

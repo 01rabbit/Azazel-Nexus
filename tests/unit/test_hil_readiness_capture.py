@@ -75,6 +75,9 @@ def test_hg04_never_emits_raw_names_or_addresses():
 def test_capture_refusal_does_not_print_exception_identity(monkeypatch, capsys):
     def refused():
         raise ValueError("private-identifier")
+    from azazel_nexus.virtualization import SENSORS
+
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
     monkeypatch.setattr(capture, "run_identity", refused)
     assert capture.main(["hg-04"]) == 2
     output = capsys.readouterr()
