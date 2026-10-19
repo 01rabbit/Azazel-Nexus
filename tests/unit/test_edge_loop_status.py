@@ -102,8 +102,11 @@ def test_components_absent_and_nonregular(tmp_path, monkeypatch):
 def test_status_reader_rejects_unknown_codes_and_wrong_hint(tmp_path):
     value = make(tmp_path).snapshot()
     for mutation in ({"refused": {"192.0.2.1": 1}}, {"recovery_hint": "secret"},
-                     {"mio_available": "yes"}, {"audit_forward_dropped": True}):
+                     {"mio_available": "yes"}, {"audit_forward_dropped": True},
+                     {"audit_forward_refused": -1}):
         assert read_explainer_status(json.dumps({**value, **mutation}).encode()) is None
+    del value["audit_forward_refused"]
+    assert read_explainer_status(json.dumps(value).encode()) is None
 
 
 def report():
@@ -167,3 +170,32 @@ def test_only_five_recent_rows_are_rendered(tmp_path, monkeypatch):
     text = render(now=20)
     assert text.count("Edge would") == 5
     assert "inc-0000000000000013" in text and "inc-0000000000000000" not in text
+
+
+def test_internal_failure_prints_fixed_lines_and_status_continues(tmp_path, monkeypatch):
+    from azazel_nexus import edge_loop_status
+    fixtures(tmp_path, monkeypatch)
+    def fail(*_):
+        raise RuntimeError("SECRET 192.0.2.1")
+    monkeypatch.setattr(edge_loop_status, "read_recent_incidents", fail)
+    monkeypatch.setattr(edge_loop_status, "_render_fabric_status", fail)
+    assert render() == "edge loop: unavailable (internal)\n"
+    text = _status(tmp_path)
+    assert "edge loop: unavailable (internal)" in text
+    assert "fabric status view: unavailable (internal)" in text
+    assert "SECRET" not in text and "intake:" not in text
+    assert "continuing regardless:" in text and "next:" in text
+
+
+def test_unparsed_time_is_an_internal_failure(tmp_path, monkeypatch):
+    fixtures(tmp_path, monkeypatch)
+    assert render(now=None) == "edge loop: unavailable (internal)\n"
+
+
+def test_bare_number_citation_names_are_dropped(tmp_path, monkeypatch):
+    _, _, recent = fixtures(tmp_path, monkeypatch)
+    for name in ("Port 4444", "Interpreter ４４４４", "x_8080"):
+        recent["incidents"][0]["explanation"]["knowledge_refs"][0]["name"] = name
+        assert read_recent_incidents(json.dumps(recent).encode()) is None
+    recent["incidents"][0]["explanation"]["knowledge_refs"][0]["name"] = "Rundll32"
+    assert read_recent_incidents(json.dumps(recent).encode()) is not None

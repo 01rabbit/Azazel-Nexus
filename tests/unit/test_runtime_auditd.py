@@ -29,7 +29,7 @@ from azazel_nexus_runtime.auditd import (
     VERBS,
 )
 from azazel_nexus_runtime.principal import Principal, PrincipalClass
-from azazel_nexus_runtime.protocol import RequestRefused
+from azazel_nexus_runtime.protocol import Refusal, RequestRefused
 from azazel_nexus_runtime.transport import Request
 
 SERVICE = Principal(uid=900, gid=900, pid=7, classes=frozenset({PrincipalClass.SERVICE}))
@@ -690,6 +690,7 @@ def test_incident_writer_is_exclusive_and_verify_accepts_events(tmp_path, monkey
     monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=901))
     explainer = Principal(uid=901, gid=901, pid=1, classes=frozenset({PrincipalClass.SERVICE}))
     service = _service(tmp_path)
+    service.clock = lambda: _INCIDENT_AT
     payload = {"incident_id": "inc-0123456789abcdef", "most_severe": 2, "edge_would": "isolate",
                "count": 12, "technique_count": 2, "occurred_at": "2026-10-19T00:00:00Z"}
     for kind in ("opened", "escalated", "closed"):
@@ -728,3 +729,77 @@ def test_incident_audit_schema_is_closed(key, value):
     event[key] = value
     with pytest.raises(RequestRefused):
         _bind_event("edge.incident.closed", event)
+
+
+#: 2026-10-19T00:00:00Z, the time the incident payloads below claim.
+_INCIDENT_AT = 1792368000
+_EXPLAINER = Principal(uid=901, gid=901, pid=1, classes=frozenset({PrincipalClass.SERVICE}))
+
+
+def _incident(occurred_at="2026-10-19T00:00:00Z"):
+    return {"incident_id": "inc-0123456789abcdef", "most_severe": 2, "edge_would": "isolate",
+            "count": 12, "technique_count": 2, "occurred_at": occurred_at}
+
+
+def _incident_service(tmp_path, monkeypatch, uid=901):
+    from types import SimpleNamespace
+    from azazel_nexus_runtime import auditd
+    if uid is None:
+        def absent(_):
+            raise KeyError("azexplain")
+        monkeypatch.setattr(auditd.pwd, "getpwnam", absent)
+    else:
+        monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=uid))
+    service = _service(tmp_path)
+    service.clock = lambda: _INCIDENT_AT
+    return service
+
+
+@pytest.mark.parametrize("occurred_at", ["9999-12-31T23:59:59Z", "2026-10-19T00:10:01Z",
+                                         "2026-10-18T23:49:59Z", "2001-01-01T00:00:00Z",
+                                         "0000-01-01T00:00:00Z"])
+def test_incident_time_outside_the_window_is_refused_and_does_not_block(
+        tmp_path, monkeypatch, occurred_at):
+    service = _incident_service(tmp_path, monkeypatch)
+    with pytest.raises(RequestRefused) as exc:
+        service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                                _incident(occurred_at), principal=_EXPLAINER))
+    assert exc.value.refusal is Refusal.ARGUMENT_RANGE and exc.value.detail == "occurred_at"
+    assert service.ledger.segments() == ()
+    # Neither the explainer nor another writer is stranded behind the refusal.
+    for edge in ("2026-10-18T23:50:00Z", "2026-10-19T00:10:00Z"):
+        service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                                _incident(edge), principal=_EXPLAINER))
+    service.handle(_request("audit.append", {"event_type": "activation.unit_granted"},
+                            _event(day="2026-10-19")))
+    assert sum(c.entries for c in service.ledger.checkpoint()) == 3
+
+
+def test_other_event_times_keep_their_existing_admission(tmp_path, monkeypatch):
+    service = _incident_service(tmp_path, monkeypatch)
+    _append(service, day="2026-09-20")
+    assert service.ledger.segments()[0].name == "2026-09-20.jsonl"
+
+
+def test_without_an_explainer_account_every_incident_writer_is_refused(tmp_path, monkeypatch):
+    service = _incident_service(tmp_path, monkeypatch, uid=None)
+    assert service._explainer_uid is None
+    for principal in (ROOT, SERVICE, _EXPLAINER):
+        with pytest.raises(RequestRefused) as exc:
+            service.handle(_request("audit.append", {"event_type": "edge.incident.opened"},
+                                    _incident(), principal=principal))
+        assert exc.value.refusal is Refusal.PRINCIPAL_DENIED and exc.value.detail == "incident_writer"
+    assert service.ledger.segments() == ()
+    _append(service)
+
+
+def test_incident_event_without_a_principal_is_refused(tmp_path, monkeypatch):
+    service = _incident_service(tmp_path, monkeypatch)
+    request = _request("audit.append", {"event_type": "edge.incident.opened"}, _incident(),
+                       principal=_EXPLAINER)
+    request = Request(verb=request.verb, arguments=request.arguments, principal=None,
+                      payload=request.payload)
+    with pytest.raises(RequestRefused) as exc:
+        service.handle(request)
+    assert exc.value.refusal is Refusal.PRINCIPAL_DENIED and exc.value.detail == "incident_writer"
+    assert service.ledger.segments() == ()
