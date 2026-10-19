@@ -623,9 +623,15 @@ def flip(svc, monkeypatch):
     return first, second, readings
 
 
-@pytest.mark.parametrize("step", ["retain", "fsync"])
+def last_capability(svc):
+    return [item.event for item in svc.router.ledger
+            if item.event["event_type"] in entry.CAPABILITY_EVENTS][-1]
+
+
+@pytest.mark.parametrize("step", ["retain", "fsync", "fsync-unreadable", "not-written"])
 def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
         service, tmp_path, monkeypatch, step):
+    """#227: whatever the failure, memory follows the ledger's last capability record."""
     from azazel_nexus import audit
 
     svc, clock = service
@@ -633,32 +639,63 @@ def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
     svc.reconcile_capability()
     clock.advance(entry.CAPABILITY_INTERVAL_SECONDS)
     readings["value"] = second
-    real = {"retain": svc.router.ledger.retain, "fsync": audit.os.fsync}[step]
     failed = []
+    real_fsync, real_head = audit.os.fsync, audit.AuditLedger.head
+    real_append, real_retain = audit.AuditLedger.append, svc.router.ledger.retain
 
-    def once(*args):
+    def fsync(fd):
         if not failed:
-            failed.append(step)
-            raise OSError(f"{step} fixture")
-        return real(*args)
+            failed.append("fsync")
+            raise OSError("fsync fixture")
+        return real_fsync(fd)
+
+    def head(self):
+        # The segment cannot be read right after the failed sync.
+        if failed == ["fsync"]:
+            failed.append("head")
+            raise AuditChainBroken("unreadable fixture")
+        return real_head(self)
+
+    def append(self, event, **kwargs):
+        if not failed and event.get("event_type") == "mio.capability.transition":
+            failed.append("append")
+            raise AuditUnavailable("nothing written fixture")
+        return real_append(self, event, **kwargs)
+
+    def retain():
+        if not failed:
+            failed.append("retain")
+            raise OSError("retain fixture")
+        return real_retain()
 
     if step == "retain":
-        monkeypatch.setattr(svc.router.ledger, "retain", once)
+        monkeypatch.setattr(svc.router.ledger, "retain", retain)
+    elif step == "not-written":
+        monkeypatch.setattr(audit.AuditLedger, "append", append)
     else:
-        monkeypatch.setattr(audit.os, "fsync", once)
-    # The transition is in the ledger although the append reported failure.
+        monkeypatch.setattr(audit.os, "fsync", fsync)
+        if step == "fsync-unreadable":
+            monkeypatch.setattr(audit.AuditLedger, "head", head)
     with pytest.raises(AuditUnavailable):
         svc.reconcile_capability()
     assert failed
-    last = [item.event for item in svc.router.ledger
-            if item.event["event_type"] == "mio.capability.transition"][-1]
-    assert last["to"] == second[0]["state"] and last["reasons"] == second[0]["reasons"]
-    assert svc._last_capability == second[0]
-    assert svc._observed_at == last["occurred_at"]
-    # The reading flips back: that is a transition, recorded as one.
+    last = last_capability(svc)
+    landed = step != "not-written"
+    assert (last["reasons"] == second[0]["reasons"]) is landed
+    if step in {"retain", "fsync"}:
+        # Reported by the ledger: memory already follows it.
+        assert svc._last_capability == second[0]
+        assert svc._observed_at == last["occurred_at"]
+        assert not svc._capability_uncertain
+    else:
+        # Unknown outcome: settled from the ledger before the next comparison.
+        assert svc._capability_uncertain
+    # The reading flips back. Wherever the ledger ended, the next records agree.
     clock.advance(entry.CAPABILITY_INTERVAL_SECONDS)
     readings["value"] = first
     svc.reconcile_capability()
+    assert not svc._capability_uncertain
+    assert last_capability(svc)["reasons"] == first[0]["reasons"]
     clock.advance(DAY)
     svc.handle(route_request(1001))
     carried = [item.event for item in svc.router.ledger
@@ -670,6 +707,48 @@ def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
     assert reading["state"] == first[0]["state"]
     assert reading["reasons"] == first[0]["reasons"]
     assert reading["availability"] == "last recorded observation"
+
+
+def test_a_carried_record_is_never_written_from_an_unsettled_reading(service, monkeypatch):
+    svc, clock = service
+    svc.reconcile_capability()
+    svc._capability_uncertain = True
+
+    def unreadable():
+        raise AuditChainBroken("unreadable fixture")
+
+    monkeypatch.setattr(svc, "_settle_capability", unreadable)
+    clock.advance(DAY)
+    before = svc.router.ledger.head()
+    with pytest.raises(AuditChainBroken):
+        svc.handle(route_request(1001))
+    assert svc.router.ledger.head() == before  # nothing was carried or recorded
+
+
+def test_a_line_is_reported_only_when_its_hash_matches(state):
+    clock = Clock()
+    route = ledger(state, clock)
+    seen = []
+    route.on_written = seen.append
+    route.append({"event_type": "a"})
+    head = route.head()
+    from azazel_nexus import audit
+
+    real = audit.AuditLedger.append
+
+    def foreign(self, event, **kwargs):
+        # Another line lands at the expected sequence, then the write fails.
+        real(self, {**event, "event_type": "other"}, **kwargs)
+        raise AuditUnavailable("fixture")
+
+    audit.AuditLedger.append = foreign
+    try:
+        with pytest.raises(AuditUnavailable):
+            route.append({"event_type": "b"})
+    finally:
+        audit.AuditLedger.append = real
+    assert route.head()[0] == head[0] + 1
+    assert [event["event_type"] for event in seen] == ["a"]
 
 
 def test_carried_reading_keeps_its_original_observation_time(service, tmp_path):

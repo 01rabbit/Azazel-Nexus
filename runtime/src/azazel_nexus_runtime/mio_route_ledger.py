@@ -393,10 +393,20 @@ class RouteLedger(DailySegments):
         try:
             entry = AuditLedger(path, private=True).append(event, chain_from=head)
         except AuditUnavailable:
-            # The line may be in the file although its sync failed; if so,
-            # the segment holds it and the owner must know.
+            # The line may be in the file although its sync failed. What a
+            # read shows is the page cache: after a failed fsync the kernel
+            # may still show a line it never persisted ("fsyncgate"), so this
+            # follows what this process and any later read will see, not what
+            # survives a power loss. The line is recognised by its sequence
+            # and its recomputed hash, so no other line is taken for it.
+            # When it cannot be read at all, nothing is reported here and the
+            # owner must treat the write as unknown (entryd re-reads the
+            # chain's last capability record before relying on it).
+            expected = AuditEntry(sequence=head[0] + 1, previous_hash=head[1],
+                                  event_hash="", event=dict(event))
             try:
-                landed = AuditLedger(path).head()[0] == head[0] + 1
+                landed = (AuditLedger(path).head()
+                          == (expected.sequence, expected.recomputed()))
             except (OSError, AuditUnavailable, AuditChainBroken):
                 landed = False
             if landed and self.on_written is not None:

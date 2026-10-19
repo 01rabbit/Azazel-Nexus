@@ -390,7 +390,13 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   entryd remembers a capability record as soon as the segment holds it, even
   when a later step of that append (the directory sync or retention) fails,
   so such a failure cannot make the next carried record differ from the
-  transition before it (#227). A segment opens, and gets its carried record,
+  transition before it (#227). A record counts as held only when the
+  segment's last line has its sequence and hash; when the segment cannot be
+  read to tell, entryd re-reads the chain's last capability record before it
+  compares the next sample or writes a carried record, and writes neither
+  while that read fails. What a read shows is the page cache, so after a
+  failed fsync this follows what the running node and its next start see,
+  not what a power loss would keep. A segment opens, and gets its carried record,
   whenever it holds no record yet, so an empty segment left by a crash right
   after it was created still opens with one.
 - **Migration.** On first start after upgrade, a pre-segment
@@ -421,7 +427,9 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   surface), and is charged to that caller's share. A refusal record that no
   longer fits is counted, not fatal: the refused request did nothing. The
   suppressed counts it would have carried are kept for that caller's next
-  refusal record rather than dropped.
+  refusal record rather than dropped, so the counts are "at least": a record
+  whose line landed although its write reported failure is counted again in
+  the next one.
 - **Clock.** Segments are named by the UTC wall-clock day, held by the same
   guards as the intake and explainer stores. A node without an RTC boots with
   its clock behind; until time sync steps it forward, records go into the

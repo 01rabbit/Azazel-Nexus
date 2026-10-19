@@ -121,14 +121,8 @@ class MioEntryService:
         wall_clock: Callable[[], float] = time.time,
         rate: PrincipalRate | None = None,
     ):
-        try:
-            self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
-        except KeyError:
-            self._explainer_uid = None
-        try:
-            self._arbiter_uid = pwd.getpwnam("azarbiter").pw_uid
-        except KeyError:
-            self._arbiter_uid = None
+        self._explainer_uid = self._account_uid("azexplain")
+        self._arbiter_uid = self._account_uid("azarbiter")
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
         self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
@@ -149,6 +143,10 @@ class MioEntryService:
         #: When the current capability reading was recorded as a change; a
         #: carried record repeats it rather than claiming a new observation.
         self._observed_at = None
+        #: Set when a capability record's write failed in a way that leaves
+        #: unknown whether the segment holds it; cleared by re-reading the
+        #: chain's last capability record (#227).
+        self._capability_uncertain = False
         # Verify before trusting a historical comparison basis. This happens
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
@@ -164,6 +162,13 @@ class MioEntryService:
         if hasattr(self.router.ledger, "rebuild_usage"):
             # Today's per-caller shares survive a restart.
             self.router.ledger.rebuild_usage(self._attribution())
+
+    @staticmethod
+    def _account_uid(name: str):
+        try:
+            return pwd.getpwnam(name).pw_uid
+        except (KeyError, OSError):
+            return None
 
     def _budget_key(self, uid) -> str:
         if uid is None:
@@ -250,6 +255,27 @@ class MioEntryService:
             return
         self._last_capability, self._observed_at = reading, observed
 
+    def _settle_capability(self) -> None:
+        """Take the reading from the ledger after a write of unknown outcome.
+
+        Both the next comparison and the next carried record must start from
+        the chain's last capability record. When a write failed and the
+        segment could not be read to tell whether it holds the record, that
+        record is read back here (one pass over the retained segments, only
+        after such a failure). If it cannot be read, this raises and nothing
+        is compared or carried.
+        """
+        if not self._capability_uncertain:
+            return
+        last = None
+        for item in self.router.ledger:
+            if item.event.get("event_type") in CAPABILITY_EVENTS:
+                last = item.event
+        self._last_capability = self._observed_at = None
+        if last is not None:
+            self._written(last)
+        self._capability_uncertain = False
+
     def _carry(self) -> list[dict]:
         """Open each daily segment with the current capability reading.
 
@@ -257,6 +283,7 @@ class MioEntryService:
         capability never changed would lose its last recorded observation and
         `azazel-nexus status` would read unknown. It is not a transition.
         """
+        self._settle_capability()
         if self._last_capability is None or self._observed_at is None:
             return []
         # `observed_at` keeps the original observation time: after a restart
@@ -274,7 +301,10 @@ class MioEntryService:
         a minute, carrying the counts suppressed since, charged to that
         caller's share. A refused request did nothing, so a refusal record
         that no longer fits is counted rather than fatal. The suppressed
-        counts it would have carried are kept for the next record.
+        counts it would have carried are kept for the next record, so none is
+        lost; summed over records they are "at least" counts, since a record
+        whose line landed although its write reported failure carries them
+        again in the next one.
         """
         uid, now = event.get("uid"), self._clock()
         last = self._refusal_recorded.get(uid)
@@ -339,6 +369,7 @@ class MioEntryService:
         if now < self._next_capability_check:
             return None
         current, observed = self._sample()
+        self._settle_capability()
         if current != self._last_capability:
             at = self.router._clock()
             try:
@@ -351,6 +382,14 @@ class MioEntryService:
                 # Not recorded, so not accepted: the next sample retries.
                 self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
                 return observed
+            except (AuditUnavailable, OSError):
+                # Written or not is unknown unless the ledger reported this
+                # very record (a carried record opening the segment may have
+                # been reported before it).
+                reported = self._last_capability == current and self._observed_at == at
+                if not reported and hasattr(self.router.ledger, "on_written"):
+                    self._capability_uncertain = True
+                raise
             # Already remembered by `_written` for a segmented ledger; set
             # here too for a ledger without that hook.
             self._last_capability = current
