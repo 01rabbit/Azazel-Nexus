@@ -56,6 +56,11 @@ A successful projection attests **one** mapping in
 module existing in the pinned tag is not evidence that any mapping onto it
 holds. `PLANNED_FABRIC_MODULES` below is a presence probe for the families §3
 maps, reported and never assumed.
+
+`project_edge_evidence` projects an Edge intake evidence record onto
+`schema.evidence.EvidenceRef`. It is tested against the pin and has no
+production caller yet, so it attests that the shapes agree, not that
+evidence is exported through Fabric.
 """
 
 from __future__ import annotations
