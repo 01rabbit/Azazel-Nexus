@@ -171,7 +171,9 @@ Concrete I1 limits and paths:
   The existing run root remains `root:root 0711`.
 - Maximum JSON line 16 KiB plus newline, strict UTF-8, one line followed by
   EOF per connection. Up to 64 readers, each with a total 2 s deadline;
-  listen backlog 512. A 256-record queue separates acceptance from disk I/O.
+  listen backlog 512. A 2048-record queue separates acceptance from disk I/O;
+  it holds what a resumed intake receives at once (Edge's 1024-line forwarding
+  queue plus the backlog), which a 256-record queue dropped as `queue_full`.
   Overflow accepts and closes immediately (`overloaded`); full queue drops
   with `queue_full`. No response is written to Edge. Edge flushes its backlog
   every 200 ms as one connection per line, so a connection whose single line

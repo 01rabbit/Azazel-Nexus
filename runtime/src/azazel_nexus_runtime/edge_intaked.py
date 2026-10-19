@@ -41,7 +41,11 @@ MAX_CONNECTIONS = 64
 # registered readers and deadlines. The rest are registered as before.
 MAX_INLINE = 64
 RECV_ROUNDS = 8
-QUEUE_SIZE = 256
+# Records between acceptance and disk. Large enough to hold what an Edge
+# forwarding thread (1024 lines) plus a full listen backlog (512) deliver at
+# once after the intake resumes; a record is about 1-2 KiB, so a full queue
+# stays a few MiB under MemoryMax. A load test lost 83% of that burst at 256.
+QUEUE_SIZE = 2048
 READ_DEADLINE_S = 2
 LISTEN_BACKLOG = 512
 STATUS_INTERVAL_S = 5
