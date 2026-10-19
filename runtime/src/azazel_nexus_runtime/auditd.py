@@ -37,12 +37,40 @@ calling it a checkpoint would be the weaker artifact wearing the stronger
 name. What `checkpoint()` produces is an index -- where each segment ends and
 what its last hash was -- and it is labelled as such. It makes verification
 cheaper. It anchors nothing.
+
+## Rate and daily limits (#211 S3)
+
+Nothing here deletes a segment: what the chain keeps, and for how long, is
+the owner's decision. What this daemon does bound is how fast any one writer
+can make it grow. Every append from a non-root principal spends a token from
+a bucket keyed on the kernel-derived uid and the event type; incident records
+additionally spend from a per-uid daily count. A request over either limit is
+refused with `rate_limited` (detail `rate` or `daily`), which is final for that
+request and appends nothing.
+
+The defaults sit far above what the upstream budgets can produce (see
+`docs/integration-loop.md`, "Audit chain limits"), so they bind only a writer
+that has stopped behaving like the explainer. Incident records whose
+`most_severe` is 2 or below have their own buckets and the last
+`INCIDENT_DAILY_RESERVE` records of the day, so a legitimate flood of ordinary
+incidents cannot crowd out a severe opening, escalation or close. Severity is
+the writer's claim: a compromised explainer can label everything severe, and
+the reserve then protects nothing -- the total daily cap is what bounds it.
+
+Refusals are summarized, not recorded one by one: per-request refusal lines
+would let a flood fill `refusals.jsonl` instead of the chain. At most one
+`audit.rate_limited` chain record per (uid, event type, tier, limit) per
+`SUMMARY_WINDOW_S`, and at most `SUMMARY_DAILY_CAP` of them a day, carry the
+counts; summaries are not themselves rate-limited writers' records, so they
+cannot feed back into the limiter.
 """
 
 from __future__ import annotations
 
+import os
 import pwd
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,6 +106,7 @@ __all__ = [
     "Checkpoint",
     "SegmentedLedger",
     "VERBS",
+    "summarized_refusals",
 ]
 
 #: Fields no caller may supply. The daemon assigns all three.
@@ -218,14 +247,71 @@ for _kind in ("opened", "escalated", "closed"):
     EVENT_SCHEMAS["edge.incident." + _kind] = _INCIDENT_FIELDS + (
         (Argument("reason", ArgumentKind.ENUM, choices=CLOSE_REASONS),) if _kind == "closed" else ())
 
+#: What `audit.append` may carry, fixed before the daemon's own summary type
+#: is declared below: a caller that could write `audit.rate_limited` could
+#: forge or bury it.
+_LIMITED_TYPES =tuple(sorted(name for name in EVENT_SCHEMAS if not name.startswith("bootstrap.")))
+EVENT_SCHEMAS["audit.rate_limited"] = (
+    Argument("writer_uid", ArgumentKind.ORDINAL, maximum=2**32 - 1),
+    Argument("writer_class", ArgumentKind.ENUM,
+             choices=tuple(sorted(c.value for c in PrincipalClass))),
+    Argument("refused_event_type", ArgumentKind.ENUM, choices=_LIMITED_TYPES),
+    Argument("tier", ArgumentKind.ENUM, choices=("ordinary", "service", "severe")),
+    Argument("limit", ArgumentKind.ENUM, choices=("daily", "rate")),
+    Argument("refused", ArgumentKind.ORDINAL, maximum=2**63 - 1),
+    Argument("occurred_at", ArgumentKind.TIMESTAMP),
+)
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    """A token bucket: `burst` at once, refilled at `per_second`."""
+
+    burst: int
+    per_second: float
+
+
+#: Incident severities at or below this are Edge's isolate/redirect range and
+#: get their own buckets and the daily reserve, as they do in the intake.
+INCIDENT_SEVERE_AT_MOST = 2
+#: Per (uid, incident event type, tier). Upstream, openings are at most 60/min
+#: ordinary and 30/min severe; closes follow openings (plus at most 1024 held
+#: incidents closing at once); a fall in severity happens at most ten times an
+#: incident. 2048 absorbs a whole table (1024) closing at once with room for
+#: the routine closes around it; 600/min is a wide margin over every rate.
+INCIDENT_RATE = RateLimit(burst=2048, per_second=10.0)
+#: Per (uid, event type) for every other non-root writer. These are rare
+#: transitions (commissioning reads, unit grants); 256 covers every ordinal a
+#: commissioning read can name at once.
+SERVICE_RATE = RateLimit(burst=256, per_second=0.1)
+#: Incident records one uid may append to one daily segment (the UTC day of
+#: `occurred_at`, the segment the record lands in). A whole
+#: day with every upstream budget saturated (60/min ordinary and 30/min severe
+#: openings and their closes, hourly whole-table closes, an escalation every
+#: other second) is about 330,000; normal operation is a tenth of that. At
+#: about 450-500 bytes a record (20-digit counts, long close reasons) this
+#: bounds a writer to roughly 250 MiB a day.
+INCIDENT_DAILY_CAP = 524_288
+#: The last records of that day that only severe records may use.
+INCIDENT_DAILY_RESERVE = 65_536
+#: One summary per key per window, and a hard ceiling a day.
+SUMMARY_WINDOW_S = 300.0
+SUMMARY_DAILY_CAP = 1024
+#: Warn (journal and `audit.verify`) at this chain size or this little free
+#: space on the ledger's filesystem. A warning, never a deletion.
+CAPACITY_WARN_CHAIN_BYTES = 1 << 30
+CAPACITY_WARN_FREE_BYTES = 1 << 30
+#: How often the serve loop re-reads capacity, and re-warns while above it.
+CAPACITY_CHECK_S = 3600.0
+CAPACITY_REWARN_S = 86400.0
+
 
 VERBS = (
     Verb(
         "audit.append",
         arguments=(
             Argument("event_type", ArgumentKind.ENUM,
-                     choices=tuple(sorted(name for name in EVENT_SCHEMAS
-                                           if not name.startswith("bootstrap.")))),
+                     choices=_LIMITED_TYPES),
         ),
         admits=frozenset({PrincipalClass.ROOT, PrincipalClass.SERVICE}),
         accepts_payload=True,
@@ -323,12 +409,16 @@ class SegmentedLedger:
                 return head
         return 0, GENESIS_HASH
 
-    def verify(self) -> None:
+    def verify(self, *, observe: Callable[[Path, AuditEntry], None] | None = None) -> None:
         """Walk every segment in order. A boundary is not an exception.
 
         Each segment is verified against the head the previous one left, so a
         deleted or reordered file shows up as a break rather than as a chain
         that happens to start later.
+
+        `observe`, if given, sees each verified entry with its segment, so a
+        caller that needs to count something does it in this one pass instead
+        of reading the chain again.
         """
 
         expected_sequence, expected_hash = 0, GENESIS_HASH
@@ -351,6 +441,8 @@ class SegmentedLedger:
                         "to what it records"
                     )
                 expected_sequence, expected_hash = entry.sequence, entry.event_hash
+                if observe is not None:
+                    observe(segment, entry)
 
     def append(self, event: Mapping, *, day: str) -> AuditEntry:
         """One entry, at the head this ledger currently has.
@@ -368,6 +460,35 @@ class SegmentedLedger:
             )
         head = self.head()
         return AuditLedger(segment).append(event, chain_from=head)
+
+    def capacity(self) -> dict:
+        """How much the chain holds, and what is left where it lives.
+
+        Sizes are read with `stat`, never by parsing, so this is cheap enough
+        to answer on every `audit.verify` and from the serve loop's tick.
+        """
+
+        chain_bytes = 0
+        segments = self.segments()
+        for segment in segments:
+            try:
+                chain_bytes += segment.stat().st_size
+            except OSError:
+                continue
+        try:
+            stats = os.statvfs(self.root)
+            free = stats.f_bavail * stats.f_frsize
+        except OSError:
+            free = None
+        return {
+            "chain_bytes": chain_bytes,
+            "segments": len(segments),
+            "filesystem_free_bytes": free,
+            "warning": chain_bytes >= CAPACITY_WARN_CHAIN_BYTES
+            or (free is not None and free < CAPACITY_WARN_FREE_BYTES),
+            "warn_chain_bytes": CAPACITY_WARN_CHAIN_BYTES,
+            "warn_free_bytes": CAPACITY_WARN_FREE_BYTES,
+        }
 
     def checkpoint(self) -> tuple[Checkpoint, ...]:
         """An index of where each segment ends. Unsigned, and labelled so."""
@@ -397,9 +518,31 @@ class AuditService:
     """
 
     def __init__(self, ledger: SegmentedLedger, *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 monotonic: Callable[[], float] = time.monotonic,
+                 warn: Callable[[str], None] = lambda line: print(line, file=sys.stderr, flush=True),
+                 ) -> None:
         self.ledger = ledger
         self.clock = clock
+        self.monotonic = monotonic
+        self.warn = warn
+        #: (uid, event_type, tier) -> [tokens, monotonic time of last refill]
+        self._buckets: dict[tuple, list] = {}
+        #: segment day -> uid -> [ordinary, severe] incident records in it.
+        #: Keyed on the day a record is appended to (its segment), the same
+        #: basis the startup recount uses; days before yesterday are dropped.
+        self._incidents_by_day: dict[str, dict[int, list]] = {}
+        #: segment day -> `audit.rate_limited` records in it.
+        self._summaries_by_day: dict[str, int] = {}
+        self._recount_failed = False
+        #: (uid, class, event_type, tier, limit) -> refusals not yet summarized.
+        self._summary_pending: dict[tuple, int] = {}
+        self._summary_last: dict[tuple, float] = {}
+        #: Totals since start, for `audit.verify`: "<limit>:<event_type>:<tier>".
+        self.rate_limited: dict[str, int] = {}
+        self.summaries_dropped = 0
+        self._capacity_checked = float("-inf")
+        self._capacity_warned = float("-inf")
         try:
             self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
         except KeyError:
@@ -416,8 +559,10 @@ class AuditService:
         to report.
         """
 
+        self._incidents_by_day, self._summaries_by_day = {}, {}
+        self._recount_failed = False
         try:
-            self.ledger.verify()
+            self.ledger.verify(observe=self._recount)
             self.head_sequence, self.head_hash = self.ledger.head()
         except AuditChainBroken as exc:
             self.verified = False
@@ -425,6 +570,164 @@ class AuditService:
             return
         self.verified = True
         self.break_reason = None
+        if self._recount_failed:
+            # Fail open, and say so: the chain itself verified, so refusing
+            # every writer over a counting fault would turn a bookkeeping
+            # error into an audit outage. The token buckets still bound the
+            # rest of the day. No record content is logged.
+            self._incidents_by_day, self._summaries_by_day = {}, {}
+            self.warn("azazel-auditd: daily rate-limit counts could not be rebuilt "
+                      "at startup; they start from zero for this run")
+        self._today()
+
+    # -- limits -----------------------------------------------------------
+
+    def _recount(self, segment: Path, entry: AuditEntry) -> None:
+        """Rebuild the daily counts during the startup verify pass. Never raises.
+
+        Only the explainer may write incident records, so every one of them is
+        its. A segment's name is the day its records were appended to, which
+        is the basis the running counts use too.
+        """
+
+        if self._recount_failed:
+            return
+        try:
+            day = segment.stem
+            kind = entry.event.get("event_type", "")
+            if kind == "audit.rate_limited":
+                self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
+            elif kind.startswith("edge.incident.") and self._explainer_uid is not None:
+                counts = self._incidents_by_day.setdefault(day, {}).setdefault(
+                    self._explainer_uid, [0, 0])
+                counts[1 if _severe(entry.event) else 0] += 1
+        except Exception:  # noqa: BLE001 - reported once by start()
+            self._recount_failed = True
+
+    def _today(self) -> str:
+        """auditd's current UTC day. Drops counts for days before yesterday.
+
+        Only days strictly older than yesterday go, so a clock stepping
+        backwards keeps the counts of the day it stepped back from rather
+        than silently wiping them.
+        """
+
+        now = self.clock()
+        day = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+        oldest = datetime.fromtimestamp(now - 86400, UTC).strftime("%Y-%m-%d")
+        for counts in (self._incidents_by_day, self._summaries_by_day):
+            for stale in [d for d in counts if d < oldest]:
+                del counts[stale]
+        return day
+
+    def _admit(self, principal, event_type: str, event: Mapping, day: str) -> tuple | None:
+        """Spend a token and, for an incident, a place in `day`'s count.
+
+        `day` is the segment the record is about to be appended to. Returns
+        the daily-count slot to increment once the append succeeds, or
+        `None`. Root is not limited: it writes the bootstrap records, which are
+        a handful per start, and a root that wanted to fill the disk would not
+        need this socket to do it.
+        """
+
+        if principal is None or PrincipalClass.ROOT in principal.classes:
+            return None
+        incident = event_type.startswith("edge.incident.")
+        tier = ("severe" if _severe(event) else "ordinary") if incident else "service"
+        limit = INCIDENT_RATE if incident else SERVICE_RATE
+        if incident:
+            counts = self._incidents_by_day.get(day, {}).get(principal.uid, (0, 0))
+            ceiling = (INCIDENT_DAILY_CAP if tier == "severe"
+                       else INCIDENT_DAILY_CAP - INCIDENT_DAILY_RESERVE)
+            if counts[0] + counts[1] >= ceiling:
+                self._refuse(principal, event_type, tier, "daily")
+        now = self.monotonic()
+        key = (principal.uid, event_type, tier)
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            bucket = self._buckets[key] = [float(limit.burst), now]
+        bucket[0] = min(float(limit.burst),
+                        bucket[0] + max(0.0, now - bucket[1]) * limit.per_second)
+        bucket[1] = now
+        if bucket[0] < 1.0:
+            self._refuse(principal, event_type, tier, "rate")
+        bucket[0] -= 1.0
+        if incident:
+            return (day, principal.uid, 1 if tier == "severe" else 0)
+        return None
+
+    def _refuse(self, principal, event_type: str, tier: str, limit: str) -> None:
+        name = f"{limit}:{event_type}:{tier}"
+        self.rate_limited[name] = self.rate_limited.get(name, 0) + 1
+        key = (principal.uid, _principal_class(principal), event_type, tier, limit)
+        self._summary_pending[key] = self._summary_pending.get(key, 0) + 1
+        self._summarize(only=key)
+        raise RequestRefused(Refusal.RATE_LIMITED, limit)
+
+    def _summarize(self, *, only: tuple | None = None) -> None:
+        """Write the pending counts whose window has passed. Never raises.
+
+        Bounded twice: one record per key per window, and a daily ceiling.
+        Past the ceiling the counts stay in `rate_limited` and are not
+        written; a writer cannot turn its refusals into chain growth.
+        """
+
+        if not self.verified:
+            return
+        now = self.monotonic()
+        keys = (only,) if only is not None else tuple(self._summary_pending)
+        for key in keys:
+            count = self._summary_pending.get(key, 0)
+            if not count or now - self._summary_last.get(key, float("-inf")) < SUMMARY_WINDOW_S:
+                continue
+            try:
+                at = self.clock()
+                day = self._today()
+                if self._summaries_by_day.get(day, 0) >= SUMMARY_DAILY_CAP:
+                    self.summaries_dropped += count
+                    del self._summary_pending[key]
+                    continue
+                uid, principal_class, event_type, tier, limit = key
+                occurred_at = datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                event = _bind_event("audit.rate_limited", {
+                    "writer_uid": uid, "writer_class": principal_class,
+                    "refused_event_type": event_type, "tier": tier, "limit": limit,
+                    "refused": count, "occurred_at": occurred_at,
+                })
+                entry = self.ledger.append(event, day=day)
+            except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
+                # Keep the count; a later tick tries again after the window.
+                self._summary_last[key] = now
+                continue
+            self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
+            self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
+            self._summary_last[key] = now
+            del self._summary_pending[key]
+
+    def tick(self) -> None:
+        """Called by the serve loop between connections. Never raises.
+
+        Flushes rate-limit summaries whose window has passed, so a flood that
+        stops is still summarized, and re-reads capacity once an hour.
+        """
+
+        try:
+            self._summarize()
+            now = self.monotonic()
+            if now - self._capacity_checked < CAPACITY_CHECK_S:
+                return
+            self._capacity_checked = now
+            capacity = self.ledger.capacity()
+            if capacity["warning"] and now - self._capacity_warned >= CAPACITY_REWARN_S:
+                self._capacity_warned = now
+                self.warn(
+                    "azazel-auditd: audit chain capacity warning: "
+                    f"chain_bytes={capacity['chain_bytes']} segments={capacity['segments']} "
+                    f"filesystem_free_bytes={capacity['filesystem_free_bytes']}; "
+                    "nothing is deleted, see docs/integration-loop.md (Audit chain limits)"
+                )
+        except Exception:  # noqa: BLE001 - housekeeping must not stop serving
+            return
 
     def handle(self, request) -> dict:
         # No principal is never the explainer, so an incident event without
@@ -450,6 +753,9 @@ class AuditService:
                 "verified": self.verified,
                 "break": self.break_reason,
                 "checkpoints": [c.__dict__ for c in self.ledger.checkpoint()],
+                "capacity": self.ledger.capacity(),
+                "rate_limited": dict(sorted(self.rate_limited.items())),
+                "rate_limit_summaries_dropped": self.summaries_dropped,
             }
         return self._append(request)
 
@@ -486,15 +792,50 @@ class AuditService:
         # already refused a payload missing it. The segment a record lands in
         # is the day it happened, not the day it arrived.
         day = event["occurred_at"][:10]
+        # Last, so only a record that would otherwise be appended spends a
+        # token or a place in the day. The day is the segment it lands in.
+        self._today()
+        slot = self._admit(getattr(request, "principal", None), event_type, event, day)
         try:
             entry = self.ledger.append(event, day=day)
         except AuditUnavailable:
             # Fail closed. Telling a caller the event is recorded when it is
             # not would make the next entry's hash depend on that claim.
             raise
+        if slot is not None:
+            slot_day, uid, index = slot
+            self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
         self.head_sequence = entry.sequence
         self.head_hash = entry.event_hash
         return {"sequence": entry.sequence, "event_hash": entry.event_hash}
+
+
+def _severe(event: Mapping) -> bool:
+    severity = event.get("most_severe")
+    return type(severity) is int and severity <= INCIDENT_SEVERE_AT_MOST
+
+
+def _principal_class(principal) -> str:
+    for candidate in (PrincipalClass.ROOT, PrincipalClass.SERVICE, PrincipalClass.OPERATOR):
+        if candidate in principal.classes:
+            return candidate.value
+    return PrincipalClass.SERVICE.value
+
+
+def summarized_refusals(sink: Callable[[dict], None]) -> Callable[[dict], None]:
+    """auditd's refusal sink, without one line per rate-limited request.
+
+    Those refusals are counted and summarized in the chain instead; writing
+    each one to `refusals.jsonl` would move a flood from the chain to that
+    file rather than bounding it.
+    """
+
+    def record(event: dict) -> None:
+        if event.get("reason") == Refusal.RATE_LIMITED.value:
+            return
+        sink(event)
+
+    return record
 
 
 def _bind_event(event_type: str, payload: Mapping) -> dict:
@@ -561,9 +902,9 @@ def main(
         path=socket_path("audit"),
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=SERVICE_ACCOUNTS + ("azexplain",)),
-        audit=audit_sink("audit"),
+        audit=summarized_refusals(audit_sink("audit")),
         handler=service.handle,
-        stop=stop,
+        stop=lambda: (service.tick(), stop())[1],
         ready=startup_ready,
     )
 

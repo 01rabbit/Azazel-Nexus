@@ -435,8 +435,10 @@ def test_the_append_verbs_event_types_are_exactly_the_declared_schemas():
     bootstrap = next(verb for verb in VERBS if verb.name == "audit.bootstrap.append")
     (regular_type,) = append.arguments
     (bootstrap_type,) = bootstrap.arguments
+    # `audit.rate_limited` is the daemon's own summary; no caller writes it.
     assert set(regular_type.choices) == {
-        name for name in EVENT_SCHEMAS if not name.startswith("bootstrap.")
+        name for name in EVENT_SCHEMAS
+        if not name.startswith("bootstrap.") and name != "audit.rate_limited"
     }
     assert set(bootstrap_type.choices) == {
         name for name in EVENT_SCHEMAS if name.startswith("bootstrap.")

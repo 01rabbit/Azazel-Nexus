@@ -392,6 +392,13 @@ def integrated_loop(harness: Harness) -> str:
                     "shutdown close missing"
         wait_until(time.monotonic() + CLOSE_SECONDS, closed,
                    [d for d in daemons if d is not daemons[3]], what="shutdown close")
+        # #211 S3: the whole loop stays inside auditd's per-writer limits, and
+        # capacity is reported without anything being deleted.
+        verify = request(daemons[0].path, {"verb": "audit.verify", "arguments": {}})
+        assert verify["ok"] and verify["result"]["rate_limited"] == {}, "audit rate limit bound"
+        assert verify["result"]["capacity"]["chain_bytes"] > 0
+        assert not any(e["event_type"] == "audit.rate_limited"
+                       for e in ledger_events(base / "state/audit")), "audit rate limit summary"
         assert_private(harness, events, _cli(harness, ["status"]))
     assert all(d.process.returncode == 0 for d in daemons), "daemon shutdown failed"
     assert sockets(harness.root) == baseline_sockets, "stage sockets remain after shutdown"
