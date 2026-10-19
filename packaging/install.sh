@@ -193,7 +193,14 @@ done
 if [ "$WITH_ACCOUNTS" = yes ]; then
     for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azremote azknowledge; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
-            useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
+            # Each account's own group is relied on (azedge for the intake
+            # socket, azknowledge for lite-trust), so it is made explicitly
+            # rather than left to the distribution's USERGROUPS_ENAB default.
+            if getent group "$account" >/dev/null 2>&1; then
+                useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$account" "$account"
+            else
+                useradd --system --no-create-home --shell /usr/sbin/nologin --user-group "$account"
+            fi
         fi
     done
     if ! getent group azincident-read >/dev/null 2>&1; then

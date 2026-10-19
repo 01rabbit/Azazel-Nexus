@@ -494,3 +494,13 @@ def test_minimal_profile_directory_is_always_installed_root_private():
     assert spec.mode == 0o700
     assert spec.owner == "root" and spec.group == "root"
     assert "make_dir 0700 root /etc/azazel/mio-profile" in _installer()
+
+
+def test_every_account_gets_its_own_group_explicitly():
+    """Sockets and leaves rely on an account's same-named group (azedge,
+    azknowledge); it must not depend on the distribution's USERGROUPS_ENAB."""
+    text = (REPO_ROOT / "packaging/install.sh").read_text()
+    useradds = [line.strip() for line in text.splitlines()
+                if line.strip().startswith("useradd ")]
+    assert useradds
+    assert all("--user-group" in line or "--gid" in line for line in useradds)
