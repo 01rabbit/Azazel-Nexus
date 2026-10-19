@@ -21,6 +21,7 @@ from azazel_nexus.hil_records import (
     Validation,
     validate_record,
 )
+from azazel_nexus.virtualization import SENSORS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
@@ -42,6 +43,8 @@ def fixture_record(schema=GATE_SCHEMA):
         "workload_notes": "fixture; no workload was executed",
         "harness_version": "test-only",
         "observations": {},
+        "virtualization_not_observed": True,
+        "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
     }
 
 

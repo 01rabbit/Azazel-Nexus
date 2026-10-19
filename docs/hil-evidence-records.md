@@ -78,8 +78,7 @@ The integrated tools are:
   `azazel-nexus/hil-gate/v1` (`gate_id`), `azazel-nexus/hil-on-host/v1`
   (`behaviour`), `azazel-nexus/hil-degraded-drill/v1` (`drill`),
   `azazel-nexus/core-reserve-campaign/v1` (`runs`), and
-  `azazel-nexus/hil-mio-campaign/v1` (`runs` plus `embedding_runtime` and
-  virtualization observations; the only admission input, see
+  `azazel-nexus/hil-mio-campaign/v1` (`runs` plus `embedding_runtime`; the only admission input, see
   [M.I.O. admission](hil-runbooks/mio-admission.md)). The admission loader calls
   it with `bundle_files=` and `public_key=` (enrolled key bytes) instead of a
   directory and key path. Only verification of a signed bundle with an out-of-band public key can yield
@@ -93,6 +92,21 @@ The integrated tools are:
   and reports required subsystem units, `azazel.slice`, commissioning key and
   pilot class. Use the [on-device key initialization procedure](core-reserve-measurement.md#commissioning-key-initialization-root-only).
   Probe and preflight arguments remain unchanged.
+
+Every HIL gate, on-host behaviour, degraded drill, campaign aggregate and
+per-boot run requires top-level `virtualization_not_observed: true` and
+`virtualization_observations`. The map must contain exactly `hypervisor_type`,
+`cpu_hypervisor`, `systemd_container`, `dockerenv`, `dmi_vendor`, `dmi_product`,
+and `init_cgroup`. Values must be `clear` or `absent`; CPU, DMI vendor/product
+and init cgroup must be `clear`. Missing, unknown or observed signals are
+refused with `RESERVE_VIRTUALIZATION_OBSERVED`, even in a correctly signed
+bundle. VMware, Apple Virtualization, KVM and containers never qualify.
+This negative filter establishes no physical property; independent physical
+provenance review and every other hardware requirement still apply.
+
+Lab schemas under `azazel-nexus-lab/` and signatures using the lab domain
+`azazel-nexus-lab/v1\0` are refused by production evidence and admission
+readers. A lab signature cannot turn VM output into hardware evidence.
 
 ### Acquisition and attestation binding
 
@@ -113,7 +127,11 @@ and probe schemas `azazel-nexus/core-reserve/2` and `azazel-nexus/core-reserve/3
 `validate_record`: qualification requires a complete gate/campaign envelope.
 
 Both capture outputs carry `gate_id`, `capture_method`, `dut_id`,
-`dut_fingerprint`, `boot_fingerprint`, `build_commit`, and `kernel_release`.
+`dut_fingerprint`, `boot_fingerprint`, `build_commit`, `kernel_release`,
+`virtualization_not_observed`, and `virtualization_observations`.
+Before acquiring either gate, `az-hil-capture` applies the negative filter;
+a failed filter emits only `refused: RESERVE_VIRTUALIZATION_OBSERVED` on stderr
+and exits 2 with no capture on stdout.
 HG-01 adds `systemd_version`, `unit_files`, and `units` (active/sub states).
 HG-04 adds `interfaces` with `nic_fingerprint`, `ifla_perm_address_present`
 (bool or null for unknown), `permanent_address_usable`, and
