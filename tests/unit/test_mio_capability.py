@@ -81,14 +81,19 @@ def test_restart_uses_last_transition_not_ledger_head(owner):
 def test_flapping_is_sampled_at_most_once_per_ten_seconds(owner):
     service, time = owner
     service.reconcile_capability()
-    for i in range(9):
-        service.local.observe = lambda: "local_not_admitted"
+    states = iter(["local_not_admitted", "local_unavailable"] * 20)
+    service.local.observe = lambda: next(states)
+    for _ in range(9):
         time[0] += 1
         service.reconcile_capability()
+    # A daemon toggling on every probe is still sampled once per window.
     assert len(transitions(service)) == 1
-    time[0] += 1
-    service.reconcile_capability()
-    assert len(transitions(service)) == 2
+    for window in range(3):
+        time[0] += 10
+        service.reconcile_capability()
+        service.reconcile_capability()
+    # One sample per window, each a real change: exactly one event per window.
+    assert len(transitions(service)) == 1 + 3
 
 
 @pytest.mark.parametrize("profile", [None, {}, "FULL", MioProfile.FASTEST_PERMITTED])
@@ -136,3 +141,51 @@ def test_broken_history_refused_on_restart(owner):
     service.router.ledger.path.write_text(raw)
     with pytest.raises(AuditChainBroken):
         MioEntryService(router=service.router, clock=lambda: time[0], wall_clock=lambda: time[0])
+
+
+@pytest.mark.parametrize("damage", ["to", "reasons", "occurred_at", "bad-state", "list-reasons"])
+def test_malformed_history_is_a_broken_chain_not_a_crash(owner, damage):
+    service, time = owner
+    event = {"event_type": "mio.capability.transition", "from": None, "to": "CORE",
+             "reasons": {}, "occurred_at": datetime.fromtimestamp(time[0], UTC).isoformat()}
+    if damage == "bad-state":
+        event["to"] = "MAXIMUM"
+    elif damage == "list-reasons":
+        event["reasons"] = []
+    else:
+        del event[damage]
+    # Hash-valid: appended through the ledger itself, so only the content is wrong.
+    service.router.ledger.append(event)
+    with pytest.raises(AuditChainBroken):
+        MioEntryService(router=service.router, clock=lambda: time[0], wall_clock=lambda: time[0])
+
+
+def test_restart_keeps_the_rate_bound_from_the_last_transition(owner):
+    service, time = owner
+    service.reconcile_capability()
+    time[0] += 3
+    restarted = MioEntryService(router=service.router, profile_reader=lambda: MioProfile.CORE,
+                                clock=lambda: time[0], wall_clock=lambda: time[0])
+    restarted.local.observe = lambda: "local_not_admitted"
+    restarted.remote.observe = service.remote.observe
+    restarted.reconcile_capability()
+    assert len(transitions(service)) == 1  # 3 s after the last transition: not due
+    time[0] += 7
+    restarted.reconcile_capability()
+    assert len(transitions(service)) == 2
+
+
+def test_a_request_probes_each_daemon_once_and_both_records_agree(owner):
+    from azazel_nexus.sanitizer import PrivacyClass
+
+    service, time = owner
+    calls = []
+    service.local.observe = lambda: calls.append("local") or "local_not_admitted"
+    service.remote.observe = lambda: calls.append("remote") or "remote_unavailable"
+    service.handle(SimpleNamespace(arguments={
+        "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000}))
+    assert calls == ["local", "remote"]
+    events = [item.event for item in service.router.ledger]
+    availability = next(e for e in events if e["event_type"] == "mio.entry.availability")
+    assert availability["local"] == "local_not_admitted"
+    assert transitions(service)[0]["reasons"]["health"]["local"] == "not_admitted"

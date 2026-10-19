@@ -9,6 +9,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+from azazel_nexus.capability import CapabilityState
 from azazel_nexus.local_advisory import (
     FrameRefused,
     gate_frame,
@@ -85,13 +86,20 @@ class MioEntryService:
         for item in self.router.ledger:
             event = item.event
             if event.get("event_type") == "mio.capability.transition":
-                self._last_capability = {"state": event["to"], "reasons": event["reasons"]}
-                # Retain the rate bound across restarts too. A future timestamp
-                # (wall-clock correction) delays at most one sampling interval.
+                # A hash-valid but malformed record is a broken history, not a
+                # crash: the refusal is the same one a tampered record gets.
                 try:
+                    state = CapabilityState(event["to"]).value
+                    reasons = event["reasons"]
+                    if type(reasons) is not dict:
+                        raise TypeError("reasons")
+                    # Retain the rate bound across restarts too. A future
+                    # timestamp (wall-clock correction) delays at most one
+                    # sampling interval.
                     stamp = datetime.fromisoformat(event["occurred_at"]).timestamp()
                 except (KeyError, TypeError, ValueError, OverflowError) as error:
-                    raise AuditChainBroken("invalid capability transition timestamp") from error
+                    raise AuditChainBroken("invalid capability transition record") from error
+                self._last_capability = {"state": state, "reasons": reasons}
                 remaining = max(0, min(CAPABILITY_INTERVAL_SECONDS,
                                        stamp + CAPABILITY_INTERVAL_SECONDS - wall_clock()))
                 self._next_capability_check = self._clock() + remaining
@@ -105,19 +113,25 @@ class MioEntryService:
         except Exception:
             return None
 
+    def _sample(self):
+        local, remote = self._observe(self.local.observe), self._observe(self.remote.observe)
+        reading = read_capability(self._observe(self._profile_reader), local, remote)
+        return reading.as_dict(), (local, remote)
+
     def capability(self) -> dict:
         """Pure status read: no ledger writes or comparison-state mutation."""
-        return read_capability(
-            self._observe(self._profile_reader), self._observe(self.local.observe),
-            self._observe(self.remote.observe),
-        ).as_dict()
+        return self._sample()[0]
 
-    def reconcile_capability(self) -> None:
-        """Sample at most every ten seconds; append before accepting a change."""
+    def reconcile_capability(self):
+        """Sample at most every ten seconds; append before accepting a change.
+
+        Returns the `(local, remote)` observations taken, or None when no
+        sample was due, so a request can reuse them rather than probe twice.
+        """
         now = self._clock()
         if now < self._next_capability_check:
-            return
-        current = self.capability()
+            return None
+        current, observed = self._sample()
         if current != self._last_capability:
             self.router._record({
                 "event_type": "mio.capability.transition",
@@ -126,6 +140,7 @@ class MioEntryService:
             })
             self._last_capability = current
         self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
+        return observed
 
     def handle(self, request) -> dict:
         if request.arguments["deadline_ms"] == 0:
@@ -149,14 +164,17 @@ class MioEntryService:
             )
         else:
             privacy = PrivacyClass(request.arguments["privacy_class"])
-        self.reconcile_capability()
+        sampled = self.reconcile_capability() or (None, None)
         profile = self._profile_reader()
         # Observations remain separate from admission and prediction. Even a
-        # reachable daemon cannot lift HG-05 or establish remote trust.
+        # reachable daemon cannot lift HG-05 or establish remote trust. A
+        # capability sample taken for this request is reused, so both records
+        # describe the same observation and the request probes each daemon once.
+        local, remote = sampled
         self.router._record({
             "event_type": "mio.entry.availability",
-            "local": self.local.observe(),
-            "remote": self.remote.observe(),
+            "local": local if local is not None else self.local.observe(),
+            "remote": remote if remote is not None else self.remote.observe(),
             "local_refusal": LOCAL_REFUSAL,
             "remote_trust": "unchecked",
         })

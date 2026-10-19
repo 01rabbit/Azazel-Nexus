@@ -92,16 +92,15 @@ def test_fake_locald_not_admitted_is_recorded(root):
     requests = []
 
     def serve():
-        # Two observations: the capability sample, then the request's own.
+        # One probe: the request reuses the capability sample it triggered.
         try:
-            for _ in range(2):
-                connection, _ = listener.accept()
-                with connection:
-                    connection.settimeout(2)
-                    requests.append(json.loads(read_frame(connection)))
-                    send_frame(connection, {"ok": True, "result": {
-                        "readiness": "refused", "reason": "not admitted",
-                    }})
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(2)
+                requests.append(json.loads(read_frame(connection)))
+                send_frame(connection, {"ok": True, "result": {
+                    "readiness": "refused", "reason": "not admitted",
+                }})
         except (OSError, ValueError, RuntimeError) as error:
             errors.append(error)
 
@@ -127,4 +126,4 @@ def test_fake_locald_not_admitted_is_recorded(root):
     assert not thread.is_alive()
     assert requests == [{"verb": "model.activate", "arguments": {
         "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-    }}] * 2
+    }}]
