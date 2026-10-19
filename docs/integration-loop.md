@@ -93,11 +93,18 @@ scope for this plan and needs its own decision.
   is off because it has no ceiling. It is governed like every other unit:
   masked and preset-disabled, enabled only when activation admits it in the
   `EDGE_BASELINE` tier, and run as its own system user.
-- **Known limit: first start.** `EDGE_BASELINE` admission needs all five Edge
-  checks, and one of them is "running", which a masked unit can never become.
-  I0 does not relax this. Resolving it, without weakening what
-  `edge-baseline-ready` means, is a separate design decision before I5
-  ([#198](https://github.com/01rabbit/Azazel-Nexus/issues/198)).
+- **First start resolved by [#198](https://github.com/01rabbit/Azazel-Nexus/issues/198).**
+  `EDGE_BASELINE` admission needs the four package checks: present, matching
+  version, matching digest, and healthy. The supporting probe runs the verified
+  binary's fixed `--health` contract without starting the unit. The lease-bearing
+  activation pass inspects the installed package and consumes only fresh,
+  package-bound probe results; stale, missing or unreadable evidence cannot
+  grant. Running is a consequence of starting, so it is not required to admit
+  the unit. All other activation gates remain in place. A grant only enables
+  the unit for a later boot; it neither starts it nor claims readiness.
+  `edge-baseline-ready` still requires all five checks, including running, in
+  projections, status and recorded inspection results. This separates permission
+  to start from evidence that the baseline is ready without weakening readiness.
 
 ### I1 — intake (Detect → Understand)
 

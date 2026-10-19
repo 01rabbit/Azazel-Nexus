@@ -108,8 +108,10 @@ class UnitTier(str, Enum):
     commissioned one.
 
     `EDGE_BASELINE` is the local Edge Core. It needs a verified Edge package
-    on top of everything `SUPPORTING` needs, and nothing else may cause
-    `edge-baseline-ready` to be claimed.
+    on top of everything `SUPPORTING` needs: present, matching version and
+    digest, and a healthy fixed health contract. Running is a consequence of
+    starting, not an admission prerequisite. Only all five checks, including
+    running, may cause `edge-baseline-ready` to be claimed.
 
     `ENFORCEMENT` acts on the network an operator confirmed, and needs a
     complete commissioning record on top of the rest.
@@ -209,7 +211,9 @@ REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 #: what is still owed; this tuple holds what exists.
 #:
 #: Edge Core belongs to `EDGE_BASELINE`; its probe remains `SUPPORTING`
-#: so observation does not depend on the readiness it establishes.
+#: so observation does not depend on the readiness it establishes. I0 ships
+#: the payload; #198 admits it on four package checks, while readiness still
+#: requires the fifth check, running.
 CORE_UNITS = (
     UnitDefinition(
         "azazel-commissiond.service",
@@ -400,17 +404,11 @@ class ActivationLease:
 
 @dataclass(frozen=True)
 class EdgeBaselineState:
-    """What was established about the local Edge Core. All five, or none.
+    """Evidence derived by `edge_package` from the installed package and probe.
 
-    There is deliberately **no function in this repository that produces
-    one**. Nexus consumes an Edge package that does not exist yet
-    ([Nexus#44](https://github.com/01rabbit/Azazel-Nexus/issues/44)), and a
-    producer written ahead of it would be a stub that reports on nothing while
-    looking exactly like a check.
-
-    So the decision is implemented and tested, the type says what the decision
-    needs, and until Edge ships the package the answer is `None` -- which
-    means unknown, and unknown never grants.
+    Four package checks permit launch; all five establish readiness. A grant
+    permits a future start and says nothing about whether Edge is running.
+    Missing, stale or unreadable probe evidence supplies False, never consent.
     """
 
     package_present: bool
@@ -418,6 +416,15 @@ class EdgeBaselineState:
     digest_matches: bool
     health_endpoint_healthy: bool
     running: bool
+
+    @property
+    def launchable(self) -> bool:
+        """The package may start; this does not claim baseline readiness."""
+        return not self.missing_for_launch()
+
+    def missing_for_launch(self) -> tuple[str, ...]:
+        """Failed package checks, excluding the consequence of starting."""
+        return tuple(name for name in self.missing() if name != "running")
 
     @property
     def ready(self) -> bool:
@@ -622,7 +629,7 @@ class ActivationOutcome:
     generation: Optional[int]
     verdicts: tuple[UnitVerdict, ...]
     #: What was established about the local Edge Core during this pass.
-    #: `None` means nothing was, which is what it is until Nexus#44 ships.
+    #: `None` means nothing was established. A grant is not readiness evidence.
     edge: Optional["EdgeBaselineState"] = None
     #: The commissioning record this pass decided against.
     record: Optional[CommissioningRecord] = None
@@ -927,8 +934,8 @@ class ActivationController:
                     "local Edge Core. Unknown is not absent and neither is "
                     "ready (Nexus#44)"
                 )
-            if not self._edge.ready:
-                return "edge_not_ready: " + ",".join(self._edge.missing())
+            if not self._edge.launchable:
+                return "edge_not_ready: " + ",".join(self._edge.missing_for_launch())
             return None
 
         # ENFORCEMENT adds a complete commissioning record to all of the above.

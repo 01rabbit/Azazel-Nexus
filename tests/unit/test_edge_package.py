@@ -1006,3 +1006,78 @@ def test_a_probe_that_checked_nothing_may_omit_the_package_digest():
 def test_a_checked_outcome_must_name_its_package(checked, value):
     with pytest.raises(EdgePackageRefused, match="package_digest"):
         _result(package_digest="", **{checked: value})
+
+
+@pytest.mark.parametrize("case", ["fresh", "stale", "digest", "missing", "unreadable", "malformed", "inspection_error"])
+def test_installed_activation_producer(tmp_path, monkeypatch, case):
+    from azazel_nexus import edge_package
+
+    root = _package(tmp_path)
+    state_path = tmp_path / "probe.json"
+    result = _result(package_digest=_digest_of(tmp_path), running=Evidence.FAILED)
+    state_path.write_text(json.dumps(result.as_event()), encoding="utf-8")
+    monkeypatch.setattr(edge_package, "EDGE_PACKAGE_ROOT", root)
+    # Retain the real file reader, substituting only the fixed path for this test.
+    read_probe = edge_package.load_probe_result
+    monkeypatch.setattr(edge_package, "load_probe_result", lambda: read_probe(state_path))
+    now = "2026-09-21T03:01:00Z"
+    if case == "stale":
+        now = "2026-09-21T03:05:00Z"
+    elif case == "digest":
+        (root / PIN.artifact_name).write_bytes(b"tampered")
+        finding = inspect(root).finding("digest_matches")
+        assert finding.security
+        assert "security finding" in finding.reason
+    elif case == "missing":
+        state_path.unlink()
+    elif case == "malformed":
+        state_path.write_text("{broken", encoding="utf-8")
+    elif case == "unreadable":
+        def unreadable():
+            raise PermissionError("probe unreadable")
+        monkeypatch.setattr(edge_package, "load_probe_result", unreadable)
+    elif case == "inspection_error":
+        def broken_inspection(*args, **kwargs):
+            raise OSError("package unreadable")
+        monkeypatch.setattr(edge_package, "inspect", broken_inspection)
+    state = edge_package.installed_baseline_state(now=now)
+    assert state.launchable is (case == "fresh")
+    assert not state.ready
+    assert not state.running
+    if case == "digest":
+        assert "digest_matches" in state.missing_for_launch()
+    if case in {"stale", "missing", "unreadable", "malformed"}:
+        assert state.missing_for_launch() == ("health_endpoint_healthy",)
+    if case == "inspection_error":
+        assert state == EdgeBaselineState(False, False, False, False, False)
+
+
+    # Exercise the real lease-bearing runtime call with this installed evidence,
+    # rather than proving the loader and admission only in isolation.
+    from azazel_nexus.activation import ActivationLease, CORE_UNITS
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.generation import GenerationStore
+    from azazel_nexus_runtime.activated import ActivationDaemon
+    from azazel_nexus_runtime.units import RecordingUnitManager
+
+    definition = next(d for d in CORE_UNITS if d.name == "azazel-edge-core.service")
+    store = GenerationStore(tmp_path / "generations")
+    generation = store.create(
+        {"config": b"observe-only"}, created_at=now,
+        commissioning_digest="sha256:" + "0" * 64,
+    )
+    daemon = ActivationDaemon(
+        generations=store, ledger=AuditLedger(tmp_path / "activation.jsonl"),
+        manager=RecordingUnitManager([definition.name]), definitions=(definition,),
+    )
+    outcome = daemon.activate(
+        now=now, actor="operator", wired=(),
+        lease=ActivationLease(
+            granted_by="operator", granted_at="2026-09-21T03:00:00Z",
+            expires_at="2026-09-21T04:00:00Z", generation_digest=generation.digest,
+        ),
+    )
+    assert outcome.verdicts[0].granted is (case == "fresh")
+    assert not outcome.edge_baseline_ready
+    if case == "digest":
+        assert "digest_matches" in outcome.verdicts[0].reason

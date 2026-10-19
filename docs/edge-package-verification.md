@@ -27,6 +27,18 @@ Five checks, and nothing else:
 them, and `edge_package.py` is the only module in the product that builds one
 — a static scan in `tests/unit/test_wizard_and_cli.py` keeps that true.
 
+`EdgeBaselineState.launchable` requires the first four checks; only
+`EDGE_BASELINE` unit admission uses it (#198). The fourth comes from the
+supporting probe running the verified binary's fixed `--health` under the pinned
+contract, independently of the payload unit. Running is the consequence of
+starting. An activation grant permits launch and never implies readiness;
+`ready`, status, projections and inspection events keep all five checks.
+The lease-bearing daemon path reads the installed package and fresh probe file
+on every pass. Missing, stale or unreadable probe results leave health and
+running false; inspection errors establish no checks. Lease, node health and
+commissioning requirements are unchanged. The boot refusing pass still supplies
+no lease, no Edge evidence and `healthy=False`, and grants nothing.
+
 **Accepting the package establishes at most the first three.** Edge's own
 manifest says so in `not_established_by_accepting_this_package`, and nothing
 here treats a present, matched package as readiness.
@@ -296,8 +308,8 @@ follows the node's socket layout under `/var/lib/azazel/run`) and runs with
 receiver ships in I0, and the unit adds no dependency on it.
 
 The installer masks the unit and its preset disables it. It is registered
-only in the existing `EDGE_BASELINE` activation tier, with all five readiness
-checks unchanged; the supporting probe starts nothing. In particular, this
-does not solve first-start admission: an inactive payload still fails the
-running check. Activation enables admitted units for a later boot and has no
-`StartUnit` operation. I0 introduces no startup bypass or control channel.
+only in the existing `EDGE_BASELINE` activation tier. #198 resolves first-start
+admission by requiring the four package checks before enabling it; all five
+readiness checks remain unchanged. The supporting probe starts no service.
+Activation enables admitted units for a later boot and has no `StartUnit`
+operation. Admission neither records nor displays `edge-baseline-ready`.

@@ -863,7 +863,7 @@ def test_edge_package_is_the_only_producer_of_an_edge_baseline_state():
                     and getattr(node.func, "id", "") == "EdgeBaselineState"
                 ):
                     producers.append(path.name)
-    assert producers == ["edge_package.py"], (
+    assert set(producers) == {"edge_package.py"}, (
         f"{producers} construct an EdgeBaselineState. Only edge_package.py may, "
         "and it only from a package it verified on disk (Nexus#44)"
     )
@@ -1138,3 +1138,18 @@ def test_status_reports_recorded_mio_ceiling_without_raising_capability(tmp_path
     assert "recorded ceiling: LITE; capability state: CORE" in text
     assert "core_reserve_unmeasured" in text
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_launchable_inactive_edge_is_not_ready_in_status_or_projection(tmp_path):
+    root, digest = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, digest, running="failed", running_reason="inactive/dead")
+    text = _status_with_edge(tmp_path, root, state)
+    assert "edge-baseline-ready: no" in text
+    assert "edge-baseline-ready: yes" not in text
+    assert "edge core (local): not-running" in text
+    assert "baseline-ready: yes" not in text
+    from azazel_nexus.edge_package import inspect, load_probe_result
+    inspection = inspect(root, probe=load_probe_result(state), now="2026-09-21T04:01:00Z")
+    assert inspection.state().launchable
+    assert not inspection.as_event()["ready"]
+    assert not inspection.ready

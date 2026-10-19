@@ -10,8 +10,9 @@ with an import.
 
 `package_present`, `version_matches`, `digest_matches`,
 `health_endpoint_healthy`, `running`. `activation.EdgeBaselineState` needs all
-five and this module is the **only producer of one in the package** -- the
-static scan in `tests/unit/test_wizard_and_cli.py` keeps it that way.
+five for readiness; admission needs the first four. This module is the
+**only producer of one in the package** -- the static scan in
+`tests/unit/test_wizard_and_cli.py` keeps it that way.
 
 They are separate because the operator's next action is different for each.
 "Edge is not installed" is a deployment step. "Edge is installed and its
@@ -106,6 +107,7 @@ __all__ = [
     "PIN",
     "UNSIGNED_CAVEAT",
     "inspect",
+    "installed_baseline_state",
     "no_health_probe",
     "no_running_probe",
     "presence_of",
@@ -562,6 +564,23 @@ def load_probe_result(path: Path = PROBE_STATE_PATH) -> Optional[ProbeResult]:
     except OSError as exc:
         raise EdgePackageRefused(f"the probe state could not be read: {exc}") from exc
     return parse_probe_result(text)
+
+
+def installed_baseline_state(*, now: str) -> EdgeBaselineState:
+    """Activation evidence from fixed installed paths, re-derived each pass.
+
+    Only a fresh, package-bound probe supplies health or running. An unreadable
+    probe supplies neither; an inspection error establishes no checks at all.
+    This reads files only and never invokes the binary or the service manager.
+    """
+    try:
+        try:
+            probe = load_probe_result()
+        except Exception:  # noqa: BLE001 - unreadable evidence never grants
+            probe = None
+        return inspect(EDGE_PACKAGE_ROOT, probe=probe, now=now).state()
+    except Exception:  # noqa: BLE001 - inspection failure establishes nothing
+        return EdgeBaselineState(False, False, False, False, False)
 
 
 # -- probes, whose defaults refuse ----------------------------------------
