@@ -471,11 +471,15 @@ def _store_directory(path: Path) -> None:
     """
 
     path.mkdir(mode=0o750, parents=True, exist_ok=True)
-    info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode):
-        raise OSError(f"{path} is not a directory")
-    if info.st_mode & 0o022:
-        os.chmod(path, stat.S_IMODE(info.st_mode) & ~0o022)
+    # Check and change the directory that was opened, never a path that could
+    # be swapped for a symlink in between.
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if info.st_mode & 0o022:
+            os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o022)
+    finally:
+        os.close(fd)
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:

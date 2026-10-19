@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -633,8 +634,6 @@ def _write_bits(path: Path) -> int:
 ])
 def test_store_directories_are_not_group_writable_under_a_loose_umask(node, bundle, leaves) -> None:
     # Debian's default user umask; an operator-run import used to inherit it.
-    import os
-
     service, _, root = node(bundle)
     previous = os.umask(0o002)
     try:
@@ -649,12 +648,29 @@ def test_store_directories_are_not_group_writable_under_a_loose_umask(node, bund
             assert written.stat().st_mode & 0o077 == 0
 
 
-def test_a_loosened_store_directory_is_tightened_and_keeps_setgid(node) -> None:
+@pytest.mark.parametrize("bundle,leaf", [
+    ("lite.tar.gz", "admitted"),
+    ("lite.tar.gz", "state"),
+    ("negative/corrupt-signature.tar.gz", "quarantine"),
+])
+def test_a_loosened_store_directory_is_tightened_and_keeps_setgid(node, bundle, leaf) -> None:
     # A store left behind by an import before the fix.
-    service, _, root = node("lite.tar.gz")
-    (root / "admitted").mkdir()
-    (root / "admitted").chmod(0o2775)
+    service, _, root = node(bundle)
+    (root / leaf).mkdir()
+    (root / leaf).chmod(0o2775)
     _import_only_entry(service)
-    mode = (root / "admitted").stat().st_mode
+    mode = (root / leaf).stat().st_mode
     assert mode & 0o022 == 0
     assert mode & 0o2000, "setgid must be kept so the group can still read"
+
+
+def test_a_symlinked_store_directory_is_refused_and_its_target_untouched(node, tmp_path) -> None:
+    service, _, root = node("lite.tar.gz")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o777)
+    elsewhere.chmod(0o777)
+    (root / "admitted").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError):
+        _import_only_entry(service)
+    assert elsewhere.stat().st_mode & 0o777 == 0o777
+    assert not any(elsewhere.iterdir())
