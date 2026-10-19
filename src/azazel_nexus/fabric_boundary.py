@@ -812,11 +812,21 @@ def restore_commissioning_inputs(document: dict) -> dict:
         from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
             HardwareInventory, ResourceProfile, TopologyProfile,
         )
+        schema = document["schema"]
+        if schema not in {"azazel-nexus/commissioning-proposal/v1",
+                          "azazel-nexus/commissioning-proposal/v2"}:
+            raise ValueError
+        selection = {}
+        if schema == "azazel-nexus/commissioning-proposal/v2":
+            profile = document["mio_profile"]
+            if type(profile) is not str or profile not in {"CORE", "LITE", "FULL"}:
+                raise ValueError
+            selection["mio_profile"] = profile
         return dict(inventory=HardwareInventory.model_validate(document["inventory"]),
                     resource_profile=ResourceProfile.model_validate(document["resource"]),
                     topology_profile=TopologyProfile.model_validate(document["topology"]),
                     record_id=document["record"]["record_id"], operator=document["operator"],
-                    confirmed_at=document["record"]["created_at"])
+                    confirmed_at=document["record"]["created_at"], **selection)
     except (ImportError, ValueError, TypeError, KeyError, AttributeError):
         raise CommissioningRecordUnavailable("retained commissioning inputs unavailable") from None
 

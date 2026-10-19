@@ -37,6 +37,9 @@ def protected_dir(tmp_path, monkeypatch):
     directory = tmp_path / "commissioning"
     directory.mkdir(mode=0o700)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", directory)
+    profile_dir = tmp_path / "mio-profile"
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "PROTECTION_KEY", tmp_path / "test-key")
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(commissioning_draft, "read_protection_key", lambda _path: b"synthetic-key")
@@ -70,6 +73,11 @@ def test_retention_writes_canonical_equal_copies_and_reads_manual_signature(cont
     assert expected.stat().st_mode & 0o777 == 0o600
     assert payload.stat().st_mode & 0o777 == 0o600
     assert not signature.exists()
+    profile = commissioning_draft.MIO_PROFILE_DIR
+    assert {p.name for p in profile.iterdir()} == set(commissioning_draft._PROPOSAL_FILES[:2])
+    for name in commissioning_draft._PROPOSAL_FILES[:2]:
+        assert (profile / name).read_bytes() == expected_bytes
+        assert (profile / name).stat().st_mode & 0o777 == 0o600
 
     _write_private(signature, b"x" * 64)
     assert commissioning_draft.read_proposal_review_inputs() == (

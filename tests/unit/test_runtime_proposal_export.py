@@ -113,7 +113,7 @@ def export_scope(monkeypatch):
     )
     monkeypatch.setattr(proposal_export, "assess_resources", lambda: resource_observation)
     monkeypatch.setattr(proposal_export, "_now", lambda: "2026-10-13T00:00:00Z")
-    answers = iter(("EXPORT",))
+    answers = iter(("LITE", "EXPORT"))
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     def collector(observations=(hardware, hardware)):
@@ -156,7 +156,8 @@ def test_proposal_export_cli_saves_full_linked_unsigned_record(export_scope, mon
     output = capsys.readouterr()
     assert len(export_scope.writes) == 1
     document = json.loads(export_scope.writes[0])
-    assert document["schema"] == "azazel-nexus/commissioning-proposal/v1"
+    assert document["schema"] == "azazel-nexus/commissioning-proposal/v2"
+    assert document["mio_profile"] == "LITE"
     assert document["status"] == "unsigned-proposal"
     assert document["confirmation_is"] == "proposed-until-full-signature-verified"
     assert document["inventory"]["node_id"] == "node-synthetic"
@@ -184,6 +185,9 @@ def test_cli_exports_to_real_private_fixed_file_and_refuses_overwrite(
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commission_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -199,7 +203,8 @@ def test_cli_exports_to_real_private_fixed_file_and_refuses_overwrite(
     original = saved.read_bytes()
     assert original == expected_bytes
     document = json.loads(original)
-    assert document["schema"] == "azazel-nexus/commissioning-proposal/v1"
+    assert document["schema"] == "azazel-nexus/commissioning-proposal/v2"
+    assert document["mio_profile"] == "LITE"
     assert document["status"] == "unsigned-proposal"
     assert document["inventory"]["node_id"] == "node-synthetic"
     assert document["resource"]["hardware_inventory_digest"] == document["inventory"]["inventory_digest"]
@@ -214,7 +219,7 @@ def test_cli_exports_to_real_private_fixed_file_and_refuses_overwrite(
 
     # Repeat the complete CLI path with fresh synthetic collection values.
     export_scope.collector()
-    monkeypatch.setattr("builtins.input", lambda _prompt: "EXPORT")
+    monkeypatch.setattr("builtins.input", lambda prompt: "LITE" if "ceiling" in prompt else "EXPORT")
     assert commission_cli.main(["proposal-export", "--operator", "operator-a"]) == 1
     assert saved.read_bytes() == original
     assert expected.read_bytes() == expected_bytes
@@ -231,6 +236,9 @@ def test_real_proposal_export_can_be_signed_and_reviewed_historically(
 ):
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -293,6 +301,9 @@ def signed_real_proposal(export_scope, monkeypatch, tmp_path):
     """A real exported proposal, signed ephemerally and retained privately."""
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(commissioning_draft, "luks_backed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         commissioning_draft, "read_protection_key", lambda _path: b"synthetic-protection-key"
@@ -466,6 +477,9 @@ def test_protected_storage_failure_does_not_create_proposal(
 ):
     _set_interactive(monkeypatch)
     monkeypatch.setattr(commissioning_draft, "COMMISSIONING_DIR", tmp_path)
+    profile_dir = tmp_path.parent / (tmp_path.name + "-mio-profile")
+    profile_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(commissioning_draft, "MIO_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(
         proposal_export, "retain_proposal_context", commissioning_draft.retain_proposal_context
     )
@@ -588,3 +602,20 @@ def test_wrong_proposal_export_arguments_are_rejected(export_scope, capsys, argv
     assert commission_cli.main(argv) == 2
     assert export_scope.writes == []
     assert "path overrides" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("profile", ["CORE", "LITE", "FULL"])
+def test_explicit_mio_selection_is_in_full_proposal(export_scope, monkeypatch, profile):
+    _set_interactive(monkeypatch)
+    answers = iter((profile, "EXPORT"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert commission_cli.main(["proposal-export", "--operator", "operator-a"]) == 0
+    assert json.loads(export_scope.writes[0])["mio_profile"] == profile
+
+
+@pytest.mark.parametrize("profile", ["", "standard", "full", "EXPORT"])
+def test_unknown_mio_selection_never_creates_proposal(export_scope, monkeypatch, profile):
+    _set_interactive(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda _prompt: profile)
+    assert commission_cli.main(["proposal-export", "--operator", "operator-a"]) == 1
+    assert export_scope.writes == []

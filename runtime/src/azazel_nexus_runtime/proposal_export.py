@@ -53,12 +53,16 @@ def run(operator: str, addresses) -> int:
             current=observed.commissioning_proposal(), inventory=inventory,
             profile_id="topology-" + uuid4().hex, observed_at=_now(),
         )
+        profile = input("M.I.O. ceiling [CORE, LITE, FULL] (does not admit providers): ").strip()
+        if profile not in {"CORE", "LITE", "FULL"}:
+            raise DraftRefused("unknown M.I.O. profile")
         context = dict(
             inventory=inventory, resource_profile=resource, topology_profile=topology,
             record_id="record-" + uuid4().hex, operator=operator, confirmed_at=_now(),
+            mio_profile=profile,
         )
         commissioning_proposal_payload(**context)  # Validate before asking for consent.
-        if input("Create a protected unsigned full proposal for separate review/signing? Type EXPORT: ") != "EXPORT":
+        if input(f"Create a protected unsigned full proposal with M.I.O. {profile} for separate review/signing? Type EXPORT: ") != "EXPORT":
             raise DraftRefused("export declined")
         if not addresses.unchanged():
             raise HardwareUnavailable("link snapshot changed")

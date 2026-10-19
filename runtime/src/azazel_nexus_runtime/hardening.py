@@ -599,6 +599,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         executable="/usr/libexec/azazel/az-mio-entryd",
         account="azmioentry",
         supplementary_groups=("azazel-operator",),
+        # Private read-only snapshot: no commissioning key or permission change.
+        extra=(("LoadCredential", "mio-profile:/etc/azazel/mio-profile"),
+               ("LoadCredential", "mio-trust:/etc/azazel/operator-trust/operators.json"),
+               ("LoadCredential", "mio-node:/etc/azazel/node.yaml"),
+               ("SetCredential", "mio-trust:"),
+               ("SetCredential", "mio-node:")),
         description="Azazel-Nexus M.I.O. routing entry service",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-runtime.md",
         address_families=("AF_UNIX",),

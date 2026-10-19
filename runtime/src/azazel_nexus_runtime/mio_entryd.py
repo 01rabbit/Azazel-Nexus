@@ -14,11 +14,12 @@ from azazel_nexus.local_advisory import (
     read_reference,
     request_event,
 )
-from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile, profile_in_force
+from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile
 from azazel_nexus.remote_trust import remote_admission, unchecked_reading
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
+from .mio_commissioning import commissioned_profile
 from .mio_locald import INFER_VERB, REFERENCE_DEADLINE_MS
 from .mio_router import MioRouter
 from .mio_socket_client import LocalSocketClient, RemoteSocketClient
@@ -54,13 +55,6 @@ ADVISE_VERB = Verb(
 )
 REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
-
-
-def commissioned_profile() -> MioProfile:
-    # The existing reader requires a confirmed selection. No persisted M.I.O.
-    # commissioning reader exists in this build: absence must remain CORE.
-    # Resource observations cannot substitute for a confirmed selection.
-    return profile_in_force(commissioned=False, selected=None)
 
 
 class MioEntryService:

@@ -54,11 +54,13 @@ def test_absent_services_record_handoff_and_reasons(service):
     assert all(candidate["reason"] for candidate in decision["candidates"])
 
 
-def test_confirmed_profile_reader_is_used(service):
-    service._profile_reader = lambda: MioProfile.FASTEST_PERMITTED
+@pytest.mark.parametrize("profile", [MioProfile.LOCAL_ONLY, MioProfile.FASTEST_PERMITTED])
+def test_confirmed_profile_reader_is_used_without_admitting_a_provider(service, profile):
+    service._profile_reader = lambda: profile
+    assert service._local_admitted() is False
     service.handle(request())
     decision = next(e for e in recorded(service) if e["event_type"] == "mio.route.selected")
-    assert decision["profile"] == MioProfile.FASTEST_PERMITTED.value
+    assert decision["profile"] == profile.value
     assert decision["route"] == Route.DETERMINISTIC_HANDOFF.value
 
 
