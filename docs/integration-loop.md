@@ -180,7 +180,12 @@ Concrete I1 limits and paths:
   the 64. (A container load test at 600 lines/s lost 14.7% as `overloaded`
   when every accepted connection waited for the next poll.) At most 64
   connections per accept batch are finished this way, each with at most eight
-  reads; the rest are registered as before. So `overloaded` now means
+  reads; the rest are registered as before, except that when no reader slot is
+  left a connection is still read once before it is refused. (With Edge's
+  forwarding thread, Azazel-Edge#431, lines arrive in bursts; without that
+  read a container load test at 800 lines/s lost 13.7% as `overloaded`.) The
+  intake never stops accepting to push back, because an Edge Core older than
+  #431 would then block on a full backlog. So `overloaded` now means
   incomplete connections beyond the reader slots: a completed connection is
   not refused when the slots are full, and sustained load shows as
   `queue_full` instead.

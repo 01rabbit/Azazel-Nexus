@@ -709,16 +709,17 @@ def test_burst_of_complete_connections_does_not_consume_reader_slots(running):
     assert server.refused["overloaded"] == 0
 
 
-def test_inline_finishing_is_capped_per_accept_batch(running):
+def test_complete_connections_beyond_the_inline_cap_are_not_dropped(running):
     server = running(max_connections=0)
     gate = gated(server)
     for _ in range(100):
         send(server)
     gate.set()
     wait_for(lambda: server.accepted + server.refused["overloaded"] == 100)
-    # Beyond the cap connections are registered as before; with no reader
-    # slots that is overloaded, even though they were complete.
-    assert (server.accepted, server.refused["overloaded"]) == (64, 36)
+    # Past the inline cap with no reader slot left, a connection is still read
+    # once before it is refused: a line that already arrived is kept. (A
+    # load test at 800 lines/s lost 13.7% here once Edge forwarded in bursts.)
+    assert (server.accepted, server.refused["overloaded"]) == (100, 0)
     assert daemon.MAX_INLINE == 64 and daemon.RECV_ROUNDS == 8
 
 
