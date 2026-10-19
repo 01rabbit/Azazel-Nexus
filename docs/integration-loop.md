@@ -205,8 +205,8 @@ Concrete I1 limits and paths:
 - `azazel-edge-intaked.service`: `azintake`, `Type=notify`, AF_UNIX only,
   `PrivateNetwork=yes`, no capabilities; only the three leaves above are
   writable. Supporting-tier admission lets it listen before Edge admission.
-  Startup timeout is 30 s; `Restart=no` matches auditd's explicit setting and
-  knowledge-lited's systemd default. Limits are `MemoryMax=256M`, `TasksMax=32`,
+  Startup timeout is 30 s. It declares no `Restart=`: systemd's default does
+  not restart it, and only the bootstrap pair declares lifecycle settings. Limits are `MemoryMax=256M`, `TasksMax=32`,
   `LimitNOFILE=256`, `LimitFSIZE=128M` (above the 64 MiB segment ceiling).
   It is installed masked and preset-disabled, with no dependency on Edge.
 

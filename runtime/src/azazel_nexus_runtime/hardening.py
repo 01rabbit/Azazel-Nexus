@@ -625,7 +625,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
                           "/var/lib/azazel/run/edge-intake-status"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
-        extra=(("PrivateNetwork", "yes"), ("Restart", "no"),
+        # No Restart=: systemd's default is no, and only the bootstrap pair
+        # may declare lifecycle settings (test_runtime_bootstrap_lifetime).
+        extra=(("PrivateNetwork", "yes"),
                ("TimeoutStartSec", "30s"), ("MemoryMax", "256M"),
                ("TasksMax", "32"), ("LimitNOFILE", "256"),
                ("LimitFSIZE", "128M")),

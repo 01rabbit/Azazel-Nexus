@@ -266,7 +266,7 @@ def test_socket_equals_fixed_i0_destination_and_registration():
     assert not intake.capability_bounding_set
     assert ("PrivateNetwork", "yes") in intake.extra
     assert dict(intake.extra) == {
-        "PrivateNetwork": "yes", "Restart": "no", "TimeoutStartSec": "30s",
+        "PrivateNetwork": "yes", "TimeoutStartSec": "30s",
         "MemoryMax": "256M", "TasksMax": "32", "LimitNOFILE": "256",
         "LimitFSIZE": "128M",
     }

@@ -15,7 +15,6 @@ Type=notify
 User=azintake
 ExecStart=/usr/libexec/azazel/az-edge-intaked
 PrivateNetwork=yes
-Restart=no
 TimeoutStartSec=30s
 MemoryMax=256M
 TasksMax=32
