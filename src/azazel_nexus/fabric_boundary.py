@@ -79,6 +79,7 @@ __all__ = [
     "identify_interface",
     "inventory_digest",
     "project_capability",
+    "project_edge_evidence",
     "project_interface_identity",
     "project_inventory",
     "project_resource_profile",
@@ -110,7 +111,8 @@ class IdentityUnavailable(Exception):
 FABRIC_PIN = "v0.9.0rc5"
 
 #: What this module needs to produce a projection at all.
-REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode")
+REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode",
+                           "azazel_fabric.schema.evidence")
 
 #: Fabric families that `docs/contract-ownership.md` §3 maps Nexus records onto
 #: and that no Nexus code consumes yet. Listed because an unmet requirement is
@@ -912,3 +914,21 @@ def build_commissioning_record(*, inventory=None, resource_profile=None,
         raise CommissioningRecordUnavailable(
             "complete consistent inventory, resource_profile_digest and topology_profile_digest inputs required"
         ) from None
+
+
+def project_edge_evidence(record) -> Projection:
+    """Project a pointer only; Fabric absence never prevents local intake."""
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        return Projection(available=False, reason=failure)
+    if getattr(fabric, '__version__', None) != FABRIC_PIN.lstrip('v'):
+        return Projection(available=False, reason='pinned Fabric is required')
+    try:
+        from datetime import UTC, datetime
+        from azazel_fabric.schema.evidence import EvidenceRef
+        view = EvidenceRef(evidence_id=record.digest, source='edge-core',
+            trace_id=record.event.as_dict()['enforcement']['trace_id'],
+            observed_at=datetime.fromtimestamp(record.received_at, UTC).isoformat().replace('+00:00', 'Z'))
+    except (ImportError, ValueError, TypeError, AttributeError, KeyError, OverflowError):
+        return Projection(available=False, reason='edge evidence projection unavailable')
+    return Projection(available=True, reason='', fabric_version=fabric.__version__, view=view)

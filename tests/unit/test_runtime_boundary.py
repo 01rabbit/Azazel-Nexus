@@ -187,7 +187,7 @@ EXPECTED_SCRIPTS = (
     "az-activated",
     "az-auditd",
     "az-commissiond",
-    "az-edge-probed",
+    "az-edge-probed", "az-edge-intaked",
     "az-mio-entryd",
     "az-knowledge-lited",
     "az-mio-locald",

@@ -132,6 +132,12 @@ LAYOUT = (
         owner="azcommission",
         group="azazel-operator",
     ),
+    PathSpec("/var/lib/azazel/edge-intake", 0o700,
+             "private Edge observations and incident chain", owner="azintake"),
+    PathSpec("/var/lib/azazel/run/edge-intake", 0o2710,
+             "receive-only socket reachable by Edge", owner="azintake", group="azedge"),
+    PathSpec("/var/lib/azazel/run/edge-intake-status", 0o2750,
+             "operator-readable intake liveness", owner="azintake", group="azazel-operator"),
     PathSpec(
         "/var/lib/azazel/run/edge-probe",
         0o2750,

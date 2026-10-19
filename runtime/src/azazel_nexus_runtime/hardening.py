@@ -274,6 +274,7 @@ SYSTEM_ACCOUNTS = (
     "azaudit",
     "azwatch",
     "azprobe",
+    "azintake",
     "azedge",
     "azfetch",
     "azmio",
@@ -611,6 +612,21 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Observe-only detection needs no capabilities or internet sockets. "
             "Only its private state leaf is writable; Suricata access is read-only."
         ),
+    ),
+    ServiceProfile(
+        unit="azazel-edge-intaked.service",
+        executable="/usr/libexec/azazel/az-edge-intaked",
+        account="azintake",
+        description="Azazel-Nexus receive-only Edge findings intake",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/integration-loop.md",
+        address_families=("AF_UNIX",),
+        runtime_directory="",
+        read_write_paths=("/var/lib/azazel/edge-intake", "/var/lib/azazel/run/edge-intake",
+                          "/var/lib/azazel/run/edge-intake-status"),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        extra=(("PrivateNetwork", "yes"),),
+        rationale="Receives bounded observations; no Edge control or enforcement authority.",
     ),
     ServiceProfile(
         unit="azazel-edge-probed.service",

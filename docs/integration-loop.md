@@ -1,6 +1,6 @@
 # The integrated defensive loop
 
-Status: **design; phases I0–I5 below are the implementation plan**
+Status: **I0 and I1 implemented; I2–I5 planned**
 ([#190](https://github.com/01rabbit/Azazel-Nexus/issues/190): I0 #191, I1 #192,
 I2 #193, I3 #194, I4 #196, I5 #195).
 Related: [integrated-node doctrine](nexus-integrated-node.md) ·
@@ -107,15 +107,15 @@ socket. Edge Core connects once per event and writes one line.
 - **Parse into a closed shape.** The Edge `rust_event_engine_v1` event has
   `normalized`, `defense`, `enforcement`, `enforcement_status`, `source` and
   `pipeline`. Intake accepts exactly that, with every field typed and bounded
-  (addresses parse as addresses, ports are 0–65535, severity 1–10, strings
-  have length limits). Anything else is counted and refused; its content is
+  (addresses parse as addresses, ports are 0–65535, severity 0–10 because
+  Edge can emit zero, strings have length limits). Anything else is counted and refused; its content is
   not logged.
 - **Record Edge's decision as Edge's.** `defense.action` and
   `enforcement_status` are stored verbatim as an *Edge decision observation*.
   Under the observe-only posture the status is shown as "would", never as
   "did".
 - **Evidence.** Each accepted event becomes an evidence record with a content
-  digest and a Fabric `schema.evidence.EvidenceRef` (`source="edge-core"`).
+  digest and an optional Fabric `schema.evidence.EvidenceRef` (`source="edge-core"`).
   The store is append-only with bounded retention (size and age), like the
   audit segments.
 - **Incidents.** Events are grouped into incidents by a fixed key (source
@@ -131,6 +131,47 @@ socket. Edge Core connects once per event and writes one line.
   it refused, so the status screen can tell "Edge is quiet" from "Edge is not
   reaching us". It cannot tell a quiet Edge from a stopped one by itself; the
   existing `edge-probed` running check answers that.
+
+Concrete I1 limits and paths:
+
+- Socket `/var/lib/azazel/run/edge-intake/edge-intake.sock`: leaf
+  `azintake:azedge 2710`, socket `0660`, kernel peer uid must be `azedge`.
+  The existing run root remains `root:root 0711`.
+- Maximum JSON line 16 KiB plus newline, strict UTF-8, one line followed by
+  EOF per connection. Up to 64 readers, each with a total 2 s deadline;
+  listen backlog 512. A 256-record queue separates acceptance from disk I/O.
+  Overflow accepts and closes immediately (`overloaded`); full queue drops
+  with `queue_full`. No response is written to Edge.
+- Closed parsing preserves `defense` and `enforcement_status` verbatim.
+  Enforcement plans and metadata are validated, then reduced to observation
+  fields (mode, trace id, selected action, target, policy reason, result and
+  release ledger state); command strings are never retained. Only advisory,
+  disabled-enforcement, dry-run, no-high-impact-auto observations are accepted.
+  Other postures or applied outcomes produce `EDGE_NOT_OBSERVE_ONLY`.
+  Other parser codes are `EDGE_TOO_LARGE`, `EDGE_JSON`, `EDGE_SHAPE`,
+  `EDGE_TYPE`, `EDGE_RANGE`. Transport/storage codes are `peer_refused`,
+  `overloaded`, `queue_full`, `read_deadline`, `read_error`, `storage_failed`.
+  Only fixed codes are counted; refused content and exception text are never
+  recorded. Empty addresses are absent; signature ids are bounded unsigned
+  64-bit values. Optional rule-supplied `technique_ids` accepts at most eight
+  `T1234` or `T1234.567` identifiers, refusing the whole event on malformed ids.
+- Private state `/var/lib/azazel/edge-intake` (`azintake:root 0700`): evidence
+  in `evidence/YYYY-MM-DD.jsonl` (`0640`, append/no-follow), capped at 256 MiB
+  and 14 days by deleting oldest whole segments. Canonical validated JSON
+  determines the SHA-256 digest; received time is separate.
+- Incidents key on `(src_ip, sid, target_port)`, idle after 900 s, update at
+  most every 60 s. At most 1024 remain open; capacity closes the oldest idle
+  incident first. Technique unions retain a deterministic maximum of eight.
+  `incidents.jsonl` is a private local `AuditLedger` hash chain. Forwarding
+  these transitions to auditd remains I3. Writer failure closes record
+  acceptance until restart while the listener keeps accepting and dropping.
+- Liveness `/var/lib/azazel/run/edge-intake-status/status.json` (`0644`) has a
+  separate `azintake:azazel-operator 2750` leaf. Atomic snapshots are written
+  at most every 5 s. The pure `read_intake_status` decoder supplies no readiness or enforcement authority.
+- `azazel-edge-intaked.service`: `azintake`, `Type=notify`, AF_UNIX only,
+  `PrivateNetwork=yes`, no capabilities; only the three leaves above are
+  writable. Supporting-tier admission lets it listen before Edge admission.
+  It is installed masked and preset-disabled, with no dependency on Edge.
 
 ### I2 — explanation (Explain)
 

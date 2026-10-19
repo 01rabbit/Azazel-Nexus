@@ -373,7 +373,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     env_report = destdir / "stager-environment.json"
     entrypoints = (
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
-        "az-edge-probed", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
+        "az-edge-probed", "az-edge-intaked", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
         "az-mio-entryd", "az-knowledge-lited",
     )
     stager = tools / "stage_runtime_entrypoints.py"
@@ -476,6 +476,7 @@ def test_new_daemon_entrypoints_import_in_isolated_staging_check():
     daemons = declared_daemons()
     targets = {
         "az-mio-entryd": "azazel_nexus_runtime.mio_entryd:main",
+        "az-edge-intaked": "azazel_nexus_runtime.edge_intaked:main",
         "az-knowledge-lited": "azazel_nexus_runtime.knowledge_lited:main",
     }
     assert {name: daemons[name] for name in targets} == targets
