@@ -14,6 +14,7 @@ from test_edge_intake import edge_event, record
 
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.edge_intake import read_intake_status
+from azazel_nexus.incident_explain import read_transition
 
 
 def wait_for(predicate, timeout=3):
@@ -632,3 +633,182 @@ def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch):
 def test_incident_and_evidence_have_separate_segment_ceilings(tmp_path):
     assert daemon.IncidentLedger(tmp_path, 0).segment_bytes == 16 * 1024 * 1024
     assert daemon.EvidenceStore(tmp_path).segment_bytes == 64 * 1024 * 1024
+
+
+def gated(server):
+    # Hold the accept loop so whole connections are complete in the backlog.
+    gate = threading.Event()
+    server.peer_uid = lambda _: (gate.wait(3), 123)[1]
+    return gate
+
+
+def test_burst_of_complete_connections_does_not_consume_reader_slots(running):
+    server = running(max_connections=4)
+    gate = gated(server)
+    for _ in range(daemon.MAX_INLINE):
+        send(server)
+    gate.set()
+    wait_for(lambda: server.accepted == daemon.MAX_INLINE)
+    assert server.refused["overloaded"] == 0
+
+
+def test_inline_finishing_is_capped_per_accept_batch(running):
+    server = running(max_connections=0)
+    gate = gated(server)
+    for _ in range(100):
+        send(server)
+    gate.set()
+    wait_for(lambda: server.accepted + server.refused["overloaded"] == 100)
+    # Beyond the cap connections are registered as before; with no reader
+    # slots that is overloaded, even though they were complete.
+    assert (server.accepted, server.refused["overloaded"]) == (64, 36)
+    assert daemon.MAX_INLINE == 64 and daemon.RECV_ROUNDS == 8
+
+
+def send_large(server, data):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        # macOS buffers 8 KiB per unaccepted connection by default.
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * len(data))
+        client.settimeout(1)
+        client.connect(str(server.path))
+        client.sendall(data)
+
+
+@pytest.mark.parametrize(("data", "code"), [
+    (b"{}\n{}\n", "EDGE_SHAPE"),
+    (b"x" * (daemon.MAX_LINE + 2), "EDGE_TOO_LARGE"),
+    (b"{" + b"x" * daemon.MAX_LINE + b"\n", "EDGE_TOO_LARGE"),
+    (b"{\"a\": 1}\n", "EDGE_SHAPE"),
+])
+def test_complete_connection_refused_at_accept_without_a_slot(running, data, code):
+    server = running(max_connections=0)
+    gate = gated(server)
+    send_large(server, data)
+    gate.set()
+    wait_for(lambda: server.refused[code] == 1)
+    assert server.refused["overloaded"] == 0 and server.accepted == 0
+    assert sum(server.refused.values()) == 1
+
+
+@pytest.mark.parametrize("finish", [True, False])
+def test_partial_line_at_accept_is_registered_then_finished_or_expires(running, finish):
+    server = running(read_deadline=0.5)
+    gate = gated(server)
+    line = json.dumps(edge_event()).encode() + b"\n"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(server.path))
+        client.sendall(line[:10])
+        gate.set()
+        time.sleep(0.1)
+        assert server.accepted == 0 and not any(server.refused.values())
+        if finish:
+            client.sendall(line[10:])
+            client.shutdown(socket.SHUT_WR)
+            wait_for(lambda: server.accepted == 1)
+        else:
+            wait_for(lambda: server.refused["read_deadline"] == 1)
+    assert sum(server.refused.values()) == (0 if finish else 1)
+
+
+def test_line_awaiting_eof_is_registered_then_finished(running):
+    server = running(read_deadline=1)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(server.path))
+        client.sendall(json.dumps(edge_event()).encode() + b"\n")
+        time.sleep(0.2)
+        assert server.accepted == 0
+    wait_for(lambda: server.accepted == 1)
+    assert not any(server.refused.values())
+
+
+def test_full_evidence_day_still_opens_and_records_severe_incident(tmp_path, monkeypatch):
+    def full(self, item):
+        raise daemon.SegmentFull("evidence_segment_full")
+    monkeypatch.setattr(daemon.EvidenceStore, "append", full)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 100)
+    server.pending.put(record(0, severity=1))
+    server.finished.set()
+    server._writer()
+    assert server.refused["evidence_segment_full"] == 1
+    assert server.accepted == 0 and not server.storage_failed
+    ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
+    ledger.verify()
+    events = [entry.event for entry in ledger]
+    assert [e["event_type"] for e in events] == [
+        "edge.incident.reset", "edge.incident.opened", "edge.incident.closed"]
+    for event in events[1:]:
+        assert event["evidence_stored"] is False
+        assert event["latest_evidence"] == record(0).digest
+        assert read_transition(event)["most_severe"] == 1
+
+
+def test_incident_reserve_admits_severe_after_ordinary_fills_segment(tmp_path):
+    assert daemon.IncidentLedger(tmp_path / "default", 0).severe_reserve == 1024 * 1024
+    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=64 * 1024,
+                                   severe_reserve=16 * 1024)
+    def event(severity, n):
+        return {"event_type": "edge.incident.opened", "incident_id": f"inc-{n:016x}",
+                "most_severe": severity, "padding": "x" * 200}
+    n = 0
+    while True:
+        n += 1
+        try:
+            ledger.append(event(3, n), 0)
+        except daemon.SegmentFull as exc:
+            assert exc.code == "incident_segment_full"
+            break
+    full = ledger.current.stat().st_size
+    assert full <= 64 * 1024 - 16 * 1024 + 1024
+    for severity in (2, 1):
+        n += 1
+        ledger.append(event(severity, n), 0)
+    with pytest.raises(daemon.SegmentFull):
+        ledger.append(event(3, n + 1), 0)
+    events = [entry.event for entry in ledger.ledger]
+    assert [e.get("most_severe") for e in events[-2:]] == [2, 1]
+    assert sum(e["event_type"] == "edge.incident.truncated" for e in events) == 1
+    ledger.ledger.verify()
+
+
+def test_full_evidence_skips_ordinary_updates_and_flag_is_sticky(tmp_path, monkeypatch):
+    original = daemon.EvidenceStore.append
+    def full_at(self, item):
+        if item.received_at in (60, 61, 62):
+            raise daemon.SegmentFull("evidence_segment_full")
+        return original(self, item)
+    monkeypatch.setattr(daemon.EvidenceStore, "append", full_at)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 100)
+    # opened (stored), ordinary refresh, ordinary escalation, severe
+    # escalation (all three unstored), then a stored escalation.
+    for now, severity in ((0, 5), (60, 5), (61, 4), (62, 2), (63, 1)):
+        server.pending.put(record(now, severity=severity))
+    server.finished.set()
+    server._writer()
+    assert (server.processed, server.accepted) == (5, 2)
+    assert server.last_processed_at == 63 and server.last_accepted_at == 63
+    assert server.refused["evidence_segment_full"] == 3
+    events = [entry.event for entry in AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))]
+    kinds = [(e["event_type"].removeprefix("edge.incident."), e.get("most_severe"),
+              e.get("evidence_stored")) for e in events[1:]]
+    assert kinds == [("opened", 5, None), ("updated", 2, False), ("updated", 1, False),
+                     ("closed", 1, False)]
+    assert events[-1]["count"] == 5
+    status = read_intake_status(server.status_path.read_bytes())
+    assert (status["processed"], status["accepted"], status["last_processed_at"]) == (5, 2, 63)
+
+
+def test_status_reader_checks_processed_fields(tmp_path):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123)
+    value = server.snapshot()
+    assert read_intake_status(daemon.canonical(value)) is not None
+    for mutation in ({"processed": -1}, {"processed": True}, {"last_processed_at": "now"},
+                     {"accepted": 1}):
+        assert read_intake_status(daemon.canonical({**value, **mutation})) is None
+    for key in ("processed", "last_processed_at"):
+        assert read_intake_status(daemon.canonical(
+            {k: v for k, v in value.items() if k != key})) is None

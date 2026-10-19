@@ -20,6 +20,9 @@ MAX_OPEN = 1024
 MAX_OPENINGS_PER_MINUTE = 60
 MAX_SEVERE_OPENINGS_PER_MINUTE = 30
 MAX_SOURCE_OPENINGS_PER_MINUTE = 20
+# Edge's isolate/redirect range; intake openings and explanation queueing
+# share it so a flood of ordinary events cannot crowd these out.
+SEVERE_SEVERITY = 2
 ACTIONS = frozenset({"observe", "notify", "throttle", "redirect", "isolate"})
 STATUS_SCHEMA = "azazel-nexus/edge-intake-status/v1"
 REFUSAL_CODES = frozenset(
@@ -400,7 +403,7 @@ class IncidentTracker:
     def _close(self, key, reason):
         return dict(self.incidents.pop(key), transition="closed", reason=reason)
 
-    def add(self, record):
+    def add(self, record, *, evidence_stored=True):
         now = record.received_at
         transitions = self.tick(now)
         event = record.event.as_dict()
@@ -412,7 +415,7 @@ class IncidentTracker:
             for budget in (self.openings, self.severe_openings):
                 while budget and instant - budget[0][0] >= 60:
                     budget.popleft()
-            severe = n["severity"] <= 2
+            severe = n["severity"] <= SEVERE_SEVERITY
             budget = self.severe_openings if severe else self.openings
             limit = MAX_SEVERE_OPENINGS_PER_MINUTE if severe else MAX_OPENINGS_PER_MINUTE
             source_count = sum(source == key[0] for _, source in budget)
@@ -444,6 +447,10 @@ class IncidentTracker:
                 "last_update": now,
             }
         item = self.incidents[key]
+        if not evidence_stored:
+            # Sticky: the digests stay as correlation ids, but at least one of
+            # this incident's evidence records is absent from the store.
+            item["evidence_stored"] = False
         escalated = not opened and n["severity"] < item["most_severe"]
         item.update(
             count=item["count"] + 1,
@@ -480,6 +487,8 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "written_at",
                 "last_accepted_at",
                 "accepted",
+                "processed",
+                "last_processed_at",
                 "refused",
                 "open_incidents",
                 "queue_drops",
@@ -489,10 +498,13 @@ def read_intake_status(raw: bytes) -> dict | None:
         _require(value["schema"] == STATUS_SCHEMA)
         _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
         _number(value["written_at"])
-        if value["last_accepted_at"] is not None:
-            _number(value["last_accepted_at"])
-        for key in ("accepted", "open_incidents", "queue_drops"):
+        for key in ("last_accepted_at", "last_processed_at"):
+            if value[key] is not None:
+                _number(value[key])
+        for key in ("accepted", "processed", "open_incidents", "queue_drops"):
             _int(value[key], 2**64 - 1)
+        # Processed counts every tracked event, accepted only stored ones.
+        _require(value["processed"] >= value["accepted"])
         _require(
             type(value["refused"]) is dict and set(value["refused"]) <= REFUSAL_CODES
         )

@@ -6,7 +6,7 @@ import re
 import unicodedata
 from collections import deque
 
-from .edge_intake import ACTIONS, _object, _shape, _text, _int, _number
+from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import TECHNIQUE_ID, read_knowledge_refs
 from .local_advisory import MACHINE_FIELDS, read_delivered, read_frame, read_reference
 from .route_selection import RequestOutcome
@@ -44,8 +44,11 @@ def read_transition(value):
     """Validate the whole intake transition, including fields excluded from frames."""
     import ipaddress
 
-    _shape(value, FIELDS, ("category", "protocol", "reason"))
+    _shape(value, FIELDS, ("category", "protocol", "reason", "evidence_stored"))
     _text(value["event_type"], 32)
+    # Present only as false: some of this incident's evidence hit a full day.
+    if "evidence_stored" in value and value["evidence_stored"] is not False:
+        raise ValueError("transition_refused")
     if value["event_type"] not in {"edge.incident." + t for t in ("opened", "updated", "closed")}:
         raise ValueError("transition_refused")
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
@@ -177,31 +180,72 @@ def build_frame(transition, sequence):
 
 
 class Selection:
-    """Drop newest at capacity. Remember a bounded set of explained ids."""
+    """Bounded pending work that serves the most severe incident first.
+
+    Pending entries stay in arrival order (the checkpoint shape is unchanged);
+    priority is computed when taking. An entry's priority is the most severe
+    value queued for its incident, so an opened entry is explained before its
+    queued escalation, which needs the opened baseline to stay eligible.
+    """
     def __init__(self):
         self.explained = {}
         self.pending = deque()
         self.attempts = deque()
+        self.displaced = None
+
+    @staticmethod
+    def _selected(t, baseline):
+        """Openings, escalations past what was explained, and severe firsts.
+
+        An incident whose opening was dropped (queue full, displaced, stale)
+        has no baseline. An ordinary update of it stays unexplained, but one
+        that reaches the severe range is explained as the incident's first:
+        a severe escalation must not wait on an opening that will never come.
+        """
+        if t["event_type"] == "edge.incident.opened":
+            return baseline is None
+        if t["event_type"] != "edge.incident.updated":
+            return False
+        if baseline is None:
+            return t["most_severe"] <= SEVERE_SEVERITY
+        return t["most_severe"] < baseline
 
     def eligible(self, t):
-        old = self.explained.get(t["incident_id"])
-        return (t["event_type"] == "edge.incident.opened" and old is None
-                or t["event_type"] == "edge.incident.updated" and old is not None and t["most_severe"] < old)
+        return self._selected(t, self.explained.get(t["incident_id"]))
+
+    def _priorities(self):
+        severity = {}
+        for queued, _ in self.pending:
+            ident = queued["incident_id"]
+            severity[ident] = min(severity.get(ident, 10), queued["most_severe"])
+        return [severity[queued["incident_id"]] for queued, _ in self.pending]
 
     def enqueue(self, t, sequence):
+        self.displaced = None
         t = explanation_input(t) if "src_ip" in t else read_pending(t)
         baseline = self.explained.get(t["incident_id"])
         for queued, _ in self.pending:
             if queued["incident_id"] == t["incident_id"]:
                 baseline = (queued["most_severe"] if baseline is None
                             else min(baseline, queued["most_severe"]))
-        selected = (t["event_type"] == "edge.incident.opened" and baseline is None
-                    or t["event_type"] == "edge.incident.updated" and baseline is not None
-                    and t["most_severe"] < baseline)
-        if not selected:
+        if not self._selected(t, baseline):
             return "skipped"
         if len(self.pending) >= MAX_PENDING:
-            return "queue_full"
+            if t["most_severe"] > SEVERE_SEVERITY:
+                return "queue_full"
+            # Displace the newest ordinary entry of another incident: it is the
+            # one drop-newest would have refused had this severe one come first,
+            # and older ordinary work stays as accepted. Being newest, no later
+            # entry of its incident depends on it. Severe-only queues still
+            # drop the newest arrival.
+            priorities = self._priorities()
+            victims = [i for i, (queued, _) in enumerate(self.pending)
+                       if priorities[i] > SEVERE_SEVERITY
+                       and queued["incident_id"] != t["incident_id"]]
+            if not victims:
+                return "queue_full"
+            self.displaced = self.pending[victims[-1]][0]["incident_id"]
+            del self.pending[victims[-1]]
         self.pending.append((t, sequence))
         return "queued"
 
@@ -209,7 +253,10 @@ class Selection:
         while self.attempts and now - self.attempts[0] >= 60:
             self.attempts.popleft()
         while self.pending and len(self.attempts) < MAX_PER_MINUTE:
-            t, seq = self.pending.popleft()
+            priorities = self._priorities()
+            index = min(range(len(self.pending)), key=lambda i: (priorities[i], i))
+            t, seq = self.pending[index]
+            del self.pending[index]
             if self.eligible(t):
                 self.attempts.append(now)
                 return t, seq
@@ -316,10 +363,14 @@ def build_recent_incident(transition, previous=None, record=None):
             and t["most_severe"] < previous["most_severe"]):
         explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
                        "summary": "", "knowledge_refs": [], "failure_codes": []}
-    return {**{k: t[k] for k in ("incident_id", "first_seen", "last_seen", "count",
-                                "most_severe", "edge_would", "technique_ids")},
-            "state": "closed" if t["event_type"] == "edge.incident.closed" else "open",
-            "policy_reason": clean["policy_reason"], "explanation": explanation}
+    row = {**{k: t[k] for k in ("incident_id", "first_seen", "last_seen", "count",
+                               "most_severe", "edge_would", "technique_ids")},
+           "state": "closed" if t["event_type"] == "edge.incident.closed" else "open",
+           "policy_reason": clean["policy_reason"], "explanation": explanation}
+    # Audit records do not carry this; the ledger, recent rows and status do.
+    if "evidence_stored" in t or previous and "evidence_stored" in previous:
+        row["evidence_stored"] = False
+    return row
 
 
 def explanation_summary(record):
@@ -378,7 +429,10 @@ def read_recent_incidents(raw):
         seen = set()
         for row in v["incidents"]:
             _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
-                         "edge_would", "policy_reason", "technique_ids", "explanation"))
+                         "edge_would", "policy_reason", "technique_ids", "explanation"),
+                   ("evidence_stored",))
+            if "evidence_stored" in row and row["evidence_stored"] is not False:
+                return None
             ident = row["incident_id"]
             if type(ident) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", ident) or ident in seen:
                 return None

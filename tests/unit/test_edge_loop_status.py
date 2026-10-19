@@ -22,7 +22,8 @@ def fixtures(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     intake = {"schema": STATUS_SCHEMA, "written_at": 0, "last_accepted_at": 0,
-              "accepted": 12, "refused": {"queue_full": 2}, "open_incidents": 1,
+              "accepted": 12, "processed": 12, "last_processed_at": 0,
+              "refused": {"queue_full": 2}, "open_incidents": 1,
               "queue_drops": 2, "storage_failed": False}
     explain = make(tmp_path).snapshot()
     recent = build_recent_incidents([build_recent_incident(transition(edge_would="isolate"))], 0)
@@ -199,3 +200,35 @@ def test_bare_number_citation_names_are_dropped(tmp_path, monkeypatch):
         assert read_recent_incidents(json.dumps(recent).encode()) is None
     recent["incidents"][0]["explanation"]["knowledge_refs"][0]["name"] = "Rundll32"
     assert read_recent_incidents(json.dumps(recent).encode()) is not None
+
+
+def test_pending_row_has_fixed_text_and_labels_severity_apart_from_action(tmp_path, monkeypatch):
+    fixtures(tmp_path, monkeypatch)
+    value = build_recent_incidents([build_recent_incident(transition(2, edge_would="throttle"))], 0)
+    runtime_paths.incident_recent_path().write_text(json.dumps(value))
+    text = render()
+    assert "pending: awaiting explanation" in text
+    assert "most severe 2 count=1; latest: Edge would throttle (observe-only, not executed)" in text
+    assert "severity=" not in text
+
+
+def test_intake_line_shows_processed_and_never_hides_full_evidence(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    intake.update(last_accepted_at=0, last_processed_at=95, processed=40,
+                  refused={"queue_full": 9, "read_deadline": 8, "overloaded": 7,
+                           "EDGE_SHAPE": 6, "evidence_segment_full": 1})
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    text = render(now=100)
+    assert "last processed age: 5s; processed: 40; accepted: 12;" in text
+    assert "EDGE_SHAPE=6, evidence_segment_full=1" in text
+    assert text.count("evidence_segment_full") == 1
+
+
+def test_row_with_unstored_evidence_is_marked(tmp_path, monkeypatch):
+    fixtures(tmp_path, monkeypatch)
+    value = build_recent_incidents([build_recent_incident(transition(1, evidence_stored=False))], 0)
+    runtime_paths.incident_recent_path().write_text(json.dumps(value))
+    assert "count=1 (evidence not stored); latest: Edge would" in render()
+    value = build_recent_incidents([build_recent_incident(transition(1))], 0)
+    runtime_paths.incident_recent_path().write_text(json.dumps(value))
+    assert "evidence not stored" not in render()

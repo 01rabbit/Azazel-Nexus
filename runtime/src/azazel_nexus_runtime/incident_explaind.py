@@ -191,9 +191,20 @@ class Explainer:
         except queue.Full:
             self.count_audit("audit_forward_dropped")
 
-    def explanation_unavailable(self, ident, code):
+    def explanation_unavailable(self, ident, code, *, displaced=False):
+        """Show why this incident's queued work produced no explanation.
+
+        Displaced work is the newest ordinary entry of an incident that may
+        already be explained (its opening taken, its escalation still queued).
+        That earlier explanation remains true and is kept on display; the
+        displacement is still counted as queue_full. Restricting victims to
+        incidents with nothing else queued would not cover this case, since
+        the opening is no longer queued once explained.
+        """
         for row in self.recent:
             if row["incident_id"] == ident:
+                if displaced and row["explanation"]["state"] == "explained":
+                    continue
                 row["explanation"] = {"state": "unavailable", "route": "unavailable",
                                       "outcome": "unavailable", "summary": "",
                                       "knowledge_refs": [], "failure_codes": [code]}
@@ -422,9 +433,21 @@ class Explainer:
                                 self.explanation_unavailable(t["incident_id"], "stale_skipped")
                                 continue
                             result = self.selection.enqueue(t, entry.sequence)
-                            if result == "queue_full":
+                            if (result == "skipped"
+                                    and t["incident_id"] not in self.selection.explained):
+                                # An ordinary update of an incident whose opening
+                                # was never explained: nothing is coming, so the
+                                # row must not keep promising an explanation.
+                                self.explanation_unavailable(t["incident_id"], "queue_full",
+                                                             displaced=True)
+                            elif result == "queue_full":
                                 self.refuse(result)
                                 self.explanation_unavailable(t["incident_id"], result)
+                            elif self.selection.displaced is not None:
+                                # A severe arrival displaced ordinary work; count it the same way.
+                                self.refuse("queue_full")
+                                self.explanation_unavailable(self.selection.displaced, "queue_full",
+                                                             displaced=True)
                     except Exception:  # noqa: BLE001 - authenticated chain still contains untrusted data
                         self.refuse("transition_refused")
                 if budget <= MAX_LINE or lines >= POLL_LINES:

@@ -59,15 +59,21 @@ def _render_edge_loop(out, now):
         stale = now - value["written_at"] > 30 or value["written_at"] > now + 5
         print(f"    {name}: {'stale (snapshot expired)' if stale else 'running'}", file=out)
         if name == "intake":
-            at = value["last_accepted_at"]
+            # Processed includes events tracked while evidence was full, so a
+            # live Edge does not look stopped when accepted stops growing.
+            at = value["last_processed_at"]
             age = "never" if at is None else f"{max(0, int(now-at))}s"
-            print(f"        last accepted age: {age}; accepted: {value['accepted']}; storage_failed: {value['storage_failed']}", file=out)
+            print(f"        last processed age: {age}; processed: {value['processed']}; accepted: {value['accepted']}; storage_failed: {value['storage_failed']}", file=out)
         else:
             print(f"        explained: {value['explained']}; chain_broken: {value['chain_broken']}; storage_failed: {value['storage_failed']}", file=out)
             if value["chain_broken"]:
                 print("        inspect_incident_chain_then_remove_cursor_and_restart", file=out)
             print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}; audit_forward_refused: {value['audit_forward_refused']}", file=out)
         refusals = sorted(value["refused"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+        # Never let a full evidence day hide behind more frequent refusals.
+        full = value["refused"].get("evidence_segment_full")
+        if name == "intake" and full and ("evidence_segment_full", full) not in refusals:
+            refusals.append(("evidence_segment_full", full))
         print("        refusals: " + (", ".join(f"{k}={v}" for k, v in refusals) or "none"), file=out)
     if recent is None:
         print("    recent incidents: unavailable (snapshot absent or refused)", file=out)
@@ -75,10 +81,14 @@ def _render_edge_loop(out, now):
     stale = now - recent["written_at"] > 30 or recent["written_at"] > now + 5
     print("    recent incidents:" + (" stale (snapshot expired)" if stale else ""), file=out)
     for row in recent["incidents"][:5]:
-        print(f"        {row['incident_id']} {row['state']} severity={row['most_severe']} count={row['count']}; Edge would {row['edge_would']} (observe-only, not executed); " + ", ".join(row["technique_ids"]), file=out)
+        # most_severe is the minimum seen, edge_would is the latest decision:
+        # label both so they are not read as one severity/action pair.
+        unstored = " (evidence not stored)" if "evidence_stored" in row else ""
+        print(f"        {row['incident_id']} {row['state']} most severe {row['most_severe']} count={row['count']}{unstored}; latest: Edge would {row['edge_would']} (observe-only, not executed); " + ", ".join(row["technique_ids"]), file=out)
         e = row["explanation"]
         codes = " (" + ", ".join(e["failure_codes"]) + ")" if e["failure_codes"] else ""
-        print(f"            {e['state']}{codes}: {e['summary']}", file=out)
+        summary = e["summary"] or ("awaiting explanation" if e["state"] == "pending" else "no summary")
+        print(f"            {e['state']}{codes}: {summary}", file=out)
         for ref in e["knowledge_refs"]:
             print(f"            {ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]", file=out)
 
