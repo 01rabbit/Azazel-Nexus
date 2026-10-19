@@ -157,12 +157,14 @@ def test_an_empty_edge_tier_is_not_vacuously_ready(tmp_path):
     assert outcome.edge_baseline_ready is False
 
 
-def test_an_edge_unit_is_withheld_while_nothing_is_known_about_edge(tmp_path):
+def test_an_edge_unit_is_withheld_without_installed_package_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr("azazel_nexus_runtime.activated.installed_baseline_state",
+                        lambda **kwargs: EdgeBaselineState(False, False, False, False, False))
     daemon, _ = _daemon(tmp_path, CORE_UNITS)
     outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=None)
     verdict = next(v for v in outcome.verdicts if v.unit == EDGE_UNIT.name)
     assert not verdict.granted
-    assert verdict.reason.startswith("edge_unknown")
+    assert verdict.reason.startswith("edge_not_ready")
 
 
 def test_an_edge_that_is_present_but_mismatched_names_which_check_failed(tmp_path):
@@ -771,3 +773,26 @@ def test_a_pass_asks_the_distribution_rather_than_assuming(tmp_path, monkeypatch
     assert "azazel-model-fetchd.service" in granted.granted, (
         "the pass ignored the distribution and used a fixed set"
     )
+
+
+def test_lease_bearing_pass_loads_edge_evidence_without_claiming_ready(tmp_path, monkeypatch):
+    seen = []
+    def installed(*, now):
+        seen.append(now)
+        return EdgeBaselineState(True, True, True, True, False)
+    monkeypatch.setattr("azazel_nexus_runtime.activated.installed_baseline_state", installed)
+    daemon, _ = _daemon(tmp_path)
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=_lease())
+    assert seen == [NOW]
+    assert EDGE_UNIT.name in outcome.granted
+    assert not outcome.edge_baseline_ready
+
+
+def test_refusing_pass_does_not_load_edge_evidence(tmp_path, monkeypatch):
+    def unexpected(**kwargs):
+        pytest.fail("refusing boot pass must keep edge=None")
+    monkeypatch.setattr("azazel_nexus_runtime.activated.installed_baseline_state", unexpected)
+    daemon, _ = _daemon(tmp_path)
+    outcome = daemon.activate(now=NOW, actor=ACTOR, lease=None, healthy=False, edge=None)
+    assert not outcome.granted
+    assert outcome.edge is None

@@ -913,9 +913,9 @@ def test_entry_and_knowledge_are_supporting_without_provider_wiring():
 
 
 @pytest.mark.parametrize("missing", [None, "package_present", "version_matches",
-                                    "digest_matches", "health_endpoint_healthy", "running"])
-def test_shipped_edge_core_stays_masked_without_every_baseline_check(tmp_path, missing):
-    """Shipping a payload unit must not weaken its existing readiness gate."""
+                                    "digest_matches", "health_endpoint_healthy"])
+def test_shipped_edge_core_stays_masked_without_every_launch_check(tmp_path, missing):
+    """Every package check is required before the payload may start."""
     controller, units, _, _ = _controller(tmp_path)
     checks = dict.fromkeys(("package_present", "version_matches", "digest_matches",
                             "health_endpoint_healthy", "running"), True)
@@ -930,3 +930,63 @@ def test_shipped_edge_core_stays_masked_without_every_baseline_check(tmp_path, m
     assert verdict.reason.startswith("edge_unknown" if missing is None else "edge_not_ready")
     if missing is not None:
         assert missing in verdict.reason
+
+
+def test_launchable_edge_is_admitted_without_claiming_readiness(tmp_path):
+    controller, units, ledger, _ = _controller(tmp_path)
+    edge = EdgeBaselineState(True, True, True, True, False)
+    assert edge.launchable
+    assert edge.missing_for_launch() == ()
+    assert edge.missing() == ("running",)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=edge)
+    name = "azazel-edge-core.service"
+    assert name in outcome.granted
+    assert units.state(name) is UnitState.ENABLED
+    assert not outcome.edge_baseline_ready
+    assert not edge.ready
+    events = [entry.event for entry in ledger]
+    assert any(event.get("unit") == name and event["event_type"] == "activation.unit_granted"
+               for event in events)
+    assert "edge-baseline-ready" not in str(events)
+
+
+def test_launch_refusal_names_all_missing_package_checks(tmp_path):
+    controller, _, _, _ = _controller(tmp_path)
+    edge = EdgeBaselineState(False, False, False, False, False)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=edge)
+    verdict = next(v for v in outcome.verdicts if v.unit == "azazel-edge-core.service")
+    assert verdict.reason == (
+        "edge_not_ready: package_present,version_matches,digest_matches,health_endpoint_healthy"
+    )
+
+
+@pytest.mark.parametrize("gate", ["lease", "health"])
+def test_launchable_edge_does_not_bypass_common_gates(tmp_path, gate):
+    controller, _, _, _ = _controller(tmp_path)
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, edge=EdgeBaselineState(True, True, True, True, False),
+        lease=None if gate == "lease" else _lease(), healthy=gate != "health",
+    )
+    assert not outcome.granted
+
+
+def test_edge_grant_records_bounded_admission_evidence(tmp_path):
+    controller, _, ledger, _ = _controller(tmp_path)
+    edge = EdgeBaselineState(
+        True, True, True, True, False, observed_at=NOW,
+        package_version="v" * 300, package_digest="sha256:" + "a" * 64,
+    )
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=edge)
+    grants = [entry.event for entry in ledger
+              if entry.event["event_type"] == "activation.unit_granted"]
+    event = next(event for event in grants if event["unit"] == "azazel-edge-core.service")
+    assert event["reason"] == (
+        "package-admitted: package_present,version_matches,digest_matches,health_endpoint_healthy; "
+        "running not required; readiness not claimed"
+    )
+    assert event["edge"] == {
+        "package_present": True, "version_matches": True, "digest_matches": True,
+        "health_endpoint_healthy": True, "running": False, "observed_at": NOW,
+        "package_version": "v" * 256, "package_digest": edge.package_digest,
+    }
+    assert "edge-baseline-ready" not in str(grants)
