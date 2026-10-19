@@ -207,3 +207,15 @@ hardware evidence: HG-07 still needs the real host.
 | Fabric pin, Edge Core unit, intake daemon, incidents, advice, status, audit, end-to-end stage | Azazel-Nexus |
 | Carry `alert.metadata.mitre_technique_id` into `normalized.technique_ids` | Azazel-Edge |
 | Production producer of signed activation decisions and key distribution (I4) | Azazel-Edge, later |
+
+
+`health_endpoint_healthy` means the fixed `--health` of the verified binary
+answered healthy under the pinned contract with the pinned version. The
+observe-only posture is established by the manifest posture checked under
+`package_present`; the running unit's posture is established by the fixed unit
+environment (I0). Health does not observe the running process.
+
+After admission, a unit that never becomes running (for example, a crash loop)
+keeps `edge-baseline-ready` at no. The one-shot probe can still pass its health
+check during a crash loop. Detecting that degradation and narrowing the unit
+is degradation/watchdog work for a separate issue.

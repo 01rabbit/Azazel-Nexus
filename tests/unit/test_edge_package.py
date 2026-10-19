@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -232,7 +233,8 @@ def test_the_five_checks_are_the_five_the_baseline_state_holds():
     """Same five, same order: `state()` builds the state positionally."""
 
     fields = tuple(EdgeBaselineState.__dataclass_fields__)
-    assert fields == CHECKS
+    assert fields[:len(CHECKS)] == CHECKS
+    assert fields[len(CHECKS):] == ("observed_at", "package_version", "package_digest")
 
 
 def test_all_five_passing_is_verified_ready(tmp_path):
@@ -713,9 +715,7 @@ def test_the_verifier_writes_nothing():
 def test_the_verifier_runs_no_process():
     """The boundary in `test_boundary_static.py`, asserted where it matters.
 
-    The consequence is that health and running are always `not-checked` on a
-    node built from this repository, which `inspect` reports rather than
-    hides.
+    File descriptor operations protect probe reads; none may execute a process.
     """
 
     module = ROOT / "src" / "azazel_nexus" / "edge_package.py"
@@ -727,7 +727,12 @@ def test_the_verifier_runs_no_process():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert "subprocess" not in imported
-    assert "os" not in imported
+    os_calls = {
+        node.func.attr for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
+    }
+    assert os_calls <= {"open", "fdopen", "fstat"}
 
 
 def test_nothing_reads_the_startup_block_of_an_edge_manifest():
@@ -1008,18 +1013,19 @@ def test_a_checked_outcome_must_name_its_package(checked, value):
         _result(package_digest="", **{checked: value})
 
 
-@pytest.mark.parametrize("case", ["fresh", "stale", "digest", "missing", "unreadable", "malformed", "inspection_error"])
+@pytest.mark.parametrize("case", ["fresh", "stale", "digest", "version", "missing", "unreadable", "malformed", "inspection_error"])
 def test_installed_activation_producer(tmp_path, monkeypatch, case):
     from azazel_nexus import edge_package
 
     root = _package(tmp_path)
     state_path = tmp_path / "probe.json"
     result = _result(package_digest=_digest_of(tmp_path), running=Evidence.FAILED)
+    if case == "version":
+        result = _result(package_version="different", package_digest=_digest_of(tmp_path))
     state_path.write_text(json.dumps(result.as_event()), encoding="utf-8")
-    monkeypatch.setattr(edge_package, "EDGE_PACKAGE_ROOT", root)
     # Retain the real file reader, substituting only the fixed path for this test.
     read_probe = edge_package.load_probe_result
-    monkeypatch.setattr(edge_package, "load_probe_result", lambda: read_probe(state_path))
+    monkeypatch.setattr(edge_package, "load_probe_result", lambda path: read_probe(path, owner_uid=os.geteuid()))
     now = "2026-09-21T03:01:00Z"
     if case == "stale":
         now = "2026-09-21T03:05:00Z"
@@ -1033,20 +1039,26 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
     elif case == "malformed":
         state_path.write_text("{broken", encoding="utf-8")
     elif case == "unreadable":
-        def unreadable():
+        def unreadable(path):
             raise PermissionError("probe unreadable")
         monkeypatch.setattr(edge_package, "load_probe_result", unreadable)
     elif case == "inspection_error":
         def broken_inspection(*args, **kwargs):
             raise OSError("package unreadable")
         monkeypatch.setattr(edge_package, "inspect", broken_inspection)
-    state = edge_package.installed_baseline_state(now=now)
+    state = edge_package.installed_baseline_state(
+        now=now, package_root=root, probe_path=state_path,
+    )
+    if case == "fresh":
+        assert state.observed_at == result.observed_at
+        assert state.package_version == result.package_version
+        assert state.package_digest == result.package_digest
     assert state.launchable is (case == "fresh")
     assert not state.ready
     assert not state.running
     if case == "digest":
         assert "digest_matches" in state.missing_for_launch()
-    if case in {"stale", "missing", "unreadable", "malformed"}:
+    if case in {"stale", "version", "missing", "unreadable", "malformed"}:
         assert state.missing_for_launch() == ("health_endpoint_healthy",)
     if case == "inspection_error":
         assert state == EdgeBaselineState(False, False, False, False, False)
@@ -1060,6 +1072,12 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
     from azazel_nexus_runtime.activated import ActivationDaemon
     from azazel_nexus_runtime.units import RecordingUnitManager
 
+    monkeypatch.setattr(
+        "azazel_nexus_runtime.activated.installed_baseline_state",
+        lambda *, now: edge_package.installed_baseline_state(
+            now=now, package_root=root, probe_path=state_path,
+        ),
+    )
     definition = next(d for d in CORE_UNITS if d.name == "azazel-edge-core.service")
     store = GenerationStore(tmp_path / "generations")
     generation = store.create(
@@ -1081,3 +1099,41 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
     assert not outcome.edge_baseline_ready
     if case == "digest":
         assert "digest_matches" in outcome.verdicts[0].reason
+
+
+@pytest.mark.parametrize("seconds, fresh", [(5, True), (6, False)])
+def test_future_probe_is_not_evidence_beyond_clock_skew(tmp_path, seconds, fresh):
+    root = _package(tmp_path)
+    result = _result(package_digest=_digest_of(tmp_path),
+                     observed_at=f"2026-09-21T03:00:0{seconds}Z")
+    now = "2026-09-21T03:00:00Z"
+    assert result.fresh_at(now) is fresh
+    inspection = inspect(root, probe=result, now=now)
+    if not fresh:
+        for check in ("health_endpoint_healthy", "running"):
+            finding = inspection.finding(check)
+            assert finding.evidence is Evidence.NOT_CHECKED
+            assert finding.reason == (
+                "the probe observed_at is more than 5 seconds in the future; not checked"
+            )
+
+
+def test_probe_reader_refuses_symlink(tmp_path):
+    target = tmp_path / "probe.json"
+    target.write_text(json.dumps(_result().as_event()), encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    with pytest.raises(EdgePackageRefused, match="could not be read"):
+        load_probe_result(link, owner_uid=os.geteuid())
+
+
+@pytest.mark.parametrize("unsafe", ["owner", "mode"])
+def test_probe_reader_refuses_unsafe_file(tmp_path, unsafe):
+    path = tmp_path / "probe.json"
+    path.write_text(json.dumps(_result().as_event()), encoding="utf-8")
+    if unsafe == "mode":
+        path.chmod(0o666)
+    if unsafe == "owner" and os.geteuid() == 0:
+        pytest.skip("root is an allowed probe owner")
+    with pytest.raises(EdgePackageRefused, match="unsafe ownership or mode"):
+        load_probe_result(path, owner_uid=os.geteuid() + 1 if unsafe == "owner" else os.geteuid())

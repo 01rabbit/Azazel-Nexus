@@ -968,3 +968,25 @@ def test_launchable_edge_does_not_bypass_common_gates(tmp_path, gate):
         lease=None if gate == "lease" else _lease(), healthy=gate != "health",
     )
     assert not outcome.granted
+
+
+def test_edge_grant_records_bounded_admission_evidence(tmp_path):
+    controller, _, ledger, _ = _controller(tmp_path)
+    edge = EdgeBaselineState(
+        True, True, True, True, False, observed_at=NOW,
+        package_version="v" * 300, package_digest="sha256:" + "a" * 64,
+    )
+    controller.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=edge)
+    grants = [entry.event for entry in ledger
+              if entry.event["event_type"] == "activation.unit_granted"]
+    event = next(event for event in grants if event["unit"] == "azazel-edge-core.service")
+    assert event["reason"] == (
+        "package-admitted: package_present,version_matches,digest_matches,health_endpoint_healthy; "
+        "running not required; readiness not claimed"
+    )
+    assert event["edge"] == {
+        "package_present": True, "version_matches": True, "digest_matches": True,
+        "health_endpoint_healthy": True, "running": False, "observed_at": NOW,
+        "package_version": "v" * 256, "package_digest": edge.package_digest,
+    }
+    assert "edge-baseline-ready" not in str(grants)

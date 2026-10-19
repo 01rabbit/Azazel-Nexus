@@ -402,6 +402,12 @@ class ActivationLease:
         return self.granted_at <= now < self.expires_at
 
 
+EDGE_LAUNCH_CHECKS = (
+    "package_present", "version_matches", "digest_matches", "health_endpoint_healthy",
+)
+EDGE_CHECKS = (*EDGE_LAUNCH_CHECKS, "running")
+
+
 @dataclass(frozen=True)
 class EdgeBaselineState:
     """Evidence derived by `edge_package` from the installed package and probe.
@@ -416,6 +422,9 @@ class EdgeBaselineState:
     digest_matches: bool
     health_endpoint_healthy: bool
     running: bool
+    observed_at: Optional[str] = None
+    package_version: Optional[str] = None
+    package_digest: Optional[str] = None
 
     @property
     def launchable(self) -> bool:
@@ -424,7 +433,7 @@ class EdgeBaselineState:
 
     def missing_for_launch(self) -> tuple[str, ...]:
         """Failed package checks, excluding the consequence of starting."""
-        return tuple(name for name in self.missing() if name != "running")
+        return tuple(name for name in EDGE_LAUNCH_CHECKS if not getattr(self, name))
 
     @property
     def ready(self) -> bool:
@@ -446,17 +455,18 @@ class EdgeBaselineState:
         second one is a security finding.
         """
 
-        return tuple(
-            name
-            for name, held in (
-                ("package_present", self.package_present),
-                ("version_matches", self.version_matches),
-                ("digest_matches", self.digest_matches),
-                ("health_endpoint_healthy", self.health_endpoint_healthy),
-                ("running", self.running),
-            )
-            if not held
-        )
+        return tuple(name for name in EDGE_CHECKS if not getattr(self, name))
+
+    def as_event(self) -> dict:
+        """A bounded record of the checks and the probe's package binding."""
+        event = {name: getattr(self, name) for name in EDGE_CHECKS}
+        for name, limit in (("observed_at", 64), ("package_version", 256),
+                            ("package_digest", 256)):
+            value = getattr(self, name)
+            if value is not None:
+                event[name] = value[:limit]
+        return event
+
 
 
 #: The sentinel an authorization must carry. Held by `ActivationController`
@@ -626,6 +636,11 @@ class UnitVerdict:
 
 @dataclass(frozen=True)
 class ActivationOutcome:
+    """`granted` is admission, never readiness.
+
+    `edge_baseline_ready` is the only readiness claim.
+    """
+
     generation: Optional[int]
     verdicts: tuple[UnitVerdict, ...]
     #: What was established about the local Edge Core during this pass.
@@ -862,7 +877,12 @@ class ActivationController:
             generation,
             now=now,
             actor=actor,
-            reason="verified generation, commissioning satisfied for this tier",
+            reason=(
+                "package-admitted: " + ",".join(EDGE_LAUNCH_CHECKS)
+                + "; running not required; readiness not claimed"
+                if definition.tier is UnitTier.EDGE_BASELINE
+                else "verified generation, commissioning satisfied for this tier"
+            ),
         )
         try:
             self.units.unmask_and_enable(
@@ -1070,6 +1090,11 @@ class ActivationController:
                 "reason": reason,
                 "occurred_at": now,
                 "actor": actor,
+                **({"edge": self._edge.as_event()} if (
+                    event_type == "activation.unit_granted"
+                    and definition.tier is UnitTier.EDGE_BASELINE
+                    and self._edge is not None
+                ) else {}),
             }
         )
 

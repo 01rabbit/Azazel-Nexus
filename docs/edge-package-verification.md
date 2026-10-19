@@ -313,3 +313,15 @@ admission by requiring the four package checks before enabling it; all five
 readiness checks remain unchanged. The supporting probe starts no service.
 Activation enables admitted units for a later boot and has no `StartUnit`
 operation. Admission neither records nor displays `edge-baseline-ready`.
+
+
+`health_endpoint_healthy` means the fixed `--health` of the verified binary
+answered healthy under the pinned contract with the pinned version. The
+observe-only posture is established by the manifest posture checked under
+`package_present`; the running unit's posture is established by the fixed unit
+environment (I0). Health does not observe the running process.
+
+After admission, a unit that never becomes running (for example, a crash loop)
+keeps `edge-baseline-ready` at no. The one-shot probe can still pass its health
+check during a crash loop. Detecting that degradation and narrowing the unit
+is degradation/watchdog work for a separate issue.

@@ -30,6 +30,13 @@ PROFILES = ("hardware", "resource", "topology")
 KERNEL_NAMES = ("enp4s0", "enp5s0")
 
 
+@pytest.fixture(autouse=True)
+def probe_account(monkeypatch):
+    import os
+
+    monkeypatch.setattr("azazel_nexus.edge_package._probe_owner_uid", os.geteuid)
+
+
 def _tree(tmp_path: Path, names=KERNEL_NAMES) -> Path:
     root = tmp_path / "sys"
     net = root / "class" / "net"

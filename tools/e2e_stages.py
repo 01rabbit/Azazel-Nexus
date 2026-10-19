@@ -226,6 +226,7 @@ def _activation(harness: Harness) -> str:
 
     from azazel_nexus.activation import CORE_UNITS, ActivationLease, UnitTier
     from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.edge_package import installed_baseline_state
 
     manager = RecordingUnitManager(UNIT_NAMES.values())
     daemon = ActivationDaemon(
@@ -243,6 +244,10 @@ def _activation(harness: Harness) -> str:
             generation_digest=harness.store.current().digest,  # type: ignore[attr-defined]
         ),
         record=harness.record,  # type: ignore[attr-defined]
+        edge=installed_baseline_state(
+            now=NOW, package_root=harness.root / "empty-edge-package",
+            probe_path=harness.root / "empty-edge-probe.json",
+        ),
     )
     # Not "everything governed". A unit naming a capability this build does
     # not wire is withheld for that -- `azazel-model-fetchd.service` has no
@@ -353,6 +358,7 @@ def _rollback(harness: Harness) -> str:
 
     from azazel_nexus.activation import ActivationLease, UnitState
     from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.edge_package import installed_baseline_state
 
     manager = RecordingUnitManager(
         UNIT_NAMES.values(), fail_on="azazel-watchdog.service"
