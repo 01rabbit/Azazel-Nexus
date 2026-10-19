@@ -92,14 +92,16 @@ def test_fake_locald_not_admitted_is_recorded(root):
     requests = []
 
     def serve():
+        # Two observations: the capability sample, then the request's own.
         try:
-            connection, _ = listener.accept()
-            with connection:
-                connection.settimeout(2)
-                requests.append(json.loads(read_frame(connection)))
-                send_frame(connection, {"ok": True, "result": {
-                    "readiness": "refused", "reason": "not admitted",
-                }})
+            for _ in range(2):
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(2)
+                    requests.append(json.loads(read_frame(connection)))
+                    send_frame(connection, {"ok": True, "result": {
+                        "readiness": "refused", "reason": "not admitted",
+                    }})
         except (OSError, ValueError, RuntimeError) as error:
             errors.append(error)
 
@@ -113,7 +115,11 @@ def test_fake_locald_not_admitted_is_recorded(root):
         assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
         ledger = AuditLedger(service.router.ledger.path)
         ledger.verify()
-        assert next(iter(ledger)).event["local"] == "local_not_admitted"
+        events = [item.event for item in ledger]
+        transition = next(e for e in events if e["event_type"] == "mio.capability.transition")
+        assert transition["reasons"]["health"]["local"] == "not_admitted"
+        availability = next(e for e in events if e["event_type"] == "mio.entry.availability")
+        assert availability["local"] == "local_not_admitted"
     finally:
         thread.join(5)
         listener.close()
@@ -121,4 +127,4 @@ def test_fake_locald_not_admitted_is_recorded(root):
     assert not thread.is_alive()
     assert requests == [{"verb": "model.activate", "arguments": {
         "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-    }}]
+    }}] * 2
