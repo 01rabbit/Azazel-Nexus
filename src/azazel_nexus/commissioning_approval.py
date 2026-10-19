@@ -10,13 +10,21 @@ from .operator_trust import ApprovalPurpose, ApprovalRefused, MAX_APPROVAL_BYTES
 
 
 def commissioning_proposal_payload(*, inventory, resource_profile, topology_profile,
-                                   record_id: str, operator: str, confirmed_at: str) -> bytes:
+                                   record_id: str, operator: str, confirmed_at: str,
+                                   mio_profile: str | None = None) -> bytes:
     """Canonical unsigned bytes for external review/signing in protected storage."""
     if type(operator) is not str or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", operator):
         raise ApprovalRefused("invalid commissioning operator")
     document = build_commissioning_record(inventory=inventory, resource_profile=resource_profile,
         topology_profile=topology_profile, record_id=record_id,
         operator_ref=operator, confirmed_at=confirmed_at)
+    if mio_profile is not None:
+        if type(mio_profile) is not str or mio_profile not in {"CORE", "LITE", "FULL"}:
+            raise ApprovalRefused("unknown M.I.O. commissioning profile")
+        # Extend the Nexus wrapper, not Fabric's descriptive record or authority.
+        # The existing full-proposal signature covers this selection as well.
+        document["schema"] = "azazel-nexus/commissioning-proposal/v2"
+        document["mio_profile"] = mio_profile
     payload = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(payload) > MAX_APPROVAL_BYTES:
         raise ApprovalRefused("full commissioning proposal exceeds approval size bound")
@@ -25,7 +33,8 @@ def commissioning_proposal_payload(*, inventory, resource_profile, topology_prof
 
 def verify_commissioning_proposal(*, trust: OperatorTrust, payload: bytes, signature: bytes,
                                   inventory, resource_profile, topology_profile,
-                                  record_id: str, operator: str, confirmed_at: str) -> None:
+                                  record_id: str, operator: str, confirmed_at: str,
+                                  mio_profile: str | None = None) -> None:
     """Verify against independent expected snapshots, never inputs learned from payload.
 
     Rebuild all cross-record bindings, then demand exact canonical signed bytes.
@@ -35,7 +44,8 @@ def verify_commissioning_proposal(*, trust: OperatorTrust, payload: bytes, signa
     trust.verify(operator=operator, purpose=ApprovalPurpose.COMMISSIONING_PROPOSAL,
                  payload=payload, signature=signature)
     expected = commissioning_proposal_payload(inventory=inventory, resource_profile=resource_profile,
-        topology_profile=topology_profile, record_id=record_id, operator=operator, confirmed_at=confirmed_at)
+        topology_profile=topology_profile, record_id=record_id, operator=operator, confirmed_at=confirmed_at,
+        mio_profile=mio_profile)
     if payload != expected:
         raise ApprovalRefused("commissioning proposal does not match expected snapshots")
 

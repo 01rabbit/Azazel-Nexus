@@ -18,6 +18,7 @@ SupplementaryGroups=azazel-operator
 ExecStart=/usr/libexec/azazel/az-mio-entryd
 RuntimeDirectory=azazel
 RuntimeDirectoryMode=0750
+LoadCredential=mio-commissioning:/etc/azazel/commissioning
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/state/mio
 ReadWritePaths=/var/lib/azazel/run/mio-entry

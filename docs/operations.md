@@ -28,6 +28,7 @@ Knowledge Lite store and trust → Mission Pack selection → fetch commissionin
 presence → fetched model candidates → provider admission → activation/unit
 state. `done` applies only to the fact named in that row. It does not grant
 capabilities or certify later steps.
+Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
 
 The first pass checks for selected runtime entrypoints. Presence alone cannot
 complete installed-file verification. Supply an independently reviewed manifest

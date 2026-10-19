@@ -234,7 +234,8 @@ _PROPOSAL_FILES = ("commissioning-proposal.expected.json", "commissioning-propos
 
 
 def retain_proposal_context(*, inventory, resource_profile, topology_profile,
-                            record_id: str, operator: str, confirmed_at: str) -> None:
+                            record_id: str, operator: str, confirmed_at: str,
+                            mio_profile: str | None = None) -> None:
     """Retain validated local model inputs, never imported payload bytes.
 
     Two copies separate local expectations from the signing view. Their common
@@ -245,7 +246,8 @@ def retain_proposal_context(*, inventory, resource_profile, topology_profile,
 
     payload = commissioning_proposal_payload(inventory=inventory,
         resource_profile=resource_profile, topology_profile=topology_profile,
-        record_id=record_id, operator=operator, confirmed_at=confirmed_at)
+        record_id=record_id, operator=operator, confirmed_at=confirmed_at,
+        mio_profile=mio_profile)
     directory_fd = None
     try:
         directory_fd = os.open(COMMISSIONING_DIR, os.O_RDONLY | os.O_DIRECTORY |
@@ -289,3 +291,28 @@ def read_proposal_review_inputs() -> tuple[bytes, bytes, bytes]:
     finally:
         if directory_fd is not None:
             os.close(directory_fd)
+
+
+_MIO_CREDENTIALS = Path("/run/credentials/azazel-mio-entryd.service")
+
+
+def read_mio_profile_review_inputs() -> tuple[bytes, bytes, bytes]:
+    """Read the entry unit's private snapshot, never its protection key.
+
+    systemd copies the installed directory for the unprivileged unit. Original
+    files retain their private modes; only the existing signature verifier may
+    establish a confirmed ceiling from these bounded bytes. No environment or
+    caller-selected path may replace the system-unit credential directory.
+    """
+    fd = os.open(_MIO_CREDENTIALS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        expected = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[0],
+                                 maximum=MAX_APPROVAL_BYTES)
+        payload = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[1],
+                                maximum=MAX_APPROVAL_BYTES)
+        signature = _read_private(fd, "mio-commissioning_" + _PROPOSAL_FILES[2], maximum=64)
+        if expected != payload or len(signature) != 64:
+            raise DraftRefused("profile review inputs inconsistent")
+        return expected, payload, signature
+    finally:
+        os.close(fd)

@@ -693,3 +693,10 @@ def test_locald_aggregate_safety_ceiling_allows_packaged_server_exec():
     assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
     assert "NoExecPaths" not in settings
     assert "ExecPaths" not in settings
+
+
+def test_entry_gets_private_commissioning_snapshot_without_a_protection_key():
+    settings = _settings("azazel-mio-entryd.service")
+    assert settings["User"] == ["azmioentry"]
+    assert settings["LoadCredential"] == ["mio-commissioning:/etc/azazel/commissioning"]
+    assert settings["CapabilityBoundingSet"] == [""]

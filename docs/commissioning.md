@@ -193,6 +193,8 @@ inventory/resource collectors to those projections, then exports a complete
 unsigned proposal after explicit confirmation and input rechecks. It first
 retains an independent protected expected copy, then creates the signing view
 `commissioning-proposal.json`; existing proposal state is never overwritten.
+The v2 Nexus wrapper includes the explicit M.I.O. CORE / LITE / FULL ceiling
+in the same signed bytes; v1 remains reviewable but supplies no M.I.O. choice.
 `proposal-review --operator LABEL` validates a detached signature against those
 retained expectations and current node/trust, then rereads the protected inputs
 before reporting historical approval. There is no authoritative-record import

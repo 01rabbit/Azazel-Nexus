@@ -303,11 +303,23 @@ this verb performs no inference. Absent accounts or sockets, refused
 connections, explicit refusals, invalid responses and deadlines become fixed
 unavailable/refusal reason codes. Provider reply text is discarded.
 
-Selection uses the existing `profile_in_force` reader. No persisted M.I.O.
-profile reader exists in this build, so the production input is an absent
-confirmed selection and therefore CORE. A trusted `profile_reader` composition
-point accepts a confirmed profile. Persisted profile commissioning is not
-implemented; the entry never infers a profile from RAM.
+Selection reads the existing operator-signed full commissioning proposal through
+`mio_commissioning.commissioned_profile`. The Nexus v2 wrapper includes the
+explicit CORE / LITE / FULL ceiling, mapped to `core` / `local-only` /
+`fastest-permitted` route profiles; it changes no Edge authority. The existing
+`commissioning-proposal` signature must cover the entire wrapper and match the
+independently retained expected copy and current node/operator trust. A v1
+proposal, absent/unreadable input, unknown value, invalid signature or lab host
+selects CORE. RAM never substitutes for that selection.
+
+The entry unit uses a private [systemd credential snapshot](https://www.freedesktop.org/software/systemd/man/257/systemd.exec.html#Credentials)
+of the installed commissioning directory; original 0600 permissions stay intact
+and the protection key is not passed. No environment path override is read.
+Only the two proposal copies and signature are consumed. The directory must
+exist as required by installation; an empty directory supplies no choice and
+selects CORE. Proposal changes require an entry restart to refresh the snapshot;
+node/trust changes are rechecked on every read. This historical ceiling is no
+activation, current-hardware or provider-admission evidence.
 Remote admission is computed by `remote_trust.remote_admission` with
 `unchecked_reading()`, no opt-in and no sanitised frame. Local admission is
 always false with the explicit HG-05 unmeasured Core reserve reason, and
