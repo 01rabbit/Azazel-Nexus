@@ -575,7 +575,8 @@ def test_the_state_list_covers_a_crash_and_a_rollback():
     assert len(LOCAL_RUNTIME_STATES) == len(set(LOCAL_RUNTIME_STATES))
 
 
-def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
+@pytest.mark.parametrize('lookup_state', ['available', 'empty', 'unavailable', 'silent', 'broken', 'exhausted'])
+def test_trusted_reference_delivery_and_lookup_failures(tmp_path, monkeypatch, lookup_state):
     from types import SimpleNamespace
 
     from azazel_nexus.reasoning_playbook import read_library
@@ -588,21 +589,62 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
         calls.append(request)
         return SimpleNamespace(text='A' if len(calls) % 2 else 'C')
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    from azazel_nexus.lite_import import KnowledgeRef
+    from dataclasses import asdict
+    from azazel_nexus.local_advisory import read_delivered
+    from azazel_nexus_runtime.knowledge_client import KnowledgeUnavailable
+
+    ref = KnowledgeRef('T1110.003', 'Password spraying', 'Reference only', 'T1110.003',
+                       'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+    budgets = []
+    clock = [100.0]
+    monkeypatch.setattr(mio_locald.time, 'monotonic', lambda: clock[0])
+    from azazel_nexus_runtime import mio_embedding
+    original = mio_embedding.retrieve
+    def retrieve(*args, **kwargs):
+        result = original(*args, **kwargs)
+        clock[0] += 1.0 if lookup_state == 'exhausted' else 0.1
+        return result
+    monkeypatch.setattr(mio_embedding, 'retrieve', retrieve)
+    def lookup(ids, *, deadline_s):
+        assert ids == ('T1110.003',)
+        budgets.append(deadline_s)
+        if lookup_state == 'unavailable':
+            raise KnowledgeUnavailable()
+        if lookup_state == 'silent':
+            # A service that never answers uses its whole share, and no more.
+            clock[0] += deadline_s
+            raise KnowledgeUnavailable()
+        if lookup_state == 'broken':
+            raise RuntimeError('injected lookup defect')
+        return (ref,) if lookup_state == 'available' else ()
     service = mio_locald.LocalRuntimeService(
         staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
         runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
-        playbooks=library, knowledge_lookup=lambda _: pytest.fail('unbounded lookup'))
+        playbooks=library, knowledge_lookup=lookup)
     request = SimpleNamespace(verb=mio_locald.INFER_VERB, payload=frame,
                               arguments={'deadline_ms': 1000})
     events = []
     reply = service.handle(request, audit=events.append)
+    if lookup_state == 'exhausted':
+        assert reply == {'outcome': 'timed_out', 'refusal': 'deadline'}
+        assert budgets == []
+        assert any(e.get('knowledge') == 'skipped_budget_exhausted' for e in events)
+        return
     assert reply['outcome'] == 'advisory'
     assert reply['candidate'] == {'option_id': 'auth-password-spraying', 'kind': 'playbook'}
     assert reply['provenance']['playbooks_reviewed'] is False
     assert reply['match_evidence'][0]['technique_ids'] == ['T1110.003']
-    assert 'playbook' not in reply and 'knowledge' not in reply
+    assert budgets == [pytest.approx(mio_locald.KNOWLEDGE_MAX_S)]
+    expected = [asdict(ref)] if lookup_state == 'available' else None
+    assert read_delivered(reply).get('knowledge') == expected
+    assert 'Reference only' not in str(reply['fields'])
+    assert 'Reference only' not in reply['advice']
+    assert 'cited_facts' in reply['fields']
     assert len(calls) == 0  # optional explanation skipped below one second
-    assert any(e.get('knowledge') == 'skipped_deadline_contract' for e in events)
+    expected_state = {'empty': 'no_context', 'silent': 'unavailable',
+                      'broken': 'unavailable'}.get(lookup_state, lookup_state)
+    assert any(e.get('knowledge') == expected_state for e in events)
     assert 'many accounts' not in str(events)
     frame.update(question='How do I bake bread?', context=[])
     assert service.handle(request)['reason'] == 'out_of_scope'
@@ -709,3 +751,37 @@ def test_infer_validates_against_exact_sent_reference(tmp_path, with_reference):
     else:
         with pytest.raises(ValueError, match='ungrounded_facts'):
             read_explanation(text, frame, candidate)
+
+
+def test_oversized_knowledge_is_trimmed_rather_than_failing_the_advisory(monkeypatch):
+    import json
+    import time as _time
+
+    from azazel_nexus.lite_import import KnowledgeRef
+    from azazel_nexus.local_advisory import read_delivered
+    from azazel_nexus.reasoning_playbook import match, read_library
+
+    library = read_library((REPO_ROOT / 'tests/fixtures/reasoning-playbook.json').read_bytes())
+    frame = {'request_id': 'size', 'privacy_class': 'P2-mission',
+             'question': 'Password spray T1110.003',
+             'context': [{'kind': 'auth_log', 'text': 'many accounts'}]}
+    refs = tuple(KnowledgeRef('T1110.003', f'名{i:02d}' + '名' * 117, '要' * 240, 'T1110.003',
+                              'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+                 for i in range(16))
+    def run():
+        reply, _ = mio_locald.retrieval_pipeline(None, frame, match(frame, library), refs,
+                                                 end=_time.monotonic() + 5)
+        return reply, len(json.dumps(reply, ensure_ascii=False).encode('utf-8'))
+    full, full_size = run()
+    assert len(full['knowledge']) == 16
+    # Lower the bound to just below the full reply: references are dropped
+    # from the end until the advisory fits, and the advisory itself survives.
+    monkeypatch.setattr(mio_locald, 'DELIVERED_MAX_BYTES', full_size - 1)
+    trimmed, size = run()
+    assert size <= full_size - 1
+    assert 0 < len(trimmed['knowledge']) < 16
+    assert trimmed['knowledge'] == full['knowledge'][:len(trimmed['knowledge'])]
+    assert read_delivered(trimmed)
+    monkeypatch.setattr(mio_locald, 'DELIVERED_MAX_BYTES', 1)
+    bare, _ = run()
+    assert 'knowledge' not in bare
