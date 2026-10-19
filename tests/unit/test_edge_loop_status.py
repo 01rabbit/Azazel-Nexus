@@ -199,3 +199,13 @@ def test_bare_number_citation_names_are_dropped(tmp_path, monkeypatch):
         assert read_recent_incidents(json.dumps(recent).encode()) is None
     recent["incidents"][0]["explanation"]["knowledge_refs"][0]["name"] = "Rundll32"
     assert read_recent_incidents(json.dumps(recent).encode()) is not None
+
+
+def test_pending_row_has_fixed_text_and_labels_severity_apart_from_action(tmp_path, monkeypatch):
+    fixtures(tmp_path, monkeypatch)
+    value = build_recent_incidents([build_recent_incident(transition(2, edge_would="throttle"))], 0)
+    runtime_paths.incident_recent_path().write_text(json.dumps(value))
+    text = render()
+    assert "pending: awaiting explanation" in text
+    assert "most severe 2 count=1; latest: Edge would throttle (observe-only, not executed)" in text
+    assert "severity=" not in text

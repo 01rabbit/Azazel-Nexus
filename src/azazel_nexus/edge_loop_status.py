@@ -75,10 +75,13 @@ def _render_edge_loop(out, now):
     stale = now - recent["written_at"] > 30 or recent["written_at"] > now + 5
     print("    recent incidents:" + (" stale (snapshot expired)" if stale else ""), file=out)
     for row in recent["incidents"][:5]:
-        print(f"        {row['incident_id']} {row['state']} severity={row['most_severe']} count={row['count']}; Edge would {row['edge_would']} (observe-only, not executed); " + ", ".join(row["technique_ids"]), file=out)
+        # most_severe is the minimum seen, edge_would is the latest decision:
+        # label both so they are not read as one severity/action pair.
+        print(f"        {row['incident_id']} {row['state']} most severe {row['most_severe']} count={row['count']}; latest: Edge would {row['edge_would']} (observe-only, not executed); " + ", ".join(row["technique_ids"]), file=out)
         e = row["explanation"]
         codes = " (" + ", ".join(e["failure_codes"]) + ")" if e["failure_codes"] else ""
-        print(f"            {e['state']}{codes}: {e['summary']}", file=out)
+        summary = e["summary"] or ("awaiting explanation" if e["state"] == "pending" else "no summary")
+        print(f"            {e['state']}{codes}: {summary}", file=out)
         for ref in e["knowledge_refs"]:
             print(f"            {ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]", file=out)
 

@@ -14,6 +14,7 @@ from test_edge_intake import edge_event, record
 
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.edge_intake import read_intake_status
+from azazel_nexus.incident_explain import read_transition
 
 
 def wait_for(predicate, timeout=3):
@@ -632,3 +633,49 @@ def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch):
 def test_incident_and_evidence_have_separate_segment_ceilings(tmp_path):
     assert daemon.IncidentLedger(tmp_path, 0).segment_bytes == 16 * 1024 * 1024
     assert daemon.EvidenceStore(tmp_path).segment_bytes == 64 * 1024 * 1024
+
+
+def test_burst_of_complete_connections_does_not_consume_reader_slots(running):
+    server = running(max_connections=4)
+    gate = threading.Event()
+    # Hold the accept loop so the whole burst is complete in the backlog.
+    server.peer_uid = lambda _: (gate.wait(3), 123)[1]
+    for _ in range(100):
+        send(server)
+    gate.set()
+    wait_for(lambda: server.accepted == 100)
+    assert server.refused["overloaded"] == 0
+
+
+def test_line_awaiting_eof_is_registered_then_finished(running):
+    server = running(read_deadline=1)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(server.path))
+        client.sendall(json.dumps(edge_event()).encode() + b"\n")
+        time.sleep(0.2)
+        assert server.accepted == 0
+    wait_for(lambda: server.accepted == 1)
+    assert not any(server.refused.values())
+
+
+def test_full_evidence_day_still_opens_and_records_severe_incident(tmp_path, monkeypatch):
+    def full(self, item):
+        raise daemon.SegmentFull("evidence_segment_full")
+    monkeypatch.setattr(daemon.EvidenceStore, "append", full)
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 100)
+    server.pending.put(record(0, severity=1))
+    server.finished.set()
+    server._writer()
+    assert server.refused["evidence_segment_full"] == 1
+    assert server.accepted == 0 and not server.storage_failed
+    ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
+    ledger.verify()
+    events = [entry.event for entry in ledger]
+    assert [e["event_type"] for e in events] == [
+        "edge.incident.reset", "edge.incident.opened", "edge.incident.closed"]
+    for event in events[1:]:
+        assert event["evidence_stored"] is False
+        assert event["latest_evidence"] == record(0).digest
+        assert read_transition(event)["most_severe"] == 1

@@ -156,7 +156,12 @@ Concrete I1 limits and paths:
   EOF per connection. Up to 64 readers, each with a total 2 s deadline;
   listen backlog 512. A 256-record queue separates acceptance from disk I/O.
   Overflow accepts and closes immediately (`overloaded`); full queue drops
-  with `queue_full`. No response is written to Edge.
+  with `queue_full`. No response is written to Edge. Edge flushes its backlog
+  every 200 ms as one connection per line, so a connection whose single line
+  and EOF are already readable when accepted is finished at once and never
+  takes a reader slot; only incomplete ones are registered and count toward
+  the 64. (A container load test at 600 lines/s lost 14.7% as `overloaded`
+  when every accepted connection waited for the next poll.)
 - Closed parsing preserves `defense` and `enforcement_status` verbatim.
   Enforcement plans and metadata are validated, then reduced to observation
   fields (mode, trace id, selected action, target, policy reason, result and
@@ -190,6 +195,12 @@ Concrete I1 limits and paths:
   day for midnight rollover, so a forward clock jump cannot age out history.
   A full daily evidence segment refuses appends with `evidence_segment_full`;
   it does not permanently fail storage, and the next day's segment resumes.
+  The event still reaches the incident tracker and its transitions still reach
+  the incident ledger, so new incidents (severity 1 included) keep opening for
+  the rest of that day. Such an event is not counted in `accepted`, and its
+  incident's transitions carry `evidence_stored: false` from then on: the
+  digests remain correlation ids, but at least one of them names evidence that
+  was never stored. The field is absent while all evidence was stored.
   The SHA-256 digest covers canonical JSON of the validated, normalized event
   (including address normalization and reduced enforcement observations),
   not Edge's raw line; received time is separate. New segment creation fsyncs
@@ -301,9 +312,16 @@ nothing in intake, detection or Edge's observe-only decisions.
   at most 256 directory entries. A corrupt checkpoint fails startup closed.
 - **Selection and load.** Explain `opened`, then `updated` only when its
   `most_severe` number falls below the last explained value. Remember at most
-  1024 incident severities; unknown updates are skipped. Pending work is a
-  durable FIFO of 64 entries; full queues **drop newest**, counting
-  `queue_full`, to preserve already accepted work. Stale queued updates are
+  1024 incident severities; unknown updates are skipped. Pending work holds
+  64 entries and is taken most severe first (an entry ranks by the most severe
+  value queued for its incident, so an opening precedes its own escalation),
+  oldest first within a rank. Full queues **drop newest**, counting
+  `queue_full`, to preserve already accepted work, except that an arrival with
+  severity <= 2 (intake's severe threshold, one shared constant) displaces the
+  newest entry of another incident ranked above 2, also counted as
+  `queue_full`. A queue of only severe work still drops the newest arrival.
+  Entries are checkpointed in arrival order as before, so earlier cursors
+  remain readable. Stale queued updates are
   checked again when drained. During outage replay and before draining, an
   `opened` transition more than one hour past `first_seen` is dropped and
   counted as `stale_skipped`. At most six attempts occur in any rolling
@@ -430,7 +448,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   older I2 cursors without these additional fields remain readable. Initial
   seeding still does not replay history. An intake reset closes the previous
   run's recent rows without manufacturing audit close records. Status renders at most five rows,
-  always `Edge would <action> (observe-only, not executed)`, their summary and
+  labelled `most severe <n>` (the minimum seen) apart from
+  `latest: Edge would <action> (observe-only, not executed)` (the latest
+  decision), their summary (fixed `awaiting explanation` while pending) and
   citations. The recent reader refuses the whole snapshot on any malformed
   row, unknown field or unsanitized/address-shaped summary; read bound 256 KiB.
 - **Liveness detail.** Intake shows last accepted age, accepted count, the top

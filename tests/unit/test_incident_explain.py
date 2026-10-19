@@ -68,7 +68,9 @@ def test_pending_bound_and_queued_escalation():
 @pytest.mark.parametrize("mutate", [lambda t: t.update(unexpected="secret"),
                                      lambda t: t.update(most_severe=True),
                                      lambda t: t.update(technique_ids=["bad"]),
-                                     lambda t: t.update(edge_would="execute")])
+                                     lambda t: t.update(edge_would="execute"),
+                                     lambda t: t.update(evidence_stored=True),
+                                     lambda t: t.update(evidence_stored=0)])
 def test_transition_closed(mutate):
     t = transition()
     mutate(t)
@@ -182,3 +184,46 @@ def test_recent_strict_shape(mutation):
     v = build_recent_incidents([build_recent_incident(transition())], 0)
     mutation(v)
     assert read_recent_incidents(json.dumps(v).encode()) is None
+
+
+def test_severe_displaces_newest_ordinary_and_is_taken_first():
+    s = Selection()
+    for n in range(MAX_PENDING):
+        assert s.enqueue(transition(5, incident_id=f"inc-{n:016x}"), n+1) == "queued"
+    assert s.enqueue(transition(5, incident_id="inc-00000000000000ff"), 99) == "queue_full"
+    severe = transition(1, incident_id="inc-00000000000000aa")
+    assert s.enqueue(severe, 100) == "queued"
+    assert s.displaced == f"inc-{MAX_PENDING-1:016x}"
+    assert len(s.pending) == MAX_PENDING
+    assert s.take(0)[0]["incident_id"] == "inc-00000000000000aa"
+    # Ordinary work keeps arrival order behind it.
+    assert s.take(0)[0]["incident_id"] == "inc-0000000000000000"
+
+
+def test_severe_only_queue_still_drops_newest():
+    s = Selection()
+    for n in range(MAX_PENDING):
+        s.enqueue(transition(2, incident_id=f"inc-{n:016x}"), n+1)
+    assert s.enqueue(transition(1, incident_id="inc-00000000000000aa"), 99) == "queue_full"
+    assert s.displaced is None
+
+
+def test_priority_keeps_opened_before_its_queued_escalation():
+    s = Selection()
+    s.enqueue(transition(4, incident_id="inc-0000000000000001"), 1)
+    s.enqueue(transition(5), 2)
+    s.enqueue(transition(1, "updated"), 3)
+    first = s.take(0)[0]
+    assert (first["incident_id"], first["event_type"]) == (transition()["incident_id"], "edge.incident.opened")
+    s.mark(first)
+    assert s.take(0)[0]["most_severe"] == 1
+    assert s.take(0)[0]["incident_id"] == "inc-0000000000000001"
+
+
+def test_full_queue_does_not_displace_the_severe_incidents_own_opened():
+    s = Selection()
+    s.enqueue(transition(5), 1)
+    for n in range(1, MAX_PENDING):
+        s.enqueue(transition(2, incident_id=f"inc-{n:016x}"), n+1)
+    assert s.enqueue(transition(1, "updated"), 99) == "queue_full"
+    assert s.displaced is None

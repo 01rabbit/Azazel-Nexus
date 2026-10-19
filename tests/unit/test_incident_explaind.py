@@ -863,3 +863,19 @@ def test_unchanged_status_is_rewritten_every_20_seconds(tmp_path, monkeypatch):
     e.status()
     assert "status.json" in writes
     assert json.loads((tmp_path / "status.json").read_text())["written_at"] == 20
+
+
+def test_severe_transition_displaces_ordinary_work_and_survives_restart(tmp_path):
+    from azazel_nexus.incident_explain import MAX_PENDING
+    e = make(tmp_path)
+    e.selection.attempts.extend([0] * 6)
+    for n in range(MAX_PENDING):
+        e.selection.enqueue(transition(5, incident_id=f"inc-{n:016x}"), n + 1)
+    append(e, transition(1, incident_id="inc-00000000000000aa", evidence_stored=False))
+    e.poll()
+    assert e.refused["queue_full"] == 1
+    assert len(e.selection.pending) == MAX_PENDING
+    restarted = make(tmp_path)
+    restarted.monotonic = lambda: 61
+    restarted.poll()
+    assert records(restarted)[0]["incident_id"] == "inc-00000000000000aa"

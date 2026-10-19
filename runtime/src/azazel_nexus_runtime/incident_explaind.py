@@ -425,6 +425,10 @@ class Explainer:
                             if result == "queue_full":
                                 self.refuse(result)
                                 self.explanation_unavailable(t["incident_id"], result)
+                            elif self.selection.displaced is not None:
+                                # A severe arrival displaced ordinary work; count it the same way.
+                                self.refuse("queue_full")
+                                self.explanation_unavailable(self.selection.displaced, "queue_full")
                     except Exception:  # noqa: BLE001 - authenticated chain still contains untrusted data
                         self.refuse("transition_refused")
                 if budget <= MAX_LINE or lines >= POLL_LINES:

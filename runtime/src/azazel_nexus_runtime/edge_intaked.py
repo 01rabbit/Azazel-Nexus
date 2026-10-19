@@ -395,9 +395,16 @@ class IntakeServer:
             if not self.storage_failed:
                 try:
                     transitions = []
+                    stored = True
                     if record is not None:
-                        self.store.append(record)
-                        transitions = self.tracker.add(record)
+                        try:
+                            self.store.append(record)
+                        except SegmentFull as exc:
+                            # A full evidence day must not hide new incidents
+                            # (severity 1 included) for the rest of that day.
+                            self.refuse(exc.code)
+                            stored = False
+                        transitions = self.tracker.add(record, evidence_stored=stored)
                         with self.lock:
                             self.refused["incident_rate_limited"] = self.tracker.rate_limited
                     else:
@@ -405,11 +412,9 @@ class IntakeServer:
                     self._transitions(transitions)
                     with self.lock:
                         self.open_incidents = len(self.tracker.incidents)
-                        if record is not None:
+                        if record is not None and stored:
                             self.accepted += 1
                             self.last_accepted_at = record.received_at
-                except SegmentFull as exc:
-                    self.refuse(exc.code)
                 except Exception:  # noqa: BLE001 - failures must not stop acceptance or expose input
                     # A broken writer stays closed for records until restart.
                     self.storage_failed = True
@@ -477,6 +482,35 @@ class IntakeServer:
             clients.pop(connection)
             connection.close()
 
+        def receive(connection, buffer):
+            """Read what is available; None while unfinished, else a code ("" = done)."""
+            while True:
+                try:
+                    data = connection.recv(MAX_LINE + 2 - len(buffer))
+                except BlockingIOError:
+                    return None
+                except OSError:
+                    return "read_error"
+                buffer.extend(data)
+                if len(buffer) > MAX_LINE + 1:
+                    return "EDGE_TOO_LARGE"
+                if b"\n" in buffer:
+                    # Wait for EOF to refuse a second line as a whole.
+                    if buffer.count(b"\n") != 1 or not buffer.endswith(b"\n"):
+                        return "EDGE_SHAPE"
+                    if not data:
+                        try:
+                            event = parse_edge_event(bytes(buffer[:-1]))
+                            record = EvidenceRecord.receive(event, self.clock)
+                            self.pending.put_nowait(record)
+                        except EdgeEventRefused as exc:
+                            return exc.code
+                        except queue.Full:
+                            return "queue_full"
+                        return ""
+                elif not data:
+                    return "EDGE_SHAPE"
+
         try:
             selector.register(listener, selectors.EVENT_READ)
             worker.start()
@@ -501,42 +535,30 @@ class IntakeServer:
                                 self.refuse("peer_refused")
                                 incoming.close()
                                 continue
+                            incoming.setblocking(False)
+                            # Edge sends each line on its own connection and closes
+                            # at once; finishing complete ones here keeps a burst
+                            # from exhausting reader slots before the next select.
+                            buffer = bytearray()
+                            code = receive(incoming, buffer)
+                            if code is not None:
+                                if code:
+                                    self.refuse(code)
+                                incoming.close()
+                                continue
                             if len(clients) >= self.max_connections:
                                 self.refuse("overloaded")
                                 incoming.close()
                                 continue
-                            incoming.setblocking(False)
                             clients[incoming] = (
-                                bytearray(),
+                                buffer,
                                 time.monotonic() + self.read_deadline,
                             )
                             selector.register(incoming, selectors.EVENT_READ)
                         continue
-                    buffer, deadline = clients[connection]
-                    try:
-                        data = connection.recv(MAX_LINE + 2 - len(buffer))
-                    except OSError:
-                        close(connection, "read_error")
-                        continue
-                    buffer.extend(data)
-                    if len(buffer) > MAX_LINE + 1:
-                        close(connection, "EDGE_TOO_LARGE")
-                    elif b"\n" in buffer:
-                        # Wait for EOF to refuse a second line as a whole.
-                        if buffer.count(b"\n") != 1 or not buffer.endswith(b"\n"):
-                            close(connection, "EDGE_SHAPE")
-                        elif not data:
-                            try:
-                                event = parse_edge_event(bytes(buffer[:-1]))
-                                record = EvidenceRecord.receive(event, self.clock)
-                                self.pending.put_nowait(record)
-                            except EdgeEventRefused as exc:
-                                self.refuse(exc.code)
-                            except queue.Full:
-                                self.refuse("queue_full")
-                            close(connection)
-                    elif not data:
-                        close(connection, "EDGE_SHAPE")
+                    code = receive(connection, clients[connection][0])
+                    if code is not None:
+                        close(connection, code)
                 for connection, (_, deadline) in list(clients.items()):
                     if time.monotonic() >= deadline:
                         close(connection, "read_deadline")
