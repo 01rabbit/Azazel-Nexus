@@ -494,8 +494,29 @@ A redirect is an Edge decision. Deception Lite may materialise a decoy only
 when it holds an Edge-signed Fabric `EnvironmentActivationDecision`. Edge
 already builds signed transition decisions (`deception_transition.py`) but
 nothing calls it in production, and key distribution to Nexus does not exist.
-This phase starts when Edge produces those decisions; until then a redirect
-decision is shown as "Edge would redirect to a decoy" and no decoy is started.
+Until then a redirect decision is shown as "Edge would redirect to a decoy"
+and no decoy is started.
+
+I4 has three prerequisites, not one:
+
+1. **Edge enforcement.** A redirect moves traffic, and the shipped Edge Core
+   is observe-only: its redirect is planned, never applied. A decoy started for
+   a redirect that is not applied receives nothing, so the redirect half of I4
+   waits for Azazel-Edge#412 (one declared enforcement path) and a commissioned
+   enforcement design in Nexus. Neither is part of this plan.
+2. **Signed decisions and their key.** Edge signs transition decisions with a
+   shared HMAC transport key (Fabric `decision_signing`). Nexus can verify one
+   only with that key, so its provisioning, storage and rotation must be
+   designed with commissioning, the same way operator keys are. Edge must also
+   call the producer in production.
+3. **A decoy that can be reached.** Deception Lite is loopback-only today
+   (`decoy_loopback.py`): it has no unit, no `az-decoy0` bridge and no
+   exposure path beyond the lifecycle in `decoy.py`.
+
+One part does not need enforcement: what an operator-exposed decoy observes
+(Fabric `EnvironmentEvent`) can enter this loop as evidence, the way Edge's
+alerts do, once item 3 exists. That observation path is the first piece of I4
+that can be built while Edge stays observe-only.
 
 **Edge Core's own output.** Edge Core prints each decision to stdout, which
 the unit sends to the journal. Those lines are Edge's record and carry the
@@ -578,6 +599,7 @@ built for the host architecture, not packaged by Edge's packager, and not
 started by systemd); activation admitting the unit (#198); hardware behaviour.
 The same run on the rehearsal VM, through the installed units, is the next
 step. Neither is hardware evidence: HG-07 still needs the real host.
+The VM procedure is the [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md).
 
 ## 3. What is out of scope
 
@@ -594,6 +616,7 @@ step. Neither is hardware evidence: HG-07 still needs the real host.
 | Fabric pin, Edge Core unit, intake daemon, incidents, advice, status, audit, end-to-end stage | Azazel-Nexus |
 | Carry `alert.metadata.mitre_technique_id` into `normalized.technique_ids` | Azazel-Edge |
 | Production producer of signed activation decisions and key distribution (I4) | Azazel-Edge, later |
+| One declared enforcement path, before any redirect is applied (I4) | Azazel-Edge#412 |
 
 
 `health_endpoint_healthy` means the fixed `--health` of the verified binary
