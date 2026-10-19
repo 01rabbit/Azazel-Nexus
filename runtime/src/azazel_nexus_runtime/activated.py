@@ -64,6 +64,7 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
+from azazel_nexus.edge_package import installed_baseline_state
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
@@ -235,6 +236,11 @@ class ActivationDaemon:
         commissioning_evidence: Optional[CommissioningEvidence] = None,
         require_commissioning_evidence: bool = False,
     ) -> ActivationOutcome:
+        """Apply one pass; a lease-bearing pass loads missing Edge evidence.
+
+        Explicit Edge states remain an injection seam. With no lease, None
+        stays unknown, as required by the production boot refusing pass.
+        """
         units = ManagedUnitController(self.manager)
         controller = ActivationController(
             units=units,
@@ -248,7 +254,13 @@ class ActivationDaemon:
                 actor=actor,
                 lease=lease,
                 record=record,
-                edge=edge,
+                # The lease-bearing ordinary path consumes package/probe
+                # evidence. The boot refusing pass keeps edge=None and grants
+                # nothing; evidence itself supplies no lease or node health.
+                edge=(
+                    installed_baseline_state(now=now)
+                    if edge is None and lease is not None else edge
+                ),
                 healthy=healthy,
                 commissioning_evidence=commissioning_evidence,
                 require_commissioning_evidence=require_commissioning_evidence,

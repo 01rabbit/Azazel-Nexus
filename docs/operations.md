@@ -290,7 +290,8 @@ view. Intake/explainer snapshots degrade independently to unavailable or stale
 (over 30 seconds); a quiet explainer's unchanged snapshot may become stale.
 Use the existing Edge probe to assess the payload itself. Status also shows
 accepted/explained counts, refusal counters, storage failure, last advisory
-availability, and `audit_forward_dropped`. A chain break shows
+availability, `audit_forward_dropped` (delivery gave up or queue full) and
+`audit_forward_refused` (auditd refused the record). A chain break shows
 `inspect_incident_chain_then_remove_cursor_and_restart`; follow the recovery
 procedure above before removing any cursor.
 

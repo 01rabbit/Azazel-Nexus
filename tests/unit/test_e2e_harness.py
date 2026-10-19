@@ -889,3 +889,36 @@ def test_replay_connects_one_line_per_connection_as_child(short_root, monkeypatc
     import time
     e2e_loop.replay(Harness(short_root), short_root / "intake.sock", time.monotonic() + 1)
     assert captured == ["azedge"]
+
+
+def test_activation_stage_uses_empty_edge_paths(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from azazel_nexus.edge_package import installed_baseline_state
+    from azazel_nexus.generation import GenerationStore
+    from tools.e2e_stages import NOW, _activation
+
+    store = GenerationStore(tmp_path / "generations")
+    store.create({"config": b"observe-only"}, created_at=NOW,
+                 commissioning_digest="sha256:" + "0" * 64)
+    harness = SimpleNamespace(root=tmp_path, store=store, record=None)
+    seen = []
+
+    def installed(*, now, package_root, probe_path):
+        assert package_root.is_relative_to(tmp_path)
+        assert probe_path.is_relative_to(tmp_path)
+        assert not package_root.exists()
+        assert not probe_path.exists()
+        state = installed_baseline_state(now=now, package_root=package_root,
+                                         probe_path=probe_path)
+        assert not state.package_present
+        seen.append(state)
+        return state
+
+    def host_read(**kwargs):
+        pytest.fail("the e2e stage must inject Edge evidence instead of reading host paths")
+
+    monkeypatch.setattr("azazel_nexus.edge_package.installed_baseline_state", installed)
+    monkeypatch.setattr("azazel_nexus_runtime.activated.installed_baseline_state", host_read)
+    assert "supporting units granted" in _activation(harness)
+    assert len(seen) == 1

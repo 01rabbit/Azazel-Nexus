@@ -1,6 +1,7 @@
 """Read-only operator projection; missing components never hide the baseline."""
 from __future__ import annotations
 
+import io
 import os
 import re
 import stat
@@ -24,7 +25,26 @@ def _availability(value):
     return "unattempted/skipped" if value is None else "available" if value else "unavailable"
 
 
+def _guarded(out, fallback, render):
+    # Buffered so a failure part-way prints one fixed line, never half a
+    # section or exception text, and the rest of status still renders.
+    buffer = io.StringIO()
+    try:
+        render(buffer)
+    except Exception:  # noqa: BLE001 - presentation only; status continues
+        print(fallback, file=out)
+        return
+    out.write(buffer.getvalue())
+
+
 def render_edge_loop(out, *, now):
+    """``now`` is None when the caller could not establish the time."""
+    _guarded(out, "edge loop: unavailable (internal)", lambda o: _render_edge_loop(o, now))
+
+
+def _render_edge_loop(out, now):
+    if type(now) not in (int, float):
+        raise ValueError("time")
     print("edge loop:", file=out)
     from .runtime_paths import (
         edge_intake_status_path, incident_explain_status_path, incident_recent_path,
@@ -46,7 +66,7 @@ def render_edge_loop(out, *, now):
             print(f"        explained: {value['explained']}; chain_broken: {value['chain_broken']}; storage_failed: {value['storage_failed']}", file=out)
             if value["chain_broken"]:
                 print("        inspect_incident_chain_then_remove_cursor_and_restart", file=out)
-            print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}", file=out)
+            print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}; audit_forward_refused: {value['audit_forward_refused']}", file=out)
         refusals = sorted(value["refused"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
         print("        refusals: " + (", ".join(f"{k}={v}" for k, v in refusals) or "none"), file=out)
     if recent is None:
@@ -64,8 +84,13 @@ def render_edge_loop(out, *, now):
 
 
 def render_fabric_status(report, out):
-    from .fabric_boundary import project_capability
+    _guarded(out, "fabric status view: unavailable (internal)",
+             lambda o: _render_fabric_status(report, o))
+
+
+def _render_fabric_status(report, out):
     try:
+        from .fabric_boundary import project_capability
         projection = project_capability(report.capabilities.state, report.capabilities.available)
         if projection.available:
             version = projection.fabric_version

@@ -10,8 +10,9 @@ with an import.
 
 `package_present`, `version_matches`, `digest_matches`,
 `health_endpoint_healthy`, `running`. `activation.EdgeBaselineState` needs all
-five and this module is the **only producer of one in the package** -- the
-static scan in `tests/unit/test_wizard_and_cli.py` keeps it that way.
+five for readiness; admission needs the first four. This module is the
+**only producer of one in the package** -- the static scan in
+`tests/unit/test_wizard_and_cli.py` keeps it that way.
 
 They are separate because the operator's next action is different for each.
 "Edge is not installed" is a deployment step. "Edge is installed and its
@@ -78,12 +79,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import pwd
+import stat
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from .activation import EdgeBaselineState
+from .activation import EDGE_CHECKS, EdgeBaselineState
 from .integration import EdgePresence
 
 __all__ = [
@@ -106,6 +110,7 @@ __all__ = [
     "PIN",
     "UNSIGNED_CAVEAT",
     "inspect",
+    "installed_baseline_state",
     "no_health_probe",
     "no_running_probe",
     "presence_of",
@@ -144,6 +149,7 @@ HEALTH_ARGV = ("bin/azazel-edge-core", "--health")
 #: solve; the TTL solves it, and a result from before a reboot is stale by
 #: exactly the rule that makes any other old result stale.
 PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe/edge-probe.json")
+PROBE_CLOCK_SKEW_SECONDS = 5
 PROBE_CONTRACT = "azazel-nexus/edge-probe/v1"
 
 #: A ceiling on what is read from the state file. A reader with no ceiling is
@@ -162,13 +168,7 @@ MAX_TTL_SECONDS = 3600
 #: The five checks, in the order an operator reads them. A tuple rather than a
 #: set: both a disappearance and a reordering should fail a test, because the
 #: order is what the display walks.
-CHECKS = (
-    "package_present",
-    "version_matches",
-    "digest_matches",
-    "health_endpoint_healthy",
-    "running",
-)
+CHECKS = EDGE_CHECKS
 
 #: Printed beside every passing inspection. Not a footnote in a design
 #: document: a limit recorded only there is a limit nobody reads.
@@ -305,6 +305,7 @@ class EdgeInspection:
     presence: EdgePresence
     caveats: tuple[str, ...] = ()
     root: str = ""
+    probe: Optional["ProbeResult"] = None
 
     def __post_init__(self) -> None:
         seen = tuple(finding.check for finding in self.findings)
@@ -358,7 +359,12 @@ class EdgeInspection:
         for the `False` stays in the finding rather than being flattened here.
         """
 
-        return EdgeBaselineState(*(finding.held for finding in self.findings))
+        return EdgeBaselineState(
+            *(finding.held for finding in self.findings),
+            observed_at=self.probe.observed_at if self.probe else None,
+            package_version=self.probe.package_version if self.probe else None,
+            package_digest=self.probe.package_digest if self.probe else None,
+        )
 
     def as_event(self) -> dict:
         return {
@@ -439,7 +445,14 @@ class ProbeResult:
         return _zulu(moment.isoformat())
 
     def fresh_at(self, now: str) -> bool:
-        return _instant(now) < _instant(self.expires_at())
+        return not self.future_at(now) and _instant(now) < _instant(self.expires_at())
+
+    def future_at(self, now: str) -> bool:
+        from datetime import timedelta
+
+        return _instant(self.observed_at) > (
+            _instant(now) + timedelta(seconds=PROBE_CLOCK_SKEW_SECONDS)
+        )
 
     def as_event(self) -> dict:
         return {
@@ -546,22 +559,61 @@ def parse_probe_result(text: str) -> ProbeResult:
     )
 
 
-def load_probe_result(path: Path = PROBE_STATE_PATH) -> Optional[ProbeResult]:
+def _probe_owner_uid() -> int:
+    try:
+        return pwd.getpwnam("azprobe").pw_uid
+    except KeyError:
+        return 0  # An uninstalled account never trusts a local writer.
+
+
+def load_probe_result(
+    path: Path = PROBE_STATE_PATH, *, owner_uid: Optional[int] = None,
+) -> Optional[ProbeResult]:
     """Read the state file, or `None` when there is nothing readable there.
 
     `None` for an absent file, because a node where the probe has never run is
     not a node with a broken probe. A file that exists and cannot be read as a
     result raises: something wrote it, and silently ignoring that would hide
-    the one case where the probe is producing garbage.
+    the one case where the probe is producing garbage. Only azprobe or root
+    may own it, with no group/other write permission (layout.py's probe leaf).
+    Tests may inject the writer UID; an unresolved azprobe trusts only root.
     """
 
     try:
-        text = path.read_text(encoding="utf-8")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            if owner_uid is None:
+                owner_uid = _probe_owner_uid()
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, owner_uid)
+                    or info.st_mode & 0o022):
+                raise EdgePackageRefused("the probe state has unsafe ownership or mode")
+            text = stream.read(PROBE_MAX_BYTES + 1)
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise EdgePackageRefused(f"the probe state could not be read: {exc}") from exc
     return parse_probe_result(text)
+
+
+def installed_baseline_state(
+    *, now: str, package_root: Path = EDGE_PACKAGE_ROOT,
+    probe_path: Path = PROBE_STATE_PATH,
+) -> EdgeBaselineState:
+    """Activation evidence from fixed installed paths, re-derived each pass.
+
+    Only a fresh, package-bound probe supplies health or running. An unreadable
+    probe supplies neither; an inspection error establishes no checks at all.
+    This reads files only and never invokes the binary or the service manager.
+    """
+    try:
+        try:
+            probe = load_probe_result(probe_path)
+        except Exception:  # noqa: BLE001 - unreadable evidence never grants
+            probe = None
+        return inspect(package_root, probe=probe, now=now).state()
+    except Exception:  # noqa: BLE001 - inspection failure establishes nothing
+        return EdgeBaselineState(False, False, False, False, False)
 
 
 # -- probes, whose defaults refuse ----------------------------------------
@@ -684,6 +736,7 @@ def inspect(
         presence=presence_of(ordered),
         caveats=caveats,
         root=str(root),
+        probe=probe,
     )
 
 
@@ -730,6 +783,8 @@ def _probe_findings(
             f"{manifest_version}/{artifact_digest}. A result about a different "
             "package is a result about something else"
         )
+    if probe.future_at(now):
+        return unusable("the probe observed_at is more than 5 seconds in the future; not checked")
     if not probe.fresh_at(now):
         return unusable(
             f"the probe result was observed at {probe.observed_at} and expired "

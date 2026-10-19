@@ -43,7 +43,9 @@ from __future__ import annotations
 
 import pwd
 import re
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
 
@@ -201,6 +203,12 @@ _INCIDENT_FIELDS = (
     Argument("technique_count", ArgumentKind.ORDINAL, maximum=8),
     Argument("occurred_at", ArgumentKind.TIMESTAMP),
 )
+#: An incident record's day names its segment, and segments only move
+#: forward: one far-future record would refuse every later writer, and a
+#: replayed old one can never land. Incident times are the explainer's
+#: observation times, so a record outside this window is refused outright.
+INCIDENT_CLOCK_SKEW_S = 600
+
 for _kind in ("opened", "escalated", "closed"):
     EVENT_SCHEMAS["edge.incident." + _kind] = _INCIDENT_FIELDS + (
         (Argument("reason", ArgumentKind.ENUM, choices=CLOSE_REASONS),) if _kind == "closed" else ())
@@ -383,8 +391,10 @@ class AuditService:
     that may already be broken.
     """
 
-    def __init__(self, ledger: SegmentedLedger) -> None:
+    def __init__(self, ledger: SegmentedLedger, *,
+                 clock: Callable[[], float] = time.time) -> None:
         self.ledger = ledger
+        self.clock = clock
         try:
             self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
         except KeyError:
@@ -450,6 +460,13 @@ class AuditService:
                 != (request.verb.name == "audit.bootstrap.append")):
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "event writer")
         event = _bind_event(event_type, payload)
+        if event_type.startswith("edge.incident."):
+            try:
+                skew = abs(datetime.fromisoformat(event["occurred_at"]).timestamp() - self.clock())
+            except (ValueError, OverflowError):
+                skew = None
+            if skew is None or skew > INCIDENT_CLOCK_SKEW_S:
+                raise RequestRefused(Refusal.ARGUMENT_RANGE, "occurred_at")
         # Every declared schema carries `occurred_at`, and `_bind_event` has
         # already refused a payload missing it. The segment a record lands in
         # is the day it happened, not the day it arrived.

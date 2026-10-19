@@ -665,7 +665,7 @@ def test_audit_client_uses_shared_authenticated_bounded_transport(monkeypatch):
     receipt = daemon.append_audit(event)
     assert receipt.sequence == 1
     assert calls == [(("audit", "azaudit", "audit.append", {"event_type": "edge.incident.opened"}),
-                      {"payload": {"count": 1}, "deadline_s": 0.25})]
+                      {"payload": {"count": 1}, "deadline_s": 2})]
     monkeypatch.setattr(daemon, "_exchange", lambda *a, **kw: {"sequence": True, "event_hash": "SECRET"})
     with pytest.raises(ValueError):
         daemon.append_audit(event)
@@ -698,7 +698,7 @@ def test_legacy_i2_cursor_migrates_audit_comparison_state(tmp_path):
     e.poll()
     path = e.state / "cursor.json"
     value = json.loads(path.read_bytes())
-    for key in ("recent", "audit_severities", "audit_forward_dropped"):
+    for key in ("recent", "audit_severities", "audit_forward_dropped", "audit_forward_refused"):
         del value[key]
     path.write_text(json.dumps(value))
     restored = make(tmp_path)
@@ -718,18 +718,131 @@ def test_intake_reset_closes_recent_projection_without_manufacturing_audit(tmp_p
     assert e.audit_pending.qsize() == 1
 
 
-def test_permanently_refused_audit_head_is_dropped_after_bounded_retries(tmp_path):
-    calls, waits = [], []
+class DrainStop:
+    def __init__(self, e):
+        self.e, self.waits = e, []
+    def is_set(self):
+        return self.e.audit_pending.empty()
+    def wait(self, seconds):
+        self.waits.append(seconds)
+
+
+def test_failed_audit_delivery_backs_off_then_drops_the_head(tmp_path):
+    calls = []
     def fail(event):
         calls.append(event)
         raise ValueError("SECRET")
     e = make(tmp_path, audit=fail)
     e.observe_transition(transition())
-    class Stop:
-        def is_set(self):
-            return e.audit_pending.empty()
-        def wait(self, seconds):
-            waits.append(seconds)
-    e.forward_audit(Stop())
-    assert len(calls) == 5 and waits == [1] * 4
-    assert e.audit_forward_dropped == 1 and not e.storage_failed
+    stop = DrainStop(e)
+    e.forward_audit(stop)
+    assert len(calls) == 4 and stop.waits == [0.5, 1, 2]
+    assert e.audit_forward_dropped == 1 and e.audit_forward_refused == 0 and not e.storage_failed
+
+
+@pytest.mark.parametrize("refusal", ["principal_denied", "argument_range", "argument_type",
+                                     "undeclared_argument", "missing_argument", "unknown_verb"])
+def test_audit_refusal_is_dropped_at_once_and_counted_apart(tmp_path, refusal):
+    calls = []
+    def refuse(event):
+        calls.append(event)
+        raise client.ServiceRefused(refusal)
+    e = make(tmp_path, audit=refuse)
+    e.observe_transition(transition())
+    e.observe_transition(transition(incident_id="inc-2222222222222222"))
+    stop = DrainStop(e)
+    e.forward_audit(stop)
+    assert len(calls) == 2 and stop.waits == []
+    assert e.audit_forward_refused == 2 and e.audit_forward_dropped == 0
+    status = e.snapshot()
+    assert status["audit_forward_refused"] == 2
+    from azazel_nexus.incident_explain import read_explainer_status
+    assert read_explainer_status(json.dumps(status).encode()) == status
+    e.checkpoint()
+    assert make(tmp_path).audit_forward_refused == 2
+
+
+def test_server_read_deadline_refusal_is_retried(tmp_path):
+    calls = []
+    def audit(event):
+        calls.append(event)
+        if len(calls) == 1:
+            raise client.ServiceRefused("read_deadline")
+    e = make(tmp_path, audit=audit)
+    e.observe_transition(transition())
+    stop = DrainStop(e)
+    e.forward_audit(stop)
+    assert len(calls) == 2 and stop.waits == [0.5]
+    assert e.audit_forward_refused == e.audit_forward_dropped == 0
+
+
+@pytest.mark.parametrize("reply,refused", [({"ok": False, "refusal": "principal_denied"}, True),
+                                           ({"ok": False, "refusal": "SECRET 192.0.2.1"}, False),
+                                           ({"ok": False, "refusal": "principal_denied", "x": 1}, False)])
+def test_audit_client_carries_only_declared_refusal_reasons(tmp_path, monkeypatch, reply, refused):
+    with tempfile.TemporaryDirectory(prefix="i3-", dir="/tmp") as directory:
+        monkeypatch.setattr(runtime_paths, "ROOT", Path(directory))
+        monkeypatch.setenv("AZAZEL_ROOT", directory)
+        monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+        monkeypatch.setattr(client, "peer_credentials", lambda _: (1, os.getuid(), os.getgid()))
+        path = runtime_paths.socket_path("audit")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # BSD gives new files the directory's group, so macOS sockets in /tmp
+        # are not in the caller's primary group.
+        gid = path.parent.stat().st_gid
+        monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=gid))
+        try:
+            listener = bind_socket(path, expected_gid=gid)
+        except PermissionError:
+            pytest.skip("sandbox denies AF_UNIX bind")
+        listener.settimeout(3)
+        errors = []
+        def serve():
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(2)
+                    read_frame(connection)
+                    send_frame(connection, reply)
+            except Exception as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=serve)
+        thread.start()
+        try:
+            with pytest.raises(ValueError) as exc:
+                daemon.append_audit({"event_type": "edge.incident.opened", "count": 1})
+        finally:
+            thread.join(4)
+            listener.close()
+        assert not errors
+        assert isinstance(exc.value, client.ServiceRefused) is refused
+        assert str(exc.value) == "M.I.O. service refused"
+        if refused:
+            assert exc.value.refusal == "principal_denied"
+
+
+def test_recent_projection_failure_does_not_cost_the_audit_record(tmp_path, monkeypatch):
+    e = make(tmp_path)
+    def fail(*_):
+        raise RuntimeError("SECRET")
+    monkeypatch.setattr(daemon, "build_recent_incident", fail)
+    e.observe_transition(transition())
+    assert e.audit_pending.qsize() == 1 and e.refused["transition_refused"] == 1
+
+
+def test_unchanged_recent_snapshot_is_rewritten_every_20_seconds(tmp_path, monkeypatch):
+    e = make(tmp_path)
+    append(e)
+    e.poll()
+    writes = []
+    original = daemon.atomic_json
+    monkeypatch.setattr(daemon, "atomic_json",
+                        lambda path, value, mode: (writes.append(path.name), original(path, value, mode)))
+    e.monotonic = lambda: 19
+    e.recent_status()
+    assert writes == []
+    e.clock = lambda: 20
+    e.monotonic = lambda: 20
+    e.recent_status()
+    assert writes == ["recent.json"]
+    assert json.loads((tmp_path / "recent.json").read_text())["written_at"] == 20

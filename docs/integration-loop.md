@@ -93,11 +93,18 @@ scope for this plan and needs its own decision.
   is off because it has no ceiling. It is governed like every other unit:
   masked and preset-disabled, enabled only when activation admits it in the
   `EDGE_BASELINE` tier, and run as its own system user.
-- **Known limit: first start.** `EDGE_BASELINE` admission needs all five Edge
-  checks, and one of them is "running", which a masked unit can never become.
-  I0 does not relax this. Resolving it, without weakening what
-  `edge-baseline-ready` means, is a separate design decision before I5
-  ([#198](https://github.com/01rabbit/Azazel-Nexus/issues/198)).
+- **First start resolved by [#198](https://github.com/01rabbit/Azazel-Nexus/issues/198).**
+  `EDGE_BASELINE` admission needs the four package checks: present, matching
+  version, matching digest, and healthy. The supporting probe runs the verified
+  binary's fixed `--health` contract without starting the unit. The lease-bearing
+  activation pass inspects the installed package and consumes only fresh,
+  package-bound probe results; stale, missing or unreadable evidence cannot
+  grant. Running is a consequence of starting, so it is not required to admit
+  the unit. All other activation gates remain in place. A grant only enables
+  the unit for a later boot; it neither starts it nor claims readiness.
+  `edge-baseline-ready` still requires all five checks, including running, in
+  projections, status and recorded inspection results. This separates permission
+  to start from evidence that the baseline is ready without weakening readiness.
 
 ### I1 — intake (Detect → Understand)
 
@@ -403,7 +410,8 @@ nothing in intake, detection or Edge's observe-only decisions.
   stale. The deterministic summary still prints when components are absent.
 - **Recent incidents.** `recent.json` shares the explainer's operator leaf
   (`2750 azexplain:azazel-operator`), atomically replaced/fsynced as `0644`,
-  only on content change and no more than once per five seconds. Schema
+  on content change no more than once per five seconds, and rewritten
+  unchanged every 20 seconds so a quiet node's rows do not read as stale. Schema
   `azazel-nexus/recent-incidents/v1` holds `written_at` and at most 20 rows,
   sorted newest observation first. Transitions update open/closed state,
   first/last times, count, severity, closed policy reason, Edge action and
@@ -411,7 +419,8 @@ nothing in intake, detection or Edge's observe-only decisions.
   eight citations are retained. Summaries take the first 280 characters of
   validated advice/reference text, then apply I2's ASCII-letter/space filter
   (32 characters per word). Citation fields are only technique id, validated
-  name and claim id; address syntax in names is refused. No network addresses,
+  name and claim id; address syntax or a bare number token in a name drops
+  that citation. No network addresses,
   rule text, targets, evidence digests or raw advice enter this projection.
   Recent rows and audit comparison severities survive in the private cursor;
   older I2 cursors without these additional fields remain readable. Initial
@@ -423,14 +432,18 @@ nothing in intake, detection or Edge's observe-only decisions.
 - **Liveness detail.** Intake shows last accepted age, accepted count, the top
   four refusal counters and storage failure. Explainer shows explained count,
   chain break and its fixed recovery hint, storage failure, last attempted
-  M.I.O./Knowledge availability and `audit_forward_dropped`. Unchanged
+  M.I.O./Knowledge availability, `audit_forward_dropped` and
+  `audit_forward_refused`. Unchanged
   explainer snapshots intentionally do not heartbeat: a quiet snapshot can
   age to stale; that means stale observation, not proof the process stopped.
 - **Fabric presentation.** Production status calls `project_capability` with
   the same capability state and available set already displayed. It reports
   `projected (v0.9.0rc5)`, `not available (extra not installed)` or
   `refused (projection_refused)`. Exception text is never rendered and the
-  optional extra never determines capability or interrupts status.
+  optional extra never determines capability or interrupts status. An
+  unexpected failure in either the loop or the Fabric section (including an
+  unparseable `--as-of`) prints only `edge loop: unavailable (internal)` or
+  `fabric status view: unavailable (internal)`, and status continues.
 - **Exclusive audit writer.** Only auditd adds `azexplain` to the default
   SERVICE allowlist (in addition to I2's explicit entryd/knowledge-lited lists).
   The shared SERVICE list remains unchanged. Auditd also checks the
@@ -441,6 +454,11 @@ nothing in intake, detection or Edge's observe-only decisions.
   prevents azexplain's supplementary operator group from granting OPERATOR.
   Existing `azazel-operator` membership traverses audit's `2710` leaf and
   reaches its `0660` socket; no new groups or socket permissions are needed.
+  An incident record's `occurred_at` names its daily segment and segments
+  only move forward, so auditd refuses an `edge.incident.*` record more than
+  ten minutes from its own clock (`argument_range`, detail `occurred_at`):
+  one far-future record cannot strand every later writer. Other event types
+  keep their existing admission.
 - **Best-effort forwarding.** Openings, updates whose minimum severity falls,
   and closes become `edge.incident.opened|escalated|closed` via authenticated
   `audit.append`, reusing the bounded AF_UNIX client and validated receipt.
@@ -451,11 +469,21 @@ nothing in intake, detection or Edge's observe-only decisions.
   intake update time for openings/escalations and close observation time for
   closes (I1 has no separate close timestamp).
   A separate worker drains a 256-entry memory queue; full queues drop newest.
-  Each exchange has a 250 ms total deadline; failures retry every second,
-  dropping after five failed attempts so a permanently refused head cannot
-  prevent later records. Drops and abandoned queued work at clean shutdown
-  increment `audit_forward_dropped`. The queue does not survive crashes, and
-  a lost acknowledgement can duplicate an append. Neither failure blocks
+  Each exchange has a 2 s total deadline. A refusal from auditd
+  (`principal_denied`, `argument_*`, schema refusals and the like) is final
+  for that record: it is dropped at once and counted in
+  `audit_forward_refused`. Only delivery failures (connection, timeout,
+  malformed reply, auditd's read deadline) retry, after 0.5, 1 and 2 s; the
+  fourth failure drops the head, so one record holds the queue for about
+  12 s at most. Retry drops, full-queue drops and work still queued at clean
+  shutdown increment `audit_forward_dropped`. A record replayed more than ten
+  minutes late (for example after a long stop) is refused by auditd's window.
+- **Delivery semantics.** Forwarding is best effort and at most a projection.
+  An acknowledgement lost after auditd appended means the retry appends the
+  record again, so the chain can hold duplicates. A crash or kill loses
+  whatever is still queued, and those losses are not counted anywhere. Absence
+  from the audit chain therefore proves nothing; the incident ledger remains
+  the complete record of transitions. Neither failure blocks
   ledger consumption or explanations. Auditd's existing cross-segment verifier
   and CLI health ledger verification accept these typed records. No ledger
   events are manufactured for history skipped during initial seeding.
@@ -528,3 +556,15 @@ step. Neither is hardware evidence: HG-07 still needs the real host.
 | Fabric pin, Edge Core unit, intake daemon, incidents, advice, status, audit, end-to-end stage | Azazel-Nexus |
 | Carry `alert.metadata.mitre_technique_id` into `normalized.technique_ids` | Azazel-Edge |
 | Production producer of signed activation decisions and key distribution (I4) | Azazel-Edge, later |
+
+
+`health_endpoint_healthy` means the fixed `--health` of the verified binary
+answered healthy under the pinned contract with the pinned version. The
+observe-only posture is established by the manifest posture checked under
+`package_present`; the running unit's posture is established by the fixed unit
+environment (I0). Health does not observe the running process.
+
+After admission, a unit that never becomes running (for example, a crash loop)
+keeps `edge-baseline-ready` at no. The one-shot probe can still pass its health
+check during a crash loop. Detecting that degradation and narrowing the unit
+is degradation/watchdog work for a separate issue.

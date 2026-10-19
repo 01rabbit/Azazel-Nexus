@@ -355,9 +355,10 @@ def _citation(row, ids):
     _text(row["name"], 120)
     # Citation names have already been validated by Knowledge. Reject address
     # syntax here as well: signed content is still untrusted display data.
-    if not row["name"] or re.search(
-            r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*",
-            unicodedata.normalize("NFKC", row["name"])):
+    # A bare number token (a port, an integer address) is refused likewise.
+    name = unicodedata.normalize("NFKC", row["name"])
+    if not name or re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
+            token.isdecimal() for token in re.split(r"[^\w]+|_", name)):
         raise ValueError("recent_refused")
 
 
@@ -425,13 +426,14 @@ def read_explainer_status(raw):
         v = decode(raw)
         _shape(v, ("schema", "written_at", "last_explained_at", "explained", "refused", "pending",
                    "cursor_lag", "chain_broken", "recovery_hint", "storage_failed",
-                   "mio_available", "knowledge_available", "audit_forward_dropped"))
+                   "mio_available", "knowledge_available", "audit_forward_dropped",
+                   "audit_forward_refused"))
         if v["schema"] != "azazel-nexus/incident-explain-status/v1":
             return None
         _number(v["written_at"])
         if v["last_explained_at"] is not None:
             _number(v["last_explained_at"])
-        for key in ("explained", "pending", "cursor_lag", "audit_forward_dropped"):
+        for key in ("explained", "pending", "cursor_lag", "audit_forward_dropped", "audit_forward_refused"):
             _int(v[key], 2**64-1)
         for key in ("chain_broken", "storage_failed"):
             if type(v[key]) is not bool:

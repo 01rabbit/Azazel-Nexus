@@ -377,7 +377,11 @@ def _render_status(
     from datetime import datetime
     from .edge_loop_status import render_edge_loop, render_fabric_status
     render_fabric_status(report, out)
-    render_edge_loop(out, now=datetime.fromisoformat(as_of or _now()).timestamp())
+    try:
+        now = datetime.fromisoformat(as_of or _now()).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        now = None
+    render_edge_loop(out, now=now)
     print(file=out)
     _render_health(report, out)
     print(file=out)
