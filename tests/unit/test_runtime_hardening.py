@@ -775,6 +775,8 @@ def test_edge_core_posture_matches_the_packaged_health_contract():
     # stop, remove the /run/azazel the intake socket lives in.
     assert "RuntimeDirectory" not in settings
     assert settings["PrivateNetwork"] == ["yes"]
+    # Edge's detection is weighted ahead of every other unit under load.
+    assert settings["CPUWeight"] == ["400"]
     assert settings["ReadWritePaths"] == ["/var/lib/azazel/edge-core"]
     assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
     assert settings["CapabilityBoundingSet"] == [""]
