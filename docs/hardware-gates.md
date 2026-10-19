@@ -41,6 +41,14 @@ Recording such a run as a gate result would be the exact substitution this
 register exists to prevent — a simulated result read as a measured one, with
 the extra hazard that it looks like hardware.
 
+All HIL record kinds and their campaign run envelopes apply the
+[virtualization negative filter](hil-evidence-records.md#tools-and-trust).
+Observed virtualization (including VMware, Apple Virtualization, KVM or a
+container), missing observations and unknown signals cause refusal even with
+a valid operator signature. A clear filter is no physical attestation and
+closes no gate. Lab schemas and lab-domain signatures are refused by production
+readers; VM results remain development references only.
+
 | Gate | Claim | State |
 | --- | --- | --- |
 | `HG-01` | Operational units are masked after installation and stay masked until activation | `hardware-unverified` |

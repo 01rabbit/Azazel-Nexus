@@ -294,7 +294,8 @@ One aggregate record, schema `azazel-nexus/hil-mio-campaign/v1`, validated by
 
 Each run envelope repeats `class`, `synthetic`, `physical_hardware`,
 `platform`, `provenance`, `dut_id`, `dut_fingerprint`, `hardware_class`,
-`harness_version`, `capture_method`, `operator_attestation_ref` and
+`harness_version`, `capture_method`, `operator_attestation_ref`,
+`virtualization_not_observed`, `virtualization_observations` and
 `workload_notes`, adds `boot_fingerprint` (copied from the probe document) and
 embeds the probe document **unchanged** under `measurement`.
 
@@ -336,7 +337,9 @@ runs = []
 for index, name in enumerate(sys.argv[2:], 1):
     measurement = json.loads(Path(name).read_text())
     run = {key: envelope[key] for key in common}
-    run.update(boot_fingerprint=measurement["boot_fingerprint"], measurement=measurement)
+    run.update(boot_fingerprint=measurement["boot_fingerprint"], measurement=measurement,
+               virtualization_not_observed=measurement["virtualization_not_observed"],
+               virtualization_observations=measurement["virtualization_observations"])
     Path(f"run-{index}.json").write_bytes(canonical_event_bytes(run))
     runs.append(run)
 Path("campaign.json").write_bytes(canonical_event_bytes({**envelope, "runs": runs}))

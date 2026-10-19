@@ -138,6 +138,11 @@ def _privacy(value: object, reasons: list[str]) -> None:
 
 
 def _common(record: dict, reasons: list[str]) -> None:
+    from azazel_nexus.virtualization import virtualization_not_observed
+
+    if (record.get("virtualization_not_observed") is not True
+            or not virtualization_not_observed(record.get("virtualization_observations"))):
+        reasons.append("RESERVE_VIRTUALIZATION_OBSERVED")
     for key, expected in {
         "class": "hardware-only",
         "synthetic": False,
@@ -680,11 +685,6 @@ def validate_record(
 
 
 def _mio_campaign(record, reasons):
-    from azazel_nexus.virtualization import virtualization_not_observed
-
-    if (record.get("virtualization_not_observed") is not True
-            or not virtualization_not_observed(record.get("virtualization_observations"))):
-        reasons.append("RESERVE_VIRTUALIZATION_OBSERVED")
     runtime = record.get("embedding_runtime")
     fields = {"peak_rss_mib", "startup_ms", "retrieval_p50_ms", "retrieval_p95_ms",
               "runtime_binary_digest", "model_digest", "argv_digest"}
