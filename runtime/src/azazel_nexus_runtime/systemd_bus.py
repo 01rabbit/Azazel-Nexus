@@ -4,19 +4,26 @@ This module does not accept D-Bus destinations, interfaces, object paths,
 signatures, or unit names from callers. It maps the runtime's narrow semantic
 verbs onto the systemd system-bus API and validates every reply. In
 particular, it never exposes ``StartUnit``.
+
+``EdgeUnitStateReader`` is the narrower, read-only view handed to
+``az-edge-probed``: one verb, one unit, three properties, and no route to the
+mask/unmask/enable calls the controller uses.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
+
+from azazel_nexus.edge_package import EDGE_UNIT as _EDGE_UNIT
 
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
 
-__all__ = ["SystemdBusSession", "SystemdUnitCalls"]
+__all__ = ["EdgeUnitStateReader", "SystemdBusSession", "SystemdUnitCalls"]
 
 DESTINATION = "org.freedesktop.systemd1"
 MANAGER_PATH = "/org/freedesktop/systemd1"
@@ -60,6 +67,16 @@ _UNIT_FILE_STATES = frozenset(
         "invalid",
     }
 )
+
+
+#: The only unit-object properties beyond ActiveState that may be read, and
+#: only on the Edge unit's object, for ``EdgeUnitStateReader``.
+_EDGE_UNIT_PROPERTIES = ("LoadState", "ActiveState", "SubState")
+_LOAD_STATES = frozenset(
+    {"stub", "loaded", "not-found", "bad-setting", "error", "merged", "masked"}
+)
+#: SubState values differ per unit type; this bounds their shape, not the set.
+_SUB_STATE = re.compile(r"[a-z][a-z-]{0,31}")
 
 
 @dataclass(frozen=True)
@@ -342,6 +359,10 @@ class SystemdBusSession:
                     or type(body[1]) is not str
                     or body[1] not in {"Version", "UnitPath"}):
                 raise UnitOperationFailed("the systemd client refused a manager property")
+        elif (path == _unit_object_path(_EDGE_UNIT) and len(body) == 2
+                and body[0] == UNIT_INTERFACE and type(body[1]) is str
+                and body[1] in _EDGE_UNIT_PROPERTIES):
+            pass  # The probe's three reads, on the Edge unit's object only.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -405,3 +426,100 @@ class SystemdBusSession:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
+
+
+#: What systemd holding no unit object for the Edge unit is reported as.
+#: ``not-loaded`` is this module's word, not a systemd LoadState: ``GetUnit``
+#: never loads a unit, so ``NoSuchUnit`` means nothing is running it.
+_EDGE_NOT_LOADED = {"LoadState": "not-loaded", "ActiveState": "inactive", "SubState": "dead"}
+
+
+def _read_edge_unit_state(exchange: Callable[..., _Reply]) -> dict:
+    """Resolve the Edge unit object and read its three state properties."""
+
+    unit_reply = exchange(
+        MANAGER_INTERFACE, "GetUnit", "s", [_EDGE_UNIT], allow_no_such_unit=True
+    )
+    if getattr(unit_reply, "no_such_unit", False) is True:
+        return dict(_EDGE_NOT_LOADED)
+    expected_path = _unit_object_path(_EDGE_UNIT)
+    if SystemdUnitCalls._one(unit_reply, "o", "GetUnit") != expected_path:
+        raise UnitOperationFailed("systemd returned an invalid unit object")
+    state: dict[str, str] = {}
+    for name in _EDGE_UNIT_PROPERTIES:
+        reply = exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name], path=expected_path
+        )
+        variant = SystemdUnitCalls._one(reply, "v", f"Unit.{name}")
+        value = getattr(variant, "value", None)
+        if getattr(variant, "signature", None) != "s" or type(value) is not str:
+            raise UnitOperationFailed(f"systemd returned an invalid {name}")
+        if ((name == "LoadState" and value not in _LOAD_STATES)
+                or (name == "ActiveState" and value not in _ACTIVE_STATES)
+                or (name == "SubState" and not _SUB_STATE.fullmatch(value))):
+            raise UnitOperationFailed(f"systemd returned an unknown {name}")
+        state[name] = value
+    return state
+
+
+def _read_only(exchange: Callable[..., _Reply]) -> Callable[..., _Reply]:
+    """Pass through only the two call shapes ``_read_edge_unit_state`` sends."""
+
+    def read(interface, member, signature, body, **kwargs) -> _Reply:
+        if (interface, member, signature) not in {
+            (MANAGER_INTERFACE, "GetUnit", "s"),
+            (PROPERTIES_INTERFACE, "Get", "ss"),
+        }:
+            raise UnitOperationFailed("the edge unit reader refused a non-read call")
+        return exchange(interface, member, signature, body, **kwargs)
+
+    return read
+
+
+class EdgeUnitStateReader:
+    """The read-only systemd view ``az-edge-probed`` is given (#72, #195).
+
+    Callable as ``read(method, unit)``, the shape the probe uses, and it
+    answers exactly one question: ``GetUnitProperties`` of
+    ``edge_package.EDGE_UNIT``, as ``LoadState``/``ActiveState``/``SubState``.
+    Any other method or unit is refused before the bus is touched. It keeps
+    no session and no ``SystemdUnitCalls``, only an exchange that passes
+    ``GetUnit`` and ``Properties.Get``, so mask, unmask and enable have no
+    verb here. (Python is not a sandbox; the probe also runs unprivileged,
+    where systemd's polkit policy refuses those calls anyway. This keeps the
+    probe's own code from being able to name them.)
+
+    It connects over the same fixed transport as ``SystemdBusSession`` -- the
+    fixed socket, the manager-identity check, the timeouts -- lazily, on the
+    first read, so a probe that never reads never connects. A connection
+    failure is raised to the caller, which reports it as not checked.
+    """
+
+    __slots__ = ("_connect", "_exchange", "_close", "_closed")
+
+    def __init__(self, connect: Optional[Callable[[], SystemdBusSession]] = None) -> None:
+        self._connect = connect if connect is not None else SystemdBusSession.connect
+        self._exchange: Optional[Callable[..., _Reply]] = None
+        self._close: Optional[Callable[[], None]] = None
+        self._closed = False
+
+    def __call__(self, method: str, unit: str) -> dict:
+        if method != "GetUnitProperties" or unit != _EDGE_UNIT:
+            raise UnitOperationFailed("the edge unit reader refused a call outside its one read")
+        if self._closed:
+            raise UnitOperationFailed("the edge unit reader is closed")
+        if self._exchange is None:
+            session = self._connect()
+            self._exchange, self._close = _read_only(session._exchange), session.close
+        return _read_edge_unit_state(self._exchange)
+
+    def close(self) -> None:
+        """Disconnect if connected. Never raises: the finding is already made."""
+
+        self._closed = True
+        close, self._close, self._exchange = self._close, None, None
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - a probe never raises for the node
+                pass

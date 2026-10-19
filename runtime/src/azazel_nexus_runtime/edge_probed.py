@@ -48,8 +48,10 @@ the way `fabric_boundary.py` contains the Fabric import. The exception is
 narrow and its narrowness is tested: one `subprocess.run`, an argv assembled
 only from module constants, no shell, a fixed `PATH`, and a deadline.
 
-When no D-Bus connection is supplied -- a container, a host without systemd,
-a permission refusal -- `running` is `not-checked` with that as the reason,
+`main` supplies `systemd_bus.EdgeUnitStateReader`: the fixed system-bus
+transport the controller uses, narrowed to that one read of that one unit.
+When the bus cannot be reached -- a container, a host without systemd, a
+permission refusal -- `running` is `not-checked` with that as the reason,
 never `failed`. An operator sent to fix an Edge Core that is fine is an
 operator doing harm on our word.
 
@@ -98,6 +100,8 @@ from azazel_nexus.edge_package import (
     PROBE_STATE_PATH,
     Evidence,
 )
+
+from .systemd_bus import EdgeUnitStateReader
 
 __all__ = [
     "PROBE_ENV",
@@ -194,9 +198,10 @@ def probe(
 ) -> ProbeOutcome:
     """Run once. Never raises for anything the node could be doing wrong.
 
-    `runner` and `unit_reader` are seams. `main` supplies neither, so a
-    deployment gets the fixed spawn and the refusing reader, and a test gets
-    to drive both without a systemd or an Edge Core.
+    `runner` and `unit_reader` are seams. `main` supplies only the reader --
+    `systemd_bus.EdgeUnitStateReader`, which can read one unit's state and
+    nothing else -- so a deployment gets the fixed spawn and a read-only bus,
+    and a test gets to drive both without a systemd or an Edge Core.
     """
 
     run = runner if runner is not None else _run
@@ -426,6 +431,11 @@ def _running_finding(read) -> tuple[Evidence, str]:
             Evidence.FAILED,
             f"{EDGE_UNIT} is not installed on this host, so nothing is running it",
         )
+    if str(answer.get("LoadState", "")) == "not-loaded":
+        return (
+            Evidence.FAILED,
+            f"systemd holds no unit object for {EDGE_UNIT}, so nothing is running it",
+        )
     active = str(answer["ActiveState"])
     sub = str(answer["SubState"])
     if active in RUNNING_ACTIVE_STATES and sub in RUNNING_SUB_STATES:
@@ -494,7 +504,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    outcome = probe()
+    # The one systemd view the probe gets: read-only, one unit, connected on
+    # first read. A refused or absent bus is `not-checked`, never `failed`,
+    # and health does not wait on it (#195: without this, `running` was never
+    # read on an installed node).
+    reader = EdgeUnitStateReader()
+    try:
+        outcome = probe(unit_reader=reader)
+    finally:
+        reader.close()
     try:
         write_result(outcome)
     except OSError as exc:

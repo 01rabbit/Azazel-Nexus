@@ -14,8 +14,10 @@ from azazel_nexus_runtime.systemd_bus import (
     MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
     UNIT_INTERFACE,
+    EdgeUnitStateReader,
     SystemdBusSession,
     SystemdUnitCalls,
+    _Reply,
     _unit_object_path,
 )
 from azazel_nexus_runtime.units import (
@@ -423,3 +425,167 @@ def test_entrypoint_rejects_arguments_instead_of_accepting_runtime_overrides():
 def test_entrypoint_checks_arguments_from_the_wrapper_invocation(monkeypatch):
     monkeypatch.setattr("sys.argv", ["az-activated", "sshd.service"])
     assert main() == 2
+
+
+# -- the probe's read-only view (#72, #195) --------------------------------
+
+_EDGE = "azazel-edge-core.service"
+_EDGE_PATH = "/org/freedesktop/systemd1/unit/azazel_2dedge_2dcore_2eservice"
+_RUNNING = {"LoadState": "loaded", "ActiveState": "active", "SubState": "running"}
+
+
+def _edge_exchange(state, calls):
+    def exchange(interface, member, signature, body, **kwargs):
+        calls.append((interface, member, signature, body, kwargs))
+        if member == "GetUnit":
+            if state is None:
+                return _Reply("", [], no_such_unit=True)
+            return _Reply("o", [_EDGE_PATH])
+        return _Reply("v", [SimpleNamespace(signature="s", value=state[body[1]])])
+
+    return exchange
+
+
+def _edge_reader(state, calls):
+    session = SimpleNamespace(_exchange=_edge_exchange(state, calls), close=lambda: None)
+    return EdgeUnitStateReader(connect=lambda: session)
+
+
+def test_edge_reader_reads_three_properties_of_the_fixed_unit_object():
+    calls = []
+    assert _edge_reader(_RUNNING, calls)("GetUnitProperties", _EDGE) == _RUNNING
+    assert calls == [
+        (MANAGER_INTERFACE, "GetUnit", "s", [_EDGE], {"allow_no_such_unit": True}),
+        *[(PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name], {"path": _EDGE_PATH})
+          for name in ("LoadState", "ActiveState", "SubState")],
+    ]
+
+
+def test_edge_reader_reports_no_unit_object_as_inactive():
+    calls = []
+    assert _edge_reader(None, calls)("GetUnitProperties", _EDGE) == {
+        "LoadState": "not-loaded", "ActiveState": "inactive", "SubState": "dead",
+    }
+    assert [call[1] for call in calls] == ["GetUnit"]
+
+
+@pytest.mark.parametrize("method, unit", [
+    ("GetUnitProperties", "azazel-auditd.service"),
+    ("GetUnitProperties", "sshd.service"),
+    ("MaskUnitFiles", _EDGE),
+    ("UnmaskUnitFiles", _EDGE),
+    ("EnableUnitFiles", _EDGE),
+    ("StartUnit", _EDGE),
+    ("GetUnitFileState", _EDGE),
+])
+def test_edge_reader_refuses_anything_but_its_one_read_before_connecting(method, unit):
+    connected = []
+    reader = EdgeUnitStateReader(connect=lambda: connected.append(1))
+    with pytest.raises(UnitOperationFailed):
+        reader(method, unit)
+    assert connected == []
+
+
+def test_edge_reader_holds_no_control_verb():
+    reader = _edge_reader(_RUNNING, [])
+    reader("GetUnitProperties", _EDGE)
+    assert not hasattr(reader, "calls") and not hasattr(reader, "__dict__")
+    for member, signature in (("MaskUnitFiles", "asbb"), ("UnmaskUnitFiles", "asb"),
+                              ("EnableUnitFiles", "asbb"), ("GetUnitFileState", "s")):
+        with pytest.raises(UnitOperationFailed, match="non-read"):
+            reader._exchange(MANAGER_INTERFACE, member, signature, [[_EDGE], False, False])
+
+
+@pytest.mark.parametrize("state", [
+    {**_RUNNING, "ActiveState": "running"},
+    {**_RUNNING, "LoadState": "whatever"},
+    {**_RUNNING, "SubState": "Running; rm"},
+    {**_RUNNING, "SubState": ""},
+])
+def test_edge_reader_refuses_unknown_property_values(state):
+    with pytest.raises(UnitOperationFailed):
+        _edge_reader(state, [])("GetUnitProperties", _EDGE)
+
+
+def test_edge_reader_refuses_a_non_string_variant():
+    def wrong_type(interface, member, signature, body, **kwargs):
+        if member == "GetUnit":
+            return _Reply("o", [_EDGE_PATH])
+        return _Reply("v", [SimpleNamespace(signature="u", value=1)])
+
+    session = SimpleNamespace(_exchange=wrong_type, close=lambda: None)
+    with pytest.raises(UnitOperationFailed, match="invalid"):
+        EdgeUnitStateReader(connect=lambda: session)("GetUnitProperties", _EDGE)
+
+
+def test_edge_reader_refuses_a_foreign_unit_object():
+    session = SimpleNamespace(
+        _exchange=lambda *a, **k: _Reply("o", [_unit_object_path("sshd.service")]),
+        close=lambda: None,
+    )
+    with pytest.raises(UnitOperationFailed, match="invalid unit object"):
+        EdgeUnitStateReader(connect=lambda: session)("GetUnitProperties", _EDGE)
+
+
+def test_edge_reader_connects_once_lazily_and_close_never_raises():
+    connects = []
+
+    def boom():
+        raise RuntimeError("disconnect failed")
+
+    session = SimpleNamespace(_exchange=_edge_exchange(_RUNNING, []), close=boom)
+    reader = EdgeUnitStateReader(connect=lambda: connects.append(1) or session)
+    assert connects == []
+    reader("GetUnitProperties", _EDGE)
+    reader("GetUnitProperties", _EDGE)
+    assert connects == [1]
+    reader.close()
+    reader.close()
+    with pytest.raises(UnitOperationFailed, match="closed"):
+        reader("GetUnitProperties", _EDGE)
+
+
+def test_edge_reader_propagates_a_connect_failure():
+    def refuse():
+        raise UnitOperationFailed("could not connect to the system D-Bus service manager")
+
+    reader = EdgeUnitStateReader(connect=refuse)
+    with pytest.raises(UnitOperationFailed, match="could not connect"):
+        reader("GetUnitProperties", _EDGE)
+    reader.close()
+
+
+def _session_for_allowlist():
+    bus = _BusStub(SimpleNamespace(message_type=1, signature="v", body=[]))
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    return session, bus
+
+
+@pytest.mark.parametrize("name", ["LoadState", "ActiveState", "SubState"])
+def test_bus_allowlist_admits_the_edge_state_properties(name):
+    session, bus = _session_for_allowlist()
+    session._exchange(PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name], path=_EDGE_PATH)
+    assert bus.messages[0].path == _EDGE_PATH
+    assert bus.messages[0].body == [UNIT_INTERFACE, name]
+
+
+@pytest.mark.parametrize("path, body", [
+    # SubState/LoadState are admitted on the Edge object only.
+    (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE, "SubState"]),
+    (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE, "LoadState"]),
+    (_unit_object_path("sshd.service"), [UNIT_INTERFACE, "SubState"]),
+    (_EDGE_PATH, [UNIT_INTERFACE, "ExecStart"]),
+    (_EDGE_PATH, [UNIT_INTERFACE, "MainPID"]),
+    (_EDGE_PATH, ["org.freedesktop.systemd1.Service", "SubState"]),
+    (_EDGE_PATH, [UNIT_INTERFACE, ["SubState"]]),
+    (_EDGE_PATH, [UNIT_INTERFACE, "SubState", "extra"]),
+])
+def test_bus_allowlist_still_refuses_other_properties_and_paths(path, body):
+    session, bus = _session_for_allowlist()
+    with pytest.raises(UnitOperationFailed):
+        session._exchange(PROPERTIES_INTERFACE, "Get", "ss", body, path=path)
+    assert bus.messages == []

@@ -30,6 +30,12 @@ from azazel_nexus.edge_package import (
     parse_probe_result,
 )
 from azazel_nexus_runtime import edge_probed
+from azazel_nexus_runtime.systemd_bus import (
+    EdgeUnitStateReader,
+    SystemdBusSession,
+    _unit_object_path,
+)
+from azazel_nexus_runtime.units import UnitOperationFailed
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "runtime" / "src" / "azazel_nexus_runtime" / "edge_probed.py"
@@ -142,7 +148,8 @@ def test_main_takes_nothing_that_could_redirect_it():
 
 
 def test_main_probes_the_fixed_root(tmp_path, monkeypatch):
-    """It calls `probe()` with no argument, so the default is what is used."""
+    """It passes `probe()` the read-only reader and nothing else, so every
+    other default -- root, runner, TTL -- is what is used (#195)."""
 
     seen = {}
 
@@ -162,7 +169,148 @@ def test_main_probes_the_fixed_root(tmp_path, monkeypatch):
     monkeypatch.setattr(edge_probed, "probe", fake_probe)
     monkeypatch.setattr(edge_probed, "write_result", lambda outcome: tmp_path / "x")
     assert edge_probed.main([]) == 0
-    assert seen == {"args": (), "kwargs": {}}
+    assert seen["args"] == ()
+    assert list(seen["kwargs"]) == ["unit_reader"]
+    assert isinstance(seen["kwargs"]["unit_reader"], EdgeUnitStateReader)
+
+
+# -- main reads running over the fixed, read-only system bus (#195) --------
+
+
+class _Variant:
+    def __init__(self, value, signature="s"):
+        self.value = value
+        self.signature = signature
+
+
+class _ScriptedBus:
+    """A system bus that answers the Edge unit's GetUnit and state reads."""
+
+    def __init__(self, state=None):
+        self.state = state
+        self.messages = []
+        self.disconnected = False
+
+    async def call(self, message):
+        from types import SimpleNamespace
+
+        self.messages.append(message)
+        if message.member == "GetUnit":
+            if self.state is None:
+                return SimpleNamespace(
+                    message_type=3, error_name="org.freedesktop.systemd1.NoSuchUnit",
+                    signature="s", body=["no unit"],
+                )
+            return SimpleNamespace(
+                message_type=1, signature="o", body=[_unit_object_path(EDGE_UNIT)]
+            )
+        return SimpleNamespace(
+            message_type=1, signature="v", body=[_Variant(self.state[message.body[1]])]
+        )
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+def _session(bus):
+    import asyncio
+    from types import SimpleNamespace
+
+    class Loop:
+        def run_until_complete(self, awaitable):
+            return asyncio.run(awaitable)
+
+        def is_closed(self):
+            return True
+
+        def close(self):
+            pass
+
+    return SystemdBusSession(
+        bus=bus, loop=Loop(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=lambda **values: SimpleNamespace(**values),
+    )
+
+
+def _main_against(tmp_path, monkeypatch, connect):
+    """Run `main` for real except for the package root, runner and bus."""
+
+    root = _package(tmp_path)
+    real_probe = edge_probed.probe
+    monkeypatch.setattr(
+        edge_probed, "probe",
+        lambda **kwargs: real_probe(root, clock=_clock(), runner=_runner(), **kwargs),
+    )
+    monkeypatch.setattr(SystemdBusSession, "connect", classmethod(lambda cls: connect()))
+    written = {}
+    monkeypatch.setattr(
+        edge_probed, "write_result",
+        lambda outcome: written.setdefault("outcome", outcome),
+    )
+    assert edge_probed.main([]) == 0
+    return written["outcome"]
+
+
+def test_main_reads_running_over_the_bus_and_closes_it(tmp_path, monkeypatch):
+    bus = _ScriptedBus({"LoadState": "loaded", "ActiveState": "active", "SubState": "running"})
+    outcome = _main_against(tmp_path, monkeypatch, lambda: _session(bus))
+    assert outcome.health is Evidence.PASSED
+    assert outcome.running is Evidence.PASSED, outcome.running_reason
+    assert bus.disconnected is True
+    assert [(m.member, m.body) for m in bus.messages] == [
+        ("GetUnit", [EDGE_UNIT]),
+        ("Get", ["org.freedesktop.systemd1.Unit", "LoadState"]),
+        ("Get", ["org.freedesktop.systemd1.Unit", "ActiveState"]),
+        ("Get", ["org.freedesktop.systemd1.Unit", "SubState"]),
+    ]
+
+
+def test_main_reports_an_inactive_unit_as_failed(tmp_path, monkeypatch):
+    bus = _ScriptedBus({"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"})
+    outcome = _main_against(tmp_path, monkeypatch, lambda: _session(bus))
+    assert outcome.running is Evidence.FAILED
+    assert "not running" in outcome.running_reason
+
+
+def test_main_reports_no_unit_object_as_failed(tmp_path, monkeypatch):
+    """`GetUnit` never loads a unit: NoSuchUnit means nothing is running it."""
+
+    outcome = _main_against(tmp_path, monkeypatch, lambda: _session(_ScriptedBus(None)))
+    assert outcome.running is Evidence.FAILED
+    assert "no unit object" in outcome.running_reason
+
+
+def test_main_without_a_bus_is_not_checked_and_health_still_runs(tmp_path, monkeypatch):
+    """A container, a host with no systemd, a refusal: nobody looked."""
+
+    def refuse():
+        raise UnitOperationFailed("could not connect to the system D-Bus service manager")
+
+    outcome = _main_against(tmp_path, monkeypatch, refuse)
+    assert outcome.health is Evidence.PASSED
+    assert outcome.running is Evidence.NOT_CHECKED
+    assert "could not connect" in outcome.running_reason
+
+
+def test_main_with_an_unreadable_bus_answer_is_not_checked(tmp_path, monkeypatch):
+    bus = _ScriptedBus({"LoadState": "loaded", "ActiveState": "running?", "SubState": "x"})
+    outcome = _main_against(tmp_path, monkeypatch, lambda: _session(bus))
+    assert outcome.running is Evidence.NOT_CHECKED
+    assert bus.disconnected is True
+
+
+def test_the_probe_imports_only_the_read_only_view_of_the_bus():
+    """Not the session, not the controller's calls: the one reader."""
+
+    tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+    imported = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module and "systemd" in node.module
+        for alias in node.names
+    }
+    assert imported == {("systemd_bus", "EdgeUnitStateReader")}
 
 
 def test_the_only_spawn_uses_no_shell_a_fixed_environment_and_a_deadline():
