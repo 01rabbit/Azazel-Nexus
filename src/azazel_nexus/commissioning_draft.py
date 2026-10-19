@@ -26,10 +26,22 @@ class DraftRefused(Exception):
     """Draft export failed; no signature or activation was attempted."""
 
 
+DRAFT_INPUT_REASONS = frozenset({
+    "draft directory ownership or access refused",
+    "encrypted commissioning storage is required",
+    "commissioning protection key is unavailable",
+    "draft signature refused (invalid length)",
+    "no signed draft present (draft or detached signature missing)",
+    "signed draft unreadable",
+})
+
+
 class DraftInputRefused(DraftRefused):
     """Safe reason for unavailable signed-draft input."""
 
     def __init__(self, reason):
+        if type(reason) is not str or reason not in DRAFT_INPUT_REASONS:
+            raise ValueError("unreviewed draft input reason")
         self.reason = reason
         super().__init__(reason)
 
@@ -136,11 +148,11 @@ def _check_protection(directory_fd: int) -> None:
     # expose fixed file names/metadata, but never owner-only payload bytes.
     # Do not permit group writes or any other-user permission.
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o027:
-        raise DraftRefused("draft directory ownership or access refused")
+        raise DraftInputRefused("draft directory ownership or access refused")
     if not luks_backed(COMMISSIONING_DIR, stat=lambda _: os.fstat(directory_fd)):
-        raise DraftRefused("encrypted commissioning storage is required")
+        raise DraftInputRefused("encrypted commissioning storage is required")
     if not read_protection_key(PROTECTION_KEY):
-        raise DraftRefused("commissioning protection key is unavailable")
+        raise DraftInputRefused("commissioning protection key is unavailable")
 
 
 def _private_owner_ok(info) -> bool:

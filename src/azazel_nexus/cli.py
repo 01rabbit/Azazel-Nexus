@@ -329,7 +329,8 @@ def _render_status(
     print(file=out)
     print(describe(status_summary()), file=out)
     print(file=out)
-    print(f"capability state: {report.capabilities.state.value}", file=out)
+    print(f"CLI baseline capability state: {report.capabilities.state.value} "
+          "(fixed CORE component set; no live provider assessment)", file=out)
     print("    continuing: " + ", ".join(report.capabilities.retained), file=out)
     if report.capabilities.lost:
         print("    not available: " + ", ".join(report.capabilities.lost), file=out)
@@ -383,7 +384,12 @@ def _render_status(
                 command in action.command for command in (
                     "azazel-nexus commission", "azazel-nexus hil-preflight",
                     "azazel-nexus model-import-fetched")):
-            print("    step unavailable on a lab host (LAB_HOST_MARKER); requires a non-lab deployment", file=out)
+            step = next(name for command, name in (
+                ("azazel-nexus commission", "commissioning"),
+                ("azazel-nexus hil-preflight", "host-preflight"),
+                ("azazel-nexus model-import-fetched", "model-import-fetched"),
+            ) if command in action.command)
+            print(f"    {step} step unavailable on a lab host (LAB_HOST_MARKER); requires a non-lab deployment", file=out)
             continue
         print(f"    {action.summary}", file=out)
         if action.command:

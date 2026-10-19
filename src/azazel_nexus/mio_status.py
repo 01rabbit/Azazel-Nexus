@@ -68,7 +68,7 @@ def status_summary(*, root=None):
 def describe(reading):
     return ("M.I.O.: recorded ceiling: " + (reading["ceiling"] or "unknown")
             + "; capability state: " + (reading["state"] or "unknown")
-            + "; " + reading["availability"]
+            + "; source: entryd route ledger; " + reading["availability"]
             + ("; observed at: " + str(reading["observed_at"]) if reading["state"] else "")
             + ("; reasons: " + json.dumps(reading["reasons"], sort_keys=True) if reading["reasons"] else "")
             + ". " + NOTICE)

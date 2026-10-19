@@ -31,6 +31,11 @@ from .mio_status import status_summary as mio_status, describe as describe_mio
 KNOWLEDGE_ROOT = Path("/var/lib/azazel/knowledge")
 
 
+def _permission_denied():
+    return Observation(State.REFUSED, "not readable by this user (run as root)",
+                       "none available; run this read-only command as root")
+
+
 def add_parser(sub):
     parser = sub.add_parser("setup", help="read-only ordered operator setup guidance")
     parser.add_argument("--next", action="store_true", help="show only the first unresolved step")
@@ -56,6 +61,8 @@ def collect(args, *, now, root=None):
         try:
             detail = reader()
             observations[name] = Observation(State.COMPLETE, detail or reason, command)
+        except PermissionError:
+            observations[name] = _permission_denied()
         except DraftInputRefused as error:
             observations[name] = Observation(State.REFUSED, error.reason, command)
         except DraftRefused:
@@ -71,6 +78,8 @@ def collect(args, *, now, root=None):
                 reason + ("; missing: " + ", ".join(missing) if missing else "; present (not verified)"),
                 command,
             )
+        except PermissionError:
+            observations[name] = _permission_denied()
         except OSError:
             observations[name] = Observation(State.REFUSED, reason + "; presence unreadable", command)
 
@@ -133,6 +142,8 @@ def collect(args, *, now, root=None):
         def bootstrap(name=name, filename=filename, reader=reader, command=command):
             presence(name, [path("/etc/azazel/bootstrap/" + filename + ".json")], command,
                      "bootstrap " + filename)
+            if observations[name].state is State.REFUSED:
+                return observations[name]
             if path("/etc/azazel/bootstrap/" + filename + ".pending").exists():
                 return Observation(
                     State.REFUSED, "unfinished publication; inspect retained state before explicit recovery",
@@ -142,6 +153,8 @@ def collect(args, *, now, root=None):
                 try:
                     reader()
                     observations[name] = Observation(State.COMPLETE, reason, "none required for this read")
+                except PermissionError:
+                    observations[name] = _permission_denied()
                 except SelectionReadRefused as error:
                     observations[name] = Observation(
                         State.REFUSED, error.reason,
@@ -256,6 +269,8 @@ def _installed(args):
 def _observation(observations, name, reader, command):
     try:
         observations[name] = reader()
+    except PermissionError:
+        observations[name] = _permission_denied()
     except Exception:  # noqa: BLE001 - redact local configuration and fail closed
         observations[name] = Observation(State.REFUSED, "local state unavailable or verification refused", command)
 

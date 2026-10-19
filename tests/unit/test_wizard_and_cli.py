@@ -1112,7 +1112,10 @@ def test_status_vm_lab_guidance_and_unknown_mio(tmp_path, monkeypatch):
     assert "M.I.O.: recorded ceiling: unknown; capability state: unknown" in text
     assert "not a grant or admission" in text
     assert "azazel-nexus commission" not in text
-    assert "step unavailable on a lab host" in text
+    assert "commissioning step unavailable on a lab host" in text
+    assert "source: entryd route ledger" in text
+    assert "CLI baseline capability state: CORE (fixed CORE component set; no live provider assessment)" in text
+    assert "\ncapability state:" not in text
     assert "ships no daemon" not in text
     assert "no --ledger path supplied" in text
     assert "the path given" not in text

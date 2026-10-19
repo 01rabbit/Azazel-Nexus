@@ -301,17 +301,18 @@ def test_manifest_option_error_is_json():
     assert json.loads(out.getvalue())["error"].endswith("together")
 
 
-def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch):
+@pytest.mark.parametrize("denied_at", ["record", "pending"])
+def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch, denied_at):
     original_file = Path.is_file
     original_exists = Path.exists
 
     def is_file(path):
-        if "commissioning" in path.parts:
+        if "commissioning" in path.parts or (denied_at == "record" and path.name in {"deployment.json", "selection.json"}):
             raise PermissionError("private-identity-sentinel")
         return original_file(path)
 
     def exists(path):
-        if path.suffix == ".pending":
+        if denied_at == "pending" and path.suffix == ".pending":
             raise PermissionError("private-identity-sentinel")
         return original_exists(path)
 
@@ -322,6 +323,10 @@ def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, 
     assert facts["bootstrap-deployment"].state is State.REFUSED
     assert facts["bootstrap-selection"].state is State.REFUSED
     assert "sentinel" not in repr(facts)
+    for name in ("commissioning", "bootstrap-deployment", "bootstrap-selection"):
+        assert facts[name].reason == "not readable by this user (run as root)"
+        assert "initialize" not in facts[name].command
+        assert "as root" in facts[name].command
 
 
 def test_vm_lab_stale_boot_hg05_json_is_read_only(tmp_path, fixture_host, monkeypatch):
