@@ -192,6 +192,9 @@ def measure(readers: Optional[Readers] = None) -> object:
     was the last of the first node -- so the whole run is refused.
     """
 
+    from azazel_nexus.lab_host import refuse_lab_host
+
+    refuse_lab_host(MeasurementRefused)
     readers = readers or Readers()
     _require_subsystems(readers, when="when the run began")
 
@@ -343,6 +346,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
     parser.parse_args(argv)
+    from azazel_nexus.lab_host import is_lab_host
+
+    if is_lab_host():
+        print("refused: LAB_HOST_MARKER", file=sys.stderr)
+        return 2
     try:
         from .hil_readiness import ReadOnlySystemd
 

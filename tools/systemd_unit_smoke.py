@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import grp
 import hashlib
 import json
@@ -18,339 +17,47 @@ import tempfile
 import time
 from pathlib import Path
 
+from azazel_nexus_runtime.unit_relocation import (
+    assert_write_isolation,
+    build_command,
+    create_scratch_tree,
+    parse_service,
+    relocate,
+    require_strict,
+)
+
 UNITS = {
     "azazel-mio-entryd": ("mio-entry", "azmioentry", "mio.route",
                           {"privacy_class": "P0-public", "deadline_ms": 1000}),
     "azazel-knowledge-lited": ("knowledge", "azknowledge", "knowledge.status", {}),
 }
-SHOW = (
-    "ActiveState", "SubState", "MainPID", "User", "Group", "SupplementaryGroups",
-    "RestrictAddressFamilies", "ReadWritePaths", "ReadOnlyPaths", "CapabilityBoundingSet",
-    "AmbientCapabilities", "NoNewPrivileges", "ProtectSystem", "ProtectHome",
-    "PrivateNetwork", "IPAddressDeny", "RuntimeDirectory", "RuntimeDirectoryMode",
-    "RuntimeDirectoryPreserve", "PrivateTmp", "PrivateDevices", "ProtectKernelTunables",
-    "ProtectKernelModules", "ProtectControlGroups", "RestrictNamespaces",
-    "RestrictSUIDSGID", "LockPersonality", "MemoryDenyWriteExecute",
-    "SystemCallArchitectures", "SystemCallFilter", "UMask",
+# Preserve the smoke tool's public seams while sharing verification with lab.
+from azazel_nexus_runtime import unit_sandbox as sandbox
+from azazel_nexus_runtime.unit_sandbox import (
+    SHOW,
+    expected_properties,
+    native_unknown_syscalls,
 )
 
-
-# Occurrences stay ordered: systemd-run applies each assignment, including resets.
-Properties = list[tuple[str, str]]
-PATH_KEYS = {"ReadWritePaths", "ReadOnlyPaths"}
-SET_KEYS = {"SupplementaryGroups", "RestrictAddressFamilies", "CapabilityBoundingSet",
-            "AmbientCapabilities", "SystemCallArchitectures", "RuntimeDirectory"}
-BOOL_KEYS = {key for key in SHOW if key.startswith(("Private", "Protect", "Restrict"))} | {
-    "NoNewPrivileges", "LockPersonality", "MemoryDenyWriteExecute"}
+DANGEROUS_SYSCALL_GROUPS = sandbox.DANGEROUS_SYSCALL_GROUPS
+SYSCALL_DIFFERENCE_LIMIT = sandbox.SYSCALL_DIFFERENCE_LIMIT
+ctypes = sandbox.ctypes
 
 
-def parse_service(text: str) -> Properties:
-    """Preserve assignments verbatim; refuse executable hooks and specifiers."""
-    properties = []
-    section = pending = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.endswith("\\"):
-            pending += line[:-1] + " "
-            continue
-        line, pending = pending + line, ""
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1]
-            continue
-        key, separator, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        # Reject even Unit/Install specifiers rather than hiding a semantic delta.
-        if "%" in value:
-            raise ValueError("unit specifiers are unsupported")
-        if section != "Service":
-            continue
-        if not separator or not key or not key.isalnum():
-            raise ValueError("malformed Service directive")
-        if key.startswith("Exec") and key != "ExecStart":
-            raise ValueError("Exec hooks are unsupported")
-        properties.append((key, value))
-    if (pending or len([v for k, v in properties if k == "ExecStart"]) != 1
-            or not dict(properties).get("ExecStart") or not dict(properties).get("User")):
-        raise ValueError("incomplete or ambiguous Service section")
-    return properties
+def expand_syscall_groups(properties, observed):
+    return sandbox.expand_syscall_groups(properties, observed, runner=run)
 
 
-def relocate(properties: Properties, scratch: Path, name: str) -> Properties:
-    """Only state paths, the private runtime directory and startup protocol differ."""
-    from azazel_nexus.layout import spec_for
-
-    result = []
-    for key, value in properties:
-        if key in PATH_KEYS:
-            paths = []
-            for token in shlex.split(value):
-                prefix = token[:len(token) - len(token.lstrip("-+"))]
-                path = token[len(prefix):]
-                if not spec_for(path) or not path.startswith("/var/lib/azazel/"):
-                    raise ValueError("path is outside the installer layout")
-                paths.append(prefix + str(scratch / path.lstrip("/")))
-            value = " ".join(paths)
-        elif key == "RuntimeDirectory":
-            value = "azazel-smoke-" + name
-        elif key == "Type":
-            # runtime_ready_callback deliberately emits no READY under AZAZEL_ROOT.
-            if value != "notify":
-                raise ValueError("unexpected service startup protocol")
-            value = "exec"
-        elif key in {"Environment", "EnvironmentFile", "PassEnvironment", "UnsetEnvironment",
-                     "RootDirectory", "RootImage", "WorkingDirectory", "StateDirectory",
-                     "CacheDirectory", "LogsDirectory", "ConfigurationDirectory",
-                     "BindPaths", "BindReadOnlyPaths", "TemporaryFileSystem",
-                     "StandardOutput", "StandardError", "PIDFile"}:
-            raise ValueError("unreviewed path or environment directive")
-        result.append((key, value))
-    if not dict(result).get("RuntimeDirectory"):
-        raise ValueError("RuntimeDirectory required")
-    result.append(("Environment", "AZAZEL_ROOT=" + str(scratch)))
-    return result
+def compare_syscall_filter(properties, shown, groups):
+    return sandbox.compare_syscall_filter(properties, shown, groups,
+                                          native_resolver=native_unknown_syscalls)
 
 
-def build_command(name: str, properties: Properties) -> list[str]:
-    if name not in UNITS:
-        raise ValueError("unknown smoke unit")
-    # Validate again for callers that did not use parse_service.
-    properties = parse_service("[Service]\n" + "\n".join(f"{k}={v}" for k, v in properties))
-    command = shlex.split(dict(properties)["ExecStart"])
-    if (not command or not command[0].startswith("/")
-            or command[0].startswith(("-", "+", "!", "@", ":"))):
-        raise ValueError("ExecStart must be a literal absolute command")
-    argv = ["systemd-run", "--unit=azazel-smoke-" + name, "--no-block", "--collect"]
-    return [*argv, *[f"--property={k}={v}" for k, v in properties if k != "ExecStart"],
-            "--", *command]
-
-
-def normalise(key: str, value: str):
-    """Normalise show's encodings, without erasing list inversion or path flags."""
-    if key == "UMask" or key.endswith("DirectoryMode"):
-        return int(value, 8)
-    if key in BOOL_KEYS and value in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
-        return value in {"1", "true", "yes", "on"}
-    if key == "IPAddressDeny":
-        return frozenset({"0.0.0.0/0", "::/0"} if value == "any" else value.split())
-    if key in SET_KEYS or key in PATH_KEYS:
-        inverted = value.startswith("~")
-        words = shlex.split(value[1:] if inverted else value)
-        if key == "SystemCallArchitectures":
-            native = {"x86_64": "x86-64", "aarch64": "arm64", "arm64": "arm64"}.get(
-                platform.machine(), platform.machine())
-            words = [native if word == "native" else word for word in words]
-        if key in PATH_KEYS:
-            paths = []
-            for word in words:
-                path = word.lstrip("-+")
-                flags = word[:len(word) - len(path)]
-                paths.append("".join(sorted(set(flags))) + str(Path(path)))
-            words = paths
-        if key in {"CapabilityBoundingSet", "AmbientCapabilities"}:
-            words = [word.lower() for word in words]
-        return inverted, frozenset(words)
-    return value
-
-
-def expected_properties(properties: Properties) -> dict[str, str]:
-    result = {}
-    for key, value in properties:
-        if key == "ExecStart":
-            continue
-        if key == "SystemCallFilter":
-            # Compared separately using the original ordered assignments.
-            result[key] = value
-            continue
-        if key in SET_KEYS | PATH_KEYS | {"IPAddressDeny", "Environment"}:
-            if not value:
-                result[key] = ""
-            elif key in {"CapabilityBoundingSet", "RestrictAddressFamilies"}:
-                # Mixed positive/inverse repetitions require systemd's algebra.
-                # Refuse rather than guess the resulting sandbox.
-                old = result.get(key, "")
-                if old and old.startswith("~") != value.startswith("~"):
-                    raise ValueError("mixed inverted assignments require review")
-                result[key] = ("~" if value.startswith("~") else "") + " ".join(
-                    part.lstrip("~") for part in (old, value) if part)
-            else:
-                result[key] = " ".join(part for part in (result.get(key, ""), value) if part)
-        else:
-            result[key] = value
-    return result
-
-
-DANGEROUS_SYSCALL_GROUPS = (
-    "@mount", "@reboot", "@module", "@raw-io", "@privileged", "@debug", "@swap",
-    "@cpu-emulation", "@obsolete", "@clock",
-)
-SYSCALL_DIFFERENCE_LIMIT = 64
-
-
-def compare_properties(properties: Properties, observed: dict[str, str],
-                       syscall_groups: dict | None = None, evidence: dict | None = None) -> list[str]:
-    mismatches = []
-    for key, value in expected_properties(properties).items():
-        if key == "SystemCallFilter":
-            groups = (expand_syscall_groups(properties, observed)
-                      if syscall_groups is None else syscall_groups)
-            detail = compare_syscall_filter(properties, observed.get(key, ""), groups)
-            if evidence is not None:
-                evidence["system_call_filter"] = detail
-            if key not in observed or not detail["ok"]:
-                mismatches.append(key)
-        elif key not in observed or normalise(key, value) != normalise(key, observed[key]):
-            mismatches.append(key)
-    return mismatches
-
-
-def syscall_words(value: str) -> tuple[bool, list[str]]:
-    inverted = value.startswith("~")
-    words = shlex.split(value[1:] if inverted else value)
-    # errno overrides and other unreviewed syntax must never become literal names.
-    if any(not word.lstrip("@").replace("_", "").replace("-", "").isalnum()
-           or "@" in word[1:] for word in words):
-        raise ValueError("unsupported syscall filter syntax")
-    return inverted, words
-
-
-def expand_syscall_groups(properties: Properties, observed: dict[str, str]) -> dict:
-    """Use this host's systemd definitions, including recursively nested groups.
-
-    Missing systemd-analyze, failed commands and malformed output all refuse smoke.
-    """
-    groups = {}
-    pending = set()
-
-    def expand(group):
-        if group in pending:
-            raise ValueError("recursive syscall group")
-        if group in groups:
-            return groups[group]
-        pending.add(group)
-        lines = run(["systemd-analyze", "syscall-filter", "--no-pager", group]).splitlines()
-        names = set()
-        for line in lines:
-            word = line.strip()
-            if not word or word.startswith("#") or word == group:
-                continue
-            inverted, words = syscall_words(word)
-            if inverted or len(words) != 1:
-                raise ValueError("unrecognised syscall-filter representation")
-            names.update(expand(word) if word.startswith("@") else {word})
-        if not names:
-            raise ValueError("empty syscall group expansion")
-        pending.remove(group)
-        groups[group] = names
-        return names
-
-    for group in (*DANGEROUS_SYSCALL_GROUPS, "@default"):
-        expand(group)
-    values = [value for key, value in properties if key == "SystemCallFilter"]
-    for value in [*values, observed.get("SystemCallFilter", "")]:
-        inverted, words = syscall_words(value)
-        if inverted or not value:
-            expand("@known")
-        for word in words:
-            if word.startswith("@"):
-                expand(word)
-    return groups
-
-
-def native_unknown_syscalls(names: set[str]) -> set[str]:
-    """Resolve against the native ABI; never infer architecture gaps from show.
-
-    libseccomp returns negative numbers for unknown or architecture-only pseudo
-    syscalls. No filters are installed. Fail closed if the resolver is unavailable.
-    """
-    if not names:
-        return set()
-    library = ctypes.CDLL("libseccomp.so.2")
-    resolve = library.seccomp_syscall_resolve_name
-    resolve.argtypes = [ctypes.c_char_p]
-    resolve.restype = ctypes.c_int
-    return {name for name in names if resolve(name.encode("ascii")) < 0}
-
-
-def compare_syscall_filter(properties: Properties, shown: str, groups: dict) -> dict:
-    def expand(words):
-        return set().union(*(groups[word] if word.startswith("@") else {word}
-                             for word in words))
-
-    allowed = set()
-    explicit_groups = set()
-    initial = True
-    for key, value in properties:
-        if key != "SystemCallFilter":
-            continue
-        if not value:
-            allowed = set(groups["@known"])
-            explicit_groups.clear()
-            initial = True
-            continue
-        inverted, words = syscall_words(value)
-        if initial:
-            allowed = set(groups["@known"] if inverted else groups["@default"])
-            initial = False
-        names = expand(words)
-        if inverted:
-            allowed.difference_update(names)
-            explicit_groups.difference_update(words)
-        else:
-            allowed.update(names)
-            explicit_groups.update(word for word in words if word in DANGEROUS_SYSCALL_GROUPS)
-
-    inverted, words = syscall_words(shown)
-    observed = expand(words)
-    if inverted:
-        observed = set(groups["@known"]) - observed
-    # An empty show property means no filter; it must never certify hardening.
-    if not words:
-        observed = set()
-    exempt = expand(explicit_groups)
-    dangerous = expand(DANGEROUS_SYSCALL_GROUPS) - exempt
-    unexpected = observed - allowed
-    # A dangerous-group member the declared filter itself allows (for example
-    # @system-service's own @chown/@setuid subgroups) is the unit's stated
-    # policy, not drift: it is reported, and fails only if it was not declared.
-    forbidden = (observed & dangerous) - allowed
-    declared_dangerous = (observed & dangerous) & allowed
-    missing = allowed - observed
-    unknown = native_unknown_syscalls(missing)
-    missing_native = missing - unknown
-    detail = {"ok": bool(observed) and not (unexpected or forbidden or missing_native),
-              "expanded_count": len(allowed), "observed_count": len(observed),
-              "explicit_dangerous_groups": sorted(explicit_groups),
-              "difference_limit": SYSCALL_DIFFERENCE_LIMIT}
-    for label, names in (("unexpected", unexpected), ("dangerous", forbidden),
-                         ("declared_dangerous", declared_dangerous),
-                         ("missing_native", missing_native), ("omitted_native_unknown", unknown)):
-        detail[label + "_count"] = len(names)
-        detail[label] = sorted(names)[:SYSCALL_DIFFERENCE_LIMIT]
-    return detail
-
-
-def create_scratch_tree(scratch: Path, properties: Properties) -> None:
-    from azazel_nexus.layout import LAYOUT
-
-    leaves = {token.lstrip("-+") for key, value in properties if key in PATH_KEYS
-              for token in shlex.split(value)}
-    specs = [spec for spec in LAYOUT
-             if any(leaf == spec.path or leaf.startswith(spec.path + "/") for leaf in leaves)]
-    scratch.chmod(0o755)  # system accounts must traverse the unique root
-    # The installer relies on the OS-owned /var and /var/lib ancestors. Their
-    # scratch equivalents must not inherit the invoking root shell's umask.
-    for relative in ("var", "var/lib"):
-        parent = scratch / relative
-        parent.mkdir(exist_ok=True)
-        os.chown(parent, 0, 0)
-        parent.chmod(0o755)
-    for spec in sorted(specs, key=lambda item: item.path.count("/")):
-        target = scratch / spec.path.lstrip("/")
-        target.mkdir(parents=True, exist_ok=True)
-        os.chown(target, pwd.getpwnam(spec.owner).pw_uid, grp.getgrnam(spec.group).gr_gid)
-        target.chmod(spec.mode)  # chown can clear setgid
+def compare_properties(properties, observed, syscall_groups=None, evidence=None):
+    if syscall_groups is None and any(key == "SystemCallFilter" for key, _ in properties):
+        syscall_groups = expand_syscall_groups(properties, observed)
+    return sandbox.compare_properties(properties, observed, syscall_groups, evidence,
+                                      native_resolver=native_unknown_syscalls)
 
 
 # Snapshot every real state surface, including absent roots and directory metadata.
@@ -361,29 +68,6 @@ REAL_DIRECTORIES = tuple(map(Path, (
     "/data/azazel/mission-packs", "/etc/azazel/mission-pack.json",
 )))
 HASH_LIMIT = 8 * 1024 * 1024
-
-
-def require_strict(properties: Properties) -> None:
-    # full leaves /var writable; only strict provides the required default deny.
-    if expected_properties(properties).get("ProtectSystem") != "strict":
-        raise ValueError("ProtectSystem=strict required")
-
-
-def assert_write_isolation(observed: dict[str, str], scratch: Path,
-                           private_runtime: Path) -> None:
-    """Check effective mount exceptions, separately from property equality."""
-    if observed.get("ProtectSystem") != "strict":
-        raise ValueError("effective ProtectSystem=strict required")
-    if "ReadWritePaths" not in observed:
-        raise ValueError("effective ReadWritePaths missing")
-    if shlex.split(observed.get("RuntimeDirectory", "")) != [private_runtime.name]:
-        raise ValueError("effective RuntimeDirectory is not private")
-    for token in shlex.split(observed["ReadWritePaths"]):
-        path = Path(token.lstrip("-+"))
-        if (not path.is_absolute() or ".." in path.parts
-                or not (path.resolve().is_relative_to(scratch.resolve())
-                        or path == private_runtime and path.resolve() == private_runtime)):
-            raise ValueError("effective ReadWritePaths outside scratch/private runtime: " + token)
 
 
 def snapshot_directories(roots: tuple[Path, ...] = REAL_DIRECTORIES) -> dict:

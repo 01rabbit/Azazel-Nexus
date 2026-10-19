@@ -1,0 +1,16 @@
+{
+  "schema": "azazel-nexus-lab/scenario/1",
+  "lab": true,
+  "not_hardware_evidence": true,
+  "frame": {
+    "request_id": "lab-ransomware",
+    "privacy_class": "P0-public",
+    "question": "host=lab-files で 400 ファイルの拡張子が変化。ランサムウェアの疑い。 / Possible ransomware: what should I check?",
+    "context": [
+      {
+        "kind": "observation",
+        "text": "host=lab-files; 400 renamed files in 120 seconds; security alert raised."
+      }
+    ]
+  }
+}

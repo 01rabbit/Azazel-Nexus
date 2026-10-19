@@ -812,6 +812,15 @@ def main(
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    from .lab_host import is_lab_host
+
+    if is_lab_host():
+        if args.command in {"status", "setup"}:
+            print("LAB HOST", file=stream)
+        if args.command in {"hil-preflight", "commission-review"}:
+            print("refused: LAB_HOST_MARKER", file=error_stream)
+            return 2
+
     if args.command == "broker":
         from .broker_cli import run as run_broker
         return run_broker(args, now=_now(), out=stream)

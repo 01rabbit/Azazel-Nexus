@@ -95,6 +95,9 @@ def verify_draft_review(*, payload: bytes, signature: bytes, operator: str,
     assertions. Boot/node/policy binding, measured profiles and activation
     approval must be established separately before operational use.
     """
+    from .lab_host import refuse_lab_host
+
+    refuse_lab_host(DraftRefused)
     try:
         trust.verify(operator=operator, purpose=ApprovalPurpose.COMMISSIONING,
                      payload=payload, signature=signature)

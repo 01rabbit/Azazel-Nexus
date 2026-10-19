@@ -1,0 +1,16 @@
+{
+  "schema": "azazel-nexus-lab/scenario/1",
+  "lab": true,
+  "not_hardware_evidence": true,
+  "frame": {
+    "request_id": "lab-phishing",
+    "privacy_class": "P0-public",
+    "question": "account=demo に不審メール。フィッシングの初動確認は？ / Possible phishing: which checks are useful?",
+    "context": [
+      {
+        "kind": "observation",
+        "text": "account=demo host=lab-mail; 3 suspicious messages, no attachment opened."
+      }
+    ]
+  }
+}
