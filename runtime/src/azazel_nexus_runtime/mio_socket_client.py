@@ -29,13 +29,13 @@ def _exchange(
     leaf: str, account: str, verb: str, arguments: dict, *,
     payload: dict | None = None, deadline_s: float = 0.5,
 ) -> dict:
+    if type(deadline_s) not in {int, float} or not 0 < deadline_s <= 60:
+        raise ValueError("M.I.O. deadline refused")
+    deadline = time.monotonic() + deadline_s
     path = socket_path(leaf)
     uid = pwd.getpwnam(account).pw_uid
     gid = grp.getgrnam("azknowledge-read" if leaf == "knowledge-read" else "azazel-operator").gr_gid
     verify_socket(path, expected_uid=uid, expected_gid=gid)
-    if not 0 < deadline_s <= 60:
-        raise ValueError("M.I.O. deadline refused")
-    deadline = time.monotonic() + deadline_s
     document = {"verb": verb, "arguments": arguments}
     if payload is not None:
         document["event"] = payload

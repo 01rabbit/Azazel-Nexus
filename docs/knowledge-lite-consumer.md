@@ -312,7 +312,9 @@ retains a deterministic prefix fitting a 60 KiB JSON envelope, including ASCII
 escaping overhead, below the existing 64 KiB transport limit. Each frozen
 library `KnowledgeRef` carries `technique_id`, `name` (120 characters maximum),
 `summary` (240 maximum), `claim_id`, `bundle_digest`, and `freshness` (`current`
-or `static`). `attack_stix.flatten` obtains technique IDs from MITRE external
+or `static`), plus `source_kind: knowledge_lite`, the authenticated bundle
+`generation`, and `trust_check: verified`. These are read-time provenance,
+not approval or authority. `attack_stix.flatten` obtains technique IDs from MITRE external
 references and preserves the technique name and description; Knowledge's native
 ATT&CK table uses `technique_id` as the stable primary key. That key is both
 `technique_id` and `claim_id` here, qualified by the authenticated bundle digest.

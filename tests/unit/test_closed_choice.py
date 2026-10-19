@@ -210,3 +210,37 @@ def test_empty_selection_is_not_reviewed_and_candidate_has_no_trailing_newline(f
     assert doc['provenance']['playbooks_reviewed'] is False
     assert not doc['fields']['candidate'].endswith('\n')
     assert 'テンプレート' not in doc['advice'] and 'template' not in doc['advice'].lower()
+
+
+def test_knowledge_stays_separate_from_model_and_situation_facts(frame):
+    from dataclasses import asdict
+
+    from azazel_nexus.lite_import import KnowledgeRef
+
+    ref = KnowledgeRef('T1110.003', 'Reference name', 'Reference-only marker',
+                       'T1110.003', 'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+    prompts = []
+    def infer(request, **kwargs):
+        prompts.append(request.prompt_messages)
+        return SimpleNamespace(text=json.dumps({
+            'reason': '"Password spray" suggests credential guessing.',
+            'check_1': 'Review authentication logs.',
+            'check_2': 'Check account history.',
+            'check_3': 'Ask the operator to review.',
+            'missing': 'Account history is needed.',
+        }))
+    baseline, _ = deliver(frame, (.8,), server=SimpleNamespace(infer=infer))
+    reply, _ = deliver(frame, (.8,), server=SimpleNamespace(infer=infer), knowledge=(ref,))
+    assert reply['explanation_source'] == 'model'
+    # Verified Knowledge reaches the model only inside the trusted reference
+    # message; the situation and the rest of the prompt are unchanged.
+    assert 'Reference name' not in str(prompts[0])
+    assert 'T1110.003 Reference name [T1110.003]' in prompts[1][1][1]
+    assert prompts[1][0] == prompts[0][0] and prompts[1][2:] == prompts[0][2:]
+    assert reply == {**baseline, 'knowledge': [asdict(ref)]}
+    assert 'model_reason' in reply['fields']
+    assert 'cited_facts' in reply['fields']
+    assert read_delivered(reply)['knowledge'] == [asdict(ref)]
+    malformed = {**reply, 'knowledge': [{**asdict(ref), 'trust_check': 'revoked'}]}
+    with pytest.raises(ValueError):
+        read_delivered(malformed)

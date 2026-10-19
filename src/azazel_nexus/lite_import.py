@@ -96,6 +96,7 @@ __all__ = [
     "LookupContext",
     "lookup_context",
     "lookup_context_reading",
+    "read_knowledge_refs",
 ]
 
 #: Members a bundle may not carry whatever its manifest says. A bundle does
@@ -580,6 +581,34 @@ class KnowledgeRef:
     claim_id: str
     bundle_digest: str
     freshness: str
+    source_kind: str
+    generation: int
+    trust_check: str
+
+
+def read_knowledge_refs(rows: list) -> tuple[KnowledgeRef, ...]:
+    """Validate cited context again at each process boundary, never as authority."""
+    fields = {"technique_id", "name", "summary", "claim_id", "bundle_digest",
+              "freshness", "source_kind", "generation", "trust_check"}
+    if type(rows) is not list or len(rows) > 16:
+        raise ValueError("invalid_knowledge_refs")
+    refs = []
+    for row in rows:
+        if (type(row) is not dict or set(row) != fields
+                or any(type(row[key]) is not str for key in fields - {"generation"})):
+            raise ValueError("invalid_knowledge_refs")
+        if (not TECHNIQUE_ID.fullmatch(row["technique_id"])
+                or row["claim_id"] != row["technique_id"]
+                or not 0 < len(row["name"]) <= 120 or len(row["summary"]) > 240
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", row["bundle_digest"])
+                or row["freshness"] not in {"current", "static"}
+                or row["source_kind"] != "knowledge_lite"
+                or type(row["generation"]) is not int or not 0 <= row["generation"] < 2**63
+                or row["trust_check"] != "verified"
+                or any(not c.isprintable() for key in ("name", "summary") for c in row[key])):
+            raise ValueError("invalid_knowledge_refs")
+        refs.append(KnowledgeRef(**row))
+    return tuple(refs)
 
 
 @dataclass(frozen=True)
@@ -632,6 +661,7 @@ def lookup_context_reading(*, root: Path, trust_root: Path,
                 technique, name, _plain_text(row.get("description"), 240),
                 technique, accepted.bundle_digest,
                 "static" if row.get("agg_next_expiry") is None else "current",
+                "knowledge_lite", accepted.bundle_version, "verified",
             ))
             if len(refs) == 16:
                 break
