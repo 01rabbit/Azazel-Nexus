@@ -204,12 +204,12 @@ def test_retention_deletes_whole_oldest_segments_and_refuses_links(tmp_path):
     for day in ("2026-01-01", "2026-01-02", "2026-01-03"):
         (store.directory / (day + ".jsonl")).write_bytes(b"1234")
     now = daemon.datetime(2026, 1, 3, tzinfo=daemon.UTC).timestamp()
-    store.retain(now)
+    store.retain()
     assert sorted(p.stem for p in store.directory.iterdir()) == [
         "2026-01-02",
         "2026-01-03",
     ]
-    store.retain(now + 20 * 86400)
+    store.retain()
     assert sorted(p.stem for p in store.directory.iterdir()) == [
         "2026-01-02", "2026-01-03",
     ]
@@ -324,7 +324,7 @@ def test_broken_chain_refuses_new_records_without_content(tmp_path):
     assert list((tmp_path / "evidence").glob("*.jsonl")) == []
 
 
-@pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
+@pytest.mark.parametrize("kind", [daemon.EvidenceStore])
 def test_retention_keeps_newest_over_total_ceiling_and_ignores_wall_jump(tmp_path, kind):
     now = daemon.datetime(2026, 1, 20, tzinfo=daemon.UTC).timestamp()
     if kind is daemon.EvidenceStore:
@@ -333,12 +333,12 @@ def test_retention_keeps_newest_over_total_ceiling_and_ignores_wall_jump(tmp_pat
         store = kind(tmp_path, now, max_bytes=1)
     for day in ("2026-01-01", "2026-01-10", "2026-01-20"):
         (store.directory / (day + ".jsonl")).write_bytes(b"1234")
-    store.retain(daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp())
+    store.retain()
     assert sorted(p.stem for p in store.directory.iterdir()) == ["2026-01-20"]
     store.max_bytes = 100
     for day in ("2026-01-01", "2026-01-10"):
         (store.directory / (day + ".jsonl")).write_bytes(b"1234")
-    store.retain(daemon.datetime(2099, 1, 1, tzinfo=daemon.UTC).timestamp())
+    store.retain()
     assert sorted(p.stem for p in store.directory.iterdir()) == ["2026-01-10", "2026-01-20"]
 
 
@@ -409,35 +409,44 @@ def test_rate_limit_preserves_evidence_and_counts_status(tmp_path):
     server.finished.set()
     server._writer()
     assert server.accepted == 65
-    assert server.snapshot()["refused"]["incident_rate_limited"] == 5
+    assert server.snapshot()["refused"]["incident_rate_limited"] == 35
     assert len(next((tmp_path / "evidence").glob("*.jsonl")).read_text().splitlines()) == 65
     ledger = AuditLedger(next((tmp_path / "incidents").glob("*.jsonl")))
     entries = [entry.event for entry in ledger]
     assert entries[0] == {"event_type": "edge.incident.reset", "at": 0,
                           "reason": "intake_started"}
-    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 60
+    assert sum(e["event_type"] == "edge.incident.opened" for e in entries) == 30
     closed = [e for e in entries if e["event_type"] == "edge.incident.closed"]
-    assert len(closed) == 60 and all(e["reason"] == "shutdown" for e in closed)
+    assert len(closed) == 30 and all(e["reason"] == "shutdown" for e in closed)
     assert read_intake_status(server.status_path.read_bytes())["storage_failed"] is False
 
 
-def test_incident_segments_are_capped_and_only_current_verified(tmp_path):
-    directory = tmp_path / "incidents"
-    directory.mkdir()
-    (directory / "1970-01-01.jsonl").write_text("old unverified data")
-    ledger = daemon.IncidentLedger(tmp_path, 86400, segment_bytes=1024)
-    event = {"event_type": "edge.incident.reset", "at": 86400, "reason": "intake_started"}
+def test_incident_segments_are_linked_capped_and_mark_truncation(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0, segment_bytes=4096)
+    event = {"event_type": "edge.incident.reset", "at": 0, "reason": "intake_started"}
+    ledger.append(event, 0)
+    previous = ledger.head
     ledger.append(event, 86400)
+    assert next(iter(ledger.ledger)).previous_hash == previous[1]
+    while True:
+        try:
+            ledger.append(event, 86400)
+        except daemon.SegmentFull as exc:
+            assert exc.code == "incident_segment_full"
+            break
     before = ledger.current.read_bytes()
-    ledger.segment_bytes = len(before)
-    with pytest.raises(daemon.SegmentFull) as caught:
+    with pytest.raises(daemon.SegmentFull):
         ledger.append(event, 86400)
-    assert caught.value.code == "incident_segment_full"
     assert ledger.current.read_bytes() == before
-    ledger.segment_bytes = 1024
+    assert ledger.current.stat().st_size <= 4096
+    assert sum(e.event["event_type"] == "edge.incident.truncated" for e in ledger.ledger) == 1
+    restarted = daemon.IncidentLedger(tmp_path, 86400, segment_bytes=4096)
+    assert restarted.head == ledger.head
+    with pytest.raises(daemon.SegmentFull):
+        restarted.append(event, 86400)
+    assert restarted.current.read_bytes() == before
     ledger.append(event, 2 * 86400)
-    ledger.ledger.verify()
-    assert ledger.ledger.head()[0] == 1
+    assert ledger.head[0] == restarted.head[0] + 1
 
 
 @pytest.mark.parametrize("kind", [daemon.EvidenceStore, daemon.IncidentLedger])
@@ -447,6 +456,9 @@ def test_received_time_leap_does_not_age_existing_segments(tmp_path, kind):
     if kind is daemon.EvidenceStore:
         store = kind(tmp_path)
     else:
+        directory = tmp_path / "incidents"
+        directory.mkdir()
+        AuditLedger(directory / "2026-01-10.jsonl", private=True).append({"at": jan20})
         store = kind(tmp_path, jan20)
     old = store.directory / "2026-01-10.jsonl"
     if kind is daemon.EvidenceStore:
@@ -454,7 +466,6 @@ def test_received_time_leap_does_not_age_existing_segments(tmp_path, kind):
         store.append(record(jan20))
         store.append(record(future))
     else:
-        AuditLedger(old, private=True).append({"at": jan20})
         store.append({"at": jan20}, jan20)
         store.append({"at": future}, future)
     assert old.exists()
@@ -499,7 +510,10 @@ def test_retention_keeps_active_segment_when_clock_moves_back(tmp_path, kind):
     else:
         store = kind(tmp_path, 20 * 86400, max_bytes=1)
         store.append({"at": 0}, 0)
-    assert store.path_at(0).exists()
+    if kind is daemon.EvidenceStore:
+        assert store.path_at(0).exists()
+    else:
+        assert not store.path_at(0).exists()
     assert store.path_at(20 * 86400).exists()
 
 
@@ -533,3 +547,88 @@ def test_runtime_writer_failure_stays_closed_without_transport(tmp_path, monkeyp
     assert server.snapshot()["storage_failed"] is True
     assert server.refused["storage_failed"] == 2
     assert "SECRET" not in server.status_path.read_text()
+
+
+def test_incident_retention_boundary_survives_restart_and_pending_unlink(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0, max_bytes=1)
+    ledger.append({"at": 0}, 0)
+    retired_path = ledger.current
+    retired = retired_path.read_bytes()
+    retired_head = ledger.head
+    ledger.append({"at": 86400}, 86400)
+    assert not retired_path.exists()
+    boundary = json.loads(ledger.boundary.read_bytes())
+    assert boundary == {"oldest": "1970-01-02.jsonl", "deleted": "1970-01-01.jsonl",
+                        "sequence": retired_head[0], "hash": retired_head[1]}
+    assert ledger.boundary.stat().st_mode & 0o777 == 0o600
+    # Simulate power loss after boundary fsync and before the retired unlink.
+    retired_path.write_bytes(retired)
+    restarted = daemon.IncidentLedger(tmp_path, 86400, max_bytes=1)
+    assert not retired_path.exists()
+    assert restarted.head == ledger.head
+    ledger.current.unlink()
+    with pytest.raises(daemon.AuditChainBroken):
+        daemon.IncidentLedger(tmp_path, 86400)
+
+
+@pytest.mark.parametrize("change", ["delete_first", "delete_middle", "edit_link"])
+def test_incident_missing_or_relinked_segment_refuses_startup(tmp_path, change):
+    ledger = daemon.IncidentLedger(tmp_path, 0)
+    for day in range(3):
+        ledger.append({"at": day * 86400}, day * 86400)
+    if change == "edit_link":
+        path = ledger.path_at(2 * 86400)
+        value = json.loads(path.read_bytes())
+        value["previous_hash"] = "0" * 64
+        path.write_text(json.dumps(value) + "\n")
+    else:
+        ledger.path_at(0 if change == "delete_first" else 86400).unlink()
+    with pytest.raises(daemon.AuditChainBroken):
+        daemon.IncidentLedger(tmp_path, 2 * 86400)
+
+
+def test_torn_incident_final_line_refuses_with_fixed_status(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0)
+    ledger.append({"at": 0}, 0)
+    with ledger.current.open("ab") as stream:
+        stream.write(b'{"SECRET":')
+    before = ledger.current.read_bytes()
+    server = daemon.IntakeServer(path=tmp_path / "in.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    ready = []
+    assert server.serve(ready=lambda: ready.append(True)) == 1
+    assert not ready and not server.path.exists()
+    status = read_intake_status(server.status_path.read_bytes())
+    assert status["refused"]["incident_ledger_torn"] == 1
+    assert status["storage_failed"]
+    assert "SECRET" not in server.status_path.read_text()
+    assert ledger.current.read_bytes() == before
+
+
+def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch):
+    server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 clock=lambda: 0)
+    server._open_storage()
+    transition = server.tracker.add(record(0))[0]
+    for sid in range(1024):
+        server.tracker.incidents[("10.0.0.8", sid, 443)] = dict(transition, sid=sid)
+    calls = []
+    original = daemon.os.fsync
+    def fsync(fd):
+        calls.append(fd)
+        return original(fd)
+    monkeypatch.setattr(daemon.os, "fsync", fsync)
+    server.finished.set()
+    server._writer()
+    assert not server.storage_failed
+    assert calls and len(calls) == 1
+    assert sum(entry.event.get("reason") == "shutdown" for entry in server.ledger.ledger) == 1024
+    server.ledger.ledger.verify()
+    assert daemon.WORKER_JOIN_S == 20
+
+
+def test_incident_and_evidence_have_separate_segment_ceilings(tmp_path):
+    assert daemon.IncidentLedger(tmp_path, 0).segment_bytes == 16 * 1024 * 1024
+    assert daemon.EvidenceStore(tmp_path).segment_bytes == 64 * 1024 * 1024

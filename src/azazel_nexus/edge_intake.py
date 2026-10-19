@@ -18,6 +18,8 @@ INCIDENT_IDLE_S = 900
 UPDATE_INTERVAL_S = 60
 MAX_OPEN = 1024
 MAX_OPENINGS_PER_MINUTE = 60
+MAX_SEVERE_OPENINGS_PER_MINUTE = 30
+MAX_SOURCE_OPENINGS_PER_MINUTE = 20
 ACTIONS = frozenset({"observe", "notify", "throttle", "redirect", "isolate"})
 STATUS_SCHEMA = "azazel-nexus/edge-intake-status/v1"
 REFUSAL_CODES = frozenset(
@@ -37,6 +39,7 @@ REFUSAL_CODES = frozenset(
         "status_write_failed",
         "evidence_segment_full",
         "incident_segment_full",
+        "incident_ledger_torn",
         "incident_rate_limited",
         "EDGE_TYPE_attack_type",
         "EDGE_RANGE_attack_type",
@@ -201,7 +204,10 @@ def parse_edge_event(raw: bytes) -> EdgeEvent:
         try:
             if n[key]:
                 _require("%" not in n[key], "EDGE_RANGE")
-                n[key] = ipaddress.ip_address(n[key]).compressed
+                address = ipaddress.ip_address(n[key])
+                if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                    address = address.ipv4_mapped
+                n[key] = address.compressed
         except ValueError:
             raise EdgeEventRefused("EDGE_RANGE") from None
     for key in ("attack_type", "category"):
@@ -380,6 +386,7 @@ class IncidentTracker:
         self.incidents = {}
         self.monotonic = monotonic
         self.openings = deque()
+        self.severe_openings = deque()
         self.rate_limited = 0
 
     def tick(self, now=None):
@@ -402,12 +409,18 @@ class IncidentTracker:
         opened = key not in self.incidents
         if opened:
             instant = self.monotonic()
-            while self.openings and instant - self.openings[0] >= 60:
-                self.openings.popleft()
-            if len(self.openings) >= MAX_OPENINGS_PER_MINUTE:
+            for budget in (self.openings, self.severe_openings):
+                while budget and instant - budget[0][0] >= 60:
+                    budget.popleft()
+            severe = n["severity"] <= 2
+            budget = self.severe_openings if severe else self.openings
+            limit = MAX_SEVERE_OPENINGS_PER_MINUTE if severe else MAX_OPENINGS_PER_MINUTE
+            source_count = sum(source == key[0] for _, source in budget)
+            if (len(budget) >= limit or
+                    (not severe and source_count >= MAX_SOURCE_OPENINGS_PER_MINUTE)):
                 self.rate_limited += 1
                 return transitions
-            self.openings.append(instant)
+            budget.append((instant, key[0]))
             if len(self.incidents) >= self.max_open:
                 oldest = min(
                     self.incidents, key=lambda k: self.incidents[k]["last_seen"]

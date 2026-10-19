@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import grp
+import json
 import os
 import pwd
 import queue
@@ -17,7 +18,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from azazel_nexus.audit import AuditLedger
+from azazel_nexus.audit import GENESIS_HASH, AuditChainBroken, AuditLedger
 from azazel_nexus.edge_intake import (
     MAX_LINE,
     STATUS_SCHEMA,
@@ -40,6 +41,9 @@ STATUS_INTERVAL_S = 5
 RETENTION_BYTES = 256 * 1024 * 1024
 RETENTION_DAYS = 14
 SEGMENT_BYTES = 64 * 1024 * 1024
+INCIDENT_SEGMENT_BYTES = 16 * 1024 * 1024
+TRUNCATION_RESERVE = 1024
+WORKER_JOIN_S = 20
 
 
 class SegmentFull(Exception):
@@ -67,7 +71,7 @@ class DailySegments:
         day = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
         return self.directory / (day + ".jsonl")
 
-    def retain(self, now):
+    def retain(self):
         segments = []
         for path in self.directory.glob("????-??-??.jsonl"):
             try:
@@ -100,8 +104,12 @@ class DailySegments:
             if path == self.current:
                 continue
             if day < age_day - self.days * 86400 or total > self.max_bytes:
+                self.before_delete(path)
                 path.unlink()
                 total -= size
+
+    def before_delete(self, path):
+        pass
 
     def open_segment(self, path, mode):
         created = not path.exists()
@@ -140,12 +148,12 @@ class EvidenceStore(DailySegments):
         os.close(self.open_segment(path, 0o640))
         if not existed:
             path.unlink()
-        self.retain(now)
+        self.retain()
 
     def append(self, record):
         path = self.path_at(record.received_at)
         self.current = path
-        self.retain(record.received_at)
+        self.retain()
         data = canonical(record.as_dict()) + b"\n"
         fd = self.open_segment(path, 0o640)
         try:
@@ -156,42 +164,132 @@ class EvidenceStore(DailySegments):
             os.fsync(fd)
         finally:
             os.close(fd)
-        self.retain(record.received_at)
+        self.retain()
+
+
+class IncidentLedgerTorn(Exception):
+    """An unterminated segment needs explicit operator recovery."""
 
 
 class IncidentLedger(DailySegments):
-    """Independent daily AuditLedger chains, with bounded startup verification."""
+    """One chain through retained daily segments, with a durable left boundary."""
 
     def __init__(self, root, now, **limits):
+        limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
         super().__init__(root, "incidents", **limits)
         self.ledger = None
-        self.current = self.path_at(now)
-        self.retain(now)
+        self.boundary = self.directory / "retained-boundary.json"
+        self.head = (0, GENESIS_HASH)
+        paths = sorted(self.directory.glob("????-??-??.jsonl"))
+        if self.boundary.exists():
+            boundary = json.loads(self.boundary.read_bytes())
+            oldest = self.directory / boundary["oldest"]
+            if (oldest not in paths or oldest.name != boundary["oldest"] or
+                    boundary["deleted"] >= oldest.name or
+                    type(boundary["sequence"]) is not int or boundary["sequence"] < 0 or
+                    not isinstance(boundary["hash"], str) or len(boundary["hash"]) != 64):
+                raise AuditChainBroken("retained incident boundary is missing")
+            self.head = (boundary["sequence"], boundary["hash"])
+            # A crash after the durable boundary but before unlink is safe:
+            # only the prefix explicitly retired by that boundary is removed.
+            for path in paths:
+                if path.name <= boundary["deleted"]:
+                    path.unlink()
+            paths = sorted(self.directory.glob("????-??-??.jsonl"))
+            if not paths or paths[0] != oldest:
+                raise AuditChainBroken("retained incident boundary does not match")
+        for path in paths:
+            self.check_segment(path)
+            for entry in AuditLedger(path, private=True):
+                if (entry.sequence != self.head[0] + 1 or
+                        entry.previous_hash != self.head[1] or
+                        entry.recomputed() != entry.event_hash):
+                    raise AuditChainBroken("incident chain does not continue")
+                self.head = (entry.sequence, entry.event_hash)
+        self.current = paths[-1] if paths else None
         self.select(now)
-        self.retain(now)
+        self.retain()
+
+    def check_segment(self, path):
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise OSError("intake segment refused")
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            if size > self.segment_bytes:
+                raise OSError("incident segment exceeds ceiling")
+            if size:
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b"\n":
+                    raise IncidentLedgerTorn()
+
+    def before_delete(self, path):
+        paths = sorted(self.directory.glob("????-??-??.jsonl"))
+        following = paths[paths.index(path) + 1]
+        head = AuditLedger(path, private=True).head()
+        # An empty segment contributes no link; preserve the prior boundary.
+        if head == (0, GENESIS_HASH) and self.boundary.exists():
+            previous = json.loads(self.boundary.read_bytes())
+            head = (previous["sequence"], previous["hash"])
+        value = {"oldest": following.name, "sequence": head[0], "hash": head[1],
+                 "deleted": path.name}
+        fd, name = tempfile.mkstemp(dir=self.directory, prefix=".boundary-")
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(canonical(value) + b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, self.boundary)
+            directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
     def select(self, now):
         path = self.path_at(now)
+        # A backwards clock must not insert entries before the chain head.
+        if self.current is not None:
+            path = max(path, self.current)
         if path == self.current and self.ledger is not None:
             return
         fd = self.open_segment(path, 0o600)
+        os.close(fd)
+        self.check_segment(path)
+        self.current, self.ledger = path, AuditLedger(path, private=True)
+        self.truncated = any(
+            entry.event.get("event_type") == "edge.incident.truncated"
+            for entry in self.ledger
+        )
+
+    def _append(self, event, *, sync):
+        entry = self.ledger.append(event, chain_from=self.head, sync=sync)
+        self.head = (entry.sequence, entry.event_hash)
+
+    def append(self, event, now, *, sync=True):
+        self.select(now)
+        # Keep room for one durable gap marker even when a transition is lost.
+        required = len(canonical(event)) + 512
+        size = self.current.stat().st_size
+        if size + required + TRUNCATION_RESERVE > self.segment_bytes:
+            if not self.truncated:
+                marker = {"event_type": "edge.incident.truncated", "at": now,
+                          "reason": "incident_segment_full"}
+                if size + len(canonical(marker)) + 512 <= self.segment_bytes:
+                    self._append(marker, sync=sync)
+                    self.truncated = True
+            raise SegmentFull("incident_segment_full")
+        self._append(event, sync=sync)
+        self.retain()
+
+    def sync(self):
+        fd = self.open_segment(self.current, 0o600)
         try:
-            if os.fstat(fd).st_size > self.segment_bytes:
-                raise OSError("incident segment exceeds ceiling")
+            os.fsync(fd)
         finally:
             os.close(fd)
-        ledger = AuditLedger(path, private=True)
-        ledger.verify()
-        self.current, self.ledger = path, ledger
-
-    def append(self, event, now):
-        self.select(now)
-        # Reserve space for the chain envelope, hashes and sequence number.
-        required = len(canonical(event)) + 512
-        if self.current.stat().st_size + required > self.segment_bytes:
-            raise SegmentFull("incident_segment_full")
-        self.ledger.append(event)
-        self.retain(now)
 
 
 class IntakeServer:
@@ -268,12 +366,15 @@ class IntakeServer:
             self.refuse(exc.code)
         self.store, self.ledger = store, ledger
 
-    def _transitions(self, transitions):
+    def _transitions(self, transitions, *, batch=False):
+        batch_time = self.clock() if batch else None
         for transition in transitions:
             event_type = "edge.incident." + transition.pop("transition")
             try:
                 self.ledger.append(
-                    dict(event_type=event_type, **transition), self.clock()
+                    dict(event_type=event_type, **transition),
+                    batch_time if batch else self.clock(),
+                    sync=not batch,
                 )
             except SegmentFull as exc:
                 self.refuse(exc.code)
@@ -321,10 +422,13 @@ class IntakeServer:
                 next_status = time.monotonic() + STATUS_INTERVAL_S
         if not self.storage_failed:
             try:
-                self._transitions([
-                    self.tracker._close(key, "shutdown")
-                    for key in list(self.tracker.incidents)
-                ])
+                try:
+                    self._transitions([
+                        self.tracker._close(key, "shutdown")
+                        for key in list(self.tracker.incidents)
+                    ], batch=True)
+                finally:
+                    self.ledger.sync()
                 with self.lock:
                     self.open_incidents = 0
             except Exception:  # noqa: BLE001 - expose only a fixed failure code
@@ -338,9 +442,10 @@ class IntakeServer:
     def serve(self, *, stop=lambda: False, ready=None):
         try:
             self._open_storage()
-        except Exception:  # noqa: BLE001 - fail startup before binding or signalling READY
+        except Exception as exc:  # noqa: BLE001 - fail before binding or READY
             self.storage_failed = True
-            self.refuse("storage_failed")
+            self.refuse("incident_ledger_torn" if isinstance(exc, IncidentLedgerTorn)
+                        else "storage_failed")
             try:
                 self._status()
             except Exception:  # noqa: BLE001 - expose only a fixed failure code
@@ -439,7 +544,15 @@ class IntakeServer:
             self.path.unlink(missing_ok=True)
             self.finished.set()
             if worker.ident is not None:
-                worker.join()
+                worker.join(WORKER_JOIN_S)
+                if worker.is_alive():
+                    self.storage_failed = True
+                    self.refuse("storage_failed")
+                    try:
+                        self._status()
+                    except Exception:  # noqa: BLE001 - expose only a fixed failure code
+                        self.refuse("status_write_failed")
+                    return 1
         return 0
 
 

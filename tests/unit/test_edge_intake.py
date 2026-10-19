@@ -340,12 +340,45 @@ def test_opening_rate_is_bounded_and_existing_incidents_still_update():
     instant = [0]
     tracker = IncidentTracker(lambda: 0, monotonic=lambda: instant[0])
     for sid in range(60):
-        assert tracker.add(record(0, sid=sid))[0]["transition"] == "opened"
-    assert tracker.add(record(0, sid=60)) == []
+        value = edge_event()
+        value["normalized"].update(sid=sid, severity=4, src_ip=f"10.0.0.{sid // 20 + 1}")
+        item = EvidenceRecord.receive(parsed(value), lambda: 0)
+        assert tracker.add(item)[0]["transition"] == "opened"
+    assert tracker.add(record(0, sid=60, severity=4)) == []
     assert tracker.rate_limited == 1
-    assert tracker.add(record(60, sid=0))[0]["transition"] == "updated"
+    assert tracker.add(record(0, sid=61, severity=1))[0]["transition"] == "opened"
+    value["normalized"].update(sid=0, src_ip="10.0.0.1")
+    assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 60))[0]["transition"] == "updated"
     instant[0] = 60
-    assert tracker.add(record(60, sid=60))[0]["transition"] == "opened"
+    assert tracker.add(record(60, sid=60, severity=4))[0]["transition"] == "opened"
+
+
+def test_scanner_cannot_exhaust_ordinary_or_severe_budget():
+    tracker = IncidentTracker(lambda: 0, monotonic=lambda: 0)
+    for port in range(100):
+        value = edge_event()
+        value["normalized"].update(target_port=port, severity=4)
+        tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))
+    assert len(tracker.incidents) == 20
+    assert tracker.rate_limited == 80
+    value["normalized"].update(src_ip="10.0.0.9", severity=4)
+    assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))[0]["transition"] == "opened"
+    value["normalized"].update(src_ip="10.0.0.10", severity=1)
+    assert tracker.add(EvidenceRecord.receive(parsed(value), lambda: 0))[0]["most_severe"] == 1
+    for sid in range(29):
+        assert tracker.add(record(0, sid=sid))[0]["transition"] == "opened"
+    assert tracker.add(record(0, sid=30)) == []
+
+
+@pytest.mark.parametrize("mapped", ["::ffff:10.0.0.8", "::ffff:a00:8"])
+def test_ipv4_mapped_addresses_have_stable_digest_and_incident_id(mapped):
+    value = edge_event()
+    value["normalized"]["src_ip"] = mapped
+    assert parsed(value) == parsed()
+    first = EvidenceRecord.receive(parsed(value), lambda: 0)
+    plain = EvidenceRecord.receive(parsed(), lambda: 0)
+    assert first.digest == plain.digest
+    assert IncidentTracker(lambda: 0).add(first) == IncidentTracker(lambda: 0).add(plain)
 
 
 def test_edge_golden_events_parse():

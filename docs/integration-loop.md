@@ -110,6 +110,9 @@ socket. Edge Core connects once per event and writes one line.
   (addresses parse as addresses, ports are 0–65535, severity 0–10 because
   Edge can emit zero; lower numbers are more severe, and strings have length
   limits). Anything else is counted and refused; its content is not logged.
+- Golden producer-shaped observations are hand-derived from Edge source;
+  [fixture provenance and regeneration](../tests/fixtures/edge/README.md)
+  records the known source commits and their limits.
 - **Record Edge's decision as Edge's.** `defense.action` and
   `enforcement_status` are stored verbatim as an *Edge decision observation*.
   Under the observe-only posture the status is shown as "would", never as
@@ -155,10 +158,13 @@ Concrete I1 limits and paths:
   including tabs; other control characters and NUL are refused.
   Transport/storage codes are `peer_refused`, `overloaded`, `queue_full`,
   `read_deadline`, `read_error`, `storage_failed`, `status_write_failed`,
-  `evidence_segment_full`, `incident_segment_full`, `incident_rate_limited`.
+  `evidence_segment_full`, `incident_segment_full`, `incident_rate_limited`,
+  `incident_ledger_torn`.
   Only fixed codes are counted; refused content and exception text are never
   recorded. Empty addresses remain empty strings (the absent-address sentinel);
-  nonempty source and destination addresses use `ipaddress(...).compressed`.
+  nonempty source and destination addresses use `ipaddress(...).compressed`,
+  with IPv4-mapped IPv6 explicitly converted to dotted IPv4 first so evidence
+  digests and incident ids are stable across Python versions.
   Signature ids are bounded unsigned
   64-bit values. Optional rule-supplied `technique_ids` accepts at most eight
   `T1234` or `T1234.567` identifiers, refusing the whole event on malformed ids.
@@ -179,23 +185,58 @@ Concrete I1 limits and paths:
 - Incidents key on `(src_ip, sid, target_port)`, idle after 900 s, update at
   most every 60 s. `most_severe` is the minimum severity seen, initialized
   from the first event. At most 1024 remain open; capacity closes the oldest
-  idle incident first. New openings are limited to 60 per rolling minute on
-  a monotonic clock; excess events still go to evidence and increment
-  `incident_rate_limited`, while existing incidents can still update.
-  Technique unions retain a deterministic maximum of eight.
-  `incidents/YYYY-MM-DD.jsonl` (`0600`) holds independent daily local
-  `AuditLedger` hash chains, each at most 64 MiB (with envelope space reserved),
-  with the same 256 MiB / 14-day retention and newest/active-segment protection
-  as evidence. Only the current segment is verified at startup; older retained
-  chains are not startup-verified. A full daily ledger counts
-  `incident_segment_full` and omits transitions until the next segment, while
-  evidence intake continues. Startup writes `edge.incident.reset` with `at`
-  and reason `intake_started`, closing the interpretation of previous runs'
-  open incidents. Clean shutdown writes `closed` with reason `shutdown` for
-  each open incident (at most 1024). Forwarding to auditd remains I3.
+  idle incident first. Ordinary new openings have a shared 60/min rolling
+  monotonic budget and a 20/min cap per source. Severity <= 2 (Edge's
+  isolate/redirect range) has a separate 30/min allowance, so an ordinary
+  scanner flood cannot consume it. Excess events still go to evidence and
+  increment `incident_rate_limited`; existing incidents can still update.
+  `accepted` includes these rate-limited events because their evidence was
+  stored successfully. Technique unions retain a deterministic maximum of eight.
+  `incidents/YYYY-MM-DD.jsonl` (`0600`) holds one local `AuditLedger` chain
+  across daily segments: the first entry uses `chain_from=(seq, hash)` from
+  the previous segment's head, as auditd does. Each incident segment is at most
+  **16 MiB**; evidence remains 64 MiB and `MemoryMax=256M` is unchanged.
+  Ledger iteration/verification streams one JSON line at a time, preserving
+  newline and hash semantics, rather than expanding an entire segment in RAM.
+  Startup verifies all retained incident segments and their links, including
+  the current segment against the previous retained head. A backwards clock
+  keeps incident writes in the latest segment to preserve chain order.
+  The same 256 MiB / 14-day retention budget applies. Unlike auditd (which
+  does not delete segments), intake durably writes a small `0600`
+  `incidents/retained-boundary.json` before deleting an oldest segment. It
+  names the deleted segment and its last sequence/hash, and the next oldest
+  retained segment, which must chain from that head. Replacement and directory
+  are fsynced before unlink; a restart completes an interrupted prefix deletion.
+  This is a local, unsigned retention boundary, not an external trust anchor.
+  Missing retained segments or broken links refuse startup; intentional prefix
+  deletion remains visible in the retained boundary, including after restart.
+  A full daily ledger counts `incident_segment_full` and omits transitions
+  while evidence intake continues. A 1 KiB reserve permits one
+  `edge.incident.truncated` marker per segment (also remembered across restart)
+  when space allows. Tracker state continues to advance even when transitions
+  are dropped, so the ledger may miss openings, counts, updates or closes;
+  the marker reports a gap, not reconstructed state. The next day resumes.
+  Startup writes `edge.incident.reset` with `at` and reason `intake_started`,
+  closing the interpretation of previous runs' open incidents. Clean shutdown
+  writes `closed` with reason `shutdown` for each open incident (at most 1024),
+  flushing all closes to the same segment with one final fsync. The worker
+  join allows 20 s, below systemd's default stop timeout; a still-running
+  writer reports storage failure and exits nonzero. Forwarding to auditd remains I3.
   An evidence or ledger open/verification failure at startup exits nonzero
-  before binding or signalling READY. Later writer failures close record
-  acceptance until restart while the listener keeps accepting and dropping.
+  before binding or signalling READY. An unterminated final incident line
+  specifically reports `incident_ledger_torn` in status and is never silently
+  truncated (even a parseable JSON record without its newline is refused).
+  Operator recovery: stop intake, preserve a copy of the damaged segment and
+  its boundary, and restore the complete segment from a trusted backup if
+  available. Otherwise inspect and verify the complete prefix against the
+  previous retained segment; explicitly remove only the incomplete tail after
+  saving it and recording the loss in the operator's incident record. Restart
+  then verifies again and writes the normal reset. Do not delete whole days or
+  alter the retained boundary to bypass a broken link. Old independent daily
+  ledgers also require operator archival/migration; startup does not re-link them.
+  Later writer failures close record acceptance until restart while the
+  listener keeps accepting and dropping.
+
 - Liveness `/var/lib/azazel/run/edge-intake-status/status.json` (`0644`) has a
   separate `azintake:azazel-operator 2750` leaf. Atomic snapshots are written
   at most every 5 s, with a final shutdown snapshot. A separate boolean

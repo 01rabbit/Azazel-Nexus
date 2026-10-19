@@ -315,3 +315,16 @@ def test_a_trailing_unicode_blank_line_is_skipped_as_the_walk_skips_it(ledger):
 
     assert [e.sequence for e in ledger] == [1]
     assert ledger.head() == (1, entry.event_hash)
+
+
+def test_verify_streams_without_reading_whole_file(ledger, monkeypatch):
+    ledger.append({"text": "raw\u2028separator\rinside"})
+    ledger.append({"text": "last"})
+    # Preserve accepted blank lines and a valid final record without newline.
+    raw = ledger.path.read_bytes()
+    ledger.path.write_bytes(b"\n \r\n" + raw.rstrip(b"\n").replace(b"\n", b"\r"))
+    def whole_file_read(*args, **kwargs):
+        pytest.fail("verification must stream")
+    monkeypatch.setattr(Path, "read_text", whole_file_read)
+    ledger.verify()
+    assert len(list(ledger)) == 2
