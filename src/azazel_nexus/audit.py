@@ -140,7 +140,12 @@ class AuditLedger:
         Only the last record is read, from the end of the file, so the cost of
         asking does not grow with the ledger. It is still read from the file on
         every call rather than remembered, for the reason the class gives.
-        Whether the records before it chain is `verify`'s question, not this one.
+
+        Whether the records before it chain is `verify`'s question, not this
+        one. An `append` that is not preceded by `verify` therefore no longer
+        notices an unparseable record in the middle of the file (#175). It
+        never noticed an edited or re-linked one, so a caller that needs the
+        chain to hold before writing has always had to call `verify`.
         """
 
         try:
@@ -150,24 +155,30 @@ class AuditLedger:
                 while True:
                     stripped = tail.rstrip()
                     cut = stripped.rfind(b"\n")
-                    if cut >= 0 or position == 0:
-                        last = stripped[cut + 1:]
+                    if cut < 0 and position > 0:
+                        step = min(_TAIL_CHUNK, position)
+                        position -= step
+                        handle.seek(position)
+                        tail = handle.read(step) + tail
+                        continue
+                    try:
+                        line = stripped[cut + 1:].decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise AuditChainBroken(
+                            f"{self.path} last record is not UTF-8: {exc}"
+                        ) from exc
+                    # The same test `__iter__` applies, so a line it would
+                    # skip as blank is skipped here too.
+                    if line.strip() or cut < 0:
                         break
-                    step = min(_TAIL_CHUNK, position)
-                    position -= step
-                    handle.seek(position)
-                    tail = handle.read(step) + tail
+                    tail = stripped[:cut]
         except FileNotFoundError:
             return 0, GENESIS_HASH
         except OSError as exc:  # pragma: no cover - surfaced by callers
             raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
 
-        if not last.strip():
+        if not line.strip():
             return 0, GENESIS_HASH
-        try:
-            line = last.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise AuditChainBroken(f"{self.path} last record is not UTF-8: {exc}") from exc
         entry = self._parse(line, "last record")
         return entry.sequence, entry.event_hash
 

@@ -306,3 +306,12 @@ def test_a_line_separator_inside_an_event_is_not_a_record_boundary(ledger):
     ledger.verify()
     assert [e.sequence for e in ledger] == [1, 2]
     assert ledger.head() == (2, entry.event_hash)
+
+
+def test_a_trailing_unicode_blank_line_is_skipped_as_the_walk_skips_it(ledger):
+    entry = ledger.append({"event_type": "a"})
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write("  \n　\n")
+
+    assert [e.sequence for e in ledger] == [1]
+    assert ledger.head() == (1, entry.event_hash)
