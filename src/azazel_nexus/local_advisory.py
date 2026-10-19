@@ -548,13 +548,18 @@ def delivered_document(frame, playbooks, options, candidate, ranked, guard, mode
                     for o in ranked if o['option_id'] != candidate['option_id']]
     if benign_evidence:
         alternatives.sort(key=lambda o: o['kind'] != 'benign')
+    rival = any(o['kind'] == 'playbook' for o in alternatives)
     evidence = [{'option_id': p.id, **{k: list(v) for k, v in (p.evidence or {}).items()}}
                 for p in playbooks]
     fields = {
         'candidate': ('該当する可能性のある類型（類似度順の候補）: ' if ja else 'Possible class (candidate): ') + title,
         'alternatives': ('他の候補: ' if ja else 'Other candidates: ') + '\n'.join(o['title'] for o in alternatives),
-        'state': ({'clear': '候補が明確', 'split': '候補が拮抗', 'none': '該当する類型なし'}[state] if ja else
-                  {'clear': 'Clear candidate', 'split': 'Candidates close', 'none': 'No matching class'}[state])
+        # A split state with no other playbook to be close to is a lone,
+        # unconfirmed class; the generic fallbacks are always listed.
+        'state': (({'clear': '候補が明確', 'split': '候補が拮抗', 'none': '該当する類型なし'}[state]
+                   if state != 'split' or rival else '候補の類型は1件のみ（確定ではありません）') if ja else
+                  ({'clear': 'Clear candidate', 'split': 'Candidates close', 'none': 'No matching class'}[state]
+                   if state != 'split' or rival else 'Only one candidate class (not confirmed)'))
                  + (('。正当な活動の根拠あり（要確認）' if ja else '. Legitimate activity evidence (verify)')
                     if benign_evidence else '')
                  + (('。変更記録などシステム由来の記録あり：正当な活動か記録で確認してください' if ja else
