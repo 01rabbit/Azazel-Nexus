@@ -245,9 +245,47 @@ authority boundary**, and no downgrade or restoration grants a new authority.
 Restoration above the current state requires a passing health window and
 re-admission; a restart alone never restores a provider.
 
-The in-process route owner described below records supplied admission reasons;
-it does not publish new capability transitions or infer admission from a local
-readiness reply. HG-05 and the existing independent gates still apply.
+Entryd records `mio.capability.transition` in the existing route audit chain
+through `router._record`. Each event contains `from`, `to` (the existing
+`CapabilityState` vocabulary), and `reasons`. The first observation has
+`from: null`; thereafter a change to either state **or reasons** produces one
+event, including reason changes while the summary remains CORE. Unchanged
+observations append nothing. `MioEntryService.capability()` and the commissioned
+profile reader are read-only; reconciliation owns all transition writes.
+
+The current evidence sources cannot justify a rise above CORE. The verified
+commissioning profile is a ceiling, recorded separately as `reasons.profile`
+(`CORE`, `LITE`, `FULL`; absent/invalid verification selects CORE). It is never
+an admission grant. Entryd independently reports these closed reason sets:
+
+| Dimension | Codes / current evidence |
+| --- | --- |
+| resource | `core_reserve_unmeasured`: HG-05 reserve/headroom is not established |
+| trust | existing `Evidence.NOT_CHECKED` code `not-checked`: remote trust is unchecked |
+| health | separate `local` and `remote`: `unavailable`, `not_admitted`, `no_admission_evidence`, `invalid_observation`, from the existing bounded Unix socket probes |
+| topology | `no_verified_egress`: entryd has no verified commissioned egress evidence |
+
+Every dimension is evaluated even if another already requires CORE. Malformed
+observations and reader failures become conservative fixed codes without parser
+text; audit failures propagate. A socket refusal is availability evidence, never
+provider admission, a passing health window, or verified topology. Installed RAM
+is never used as a substitute for commissioning or measured headroom. No new
+approval flag, privilege, unit-operation API, or environment bypass is added.
+`LOCAL_MODEL_ADMISSION_ENABLED` stays false, the existing route admission gates
+remain in force, and Edge authority is unchanged.
+
+Reconciliation runs at startup and in the accept-loop stop predicate (including
+idle loops), with a request-boundary check as well. Sampling and transition
+writes are limited to **once per ten seconds**. Intermediate flaps are coalesced
+to the next sampled observation; this is sampled state history, not an exhaustive
+probe log. A failed append aborts the request/loop without advancing the
+comparison basis. After verifying the chain at construction, entryd scans once
+for its last transition, ignoring later unrelated route records. The comparison
+basis and last event time survive restart in the ledger, so unchanged restart
+observations do not duplicate events. The remaining sampling interval survives
+restart too, using a monotonic timer in-process; a wall-clock rollback at
+restart can delay sampling by at most ten seconds. Plain
+status reads neither advance that timer nor mutate the comparison basis.
 
 ## 9. Audit visibility
 
@@ -392,7 +430,7 @@ playbook reference described below. Edge continues.
 This is software evidence for route audit production, not evidence of deployed
 M.I.O. inference or the whole audit list above. Per-claim response provenance,
 material source disagreement, redaction references, request-wide correlation
-IDs and capability transitions still require their respective producers. The
+IDs still require their respective producers. The
 current chain preserves envelope provenance and exact mismatch reasons; it does
 not claim to implement a claim merger.
 

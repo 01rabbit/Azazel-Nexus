@@ -46,9 +46,10 @@ def test_absent_services_record_handoff_and_reasons(service):
     assert reply["outcome"] != "answered"
     assert reply["reason"]
     assert reply["ledger_seq"] == len(events)
-    assert events[0]["local"] == "local_unavailable"
-    assert events[0]["remote"] == "remote_unavailable"
-    assert "HG-05" in events[0]["local_refusal"]
+    availability = next(e for e in events if e["event_type"] == "mio.entry.availability")
+    assert availability["local"] == "local_unavailable"
+    assert availability["remote"] == "remote_unavailable"
+    assert "HG-05" in availability["local_refusal"]
     decision = next(event for event in events if event["event_type"] == "mio.route.selected")
     assert decision["profile"] == MioProfile.CORE.value
     assert all(candidate["reason"] for candidate in decision["candidates"])
