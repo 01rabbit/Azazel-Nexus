@@ -8,9 +8,11 @@ from pathlib import Path
 
 from .activation import CORE_UNITS
 from .bootstrap_deployment_store import load_bootstrap_deployment
-from .bootstrap_selection_store import load_bootstrap_selection
+from .bootstrap_selection_store import SelectionReadRefused, load_bootstrap_selection
 from .commissioning import propose
-from .commissioning_draft import read_draft_review_inputs, verify_draft_review
+from .commissioning_draft import (
+    DraftInputRefused, DraftRefused, read_draft_review_inputs, verify_draft_review,
+)
 from .hil_preflight import collect_readonly_inventory
 from .installed_files import measure_installed_files
 from .inventory import read_interfaces
@@ -23,8 +25,19 @@ from .model_import import CommissionedModels
 from .model_paths import bounded_read, load_model_trust
 from .operator_flow import NOTICE, Observation, State, evaluate, next_step
 from .operator_store import load_operator_trust
+from .lab_host import is_lab_host
+from .mio_status import status_summary as mio_status, describe as describe_mio
 
 KNOWLEDGE_ROOT = Path("/var/lib/azazel/knowledge")
+
+
+def _permission_denied():
+    # Root can be denied too (read-only mount, LSM); do not advise what it already is.
+    if os.geteuid() == 0:
+        return Observation(State.REFUSED, "permission denied even as root",
+                           "none available; inspect mount and security policy")
+    return Observation(State.REFUSED, "not readable by this user (run as root)",
+                       "none available; run this read-only command as root")
 
 
 def add_parser(sub):
@@ -52,6 +65,12 @@ def collect(args, *, now, root=None):
         try:
             detail = reader()
             observations[name] = Observation(State.COMPLETE, detail or reason, command)
+        except PermissionError:
+            observations[name] = _permission_denied()
+        except DraftInputRefused as error:
+            observations[name] = Observation(State.REFUSED, error.reason, command)
+        except DraftRefused:
+            observations[name] = Observation(State.REFUSED, "signed draft signature or current binding refused", command)
         except Exception:  # noqa: BLE001 - read failures cannot become success or disclose inputs
             observations[name] = Observation(State.REFUSED, reason + "; read/verification refused", command)
 
@@ -63,6 +82,8 @@ def collect(args, *, now, root=None):
                 reason + ("; missing: " + ", ".join(missing) if missing else "; present (not verified)"),
                 command,
             )
+        except PermissionError:
+            observations[name] = _permission_denied()
         except OSError:
             observations[name] = Observation(State.REFUSED, reason + "; presence unreadable", command)
 
@@ -125,13 +146,27 @@ def collect(args, *, now, root=None):
         def bootstrap(name=name, filename=filename, reader=reader, command=command):
             presence(name, [path("/etc/azazel/bootstrap/" + filename + ".json")], command,
                      "bootstrap " + filename)
+            if observations[name].state is State.REFUSED:
+                return observations[name]
             if path("/etc/azazel/bootstrap/" + filename + ".pending").exists():
                 return Observation(
                     State.REFUSED, "unfinished publication; inspect retained state before explicit recovery",
                     "azazel-nexus bootstrap-" + filename + "-recover")
             if observations[name].state is State.COMPLETE:
-                observe(name, "azazel-nexus setup", lambda: _read_only(reader),
-                        "protected bootstrap " + filename + " read; no start grant or activation")
+                reason = "protected bootstrap " + filename + " read; no start grant or activation"
+                try:
+                    reader()
+                    observations[name] = Observation(State.COMPLETE, reason, "none required for this read")
+                except PermissionError:
+                    observations[name] = _permission_denied()
+                except SelectionReadRefused as error:
+                    observations[name] = Observation(
+                        State.REFUSED, error.reason,
+                        "none available; requires administrator review of retained per-boot selection and deployment")
+                except Exception:
+                    observations[name] = Observation(
+                        State.REFUSED, reason + "; unreadable or verification refused",
+                        "none available; requires administrator inspection of protected bootstrap state")
             return observations[name]
         _observation(observations, name, bootstrap, command)
 
@@ -223,11 +258,10 @@ def collect(args, *, now, root=None):
         State.OPTIONAL, "Integration broker: " + detail
         + "; informational; Core deterministic; no enforcement readiness",
         "azazel-nexus broker status")
+    mio = mio_status(root=root)
+    observations["mio-configuration"] = Observation(
+        State.OPTIONAL, describe_mio(mio), "azazel-nexus status", mio)
     return observations
-
-
-def _read_only(reader):
-    reader()
 
 
 def _installed(args):
@@ -239,6 +273,8 @@ def _installed(args):
 def _observation(observations, name, reader, command):
     try:
         observations[name] = reader()
+    except PermissionError:
+        observations[name] = _permission_denied()
     except Exception:  # noqa: BLE001 - redact local configuration and fail closed
         observations[name] = Observation(State.REFUSED, "local state unavailable or verification refused", command)
 
@@ -249,12 +285,14 @@ def run(args, *, now, out):
         print(json.dumps({"schema": "azazel-nexus/setup/1", "read_only": True,
                           "error": message}) if args.json else message, file=out)
         return 2
-    steps = evaluate(collect(args, now=now))
+    observations = collect(args, now=now)
+    steps = evaluate(observations, lab_host=is_lab_host())
     selected = (next_step(steps),) if args.next else steps
     if args.json:
         print(json.dumps({"schema": "azazel-nexus/setup/1", "read_only": True,
                           "hg05": "unmeasured", "provider_admission": "blocked",
                           "enforcement_readiness": "not-established", "notice": NOTICE,
+                          "mio": observations["mio-configuration"].details, "lab_host": is_lab_host(),
                           "steps": [asdict(step) for step in selected]}, sort_keys=True), file=out)
     else:
         print(NOTICE, file=out)

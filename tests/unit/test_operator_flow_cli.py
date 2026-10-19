@@ -175,7 +175,7 @@ def test_json_and_next_registration(tmp_path, fixture_host, monkeypatch):
         assert doc["hg05"] == "unmeasured"
         assert doc["provider_admission"] == "blocked"
         assert doc["enforcement_readiness"] == "not-established"
-        assert len(doc["steps"]) == (1 if next_only else 14)
+        assert len(doc["steps"]) == (1 if next_only else 15)
         assert doc["steps"][0]["name"] == "installed-files"
     out = StringIO()
     assert main(["setup", "--next"], out=out) == 0
@@ -301,24 +301,141 @@ def test_manifest_option_error_is_json():
     assert json.loads(out.getvalue())["error"].endswith("together")
 
 
-def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch):
+@pytest.mark.parametrize("denied_at", ["record", "pending"])
+def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch, denied_at):
     original_file = Path.is_file
     original_exists = Path.exists
 
     def is_file(path):
-        if "commissioning" in path.parts:
+        if "commissioning" in path.parts or (denied_at == "record" and path.name in {"deployment.json", "selection.json"}):
             raise PermissionError("private-identity-sentinel")
         return original_file(path)
 
     def exists(path):
-        if path.suffix == ".pending":
+        if denied_at == "pending" and path.suffix == ".pending":
             raise PermissionError("private-identity-sentinel")
         return original_exists(path)
 
     monkeypatch.setattr(Path, "is_file", is_file)
     monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 1000)
     facts = flow.collect(args(), now=NOW, root=tmp_path)
     assert facts["commissioning"].state is State.REFUSED
     assert facts["bootstrap-deployment"].state is State.REFUSED
     assert facts["bootstrap-selection"].state is State.REFUSED
     assert "sentinel" not in repr(facts)
+    for name in ("commissioning", "bootstrap-deployment", "bootstrap-selection"):
+        assert facts[name].reason == "not readable by this user (run as root)"
+        assert "initialize" not in facts[name].command
+        assert "as root" in facts[name].command
+
+
+def test_vm_lab_stale_boot_hg05_json_is_read_only(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus import lab_host
+    from azazel_nexus.bootstrap_selection_store import SelectionReadRefused
+    marker = put(tmp_path, "/etc/azazel-lab/LAB-HOST")
+    monkeypatch.setattr(lab_host, "LAB_HOST_MARKER", marker)
+    monkeypatch.setattr(flow, "is_lab_host", lab_host.is_lab_host)
+    put(tmp_path, "/etc/azazel/bootstrap/selection.json")
+    def stale():
+        raise SelectionReadRefused("boot binding differs from the current boot")
+    monkeypatch.setattr(flow, "load_bootstrap_selection", stale)
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    before = snapshot(tmp_path)
+    out = StringIO()
+    assert main(["setup", "--json"], out=out) == 0
+    doc = json.loads(out.getvalue())
+    assert doc["lab_host"] is True
+    steps = {s["name"]: s for s in doc["steps"]}
+    assert "boot binding differs" in steps["bootstrap-selection"]["reason"]
+    assert all(s["next_command"] != "azazel-nexus setup" for s in steps.values())
+    assert steps["host-preflight"]["status"] == "done"
+    assert steps["host-preflight"]["next_command"] == "azazel-nexus hil-preflight"
+    for name in ("commissioning", "commission-review", "model-import-fetched", "provider-admission"):
+        assert steps[name]["next_command"].startswith("none available")
+        assert "LAB_HOST_MARKER" in steps[name]["reason"]
+    assert doc["mio"]["ceiling"] is None
+    assert "route ledger not readable by this user" in doc["mio"]["availability"]
+    assert steps["provider-admission"]["status"] == "blocked"
+    assert snapshot(tmp_path) == before
+
+
+def test_setup_reports_recorded_mio_in_text_and_json(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    path = put(tmp_path, ROUTE_LEDGER, b"")
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "occurred_at": "2026-10-19T00:00:00Z",
+                              "reasons": {"profile": "FULL", "resource": "core_reserve_unmeasured",
+                                          "trust": "not-checked", "topology": "no_verified_egress",
+                                          "health": {"local": "unavailable", "remote": "not_admitted"}}})
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    before = snapshot(tmp_path)
+    for options in (["setup"], ["setup", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "not a grant or admission" in text
+        if "--json" in options:
+            reading = json.loads(text)["mio"]
+            assert reading["ceiling"] == "FULL"
+            assert reading["state"] == "CORE"
+        else:
+            assert "recorded ceiling: FULL; capability state: CORE" in text
+        assert "core_reserve_unmeasured" in text
+    assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("complete_host", [True, False])
+def test_lab_next_keeps_completed_evidence_and_explains_stop(monkeypatch, complete_host):
+    from azazel_nexus.operator_flow import ORDER, Observation
+    facts = {name: Observation(State.COMPLETE, "scoped read succeeded", "azazel-nexus status")
+             for name in ORDER}
+    facts["commissioning"] = Observation(State.MISSING, "record absent", "azazel-nexus commission --help")
+    if not complete_host:
+        facts["host-preflight"] = Observation(State.MISSING, "inventory incomplete", "azazel-nexus hil-preflight")
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: facts)
+    monkeypatch.setattr(flow, "is_lab_host", lambda: True)
+    for options in (["setup", "--next"], ["setup", "--next", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "ordered flow stops here" in text
+        assert "unavailable on a lab host (LAB_HOST_MARKER)" in text
+        expected = "commissioning" if complete_host else "host-preflight"
+        if "--json" in options:
+            assert json.loads(text)["steps"][0]["name"] == expected
+        else:
+            assert expected + ": needed" in text
+
+
+def test_setup_redacts_malformed_mio_ledger_in_text_and_json(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    path = put(tmp_path, ROUTE_LEDGER, b"")
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "occurred_at": "2026-10-19T00:00:00Z\x1b[31mprivate",
+                              "reasons": {"profile": "FULL", "unexpected": "private\nvalue"}})
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    for options in (["setup"], ["setup", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "private" not in text and "unexpected" not in text and "\x1b" not in text
+        assert "entryd credentials are not read" in text
+        if "--json" in options:
+            reading = json.loads(text)["mio"]
+            assert reading["state"] is None and reading["ceiling"] is None
+            assert reading["reasons"] == {} and reading["observed_at"] is None
+
+
+def test_permission_denied_as_root_does_not_advise_running_as_root(monkeypatch):
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 0)
+    observation = flow._permission_denied()
+    assert observation.state is State.REFUSED
+    assert "as root" not in observation.command
+    monkeypatch.setattr(flow.os, "geteuid", lambda: 1000)
+    assert "as root" in flow._permission_denied().command

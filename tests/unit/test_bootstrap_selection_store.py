@@ -99,3 +99,14 @@ def test_changed_source_during_observation_refuses(selected, monkeypatch, source
         monkeypatch.setattr(store, "read_boot_id", lambda: next(values))
     with pytest.raises(ApprovalRefused):
         store.load_bootstrap_selection()
+
+
+def test_stale_boot_reason_is_redacted_and_read_only(selected, monkeypatch):
+    _root, path, _deployment, selection = selected
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    monkeypatch.setattr(store, "read_boot_id", lambda: "00000000-0000-0000-0000-000000000000")
+    with pytest.raises(store.SelectionReadRefused) as caught:
+        store.load_bootstrap_selection()
+    assert caught.value.reason == "boot binding differs from the current boot"
+    assert selection.boot_id not in str(caught.value)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before

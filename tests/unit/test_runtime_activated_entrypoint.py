@@ -305,6 +305,8 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
                     and isinstance(node.exc.args[0], ast.Constant)
                     and type(node.exc.args[0].value) is str):
                 found.add(node.exc.args[0].value)
+    from azazel_nexus.bootstrap_selection_store import SELECTION_READ_REASONS
+    found.update("protected bootstrap selection refused: " + reason for reason in SELECTION_READ_REASONS)
     found.add("bootstrap helper readiness lost")  # bootstrap._READINESS_LOST
     found = {m for m in found if "/" not in m and "{" not in m}
     assert activated._STATIC_FAILURE_MESSAGES == found
@@ -379,3 +381,22 @@ def test_failure_label_stops_at_unreviewed_cause() -> None:
             raise ApprovalRefused("bootstrap selection required") from inner
     except ApprovalRefused as exc:
         assert activated._failure_label(exc) == "ApprovalRefused: bootstrap selection required"
+
+
+def test_selection_failure_labels_preserve_each_reviewed_cause():
+    from azazel_nexus.bootstrap_selection_store import SELECTION_READ_REASONS, SelectionReadRefused
+    import pytest
+
+    for reason in SELECTION_READ_REASONS:
+        assert activated._failure_label(SelectionReadRefused(reason)) == (
+            "SelectionReadRefused: protected bootstrap selection refused: " + reason)
+    with pytest.raises(ValueError, match="unreviewed selection read reason"):
+        SelectionReadRefused("private\x1b[31m")
+    # Exact types and static messages remain required, even after construction.
+    class Derived(SelectionReadRefused):
+        pass
+    reason = next(iter(SELECTION_READ_REASONS))
+    assert activated._failure_label(Derived(reason)) == "Derived"
+    error = SelectionReadRefused(reason)
+    error.args = ("private detail",)
+    assert activated._failure_label(error) == "SelectionReadRefused"

@@ -51,3 +51,25 @@ def test_flow_has_no_io_or_runtime_imports():
     modules += [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     assert not any(name.split(".")[0] in {"socket", "subprocess", "os", "pathlib", "azazel_nexus_runtime"}
                    for name in modules)
+
+
+@pytest.mark.parametrize("name", ["host-preflight", "commissioning", "commission-review", "model-import-fetched"])
+def test_lab_keeps_complete_reads_and_advances(name):
+    facts = populated()
+    step = next(step for step in evaluate(facts, lab_host=True) if step.name == name)
+    assert step.status == "done"
+    assert step.reason == facts[name].reason
+    assert step.next_command == facts[name].command
+    assert next_step(evaluate(facts, lab_host=True)).name == "provider-admission"
+
+
+@pytest.mark.parametrize("state", [State.MISSING, State.REFUSED, State.UNKNOWN, State.OPTIONAL])
+def test_lab_preserves_noncomplete_state_and_explains_ordered_stop(state):
+    facts = populated()
+    facts["host-preflight"] = Observation(state, "inventory incomplete", "azazel-nexus hil-preflight")
+    steps = evaluate(facts, lab_host=True)
+    step = steps[1]
+    assert step.status == evaluate(facts)[1].status
+    assert "unavailable on a lab host (LAB_HOST_MARKER)" in step.next_command
+    assert ("ordered flow continues" if state is State.OPTIONAL else "ordered flow stops here") in step.reason
+    assert next_step(steps).name == ("provider-admission" if state is State.OPTIONAL else "host-preflight")

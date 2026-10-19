@@ -157,8 +157,8 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
             subject="systemd units",
             healthy=None,
             detail=(
-                "not established: this build ships no daemon and speaks to no "
-                "service manager (docs/hardware-gates.md HG-01)"
+                "not established: runtime service units ship with this build; this read-only "
+                "command does not query the service manager (docs/hardware-gates.md HG-01)"
             ),
         )
     ]
@@ -167,8 +167,8 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
             HealthReport(
                 subject="audit chain",
                 healthy=None,
-                detail="no ledger exists yet at the path given; nothing has "
-                "been recorded on this node",
+                detail=("audit ledger not inspected; no --ledger path supplied" if ledger_path is None
+                        else "no ledger exists at the supplied --ledger path; audit history unknown"),
             )
         )
         return tuple(checks)
@@ -323,9 +323,14 @@ def _render_status(
     edge: Optional[EdgeInspection] = None,
     knowledge: Optional[dict] = None,
 ) -> None:
+    from .lab_host import is_lab_host
+    from .mio_status import describe, status_summary
     _render_profile(report, out)
     print(file=out)
-    print(f"capability state: {report.capabilities.state.value}", file=out)
+    print(describe(status_summary()), file=out)
+    print(file=out)
+    print(f"CLI baseline capability state: {report.capabilities.state.value} "
+          "(fixed CORE component set; no live provider assessment)", file=out)
     print("    continuing: " + ", ".join(report.capabilities.retained), file=out)
     if report.capabilities.lost:
         print("    not available: " + ", ".join(report.capabilities.lost), file=out)
@@ -373,7 +378,19 @@ def _render_status(
     print("next:", file=out)
     if not report.next_actions:
         print("    nothing is outstanding.", file=out)
+    lab_host = is_lab_host()
     for action in report.next_actions:
+        if lab_host and action.command and any(
+                command in action.command for command in (
+                    "azazel-nexus commission", "azazel-nexus hil-preflight",
+                    "azazel-nexus model-import-fetched")):
+            step = next(name for command, name in (
+                ("azazel-nexus commission", "commissioning"),
+                ("azazel-nexus hil-preflight", "host-preflight"),
+                ("azazel-nexus model-import-fetched", "model-import-fetched"),
+            ) if command in action.command)
+            print(f"    {step} step unavailable on a lab host (LAB_HOST_MARKER); requires a non-lab deployment", file=out)
+            continue
         print(f"    {action.summary}", file=out)
         if action.command:
             print(f"        {action.command}", file=out)

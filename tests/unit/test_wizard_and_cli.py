@@ -370,7 +370,7 @@ def test_status_never_prints_a_kernel_name(tmp_path):
 
 
 def test_health_reports_the_service_manager_as_unknown_not_healthy(tmp_path):
-    """This build ships no daemon and speaks to no service manager.
+    """This status read does not query the service manager.
 
     Reporting that as healthy would be the absence of evidence rendered as
     health, which is the failure the hardware-gate register exists for.
@@ -942,7 +942,9 @@ def test_an_absent_data_tier_is_not_a_defect(tmp_path):
 
     text = _status(tmp_path)
     assert "DEFECT" not in text
-    assert "missing" not in text
+    # Missing historical M.I.O. evidence is independent of the optional data tier.
+    assert "missing" not in "\n".join(line for line in text.splitlines()
+                                        if not line.startswith("M.I.O.:"))
 
 
 def test_the_status_screen_says_which_kind_of_gap_each_embedded_feature_has(tmp_path):
@@ -1097,3 +1099,42 @@ def test_a_defect_row_is_marked_on_the_screen(tmp_path):
     assert text.count("DEFECT") == 1, "only the absent embedded feature is a defect"
     # The peer rows are on the same screen and are not marked.
     assert "AZ-04 peer is a capability extension" in text
+
+
+def test_status_vm_lab_guidance_and_unknown_mio(tmp_path, monkeypatch):
+    from azazel_nexus import lab_host
+    marker = tmp_path / "LAB-HOST"
+    marker.touch()
+    monkeypatch.setattr(lab_host, "LAB_HOST_MARKER", marker)
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    code, text = _run(["status"], tmp_path)
+    assert code == 0
+    assert "M.I.O.: recorded ceiling: unknown; capability state: unknown" in text
+    assert "not a grant or admission" in text
+    assert "azazel-nexus commission" not in text
+    assert "commissioning step unavailable on a lab host" in text
+    assert "source: entryd route ledger" in text
+    assert "CLI baseline capability state: CORE (fixed CORE component set; no live provider assessment)" in text
+    assert "\ncapability state:" not in text
+    assert "ships no daemon" not in text
+    assert "no --ledger path supplied" in text
+    assert "the path given" not in text
+
+
+def test_status_reports_recorded_mio_ceiling_without_raising_capability(tmp_path, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    path = tmp_path / ROUTE_LEDGER.lstrip("/")
+    path.parent.mkdir(parents=True)
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "occurred_at": "2026-10-19T00:00:00Z",
+                              "reasons": {"profile": "LITE", "resource": "core_reserve_unmeasured",
+                                          "trust": "not-checked", "topology": "no_verified_egress",
+                                          "health": {"local": "unavailable", "remote": "not_admitted"}}})
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    code, text = _run(["status"], tmp_path)
+    assert code == 0
+    assert "recorded ceiling: LITE; capability state: CORE" in text
+    assert "core_reserve_unmeasured" in text
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before

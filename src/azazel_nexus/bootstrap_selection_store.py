@@ -14,6 +14,28 @@ from .operator_trust import ApprovalRefused
 _PENDING = b"administrator bootstrap selection publication pending\n"
 
 
+SELECTION_READ_REASONS = frozenset({
+    "deployment unreadable or verification refused",
+    "current boot unreadable",
+    "selection unreadable or protection refused",
+    "selection format refused",
+    "boot binding differs from the current boot",
+    "deployment binding differs",
+    "selection or source changed during read",
+    "required bootstrap input missing",
+})
+
+
+class SelectionReadRefused(ApprovalRefused):
+    """Redacted read failure category; never carries boot or identity values."""
+
+    def __init__(self, reason):
+        if type(reason) is not str or reason not in SELECTION_READ_REASONS:
+            raise ValueError("unreviewed selection read reason")
+        self.reason = reason
+        super().__init__("protected bootstrap selection refused: " + reason)
+
+
 class SelectionDurabilityUncertain(ApprovalRefused):
     """Selection may be readable but final directory durability is unknown."""
 
@@ -133,14 +155,22 @@ def load_bootstrap_selection():
     No creation, latest-number inference, UUID generation or approval parsing.
     A local administrator record is not an independent rollback anchor.
     """
+    reason = "deployment unreadable or verification refused"
     try:
         declaration = load_bootstrap_deployment()
+        reason = "current boot unreadable"
         boot = read_boot_id()
+        reason = "selection unreadable or protection refused"
         with _bootstrap_directory() as fd:
             identity = os.fstat(fd)
             raw = _read_at(fd, owner=0)
+            reason = "selection format refused"
             selection = decode_bootstrap_selection(raw)
+            if selection.boot_id != boot:
+                raise SelectionReadRefused("boot binding differs from the current boot")
+            reason = "deployment binding differs"
             bind_bootstrap_selection(selection, deployment=declaration, boot_id=boot)
+            reason = "selection or source changed during read"
             with _bootstrap_directory() as current:
                 fresh = os.fstat(current)
                 if ((identity.st_dev, identity.st_ino) != (fresh.st_dev, fresh.st_ino)
@@ -149,5 +179,11 @@ def load_bootstrap_selection():
             if read_boot_id() != boot or load_bootstrap_deployment() != declaration:
                 raise ApprovalRefused("bootstrap selection source changed")
             return selection
+    except SelectionReadRefused:
+        raise
+    except FileNotFoundError:
+        raise SelectionReadRefused("required bootstrap input missing") from None
+    except (OSError, ApprovalRefused):
+        raise SelectionReadRefused(reason) from None
     except Exception:
         raise ApprovalRefused("protected bootstrap selection refused") from None
