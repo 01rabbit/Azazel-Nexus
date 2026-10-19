@@ -62,6 +62,8 @@ def run_all(harness: Harness) -> None:
                   requires=("install files", "Knowledge Lite offline import"))
     harness.stage("Core reserve input path", lambda: _core_reserve_path(harness))
     harness.stage("Integration broker", lambda: _integration_broker(harness))
+    harness.stage("integrated defensive loop", lambda: _integrated_loop(harness),
+                  requires=("Knowledge Lite offline import", "install accounts"))
 
 
 def _install_files(harness: Harness) -> str:
@@ -1354,3 +1356,9 @@ def _integration_broker(harness: Harness) -> str:
     assert all(row["state"] == "disabled" for row in broker.status(now=NOW)["adapters"])
     broker.ledger.verify()
     return "signed telemetry admission, sanitized routing, lease-gated intent, transport refusal, withdrawal; audit verified; HIL not covered"
+
+
+def _integrated_loop(harness: Harness) -> str:
+    from tools.e2e_loop import integrated_loop
+
+    return integrated_loop(harness)

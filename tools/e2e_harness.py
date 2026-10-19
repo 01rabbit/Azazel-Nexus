@@ -17,6 +17,7 @@ import grp
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,7 +108,8 @@ MAX_ROOT_BYTES = 107 - LONGEST_DECLARED_SOCKET
 
 
 class Harness:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, edge_core: Path | None = None,
+                 edge_redirect_policy: Path | None = None) -> None:
         encoded = str(root).encode("utf-8")
         if len(encoded) > MAX_ROOT_BYTES:
             raise ValueError(
@@ -117,6 +119,8 @@ class Harness:
                 "Choose a shorter root"
             )
         self.root = root
+        self.edge_core = edge_core
+        self.edge_redirect_policy = edge_redirect_policy
         self.report = Report()
         self.env = {
             **os.environ,
@@ -212,12 +216,30 @@ def request(path: Path, document: dict) -> dict:
             os.setegid(original_gid)
 
 
+def account_credentials(account: str) -> dict:
+    """Child-only credentials, including the shipped unit's supplementary groups."""
+    import pwd
+    from azazel_nexus_runtime.hardening import PROFILES
+
+    if os.geteuid() != 0:
+        raise NotExecuted("running real service accounts requires root")
+    entry = pwd.getpwnam(account)
+    profile = next(p for p in PROFILES if p.account == account)
+    groups = set(os.getgrouplist(account, entry.pw_gid))
+    groups.update(grp.getgrnam(name).gr_gid for name in profile.supplementary_groups)
+    return {"user": entry.pw_uid, "group": entry.pw_gid, "extra_groups": sorted(groups)}
+
+
 class Daemon:
     """One daemon as a real subprocess, stopped in bounded time."""
 
-    def __init__(self, harness: Harness, module: str, socket_name: str) -> None:
+    def __init__(self, harness: Harness, module: str, socket_name: str, *,
+                 account: str | None = None, ready_path: Path | None = None,
+                 deadline: float | None = None) -> None:
         self.harness = harness
         self.module = module
+        self.account, self.deadline = account, deadline
+        self.ready_path = ready_path
         # Each daemon binds inside its own leaf directory (runtime_paths).
         self.path = (
             harness.root / "var/lib/azazel/run" / socket_name / f"{socket_name}.sock"
@@ -225,28 +247,47 @@ class Daemon:
         self.process: Optional[subprocess.Popen] = None
 
     def __enter__(self) -> "Daemon":
+        command = [sys.executable, "-m", f"azazel_nexus_runtime.{self.module}"]
+        if self.account and self.module in {"auditd", "knowledge_lited", "mio_entryd"}:
+            # Their mains expose a stop predicate. Exercise orderly serve-loop
+            # cleanup without adding a signal/configuration hook to the product.
+            command = [sys.executable, "-c",
+                       "import signal, threading; from azazel_nexus_runtime import "
+                       f"{self.module} as daemon; "
+                       "stopped = threading.Event(); "
+                       "signal.signal(signal.SIGTERM, lambda *_: stopped.set()); "
+                       "raise SystemExit(daemon.main(stop=stopped.is_set))"]
+        env = self.harness.env
+        if self.account:
+            # Only what a unit would set; not the caller's NOTIFY_SOCKET etc.
+            env = {k: env[k] for k in ("AZAZEL_ROOT", "PYTHONPATH", "PATH", "LANG") if k in env}
+        # A file, not an unread pipe a chatty daemon could fill and block on.
+        self.output = tempfile.TemporaryFile()
         self.process = subprocess.Popen(
-            [sys.executable, "-m", f"azazel_nexus_runtime.{self.module}"],
-            env=self.harness.env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            command,
+            env=env,
+            stdout=self.output,
+            stderr=subprocess.STDOUT,
+            **(account_credentials(self.account) if self.account else {}),
         )
-        deadline = time.monotonic() + STARTUP_DEADLINE_SECONDS
+        own = time.monotonic() + STARTUP_DEADLINE_SECONDS
+        deadline = min(own, self.deadline if self.deadline is not None else float("inf"))
         while time.monotonic() < deadline:
-            if self.path.exists():
+            if (self.ready_path or self.path).exists():
                 return self
             if self.process.poll() is not None:
-                _, err = self.process.communicate()
+                self.output.seek(0)
+                err = self.output.read()
+                self.output.close()
                 raise RuntimeError(
                     f"{self.module} exited before binding: "
                     f"{err.decode('utf-8', 'replace').strip()[:400]}"
                 )
             time.sleep(0.02)
         self.__exit__()
-        raise RuntimeError(
-            f"{self.module} did not bind {self.path} within "
-            f"{STARTUP_DEADLINE_SECONDS:.0f}s"
-        )
+        limit = (f"within {STARTUP_DEADLINE_SECONDS:.0f}s" if deadline == own
+                 else "before the stage's shared deadline")
+        raise RuntimeError(f"{self.module} did not create {self.ready_path or self.path} {limit}")
 
     def __exit__(self, *exc) -> None:
         if self.process is None:
@@ -257,5 +298,7 @@ class Daemon:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=5)
+        finally:
+            self.output.close()
 
 

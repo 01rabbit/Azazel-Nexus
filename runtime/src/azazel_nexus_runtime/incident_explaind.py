@@ -238,7 +238,10 @@ class Explainer:
         value = self.snapshot()
         content = {k: v for k, v in value.items() if k != "written_at"}
         now = self.monotonic()
-        if content == self._status_value or now - self._status_at < 5:
+        # Like recent.json: rewrite unchanged content every 20 s, so an idle
+        # explainer reads as alive rather than as an expired snapshot.
+        if now - self._status_at < 5 or (content == self._status_value
+                                         and now - self._status_at < 20):
             return
         self._status_at = now
         try:
