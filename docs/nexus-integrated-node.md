@@ -12,8 +12,10 @@ Detect -> Understand -> Decide -> Delay / Isolate / Redirect -> Explain -> Audit
 
 AZ-04 Azazel-Knowledge and AZ-06 Azazel-Deception are capacity extensions. They increase the depth, history, and engagement endurance of a complete Nexus; they do not supply capabilities that the core deployment lacks.
 
-How the pieces below are connected without moving any authority is planned in
-[the integrated defensive loop](integration-loop.md).
+How the pieces below are connected without moving any authority is described
+in [the integrated defensive loop](integration-loop.md): I0–I3 are implemented
+(Edge Core observe-only, intake, explanation, operator status and audit), and
+the redirect to a decoy (I4) waits for Edge.
 
 ## Integrated topology
 
@@ -154,7 +156,8 @@ observation role, no independent management path, or no proven decoy isolation
 is observe-only. See [capability model](capability-model.md) and
 [commissioning](commissioning.md).
 
-Persistent content is separated under `/data/` by retention domain:
+Persistent content is separated by retention domain. The target layout is a
+`/data/` tier:
 
 ```text
 /data/evidence/          /data/audit/              /data/models/
@@ -162,14 +165,42 @@ Persistent content is separated under `/data/` by retention domain:
 /data/cache/
 ```
 
-The module manager owns capability discovery, signature/compatibility verification, state reporting, and safe handoff between embedded and external services. It does not grant an external module control-plane access. A practical service set includes:
+What is implemented today uses installer-owned leaves under `/var/lib/azazel/`
+instead (`runtime/src/azazel_nexus_runtime/runtime_paths.py`): Edge evidence in
+`edge-intake/`, the incident ledger in `edge-incidents/`, explanations in
+`incident-explain/`, the audit chain in `state/audit/`, Knowledge Lite in
+`knowledge/` and models in `models/`. Only mission packs
+(`/data/azazel/mission-packs`) and the Deception Lite root
+(`/data/azazel/deception-lite`) are named under `/data/`.
+
+The module manager owns capability discovery, signature/compatibility verification, state reporting, and safe handoff between embedded and external services. It does not grant an external module control-plane access.
+
+The units Nexus ships today (`packaging/systemd/`) for the embedded loop are:
 
 ```text
-azazel-knowledge-lite.service
-azazel-deception-lite.service
-azazel-module-manager.service
-azazel-context-merger.service
+azazel-edge-core.service          Edge Core, observe-only (EDGE_BASELINE tier)
+azazel-edge-probed.service        Edge package health and running probe
+azazel-edge-intaked.service       receive-only Edge findings intake
+azazel-incident-explaind.service  local incident explanation and audit forwarding
+azazel-knowledge-lited.service    Knowledge Lite read service
+azazel-mio-entryd.service         M.I.O. routing entry
+azazel-mio-locald.service         local model runtime host
+azazel-auditd.service             audit ledger
 ```
+
+alongside the control units (`azazel-activated`, `azazel-commissiond`,
+`azazel-watchdog`, `azazel-model-fetchd`, `azazel-mio-remoted`). Every unit
+except the activation controller is installed masked and preset-disabled
+(`packaging/install.sh`, `packaging/azazel-nexus.preset`) and enabled only when
+activation admits it.
+
+**Planned, not implemented:** a Deception Lite unit (the runtime is
+loopback-only, see integration-loop I4), a module-manager unit, and a
+context-merger unit. Names such as `azazel-deception-lite.service`,
+`azazel-module-manager.service` and `azazel-context-merger.service` are
+placeholders; no such unit exists in `packaging/systemd/`, and
+`activation.CORE_UNITS` assigns enforcement, Deception Lite and module-manager
+units to slices that are not built yet.
 
 ## Operator visibility
 
@@ -184,6 +215,12 @@ DECEPTION   LITE / LITE + FULL
 ```
 
 This makes extension loss legible without suggesting that the node itself has ceased to be operational.
+
+The screen above is the target. What exists today is the console
+`azazel-nexus status`: the six-axis [integration view](integration-display.md),
+followed by a separate `edge loop:` section (intake and explainer liveness,
+recent incidents shown as "Edge would … (observe-only, not executed)" with
+their citations) that never changes an axis.
 
 ## Design invariant
 

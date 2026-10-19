@@ -6,8 +6,11 @@ It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a
 deliberately empty required-dependency list, a unit suite, and an exact
 **Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`, ADR-0001), consumed
 through one boundary module. One mapping is attested by that boundary —
-capability/mode publication; every other contract mapping remains a design
-assertion awaiting a conformance attestation, not verified evidence.
+capability/mode publication, which production `azazel-nexus status` now calls
+(integrated loop I3). The Edge evidence pointer has a tested projection onto
+`schema.evidence.EvidenceRef` with no production caller (I1). Every other
+contract mapping remains a design assertion awaiting a conformance attestation,
+not verified evidence. See [the integrated defensive loop](integration-loop.md).
 
 Related: [Azazel program plan](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-program-plan.md) ·
 [R0 baseline](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-r0-baseline.md) ·
@@ -35,8 +38,9 @@ A record is therefore classified exactly one of:
 - **Fabric-owned (available)** — a model observed in Azazel-Fabric `main`
   during the R0 audit. Nexus consumes it behind an exact release pin.
   "Available" means the model exists in Fabric. It does **not** mean the
-  mapping in §3 has been tested: no Nexus adapter, pin, or conformance run
-  exists yet, so every stated fit is a design assertion awaiting a conformance
+  mapping in §3 has been tested: unless its row names a projection and the
+  test that checks it against the pin, no Nexus adapter or conformance run
+  covers it, so every stated fit is a design assertion awaiting a conformance
   attestation, not verified evidence. A mapping that fails conformance is
   corrected here, not worked around with a Nexus-local copy.
 - **Fabric-owned (target, R1)** — a model the program plan assigns to Fabric
@@ -94,9 +98,9 @@ that the program plan assigns to those modules is therefore a target contract.
 | --- | --- | --- | --- |
 | enforcement intent issued by the arbiter | Fabric | `schema.action.ActionIntent` + plan variants | Fabric-owned (available) |
 | operator-facing decision explanation | Fabric | `schema.decision.DecisionExplanation` | Fabric-owned (available) |
-| evidence citation carried by any advisory record | Fabric | `schema.evidence.EvidenceRef` | Fabric-owned (available) |
+| evidence citation carried by any advisory record | Fabric | `schema.evidence.EvidenceRef` | Fabric-owned (available); Edge evidence pointer projected by `fabric_boundary.project_edge_evidence` and checked against the pin in `tests/unit/test_edge_intake_fabric.py`; **not called in production** — intake stores its own digest and never needs Fabric, and no advisory record carries an `EvidenceRef` yet |
 | audit envelope and canonical bytes | Fabric | `schema.audit.AuditEvent`, `audit.jsonl` | Fabric-owned (available) |
-| capability/mode publication to the UI | Fabric | `schema.mode.ModeState`, `schema.state.StateSnapshot`, `view.status.StatusView` | Fabric-owned (available) |
+| capability/mode publication to the UI | Fabric | `schema.mode.ModeState`, `schema.state.StateSnapshot`, `view.status.StatusView` | Fabric-owned (available); `ModeState` and `StatusView` **attested** by `fabric_boundary.project_capability` (`tests/unit/test_fabric_boundary.py`) and called by production `azazel-nexus status` (`fabric status view:` line, `edge_loop_status.render_fabric_status`); `StateSnapshot` not projected |
 | trust material presentation | Fabric | `schema.trust.TrustCapsule` | Fabric-owned (available) |
 | operator alert payload | Fabric | `notify.model.NotificationEvent` | Fabric-owned (available) |
 | hash-chain ledger segments, checkpoint signing, ledger genesis linkage | **Nexus-local** | — | Nexus performs chain enforcement; Fabric supplies the event projection only |
@@ -276,9 +280,18 @@ consumed through one boundary module ([ADR-0001](adr/0001-fabric-pin.md)).
 
 One §3.1 row is attested by that boundary — capability/mode publication through
 `ModeState` and `StatusView`, checked in `tests/unit/test_fabric_boundary.py`
-against the pinned models rather than asserted here. Every other row in §3 is
-unchanged: **a bound pin is what makes an attestation possible, not an
-attestation.**
+against the pinned models rather than asserted here. Since integrated-loop I3
+production status calls that projection and prints only `projected (v0.9.0rc5)`,
+`not available (extra not installed)` or `refused (projection_refused)`; an
+absent extra never changes the capability shown. The Edge evidence pointer
+(`project_edge_evidence`, I1) is tested against the pinned `EvidenceRef` but
+has no production caller, so it is not counted as an attested row. The modules
+a capability projection needs are `REQUIRED_FABRIC_MODULES` (`view`,
+`schema.mode`, `schema.evidence`); `PLANNED_FABRIC_MODULES` (`cti_contracts`,
+`deception_contracts`, `mio_contracts`) are mapped in §3 and consumed by no
+Nexus code — the integrated loop's Knowledge citations and M.I.O. frames use
+Nexus-local shapes, not those families. Every other row in §3 is unchanged:
+**a bound pin is what makes an attestation possible, not an attestation.**
 
 `tests/unit/test_repository_status_claims.py` exists because the two closed
 rows above stayed in seven documents after they were closed — and it is what

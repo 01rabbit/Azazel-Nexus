@@ -50,6 +50,24 @@ Leaving it out would have left one optional component whose failure nothing
 tests — and would have read as though that component were out of scope. It is
 not.
 
+## Integrated Edge loop components (outside the generated table)
+
+The [integrated defensive loop](integration-loop.md) adds intake
+(`azazel-edge-intaked`) and the incident explainer
+(`azazel-incident-explaind`). They are **not conditions in `MATRIX`**, so the
+tables here do not render them; what holds when either stops comes from the
+units and the status reader instead:
+
+| Component down | What continues | What status shows |
+| --- | --- | --- |
+| intake | Edge Core keeps detecting and deciding: `azazel-edge-core.service` has no dependency on intake, and nothing in Nexus is in Edge's decision path | `edge loop:` → `intake: unavailable (snapshot absent or refused)`, or `stale (snapshot expired)` when the last snapshot is older than 30 s; the six axes and the Edge axis (from the probe) do not change |
+| explainer | Edge Core and intake continue; evidence and incident transitions are still recorded. Explanation and audit forwarding stop, and on restart the explainer resumes from its cursor | `explainer: unavailable (snapshot absent or refused)` or `stale (snapshot expired)`; recent incidents stop updating |
+| M.I.O. or Knowledge Lite, with the explainer up | the explainer records an explanation of missing context; nothing upstream changes | `last attempt: mio unavailable` / `knowledge unavailable` |
+
+A stale snapshot means stale observation, not proof that the process stopped.
+None of these is an `edge_core_absent` cell: the deterministic path does not
+pass through either component.
+
 ## The five failure modes
 
 | Mode | Disposition | What it means |

@@ -25,8 +25,8 @@ suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`,
 ADR-0001), consumed through one boundary module. One mapping is attested by
 that boundary — capability/mode publication; every other contract mapping
 remains a design assertion awaiting a conformance attestation, not verified
-evidence. Nothing below is implemented or
-verified here.
+evidence. Except for the integrated Edge loop (§2.1) and the rows in §6 that
+name an implementation, nothing below is implemented or verified here.
 
 The rc3/rc4 fixes to `effect_contracts` references and authority classes are
 already relied on by Edge and Deception; rc2 → rc5 changes only
@@ -77,6 +77,30 @@ See [commissioning](commissioning.md) and [capability model](capability-model.md
 Nexus does not invoke or inherit Azazel-Edge's device-specific network
 installer, its NIC fixed values, or its unit defaults. Edge is consumed as a
 released, signed package behind an explicit adapter.
+
+### 2.1 What runs today: the Edge → Nexus data flow
+
+The diagram above is the target. The part that is implemented is the
+[integrated defensive loop](integration-loop.md) (I0–I3), and every
+connection in it carries data from Edge to Nexus only:
+
+```text
+Suricata eve.json
+  -> azazel-edge-core.service     Edge's verified binary, observe-only, Nexus-owned unit
+  -> intake socket (AF_UNIX, one JSON line per alert)
+  -> azazel-edge-intaked          closed parse; evidence store + incident ledger
+  -> azazel-incident-explaind     reads the incident ledger
+       -> mio.advise (azazel-mio-entryd)        P3-restricted frame, local only
+       -> knowledge.lookup (azazel-knowledge-lited)  by the event's technique ids
+  -> explanation records, recent.json, `azazel-nexus status` (`edge loop:`)
+  -> audit.append (azazel-auditd)  edge.incident.opened|escalated|closed, best effort
+```
+
+Edge Core decides; Nexus records that decision as Edge's and shows it as
+"Edge would …" because the shipped posture is observe-only. Nothing in Nexus
+writes to Edge, signals it or changes its configuration. Enforcement,
+decision signing keys and a reachable decoy are I4 prerequisites that the
+loop document lists; none of them exists here.
 
 ## 3. Core node: AZ-01 Azazel-Edge
 
@@ -184,16 +208,16 @@ The user interface and service implementations are replaceable behind stable con
 
 | Boundary | Contract owner | Implementations may vary |
 | --- | --- | --- |
-| Sensor input | Nexus-local ingest envelope | Suricata, interface monitor, mission sensors |
-| Evidence citation | **Fabric** `schema.evidence` | local encrypted store, replicated store |
+| Sensor input | Nexus-local ingest envelope; implemented for Edge Core's `rust_event_engine_v1` events by `azazel_nexus.edge_intake` (closed, bounded parse) | Edge Core over the intake socket; other sensors target |
+| Evidence citation | **Fabric** `schema.evidence` — `EvidenceRef` projection of an Edge evidence record exists (`fabric_boundary.project_edge_evidence`) but nothing calls it in production; the stored record is Nexus-local (content digest, append-only daily segments) | local evidence store under `/var/lib/azazel/edge-intake`; replicated store target |
 | Evaluation | Nexus-local assessment; **Fabric** `schema.decision` for the operator-facing explanation | rules engine, approved analyzers |
 | Enforcement | **Fabric** `schema.action` intent and plans; Nexus owns the receipt and lease state | nftables, tc, route/bridge adapter |
-| Knowledge context | **Fabric** `cti_contracts` | Knowledge Lite cache, AZ-04 full node |
+| Knowledge context | **Fabric** `cti_contracts` — *mapped, not adopted*; today the explainer's `knowledge.lookup` by technique id returns citations checked by Nexus-local `lite_import.read_knowledge_refs` | Knowledge Lite (`azazel-knowledge-lited`); AZ-04 full node target |
 | Deception | **Fabric** `deception_contracts` | Deception Lite runtime, AZ-06 full host |
 | Cognition | **Fabric** `mio_contracts` — *published in the pinned Fabric, not adopted here* | local model, remote provider, deterministic fallback |
-| Operator UI | **Fabric** `view.status`; Nexus owns sessions and approval handling | touchscreen, external console, API client |
+| Operator UI | **Fabric** `view.status`; Nexus owns sessions and approval handling. `azazel-nexus status` prints the six-axis view, a `fabric status view:` line from `project_capability` (`ModeState`/`StatusView`), and the `edge loop:` section | console (`azazel-nexus status`) today; touchscreen and API client target |
 | Alerts | **Fabric** `notify.model`; Nexus owns the priority queue | local audio, visual UI, optional relay |
-| Audit | **Fabric** `schema.audit` envelope; Nexus owns chain enforcement and anchoring | append-only ledger, signed checkpoints |
+| Audit | **Fabric** `schema.audit` envelope (not yet projected); Nexus owns chain enforcement and anchoring. The chain is Nexus-local (`azazel_nexus.audit`); auditd accepts `edge.incident.opened\|escalated\|closed` only from the explainer's uid | append-only ledger (auditd) plus the intake's own incident ledger; signed checkpoints target |
 | Provisioning and commissioning | **Fabric** `provisioning_contracts` — *published in the pinned Fabric; `InterfaceIdentity` consumed, the rest not adopted*; Nexus owns admission, rendering, and activation | inventory, commissioning record, generation |
 
 No interface allows a renderer, model, or module to bypass the arbiter. Backend selection is made at deployment configuration time and recorded in the system inventory.
