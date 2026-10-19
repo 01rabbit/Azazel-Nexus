@@ -575,7 +575,8 @@ def test_the_state_list_covers_a_crash_and_a_rollback():
     assert len(LOCAL_RUNTIME_STATES) == len(set(LOCAL_RUNTIME_STATES))
 
 
-def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
+@pytest.mark.parametrize('lookup_state', ['available', 'empty', 'unavailable', 'exhausted'])
+def test_trusted_reference_delivery_and_lookup_failures(tmp_path, monkeypatch, lookup_state):
     from types import SimpleNamespace
 
     from azazel_nexus.reasoning_playbook import read_library
@@ -588,21 +589,55 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path):
         calls.append(request)
         return SimpleNamespace(text='A' if len(calls) % 2 else 'C')
     (tmp_path / 'fixture.model').write_bytes(b'GGUF' + b'\0' * 4096)
+    from azazel_nexus.lite_import import KnowledgeRef
+    from dataclasses import asdict
+    from azazel_nexus.local_advisory import read_delivered
+    from azazel_nexus_runtime.knowledge_client import KnowledgeUnavailable
+
+    ref = KnowledgeRef('T1110.003', 'Password spraying', 'Reference only', 'T1110.003',
+                       'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+    budgets = []
+    clock = [100.0]
+    monkeypatch.setattr(mio_locald.time, 'monotonic', lambda: clock[0])
+    from azazel_nexus_runtime import mio_embedding
+    original = mio_embedding.retrieve
+    def retrieve(*args, **kwargs):
+        result = original(*args, **kwargs)
+        clock[0] += 1.0 if lookup_state == 'exhausted' else 0.1
+        return result
+    monkeypatch.setattr(mio_embedding, 'retrieve', retrieve)
+    def lookup(ids, *, deadline_s):
+        assert ids == ('T1110.003',)
+        budgets.append(deadline_s)
+        if lookup_state == 'unavailable':
+            raise KnowledgeUnavailable()
+        return (ref,) if lookup_state == 'available' else ()
     service = mio_locald.LocalRuntimeService(
         staging=tmp_path, reserve=object(), admitted=lambda _: True, model_id='fixture',
         runtime_id='fixture', runtime=lambda _: object(), server=SimpleNamespace(infer=infer),
-        playbooks=library, knowledge_lookup=lambda _: pytest.fail('unbounded lookup'))
+        playbooks=library, knowledge_lookup=lookup)
     request = SimpleNamespace(verb=mio_locald.INFER_VERB, payload=frame,
                               arguments={'deadline_ms': 1000})
     events = []
     reply = service.handle(request, audit=events.append)
+    if lookup_state == 'exhausted':
+        assert reply == {'outcome': 'timed_out', 'refusal': 'deadline'}
+        assert budgets == []
+        assert any(e.get('knowledge') == 'skipped_budget_exhausted' for e in events)
+        return
     assert reply['outcome'] == 'advisory'
     assert reply['candidate'] == {'option_id': 'auth-password-spraying', 'kind': 'playbook'}
     assert reply['provenance']['playbooks_reviewed'] is False
     assert reply['match_evidence'][0]['technique_ids'] == ['T1110.003']
-    assert 'playbook' not in reply and 'knowledge' not in reply
+    assert budgets == [pytest.approx(0.9 - mio_locald.DELIVERY_RESERVE_S)]
+    expected = [asdict(ref)] if lookup_state == 'available' else None
+    assert read_delivered(reply).get('knowledge') == expected
+    assert 'Reference only' not in str(reply['fields'])
+    assert 'Reference only' not in reply['advice']
+    assert 'cited_facts' in reply['fields']
     assert len(calls) == 0  # optional explanation skipped below one second
-    assert any(e.get('knowledge') == 'skipped_deadline_contract' for e in events)
+    expected_state = 'no_context' if lookup_state == 'empty' else lookup_state
+    assert any(e.get('knowledge') == expected_state for e in events)
     assert 'many accounts' not in str(events)
     frame.update(question='How do I bake bread?', context=[])
     assert service.handle(request)['reason'] == 'out_of_scope'

@@ -10,10 +10,10 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
@@ -49,7 +49,7 @@ from azazel_nexus.playbook_selection import (
 )
 from azazel_nexus.reasoning_playbook import Library, match, technique_ids
 
-from .knowledge_client import lookup_context
+from .knowledge_client import KnowledgeUnavailable, lookup_context
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import (
@@ -131,6 +131,11 @@ class ActivationReply:
         }
 
 
+class KnowledgeLookup(Protocol):
+    def __call__(self, technique_ids: tuple[str, ...], *,
+                 deadline_s: float) -> Sequence[KnowledgeRef]: ...
+
+
 class LocalRuntimeService:
     """Check readiness or read advice through an explicitly supplied server."""
 
@@ -147,7 +152,7 @@ class LocalRuntimeService:
         server: Any = None,
         runtime: Callable = resolve_runtime,
         playbooks: Library | None = None,
-        knowledge_lookup: Callable[[tuple[str, ...]], Sequence[KnowledgeRef]] | None = None,
+        knowledge_lookup: KnowledgeLookup | None = None,
     ) -> None:
         self._artifact_path = artifact_path
         self._retriever = retriever
@@ -294,9 +299,15 @@ class LocalRuntimeService:
         knowledge_state = "unused"
         ids = technique_ids(frame)
         if self._knowledge_lookup is not None and ids:
-            # Existing lookup has no remaining-budget argument. Skip rather than
-            # allowing an optional synchronous call to overrun the whole deadline.
-            knowledge_state = "skipped_deadline_contract"
+            remaining = began + deadline_ms / 1000 - time.monotonic() - DELIVERY_RESERVE_S
+            if remaining <= 0:
+                knowledge_state = "skipped_budget_exhausted"
+            else:
+                try:
+                    knowledge = tuple(self._knowledge_lookup(ids, deadline_s=remaining))
+                    knowledge_state = "available" if knowledge else "no_context"
+                except KnowledgeUnavailable:
+                    knowledge_state = "unavailable"
         audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
                "playbook_count": len(playbooks), "knowledge": knowledge_state,
                "knowledge_count": len(knowledge)})
@@ -317,7 +328,8 @@ class LocalRuntimeService:
         return {"outcome": "advisory", "refusal": None, **reply}
 
 
-# Reserve delivery time; optional Knowledge must never consume the inference budget.
+# Keep 20 ms for bounded document validation, audit and socket delivery after
+# optional I/O; this is a software budget, not measured hardware latency.
 DELIVERY_RESERVE_S = 0.02
 EXPLANATION_MIN_S = 1.0
 
@@ -346,7 +358,9 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
             dropped = "deadline_short"
         else:
             chosen = next(o for o in options if o["option_id"] == candidate["option_id"])
-            messages = explanation_prompt(frame, chosen, playbooks, knowledge)
+            # Knowledge is displayed as cited context only; it must not become
+            # model wording or apparent evidence for the selected candidate.
+            messages = explanation_prompt(frame, chosen, playbooks)
             try:
                 result = server.infer(LocalInferenceRequest(
                     messages, max_tokens=512, temperature=0,
@@ -372,6 +386,8 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
                                similarities=similarities, state=state, retrieval=retrieval,
                                benign_evidence=support, system_record=record,
                                provenance="model" if explanation else retrieval)
+    if knowledge:
+        reply['knowledge'] = [asdict(ref) for ref in knowledge]
     read_delivered(reply)
     return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
                    "explanation_ms": (time.monotonic() - explanation_began) * 1000,

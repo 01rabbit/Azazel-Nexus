@@ -451,3 +451,25 @@ prediction evidence, an unmeasured HG-05 reserve and a pinned runtime with close
 allowlist. Trusted harnesses can inject admission, predictions and a fake
 server to exercise the path. Availability probes never change these gates;
 the new verbs do not commission a model or alter Edge authority.
+
+
+### Optional local Knowledge context
+
+After admitted local retrieval, locald passes `deadline_s` to the Knowledge
+client: the remaining request budget minus `DELIVERY_RESERVE_S` (20 ms for
+bounded validation, audit and delivery). A nonpositive budget skips lookup with
+`skipped_budget_exhausted`. The client uses one monotonic transport deadline
+across connect, send and receive, without retries; an unavailable or silent
+Knowledge service contributes no context. Exhausting the request budget still
+returns the existing timeout refusal.
+
+Usable references are returned separately under `knowledge`, with
+`source_kind: knowledge_lite`, verified bundle `generation`, `freshness`
+(`current` or `static`), `trust_check: verified`, and the existing citation
+fields. Both socket client and delivery reader validate this bounded schema.
+Trust results describe the lookup's existing signature/revocation checks, not
+an approval. Expired indicators remain withheld by the existing serving filter;
+static reference material remains available. Knowledge is excluded from model
+prompts, prose, candidate selection and authority decisions. Situation quotes
+remain in `fields.cited_facts`, separate from model explanation fields.
+These are software contracts and unit-test results, not hardware evidence.

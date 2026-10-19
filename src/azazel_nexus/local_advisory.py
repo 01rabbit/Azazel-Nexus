@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from ipaddress import IPv6Address
 
 from .advisory_response import Advisory, AdvisoryRefusal, AdvisoryRefused, read_advisory
+from .lite_import import read_knowledge_refs
 from .sanitizer import PrivacyClass
 
 MAX_FRAME_BYTES = 32 * 1024
@@ -644,7 +645,7 @@ def read_delivered(reply):
             text(value['title'], 160)
 
     require(type(reply) is dict and set(reply) <= {
-        'outcome', 'refusal', 'response_digest', 'advice', 'fields', *MACHINE_FIELDS,
+        'outcome', 'refusal', 'response_digest', 'advice', 'fields', 'knowledge', *MACHINE_FIELDS,
     })
     require(all(k in reply for k in ('advice', 'fields', *MACHINE_FIELDS)))
     option(reply['candidate'])
@@ -738,8 +739,11 @@ def read_delivered(reply):
     if reply['explanation_source'] == 'model':
         read_advisory(json.dumps({'fields': {k: reply['fields'][k] for k in model}},
                                  ensure_ascii=False).encode('utf-8'))
+    if 'knowledge' in reply:
+        read_knowledge_refs(reply['knowledge'])
     require(len(json.dumps(reply, ensure_ascii=False).encode('utf-8')) <= 48 * 1024)
-    return {key: reply[key] for key in ('advice', 'fields', *MACHINE_FIELDS)}
+    return {key: reply[key] for key in ('advice', 'fields', *MACHINE_FIELDS, 'knowledge')
+            if key in reply}
 
 
 
