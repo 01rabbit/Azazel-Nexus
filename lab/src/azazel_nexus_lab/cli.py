@@ -170,13 +170,17 @@ def up(root):
 
 
 def audit(root):
-    from azazel_nexus.route_ledger import ROUTE_DIR, RouteChain
+    from azazel_nexus.route_ledger import ROUTE_DIR, RouteChain, verify_archive
 
     chains = {}
     segments = root / ROUTE_DIR.lstrip("/")
     if segments.is_dir():
         # entryd's daily segments (#211 S4): one chain from the retained boundary.
         chains["route"] = {"state": "verified", "head": RouteChain(segments).verify()}
+        # The migrated single file is verified here, offline, never at entryd start.
+        archive = verify_archive(segments)
+        if archive is not None:
+            chains["route-legacy"] = {"state": "verified", "head": archive}
     for name, relative in {
         "route": "var/lib/azazel/state/mio/route.jsonl",
         "local": "var/lib/azazel/mio/local.jsonl", "lite-import": "lite-import.jsonl",

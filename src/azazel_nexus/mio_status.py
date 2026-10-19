@@ -24,13 +24,29 @@ ROUTE_SEGMENTS = ROUTE_DIR
 CAPABILITY_EVENTS = frozenset({"mio.capability.transition", "mio.capability.carried"})
 
 
+def _observed(event):
+    """When a reading was observed: a carried record keeps the original time."""
+    if event.get("event_type") == "mio.capability.carried":
+        return event["observed_at"]
+    return event["occurred_at"]
+
+
 def _last_capability(root):
     """Verify the retained chain once, keeping only the newest capability record."""
     found = []
 
     def visit(entry):
-        if entry.event.get("event_type") in CAPABILITY_EVENTS:
-            found[:] = [entry.event]
+        event = entry.event
+        kind = event.get("event_type")
+        if kind not in CAPABILITY_EVENTS:
+            return
+        # A carried record repeats the reading before it, with that reading's
+        # own observation time; one that differs is refused.
+        if kind == "mio.capability.carried" and found and (
+                found[0]["to"], found[0]["reasons"], _observed(found[0])) != (
+                event.get("to"), event.get("reasons"), event.get("observed_at")):
+            raise ValueError("carried record differs from the reading it carries")
+        found[:] = [event]
 
     directory = root / ROUTE_SEGMENTS.lstrip("/")
     if directory.is_dir():
@@ -69,7 +85,7 @@ def status_summary(*, root=None):
             raise ValueError("invalid transition")
         # Never echo the raw timestamp: fromisoformat accepts arbitrary date/time
         # separators, including control characters. isoformat emits a safe form.
-        observed_at = datetime.fromisoformat(event["occurred_at"]).isoformat()
+        observed_at = datetime.fromisoformat(_observed(event)).isoformat()
         result.update(ceiling=reasons["profile"], state=event["to"], reasons=reasons,
                       observed_at=observed_at, availability="last recorded observation")
     except Exception:  # noqa: BLE001 - no paths, identities or raw exceptions in diagnostics

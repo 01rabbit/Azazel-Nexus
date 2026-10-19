@@ -11,7 +11,12 @@ from azazel_nexus_runtime import mio_entryd as entry
 from azazel_nexus_runtime import mio_socket_client as client
 from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.mio_route_ledger import (
+    CALLER_SHARE,
+    CALLERS_POOL,
+    CONTROL,
     CONTROL_RESERVE,
+    EXPLAINER,
+    EXPLAINER_SHARE,
     REQUEST_HEADROOM,
     RETENTION_BYTES,
     RETENTION_DAYS,
@@ -35,6 +40,7 @@ from azazel_nexus.route_ledger import (
     ROUTE_DIR,
     RouteChain,
     read_boundary,
+    verify_archive,
 )
 
 DAY = 86400
@@ -74,8 +80,11 @@ def state(tmp_path):
 
 
 def test_defaults_are_bounded_and_cover_the_explainer_day():
-    # About 20 MB a day at six advice requests a minute must fit one segment.
-    assert SEGMENT_BYTES - CONTROL_RESERVE - REQUEST_HEADROOM > 20 * 1000 * 1000
+    # About 20 MB a day at six advice requests a minute must fit its own share,
+    # and the shares never add up to more than one segment.
+    assert EXPLAINER_SHARE - REQUEST_HEADROOM > 20 * 1000 * 1000
+    assert EXPLAINER_SHARE + CALLERS_POOL + CONTROL_RESERVE == SEGMENT_BYTES
+    assert CALLER_SHARE < CALLERS_POOL
     assert RETENTION_DAYS == 14
     assert RETENTION_BYTES <= 256 * 1024 * 1024
 
@@ -241,6 +250,9 @@ def test_migration_archives_legacy_and_continues_its_chain(state):
     boundary = read_boundary(route.directory)
     assert (boundary["sequence"], boundary["hash"]) == head
     assert boundary["oldest"] is None and boundary["retired"] == "route.jsonl"
+    assert boundary["legacy"] == {"state": "legacy_unverified", "sequence": head[0],
+                                  "hash": head[1], "size": archive.stat().st_size}
+    assert verify_archive(route.directory) == head
     entry_ = route.append({"event_type": "new"})
     assert (entry_.sequence, entry_.previous_hash) == (head[0] + 1, head[1])
     assert route.verify() == (entry_.sequence, entry_.event_hash)
@@ -253,8 +265,11 @@ def test_migration_finishes_after_a_crash_before_the_rename(state):
     head = legacy.head()
     directory = state / "route"
     directory.mkdir()
+    size = (state / "route.jsonl").stat().st_size
     (directory / BOUNDARY).write_text(json.dumps(
-        {"sequence": head[0], "hash": head[1], "oldest": None, "retired": "route.jsonl"}))
+        {"sequence": head[0], "hash": head[1], "oldest": None, "retired": "route.jsonl",
+         "legacy": {"state": "legacy_unverified", "sequence": head[0], "hash": head[1],
+                    "size": size}}))
     route = ledger(state, Clock())
     route.prepare()
     assert (directory / ARCHIVE).exists() and not (state / "route.jsonl").exists()
@@ -284,21 +299,37 @@ def test_empty_legacy_migrates_to_a_genesis_boundary(state):
     assert route.verify()[0] == 1
 
 
-def test_full_segment_refuses_ordinary_records_and_keeps_the_reserve(state):
-    clock = Clock()
-    route = ledger(state, clock, segment_bytes=REQUEST_HEADROOM + 8192, reserve=4096)
-    assert route.room()
+SMALL = {"explainer_share": REQUEST_HEADROOM + 16384, "caller_share": REQUEST_HEADROOM + 8192,
+         "callers_pool": 2 * REQUEST_HEADROOM + 16384, "reserve": 8192,
+         "segment_bytes": 3 * REQUEST_HEADROOM + 40960}
+
+
+def fill(route, owner):
+    route.owner = owner
     with pytest.raises(RouteSegmentFull):
-        for _ in range(1000):
+        for _ in range(10_000):
             route.append({"event_type": "a", "pad": "x" * 200})
-    assert not route.room()
+    route.owner = None
+
+
+def test_a_spent_share_refuses_only_its_owner(state):
+    clock = Clock()
+    route = ledger(state, clock, **SMALL)
+    fill(route, "uid:1001")
+    assert not route.room("uid:1001")
+    assert route.room("uid:1002") and route.room(EXPLAINER)
+    fill(route, "uid:1002")
+    # The callers' pool is spent; the explainer's share is untouched.
+    assert not route.room("uid:1003")
+    assert route.room(EXPLAINER)
+    fill(route, EXPLAINER)
+    assert not route.room(EXPLAINER)
     size = route.path.stat().st_size
-    route.append({"event_type": "control"}, reserved=True)
-    assert route.path.stat().st_size > size
-    assert route.path.stat().st_size <= REQUEST_HEADROOM + 8192
+    route.append({"event_type": "control"}, reserved=True)  # the control reserve is separate
+    assert size < route.path.stat().st_size <= SMALL["segment_bytes"]
     route.verify()
     clock.advance(DAY)
-    assert route.room()  # a new day is a new budget
+    assert route.room("uid:1001") and route.room(EXPLAINER)  # a new day is a new budget
 
 
 def test_absent_state_directory_is_read_as_empty_and_not_created(tmp_path):
@@ -315,22 +346,39 @@ def test_absent_state_directory_is_read_as_empty_and_not_created(tmp_path):
 # -- entryd ---------------------------------------------------------------
 
 
-@pytest.fixture
-def service(tmp_path, monkeypatch):
+def compose(tmp_path, monkeypatch, *, rate=None, **limits):
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
     monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
-    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_state_dir().mkdir(parents=True, exist_ok=True)
     clock = Clock()
     from azazel_nexus_runtime.mio_router import MioRouter
 
     router = MioRouter(clock=lambda: datetime.fromtimestamp(clock.now, UTC).isoformat())
-    router.ledger = ledger(runtime_paths.mio_state_dir(), clock, days=2)
-    service = entry.MioEntryService(router=router, clock=clock.mono, wall_clock=clock.wall)
+    router.ledger = ledger(runtime_paths.mio_state_dir(), clock, days=2, **limits)
+    service = entry.MioEntryService(
+        router=router, clock=clock.mono, wall_clock=clock.wall,
+        rate=rate(clock) if rate else None)
     service.local.observe = lambda: "local_unavailable"
     service.remote.observe = lambda: "remote_unavailable"
     return service, clock
+
+
+def restart(svc, clock):
+    restarted = entry.MioEntryService(router=svc.router, clock=clock.mono, wall_clock=clock.wall)
+    restarted.local.observe = svc.local.observe
+    restarted.remote.observe = svc.remote.observe
+    return restarted
+
+
+@pytest.fixture
+def service(tmp_path, monkeypatch):
+    return compose(tmp_path, monkeypatch)
+
+
+def unlimited(clock):
+    return entry.PrincipalRate(per_minute=10**9, burst=10**9, clock=clock.mono)
 
 
 def route_request(uid=None):
@@ -364,23 +412,31 @@ def test_sustained_rate_is_above_the_explainers_six_a_minute(service):
     assert not svc.rate_limited
 
 
-def test_rate_limited_refusal_records_are_aggregated(service):
+def test_every_refusal_reason_is_aggregated_per_caller(service):
     svc, clock = service
-    refusal = {"event_type": "runtime.request_refused", "reason": "rate_limited",
-               "request_bytes": 10, "request_fingerprint": "x", "uid": 1001}
-    for _ in range(50):
-        svc.record_refusal(dict(refusal))
+    refusal = {"event_type": "runtime.request_refused", "request_bytes": 10,
+               "request_fingerprint": "x", "uid": 1001}
+    for index in range(50):
+        reason = ("rate_limited", "malformed_frame", "principal_denied")[index % 3]
+        svc.record_refusal({**refusal, "reason": reason})
+    svc.record_refusal({**refusal, "reason": "malformed_frame", "uid": 1002})
     clock.advance(entry.REFUSAL_RECORD_INTERVAL_SECONDS)
-    svc.record_refusal(dict(refusal))
+    svc.record_refusal({**refusal, "reason": "rate_limited"})
     records = [item.event for item in svc.router.ledger
                if item.event["event_type"] == "runtime.request_refused"]
-    assert len(records) == 2
-    assert records[0]["suppressed"] == 0 and records[1]["suppressed"] == 49
+    assert [record["uid"] for record in records] == [1001, 1002, 1001]
+    assert records[0]["suppressed"] == {}
+    assert records[2]["suppressed"] == {"malformed_frame": 17, "principal_denied": 16,
+                                        "rate_limited": 16}
+    # Charged to each caller's own share, never to the explainer's or control.
+    usage = svc.router.ledger.usage
+    assert usage["uid:1001"] > 0 and usage["uid:1002"] > 0
+    assert usage[EXPLAINER] == 0
 
 
 def test_spent_route_budget_is_a_bounded_refusal_and_refusals_never_crash(service, monkeypatch):
     svc, _ = service
-    monkeypatch.setattr(svc.router.ledger, "room", lambda: False)
+    monkeypatch.setattr(svc.router.ledger, "room", lambda key: False)
     with pytest.raises(RequestRefused) as refused:
         svc.handle(route_request(1001))
     assert refused.value.detail == "route_budget"
@@ -412,6 +468,94 @@ def test_each_new_segment_opens_with_the_capability_and_status_survives_retentio
     # A restart restores the carried reading rather than recording a transition.
     restarted = entry.MioEntryService(router=svc.router, clock=clock.mono, wall_clock=clock.wall)
     assert restarted._last_capability == svc._last_capability
+
+
+def test_a_flooding_caller_cannot_spend_anothers_room(tmp_path, monkeypatch):
+    svc, clock = compose(tmp_path, monkeypatch, rate=unlimited, **SMALL)
+    svc._explainer_uid = 4242
+    for _ in range(10_000):
+        try:
+            svc.handle(route_request(1001))
+        except RequestRefused as refused:
+            assert refused.detail == "route_budget"
+            break
+    else:
+        pytest.fail("the flooding caller was never bounded")
+    # Its refusals keep coming; they are charged to it and aggregated.
+    for _ in range(500):
+        with pytest.raises(RequestRefused):
+            svc.handle(route_request(1001))
+        svc.record_refusal({"event_type": "runtime.request_refused", "reason": "rate_limited",
+                            "request_bytes": 1, "request_fingerprint": "x", "uid": 1001})
+        clock.advance(entry.REFUSAL_RECORD_INTERVAL_SECONDS)
+        if clock.now - START > DAY / 2:
+            break
+    svc.handle(route_request(1002))  # another operator still has its own share
+    assert svc.router.ledger.room(EXPLAINER)  # and the explainer's share is untouched
+    usage = dict(svc.router.ledger.usage)
+    # A restart recounts today's shares from today's segment.
+    restarted = restart(svc, clock)
+    assert dict(restarted.router.ledger.usage) == usage
+    assert usage["uid:1001"] <= SMALL["caller_share"]
+    assert usage.get(CONTROL, 0) <= SMALL["reserve"]
+    with pytest.raises(RequestRefused):
+        restarted.handle(route_request(1001))
+
+
+def test_explainer_advice_survives_a_flooding_operator(tmp_path, monkeypatch):
+    from test_incident_explain import transition
+
+    from azazel_nexus.incident_explain import build_frame
+
+    svc, _ = compose(tmp_path, monkeypatch, rate=unlimited, **SMALL)
+    svc._explainer_uid = 4242
+    svc.local.reference = lambda *a, **kw: None
+    for _ in range(10_000):
+        try:
+            svc.handle(route_request(1001))
+        except RequestRefused:
+            break
+    explainer = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))
+    request = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500},
+                              payload=build_frame(transition(), 1), principal=explainer)
+    reply = svc.handle(request)
+    assert reply["route"] == "deterministic handoff"
+    usage = svc.router.ledger.usage
+    assert usage[EXPLAINER] > 0 and usage["uid:1001"] <= SMALL["caller_share"]
+
+
+def test_carried_reading_keeps_its_original_observation_time(service, tmp_path):
+    svc, clock = service
+    svc.reconcile_capability()
+    first = next(item.event for item in svc.router.ledger
+                 if item.event["event_type"] == "mio.capability.transition")
+    clock.advance(DAY)
+    restarted = restart(svc, clock)
+    restarted.handle(route_request(1001))
+    carried = [item.event for item in restarted.router.ledger
+               if item.event["event_type"] == "mio.capability.carried"]
+    assert carried and carried[0]["observed_at"] == first["occurred_at"]
+    assert carried[0]["occurred_at"] != first["occurred_at"]
+    reading = status_summary(root=tmp_path)
+    assert reading["observed_at"] == datetime.fromisoformat(first["occurred_at"]).isoformat()
+    assert restart(restarted, clock)._observed_at == first["occurred_at"]
+
+
+@pytest.mark.parametrize("field", ["to", "observed_at"])
+def test_a_carried_record_that_differs_from_its_reading_is_refused(service, tmp_path, field):
+    svc, clock = service
+    svc.reconcile_capability()
+    clock.advance(DAY)
+    value = {"to": "FULL", "observed_at": "2020-01-01T00:00:00+00:00"}[field]
+    svc.router.ledger.append({"event_type": "mio.capability.carried",
+                              "to": svc._last_capability["state"],
+                              "reasons": svc._last_capability["reasons"],
+                              "observed_at": svc._observed_at,
+                              "occurred_at": "2027-01-16T08:00:00+00:00", field: value},
+                             reserved=True)
+    with pytest.raises(AuditChainBroken):
+        restart(svc, clock)
+    assert "unknown" in status_summary(root=tmp_path)["availability"]
 
 
 def test_status_reads_segments_written_through_the_runtime(tmp_path):
@@ -458,3 +602,40 @@ def test_explainer_degrades_on_a_rate_limited_entry(tmp_path):
     assert explainer.mio_available is True
     assert daemon.Explainer is type(explainer)
 
+
+
+def test_migration_reads_only_the_legacy_tail(state, monkeypatch):
+    legacy = AuditLedger(state / "route.jsonl")
+    for index in range(4):
+        legacy.append({"event_type": "old", "index": index})
+    head = legacy.head()
+    # Damage the middle: start-up must not read it, so it must not notice.
+    lines = (state / "route.jsonl").read_text().splitlines(keepends=True)
+    lines[1] = lines[1].replace('"old"', '"edited"')
+    (state / "route.jsonl").write_text("".join(lines))
+    monkeypatch.setattr(AuditLedger, "verify", lambda self: pytest.fail("full legacy read"))
+    route = ledger(state, Clock())
+    route.prepare()
+    assert route.append({"event_type": "new"}).previous_hash == head[1]
+    monkeypatch.undo()
+    # Offline verification finds what start-up deliberately did not read.
+    with pytest.raises(AuditChainBroken):
+        verify_archive(route.directory)
+    route.verify()  # the retained chain itself is intact
+
+
+def test_boundary_keeps_the_legacy_record_across_retention(state):
+    legacy = AuditLedger(state / "route.jsonl")
+    legacy.append({"event_type": "old"})
+    head = legacy.head()
+    clock = Clock()
+    route = ledger(state, clock, days=1)
+    for _ in range(4):
+        route.append({"event_type": "a"})
+        clock.advance(DAY)
+    route.append({"event_type": "a"})
+    boundary = read_boundary(route.directory)
+    assert boundary["retired"] != "route.jsonl"
+    assert boundary["legacy"]["sequence"] == 1
+    assert verify_archive(route.directory) == head
+    route.verify()

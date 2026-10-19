@@ -27,7 +27,7 @@ from azazel_nexus.sanitizer import PrivacyClass
 from .mio_capability import read_capability
 from .mio_commissioning import commissioned_profile
 from .mio_locald import INFER_VERB, REFERENCE_DEADLINE_MS
-from .mio_route_ledger import RouteSegmentFull
+from .mio_route_ledger import CONTROL, EXPLAINER, UNATTRIBUTED, RouteSegmentFull
 from .mio_router import MioRouter
 from .mio_socket_client import LocalSocketClient, RemoteSocketClient
 from .principal import PrincipalClass, PrincipalPolicy
@@ -68,13 +68,21 @@ LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 CAPABILITY_INTERVAL_SECONDS = 10
 #: Per-principal request rate (#211 S4). The explainer sends at most six
 #: advice requests a minute; an operator's interactive use is a few a minute.
+#: The rate bounds request bursts; each caller's share of the day's route
+#: segment (`mio_route_ledger`) bounds what it can make the ledger grow.
 RATE_PER_MINUTE = 30
 RATE_BURST = 10
-#: A rate-limited caller's refusals are recorded at most once a minute each,
-#: carrying the count suppressed since, so a flood cannot fill the segment.
+#: Each caller's refusals, whatever the reason, are recorded at most once a
+#: minute, carrying the counts suppressed since, and are charged to that
+#: caller's share, so a refusal flood cannot spend anyone else's room.
 REFUSAL_RECORD_INTERVAL_SECONDS = 60
 MAX_TRACKED_PRINCIPALS = 64
 CAPABILITY_EVENTS = frozenset({"mio.capability.transition", "mio.capability.carried"})
+#: Records charged to the control reserve rather than to a caller.
+CONTROL_EVENTS = CAPABILITY_EVENTS | {"mio.entry.started"}
+#: Opens each request's records and names whose share they are charged to,
+#: so a restart can recount today's shares from today's segment.
+REQUEST_MARKER = "mio.entry.request"
 
 
 class PrincipalRate:
@@ -127,7 +135,10 @@ class MioEntryService:
         self.rate_limited = Counter()
         self.refusals_unrecorded = 0
         self._refusal_recorded: dict = {}
-        self._refusals_suppressed = Counter()
+        self._refusals_suppressed: dict = {}
+        #: When the current capability reading was recorded as a change; a
+        #: carried record repeats it rather than claiming a new observation.
+        self._observed_at = None
         # Verify before trusting a historical comparison basis. This happens
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
@@ -135,10 +146,40 @@ class MioEntryService:
         self.router.ledger.verify(self._restore)
         if hasattr(self.router.ledger, "on_new_segment"):
             self.router.ledger.on_new_segment = self._carry
+        if hasattr(self.router.ledger, "rebuild_usage"):
+            # Today's per-caller shares survive a restart.
+            self.router.ledger.rebuild_usage(self._attribution())
+
+    def _budget_key(self, uid) -> str:
+        if uid is None:
+            return UNATTRIBUTED
+        if self._explainer_uid is not None and uid == self._explainer_uid:
+            return EXPLAINER
+        return f"uid:{uid}"
+
+    def _attribution(self):
+        """The rule that charged each of today's records to a share."""
+        current = [UNATTRIBUTED]
+
+        def attribute(event) -> str:
+            kind = event.get("event_type")
+            if kind in CONTROL_EVENTS:
+                return CONTROL
+            if kind == REQUEST_MARKER:
+                caller = event.get("caller")
+                current[0] = caller if type(caller) is str else UNATTRIBUTED
+                return current[0]
+            if kind == "runtime.request_refused":
+                uid = event.get("uid")
+                return self._budget_key(uid if type(uid) is int else None)
+            return current[0]
+
+        return attribute
 
     def _restore(self, item) -> None:
         event = item.event
-        if event.get("event_type") not in CAPABILITY_EVENTS:
+        kind = event.get("event_type")
+        if kind not in CAPABILITY_EVENTS:
             return
         # A hash-valid but malformed record is a broken history, not a
         # crash: the refusal is the same one a tampered record gets.
@@ -151,9 +192,22 @@ class MioEntryService:
             # timestamp (wall-clock correction) delays at most one
             # sampling interval.
             stamp = datetime.fromisoformat(event["occurred_at"]).timestamp()
+            observed = event["occurred_at"]
+            if kind == "mio.capability.carried":
+                observed = event["observed_at"]
+                if type(observed) is not str:
+                    raise TypeError("observed_at")
+                datetime.fromisoformat(observed)
+                # A carried record repeats the reading before it; one that
+                # differs is a rewritten history, not a new observation.
+                if self._last_capability is not None and (
+                        {"state": state, "reasons": reasons} != self._last_capability
+                        or observed != self._observed_at):
+                    raise ValueError("carried record differs from the reading it carries")
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             raise AuditChainBroken("invalid capability transition record") from error
         self._last_capability = {"state": state, "reasons": reasons}
+        self._observed_at = observed
         remaining = max(0, min(CAPABILITY_INTERVAL_SECONDS,
                                stamp + CAPABILITY_INTERVAL_SECONDS - self._wall_clock()))
         self._next_capability_check = self._clock() + remaining
@@ -165,39 +219,48 @@ class MioEntryService:
         capability never changed would lose its last recorded observation and
         `azazel-nexus status` would read unknown. It is not a transition.
         """
-        if self._last_capability is None:
+        if self._last_capability is None or self._observed_at is None:
             return []
+        # `observed_at` keeps the original observation time: after a restart
+        # or a day boundary the reading is not presented as fresher than it is.
         return [{"event_type": "mio.capability.carried",
                  "to": self._last_capability["state"],
                  "reasons": self._last_capability["reasons"],
+                 "observed_at": self._observed_at,
                  "occurred_at": self.router._clock()}]
 
     def record_refusal(self, event: dict) -> None:
-        """The transport's refusal records, bounded.
+        """The transport's refusal records, bounded per caller.
 
-        A refused request did nothing, so a refusal record that no longer fits
-        the day's segment is counted rather than fatal. Rate-limited refusals
-        are aggregated per caller: one record a minute, with what it absorbed.
+        Every refusal reason is aggregated per kernel-reported uid: one record
+        a minute, carrying the counts suppressed since, charged to that
+        caller's share. A refused request did nothing, so a refusal record
+        that no longer fits is counted rather than fatal.
         """
-        reserved = False
-        if event.get("reason") == Refusal.RATE_LIMITED.value:
-            key, now = event.get("uid"), self._clock()
-            last = self._refusal_recorded.get(key)
-            if last is not None and now - last < REFUSAL_RECORD_INTERVAL_SECONDS:
-                self._refusals_suppressed[key] += 1
-                return
-            self._refusal_recorded.pop(key, None)
-            self._refusal_recorded[key] = now
-            while len(self._refusal_recorded) > MAX_TRACKED_PRINCIPALS:
-                del self._refusal_recorded[next(iter(self._refusal_recorded))]
-            event = {**event, "suppressed": self._refusals_suppressed.pop(key, 0),
-                     "rate_limited": dict(sorted(self.rate_limited.items())),
-                     "unrecorded": self.refusals_unrecorded}
-            reserved = True
+        uid, now = event.get("uid"), self._clock()
+        last = self._refusal_recorded.get(uid)
+        if last is not None and now - last < REFUSAL_RECORD_INTERVAL_SECONDS:
+            self._refusals_suppressed.setdefault(uid, Counter())[str(event.get("reason"))] += 1
+            return
+        self._refusal_recorded.pop(uid, None)
+        self._refusal_recorded[uid] = now
+        while len(self._refusal_recorded) > MAX_TRACKED_PRINCIPALS:
+            oldest = next(iter(self._refusal_recorded))
+            del self._refusal_recorded[oldest]
+            self._refusals_suppressed.pop(oldest, None)
+        event = {**event,
+                 "suppressed": dict(sorted(self._refusals_suppressed.pop(uid, Counter()).items())),
+                 "rate_limited": dict(sorted(self.rate_limited.items())),
+                 "unrecorded": self.refusals_unrecorded}
+        ledger = self.router.ledger
+        previous = getattr(ledger, "owner", None)
+        ledger.owner = self._budget_key(uid if type(uid) is int else None)
         try:
-            self.router._record(event, reserved=reserved)
+            self.router._record(event)
         except RouteSegmentFull:
             self.refusals_unrecorded += 1
+        finally:
+            ledger.owner = previous
 
     @staticmethod
     def _observe(reader):
@@ -228,17 +291,19 @@ class MioEntryService:
             return None
         current, observed = self._sample()
         if current != self._last_capability:
+            at = self.router._clock()
             try:
                 self.router._record({
                     "event_type": "mio.capability.transition",
                     "from": self._last_capability["state"] if self._last_capability else None,
                     "to": current["state"], "reasons": current["reasons"],
-                }, reserved=True)
+                }, reserved=True, occurred_at=at)
             except RouteSegmentFull:
                 # Not recorded, so not accepted: the next sample retries.
                 self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
                 return observed
             self._last_capability = current
+            self._observed_at = at
         self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
         return observed
 
@@ -246,13 +311,30 @@ class MioEntryService:
         # Before anything is written: a refused request leaves only the
         # transport's (aggregated) refusal record.
         principal = getattr(request, "principal", None)
-        if not self.rate.take(getattr(principal, "uid", None)):
+        uid = getattr(principal, "uid", None)
+        if not self.rate.take(uid):
             self.rate_limited["principal_rate"] += 1
             raise RequestRefused(Refusal.RATE_LIMITED, "principal_rate")
+        key = self._budget_key(uid)
         room = getattr(self.router.ledger, "room", None)
-        if room is not None and not room():
+        if room is not None and not room(key):
+            # This caller's share of today's segment is spent; no other
+            # caller's share is touched.
             self.rate_limited["route_budget"] += 1
             raise RequestRefused(Refusal.RATE_LIMITED, "route_budget")
+        ledger = self.router.ledger
+        previous = getattr(ledger, "owner", None)
+        ledger.owner = key
+        try:
+            return self._handle(request, principal, key)
+        finally:
+            ledger.owner = previous
+
+    def _mark(self, key: str) -> None:
+        if hasattr(self.router.ledger, "rebuild_usage"):
+            self.router._record({"event_type": REQUEST_MARKER, "caller": key})
+
+    def _handle(self, request, principal, key) -> dict:
         if request.arguments["deadline_ms"] == 0:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "deadline_ms")
         is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
@@ -270,6 +352,7 @@ class MioEntryService:
             privacy = PrivacyClass(frame["privacy_class"])
             if explainer and privacy is not PrivacyClass.P3_RESTRICTED:
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
+            self._mark(key)
             self.router._record(request_event(frame))
             gated = gate_frame(frame)
             if gated is not None and gated["reason"] == "insufficient_information":
@@ -281,6 +364,7 @@ class MioEntryService:
             )
         else:
             privacy = PrivacyClass(request.arguments["privacy_class"])
+            self._mark(key)
         sampled = self.reconcile_capability() or (None, None)
         profile = self._profile_reader()
         # Observations remain separate from admission and prediction. Even a

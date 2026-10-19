@@ -15,6 +15,7 @@ from azazel_nexus.mio_profile import MioProfile
 from azazel_nexus.remote_trust import Exclusion, RemoteAdmission
 from azazel_nexus.resource_profile import ResourceProfile
 from azazel_nexus.route_evidence import Prediction
+from azazel_nexus.route_ledger import RouteChain
 from azazel_nexus.route_selection import RequestOutcome, TerminalEvent
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
@@ -66,9 +67,11 @@ def invoke(
 
 
 def events(router):
-    ledger = AuditLedger(router.ledger.path)
+    # The whole retained chain, so a run across UTC midnight still verifies.
+    ledger = RouteChain(router.ledger.directory)
     ledger.verify()
-    assert SENTINEL.decode() not in ledger.path.read_text()
+    for segment in ledger.segments():
+        assert SENTINEL.decode() not in segment.read_text()
     for entry in ledger:
         if entry.event['event_type'] == 'mio.route.terminal':
             TerminalEvent(entry.event['terminal_event'])

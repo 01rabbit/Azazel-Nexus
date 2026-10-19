@@ -9,9 +9,11 @@ the ledger out.
 
 Bounds:
 
-* one segment per UTC day, at most `SEGMENT_BYTES`; ordinary records stop
-  `CONTROL_RESERVE` short of that so start, capability and refusal records
-  still fit on a day the request budget is spent;
+* one segment per UTC day, at most `SEGMENT_BYTES`, divided into budgets
+  that no other caller can spend: `EXPLAINER_SHARE` for the explainer,
+  `CALLER_SHARE` for each other caller within `CALLERS_POOL` for all of them
+  together, and `CONTROL_RESERVE` for start and capability records. A
+  caller's refusal records are charged to that caller;
 * at most `RETENTION_DAYS` days and `RETENTION_BYTES` in total, so start-up
   verification reads at most `RETENTION_BYTES` whatever the node's age.
 
@@ -23,10 +25,12 @@ next start removes.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -42,6 +46,7 @@ from azazel_nexus.audit import (
 from azazel_nexus.route_ledger import (
     ARCHIVE,
     BOUNDARY,
+    LEGACY_UNVERIFIED,
     RouteChain,
     read_boundary,
     segment_paths,
@@ -50,12 +55,21 @@ from azazel_nexus.store_dirs import fsync_directory
 
 from .edge_intaked import ELAPSED, DailySegments
 
-#: About 20 MB a day at the explainer's six advice requests a minute; the
-#: per-principal rate limit bounds a misbehaving caller to the same ceiling.
-SEGMENT_BYTES = 32 * 1024 * 1024
+#: The explainer's six advice requests a minute write about 20 MB a day
+#: (about 2.3 KB a request). Its share holds that with headroom. A caller at
+#: the 30-a-minute rate limit would write about 100 MB a day, so each share,
+#: not the rate limit, is what bounds one caller's daily growth.
+EXPLAINER_SHARE = 28 * 1024 * 1024
+CALLER_SHARE = 4 * 1024 * 1024
+CALLERS_POOL = 16 * 1024 * 1024
+CONTROL_RESERVE = 2 * 1024 * 1024
+SEGMENT_BYTES = EXPLAINER_SHARE + CALLERS_POOL + CONTROL_RESERVE
 RETENTION_DAYS = 14
 RETENTION_BYTES = 192 * 1024 * 1024
-CONTROL_RESERVE = 1024 * 1024
+#: Budget keys. Any other key is one ordinary caller.
+EXPLAINER = "explainer"
+CONTROL = "control"
+UNATTRIBUTED = "unattributed"
 #: What one request may write after admitting it. A request admitted with
 #: less room than this could fail half-recorded.
 REQUEST_HEADROOM = 64 * 1024
@@ -64,7 +78,17 @@ _ENVELOPE = 256
 
 
 class RouteSegmentFull(AuditUnavailable):
-    """Today's segment has no room for this record; nothing was written."""
+    """Today's segment, or this caller's share of it, has no room; nothing was written."""
+
+
+def line_bytes(entry: AuditEntry) -> int:
+    """The bytes `AuditLedger.append` wrote for `entry`, newline included."""
+
+    return len(json.dumps(
+        {"sequence": entry.sequence, "previous_hash": entry.previous_hash,
+         "event_hash": entry.event_hash, "event": entry.event},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")) + 1
 
 
 class RouteLedger(DailySegments):
@@ -82,13 +106,21 @@ class RouteLedger(DailySegments):
         self, state_dir: Path, *, clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = ELAPSED, max_bytes: int = RETENTION_BYTES,
         days: int = RETENTION_DAYS, segment_bytes: int = SEGMENT_BYTES,
-        reserve: int = CONTROL_RESERVE,
+        reserve: int = CONTROL_RESERVE, explainer_share: int = EXPLAINER_SHARE,
+        caller_share: int = CALLER_SHARE, callers_pool: int = CALLERS_POOL,
     ) -> None:
         # DailySegments.__init__ would create the directory at composition.
         self.state_dir = state_dir
         self.directory = state_dir / "route"
         self.max_bytes, self.days = max_bytes, days
         self.segment_bytes, self.reserve = segment_bytes, reserve
+        self.explainer_share, self.caller_share = explainer_share, caller_share
+        self.callers_pool = callers_pool
+        #: Who ordinary records are charged to; set by the request owner.
+        self.owner: str | None = None
+        #: Bytes each budget key has written to `usage_segment`.
+        self.usage: Counter = Counter()
+        self.usage_segment: str | None = None
         self.monotonic, self.clock = monotonic, clock
         self.current = None
         self.age_anchor = self.clock_anchor = self.last_now = None
@@ -142,30 +174,41 @@ class RouteLedger(DailySegments):
         self._prepared = True
 
     def _migrate(self) -> None:
-        """Move a pre-segment `route.jsonl` aside, verified and unchanged.
+        """Move a pre-segment `route.jsonl` aside, unchanged, in bounded time.
 
-        Order: verify it, durably write the boundary at its head, then rename
-        it into the segment directory. A crash between the two leaves the
-        legacy file and a boundary that names it, and the next start finishes
-        the rename. A legacy file beside a segment chain is refused.
+        Only the legacy file's last record is read (from the end, as
+        `AuditLedger.head` does), so a start does not depend on its size.
+        Order: durably write the boundary at that head, marked
+        `legacy_unverified` with the file's size, then rename the file into
+        the segment directory. A crash between the two leaves the legacy file
+        and a boundary that names it; the next start finishes the rename.
+        Full verification of the archive is offline
+        (`azazel_nexus.route_ledger.verify_archive`, lab `audit`). A legacy
+        file beside a segment chain is refused.
         """
 
         if not os.path.lexists(self.legacy):
             return
-        if not stat.S_ISREG(os.lstat(self.legacy).st_mode):
+        info = os.lstat(self.legacy)
+        if not stat.S_ISREG(info.st_mode):
             raise AuditUnavailable("legacy route ledger refused")
-        legacy = AuditLedger(self.legacy)
-        legacy.verify()
-        head = legacy.head()
+        # An unreadable last record refuses the start: there is no head to
+        # continue from, and repairing the tail is the operator's decision.
+        head = AuditLedger(self.legacy).head()
         boundary = read_boundary(self.directory)
         archive = self.directory / ARCHIVE
         if boundary is None:
             if segment_paths(self.directory) or os.path.lexists(archive):
                 raise AuditChainBroken("legacy route ledger beside a segment chain")
-            self._write_boundary({"sequence": head[0], "hash": head[1],
-                                  "oldest": None, "retired": self.legacy.name})
+            self._write_boundary({
+                "sequence": head[0], "hash": head[1], "oldest": None,
+                "retired": self.legacy.name,
+                "legacy": {"state": LEGACY_UNVERIFIED, "sequence": head[0],
+                           "hash": head[1], "size": info.st_size},
+            })
         elif (boundary["retired"] != self.legacy.name
               or (boundary["sequence"], boundary["hash"]) != head
+              or boundary.get("legacy", {}).get("size") != info.st_size
               or os.path.lexists(archive)):
             raise AuditChainBroken("legacy route ledger beside a segment chain")
         os.chmod(self.legacy, 0o400)
@@ -205,8 +248,12 @@ class RouteLedger(DailySegments):
         head = AuditLedger(path).head()
         if head == (0, GENESIS_HASH):
             head = self.chain.anchor(boundary)
-        self._write_boundary({"sequence": head[0], "hash": head[1],
-                              "oldest": following.name, "retired": path.name})
+        value = {"sequence": head[0], "hash": head[1],
+                 "oldest": following.name, "retired": path.name}
+        if boundary is not None and "legacy" in boundary:
+            # The archive's identity outlives the segment that continued it.
+            value["legacy"] = boundary["legacy"]
+        self._write_boundary(value)
 
     # -- reading ---------------------------------------------------------
 
@@ -239,8 +286,26 @@ class RouteLedger(DailySegments):
         self._ensure()
         return self.chain.verify(visit)
 
-    def room(self) -> bool:
-        """Whether today's segment can take one more whole request."""
+    def _usage_for(self, name: str) -> Counter:
+        return self.usage if self.usage_segment == name else Counter()
+
+    def _fits(self, usage: Counter, key: str, size: int) -> bool:
+        """Whether `size` more bytes stay inside `key`'s budget for the day."""
+
+        if key == CONTROL:
+            return usage[CONTROL] + size <= self.reserve
+        if key == EXPLAINER:
+            return usage[EXPLAINER] + size <= self.explainer_share
+        callers = sum(value for name, value in usage.items() if name not in {CONTROL, EXPLAINER})
+        return (usage[key] + size <= self.caller_share
+                and callers + size <= self.callers_pool)
+
+    def room(self, key: str | None = None) -> bool:
+        """Whether `key` can make one more whole request in today's segment.
+
+        Each caller spends only its own share, so a flooding caller exhausts
+        itself, never the explainer's or another caller's budget.
+        """
 
         self._ensure()
         path = self._target()
@@ -248,15 +313,31 @@ class RouteLedger(DailySegments):
             size = path.stat().st_size
         except FileNotFoundError:
             size = 0
-        return size + REQUEST_HEADROOM <= self.segment_bytes - self.reserve
+        return (size + REQUEST_HEADROOM <= self.segment_bytes
+                and self._fits(self._usage_for(path.name), key or UNATTRIBUTED,
+                               REQUEST_HEADROOM))
+
+    def rebuild_usage(self, attribute: Callable[[Mapping[str, Any]], str]) -> None:
+        """Recount today's budgets from today's segment (one bounded read).
+
+        `attribute` names the budget key of each event in order; it is the
+        request owner's rule, since only the owner knows its records.
+        """
+
+        self._ensure()
+        path = self._target()
+        usage: Counter = Counter()
+        for entry in AuditLedger(path):
+            usage[attribute(entry.event)] += line_bytes(entry)
+        self.usage, self.usage_segment = usage, path.name
 
     # -- writing ---------------------------------------------------------
 
     def append(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
         """Add one entry at the chain head, or add nothing and raise.
 
-        `reserved` lets start, capability and refusal records use the last
-        `CONTROL_RESERVE` bytes of the day's segment.
+        `reserved` charges the record to `CONTROL_RESERVE` (start and
+        capability records); otherwise it is charged to `owner`'s share.
         """
 
         self._ensure(create=True)
@@ -282,11 +363,15 @@ class RouteLedger(DailySegments):
             size = path.stat().st_size
         except FileNotFoundError:
             size = 0
-        limit = self.segment_bytes if reserved else self.segment_bytes - self.reserve
-        if size + len(canonical_event_bytes(event)) + _ENVELOPE > limit:
-            raise RouteSegmentFull("today's route segment is full; the event was not recorded")
+        if self.usage_segment != path.name:
+            self.usage, self.usage_segment = Counter(), path.name
+        key = CONTROL if reserved else (self.owner or UNATTRIBUTED)
+        need = len(canonical_event_bytes(event)) + _ENVELOPE
+        if size + need > self.segment_bytes or not self._fits(self.usage, key, need):
+            raise RouteSegmentFull("today's route budget is spent; the event was not recorded")
         created = size == 0 and not path.exists()
         entry = AuditLedger(path, private=True).append(event, chain_from=head)
+        self.usage[key] += line_bytes(entry)
         if created:
             try:
                 fsync_directory(self.directory)

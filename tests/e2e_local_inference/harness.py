@@ -175,9 +175,10 @@ def invoke(entry, privacy):
 
 
 def events(router):
-    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.route_ledger import RouteChain
 
-    ledger = AuditLedger(router.ledger.path)
+    # The whole retained chain, so a run across UTC midnight still verifies.
+    ledger = RouteChain(router.ledger.directory)
     ledger.verify()
     return [item.event for item in ledger]
 

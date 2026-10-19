@@ -346,13 +346,22 @@ reordered or edited segment is a break. The reader is
 `azazel_nexus_runtime.mio_route_ledger.RouteLedger`, which reuses the
 explainer's and intake's `DailySegments` rotation, ageing and clock guards.
 
-- **Bounds.** 32 MiB per segment, 192 MiB in total and 14 days. Retention
+- **Bounds.** 46 MiB per segment, 192 MiB in total and 14 days. Retention
   deletes whole oldest segments only and never the newest or current one, so
-  today's segment survives any total-size pressure. The last 1 MiB of each
-  segment is reserved for start, capability and refusal records; a request is
-  admitted only with 64 KiB of ordinary room left. When the day's ordinary
-  budget is spent, requests are refused with `rate_limited` (detail
-  `route_budget`) until the next UTC day.
+  today's segment survives any total-size pressure.
+- **Per-caller shares.** Each day's segment is divided into budgets that no
+  other caller can spend: 28 MiB for the explainer (`azexplain`; its six
+  advice requests a minute write about 20 MB a day), 4 MiB for each other
+  kernel-reported UID (operators, `azarbiter`, root) within a 16 MiB pool for
+  all of them together, and a 2 MiB control reserve for start and capability
+  records. A request is admitted only with 64 KiB left in its caller's share;
+  otherwise it is refused with `rate_limited` (detail `route_budget`) until
+  the next UTC day. A flooding caller therefore exhausts only its own share:
+  at the 30-a-minute rate limit one caller would write about 100 MB a day,
+  which the share, not the rate limit, stops at 4 MiB. Each request's records
+  open with a small `mio.entry.request` record naming whose share they are
+  charged to, so a restart recounts today's shares from today's segment
+  rather than forgetting them.
 - **Boundary.** Before deleting a segment, the writer durably replaces
   `route/retained-boundary.json` with the deleted segment's last sequence and
   hash, the oldest retained segment and the retired name. Verification starts
@@ -361,33 +370,62 @@ explainer's and intake's `DailySegments` rotation, ageing and clock guards.
   next start removes it. Removing the boundary, or the oldest retained
   segment, is a break.
 - **Bounded start.** Start-up verifies only the retained segments, in one pass
-  that also restores the last capability reading: at most 192 MiB plus the
-  current segment, whatever the node's age. Each new segment opens with a
-  `mio.capability.carried` record (the current reading, not a transition), so
-  retention never removes the last recorded observation that `azazel-nexus
-  status` shows.
+  that also restores the last capability reading, plus one read of today's
+  segment to recount the shares: at most 192 MiB plus the current segment,
+  whatever the node's age. Each new segment opens with a
+  `mio.capability.carried` record, so retention never removes the last
+  recorded observation that `azazel-nexus status` shows. It is not a
+  transition and not a new observation: it repeats the reading before it
+  together with that reading's original time in `observed_at` (its own
+  `occurred_at` is only when it was carried). Status and entryd's restore show
+  and use `observed_at`, so a reading restored after a restart or a day
+  boundary is never presented as fresher than it is. A carried record that
+  differs from the reading it carries (state, reasons or `observed_at`) is a
+  rewritten history: entryd refuses to start and status reads unknown.
 - **Migration.** On first start after upgrade, a pre-segment
-  `state/mio/route.jsonl` is verified in full, the boundary is written at its
-  head, and the unchanged file is renamed to `route/legacy-route.jsonl`
-  (`0400`). The first segment continues its chain (its first entry follows the
-  legacy head), and the archive remains a genesis-rooted chain that
-  `AuditLedger.verify` checks on its own. Retention never deletes the archive
-  and start-up never re-reads it; removing it after export is the owner's
-  decision. A broken legacy file is refused and left in place; a legacy file
-  found beside an existing segment chain is refused. Until entryd has
-  migrated, `azazel-nexus status` still reads the single file.
+  `state/mio/route.jsonl` is moved aside in bounded time: only its last
+  record is read (from the end of the file), the boundary is written durably
+  at that head and marked `legacy_unverified` with the head and the file's
+  size, and the unchanged file is renamed to `route/legacy-route.jsonl`
+  (`0400`). Start-up never reads the whole legacy file, so a node that ran the
+  single file for months starts as fast as a new one. The first segment
+  continues its chain (its first entry follows the legacy head). Full
+  verification of the archive is offline:
+  `python3 -m azazel_nexus.route_ledger` (as root) verifies the retained
+  segments and the archive in full against the recorded head and size, and
+  the lab `audit` does the same. Retention never deletes the archive; removing
+  it after export is the owner's decision. A legacy file whose last record is
+  unreadable is refused and left in place; a legacy file found beside an
+  existing segment chain is refused; a crash between the boundary and the
+  rename is finished by the next start. Until entryd has migrated,
+  `azazel-nexus status` still reads the single file.
 - **Per-principal rate.** Entryd admits at most 30 requests a minute per
   kernel-reported UID, with a burst of 10, before anything is written. Over
-  the limit it replies `rate_limited` (detail `principal_rate`). Rate-limited
-  refusals are recorded at most once a minute per UID, carrying the count
+  the limit it replies `rate_limited` (detail `principal_rate`). The rate
+  bounds bursts; the shares above bound daily growth.
+- **Refusal records.** Every refusal the transport reports, whatever its
+  reason (`rate_limited`, `principal_denied`, `malformed_frame`, ...), is
+  recorded at most once a minute per UID, carrying the counts by reason
   suppressed since and the in-memory refusal counters (entryd has no status
-  surface). A refusal record that no longer fits the day's segment is counted,
-  not fatal: the refused request did nothing.
-- **Capacity on `/var/lib`.** The route ledger uses at most about 224 MiB
-  (192 MiB retained plus one 32 MiB current segment), plus the one-time legacy
-  archive if one was migrated. A sustained 30 requests a minute from one
-  caller fills a day's segment in roughly eight hours, after which requests
-  wait for the next day rather than growing the disk.
+  surface), and is charged to that caller's share. A refusal record that no
+  longer fits is counted, not fatal: the refused request did nothing.
+- **Clock.** Segments are named by the UTC wall-clock day, held by the same
+  guards as the intake and explainer stores. A node without an RTC boots with
+  its clock behind; until time sync steps it forward, records go into the
+  segment for that earlier day, and a forward step within the first 15 minutes
+  of uptime is followed rather than held. A backward step never writes before
+  the newest segment (records continue in it), and a forward jump during a run
+  cannot age the ledger out: ageing follows elapsed time. A segment dated
+  ahead of the clock keeps receiving records until the clock passes it, which
+  can make one segment hold more than a day; its shares still apply.
+- **Capacity on `/var/lib`.** The route ledger uses at most about 238 MiB
+  (192 MiB retained plus one 46 MiB current segment), **plus** the
+  `legacy-route.jsonl` archive on a node upgraded from the single file: its
+  size is whatever `route.jsonl` had reached (about 20 MB for each day the
+  integrated loop ran), recorded in the boundary, and it stays until the
+  owner removes it. One caller at its rate limit spends its 4 MiB share in
+  well under an hour and then waits for the next day; the disk does not
+  grow.
 
 Before selecting, the entry records bounded availability observations from
 locald (`mio`) and remoted (`remote`). The fixed probes use uncommissioned

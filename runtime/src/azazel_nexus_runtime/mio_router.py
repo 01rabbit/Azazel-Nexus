@@ -81,8 +81,9 @@ class MioRouter:
         self._local = local if local is not None else LocalRuntimeService()
         self._clock = clock
 
-    def _record(self, event: dict, *, reserved: bool = False) -> None:
-        dated = {**event, "occurred_at": self._clock()}
+    def _record(self, event: dict, *, reserved: bool = False,
+                occurred_at: str | None = None) -> None:
+        dated = {**event, "occurred_at": occurred_at if occurred_at is not None else self._clock()}
         if reserved:
             # Start, capability and refusal records may use the segment's
             # control reserve; request records may not.
