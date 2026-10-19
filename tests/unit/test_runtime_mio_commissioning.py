@@ -247,3 +247,14 @@ def test_absent_optional_fabric_is_core(credentials, context, monkeypatch):
     credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
     monkeypatch.setattr("azazel_nexus.fabric_boundary._import_fabric", lambda: (None, "unavailable"))
     assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+@pytest.mark.parametrize("name", ["mio-trust", "mio-node"])
+def test_the_unit_fallback_value_is_core_without_verifying(credentials, monkeypatch, name):
+    # What systemd supplies when the source file is missing (SetCredential).
+    inputs = [b'{"operator":"operator-a"}', b"payload", b"s" * 64, b"trust", b"node"]
+    inputs[3 if name == "mio-trust" else 4] = mio_commissioning.MISSING_CREDENTIAL
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: tuple(inputs))
+    monkeypatch.setattr(mio_commissioning, "verify_retained_commissioning_proposal",
+                        lambda **kw: pytest.fail("fallback reached verification"))
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE

@@ -46,6 +46,13 @@ The separate lab distribution is absent from the production bundle and installed
 manifest. Do not install it into the production interpreter or daemon import path;
 the production loaded-module verifier refuses it.
 
+To upgrade the production code on a lab VM, run `az-nexus-lab --id <id> down`,
+then `sudo systemctl unmask azazel-activated.service`, re-run
+`packaging/install.sh`, and stop and mask the controller again before the next
+`up`. Re-running the installer while the controller is masked applies every
+file but ends with exit status 1, because its final `systemctl enable` cannot
+enable a masked unit.
+
 ## Owner demo script
 
 Run from `/opt/src/Azazel-Nexus`. Each command starts with the Japanese and English LAB

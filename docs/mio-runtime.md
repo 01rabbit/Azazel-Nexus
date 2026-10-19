@@ -367,12 +367,16 @@ Two individual credentials supply `/etc/azazel/node.yaml` as `mio-node` and
 `/etc/azazel/operator-trust/operators.json` as `mio-trust`. The latter contains
 only enrolled public keys and revocations, never private signing keys. Provision
 these through the existing administrator setup without widening their source
-permissions. Empty `SetCredential` defaults let missing node/trust sources
-produce CORE. The proposal directory must exist and be readable by systemd;
+permissions. `SetCredential=mio-trust:absent` and `SetCredential=mio-node:absent`
+are the fallbacks when a source file is missing; the reader treats the value
+`absent` as no source and yields CORE. (systemd 257 drops an empty
+`SetCredential=ID:` line as invalid syntax, so an empty fallback would leave
+entryd unable to start, 243/CREDENTIALS, rather than CORE.) The proposal directory must exist and be readable by systemd;
 if it is removed or unreadable, credential setup can fail before entryd starts.
 An empty installed directory starts with CORE.
 
-The five credential copies are read-only 0400, owned by `azmioentry`; proposal
+The five credential copies are read-only (observed on systemd 257: root:root
+0440 with an ACL granting `azmioentry` read); proposal
 names are prefixed `mio-profile_`. The reader uses the fixed system-unit
 credential directory, with no environment path override. All five exact byte
 strings are hashed on each read; YAML parsing, trust decoding, proposal rebuild

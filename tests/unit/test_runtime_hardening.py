@@ -703,7 +703,23 @@ def test_entry_gets_private_commissioning_snapshot_without_a_protection_key():
         "mio-trust:/etc/azazel/operator-trust/operators.json",
         "mio-node:/etc/azazel/node.yaml",
     ]
-    assert settings["SetCredential"] == ["mio-trust:", "mio-node:"]
+    assert settings["SetCredential"] == ["mio-trust:absent", "mio-node:absent"]
     assert all(source.split(":", 1)[1] != "/etc/azazel/commissioning"
                for source in settings["LoadCredential"])
     assert settings["CapabilityBoundingSet"] == [""]
+
+
+def test_no_packaged_unit_has_an_empty_set_credential():
+    """systemd drops `SetCredential=ID:` with an empty value as invalid syntax.
+
+    The fallback then silently does not exist, and a missing LoadCredential
+    source fails the unit start (243/CREDENTIALS) instead of using it. Found on
+    the Debian 13 test VM with `systemd-analyze verify`.
+    """
+    units = sorted((Path(__file__).resolve().parents[2] / "packaging/systemd").glob("*.service"))
+    assert units
+    for unit in units:
+        for line in unit.read_text().splitlines():
+            if line.startswith("SetCredential="):
+                ident, _, value = line.partition("=")[2].partition(":")
+                assert ident and value.strip(), f"{unit.name}: {line!r}"

@@ -92,6 +92,15 @@ def test_setup_first_line_marks_host(marker, capsys):
     assert capsys.readouterr().out.splitlines()[0] == "LAB HOST"
 
 
+def test_setup_json_stays_parseable_on_a_lab_host(marker, capsys):
+    from azazel_nexus.cli import main
+
+    main(["setup", "--json"])
+    captured = capsys.readouterr()
+    json.loads(captured.out)
+    assert captured.err.splitlines()[0] == "LAB HOST"
+
+
 @pytest.mark.parametrize("module,arguments", [
     ("hil_capture", ["hg-01"]), ("core_reserve_probe", []),
     ("model_admission_cli", ["request", "--role", "embedding"]),
