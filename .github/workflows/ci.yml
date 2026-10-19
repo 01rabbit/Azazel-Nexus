@@ -1093,6 +1093,7 @@ jobs:
           python -m pytest \
             tests/unit/test_fabric_boundary.py \
             tests/unit/test_edge_intake_fabric.py \
+            tests/unit/test_edge_loop_status.py \
             tests/unit/test_status_claims.py \
             -q --no-header -rs | tee /tmp/boundary.txt
           if grep -qE '[0-9]+ skipped' /tmp/boundary.txt; then

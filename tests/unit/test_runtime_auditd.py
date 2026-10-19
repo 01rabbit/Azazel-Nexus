@@ -682,3 +682,49 @@ def test_watchdog_schema_refuses_invalid_fields(tmp_path, field, value):
     payload[field] = value
     with pytest.raises(RequestRefused):
         _service(tmp_path).handle(_request("audit.append", {"event_type": "watchdog.fenced"}, payload))
+
+
+def test_incident_writer_is_exclusive_and_verify_accepts_events(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from azazel_nexus_runtime import auditd
+    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=901))
+    explainer = Principal(uid=901, gid=901, pid=1, classes=frozenset({PrincipalClass.SERVICE}))
+    service = _service(tmp_path)
+    payload = {"incident_id": "inc-0123456789abcdef", "most_severe": 2, "edge_would": "isolate",
+               "count": 12, "technique_count": 2, "occurred_at": "2026-10-19T00:00:00Z"}
+    for kind in ("opened", "escalated", "closed"):
+        event_type = "edge.incident." + kind
+        event = {**payload, **({"reason": "idle"} if kind == "closed" else {})}
+        for principal in (ROOT, SERVICE):
+            with pytest.raises(RequestRefused) as exc:
+                service.handle(_request("audit.append", {"event_type": event_type}, event, principal=principal))
+            assert exc.value.detail == "incident_writer"
+        service.handle(_request("audit.append", {"event_type": event_type}, event, principal=explainer))
+    with pytest.raises(RequestRefused) as exc:
+        service.handle(_request("audit.append", {"event_type": "activation.unit_granted"}, _event(), principal=explainer))
+    assert exc.value.detail == "incident_writer"
+    for verb in ("audit.verify", "audit.bootstrap.observe", "audit.bootstrap.append"):
+        with pytest.raises(RequestRefused):
+            _request(verb, {}, principal=explainer)
+    service.ledger.verify()
+    reply = service.handle(_request("audit.verify", {}, principal=OPERATOR))
+    assert reply["verified"] and sum(c["entries"] for c in reply["checkpoints"]) == 3
+    from azazel_nexus.cli import main
+    import io
+    out = io.StringIO()
+    segment = service.ledger.segments()[0]
+    assert main(["--ledger", str(segment), "health"], out=out) == 0
+    assert "audit chain: ok" in out.getvalue()
+
+
+@pytest.mark.parametrize("key,value", [("incident_id", "192.0.2.1"), ("most_severe", 11),
+                                      ("most_severe", True), ("count", 2**64),
+                                      ("technique_count", 9), ("edge_would", "isolated"),
+                                      ("reason", "private address"), ("attack_text", "SECRET")])
+def test_incident_audit_schema_is_closed(key, value):
+    from azazel_nexus_runtime.auditd import _bind_event
+    event = {"incident_id": "inc-0123456789abcdef", "most_severe": 2, "edge_would": "isolate",
+             "count": 12, "technique_count": 2, "occurred_at": "2026-10-19T00:00:00Z", "reason": "idle"}
+    event[key] = value
+    with pytest.raises(RequestRefused):
+        _bind_event("edge.incident.closed", event)

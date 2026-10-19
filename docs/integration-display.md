@@ -259,3 +259,29 @@ that is already installed and has been tampered with. The leading word names
 the **earliest** failure in check order, so a digest mismatch is never buried
 under a consequence discovered later, and all five checks are printed
 underneath whatever the leading word says.
+
+
+## 9. Integrated Edge loop observations (I3)
+
+After the unchanged six-axis integration view, status prints a Fabric status
+projection line and a separate `edge loop:` section. This adds no axis values,
+readiness claims or enforcement authority. Intake and explainer each report
+`running`, `stale (snapshot expired)` (over 30 seconds), or
+`unavailable (snapshot absent or refused)`. A fresh snapshot is observation evidence,
+not a process probe; the explainer writes only on change and quiet snapshots
+can become stale.
+
+Intake includes last accepted age, accepted count, top refusal counters and
+`storage_failed`. Explainer includes explained count, chain integrity, the
+fixed recovery hint, last-attempt M.I.O./Knowledge availability and audit drops.
+The operator sees up to five recent pseudonymous incidents, severity/count,
+technique ids, a sanitized explanation summary and validated citation fields,
+for example `T1110 Brute Force [claim T1110]`. Every action reads
+`Edge would isolate (observe-only, not executed)`; a closed incident only means
+the observation group ended. Missing or malformed recent data is independently
+unavailable. No address or raw attacker text is rendered from loop snapshots.
+
+Fabric's optional `StatusView` is now projected from the capability state and
+available set status already shows. Failure reports a fixed code; no exception
+text enters the screen. The deterministic summary remains available regardless
+of loop components or Fabric. See [I3 choices and limits](integration-loop.md#i3--operator-view-and-audit-explain--audit--implemented).

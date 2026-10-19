@@ -1,6 +1,6 @@
 # The integrated defensive loop
 
-Status: **I0–I2 implemented; I3–I5 planned**
+Status: **I0–I3 implemented; I4–I5 planned**
 ([#190](https://github.com/01rabbit/Azazel-Nexus/issues/190): I0 #191, I1 #192,
 I2 #193, I3 #194, I4 #196, I5 #195).
 Related: [integrated-node doctrine](nexus-integrated-node.md) ·
@@ -222,7 +222,7 @@ Concrete I1 limits and paths:
   writes `closed` with reason `shutdown` for each open incident (at most 1024),
   flushing all closes to the same segment with one final fsync. The worker
   join allows 20 s, below systemd's default stop timeout; a still-running
-  writer reports storage failure and exits nonzero. Forwarding to auditd remains I3.
+  writer reports storage failure and exits nonzero. I3 forwards selected transitions to auditd through the explainer.
   An evidence or ledger open/verification failure at startup exits nonzero
   before binding or signalling READY. An unterminated final incident line
   specifically reports `incident_ledger_torn` in status and is never silently
@@ -387,16 +387,78 @@ nothing in intake, detection or Edge's observe-only decisions.
   state and status leaves are writable. It is installed masked and
   preset-disabled and is covered by the normal renderer and staging checks.
 
-### I3 — operator view and audit (Explain → Audit)
+### I3 — operator view and audit (Explain → Audit) — implemented
 
-- `azazel-nexus status` stops passing constants for the axes it can now
-  observe. The Edge axis reads intake liveness together with the existing
-  probe. Incidents show Edge's decision ("Edge would redirect"), the advice,
-  and their citations.
-- The Fabric `StatusView` projection (`project_capability`) is called in
-  production, not only in tests.
-- Incident transitions are written to the audit chain through `auditd` like
-  every other transition, and appear in the existing audit verification.
+- **Separate operator section.** `azazel-nexus status` prints `edge loop:`
+  after the integration view. The six axes and their vocabularies remain
+  unchanged; intake liveness cannot establish Edge package health, running
+  state, readiness or authority. The existing probe remains the Edge-axis
+  source. Each loop snapshot is read with a strict decoder and bounded,
+  no-follow regular-file read using shared read-only `runtime_paths` (including `AZAZEL_ROOT`);
+  the runtime delegates to these same paths without importing runtime into
+  the core library.
+  Missing/unreadable/malformed snapshots report the fixed reason
+  `snapshot absent or refused`.
+  Snapshots older than 30 seconds, or over five seconds in the future, are
+  stale. The deterministic summary still prints when components are absent.
+- **Recent incidents.** `recent.json` shares the explainer's operator leaf
+  (`2750 azexplain:azazel-operator`), atomically replaced/fsynced as `0644`,
+  only on content change and no more than once per five seconds. Schema
+  `azazel-nexus/recent-incidents/v1` holds `written_at` and at most 20 rows,
+  sorted newest observation first. Transitions update open/closed state,
+  first/last times, count, severity, closed policy reason, Edge action and
+  technique ids. Last explanation state, fixed failure codes, route, outcome, summary and up to
+  eight citations are retained. Summaries take the first 280 characters of
+  validated advice/reference text, then apply I2's ASCII-letter/space filter
+  (32 characters per word). Citation fields are only technique id, validated
+  name and claim id; address syntax in names is refused. No network addresses,
+  rule text, targets, evidence digests or raw advice enter this projection.
+  Recent rows and audit comparison severities survive in the private cursor;
+  older I2 cursors without these additional fields remain readable. Initial
+  seeding still does not replay history. An intake reset closes the previous
+  run's recent rows without manufacturing audit close records. Status renders at most five rows,
+  always `Edge would <action> (observe-only, not executed)`, their summary and
+  citations. The recent reader refuses the whole snapshot on any malformed
+  row, unknown field or unsanitized/address-shaped summary; read bound 256 KiB.
+- **Liveness detail.** Intake shows last accepted age, accepted count, the top
+  four refusal counters and storage failure. Explainer shows explained count,
+  chain break and its fixed recovery hint, storage failure, last attempted
+  M.I.O./Knowledge availability and `audit_forward_dropped`. Unchanged
+  explainer snapshots intentionally do not heartbeat: a quiet snapshot can
+  age to stale; that means stale observation, not proof the process stopped.
+- **Fabric presentation.** Production status calls `project_capability` with
+  the same capability state and available set already displayed. It reports
+  `projected (v0.9.0rc5)`, `not available (extra not installed)` or
+  `refused (projection_refused)`. Exception text is never rendered and the
+  optional extra never determines capability or interrupts status.
+- **Exclusive audit writer.** Only auditd adds `azexplain` to the default
+  SERVICE allowlist (in addition to I2's explicit entryd/knowledge-lited lists).
+  The shared SERVICE list remains unchanged. Auditd also checks the
+  kernel-derived uid: azexplain can only `audit.append` the three declared
+  `edge.incident.*` types; every other uid, including root, is refused for
+  those types (`principal_denied`, fixed detail `incident_writer`). Bootstrap
+  and root-only verbs keep their existing admission. DAEMON classification
+  prevents azexplain's supplementary operator group from granting OPERATOR.
+  Existing `azazel-operator` membership traverses audit's `2710` leaf and
+  reaches its `0660` socket; no new groups or socket permissions are needed.
+- **Best-effort forwarding.** Openings, updates whose minimum severity falls,
+  and closes become `edge.incident.opened|escalated|closed` via authenticated
+  `audit.append`, reusing the bounded AF_UNIX client and validated receipt.
+  Fields are pseudonymous incident id, severity 0–10, Edge action enum, count
+  0–2^64−1, technique count 0–8, UTC occurred time, and for closes only reason
+  `idle|capacity|shutdown`. Comparison state is bounded to 1024 ids and is
+  independent of explanation attempt/rate limits. Occurrence time is the
+  intake update time for openings/escalations and close observation time for
+  closes (I1 has no separate close timestamp).
+  A separate worker drains a 256-entry memory queue; full queues drop newest.
+  Each exchange has a 250 ms total deadline; failures retry every second,
+  dropping after five failed attempts so a permanently refused head cannot
+  prevent later records. Drops and abandoned queued work at clean shutdown
+  increment `audit_forward_dropped`. The queue does not survive crashes, and
+  a lost acknowledgement can duplicate an append. Neither failure blocks
+  ledger consumption or explanations. Auditd's existing cross-segment verifier
+  and CLI health ledger verification accept these typed records. No ledger
+  events are manufactured for history skipped during initial seeding.
 
 ### I4 — redirect to Deception Lite (later)
 

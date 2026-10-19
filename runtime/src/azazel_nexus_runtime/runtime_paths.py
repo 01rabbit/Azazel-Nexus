@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus import runtime_paths as observation_paths
 
 __all__ = [
     "ROOT",
@@ -26,6 +27,7 @@ __all__ = [
     "incident_segments_dir",
     "incident_explain_state_dir",
     "incident_explain_status_path",
+    "incident_recent_path",
     "edge_intake_state_dir",
     "edge_intake_status_path",
     "commission_ledger_path",
@@ -210,7 +212,7 @@ def edge_intake_state_dir() -> Path:
 
 def edge_intake_status_path() -> Path:
     """Only the dedicated status leaf is operator-readable."""
-    return _under("/var/lib/azazel/run/edge-intake-status/status.json")
+    return observation_paths.edge_intake_status_path(ROOT)
 
 
 def incident_segments_dir() -> Path:
@@ -222,4 +224,8 @@ def incident_explain_state_dir() -> Path:
 
 
 def incident_explain_status_path() -> Path:
-    return _under("/var/lib/azazel/run/incident-explain-status/status.json")
+    return observation_paths.incident_explain_status_path(ROOT)
+
+
+def incident_recent_path() -> Path:
+    return observation_paths.incident_recent_path(ROOT)

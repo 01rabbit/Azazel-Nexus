@@ -322,6 +322,7 @@ def _render_status(
     view: Optional[IntegrationView] = None,
     edge: Optional[EdgeInspection] = None,
     knowledge: Optional[dict] = None,
+    as_of: Optional[str] = None,
 ) -> None:
     from .lab_host import is_lab_host
     from .mio_status import describe, status_summary
@@ -373,6 +374,11 @@ def _render_status(
     if view is not None:
         _render_integration(view, out)
         print(file=out)
+    from datetime import datetime
+    from .edge_loop_status import render_edge_loop, render_fabric_status
+    render_fabric_status(report, out)
+    render_edge_loop(out, now=datetime.fromisoformat(as_of or _now()).timestamp())
+    print(file=out)
     _render_health(report, out)
     print(file=out)
     print("next:", file=out)
@@ -1093,6 +1099,7 @@ def main(
             ),
             edge,
             knowledge,
+            as_of,
         )
     return 0
 

@@ -172,7 +172,8 @@ def test_registration_and_only_allowed_connections():
     text = Path(daemon.__file__).read_text()
     tree = ast.parse(text)
     exchanges = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_exchange"]
-    assert len(exchanges) == 1 and exchanges[0].args[0].value == "mio-entry"
+    assert {n.args[0].value for n in exchanges} == {"mio-entry", "audit"}
+    assert len(exchanges) == 2
     assert 'lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S)' in text
     assert not any(isinstance(n, ast.Attribute) and n.attr == "connect" for n in ast.walk(tree))
     assert not any(word in text for word in ("subprocess", "dbus", "systemctl", 'socket_path("edge'))
@@ -249,7 +250,7 @@ def test_storage_failure_is_sticky_and_status_failure_is_separate(tmp_path, monk
     append(e)
     e.poll()
     assert e.explained == 1 and not e.storage_failed
-    assert e.refused["status_write_failed"] == 1
+    assert e.refused["status_write_failed"] == 2
 
 
 def test_corrupt_checkpoint_fails_before_ready(tmp_path):
@@ -437,19 +438,23 @@ def test_explainer_privilege_at_every_runtime_policy_site(monkeypatch):
             servers.append((path.name, policy.lineno))
         for call in resolves:
             assert not call.args and all(k.arg is not None for k in call.keywords)
-            kwargs = {k.arg: ast.literal_eval(k.value) for k in call.keywords}
+            if path.stem == "auditd":
+                assert ast.unparse(call) == "PrincipalPolicy.resolve(service_accounts=SERVICE_ACCOUNTS + ('azexplain',))"
+            kwargs = {k.arg: (principal.SERVICE_ACCOUNTS + ("azexplain",)
+                              if path.stem == "auditd" and k.arg == "service_accounts"
+                              else ast.literal_eval(k.value)) for k in call.keywords}
             policy = PrincipalPolicy.resolve(**kwargs)
             uid = accounts["azexplain"]
             for gid, supplementary in ((7, ()), (8, (7,))):
                 classes = policy.classify(uid, gid, 1, supplementary).classes
                 expected = (frozenset({PrincipalClass.SERVICE}) if path.stem in
-                            {"mio_entryd", "knowledge_lited"} else frozenset())
+                            {"mio_entryd", "knowledge_lited", "auditd"} else frozenset())
                 assert classes == expected, (path, call.lineno, classes)
                 if classes:
                     admitted.add(path.stem)
             sites.append((path.name, call.lineno))
     assert sites and sorted(servers) == sorted(sites)
-    assert admitted == {"mio_entryd", "knowledge_lited"}
+    assert admitted == {"mio_entryd", "knowledge_lited", "auditd"}
 
 
 def test_first_start_seeds_end_and_missing_cursor_reseeds(tmp_path):
@@ -472,7 +477,7 @@ def test_stale_replay_is_counted_and_pending_has_no_addresses(tmp_path):
     e = make(tmp_path)
     e.clock = lambda: 7200
     append(e)
-    append(e, transition(incident_id="inc-2222222222222222", first_seen=7200,
+    append(e, transition(incident_id="inc-2222222222222222", first_seen=7200, last_seen=7200,
                          attack_type="a=b; c=d 192.0.2.1", policy_reason="private host"))
     e.selection.attempts.extend([0] * 6)
     e.poll()
@@ -500,7 +505,7 @@ def test_idle_writes_are_suppressed_and_status_is_throttled(tmp_path, monkeypatc
         return original(path, value, mode)
     monkeypatch.setattr(daemon, "atomic_json", write)
     e.poll()
-    assert writes == ["status.json"]
+    assert writes == ["recent.json", "status.json"]
     writes.clear()
     e.clock = lambda: 1
     e.monotonic = lambda: 1
@@ -512,7 +517,7 @@ def test_idle_writes_are_suppressed_and_status_is_throttled(tmp_path, monkeypatc
     writes.clear()
     e.monotonic = lambda: 5
     e.poll()
-    assert writes == ["status.json"]
+    assert writes == ["recent.json", "status.json"]
     writes.clear()
     e.monotonic = lambda: 10
     e.poll()
@@ -588,3 +593,143 @@ def test_record_and_checkpoint_refuse_unsanitized_producer_fields(tmp_path):
     checkpoint["pending"] = [[transition(), 1]]
     with pytest.raises(ValueError):
         daemon.decode_checkpoint(json.dumps(checkpoint).encode())
+
+
+def test_recent_closes_survives_restart_and_updates_explanation(tmp_path):
+    from azazel_nexus.incident_explain import read_recent_incidents
+    e = make(tmp_path)
+    append(e)
+    e.poll()
+    row = read_recent_incidents((tmp_path / "recent.json").read_bytes())["incidents"][0]
+    assert row["explanation"]["state"] == "unavailable"
+    append(e, transition(event_type="closed", reason="idle"))
+    e.monotonic = lambda: 5
+    e.poll()
+    assert e.recent[0]["state"] == "closed"
+    restored = make(tmp_path)
+    assert restored.recent[0]["state"] == "closed"
+    assert (tmp_path / "recent.json").stat().st_mode & 0o777 == 0o644
+
+
+def test_audit_selection_ignores_regular_update_and_queue_does_not_block(tmp_path):
+    e = make(tmp_path)
+    append(e)
+    append(e, transition(3, "updated"))
+    append(e, transition(1, "updated"))
+    append(e, transition(1, "closed", reason="shutdown"))
+    e.poll()
+    events = list(e.audit_pending.queue)
+    assert [v["event_type"] for v in events] == ["edge.incident." + k for k in ("opened", "escalated", "closed")]
+    assert len(records(e)) == 2 and not e.storage_failed
+    assert not {"attack_type", "src_ip", "technique_ids"} & set(events[0])
+    assert "192.0.2.1" not in json.dumps(events)
+    for i in range(300):
+        e.observe_transition(transition(incident_id=f"inc-{i:016x}"))
+    assert e.audit_pending.qsize() == 256
+    assert e.snapshot()["audit_forward_dropped"] == 47
+    assert len(e.recent) == 20
+
+
+def test_audit_retry_is_independent_and_recovers(tmp_path):
+    seen, failed = [], threading.Event()
+    def audit(event):
+        if not failed.is_set():
+            failed.set()
+            raise OSError("SECRET")
+        seen.append(event)
+        stopped.set()
+    e = make(tmp_path, audit=audit)
+    append(e)
+    e.poll()
+    stopped = threading.Event()
+    worker = threading.Thread(target=e.forward_audit, args=(stopped,))
+    worker.start()
+    assert failed.wait(2)
+    # The failed event still occupies the bounded queue; ledger polls continue.
+    assert e.audit_pending.qsize() == 1
+    append(e, transition(1, "updated"))
+    e.poll()
+    assert len(records(e)) == 2
+    worker.join(3)
+    assert not worker.is_alive() and len(seen) == 1
+    assert not e.storage_failed and e.audit_forward_dropped == 0
+
+
+def test_audit_client_uses_shared_authenticated_bounded_transport(monkeypatch):
+    calls = []
+    def exchange(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"sequence": 1, "event_hash": "a" * 64}
+    monkeypatch.setattr(daemon, "_exchange", exchange)
+    event = {"event_type": "edge.incident.opened", "count": 1}
+    receipt = daemon.append_audit(event)
+    assert receipt.sequence == 1
+    assert calls == [(("audit", "azaudit", "audit.append", {"event_type": "edge.incident.opened"}),
+                      {"payload": {"count": 1}, "deadline_s": 0.25})]
+    monkeypatch.setattr(daemon, "_exchange", lambda *a, **kw: {"sequence": True, "event_hash": "SECRET"})
+    with pytest.raises(ValueError):
+        daemon.append_audit(event)
+
+
+def test_recent_summary_uses_validated_advice_and_frame_filter(tmp_path):
+    from azazel_nexus.local_advisory import delivered_document, build_options
+    from azazel_nexus.incident_explain import private_text, read_recent_incidents
+    e = make(tmp_path)
+    def mio(frame):
+        options = build_options(frame)
+        body = delivered_document(frame, (), options,
+                                  {"option_id": "other_suspicious", "kind": "other_suspicious"},
+                                  list(options), None, "deterministic")
+        return {"route": "local", "outcome": "answered", "reason": "local", "ledger_seq": 1, **body}
+    e.mio = mio
+    append(e)
+    e.poll()
+    value = records(e)[0]
+    row = read_recent_incidents((tmp_path / "recent.json").read_bytes())["incidents"][0]
+    assert row["explanation"]["state"] == "explained"
+    assert row["explanation"]["summary"] == private_text(value["mio"]["text"][:280], 280)
+    assert len(row["explanation"]["summary"]) <= 280
+    assert "192.0.2.1" not in json.dumps(row)
+
+
+def test_legacy_i2_cursor_migrates_audit_comparison_state(tmp_path):
+    e = make(tmp_path)
+    append(e)
+    e.poll()
+    path = e.state / "cursor.json"
+    value = json.loads(path.read_bytes())
+    for key in ("recent", "audit_severities", "audit_forward_dropped"):
+        del value[key]
+    path.write_text(json.dumps(value))
+    restored = make(tmp_path)
+    append(restored, transition(1, "updated"))
+    restored.poll()
+    assert list(restored.audit_pending.queue)[0]["event_type"] == "edge.incident.escalated"
+
+
+def test_intake_reset_closes_recent_projection_without_manufacturing_audit(tmp_path):
+    e = make(tmp_path)
+    append(e)
+    e.poll()
+    append(e, {"event_type": "edge.incident.reset", "at": 1, "reason": "intake_started"})
+    e.poll()
+    assert e.recent[0]["state"] == "closed"
+    assert not e.audit_severities
+    assert e.audit_pending.qsize() == 1
+
+
+def test_permanently_refused_audit_head_is_dropped_after_bounded_retries(tmp_path):
+    calls, waits = [], []
+    def fail(event):
+        calls.append(event)
+        raise ValueError("SECRET")
+    e = make(tmp_path, audit=fail)
+    e.observe_transition(transition())
+    class Stop:
+        def is_set(self):
+            return e.audit_pending.empty()
+        def wait(self, seconds):
+            waits.append(seconds)
+    e.forward_audit(Stop())
+    assert len(calls) == 5 and waits == [1] * 4
+    assert e.audit_forward_dropped == 1 and not e.storage_failed
