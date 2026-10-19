@@ -817,7 +817,7 @@ def main(
     if is_lab_host():
         if args.command in {"status", "setup"}:
             print("LAB HOST", file=stream)
-        if args.command in {"hil-preflight", "commission-review"}:
+        if args.command in {"hil-preflight", "commission-review", "commission", "model-import-fetched"}:
             print("refused: LAB_HOST_MARKER", file=error_stream)
             return 2
 

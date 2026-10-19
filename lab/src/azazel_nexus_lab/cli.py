@@ -15,15 +15,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from azazel_nexus_runtime.mio_supervisor import SupervisorRefused
-
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.lab_host import LAB_HOST_MARKER
-from azazel_nexus.model_runtime import RuntimeRefused
 
 from . import services
 from .artifacts import BANNER, canonical, create_key, envelope, output, shred_keys
 from .provision import provision
+from .refusal import LabRefused
+from .safe_files import lab_file
 
 BASE = Path("/var/lib/azazel-lab")
 
@@ -62,8 +61,9 @@ def mark_host():
 
 def worker(root, operation, *args, payload=None):
     process = subprocess.run(
-        [sys.executable, "-m", "azazel_nexus_lab.worker", operation, *map(str, args)],
-        env={**os.environ, "AZAZEL_ROOT": str(root), "PYTHONDONTWRITEBYTECODE": "1"},
+        [sys.executable, "-I", "-B", "-m", "azazel_nexus_lab.worker", operation, *map(str, args)],
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "AZAZEL_ROOT": str(root)},
+        cwd="/",
         capture_output=True, text=True,
         input=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
         timeout=30 + (3 * int(args[1]) if operation == "roundtrips" else 0), check=False,
@@ -122,10 +122,12 @@ def up(root):
     if root.exists():
         raise ValueError("lab id already exists; use down first")
     secure_directory(BASE, 0o755)
-    root.mkdir(mode=0o755)
-    mark_host()
     attempted = False
+    created = False
     try:
+        root.mkdir(mode=0o755)
+        created = True
+        mark_host()
         props = services.prepare(root)
         key = create_key(root / "keys")
         fixture = provision(root, key)
@@ -150,8 +152,9 @@ def up(root):
     except Exception:
         if attempted:
             services.stop(root)
-        shred_keys(root / "keys")
-        shutil.rmtree(root)
+        if created:
+            shred_keys(root / "keys")
+            shutil.rmtree(root)
         raise
 
 
@@ -181,7 +184,9 @@ def break_target(root, target):
     detail = "applied"
     try:
         if target == "knowledge-trust":
-            (root / "var/lib/azazel/lite-trust/trust.json").write_text("{}\n")
+            with lab_file(root, "knowledge-trust", write=True) as stream:
+                stream.write(b"{}\n")
+                stream.truncate()
         elif target == "locald":
             services.run(["systemctl", "stop", services.prefix(root) + "azazel-mio-locald.service"])
         elif target == "pack-expire":
@@ -189,8 +194,10 @@ def break_target(root, target):
             # admission record to make this break appear successful.
             detail = "unavailable: no active lab pack selection"
         else:
-            with (root / "var/lib/azazel/state/mio/route.jsonl").open("a") as stream:
-                stream.write('{"tampered":true}\n')
+            services.run(["systemctl", "stop", services.prefix(root) + "azazel-mio-entryd.service"])
+            with lab_file(root, "audit-tamper", write=True) as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.write(b'{"tampered":true}\n')
     finally:
         after = masked_snapshot()
         print(json.dumps(output(unchanged_edge_snapshot=after, unchanged=before == after),
@@ -212,19 +219,11 @@ def down(root):
 def lab_reference(root, scenario, embedding=False, model=None, *, frame=None):
     from .inprocess import load_frame, read_frame, reference
 
-    frame = read_frame(frame) if frame is not None else load_frame(scenario)
     if embedding:
-        from .embedding import retriever
+        from .embedding import refuse_embedding
 
-        try:
-            with retriever(root, model) as (engine, server):
-                result = reference(frame, retriever=engine)
-                result["embedding_memory"] = server.memory()
-                return result
-        except (OSError, ValueError, RuntimeError, RuntimeRefused, SupervisorRefused) as error:
-            result = reference(frame)
-            result["fallback"] = type(error).__name__
-            return result
+        refuse_embedding()
+    frame = read_frame(frame) if frame is not None else load_frame(scenario)
     return reference(frame)
 
 
@@ -256,6 +255,10 @@ def main(argv=None):
     try:
         if os.geteuid() != 0:
             raise ValueError("root required")
+        if getattr(args, "embedding", False):
+            from .embedding import refuse_embedding
+
+            refuse_embedding()
         root = lab_root(args.id)
         if args.command not in {"up", "down"} and not (root / "session.json").is_file():
             raise ValueError("lab is not up")
@@ -290,6 +293,8 @@ def main(argv=None):
         return 1 if result.get("state") == "degraded" else 0
     except Exception as error:  # noqa: BLE001 - no untrusted payload or key in diagnostics
         refusal = output(state="refused", error_type=type(error).__name__)
+        if isinstance(error, LabRefused):
+            refusal["message"] = str(error)
         if args.command == "bench":
             refusal.update(schema=SCHEMA, banner=BANNER, performance_label=LABEL)
         print(json.dumps(refusal, ensure_ascii=False, sort_keys=True))

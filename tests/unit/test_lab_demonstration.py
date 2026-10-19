@@ -19,6 +19,13 @@ from azazel_nexus import lab_host
 
 
 @pytest.fixture
+def file_owners(monkeypatch):
+    from azazel_nexus_lab import safe_files
+
+    monkeypatch.setattr(safe_files, "expected_owner", lambda target: os.getuid())
+
+
+@pytest.fixture
 def marker(tmp_path, monkeypatch):
     path = tmp_path / "LAB-HOST"
     monkeypatch.setattr(lab_host, "LAB_HOST_MARKER", path)
@@ -63,11 +70,17 @@ def test_marker_is_absolute_and_removal_grants_nothing(marker, monkeypatch):
     assert lab_host.is_lab_host()
 
 
-@pytest.mark.parametrize("command", ["hil-preflight", "commission-review"])
+@pytest.mark.parametrize("command", ["hil-preflight", "commission-review", "commission", "model-import-fetched"])
 def test_library_cli_marker_refusal_before_inventory(marker, command, capsys):
     from azazel_nexus.cli import main
 
-    arguments = [command] + (["--operator", "lab"] if command == "commission-review" else [])
+    arguments = [command]
+    if command in {"commission", "commission-review"}:
+        arguments += ["--operator", "lab"]
+    elif command == "model-import-fetched":
+        arguments += ["lab-model"]
+    if command == "commission":
+        arguments += ["--at", "2026-10-19T00:00:00Z"]
     assert main(arguments) == 2
     assert "LAB_HOST_MARKER" in capsys.readouterr().err
 
@@ -308,9 +321,11 @@ def test_partial_start_failure_stops_units_before_key_cleanup(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("target", ["knowledge-trust", "locald", "pack-expire", "audit-tamper"])
-def test_every_break_prints_unchanged_edge_snapshot(tmp_path, monkeypatch, capsys, target):
+def test_every_break_prints_unchanged_edge_snapshot(tmp_path, monkeypatch, file_owners, capsys, target):
     (tmp_path / "var/lib/azazel/lite-trust").mkdir(parents=True)
     (tmp_path / "var/lib/azazel/state/mio").mkdir(parents=True)
+    (tmp_path / "var/lib/azazel/lite-trust/trust.json").write_bytes(b"original")
+    (tmp_path / "var/lib/azazel/state/mio/route.jsonl").write_bytes(b"original")
     monkeypatch.setattr(cli, "masked_snapshot", lambda: {"authority": "unobserved", "lease": "unobserved"})
     monkeypatch.setattr(services, "run", lambda argv: "")
     result = cli.break_target(tmp_path, target)
@@ -408,33 +423,22 @@ def test_ask_service_reply_is_separate_and_unchanged(tmp_path, monkeypatch, caps
     assert result["lab_inprocess"]["document"]["provenance"]["retrieval"] == "keyword"
 
 
-def test_embedding_unavailable_falls_back_with_visible_banner(tmp_path, monkeypatch):
-    from azazel_nexus_lab import embedding
-    from azazel_nexus_lab.inprocess import render
+@pytest.mark.parametrize("command", ["ask", "bench"])
+def test_embedding_refuses_before_worker_or_files(tmp_path, monkeypatch, capsys, command):
+    from azazel_nexus_lab.refusal import LabRefused
 
-    monkeypatch.setattr(embedding, "available_mib", lambda: embedding.MODEL_RSS_MIB + 255)
-    scenario = ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json"
-    result = cli.lab_reference(tmp_path, scenario, True, tmp_path / "absent.gguf")
-    assert result["retrieval"] == "keyword" and result["fallback"] == "ValueError"
-    assert "keyword fallback" in render(result)
-    assert not (tmp_path / "embedding").exists()
-
-
-def test_embedding_runtime_pin_failure_also_falls_back(tmp_path, monkeypatch):
-    from azazel_nexus_lab import embedding
-
-    from azazel_nexus.model_runtime import RuntimeRefused
-
-    monkeypatch.setattr(embedding, "available_mib", lambda: 10000)
-    def refuse(record, path):
-        assert path == Path("/usr/libexec/azazel/llama-server")
-        assert record.digest in __import__("azazel_nexus.model_runtime", fromlist=["LLAMA_RUNTIME_DIGESTS"]).LLAMA_RUNTIME_DIGESTS.values()
-        raise RuntimeRefused("bad pin")
-    monkeypatch.setattr(embedding, "open_verified_runtime", refuse)
-    result = cli.lab_reference(tmp_path, ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json",
-                               True, tmp_path / "absent")
-    assert result["fallback"] == "RuntimeRefused"
-    assert result["retrieval"] == "keyword"
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "worker", lambda *a, **k: pytest.fail("worker called"))
+    args = [command, "--embedding"] + ([str(tmp_path / "absent.json")] if command == "ask" else [])
+    assert cli.main(args) == 2
+    refusal = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert refusal["state"] == "refused"
+    assert "tests/e2e_local_inference/harness.py" in refusal["message"]
+    assert "Production admission remains closed" in refusal["message"]
+    assert "not an admission" in refusal["message"]
+    with pytest.raises(LabRefused, match="Production admission remains closed"):
+        cli.lab_reference(tmp_path, tmp_path / "absent", True)
+    assert not list(tmp_path.iterdir())
 
 
 def test_real_embedding_retriever_composition_uses_library_and_cache(tmp_path):
@@ -538,7 +542,7 @@ def test_bench_refuses_symlink_output(tmp_path):
         run_bench(tmp_path, Namespace(requests=1, duration=1, interval=1))
 
 
-def test_recovery_observes_refusal_and_restores_each_break(tmp_path, monkeypatch):
+def test_recovery_observes_refusal_and_restores_each_break(tmp_path, monkeypatch, file_owners):
     from azazel_nexus_lab import bench
 
     paths = [tmp_path / relative for relative in (
@@ -559,7 +563,7 @@ def test_recovery_observes_refusal_and_restores_each_break(tmp_path, monkeypatch
     assert all(path.read_bytes() == b"original" for path in paths)
 
 
-def test_recovery_ignores_the_advancing_route_ledger_position(tmp_path, monkeypatch):
+def test_recovery_ignores_the_advancing_route_ledger_position(tmp_path, monkeypatch, file_owners):
     # entryd's reply carries ledger_seq, which advances on every request. The
     # VM run timed out because otherwise identical handoffs never compared equal.
     import itertools
@@ -584,60 +588,6 @@ def test_recovery_ignores_the_advancing_route_ledger_position(tmp_path, monkeypa
     assert locald["state"] == "stable_handoff_or_refusal"
     assert len(locald["observations"]) == 3
     assert "ledger_seq" in locald["observations"][0]["stdout"]
-
-
-def test_embedding_checks_model_digest_holds_copy_and_preserves_kill_switch(tmp_path, monkeypatch):
-    import hashlib
-
-    from azazel_nexus_lab import embedding
-    from azazel_nexus_runtime.mio_serve import LocalServer
-
-    from azazel_nexus.model_admission import LOCAL_MODEL_ADMISSION_ENABLED
-
-    model = tmp_path / "input.gguf"
-    model.write_bytes(b"GGUF unit fixture, no inference")
-    binary = tmp_path / "binary"
-    binary.write_bytes(b"unit fixture, never executed")
-    monkeypatch.setattr(embedding, "available_mib", lambda: embedding.MODEL_RSS_MIB + 256)
-    monkeypatch.setattr(embedding, "MODEL_BYTES", model.stat().st_size)
-    monkeypatch.setattr(embedding, "DIGEST", hashlib.sha256(model.read_bytes()).hexdigest())
-    monkeypatch.setattr(embedding, "open_verified_runtime", lambda record, path: os.open(binary, os.O_RDONLY))
-    with embedding.retriever(tmp_path, model) as (retriever, server):
-        assert isinstance(server, LocalServer)
-        assert type(server).embed is LocalServer.embed
-        assert type(server).start is LocalServer.start
-        assert retriever.server is server
-        assert LOCAL_MODEL_ADMISSION_ENABLED is False
-        copy = tmp_path / "embedding/bge-m3.gguf"
-        assert copy.read_bytes() == model.read_bytes()
-        assert copy.stat().st_mode & 0o777 == 0o400
-        descriptors = server.descriptors
-        server._check_admission()
-        model.write_bytes(b"source changed")
-        assert os.pread(descriptors[1], 4, 0) == b"GGUF"
-        copy.chmod(0o600)
-        copy.write_bytes(b"changed lab inode")
-        with pytest.raises(ValueError, match="descriptor"):
-            server._check_admission()
-    for descriptor in descriptors:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
-
-
-def test_bad_embedding_model_hash_never_constructs_server(tmp_path, monkeypatch):
-    from azazel_nexus_lab import embedding
-
-    model = tmp_path / "wrong.gguf"
-    model.write_bytes(b"wrong")
-    binary = tmp_path / "binary"
-    binary.write_bytes(b"not executed")
-    monkeypatch.setattr(embedding, "available_mib", lambda: 10000)
-    monkeypatch.setattr(embedding, "MODEL_BYTES", 5)
-    monkeypatch.setattr(embedding, "open_verified_runtime", lambda record, path: os.open(binary, os.O_RDONLY))
-    with pytest.raises(ValueError, match="sha256"), embedding.retriever(tmp_path, model):
-        pytest.fail("bad model accepted")
-    assert not (tmp_path / "embedding/bge-m3.gguf").exists()
-    assert not list((tmp_path / "embedding").glob("model.staging-*"))
 
 
 def test_ask_freezes_frame_before_service_and_inprocess(tmp_path, monkeypatch, capsys):
@@ -705,3 +655,129 @@ def test_bench_refusal_is_still_labelled_software_performance(monkeypatch, capsy
     refusal = json.loads(text.splitlines()[-1])
     assert refusal["schema"] == SCHEMA
     assert refusal["banner"] == artifacts.BANNER and refusal["performance_label"] == LABEL
+
+
+def test_lab_has_no_production_serving_adapters_or_admission_callbacks():
+    # Permit only refusal exception imports from serving modules. This catches
+    # serving aliases/monkeypatches and prevents indirect subclasses as well.
+    forbidden = ("azazel_nexus_runtime.mio_serve", "azazel_nexus_runtime.mio_supervisor",
+                 "azazel_nexus_runtime.mio_local", "azazel_nexus_runtime.mio_entryd")
+    for path in (ROOT / "lab/src/azazel_nexus_lab").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        exception_aliases = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if any((node.module or "").startswith(name) for name in forbidden):
+                    assert all(alias.name == "SupervisorRefused" for alias in node.names), path
+                    exception_aliases.update(alias.asname or alias.name for alias in node.names)
+                assert node.module != "azazel_nexus_runtime", path
+            elif isinstance(node, ast.Import):
+                assert not any(alias.name.startswith(forbidden) or alias.name == "azazel_nexus_runtime"
+                               for alias in node.names), path
+            elif isinstance(node, ast.keyword) and node.arg and "admi" in node.arg:
+                assert not isinstance(node.value, ast.Lambda), path
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                if isinstance(value, ast.Lambda):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    assert not any("admi" in ast.unparse(target) for target in targets), path
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                assert not any(isinstance(base, ast.Name) and base.id in exception_aliases
+                               for base in node.bases), path
+
+
+def test_worker_uses_installed_package_in_isolated_interpreter(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "hostile"))
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "hostile"))
+    monkeypatch.setenv("LD_PRELOAD", "hostile.so")
+    def run(argv, **kwargs):
+        assert argv == [sys.executable, "-I", "-B", "-m", "azazel_nexus_lab.worker", "status"]
+        assert kwargs["cwd"] == "/"
+        assert kwargs["env"] == {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "AZAZEL_ROOT": str(tmp_path)}
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli.worker(tmp_path, "status")["exit_code"] == 0
+
+
+def test_mark_host_failure_removes_root_and_allows_retry(tmp_path, monkeypatch):
+    root = tmp_path / "demo"
+    monkeypatch.setattr(cli, "BASE", tmp_path)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cli.platform, "freedesktop_os_release", lambda: {"ID": "debian", "VERSION_ID": "13"})
+    monkeypatch.setattr(cli, "masked_snapshot", dict)
+    monkeypatch.setattr(cli, "secure_directory", lambda *a: None)
+    def fail_marker():
+        assert root.is_dir() and not list(root.iterdir())
+        raise ValueError("marker failed")
+    monkeypatch.setattr(cli, "mark_host", fail_marker)
+    monkeypatch.setattr(services, "prepare", lambda root: pytest.fail("provisioned before marker"))
+    for _ in range(2):
+        with pytest.raises(ValueError, match="marker failed"):
+            cli.up(root)
+        assert not root.exists()
+
+
+@pytest.mark.parametrize("target", ["knowledge-trust", "audit-tamper"])
+@pytest.mark.parametrize("attack", ["symlink", "parent-symlink", "hardlink", "owner", "fifo"])
+def test_break_refuses_unsafe_file(tmp_path, monkeypatch, file_owners, target, attack):
+    from azazel_nexus_lab import safe_files
+    from azazel_nexus_lab.refusal import LabRefused
+
+    path = tmp_path / safe_files.FILES[target][0]
+    path.parent.mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"untouched")
+    if attack == "symlink":
+        path.symlink_to(victim)
+    elif attack == "parent-symlink":
+        path.parent.rmdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / path.name).write_bytes(b"untouched")
+        path.parent.symlink_to(outside, target_is_directory=True)
+    elif attack == "hardlink":
+        os.link(victim, path)
+    elif attack == "fifo":
+        os.mkfifo(path)
+    else:
+        path.write_bytes(b"untouched")
+        monkeypatch.setattr(safe_files, "expected_owner", lambda target: os.getuid() + 1)
+    monkeypatch.setattr(cli, "masked_snapshot", dict)
+    stopped = []
+    monkeypatch.setattr(services, "run", lambda argv: stopped.append(argv))
+    with pytest.raises(LabRefused, match="LAB:"):
+        cli.break_target(tmp_path, target)
+    assert victim.read_bytes() == b"untouched"
+    if attack in {"owner", "parent-symlink"}:
+        assert path.read_bytes() == b"untouched"
+    if target == "audit-tamper":
+        assert stopped == [["systemctl", "stop", services.prefix(tmp_path) + "azazel-mio-entryd.service"]]
+
+
+def test_bench_restore_refuses_planted_symlink(tmp_path, monkeypatch, file_owners):
+    from azazel_nexus_lab import bench, safe_files
+    from azazel_nexus_lab.refusal import LabRefused
+
+    path = tmp_path / safe_files.FILES["knowledge-trust"][0]
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"original")
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"untouched")
+    events = []
+    monkeypatch.setattr(services, "stop", lambda root: events.append("stop"))
+    monkeypatch.setattr(services, "prepare", lambda root: {})
+    monkeypatch.setattr(services, "start", lambda *a: [])
+    monkeypatch.setattr(bench, "service_memory", lambda root: {})
+    monkeypatch.setattr(cli, "worker", lambda *a: {"exit_code": 0, "stdout": "{}"})
+    def plant(root, target):
+        path.unlink()
+        path.symlink_to(victim)
+        print("{}")
+    monkeypatch.setattr(cli, "break_target", plant)
+    with pytest.raises(LabRefused, match="LAB:"):
+        bench.recoveries(tmp_path)
+    assert events == ["stop", "stop"]
+    assert victim.read_bytes() == b"untouched"

@@ -98,9 +98,52 @@ class ObservedServer:
         return result
 
 
-# Shared non-production composition; production never imports this package.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lab/src"))
-from azazel_nexus_lab.composition import compose
+class NoRemote:
+    """Fail loudly if a local-only scenario dispatches remote content."""
+
+    def observe(self):
+        return "remote_unavailable"
+
+    def handle(self, *args, **kwargs):
+        raise AssertionError("local-only E2E attempted remote inference")
+
+
+def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama"):
+    """Compose the real A/B APIs using only trusted constructor injections."""
+    from azazel_nexus_runtime.mio_entryd import MioEntryService
+    from azazel_nexus_runtime.mio_locald import LocalRuntimeService
+    from azazel_nexus_runtime.mio_router import MioRouter
+
+    from azazel_nexus.core_reserve import CoreReserve
+    from azazel_nexus.mio_profile import MioProfile
+    from azazel_nexus.resource_profile import ResourceProfile
+    from azazel_nexus.route_evidence import Prediction
+    from azazel_nexus.routing import Route
+
+    reserve = CoreReserve(
+        profile=ResourceProfile.STANDARD, reserve_mib=512,
+        host_digest="sha256:" + "0" * 64,
+        harness_version="e2e-fixture-not-HG-05", sample_count=64, duration_seconds=3600,
+    )
+
+    def runtime(identity):
+        assert identity == runtime_id
+        return record
+
+    local = LocalRuntimeService(
+        staging=root / "var/lib/azazel/mio", reserve=reserve,
+        admitted=lambda identity: identity == model_id,
+        runtime=runtime, server=observed, model_id=model_id, runtime_id=runtime_id,
+    )
+    router = MioRouter(local=local, remote=NoRemote())
+    entry = MioEntryService(
+        router=router, profile_reader=lambda: MioProfile.LOCAL_ONLY,
+        local_admitted=lambda: True,
+        predictions_reader=lambda: {Route.LOCAL: Prediction(
+            Route.LOCAL.value, True, 100, 100, 100, False, "e2e fixture prediction",
+        )},
+    )
+    return entry, router
 
 
 def frame(privacy):

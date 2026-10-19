@@ -8,19 +8,17 @@ import math
 import platform
 import statistics
 import time
-from contextlib import ExitStack, redirect_stdout
+from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from azazel_nexus_runtime.mio_supervisor import SupervisorRefused
-
 from azazel_nexus.audit import AuditChainBroken
-from azazel_nexus.model_runtime import RuntimeRefused
 
 from . import services
 from .artifacts import BANNER
 from .inprocess import DATA, load_frame, reference
+from .safe_files import lab_file
 
 SCHEMA = "azazel-nexus-lab/bench/v1"
 LABEL = "仮想マシン・ソフトウェア性能（実機の根拠ではない）"
@@ -98,7 +96,10 @@ def recoveries(root, *, timeout=15):
         # Stop writers before capturing a ledger that will later be restored.
         services.stop(root)
         path = root / relative if relative else None
-        saved = path.read_bytes() if path is not None and path.exists() else None
+        saved = None
+        if path is not None:
+            with lab_file(root, target) as stream:
+                saved = stream.read()
         services.start(root, services.prepare(root))
         try:
             began = time.monotonic()
@@ -142,10 +143,9 @@ def recoveries(root, *, timeout=15):
         finally:
             services.stop(root)
             if path is not None:
-                if saved is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_bytes(saved)
+                with lab_file(root, target, write=True) as stream:
+                    stream.write(saved)
+                    stream.truncate()
             services.start(root, services.prepare(root))
     return results
 
@@ -173,6 +173,10 @@ def summary(document):
 
 
 def run_bench(root, args):
+    if getattr(args, "embedding", False):
+        from .embedding import refuse_embedding
+
+        refuse_embedding()
     if not 1 <= args.requests <= 10000 or not 0 < args.duration <= 86400 or not .1 <= args.interval <= 60:
         raise ValueError("requests 1..10000, duration (0,86400], interval .1..60 required")
     # No caller-supplied destination and no writes into evidence directories.
@@ -192,38 +196,7 @@ def run_bench(root, args):
     document["entryd"] = [roundtrips(root, args.requests, c) for c in (1, 2, 4)]
     document["keyword"] = distribution([reference(frame)["latency_ms"] for _ in range(args.requests)])
     document["embedding"] = {"state": "not_requested"}
-    with ExitStack() as stack:
-        engine, server = None, None
-        if args.embedding:
-            from .embedding import retriever
-
-            try:
-                prepared_at = time.perf_counter()
-                engine, server = stack.enter_context(retriever(root, args.model))
-                preparation_ms = (time.perf_counter() - prepared_at) * 1000
-            except (OSError, ValueError, RuntimeError, RuntimeRefused, SupervisorRefused) as error:
-                document["embedding"] = {"state": "keyword_fallback", "reason": type(error).__name__,
-                                         "banner": "埋め込み利用不可・keyword にフォールバック / embedding unavailable; keyword fallback"}
-        if engine is not None:
-            began = time.perf_counter()
-            cold = reference(frame, retriever=engine)
-            cold_total = (time.perf_counter() - began) * 1000
-            samples = [reference(frame, retriever=engine) for _ in range(args.requests)]
-            embedding_samples = [r["latency_ms"] for r in samples if r["retrieval"] == "embedding"]
-            document["embedding"] = {
-                "state": "embedding" if all(r["retrieval"] == "embedding" for r in [cold, *samples]) else "keyword_fallback",
-                "model_digest": engine.model_digest, "runtime_digest": server.record.digest,
-                "asset_preparation_ms": preparation_ms,
-                "cold_ms": cold["latency_ms"], "startup_and_cold_ms": cold_total,
-                "latency": distribution(embedding_samples) if embedding_samples else None,
-                "samples": samples, "memory": server.memory(),
-                "fallbacks": [r["fallback"] for r in [cold, *samples] if r["fallback"]],
-            }
-            if document["embedding"]["state"] == "keyword_fallback":
-                document["embedding"]["banner"] = "埋め込み利用不可・keyword にフォールバック / embedding unavailable; keyword fallback"
-        sustained = sustained_run(root, frame, args, engine)
-        if server is not None:
-            document["embedding"]["memory"] = server.memory()
+    sustained = sustained_run(root, frame, args, None)
     document["sustained"] = sustained
     document["memory_after"] = service_memory(root)
     document["recovery"] = recoveries(root)

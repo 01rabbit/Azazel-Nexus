@@ -22,11 +22,8 @@ LAB — NOT hardware evidence / NOT admission / NOT production activation.
 Use a disposable Debian 13 test VM, a reviewed checkout at `/opt/src/Azazel-Nexus`,
 a separately prepared offline wheel directory `/opt/lab-wheels`, and the pinned
 architecture-specific b11716 binary at `/opt/lab-assets/llama-server`.
-Place bge-m3 Q8_0 at `/opt/lab-assets/bge-m3-Q8_0.gguf` if using embedding.
-The model is 634553760 bytes, SHA-256
-`950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167`.
 Nothing is downloaded by the lab. The production installer verifies the runtime
-against the existing architecture digest pins; the lab verifies the installed binary again.
+against the existing architecture digest pins. The lab does not launch a model server.
 The VM must have Python 3.11+ with venv and the production offline staging inputs
 prepared as described in [the systemd runbook](evidence/milestone1-real-systemd-smoke-RUNBOOK.md).
 
@@ -64,10 +61,8 @@ sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_la
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/phishing.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/ransomware.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/out-of-scope.json
-sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask --embedding --model /opt/lab-assets/bge-m3-Q8_0.gguf lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo audit
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo bench --requests 20 --duration 300 --interval 5
-sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo bench --embedding --model /opt/lab-assets/bge-m3-Q8_0.gguf --requests 20 --duration 300 --interval 5
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break knowledge-trust
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo knowledge T1110
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break locald
@@ -104,19 +99,13 @@ this short run cannot establish sustained stability.
   Baseline procedures remain unreviewed templates. Out-of-scope input shows its gate
   refusal, rather than an invented candidate. The English header is
   `LAB-INPROCESS — NOT admission / OUTSIDE service path`.
-- `--embedding`: real `EmbeddingRetriever` and inherited `LocalServer` HTTP,
-  readiness, embedding, deadline and stop methods. The shared non-production
-  composition helper was extracted from `tests/e2e_local_inference/harness.py`.
-  The lab adapter supplies its own construction, descriptor checks and launcher;
-  production construction/launch remain admission-disabled. No production flag is
-  mutated, no reserve measurement or admission receipt is fabricated. The binary
-  is fixed at `/usr/libexec/azazel/llama-server`; `--model` is copied, hashed and held
-  read-only inside the lab root. CPU only, AF_UNIX, no remote provider.
-  `MemAvailable` must be at least the explicit **1024 MiB RSS estimate + 256 MiB**.
-  This is a conservative lab estimate, not an HG measurement or a cgroup guarantee.
-  Missing assets, low memory, invalid digests, startup and retrieval failures fall
-  back to keyword with an explicit bilingual banner. On a 2 GiB VM this fallback
-  is a valid result. Model/load cold time is separate from warm retrieval latency.
+- `ask --embedding` and `bench --embedding`: explicitly refuse with a LAB message
+  pointing to `tests/e2e_local_inference/harness.py` for test-only inference.
+  The shipped lab has no embedding launcher, production serving subclass, admission
+  hook override, or injected admission callback. It does not use or bypass production
+  serving/admission. Production admission remains closed; this lab path is not an
+  admission. Plain `ask` and `bench` use keyword retrieval. The e2e harness is a
+  separate test tool, not an installed lab command or hardware evidence.
 - `audit`: route/local/Lite-import hash-chain verification. Knowledge daemon events
   are an **unhashed event log**; JSON framing is checked without a cryptographic claim.
 - `break`: trust corruption, stopped locald, or route-ledger tampering. Each prints
@@ -125,7 +114,7 @@ this short run cannot establish sustained stability.
 - `down`: exact lab-unit stop, overwrite/fsync/unlink of both ephemeral private keys,
   lab-root removal, retained `/etc/azazel-lab/LAB-HOST`. Stop failure retains recovery
   state. Overwriting cannot guarantee physical erasure on SSD/COW/snapshots; discard
-  the VM as well. The marker blocks HIL/reserve/model admission/commission review/
+  the VM as well. The marker blocks HIL/reserve/model admission/model-import-fetched/commission/commission review/
   bootstrap approval publication; removing it grants no admission.
 
 ## Bench contract and interpretation
@@ -133,7 +122,7 @@ this short run cannot establish sustained stability.
 Schema: `azazel-nexus-lab/bench/v1`. JSON and Japanese summary are created exclusively
 under `/var/lib/azazel-lab/<id>/bench/<UTC timestamp>.{json,txt}`, with both LAB banners
 and **仮想マシン・ソフトウェア性能（実機の根拠ではない）**. No output-directory flag exists. JSON records package/Python/kernel versions,
-architecture, baseline/scenario SHA-256 and, when used, verified model/runtime digests.
+architecture and baseline/scenario SHA-256.
 Production HIL, reserve and Pack validators refuse the lab schema/domain.
 
 Bench restarts the lab stack before measurement and records per-service elapsed time
@@ -142,16 +131,14 @@ not a completed application request). It then measures N actual entryd round tri
 **at each concurrency 1, 2, 4**, with individual durations/statuses, median p50 and
 nearest-rank p95. The fresh client's process startup is outside the timed exchange.
 Keyword latency includes reading/parsing the packaged baseline and document construction.
-Embedding latency includes real retrieval and document construction, with cold/cache
-preparation separate; keyword fallback samples are explicitly labelled.
+Embedding serving is unavailable in the shipped lab; `--embedding` refuses before measurement.
 
 Each service reports `/proc/<MainPID>/status` VmRSS/VmHWM and cgroup-v2 `memory.peak`.
-Missing kernel counters are `unavailable`/null, never zero evidence. The embedding
-child's VmHWM is sampled while it is still alive. The sustained run repeats serial
+Missing kernel counters are `unavailable`/null, never zero evidence. The sustained run repeats serial
 entryd batches, reference retrieval and service memory sampling for the configured
 wall duration (default 300 s), recording first-to-last RSS and p50/reference latency
 deltas plus all samples. Startup/polling and final requests can extend the duration.
-The model stays loaded during an embedding sustained run.
+No model is loaded by the lab.
 
 For each of knowledge-trust, locald and audit-tamper, bench records elapsed time from
 break initiation to three identical responses/refusals 100 ms apart, or a 15 s
@@ -165,7 +152,10 @@ fixture, concurrency and workload; host contention, paging and cache state affec
 ## Boundaries and relocation
 
 Root clients set primary effective GID to `azazel-operator` in a fresh child;
-existing PrincipalPolicy classifies this as OPERATOR. Supplementary membership alone
+existing PrincipalPolicy classifies this as OPERATOR. Workers run the installed lab
+distribution via `python -I -B -m azazel_nexus_lab.worker`, with cwd `/` and only
+fixed PATH/LC_ALL plus the lab-root relocation value in their environment; caller
+PYTHONPATH, cwd and environment are not inherited. Supplementary membership alone
 does not grant root that class. No real keys or production trust enrollment are used.
 The fixed lab root is `/var/lib/azazel-lab/<id>` with 1–12 lowercase ASCII letters/digits;
 there is no arbitrary root, admission or trust bypass. `AZAZEL_ROOT` is only the
@@ -180,8 +170,13 @@ Other sandbox directives remain checked; effective ReadWritePaths must remain un
 the lab root. Unknown hooks, drop-ins or executable paths refuse.
 
 Lab envelopes use `azazel-nexus-lab/` and `azazel-nexus-lab/v1\0`. Native Knowledge
-input retains its producer format inside the envelope, re-signed by ephemeral test
-keys pinned only under the lab root. Baseline library data is loaded only by the lab
+input retains its producer format inside the envelope. Deliberate exception:
+`resign_fixture` signs the Lite manifest bytes in the production raw signature
+format (without the lab domain), so the real Lite importer can read the fixture.
+The signing key is ephemeral; its trust anchor is pinned only under the lab root,
+never enrolled in operator trust. Both ephemeral private keys are overwritten,
+fsynced and unlinked on `down`, subject to the storage-erasure limits above.
+Lab envelopes themselves retain the lab signature domain. Baseline library data is loaded only by the lab
 process. Production `src` and `runtime` never import the lab package;
 `LOCAL_MODEL_ADMISSION_ENABLED` remains `False`, and `LLAMA_RUNTIME_DIGESTS` is unchanged.
 See [hardware gates](hardware-gates.md), [Knowledge trust](knowledge-lite-trust.md),

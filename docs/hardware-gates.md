@@ -334,4 +334,4 @@ model admission, acceptance, or production activation. VM output and
 `azazel-nexus-lab/` artifacts remain lab material regardless of signatures.
 The persistent `/etc/azazel-lab/LAB-HOST` marker narrows the host to refusals
 (`LAB_HOST_MARKER`) at HIL preflight/capture, Core reserve probing, model admission,
-commission review, and bootstrap approval publication. Removing it grants nothing.
+commission, commission review, `model-import-fetched`, and bootstrap approval publication. Removing it grants nothing.
