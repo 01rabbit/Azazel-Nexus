@@ -133,23 +133,41 @@ scheduler: an operator puts an artifact in a directory and the node reads it.
 
 ### The paths, their owners and their ceilings
 
-Everything is derived from one commissioned root, `/data/azazel/knowledge-lite`.
-A caller supplies none of it.
+The installed store root is `/var/lib/azazel/knowledge`; daemon trust is
+commissioned separately under `/var/lib/azazel/lite-trust`. A caller supplies neither.
 
 | path | what it holds | who writes | ceiling |
 | --- | --- | --- | --- |
-| `/data/azazel/knowledge-lite/inbox` | artifacts an operator placed | the operator | 32 entries considered, 256 MiB each |
-| `/data/azazel/knowledge-lite/trust/anchors.toml` | the commissioned trust root | commissioning | — |
-| `/data/azazel/knowledge-lite/admitted` | the one artifact in use | the import service | one file, replaced atomically |
-| `/data/azazel/knowledge-lite/quarantine` | refused artifacts, held | the import service | one file per refusal |
-| `/data/azazel/knowledge-lite/state/watermark` | the anti-rollback counter | the import service | one integer |
+| `/var/lib/azazel/knowledge/inbox` | artifacts an operator placed | the operator | 32 entries considered, 256 MiB each |
+| `/var/lib/azazel/lite-trust/trust/anchors.toml` | the commissioned trust root | commissioning | — |
+| `/var/lib/azazel/knowledge/admitted` | the one artifact in use | the import service | one file, replaced atomically |
+| `/var/lib/azazel/knowledge/quarantine` | refused artifacts, held | the import service | one file per refusal |
+| `/var/lib/azazel/knowledge/state/watermark` | the anti-rollback counter | the import service | one integer |
 
 The import creates `admitted/`, `state/` and `quarantine/` as `0750` (keeping
 an inherited setgid bit) and removes group/other write from any it finds
 loosened, whatever the importer's umask. Under the setgid operator-group store
 root, a group-writable `admitted/` or `state/` would let any member swap in an
 older validly signed bundle or remove the watermark: serving re-verifies the
-signature, not the version (#186). Files are written `0600`.
+signature and the anti-rollback watermark. Files are written `0600`.
+
+Serving refuses a bundle below the watermark. A missing or malformed watermark
+with a bundle present makes the store untrusted and blocks import until an
+operator restores the state. Import inspects existing store files for regular
+file type, single link, effective-uid ownership and absence of group/other write;
+it records unsafe state as `lite.import.state_untrusted` and directory tightening
+as `lite.import.store_tightened`, naming only directory roles. The fixed codes
+are `WATERMARK_MISSING`, `WATERMARK_MALFORMED`, `WATERMARK_UNREADABLE` and
+`STORE_FILE_UNSAFE`.
+
+Imports run as the store owner (`azknowledge`, which owns
+`/var/lib/azazel/knowledge`); store files owned by anyone else are refused, not
+adopted. The bundle is renamed and its directory synced before the watermark
+is written, so a crash leaves a bundle at or above the watermark, never below.
+A crash during the very first import can leave `admitted/current.tar.gz`
+without a watermark. That state is refused like a deleted watermark. To
+recover, an operator moves `admitted/current.tar.gz` aside (keep it for review)
+and imports again; nothing repairs it automatically.
 
 ### The caller chooses an entry, and chooses nothing else
 
@@ -177,7 +195,8 @@ material.**
 ### The audit records transitions, not reads
 
 `lite.import.started`, `lite.import.admitted`, `lite.import.quarantined`,
-`lite.import.rolled_back`, `lite.serving.stopped_by_revocation`. A status read
+`lite.import.rolled_back`, `lite.import.state_untrusted`,
+`lite.import.store_tightened`, `lite.serving.stopped_by_revocation`. A status read
 writes nothing: a ledger that grew every time somebody looked at a screen
 would be a ledger nobody can read.
 
@@ -256,8 +275,8 @@ SERVICE; production service principals are limited to `azmioentry`,
 perform admission. Protocol refusals go to this daemon's
 `/var/lib/azazel/state/knowledge/refusals.jsonl`.
 
-The installed store root is `/var/lib/azazel/knowledge`, replacing the
-historical `/data/azazel/knowledge-lite` example above. `LiteImport` still owns
+The installed store root is `/var/lib/azazel/knowledge`, as listed in §7 above.
+`LiteImport` still owns
 `inbox`, `admitted/current.tar.gz`, `quarantine` and `state/watermark`. The
 daemon never imports, repins, accepts revocations, promotes or repairs files.
 A successful status request writes neither store nor trust nor a read event.
@@ -290,9 +309,12 @@ The result has exactly four keys:
 | key | values |
 | --- | --- |
 | `state` | `available`, `stale`, `unavailable`, `quarantined` |
-| `reason_code` | `available`, `stale`, `unavailable`, `no_bundle`, `quarantined`, `bundle_refused`, `revoked`, `unverified`, `trust_unreadable`, `store_unreadable` |
+| `reason_code` | `available`, `stale`, `unavailable`, `no_bundle`, `quarantined`, `bundle_refused`, `state_untrusted`, `revoked`, `unverified`, `trust_unreadable`, `store_unreadable` |
 | `generation` | verified bundle version (at most signed 64-bit maximum), otherwise null |
 | `freshness` | `current`, `stale`, `absent` (time-bound claims axis) |
+
+`state_untrusted` means the admitted bundle is below the anti-rollback watermark
+or its watermark is missing or malformed; no bundle is served.
 
 Static references can make the state `available` while freshness is `stale`
 or `absent`; the existing three-axis bundle rules still apply. No claim body,

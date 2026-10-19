@@ -40,6 +40,7 @@ from typing import Optional
 
 from .content_store import ContentStore, ContentTampered, parse_digest
 from .signature import PUBLIC_KEY_BYTES
+from .store_dirs import fsync_directory, store_directory
 
 __all__ = [
     "LiteGeneration",
@@ -247,11 +248,18 @@ class LiteGenerationStore:
                 f"generation {number} already exists; a generation is promoted "
                 "once and never edited in place"
             )
-        directory.mkdir(parents=True)
-        (directory / "generation.json").write_text(
-            json.dumps(asdict(generation), sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        store_directory(self.generations)
+        directory.mkdir(mode=0o750, exist_ok=False)
+        store_directory(directory)
+        fd = os.open(directory / "generation.json",
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o640)
+            stream.write(json.dumps(asdict(generation), sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        fsync_directory(directory)
+        fsync_directory(self.generations)
         _atomic_write(self.live_pointer, f"{number}\n".encode("utf-8"))
         return generation
 
@@ -334,7 +342,7 @@ class LiteGenerationStore:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    store_directory(path.parent)
     handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".live-")
     try:
         with os.fdopen(handle, "wb") as stream:
@@ -342,6 +350,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise

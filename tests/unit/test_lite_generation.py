@@ -402,3 +402,26 @@ def test_retaining_nothing_is_refused(store: LiteGenerationStore) -> None:
     with pytest.raises(LiteGenerationRefused) as caught:
         store.prune(retain=0)
     assert "retention starts at 1" in str(caught.value)
+
+
+@pytest.mark.parametrize("umask", [0o002, 0o077])
+def test_generation_modes_are_explicit(store, umask):
+    import os
+    previous = os.umask(umask)
+    try:
+        admit(store, b"bundle", at="2026-09-01T00:00:00Z")
+    finally:
+        os.umask(previous)
+    for directory in (store.generations, store.generations / "1"):
+        assert directory.stat().st_mode & 0o022 == 0
+    assert (store.generations / "1/generation.json").stat().st_mode & 0o777 == 0o640
+
+
+def test_generation_refuses_symlinked_directory(store, tmp_path):
+    target = tmp_path / "outside"
+    target.mkdir()
+    store.generations.parent.mkdir(parents=True, exist_ok=True)
+    store.generations.symlink_to(target, target_is_directory=True)
+    with pytest.raises(OSError):
+        admit(store, b"bundle", at="2026-09-01T00:00:00Z")
+    assert list(target.iterdir()) == []

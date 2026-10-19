@@ -287,3 +287,41 @@ def test_read_listener_only_registers_lookup():
     assert daemon.READ_REGISTRY.resolve("knowledge.lookup", principal) == daemon.LOOKUP_VERB
     with pytest.raises(RequestRefused):
         daemon.READ_REGISTRY.resolve("knowledge.status", principal)
+
+
+@pytest.mark.parametrize("watermark", ["6", None, "abc", "-1", "9" * 100, "directory", "symlink"])
+def test_status_refuses_untrusted_watermark(node, watermark):
+    service, root, _, _ = node
+    admit(node)
+    path = root / "state/watermark"
+    path.unlink()
+    if watermark == "directory":
+        path.mkdir()
+    elif watermark == "symlink":
+        path.symlink_to(root / "inbox/bundle.tar.gz")
+    elif watermark is not None:
+        path.write_text(watermark)
+    assert service.handle(None) == {"state": "quarantined", "reason_code": "state_untrusted",
+                                    "generation": None, "freshness": "absent"}
+
+
+@pytest.mark.parametrize("floor", ["4", "5"])
+def test_status_serves_equal_or_newer_than_watermark(node, floor):
+    service, root, _, _ = node
+    admit(node)
+    (root / "state/watermark").write_text(floor)
+    assert service.handle(None)["state"] == "available"
+
+
+def test_status_reports_unreadable_watermark_as_unreadable(node, monkeypatch):
+    import azazel_nexus.lite_import as lite_import
+
+    service, _, _, _ = node
+    admit(node)
+
+    def denied(path):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(lite_import, "_read_watermark", denied)
+    assert service.handle(None) == {"state": "unavailable", "reason_code": "store_unreadable",
+                                    "generation": None, "freshness": "absent"}

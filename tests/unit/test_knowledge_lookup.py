@@ -339,3 +339,26 @@ def test_client_transport_uses_one_budget_for_connect_send_and_silent_recv(monke
         knowledge_client.lookup_context(('T1110',), deadline_s=0.05)
     assert timeouts == pytest.approx([0.05, 0.04, 0.02])
     assert clock[0] == pytest.approx(10.05)
+
+
+@pytest.mark.parametrize("watermark", ["6", None, "abc", "-1", "9" * 100, "directory", "symlink"])
+def test_lookup_refuses_untrusted_watermark(node, watermark):
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}])
+    path = node[1] / "state/watermark"
+    path.unlink()
+    if watermark == "directory":
+        path.mkdir()
+    elif watermark == "symlink":
+        path.symlink_to(node[1] / "inbox/bundle.tar.gz")
+    elif watermark is not None:
+        path.write_text(watermark)
+    result = reading(node)
+    assert result.reason_code == "state_untrusted"
+    assert result.refs == ()
+
+
+@pytest.mark.parametrize("floor", ["4", "5"])
+def test_lookup_serves_equal_or_newer_than_watermark(node, floor):
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}])
+    (node[1] / "state/watermark").write_text(floor)
+    assert reading(node).reason_code == "available"
