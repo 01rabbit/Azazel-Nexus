@@ -457,16 +457,25 @@ the new verbs do not commission a model or alter Edge authority.
 
 After admitted local retrieval, locald passes `deadline_s` to the Knowledge
 client: the remaining request budget minus `DELIVERY_RESERVE_S` (20 ms for
-bounded validation, audit and delivery). A nonpositive budget skips lookup with
-`skipped_budget_exhausted`. The client uses one monotonic transport deadline
-across connect, send and receive, without retries; an unavailable or silent
-Knowledge service contributes no context. Exhausting the request budget still
-returns the existing timeout refusal.
+bounded validation, audit and delivery) and `PIPELINE_RESERVE_S` (50 ms for the
+deterministic selection that follows), capped at `KNOWLEDGE_MAX_S` (250 ms). A
+nonpositive budget skips lookup with `skipped_budget_exhausted`. The client uses
+one monotonic transport deadline across connect, send and receive, without
+retries. A silent, unavailable or defective Knowledge service contributes no
+context (`unavailable`) and costs at most the cap: playbook advice is still
+delivered, though a tight budget may lose the optional model explanation.
 
 Usable references are returned separately under `knowledge`, with
 `source_kind: knowledge_lite`, verified bundle `generation`, `freshness`
 (`current` or `static`), `trust_check: verified`, and the existing citation
-fields. Both socket client and delivery reader validate this bounded schema.
+fields. Both socket client and delivery reader validate this bounded schema; entryd
+relays the optional `knowledge` key, and the deterministic handoff reference
+(`read_reference`) still rejects it. References are dropped from the end
+rather than letting them push a valid advisory over the 48 KiB delivered
+bound, and the prompt's reference message is capped separately, so the list
+may name references the model did not see. Provenance rests on the
+`KnowledgeRef` type produced after verification and the peer-authenticated
+socket; offline evaluation fixtures are never delivered.
 Trust results describe the lookup's existing signature/revocation checks, not
 an approval. Expired indicators remain withheld by the existing serving filter;
 static reference material remains available. Verified Knowledge enters the

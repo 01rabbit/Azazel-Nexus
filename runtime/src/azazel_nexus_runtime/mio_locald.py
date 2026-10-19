@@ -7,6 +7,7 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -19,6 +20,7 @@ from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
+    DELIVERED_MAX_BYTES,
     FrameRefused,
     build_options,
     delivered_document,
@@ -299,15 +301,22 @@ class LocalRuntimeService:
         knowledge_state = "unused"
         ids = technique_ids(frame)
         if self._knowledge_lookup is not None and ids:
-            remaining = began + deadline_ms / 1000 - time.monotonic() - DELIVERY_RESERVE_S
-            if remaining <= 0:
+            # Optional context gets a capped share and leaves the deterministic
+            # pipeline its time afterwards, so a silent Knowledge service costs
+            # at most KNOWLEDGE_MAX_S and never turns playbook advice into a
+            # timeout. It may cost the optional explanation in a tight budget.
+            budget = min(KNOWLEDGE_MAX_S, began + deadline_ms / 1000 - time.monotonic()
+                         - DELIVERY_RESERVE_S - PIPELINE_RESERVE_S)
+            if budget <= 0:
                 knowledge_state = "skipped_budget_exhausted"
             else:
                 try:
-                    knowledge = tuple(self._knowledge_lookup(ids, deadline_s=remaining))
+                    knowledge = tuple(self._knowledge_lookup(ids, deadline_s=budget))
                     knowledge_state = "available" if knowledge else "no_context"
-                except KnowledgeUnavailable:
-                    knowledge_state = "unavailable"
+                except Exception as error:  # noqa: BLE001 - optional context
+                    if isinstance(error, AuditUnavailable):
+                        raise
+                    knowledge, knowledge_state = (), "unavailable"
         audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
                "playbook_count": len(playbooks), "knowledge": knowledge_state,
                "knowledge_count": len(knowledge)})
@@ -332,6 +341,11 @@ class LocalRuntimeService:
 # optional I/O; this is a software budget, not measured hardware latency.
 DELIVERY_RESERVE_S = 0.02
 EXPLANATION_MIN_S = 1.0
+# Knowledge is a local socket read of at most 64 KiB; a healthy service answers
+# well inside this, and an unhealthy one must not take the request with it.
+KNOWLEDGE_MAX_S = 0.25
+# Deterministic selection, validation and audit after the optional lookup.
+PIPELINE_RESERVE_S = 0.05
 
 
 def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="bench", *,
@@ -388,8 +402,15 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
     # checks. Offline evaluation fixtures may inform the prompt but are never
     # delivered as if they had been verified.
     delivered_refs = [asdict(ref) for ref in knowledge if isinstance(ref, KnowledgeRef)]
-    if delivered_refs:
+    # Optional references are dropped from the end rather than letting them
+    # push a valid advisory over the delivered-size bound.
+    while delivered_refs:
         reply['knowledge'] = delivered_refs
+        if len(json.dumps(reply, ensure_ascii=False).encode('utf-8')) <= DELIVERED_MAX_BYTES:
+            break
+        delivered_refs = delivered_refs[:-1]
+    else:
+        reply.pop('knowledge', None)
     read_delivered(reply)
     return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
                    "explanation_ms": (time.monotonic() - explanation_began) * 1000,

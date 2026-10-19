@@ -14,6 +14,7 @@ from .lite_import import read_knowledge_refs
 from .sanitizer import PrivacyClass
 
 MAX_FRAME_BYTES = 32 * 1024
+DELIVERED_MAX_BYTES = 48 * 1024
 MAX_CONTEXT = 16
 MAX_TEXT_BYTES = 4096
 FIELD_NAMES = (
@@ -741,7 +742,7 @@ def read_delivered(reply):
                                  ensure_ascii=False).encode('utf-8'))
     if 'knowledge' in reply:
         read_knowledge_refs(reply['knowledge'])
-    require(len(json.dumps(reply, ensure_ascii=False).encode('utf-8')) <= 48 * 1024)
+    require(len(json.dumps(reply, ensure_ascii=False).encode('utf-8')) <= DELIVERED_MAX_BYTES)
     return {key: reply[key] for key in ('advice', 'fields', *MACHINE_FIELDS, 'knowledge')
             if key in reply}
 
