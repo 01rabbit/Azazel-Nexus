@@ -142,11 +142,14 @@ def recoveries(root, *, timeout=15):
                             "memory": service_memory(root)})
         finally:
             services.stop(root)
-            if path is not None:
-                with lab_file(root, target, write=True) as stream:
-                    stream.write(saved)
-                    stream.truncate()
-            services.start(root, services.prepare(root))
+            try:
+                if path is not None:
+                    with lab_file(root, target, write=True) as stream:
+                        stream.write(saved)
+                        stream.truncate()
+            finally:
+                # A refused restore must not also leave the lab stopped.
+                services.start(root, services.prepare(root))
     return results
 
 

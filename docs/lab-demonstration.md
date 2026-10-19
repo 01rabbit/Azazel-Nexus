@@ -111,6 +111,9 @@ this short run cannot establish sustained stability.
 - `break`: trust corruption, stopped locald, or route-ledger tampering. Each prints
   production unit state and activation-approval hashes before/after. Live Edge
   authority and live lease are **unobserved**; file hashes cannot certify them.
+  There is no per-break undo command: recover by `down` then `up`, which builds a
+  fresh lab root. With no Mission Pack selected, `break locald` leaves the service
+  path reply unchanged, because entryd already hands every frame off.
 - `down`: exact lab-unit stop, overwrite/fsync/unlink of both ephemeral private keys,
   lab-root removal, retained `/etc/azazel-lab/LAB-HOST`. Stop failure retains recovery
   state. Overwriting cannot guarantee physical erasure on SSD/COW/snapshots; discard

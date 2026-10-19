@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import grp
 import hashlib
 import json
@@ -46,12 +47,22 @@ def secure_directory(path, mode):
 
 
 def mark_host():
+    try:
+        _write_marker()
+    except LabRefused:
+        raise
+    except OSError as error:
+        reason = errno.errorcode.get(error.errno, "OSError")
+        raise LabRefused(f"LAB: host marker {LAB_HOST_MARKER} could not be written ({reason})") from None
+
+
+def _write_marker():
     secure_directory(LAB_HOST_MARKER.parent, 0o755)
     fd = os.open(LAB_HOST_MARKER, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
     with os.fdopen(fd, "wb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1:
-            raise ValueError("unsafe lab marker")
+            raise LabRefused(f"LAB: host marker {LAB_HOST_MARKER} is not a root-owned regular file")
         os.fchmod(stream.fileno(), 0o644)
         stream.write((BANNER + "\n").encode())
         stream.truncate()

@@ -769,7 +769,7 @@ def test_bench_restore_refuses_planted_symlink(tmp_path, monkeypatch, file_owner
     events = []
     monkeypatch.setattr(services, "stop", lambda root: events.append("stop"))
     monkeypatch.setattr(services, "prepare", lambda root: {})
-    monkeypatch.setattr(services, "start", lambda *a: [])
+    monkeypatch.setattr(services, "start", lambda *a: events.append("start") or [])
     monkeypatch.setattr(bench, "service_memory", lambda root: {})
     monkeypatch.setattr(cli, "worker", lambda *a: {"exit_code": 0, "stdout": "{}"})
     def plant(root, target):
@@ -779,5 +779,16 @@ def test_bench_restore_refuses_planted_symlink(tmp_path, monkeypatch, file_owner
     monkeypatch.setattr(cli, "break_target", plant)
     with pytest.raises(LabRefused, match="LAB:"):
         bench.recoveries(tmp_path)
-    assert events == ["stop", "stop"]
+    # The refused restore still restarts the lab rather than leaving it stopped.
+    assert events == ["stop", "start", "stop", "start"]
     assert victim.read_bytes() == b"untouched"
+
+
+def test_mark_host_os_error_is_a_lab_refusal_with_a_reason(monkeypatch):
+    from azazel_nexus_lab.refusal import LabRefused
+
+    def denied(*args):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(cli, "secure_directory", denied)
+    with pytest.raises(LabRefused, match="LAB: host marker .* could not be written \\(EACCES\\)"):
+        cli.mark_host()
