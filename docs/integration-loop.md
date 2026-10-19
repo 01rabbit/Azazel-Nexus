@@ -383,8 +383,11 @@ Concrete I1 limits and paths:
   the previous retained segment's head exactly as the normal startup check
   does; at most 64 quarantined tails are already held; and the same bytes have
   not already been recovered at that place. Anything else -- a torn older
-  segment, a broken or relinked line before the tail, a longer tail, non-UTF-8
-  before the tail -- refuses exactly as before. Recovery never rewrites a
+  segment, a segment whose name is not `YYYY-MM-DD.jsonl` in digits, a broken
+  or relinked line before the tail, a longer tail, non-UTF-8 before the tail,
+  a segment that changed between being read and being cut -- refuses exactly
+  as before. The segment is read, checked and cut through one descriptor, and
+  its size is checked again just before the cut. Recovery never rewrites a
   complete record, and it is not silent:
   1. The torn bytes are written to
      `/var/lib/azazel/edge-intake/incident-quarantine/<segment>.<offset>.<sha256>.pending`
@@ -399,14 +402,18 @@ Concrete I1 limits and paths:
   A power cut during recovery is finished by the next start: before step 1
   completes nothing changed (a leftover `.torn-*` temporary is removed); after
   step 1 the same bytes find their `.pending` file (its digest is checked)
-  and are cut; after step 2 a `.pending` file whose digest no retained
-  `ledger_recovered` record names gets its record; after step 3 it is only
+  and are cut; after step 2 a `.pending` file whose segment, offset and
+  digest no retained `ledger_recovered` record names gets its record (the
+  digest alone is not enough: short tails share a record's opening bytes, so
+  the same bytes can be torn again elsewhere and each cut gets its own record); after step 3 it is only
   renamed. If the segment has no room for the record (it uses the control
   reserve), the file stays `.pending` and the record is written on a later
   start. Status reports `ledger_recovered` (the number of quarantined tails
   held), and `azazel-nexus status` shows it under the intake line. The
   explainer validates the record as a control record and does not forward
-  it; auditd's allowlist is unchanged. An explainer cursor saved past the
+  it; auditd's allowlist is unchanged. Intake and explainer ship in the same
+  package; an older explainer reading the new record after its chain check
+  would count it as `transition_refused`, not `chain_broken`. An explainer cursor saved past the
   recovered bytes (it read lines that were still only in the page cache)
   still reports `chain_broken`; follow its status hint
   (`inspect_incident_chain_then_remove_cursor_and_restart`).

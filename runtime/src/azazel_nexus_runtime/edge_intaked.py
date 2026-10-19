@@ -78,6 +78,7 @@ TORN_TAIL_MAX = 64 * 1024
 # Quarantined tails held before recovery refuses again and needs the
 # operator: at most 64 x 64 KiB = 4 MiB in the private state area.
 QUARANTINE_MAX = 64
+SEGMENT_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl", re.ASCII)
 # <segment>.<offset of the cut>.<sha256 of the bytes>.(pending|torn)
 QUARANTINED = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl\.\d{1,12}\.[0-9a-f]{64}\.(pending|torn)", re.ASCII)
 WORKER_JOIN_S = 20
@@ -312,7 +313,10 @@ class IncidentLedger(DailySegments):
                     raise AuditChainBroken("incident chain does not continue")
                 self.head = (entry.sequence, entry.event_hash)
                 if entry.event.get("event_type") == LEDGER_RECOVERED:
-                    recorded.add(entry.event.get("sha256"))
+                    # Short torn tails share a record's opening bytes, so the
+                    # digest alone does not name one recovery.
+                    recorded.add((entry.event.get("segment"), entry.event.get("offset"),
+                                  entry.event.get("sha256")))
         self.current = paths[-1] if paths else None
         self.select(now)
         if self.quarantine is not None:
@@ -353,54 +357,84 @@ class IncidentLedger(DailySegments):
         then `_record_recoveries` writes the chain record and only then
         marks the quarantined file done.
         """
-        data = path.read_bytes()
-        cut = data.rfind(b"\n") + 1
-        tail = data[cut:]
-        if not tail or len(tail) > TORN_TAIL_MAX:
+        # The name must be one the quarantine bound and the record can name.
+        if not SEGMENT_NAME.fullmatch(path.name):
             raise IncidentLedgerTorn()
-        head, parser = self.head, AuditLedger(path)
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            # The same line splitting AuditLedger.__iter__ applies to a file.
-            lines = io.TextIOWrapper(io.BytesIO(data[:cut]), encoding="utf-8")
-            for number, line in enumerate(lines, start=1):
-                if not line.strip():
-                    continue
-                entry = parser._parse(line, f"line {number}")
-                if (entry.sequence != head[0] + 1 or entry.previous_hash != head[1] or
-                        entry.recomputed() != entry.event_hash):
-                    raise AuditChainBroken("incident chain does not continue")
-                head = (entry.sequence, entry.event_hash)
-        except (AuditChainBroken, UnicodeDecodeError):
-            raise IncidentLedgerTorn() from None
-        digest = hashlib.sha256(tail).hexdigest()
-        name = f"{path.name}.{cut}.{digest}"
-        pending = self.quarantine / (name + ".pending")
-        if os.path.lexists(self.quarantine / (name + ".torn")):
-            # These bytes were already recovered here once; tearing again at
-            # the same place is not an interrupted append.
-            raise IncidentLedgerTorn()
-        if os.path.lexists(pending):
-            # Written before a power cut that came before the truncation.
-            if (not stat.S_ISREG(pending.lstat().st_mode) or
-                    hashlib.sha256(pending.read_bytes()).hexdigest() != digest):
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > self.segment_bytes:
                 raise IncidentLedgerTorn()
-        else:
-            if len(self._held()) >= QUARANTINE_MAX:
+            chunks, remaining = [], info.st_size
+            while remaining > 0:
+                chunk = os.read(fd, min(remaining, 1 << 20))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            cut = data.rfind(b"\n") + 1
+            tail = data[cut:]
+            if not tail or len(tail) > TORN_TAIL_MAX:
                 raise IncidentLedgerTorn()
-            fd, temporary = tempfile.mkstemp(dir=self.quarantine, prefix=".torn-")
+            head, parser = self.head, AuditLedger(path)
             try:
-                with os.fdopen(fd, "wb") as stream:
-                    os.fchmod(stream.fileno(), 0o600)
-                    stream.write(tail)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.rename(temporary, pending)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-            self._fsync_quarantine()
-        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
-        try:
+                # The same line splitting AuditLedger.__iter__ applies to a file.
+                lines = io.TextIOWrapper(io.BytesIO(data[:cut]), encoding="utf-8")
+                for number, line in enumerate(lines, start=1):
+                    if not line.strip():
+                        continue
+                    entry = parser._parse(line, f"line {number}")
+                    if (entry.sequence != head[0] + 1 or entry.previous_hash != head[1] or
+                            entry.recomputed() != entry.event_hash):
+                        raise AuditChainBroken("incident chain does not continue")
+                    head = (entry.sequence, entry.event_hash)
+            except (AuditChainBroken, UnicodeDecodeError):
+                raise IncidentLedgerTorn() from None
+            def unchanged():
+                after = os.fstat(fd)
+                return (after.st_ino, after.st_dev, after.st_size) == (
+                    info.st_ino, info.st_dev, len(data))
+
+            if not unchanged():
+                raise IncidentLedgerTorn()
+            digest = hashlib.sha256(tail).hexdigest()
+            name = f"{path.name}.{cut}.{digest}"
+            created = False
+            pending = self.quarantine / (name + ".pending")
+            if os.path.lexists(self.quarantine / (name + ".torn")):
+                # These bytes were already recovered here once; tearing again at
+                # the same place is not an interrupted append.
+                raise IncidentLedgerTorn()
+            if os.path.lexists(pending):
+                # Written before a power cut that came before the truncation.
+                if (not stat.S_ISREG(pending.lstat().st_mode) or
+                        hashlib.sha256(pending.read_bytes()).hexdigest() != digest):
+                    raise IncidentLedgerTorn()
+            else:
+                if len(self._held()) >= QUARANTINE_MAX:
+                    raise IncidentLedgerTorn()
+                held, temporary = tempfile.mkstemp(dir=self.quarantine, prefix=".torn-")
+                try:
+                    with os.fdopen(held, "wb") as stream:
+                        os.fchmod(stream.fileno(), 0o600)
+                        stream.write(tail)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.rename(temporary, pending)
+                    created = True
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                self._fsync_quarantine()
+            # Cut only the file that was verified, still exactly as it was
+            # read; otherwise leave no quarantine that a later start would
+            # record as a recovery that never happened.
+            if not unchanged():
+                if created:
+                    pending.unlink()
+                    self._fsync_quarantine()
+                raise IncidentLedgerTorn()
             os.ftruncate(fd, cut)
             os.fsync(fd)
         finally:
@@ -412,7 +446,7 @@ class IncidentLedger(DailySegments):
             if pending.suffix != ".pending":
                 continue
             segment, offset, digest = pending.stem.rsplit(".", 2)
-            if digest not in recorded:
+            if (segment, int(offset), digest) not in recorded:
                 try:
                     self.append({"event_type": LEDGER_RECOVERED, "at": now,
                                  "segment": segment, "offset": int(offset),

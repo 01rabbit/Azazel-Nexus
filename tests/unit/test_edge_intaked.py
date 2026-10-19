@@ -888,6 +888,53 @@ def test_recovery_record_waits_for_room(tmp_path):
         "edge.incident.ledger_recovered"]
 
 
+def test_same_bytes_torn_at_other_places_are_each_recorded(tmp_path):
+    # Short tails share a record's opening bytes; each cut needs its record.
+    ledger = torn_ledger(tmp_path)
+    intake(tmp_path)._open_storage()
+    with ledger.current.open("ab") as stream:
+        stream.write(TORN)
+    intake(tmp_path)._open_storage()
+    tomorrow = ledger.path_at(86400)
+    tomorrow.write_bytes(TORN)
+    server = intake(tmp_path, 86400)
+    server._open_storage()
+    markers = [e.event for path in (ledger.current, tomorrow) for e in AuditLedger(path)
+               if e.event.get("event_type") == "edge.incident.ledger_recovered"]
+    assert len({(m["segment"], m["offset"]) for m in markers}) == len(markers) == 3
+    assert {m["sha256"] for m in markers} == {daemon.hashlib.sha256(TORN).hexdigest()}
+    assert [n.rsplit(".", 1)[1] for n in quarantined(tmp_path)] == ["torn"] * 3
+    assert server.ledger_recovered == 3
+
+
+def test_segment_changed_during_recovery_is_refused_without_changes(tmp_path, monkeypatch):
+    ledger = torn_ledger(tmp_path)
+    segment = ledger.current
+    original = segment.read_bytes()
+    mkstemp = daemon.tempfile.mkstemp
+
+    def appended(*args, **kwargs):
+        # A writer appends after verification, while the tail is quarantined.
+        if kwargs.get("prefix") == ".torn-":
+            with segment.open("ab") as stream:
+                stream.write(b"more")
+        return mkstemp(*args, **kwargs)
+    monkeypatch.setattr(daemon.tempfile, "mkstemp", appended)
+    refused(tmp_path)
+    assert segment.read_bytes() == original + b"more"
+    assert quarantined(tmp_path) == []
+
+
+def test_torn_segment_with_an_unexpected_name_is_refused(tmp_path):
+    ledger = daemon.IncidentLedger(tmp_path, 0)
+    ledger.append({"at": 0}, 0)
+    odd = ledger.directory / "1970-0x-01.jsonl"
+    odd.write_bytes(TORN)
+    with pytest.raises(daemon.IncidentLedgerTorn):
+        daemon.IncidentLedger(tmp_path, 0, quarantine=tmp_path / "q")
+    assert odd.read_bytes() == TORN and list((tmp_path / "q").iterdir()) == []
+
+
 def test_stale_quarantine_temporary_is_removed(tmp_path):
     directory = tmp_path / "q"
     directory.mkdir()
