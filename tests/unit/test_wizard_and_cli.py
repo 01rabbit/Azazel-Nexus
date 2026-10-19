@@ -942,7 +942,9 @@ def test_an_absent_data_tier_is_not_a_defect(tmp_path):
 
     text = _status(tmp_path)
     assert "DEFECT" not in text
-    assert "missing" not in text
+    # Missing historical M.I.O. evidence is independent of the optional data tier.
+    assert "missing" not in "\n".join(line for line in text.splitlines()
+                                        if not line.startswith("M.I.O.:"))
 
 
 def test_the_status_screen_says_which_kind_of_gap_each_embedded_feature_has(tmp_path):
@@ -1107,7 +1109,7 @@ def test_status_vm_lab_guidance_and_unknown_mio(tmp_path, monkeypatch):
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     code, text = _run(["status"], tmp_path)
     assert code == 0
-    assert "M.I.O.: commissioned ceiling: unknown; capability state: unknown" in text
+    assert "M.I.O.: recorded ceiling: unknown; capability state: unknown" in text
     assert "not a grant or admission" in text
     assert "azazel-nexus commission" not in text
     assert "step unavailable on a lab host" in text
@@ -1123,10 +1125,13 @@ def test_status_reports_recorded_mio_ceiling_without_raising_capability(tmp_path
     path = tmp_path / ROUTE_LEDGER.lstrip("/")
     path.parent.mkdir(parents=True)
     AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
-                              "reasons": {"profile": "LITE", "resource": "core_reserve_unmeasured"}})
+                              "occurred_at": "2026-10-19T00:00:00Z",
+                              "reasons": {"profile": "LITE", "resource": "core_reserve_unmeasured",
+                                          "trust": "not-checked", "topology": "no_verified_egress",
+                                          "health": {"local": "unavailable", "remote": "not_admitted"}}})
     before = (path.read_bytes(), path.stat().st_mtime_ns)
     code, text = _run(["status"], tmp_path)
     assert code == 0
-    assert "commissioned ceiling: LITE; capability state: CORE" in text
+    assert "recorded ceiling: LITE; capability state: CORE" in text
     assert "core_reserve_unmeasured" in text
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before

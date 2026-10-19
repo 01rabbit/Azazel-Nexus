@@ -533,9 +533,17 @@ def _narrow_bootstrap_core_units():
 
 # Reviewed static messages of the bootstrap path, including the library's
 # bootstrap selection modules (see tests/unit/test_runtime_activated_entrypoint.py,
-# which keeps this exactly equal to the literal raises in the listed modules).
+# which pins literal raises plus the closed selection-read reason set).
 # Only these are ever logged.
 _STATIC_FAILURE_MESSAGES = frozenset({
+    'protected bootstrap selection refused: deployment unreadable or verification refused',
+    'protected bootstrap selection refused: current boot unreadable',
+    'protected bootstrap selection refused: selection unreadable or protection refused',
+    'protected bootstrap selection refused: selection format refused',
+    'protected bootstrap selection refused: boot binding differs from the current boot',
+    'protected bootstrap selection refused: deployment binding differs',
+    'protected bootstrap selection refused: selection or source changed during read',
+    'protected bootstrap selection refused: required bootstrap input missing',
     'additional controller command refused',
     'admitted resource thresholds required',
     'audit binding admission unconfirmed',
@@ -759,17 +767,18 @@ _FAILURE_CHAIN_LIMIT = 4
 def _failure_label(exc: BaseException) -> str:
     """Class name, plus the message only when it is a reviewed static literal.
 
-    Exactly ApprovalRefused or UnitOperationFailed (no subclasses), one
+    Exactly ApprovalRefused, SelectionReadRefused or UnitOperationFailed, one
     argument, and membership in the allowlist. Anything else (other classes,
     subclasses, interpolated or unreviewed messages) stays class-only.
     """
 
     from azazel_nexus.operator_trust import ApprovalRefused
+    from azazel_nexus.bootstrap_selection_store import SelectionReadRefused
 
     from .units import UnitOperationFailed
 
     def one(error: BaseException) -> str | None:
-        if type(error) not in (ApprovalRefused, UnitOperationFailed) or len(error.args) != 1:
+        if type(error) not in (ApprovalRefused, SelectionReadRefused, UnitOperationFailed) or len(error.args) != 1:
             return None
         message = error.args[0]
         if type(message) is str and message in _STATIC_FAILURE_MESSAGES:

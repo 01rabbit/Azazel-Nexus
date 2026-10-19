@@ -2,11 +2,20 @@
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from .audit import AuditLedger
+from .capability import CapabilityState
+from .edge_package import Evidence
 
-NOTICE = "The commissioned ceiling is not a grant or admission; provider admission remains closed."
+NOTICE = "The recorded ceiling is not a grant or admission; provider admission remains closed."
+# CORE-side copies, pinned to runtime mio_capability enums by unit tests.
+RESOURCE_REASONS = frozenset({"core_reserve_unmeasured"})
+TOPOLOGY_REASONS = frozenset({"no_verified_egress"})
+HEALTH_REASONS = frozenset({"unavailable", "not_admitted", "no_admission_evidence", "invalid_observation"})
+UNKNOWN = ("unknown (route ledger not readable by this user, missing, or verification refused; "
+           "entryd credentials are not read)")
 ROUTE_LEDGER = "/var/lib/azazel/state/mio/route.jsonl"
 
 
@@ -35,18 +44,29 @@ def status_summary(*, root=None):
             return result
         event = transitions[-1]
         reasons = event["reasons"]
-        if (event["to"] not in {"CORE", "LITE", "FULL"} or type(reasons) is not dict
-                or reasons.get("profile") not in {"CORE", "LITE", "FULL"}):
+        levels = {state.value for state in CapabilityState}
+        if (event["to"] not in levels or type(reasons) is not dict
+                or set(reasons) != {"profile", "resource", "trust", "health", "topology"}
+                or reasons["profile"] not in levels
+                or reasons["resource"] not in RESOURCE_REASONS
+                or reasons["trust"] not in {value.value for value in Evidence}
+                or reasons["topology"] not in TOPOLOGY_REASONS
+                or type(reasons["health"]) is not dict
+                or set(reasons["health"]) != {"local", "remote"}
+                or any(value not in HEALTH_REASONS for value in reasons["health"].values())):
             raise ValueError("invalid transition")
+        # Never echo the raw timestamp: fromisoformat accepts arbitrary date/time
+        # separators, including control characters. isoformat emits a safe form.
+        observed_at = datetime.fromisoformat(event["occurred_at"]).isoformat()
         result.update(ceiling=reasons["profile"], state=event["to"], reasons=reasons,
-                      observed_at=event.get("occurred_at"), availability="last recorded observation")
+                      observed_at=observed_at, availability="last recorded observation")
     except Exception:  # noqa: BLE001 - no paths, identities or raw exceptions in diagnostics
-        result["availability"] = "unknown (route ledger unreadable or verification refused)"
+        result["availability"] = UNKNOWN
     return result
 
 
 def describe(reading):
-    return ("M.I.O.: commissioned ceiling: " + (reading["ceiling"] or "unknown")
+    return ("M.I.O.: recorded ceiling: " + (reading["ceiling"] or "unknown")
             + "; capability state: " + (reading["state"] or "unknown")
             + "; " + reading["availability"]
             + ("; observed at: " + str(reading["observed_at"]) if reading["state"] else "")

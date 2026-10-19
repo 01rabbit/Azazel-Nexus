@@ -29,16 +29,19 @@ presence → fetched model candidates → provider admission → activation/unit
 state → integration broker → M.I.O. configuration. `done` applies only to the fact named in that row. It does not grant
 capabilities or certify later steps.
 On a LAB HOST, next steps that would be refused by LAB_HOST_MARKER are
-reported as unavailable. Bootstrap diagnostics distinguish boot-binding mismatch
+reported as unavailable; successful reads remain `done`. The ordered `--next`
+guide stops at the first unresolved step even when it is unavailable on a lab host;
+use `setup` to inspect later steps. Bootstrap diagnostics distinguish boot-binding mismatch
 from missing or unreadable inputs; retained state requires administrator review,
 not another invocation of setup. No state is repaired by these displays.
 
 Both setup and status show the recorded M.I.O. ceiling (CORE/LITE/FULL), capability
-state and reasons from the latest verified `mio.capability.transition` in
+state and reasons from the latest `mio.capability.transition` in the hash-chain consistent ledger
 `/var/lib/azazel/state/mio/route.jsonl`. This is the last recorded observation,
 not a live probe or a freshness guarantee. Without readable ledger evidence the
 values are unknown; operator commands do not read entryd credentials or infer
-LITE/FULL from RAM. The ceiling is not a grant or admission. Status does not
+LITE/FULL from RAM. The recorded ceiling is not a grant or admission; entryd records CORE when no
+profile is selected or its reader fails. Status does not
 query systemd, and audit-chain health is unknown without an explicit `--ledger`.
 
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.

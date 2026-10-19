@@ -344,11 +344,13 @@ def test_vm_lab_stale_boot_hg05_json_is_read_only(tmp_path, fixture_host, monkey
     steps = {s["name"]: s for s in doc["steps"]}
     assert "boot binding differs" in steps["bootstrap-selection"]["reason"]
     assert all(s["next_command"] != "azazel-nexus setup" for s in steps.values())
-    for name in ("host-preflight", "commissioning", "commission-review", "model-import-fetched", "provider-admission"):
+    assert steps["host-preflight"]["status"] == "done"
+    assert steps["host-preflight"]["next_command"] == "azazel-nexus hil-preflight"
+    for name in ("commissioning", "commission-review", "model-import-fetched", "provider-admission"):
         assert steps[name]["next_command"].startswith("none available")
         assert "LAB_HOST_MARKER" in steps[name]["reason"]
     assert doc["mio"]["ceiling"] is None
-    assert "route ledger unreadable" in doc["mio"]["availability"]
+    assert "route ledger not readable by this user" in doc["mio"]["availability"]
     assert steps["provider-admission"]["status"] == "blocked"
     assert snapshot(tmp_path) == before
 
@@ -358,7 +360,10 @@ def test_setup_reports_recorded_mio_in_text_and_json(tmp_path, fixture_host, mon
     from azazel_nexus.mio_status import ROUTE_LEDGER
     path = put(tmp_path, ROUTE_LEDGER, b"")
     AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
-                              "reasons": {"profile": "FULL", "resource": "core_reserve_unmeasured"}})
+                              "occurred_at": "2026-10-19T00:00:00Z",
+                              "reasons": {"profile": "FULL", "resource": "core_reserve_unmeasured",
+                                          "trust": "not-checked", "topology": "no_verified_egress",
+                                          "health": {"local": "unavailable", "remote": "not_admitted"}}})
     original = flow.collect
     monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
     before = snapshot(tmp_path)
@@ -372,6 +377,50 @@ def test_setup_reports_recorded_mio_in_text_and_json(tmp_path, fixture_host, mon
             assert reading["ceiling"] == "FULL"
             assert reading["state"] == "CORE"
         else:
-            assert "commissioned ceiling: FULL; capability state: CORE" in text
+            assert "recorded ceiling: FULL; capability state: CORE" in text
         assert "core_reserve_unmeasured" in text
     assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("complete_host", [True, False])
+def test_lab_next_keeps_completed_evidence_and_explains_stop(monkeypatch, complete_host):
+    from azazel_nexus.operator_flow import ORDER, Observation
+    facts = {name: Observation(State.COMPLETE, "scoped read succeeded", "azazel-nexus status")
+             for name in ORDER}
+    facts["commissioning"] = Observation(State.MISSING, "record absent", "azazel-nexus commission --help")
+    if not complete_host:
+        facts["host-preflight"] = Observation(State.MISSING, "inventory incomplete", "azazel-nexus hil-preflight")
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: facts)
+    monkeypatch.setattr(flow, "is_lab_host", lambda: True)
+    for options in (["setup", "--next"], ["setup", "--next", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "ordered flow stops here" in text
+        assert "unavailable on a lab host (LAB_HOST_MARKER)" in text
+        expected = "commissioning" if complete_host else "host-preflight"
+        if "--json" in options:
+            assert json.loads(text)["steps"][0]["name"] == expected
+        else:
+            assert expected + ": needed" in text
+
+
+def test_setup_redacts_malformed_mio_ledger_in_text_and_json(tmp_path, fixture_host, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.mio_status import ROUTE_LEDGER
+    path = put(tmp_path, ROUTE_LEDGER, b"")
+    AuditLedger(path).append({"event_type": "mio.capability.transition", "to": "CORE",
+                              "occurred_at": "2026-10-19T00:00:00Z\x1b[31mprivate",
+                              "reasons": {"profile": "FULL", "unexpected": "private\nvalue"}})
+    original = flow.collect
+    monkeypatch.setattr(flow, "collect", lambda args, *, now: original(args, now=now, root=tmp_path))
+    for options in (["setup"], ["setup", "--json"]):
+        out = StringIO()
+        assert main(options, out=out) == 0
+        text = out.getvalue()
+        assert "private" not in text and "unexpected" not in text and "\x1b" not in text
+        assert "entryd credentials are not read" in text
+        if "--json" in options:
+            reading = json.loads(text)["mio"]
+            assert reading["state"] is None and reading["ceiling"] is None
+            assert reading["reasons"] == {} and reading["observed_at"] is None

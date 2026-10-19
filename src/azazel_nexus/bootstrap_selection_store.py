@@ -14,10 +14,24 @@ from .operator_trust import ApprovalRefused
 _PENDING = b"administrator bootstrap selection publication pending\n"
 
 
+SELECTION_READ_REASONS = frozenset({
+    "deployment unreadable or verification refused",
+    "current boot unreadable",
+    "selection unreadable or protection refused",
+    "selection format refused",
+    "boot binding differs from the current boot",
+    "deployment binding differs",
+    "selection or source changed during read",
+    "required bootstrap input missing",
+})
+
+
 class SelectionReadRefused(ApprovalRefused):
     """Redacted read failure category; never carries boot or identity values."""
 
     def __init__(self, reason):
+        if type(reason) is not str or reason not in SELECTION_READ_REASONS:
+            raise ValueError("unreviewed selection read reason")
         self.reason = reason
         super().__init__("protected bootstrap selection refused: " + reason)
 

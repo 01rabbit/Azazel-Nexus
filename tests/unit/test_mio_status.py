@@ -14,7 +14,9 @@ def test_last_transition_ceiling_is_separate_from_capability(tmp_path, ceiling):
     for profile in ("CORE", ceiling):
         ledger.append({"event_type": "mio.capability.transition", "to": "CORE",
                        "occurred_at": "2026-10-19T00:00:00Z",
-                       "reasons": {"profile": profile, "resource": "core_reserve_unmeasured"}})
+                       "reasons": {"profile": profile, "resource": "core_reserve_unmeasured",
+                                   "trust": "not-checked", "topology": "no_verified_egress",
+                                   "health": {"local": "unavailable", "remote": "not_admitted"}}})
     ledger.append({"event_type": "mio.route"})
     before = (path.read_bytes(), path.stat().st_mtime_ns)
     reading = status_summary(root=tmp_path)
@@ -46,3 +48,63 @@ def test_unknown_evidence_never_infers_from_ram(tmp_path, monkeypatch, case):
     assert reading["state"] is None and reading["ceiling"] is None
     assert "unknown" in reading["availability"]
     assert "secret" not in str(reading)
+
+
+def test_reason_sets_match_runtime_enums():
+    from azazel_nexus import mio_status
+    from azazel_nexus_runtime.mio_capability import HealthReason, ResourceReason, TopologyReason
+    for values, enum in ((mio_status.RESOURCE_REASONS, ResourceReason),
+                         (mio_status.TOPOLOGY_REASONS, TopologyReason),
+                         (mio_status.HEALTH_REASONS, HealthReason)):
+        assert values == {item.value for item in enum}
+
+
+def transition():
+    return {"event_type": "mio.capability.transition", "to": "CORE",
+            "occurred_at": "2026-10-19T00:00:00Z",
+            "reasons": {"profile": "FULL", "resource": "core_reserve_unmeasured",
+                        "trust": "not-checked", "topology": "no_verified_egress",
+                        "health": {"local": "unavailable", "remote": "not_admitted"}}}
+
+
+@pytest.mark.parametrize("path,value", [
+    (("to",), "FULL\x1b[31m"),
+    (("occurred_at",), "2026-10-19T00:00:00Z\x1b[31m"),
+    (("occurred_at",), "private\nvalue"),
+    (("occurred_at",), None),
+    (("reasons", "profile"), "FULL\nprivate"),
+    (("reasons", "resource"), "private\x1b[31m"),
+    (("reasons", "trust"), "private"),
+    (("reasons", "topology"), "private"),
+    (("reasons", "health", "local"), "private"),
+    (("reasons", "health", "remote"), "private"),
+    (("reasons", "health", "unexpected"), "private"),
+    (("reasons", "unexpected"), "private"),
+    (("reasons",), {"profile": "FULL"}),
+])
+def test_invalid_transition_is_redacted_in_text_and_json(tmp_path, path, value):
+    import json
+    event = transition()
+    target = event
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    ledger = tmp_path / ROUTE_LEDGER.lstrip("/")
+    ledger.parent.mkdir(parents=True)
+    AuditLedger(ledger).append(event)
+    reading = status_summary(root=tmp_path)
+    assert reading["state"] is None and reading["ceiling"] is None
+    assert reading["reasons"] == {} and reading["observed_at"] is None
+    for text in (describe(reading), json.dumps(reading)):
+        assert "private" not in text and "unexpected" not in text
+        assert "entryd credentials are not read" in text
+
+
+@pytest.mark.parametrize("separator", ["T", "\n", "\x1b"])
+def test_timestamp_is_canonicalized(tmp_path, separator):
+    event = transition()
+    event["occurred_at"] = "2026-10-19" + separator + "00:00:00Z"
+    ledger = tmp_path / ROUTE_LEDGER.lstrip("/")
+    ledger.parent.mkdir(parents=True)
+    AuditLedger(ledger).append(event)
+    assert status_summary(root=tmp_path)["observed_at"] == "2026-10-19T00:00:00+00:00"

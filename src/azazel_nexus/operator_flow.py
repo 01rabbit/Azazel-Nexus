@@ -62,10 +62,13 @@ def evaluate(observations: Mapping[str, Observation], *, lab_host: bool = False)
             continue
         observation = observations.get(name, Observation(
             State.UNKNOWN, "observation unavailable; inspect local state", "none available; requires readable local evidence"))
-        if lab_host and name in {"host-preflight", "commissioning", "commission-review", "model-import-fetched"}:
+        if (lab_host and observation.state is not State.COMPLETE
+                and name in {"host-preflight", "commissioning", "commission-review", "model-import-fetched"}):
             observation = Observation(
-                State.REFUSED, observation.reason + "; unavailable on a lab host (LAB_HOST_MARKER)",
-                "none available; requires a non-lab deployment")
+                observation.state, observation.reason + "; unavailable on a lab host (LAB_HOST_MARKER); "
+                + ("ordered flow stops here until this evidence is complete; later steps remain visible in setup"
+                   if observation.state is not State.OPTIONAL else "optional step; ordered flow continues"),
+                "none available; unavailable on a lab host (LAB_HOST_MARKER)")
         steps.append(Step(name, statuses[observation.state], observation.reason, observation.command))
     return tuple(steps)
 
