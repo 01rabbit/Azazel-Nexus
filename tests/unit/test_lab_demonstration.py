@@ -345,6 +345,34 @@ def test_every_break_prints_unchanged_edge_snapshot(tmp_path, monkeypatch, file_
         assert result["result"].startswith("unavailable:")
 
 
+def test_audit_tamper_targets_and_audits_the_newest_route_segment(tmp_path, file_owners):
+    # entryd's route ledger is daily segments (#211 S4); the lab tampers with
+    # and verifies the newest one, and the whole retained chain.
+    from azazel_nexus_lab.safe_files import lab_file, target_relative
+    from azazel_nexus_runtime.mio_route_ledger import RouteLedger
+
+    from azazel_nexus.audit import AuditChainBroken
+
+    state = tmp_path / "var/lib/azazel/state/mio"
+    state.mkdir(parents=True)
+    assert target_relative(tmp_path, "audit-tamper") == "var/lib/azazel/state/mio/route.jsonl"
+    now = [1_800_000_000.0]
+    route = RouteLedger(state, clock=lambda: now[0], monotonic=lambda: now[0])
+    route.append({"event_type": "a"})
+    now[0] += 86400
+    route.append({"event_type": "b"})
+    newest = route.path
+    assert target_relative(tmp_path, "audit-tamper") == (
+        "var/lib/azazel/state/mio/route/" + newest.name)
+    assert cli.audit(tmp_path)["ledgers"]["route"]["head"][0] == 2
+    with lab_file(tmp_path, "audit-tamper", write=True) as stream:
+        stream.seek(0, os.SEEK_END)
+        stream.write(b'{"tampered":true}\n')
+    assert newest.read_text().endswith('{"tampered":true}\n')
+    with pytest.raises((AuditChainBroken, KeyError)):
+        cli.audit(tmp_path)
+
+
 def test_audit_tamper_detected(tmp_path):
     from azazel_nexus.audit import AuditChainBroken, AuditLedger
 

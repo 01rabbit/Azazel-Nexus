@@ -170,11 +170,19 @@ def up(root):
 
 
 def audit(root):
+    from azazel_nexus.route_ledger import ROUTE_DIR, RouteChain
+
     chains = {}
+    segments = root / ROUTE_DIR.lstrip("/")
+    if segments.is_dir():
+        # entryd's daily segments (#211 S4): one chain from the retained boundary.
+        chains["route"] = {"state": "verified", "head": RouteChain(segments).verify()}
     for name, relative in {
         "route": "var/lib/azazel/state/mio/route.jsonl",
         "local": "var/lib/azazel/mio/local.jsonl", "lite-import": "lite-import.jsonl",
     }.items():
+        if name in chains:
+            continue
         path = root / relative
         if not path.is_file():
             chains[name] = {"state": "absent"}

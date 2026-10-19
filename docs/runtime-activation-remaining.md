@@ -11,7 +11,7 @@ The M.I.O. entry and Knowledge Lite daemons now exist, with console scripts,
 fixed socket/state leaves, installer accounts and hardened SUPPORTING units.
 `az-mio-entryd` composes MioRouter with locald (`mio`) and remoted (`remote`)
 socket clients and records deterministic handoff when providers are unavailable
-or unadmitted. Its route ledger is `/var/lib/azazel/state/mio/route.jsonl`.
+or unadmitted. Its route ledger is daily segments in `/var/lib/azazel/state/mio/route/`.
 No persisted M.I.O. profile reader exists yet, so production selects CORE.
 HG-05 remains unmeasured and provider admission remains fail-closed.
 

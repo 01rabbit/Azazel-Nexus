@@ -8,6 +8,7 @@ from pathlib import Path
 from .audit import AuditLedger
 from .capability import CapabilityState
 from .edge_package import Evidence
+from .route_ledger import LEGACY, ROUTE_DIR, RouteChain
 
 NOTICE = "The recorded ceiling is not a grant or admission; provider admission remains closed."
 # CORE-side copies, pinned to runtime mio_capability enums by unit tests.
@@ -16,15 +17,33 @@ TOPOLOGY_REASONS = frozenset({"no_verified_egress"})
 HEALTH_REASONS = frozenset({"unavailable", "not_admitted", "no_admission_evidence", "invalid_observation"})
 UNKNOWN = ("unknown (route ledger not readable by this user, missing, or verification refused; "
            "entryd credentials are not read)")
-ROUTE_LEDGER = "/var/lib/azazel/state/mio/route.jsonl"
+#: The pre-segment single file, read only until entryd migrates it (#211 S4).
+ROUTE_LEDGER = LEGACY
+#: entryd's daily route segments, read whenever the directory exists.
+ROUTE_SEGMENTS = ROUTE_DIR
+CAPABILITY_EVENTS = frozenset({"mio.capability.transition", "mio.capability.carried"})
 
 
-class _Snapshot(AuditLedger):
-    def __init__(self, entries):
-        self.entries = entries
+def _last_capability(root):
+    """Verify the retained chain once, keeping only the newest capability record."""
+    found = []
 
-    def __iter__(self):
-        return iter(self.entries)
+    def visit(entry):
+        if entry.event.get("event_type") in CAPABILITY_EVENTS:
+            found[:] = [entry.event]
+
+    directory = root / ROUTE_SEGMENTS.lstrip("/")
+    if directory.is_dir():
+        RouteChain(directory).verify(visit)
+    else:
+        path = root / ROUTE_LEDGER.lstrip("/")
+        # AuditLedger treats a missing file as an empty chain. Distinguish it here.
+        path.stat()
+        ledger = AuditLedger(path)
+        ledger.verify()
+        for entry in ledger:
+            visit(entry)
+    return found[0] if found else None
 
 
 def status_summary(*, root=None):
@@ -32,17 +51,10 @@ def status_summary(*, root=None):
     result = {"ceiling": None, "state": None, "reasons": {}, "source": "route-ledger",
               "observed_at": None, "notice": NOTICE}
     try:
-        path = root / ROUTE_LEDGER.lstrip("/")
-        # AuditLedger treats a missing file as an empty chain. Distinguish it here.
-        path.stat()
-        entries = tuple(AuditLedger(path))
-        _Snapshot(entries).verify()
-        transitions = [entry.event for entry in entries
-                       if entry.event.get("event_type") == "mio.capability.transition"]
-        if not transitions:
+        event = _last_capability(root)
+        if event is None:
             result["availability"] = "unknown (no recorded capability transition)"
             return result
-        event = transitions[-1]
         reasons = event["reasons"]
         levels = {state.value for state in CapabilityState}
         if (event["to"] not in levels or type(reasons) is not dict

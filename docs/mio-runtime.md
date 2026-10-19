@@ -307,9 +307,10 @@ rendering of that claim set, never a substitute for it.
 `azazel_nexus_runtime.mio_router.MioRouter` now owns the in-process route
 execution boundary. It calls `route_audit.select_and_record` before dispatching
 to `RemoteInferenceService.handle` or `LocalRuntimeService.handle`, with no new
-network code. Its own `AuditLedger` lives at
-`/var/lib/azazel/state/mio/route.jsonl` (under `AZAZEL_ROOT` in harnesses), separate
-from auditd's chain and watchdog's chain. `az-mio-entryd` now composes this
+network code. Its own route chain lives in daily segments under
+`/var/lib/azazel/state/mio/route/` (under `AZAZEL_ROOT` in harnesses), separate
+from auditd's chain and watchdog's chain; see *Route ledger segments and
+retention* below. `az-mio-entryd` now composes this
 owner with Unix socket adapters, retaining the separate provider accounts.
 The router’s direct service defaults remain available to existing in-process
 callers; the entry always supplies socket clients. Remoted retains its startup
@@ -326,10 +327,67 @@ and refused by the existing protocol.
 
 The contract names are account `azmioentry`, socket leaf `mio-entry` at
 `/var/lib/azazel/run/mio-entry/mio-entry.sock`, and state leaf `mio` at
-`/var/lib/azazel/state/mio/route.jsonl`. Startup verifies the chain and proves
-it can append a startup event before binding; it refuses a missing or
-unwritable installer-owned ledger leaf. The shared `serve_forever` accept
-loop, kernel-derived `PrincipalPolicy` and systemd readiness callback apply.
+`/var/lib/azazel/state/mio/` with route segments in `route/`. Startup verifies
+the retained chain and proves it can append a startup event before binding; it
+refuses a missing or unwritable installer-owned state leaf. The shared
+`serve_forever` accept loop, kernel-derived `PrincipalPolicy` and systemd
+readiness callback apply.
+
+### Route ledger segments and retention
+
+The route ledger was one `route.jsonl`, verified in full at every start and
+grown by about 20 MB a day at the explainer's six `mio.advise` a minute, so
+start-up time grew with the node's age toward the unit's start timeout
+(#211 S4). It is now `route/YYYY-MM-DD.jsonl` (UTC day, `0600`, directory
+`0700 azmioentry`), one `AuditLedger` chain through all segments: a segment's
+first entry chains onto the last hash of the previous segment, so a deleted,
+reordered or edited segment is a break. The reader is
+`azazel_nexus.route_ledger.RouteChain`; the writer is
+`azazel_nexus_runtime.mio_route_ledger.RouteLedger`, which reuses the
+explainer's and intake's `DailySegments` rotation, ageing and clock guards.
+
+- **Bounds.** 32 MiB per segment, 192 MiB in total and 14 days. Retention
+  deletes whole oldest segments only and never the newest or current one, so
+  today's segment survives any total-size pressure. The last 1 MiB of each
+  segment is reserved for start, capability and refusal records; a request is
+  admitted only with 64 KiB of ordinary room left. When the day's ordinary
+  budget is spent, requests are refused with `rate_limited` (detail
+  `route_budget`) until the next UTC day.
+- **Boundary.** Before deleting a segment, the writer durably replaces
+  `route/retained-boundary.json` with the deleted segment's last sequence and
+  hash, the oldest retained segment and the retired name. Verification starts
+  there instead of at genesis. A crash between that write and the unlink
+  leaves a segment the boundary already retired; readers ignore it and the
+  next start removes it. Removing the boundary, or the oldest retained
+  segment, is a break.
+- **Bounded start.** Start-up verifies only the retained segments, in one pass
+  that also restores the last capability reading: at most 192 MiB plus the
+  current segment, whatever the node's age. Each new segment opens with a
+  `mio.capability.carried` record (the current reading, not a transition), so
+  retention never removes the last recorded observation that `azazel-nexus
+  status` shows.
+- **Migration.** On first start after upgrade, a pre-segment
+  `state/mio/route.jsonl` is verified in full, the boundary is written at its
+  head, and the unchanged file is renamed to `route/legacy-route.jsonl`
+  (`0400`). The first segment continues its chain (its first entry follows the
+  legacy head), and the archive remains a genesis-rooted chain that
+  `AuditLedger.verify` checks on its own. Retention never deletes the archive
+  and start-up never re-reads it; removing it after export is the owner's
+  decision. A broken legacy file is refused and left in place; a legacy file
+  found beside an existing segment chain is refused. Until entryd has
+  migrated, `azazel-nexus status` still reads the single file.
+- **Per-principal rate.** Entryd admits at most 30 requests a minute per
+  kernel-reported UID, with a burst of 10, before anything is written. Over
+  the limit it replies `rate_limited` (detail `principal_rate`). Rate-limited
+  refusals are recorded at most once a minute per UID, carrying the count
+  suppressed since and the in-memory refusal counters (entryd has no status
+  surface). A refusal record that no longer fits the day's segment is counted,
+  not fatal: the refused request did nothing.
+- **Capacity on `/var/lib`.** The route ledger uses at most about 224 MiB
+  (192 MiB retained plus one 32 MiB current segment), plus the one-time legacy
+  archive if one was migrated. A sustained 30 requests a minute from one
+  caller fills a day's segment in roughly eight hours, after which requests
+  wait for the next day rather than growing the disk.
 
 Before selecting, the entry records bounded availability observations from
 locald (`mio`) and remoted (`remote`). The fixed probes use uncommissioned
@@ -520,7 +578,7 @@ through `read_local_advisory`, reusing the remote advisory reader's bounds
 and instruction refusals. The reply carries advice and fields for display;
 `mio.local.request`, `mio.local.advisory.read` and `mio.local.refused` events
 contain only digests, counts, lengths and fixed refusal codes. Locald keeps
-its own `local.jsonl` ledger beside entry's `route.jsonl`. Neither stores
+its own `local.jsonl` ledger, separate from entry's route segments. Neither stores
 situation or response text. Terminal route events distinguish ANSWERED,
 NOT_ADVICE, TIMED_OUT and FAILED, using the existing one-fallback rule and
 privacy restrictions.

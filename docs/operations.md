@@ -36,8 +36,8 @@ from missing or unreadable inputs; retained state requires administrator review,
 not another invocation of setup. No state is repaired by these displays.
 
 Both setup and status show the recorded M.I.O. ceiling (CORE/LITE/FULL), capability
-state and reasons from the latest `mio.capability.transition` in the hash-chain consistent ledger
-`/var/lib/azazel/state/mio/route.jsonl`. This is the last recorded observation,
+state and reasons from the latest `mio.capability.transition` (or the `mio.capability.carried` record that opens each daily segment) in the hash-chain consistent route ledger
+`/var/lib/azazel/state/mio/route/` (or the pre-migration `route.jsonl`). This is the last recorded observation,
 not a live probe or a freshness guarantee. Without readable ledger evidence the
 values are unknown; operator commands do not read entryd credentials or infer
 LITE/FULL from RAM. The recorded ceiling is not a grant or admission; entryd records CORE when no

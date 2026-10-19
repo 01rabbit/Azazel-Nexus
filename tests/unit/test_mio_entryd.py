@@ -13,8 +13,9 @@ from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.principal import Principal, PrincipalClass
 from azazel_nexus_runtime.protocol import ArgumentKind, RequestRefused
 
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditUnavailable
 from azazel_nexus.mio_profile import MioProfile
+from azazel_nexus.route_ledger import RouteChain
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
@@ -34,7 +35,7 @@ def request(privacy=PrivacyClass.P0_PUBLIC, deadline=1000):
 
 
 def recorded(service):
-    ledger = AuditLedger(service.router.ledger.path)
+    ledger = RouteChain(service.router.ledger.directory)
     ledger.verify()
     return [item.event for item in ledger]
 
@@ -126,15 +127,19 @@ def test_main_missing_leaf_does_not_bind(tmp_path, monkeypatch):
     assert not runtime_paths.mio_state_dir().exists()
 
 
-def test_main_unwritable_ledger_does_not_bind(service, monkeypatch):
-    original = Path.open
+def test_main_unwritable_ledger_does_not_bind(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import mio_route_ledger
 
-    def denied(path, *args, **kwargs):
-        if path == service.router.ledger.path and args and args[0] == "a":
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    original = mio_route_ledger.RouteLedger.open_segment
+
+    def denied(self, path, mode):
+        if path.parent == runtime_paths.mio_state_dir() / "route":
             raise PermissionError(errno.EACCES, "fixture permission denial")
-        return original(path, *args, **kwargs)
+        return original(self, path, mode)
 
-    monkeypatch.setattr(Path, "open", denied)
+    monkeypatch.setattr(mio_route_ledger.RouteLedger, "open_segment", denied)
     monkeypatch.setattr(entry, "serve_forever", lambda **kw: pytest.fail("bound"))
     with pytest.raises(AuditUnavailable):
         entry.main([])
@@ -145,10 +150,10 @@ def test_selection_audit_failure_propagates(service, monkeypatch):
     monkeypatch.setattr(service.remote, "observe", lambda: "remote_unavailable")
     original = service.router.ledger.append
 
-    def append(event):
+    def append(event, **kwargs):
         if event["event_type"] == "mio.route.selected":
             raise AuditUnavailable("fixture full ledger")
-        return original(event)
+        return original(event, **kwargs)
 
     monkeypatch.setattr(service.router.ledger, "append", append)
     with pytest.raises(AuditUnavailable):
@@ -181,15 +186,22 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     # The explainer's advice-only listener, grouped azmio-advise (patched gid).
     assert captured["additional_sockets"] == (
         (runtime_paths.socket_path("mio-advise"), os.getgid(), entry.ADVISE_REGISTRY),)
-    assert captured["handler"].__self__.router.ledger.path == runtime_paths.mio_state_dir() / "route.jsonl"
+    ledger = captured["handler"].__self__.router.ledger
+    assert ledger.directory == runtime_paths.mio_state_dir() / "route"
+    assert ledger.path.parent == ledger.directory and ledger.path.exists()
+    # One handler and one refusal recorder serve both listeners, so the
+    # per-uid rate limit and shares apply on the operator and the
+    # mio-advise listener alike.
+    assert captured["audit"] == captured["handler"].__self__.record_refusal
     assert resolved == [{"service_accounts": ("azarbiter", "azexplain")}]
 
 
 @pytest.mark.parametrize("profile", list(MioProfile))
 @pytest.mark.parametrize("local_admitted", [False, True])
 def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypatch, profile, local_admitted):
-    from azazel_nexus.incident_explain import build_frame
     from test_incident_explain import transition
+
+    from azazel_nexus.incident_explain import build_frame
 
     service._explainer_uid = 4242
     principal = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))

@@ -559,6 +559,19 @@ nothing in intake, detection or Edge's observe-only decisions.
   citations pass `read_knowledge_refs`, including technique membership.
   Remote replies are refused. Without an admitted model, the record can hold
   a deterministic reference banner plus independently obtained Knowledge refs.
+- **Entry rate and route ledger capacity (#211 S4).** Entryd admits at most
+  **30 requests a minute per kernel-reported UID (burst 10)**, five times the
+  explainer's ceiling of six `mio.advise` a minute. Over the limit, and when
+  the day's route segment has no room for another request, it replies with the
+  bounded refusal `rate_limited` before routing or writing anything. The
+  explainer treats that like any refusal from entryd: the explanation is
+  still recorded, with route `unavailable` and failure code `mio_unavailable`,
+  and the next explanation asks again; nothing latches. Six advice requests a
+  minute write about 20 MB a day to entryd's route ledger, which is now daily
+  segments with bounded retention (see `docs/mio-runtime.md`).
+  `/var/lib` capacity for it: at most about 224 MiB (32 MiB per day, 192 MiB
+  / 14 days retained plus the current segment), plus a one-time
+  `legacy-route.jsonl` archive on nodes upgraded from the single file.
 - **Records and retention.** Append-only daily
   `incident-explain/explanations/YYYY-MM-DD.jsonl` (`0640`, inside private
   `0700` parents) stores only validated records: incident id, explained time,

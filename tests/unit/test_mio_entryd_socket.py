@@ -16,7 +16,7 @@ from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.principal import PrincipalPolicy
 from azazel_nexus_runtime.transport import bind_socket, read_frame, send_frame
 
-from azazel_nexus.audit import AuditLedger
+from azazel_nexus.route_ledger import RouteChain
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
@@ -70,7 +70,7 @@ def test_main_real_round_trip_records_handoff(root):
             response = json.loads(read_frame(connection))
         assert response["ok"] is True
         assert response["result"]["route"] == Route.DETERMINISTIC_HANDOFF.value
-        ledger = AuditLedger(runtime_paths.mio_state_dir() / "route.jsonl")
+        ledger = RouteChain(runtime_paths.mio_state_dir() / "route")
         ledger.verify()
         events = [item.event for item in ledger]
         assert response["result"]["ledger_seq"] == len(events)
@@ -123,7 +123,7 @@ def test_fake_locald_not_admitted_is_recorded(root):
             "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000,
         }))
         assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
-        ledger = AuditLedger(service.router.ledger.path)
+        ledger = RouteChain(service.router.ledger.directory)
         ledger.verify()
         events = [item.event for item in ledger]
         transition = next(e for e in events if e["event_type"] == "mio.capability.transition")

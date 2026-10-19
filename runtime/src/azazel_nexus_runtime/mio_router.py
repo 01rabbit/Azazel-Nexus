@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from azazel_nexus.audit import AuditLedger
 from azazel_nexus.mio_profile import MioProfile
 from azazel_nexus.remote_envelope import EnvelopeRefusal
 from azazel_nexus.remote_trust import RemoteAdmission
@@ -32,6 +31,7 @@ from azazel_nexus.sanitizer import PrivacyClass
 
 from .mio_locald import LocalRuntimeService
 from .mio_remoted import RemoteInferenceService
+from .mio_route_ledger import RouteLedger
 from .runtime_paths import mio_state_dir
 
 
@@ -62,7 +62,7 @@ def terminal_for(reply: Mapping[str, Any]) -> TerminalEvent:
 
 
 class MioRouter:
-    """Serialize calls through one owner with its own route.jsonl chain.
+    """Serialize calls through one owner with its own segmented route chain.
 
     Requests are separate because the existing local and remote services have
     different verbs. Neither request is copied to an audit record. This owner
@@ -76,13 +76,19 @@ class MioRouter:
         local: LocalRuntimeService | None = None,
         clock: Callable[[], str] = lambda: datetime.now(UTC).isoformat(),
     ) -> None:
-        self.ledger = AuditLedger(mio_state_dir() / "route.jsonl")
+        self.ledger = RouteLedger(mio_state_dir())
         self._remote = remote if remote is not None else RemoteInferenceService()
         self._local = local if local is not None else LocalRuntimeService()
         self._clock = clock
 
-    def _record(self, event: dict) -> None:
-        self.ledger.append({**event, "occurred_at": self._clock()})
+    def _record(self, event: dict, *, reserved: bool = False) -> None:
+        dated = {**event, "occurred_at": self._clock()}
+        if reserved:
+            # Start, capability and refusal records may use the segment's
+            # control reserve; request records may not.
+            self.ledger.append(dated, reserved=True)
+        else:
+            self.ledger.append(dated)
 
     def handle(
         self,
