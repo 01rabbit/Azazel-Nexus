@@ -79,11 +79,15 @@ def start(root, all_properties):
     for name, leaf in zip(UNITS, LEAVES, strict=True):
         props = relocate(all_properties[name], root, name, prefix=prefix(root))
         unit = prefix(root) + name + ".service"
-        began = time.perf_counter()
-        run(build_command(name, props, prefix=prefix(root)))
         socket = root / "var/lib/azazel/run" / leaf / (leaf + ".sock")
         if len(os.fsencode(socket)) >= 108:
             raise ValueError("lab socket exceeds AF_UNIX length")
+        # A stopped daemon leaves its socket file behind; readiness must observe
+        # the new instance's bind, not the previous instance's leftover inode.
+        if socket.is_socket():
+            socket.unlink()
+        began = time.perf_counter()
+        run(build_command(name, props, prefix=prefix(root)))
         deadline = time.monotonic() + 15
         active_ms = None
         socket_ms = None

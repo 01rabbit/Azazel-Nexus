@@ -559,6 +559,33 @@ def test_recovery_observes_refusal_and_restores_each_break(tmp_path, monkeypatch
     assert all(path.read_bytes() == b"original" for path in paths)
 
 
+def test_recovery_ignores_the_advancing_route_ledger_position(tmp_path, monkeypatch):
+    # entryd's reply carries ledger_seq, which advances on every request. The
+    # VM run timed out because otherwise identical handoffs never compared equal.
+    import itertools
+
+    from azazel_nexus_lab import bench
+
+    for relative in ("var/lib/azazel/lite-trust/trust.json", "var/lib/azazel/state/mio/route.jsonl"):
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / relative).write_bytes(b"original")
+    sequence = itertools.count(1)
+    monkeypatch.setattr(services, "stop", lambda root: None)
+    monkeypatch.setattr(services, "prepare", lambda root: {})
+    monkeypatch.setattr(services, "start", lambda *args: [])
+    monkeypatch.setattr(cli, "masked_snapshot", dict)
+    monkeypatch.setattr(services, "run", lambda argv: "")
+    monkeypatch.setattr(cli, "worker", lambda *args: {"exit_code": 0, "stdout": json.dumps(
+        {"ledger_seq": next(sequence), "outcome": "refused", "reference_status": "unavailable"})})
+    monkeypatch.setattr(cli, "audit", lambda root: (_ for _ in ()).throw(ValueError("refused")))
+    monkeypatch.setattr(bench.time, "sleep", lambda seconds: None)
+    result = bench.recoveries(tmp_path)
+    locald = result[1]
+    assert locald["state"] == "stable_handoff_or_refusal"
+    assert len(locald["observations"]) == 3
+    assert "ledger_seq" in locald["observations"][0]["stdout"]
+
+
 def test_embedding_checks_model_digest_holds_copy_and_preserves_kill_switch(tmp_path, monkeypatch):
     import hashlib
 

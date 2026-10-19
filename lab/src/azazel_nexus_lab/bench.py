@@ -106,6 +106,7 @@ def recoveries(root, *, timeout=15):
                 break_target(root, target)
             previous, stable = None, 0
             observations = []
+            reading = {"state": "transport_failure"}
             while time.monotonic() - began < timeout:
                 if target == "audit-tamper":
                     try:
@@ -122,9 +123,14 @@ def recoveries(root, *, timeout=15):
                             reading["state"] = "answered" if body.get("state") in {"available", "stale"} else "refused"
                         else:
                             reading["state"] = "answered" if body.get("outcome") == "answered" else "handoff_or_refusal"
+                        # The route ledger position advances on every request by
+                        # design; identical replies differ only in ledger_seq.
+                        reading["reply"] = {key: value for key, value in body.items()
+                                            if key != "ledger_seq"}
                 observations.append(reading)
-                stable = stable + 1 if reading == previous else 1
-                previous = reading
+                compared = {key: value for key, value in reading.items() if key != "stdout"}
+                stable = stable + 1 if compared == previous else 1
+                previous = compared
                 # Stable replies/refusals are observed three times, 100 ms apart.
                 if stable >= 3 and reading["state"] != "transport_failure":
                     break
