@@ -271,8 +271,10 @@ readiness claims or enforcement authority. Intake and explainer each report
 not a process probe; the explainer writes only on change and quiet snapshots
 can become stale.
 
-Intake includes last accepted age, accepted count, top refusal counters and
-`storage_failed`. Explainer includes explained count, chain integrity, the
+Intake includes last processed age, processed and accepted counts, top refusal
+counters (always including `evidence_segment_full` when nonzero) and
+`storage_failed`. An incident whose evidence was not all stored is marked
+`(evidence not stored)`. Explainer includes explained count, chain integrity, the
 fixed recovery hint, last-attempt M.I.O./Knowledge availability and audit drops.
 The operator sees up to five recent pseudonymous incidents, severity/count,
 technique ids, a sanitized explanation summary and validated citation fields,

@@ -809,6 +809,8 @@ def replay_artifacts(short_root):
         server._transitions(server.tracker.add(record))
         server.accepted += 1
         server.last_accepted_at = record.received_at
+        server.processed += 1
+        server.last_processed_at = record.received_at
         instant[0] += 6
         explainer.poll()
         while not explainer.audit_pending.empty():

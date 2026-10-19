@@ -21,6 +21,7 @@ from pathlib import Path
 from azazel_nexus.audit import GENESIS_HASH, AuditChainBroken, AuditLedger
 from azazel_nexus.edge_intake import (
     MAX_LINE,
+    SEVERE_SEVERITY,
     STATUS_SCHEMA,
     EdgeEventRefused,
     EvidenceRecord,
@@ -34,6 +35,11 @@ from .principal import peer_credentials
 from .transport import bind_socket
 
 MAX_CONNECTIONS = 64
+# Connections finished at accept time per listener batch. Each costs at most
+# RECV_ROUNDS reads of a 16 KiB line; the cap keeps one batch from starving
+# registered readers and deadlines. The rest are registered as before.
+MAX_INLINE = 64
+RECV_ROUNDS = 8
 QUEUE_SIZE = 256
 READ_DEADLINE_S = 2
 LISTEN_BACKLOG = 512
@@ -43,6 +49,12 @@ RETENTION_DAYS = 14
 SEGMENT_BYTES = 64 * 1024 * 1024
 INCIDENT_SEGMENT_BYTES = 16 * 1024 * 1024
 TRUNCATION_RESERVE = 1024
+# The tail of each incident segment is kept for severe incidents (severity <=
+# SEVERE_SEVERITY) and control records, so ordinary churn while evidence is
+# full cannot use up the day before a severity 1 incident arrives.
+SEVERE_RESERVE = 1024 * 1024
+RESERVED_CONTROL = frozenset({"edge.incident.reset", "edge.incident.truncated",
+                              "edge.incident.retention"})
 WORKER_JOIN_S = 20
 
 
@@ -174,9 +186,10 @@ class IncidentLedgerTorn(Exception):
 class IncidentLedger(DailySegments):
     """One chain through retained daily segments, with a durable left boundary."""
 
-    def __init__(self, root, now, *, leaf="incidents", **limits):
+    def __init__(self, root, now, *, leaf="incidents", severe_reserve=SEVERE_RESERVE, **limits):
         limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
         super().__init__(root, leaf, mode=0o2750, **limits)
+        self.severe_reserve = severe_reserve
         self.ledger = None
         self.boundary = self.directory / "retained-boundary.json"
         self.head = (0, GENESIS_HASH)
@@ -273,6 +286,10 @@ class IncidentLedger(DailySegments):
         self.select(now)
         # Keep room for one durable gap marker even when a transition is lost.
         required = len(canonical(event)) + 512
+        severity = event.get("most_severe")
+        if not (event.get("event_type") in RESERVED_CONTROL
+                or type(severity) is int and severity <= SEVERE_SEVERITY):
+            required += self.severe_reserve
         size = self.current.stat().st_size
         if size + required + TRUNCATION_RESERVE > self.segment_bytes:
             if not self.truncated:
@@ -321,6 +338,10 @@ class IntakeServer:
         self.refused = Counter()
         self.accepted = 0
         self.last_accepted_at = None
+        # Tracked with or without stored evidence, so a full evidence day does
+        # not make a live Edge look stopped.
+        self.processed = 0
+        self.last_processed_at = None
         self.tracker = IncidentTracker(clock)
         self.lock = threading.Lock()
         self.finished = threading.Event()
@@ -338,6 +359,8 @@ class IntakeServer:
                 "written_at": self.clock(),
                 "last_accepted_at": self.last_accepted_at,
                 "accepted": self.accepted,
+                "processed": self.processed,
+                "last_processed_at": self.last_processed_at,
                 "refused": dict(self.refused),
                 "open_incidents": self.open_incidents,
                 "queue_drops": self.refused["queue_full"],
@@ -405,6 +428,15 @@ class IntakeServer:
                             self.refuse(exc.code)
                             stored = False
                         transitions = self.tracker.add(record, evidence_stored=stored)
+                        if not stored:
+                            # While evidence is full the ledger alone takes the
+                            # load: skip ordinary refreshes, keep openings,
+                            # closings and severe updates.
+                            transitions = [
+                                t for t in transitions
+                                if t["transition"] != "updated"
+                                or t["most_severe"] <= SEVERE_SEVERITY
+                            ]
                         with self.lock:
                             self.refused["incident_rate_limited"] = self.tracker.rate_limited
                     else:
@@ -412,6 +444,9 @@ class IntakeServer:
                     self._transitions(transitions)
                     with self.lock:
                         self.open_incidents = len(self.tracker.incidents)
+                        if record is not None:
+                            self.processed += 1
+                            self.last_processed_at = record.received_at
                         if record is not None and stored:
                             self.accepted += 1
                             self.last_accepted_at = record.received_at
@@ -484,7 +519,9 @@ class IntakeServer:
 
         def receive(connection, buffer):
             """Read what is available; None while unfinished, else a code ("" = done)."""
-            while True:
+            # Bounded rounds: an unfinished connection is read again on the
+            # next select rather than holding the loop.
+            for _ in range(RECV_ROUNDS):
                 try:
                     data = connection.recv(MAX_LINE + 2 - len(buffer))
                 except BlockingIOError:
@@ -510,6 +547,7 @@ class IntakeServer:
                         return ""
                 elif not data:
                     return "EDGE_SHAPE"
+            return None
 
         try:
             selector.register(listener, selectors.EVENT_READ)
@@ -521,6 +559,7 @@ class IntakeServer:
                     connection = key.fileobj
                     if connection is listener:
                         # A finite batch lets deadlines run even during a flood.
+                        inline = 0
                         for _ in range(LISTEN_BACKLOG):
                             try:
                                 incoming, _ = listener.accept()
@@ -540,7 +579,10 @@ class IntakeServer:
                             # at once; finishing complete ones here keeps a burst
                             # from exhausting reader slots before the next select.
                             buffer = bytearray()
-                            code = receive(incoming, buffer)
+                            code = None
+                            if inline < MAX_INLINE:
+                                inline += 1
+                                code = receive(incoming, buffer)
                             if code is not None:
                                 if code:
                                     self.refuse(code)

@@ -47,7 +47,7 @@ def read_transition(value):
     _shape(value, FIELDS, ("category", "protocol", "reason", "evidence_stored"))
     _text(value["event_type"], 32)
     # Present only as false: some of this incident's evidence hit a full day.
-    if value.get("evidence_stored", False) is not False:
+    if "evidence_stored" in value and value["evidence_stored"] is not False:
         raise ValueError("transition_refused")
     if value["event_type"] not in {"edge.incident." + t for t in ("opened", "updated", "closed")}:
         raise ValueError("transition_refused")
@@ -351,10 +351,14 @@ def build_recent_incident(transition, previous=None, record=None):
             and t["most_severe"] < previous["most_severe"]):
         explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
                        "summary": "", "knowledge_refs": [], "failure_codes": []}
-    return {**{k: t[k] for k in ("incident_id", "first_seen", "last_seen", "count",
-                                "most_severe", "edge_would", "technique_ids")},
-            "state": "closed" if t["event_type"] == "edge.incident.closed" else "open",
-            "policy_reason": clean["policy_reason"], "explanation": explanation}
+    row = {**{k: t[k] for k in ("incident_id", "first_seen", "last_seen", "count",
+                               "most_severe", "edge_would", "technique_ids")},
+           "state": "closed" if t["event_type"] == "edge.incident.closed" else "open",
+           "policy_reason": clean["policy_reason"], "explanation": explanation}
+    # Audit records do not carry this; the ledger, recent rows and status do.
+    if "evidence_stored" in t or previous and "evidence_stored" in previous:
+        row["evidence_stored"] = False
+    return row
 
 
 def explanation_summary(record):
@@ -413,7 +417,10 @@ def read_recent_incidents(raw):
         seen = set()
         for row in v["incidents"]:
             _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
-                         "edge_would", "policy_reason", "technique_ids", "explanation"))
+                         "edge_would", "policy_reason", "technique_ids", "explanation"),
+                   ("evidence_stored",))
+            if "evidence_stored" in row and row["evidence_stored"] is not False:
+                return None
             ident = row["incident_id"]
             if type(ident) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", ident) or ident in seen:
                 return None

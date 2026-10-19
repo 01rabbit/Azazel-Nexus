@@ -161,7 +161,12 @@ Concrete I1 limits and paths:
   and EOF are already readable when accepted is finished at once and never
   takes a reader slot; only incomplete ones are registered and count toward
   the 64. (A container load test at 600 lines/s lost 14.7% as `overloaded`
-  when every accepted connection waited for the next poll.)
+  when every accepted connection waited for the next poll.) At most 64
+  connections per accept batch are finished this way, each with at most eight
+  reads; the rest are registered as before. So `overloaded` now means
+  incomplete connections beyond the reader slots: a completed connection is
+  not refused when the slots are full, and sustained load shows as
+  `queue_full` instead.
 - Closed parsing preserves `defense` and `enforcement_status` verbatim.
   Enforcement plans and metadata are validated, then reduced to observation
   fields (mode, trace id, selected action, target, policy reason, result and
@@ -201,6 +206,15 @@ Concrete I1 limits and paths:
   incident's transitions carry `evidence_stored: false` from then on: the
   digests remain correlation ids, but at least one of them names evidence that
   was never stored. The field is absent while all evidence was stored.
+  `first_evidence`/`latest_evidence` digests are for correlation only and need
+  not exist in the evidence files. The field is not forwarded to audit; it is
+  visible only in the incident ledger, `recent.json` and status. Intake status
+  counts `processed` (events that reached the tracker, stored or not, so
+  `processed >= accepted`) and `last_processed_at`, so a live Edge does not
+  look stopped while `accepted` is frozen. While an event's evidence was not
+  stored, its ordinary `updated` transitions (severity > 2) are not written to
+  the incident ledger; `opened`, `closed` and severe `updated` still are, and
+  the closing transition carries the final count.
   The SHA-256 digest covers canonical JSON of the validated, normalized event
   (including address normalization and reduced enforcement observations),
   not Edge's raw line; received time is separate. New segment creation fsyncs
@@ -234,7 +248,13 @@ Concrete I1 limits and paths:
   Missing retained segments or broken links refuse startup; intentional prefix
   deletion remains visible in the retained boundary, including after restart.
   A full daily ledger counts `incident_segment_full` and omits transitions
-  while evidence intake continues. A 1 KiB reserve permits one
+  while evidence intake continues. The last 1 MiB of each 16 MiB segment is
+  reserved: only transitions of incidents whose `most_severe` is <= 2 and the
+  `truncated`, `reset` and `retention` control records may use it, so ordinary
+  churn (for example while evidence is full and the ledger alone takes the
+  load) is refused with `incident_segment_full` before it can crowd out a
+  later severity 1 opening. The first ordinary refusal there writes the
+  truncation marker. A further 1 KiB reserve permits one
   `edge.incident.truncated` marker per segment (also remembered across restart)
   when space allows. Tracker state continues to advance even when transitions
   are dropped, so the ledger may miss openings, counts, updates or closes;
@@ -319,7 +339,14 @@ nothing in intake, detection or Edge's observe-only decisions.
   `queue_full`, to preserve already accepted work, except that an arrival with
   severity <= 2 (intake's severe threshold, one shared constant) displaces the
   newest entry of another incident ranked above 2, also counted as
-  `queue_full`. A queue of only severe work still drops the newest arrival.
+  `queue_full`. A queue of only severe work still drops the newest arrival,
+  so when the 64 entries are all severe a new severe arrival is lost as
+  `queue_full`. While severe arrivals keep exceeding the explanation budget
+  ordinary entries are not taken, but this starvation is bounded: an
+  `opened` entry more than one hour past `first_seen` is discarded as
+  `stale_skipped` when drained. A displaced incident's recent row shows
+  `queue_full` unless it already shows an explanation, which stays true for
+  the earlier severity and is kept.
   Entries are checkpointed in arrival order as before, so earlier cursors
   remain readable. Stale queued updates are
   checked again when drained. During outage replay and before draining, an
@@ -451,10 +478,16 @@ nothing in intake, detection or Edge's observe-only decisions.
   labelled `most severe <n>` (the minimum seen) apart from
   `latest: Edge would <action> (observe-only, not executed)` (the latest
   decision), their summary (fixed `awaiting explanation` while pending) and
-  citations. The recent reader refuses the whole snapshot on any malformed
+  citations. A row carries optional `evidence_stored: false` (present only as
+  false) once some of that incident's evidence hit a full day, and status
+  prints `(evidence not stored)` on it. Audit records do not carry this;
+  it is visible only in the incident ledger, recent rows and status, and the
+  row's evidence digests (ledger only) are correlation ids that need not exist
+  in the evidence files. The recent reader refuses the whole snapshot on any malformed
   row, unknown field or unsanitized/address-shaped summary; read bound 256 KiB.
-- **Liveness detail.** Intake shows last accepted age, accepted count, the top
-  four refusal counters and storage failure. Explainer shows explained count,
+- **Liveness detail.** Intake shows last processed age, processed and
+  accepted counts, the top four refusal counters (plus
+  `evidence_segment_full` whenever it is nonzero) and storage failure. Explainer shows explained count,
   chain break and its fixed recovery hint, storage failure, last attempted
   M.I.O./Knowledge availability, `audit_forward_dropped` and
   `audit_forward_refused`. Unchanged

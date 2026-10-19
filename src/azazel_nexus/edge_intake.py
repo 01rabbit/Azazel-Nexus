@@ -487,6 +487,8 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "written_at",
                 "last_accepted_at",
                 "accepted",
+                "processed",
+                "last_processed_at",
                 "refused",
                 "open_incidents",
                 "queue_drops",
@@ -496,10 +498,13 @@ def read_intake_status(raw: bytes) -> dict | None:
         _require(value["schema"] == STATUS_SCHEMA)
         _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
         _number(value["written_at"])
-        if value["last_accepted_at"] is not None:
-            _number(value["last_accepted_at"])
-        for key in ("accepted", "open_incidents", "queue_drops"):
+        for key in ("last_accepted_at", "last_processed_at"):
+            if value[key] is not None:
+                _number(value[key])
+        for key in ("accepted", "processed", "open_incidents", "queue_drops"):
             _int(value[key], 2**64 - 1)
+        # Processed counts every tracked event, accepted only stored ones.
+        _require(value["processed"] >= value["accepted"])
         _require(
             type(value["refused"]) is dict and set(value["refused"]) <= REFUSAL_CODES
         )

@@ -879,3 +879,56 @@ def test_severe_transition_displaces_ordinary_work_and_survives_restart(tmp_path
     restarted.monotonic = lambda: 61
     restarted.poll()
     assert records(restarted)[0]["incident_id"] == "inc-00000000000000aa"
+
+
+@pytest.mark.parametrize("state", ["explained", "pending"])
+def test_displacement_keeps_an_explained_row(tmp_path, state):
+    from azazel_nexus.incident_explain import MAX_PENDING, build_recent_incident
+    e = make(tmp_path)
+    e.selection.attempts.extend([0] * 6)
+    victim = "inc-00000000000000bb"
+    row = build_recent_incident(transition(5, incident_id=victim))
+    if state == "explained":
+        row["explanation"] = {"state": "explained", "route": "local", "outcome": "answered",
+                              "summary": "Inspect the incident", "knowledge_refs": [],
+                              "failure_codes": []}
+        e.selection.mark(transition(5, incident_id=victim))
+    e.recent = [row]
+    for n in range(MAX_PENDING - 1):
+        e.selection.enqueue(transition(5, incident_id=f"inc-{n:016x}"), n + 1)
+    queued = transition(4, "updated", incident_id=victim) if state == "explained" else transition(5, incident_id=victim)
+    assert e.selection.enqueue(queued, 100) == "queued"
+    append(e, transition(1, incident_id="inc-00000000000000aa", evidence_stored=False))
+    e.poll()
+    assert e.refused["queue_full"] == 1
+    assert all(t["incident_id"] != victim for t, _ in e.selection.pending)
+    shown = next(r for r in e.recent if r["incident_id"] == victim)["explanation"]
+    if state == "explained":
+        assert shown["state"] == "explained" and shown["summary"] == "Inspect the incident"
+    else:
+        assert (shown["state"], shown["failure_codes"]) == ("unavailable", ["queue_full"])
+    severe = next(r for r in e.recent if r["incident_id"] == "inc-00000000000000aa")
+    assert severe["evidence_stored"] is False
+    # Audit stays on its declared schema: the flag is not forwarded.
+    (event,) = list(e.audit_pending.queue)
+    assert event["event_type"] == "edge.incident.opened" and "evidence_stored" not in event
+
+
+def test_pending_order_survives_checkpoint_and_displaced_stays_gone(tmp_path):
+    from azazel_nexus.incident_explain import MAX_PENDING
+    from test_incident_explain import drain
+    e = make(tmp_path)
+    for n in range(MAX_PENDING):
+        e.selection.enqueue(transition(5 if n % 3 else 3, incident_id=f"inc-{n:016x}"), n + 1)
+    e.selection.enqueue(transition(1, incident_id="inc-00000000000000aa"), 100)
+    displaced = e.selection.displaced
+    e.selection.enqueue(transition(2, "updated", incident_id="inc-0000000000000001"), 101)
+    e.checkpoint()
+    restarted = make(tmp_path)
+    assert list(restarted.selection.pending) == list(e.selection.pending)
+    order = drain(restarted.selection)
+    assert order == drain(e.selection) and order
+    assert order[0][0] == "inc-00000000000000aa"
+    assert [o[:2] for o in order[1:3]] == [("inc-0000000000000001", "edge.incident.opened"),
+                                           ("inc-0000000000000001", "edge.incident.updated")]
+    assert displaced not in {o[0] for o in order}

@@ -227,3 +227,57 @@ def test_full_queue_does_not_displace_the_severe_incidents_own_opened():
         s.enqueue(transition(2, incident_id=f"inc-{n:016x}"), n+1)
     assert s.enqueue(transition(1, "updated"), 99) == "queue_full"
     assert s.displaced is None
+
+
+def drain(s):
+    order = []
+    while s.pending:
+        s.attempts.clear()
+        item = s.take(0)
+        if item is None:
+            continue
+        order.append((item[0]["incident_id"], item[0]["event_type"], item[1]))
+        s.mark(item[0])
+    return order
+
+
+def test_displacement_takes_the_newest_entry_of_a_multi_entry_incident():
+    s = Selection()
+    for n in range(MAX_PENDING - 2):
+        s.enqueue(transition(5, incident_id=f"inc-{n:016x}"), n + 1)
+    shared = "inc-00000000000000bb"
+    s.enqueue(transition(5, incident_id=shared), 200)
+    s.enqueue(transition(4, "updated", incident_id=shared), 201)
+    assert s.enqueue(transition(1, incident_id="inc-00000000000000aa"), 300) == "queued"
+    assert s.displaced == shared
+    # Only the newest (the escalation) went; the opening it depends on stays.
+    assert [seq for t, seq in s.pending if t["incident_id"] == shared] == [200]
+    assert s.enqueue(transition(1, incident_id="inc-00000000000000ab"), 301) == "queued"
+    assert s.displaced == shared
+    assert all(t["incident_id"] != shared for t, _ in s.pending)
+    order = drain(s)
+    assert [o[0] for o in order[:2]] == ["inc-00000000000000aa", "inc-00000000000000ab"]
+    assert shared not in {o[0] for o in order}
+    assert [o[2] for o in order[2:]] == list(range(1, MAX_PENDING - 1))
+
+
+def test_transition_evidence_stored_is_false_or_absent():
+    assert read_transition(transition(evidence_stored=False))["evidence_stored"] is False
+    assert "evidence_stored" not in read_transition(transition())
+    for value in (True, 0, None, "false"):
+        with pytest.raises(ValueError):
+            read_transition(transition(evidence_stored=value))
+
+
+def test_recent_row_shows_unstored_evidence_and_keeps_it():
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    row = build_recent_incident(transition(evidence_stored=False))
+    assert row["evidence_stored"] is False
+    assert "evidence_stored" not in build_recent_incident(transition())
+    later = build_recent_incident(transition(2, "updated"), row)
+    assert later["evidence_stored"] is False
+    value = build_recent_incidents([later], 0)
+    assert read_recent_incidents(json.dumps(value).encode()) == value
+    for bad in (True, 0, None):
+        value["incidents"][0]["evidence_stored"] = bad
+        assert read_recent_incidents(json.dumps(value).encode()) is None
