@@ -269,8 +269,11 @@ def _activation(harness: Harness) -> str:
                 "having nothing to serve"
             )
     edge_verdict = next(v for v in outcome.verdicts if v.unit == "azazel-edge-core.service")
-    if edge_verdict.granted or not edge_verdict.reason.startswith("edge_unknown"):
-        raise RuntimeError("Edge Core must be withheld without baseline evidence")
+    # A lease-bearing pass now reads the installed package (#198); the
+    # harness installs none, so the package check itself must be what fails.
+    if (edge_verdict.granted or not edge_verdict.reason.startswith("edge_not_ready:")
+            or "package_present" not in edge_verdict.reason):
+        raise RuntimeError("Edge Core must be withheld without an installed package")
     if outcome.edge_baseline_ready:
         raise RuntimeError(
             "edge-baseline-ready was claimed with no Edge Core established"
