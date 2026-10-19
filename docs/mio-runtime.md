@@ -469,7 +469,9 @@ Usable references are returned separately under `knowledge`, with
 fields. Both socket client and delivery reader validate this bounded schema.
 Trust results describe the lookup's existing signature/revocation checks, not
 an approval. Expired indicators remain withheld by the existing serving filter;
-static reference material remains available. Knowledge is excluded from model
-prompts, prose, candidate selection and authority decisions. Situation quotes
-remain in `fields.cited_facts`, separate from model explanation fields.
+static reference material remains available. Verified Knowledge enters the
+explanation prompt only through the trusted reference message, as before; it
+never selects the candidate or reaches an authority decision, and model output
+is still validated field by field. Situation quotes remain in
+`fields.cited_facts`, separate from model explanation fields.
 These are software contracts and unit-test results, not hardware evidence.

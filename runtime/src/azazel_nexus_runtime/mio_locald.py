@@ -358,9 +358,7 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
             dropped = "deadline_short"
         else:
             chosen = next(o for o in options if o["option_id"] == candidate["option_id"])
-            # Knowledge is displayed as cited context only; it must not become
-            # model wording or apparent evidence for the selected candidate.
-            messages = explanation_prompt(frame, chosen, playbooks)
+            messages = explanation_prompt(frame, chosen, playbooks, knowledge)
             try:
                 result = server.infer(LocalInferenceRequest(
                     messages, max_tokens=512, temperature=0,
@@ -386,8 +384,12 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
                                similarities=similarities, state=state, retrieval=retrieval,
                                benign_evidence=support, system_record=record,
                                provenance="model" if explanation else retrieval)
-    if knowledge:
-        reply['knowledge'] = [asdict(ref) for ref in knowledge]
+    # Only verified Knowledge Lite references carry the provenance the reader
+    # checks. Offline evaluation fixtures may inform the prompt but are never
+    # delivered as if they had been verified.
+    delivered_refs = [asdict(ref) for ref in knowledge if isinstance(ref, KnowledgeRef)]
+    if delivered_refs:
+        reply['knowledge'] = delivered_refs
     read_delivered(reply)
     return reply, {"explanation_dropped": dropped, "embed_ms": embed_ms,
                    "explanation_ms": (time.monotonic() - explanation_began) * 1000,

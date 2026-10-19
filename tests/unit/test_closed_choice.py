@@ -232,8 +232,11 @@ def test_knowledge_stays_separate_from_model_and_situation_facts(frame):
     baseline, _ = deliver(frame, (.8,), server=SimpleNamespace(infer=infer))
     reply, _ = deliver(frame, (.8,), server=SimpleNamespace(infer=infer), knowledge=(ref,))
     assert reply['explanation_source'] == 'model'
-    assert prompts[0] == prompts[1]
-    assert 'Reference-only marker' not in str(prompts)
+    # Verified Knowledge reaches the model only inside the trusted reference
+    # message; the situation and the rest of the prompt are unchanged.
+    assert 'Reference name' not in str(prompts[0])
+    assert 'T1110.003 Reference name [T1110.003]' in prompts[1][1][1]
+    assert prompts[1][0] == prompts[0][0] and prompts[1][2:] == prompts[0][2:]
     assert reply == {**baseline, 'knowledge': [asdict(ref)]}
     assert 'model_reason' in reply['fields']
     assert 'cited_facts' in reply['fields']
