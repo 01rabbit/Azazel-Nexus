@@ -92,6 +92,7 @@ def test_fake_locald_not_admitted_is_recorded(root):
     requests = []
 
     def serve():
+        # One probe: the request reuses the capability sample it triggered.
         try:
             connection, _ = listener.accept()
             with connection:
@@ -113,7 +114,11 @@ def test_fake_locald_not_admitted_is_recorded(root):
         assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
         ledger = AuditLedger(service.router.ledger.path)
         ledger.verify()
-        assert next(iter(ledger)).event["local"] == "local_not_admitted"
+        events = [item.event for item in ledger]
+        transition = next(e for e in events if e["event_type"] == "mio.capability.transition")
+        assert transition["reasons"]["health"]["local"] == "not_admitted"
+        availability = next(e for e in events if e["event_type"] == "mio.entry.availability")
+        assert availability["local"] == "local_not_admitted"
     finally:
         thread.join(5)
         listener.close()
