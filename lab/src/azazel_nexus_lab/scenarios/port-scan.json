@@ -5,7 +5,7 @@
   "frame": {
     "request_id": "lab-port-scan",
     "privacy_class": "P0-public",
-    "question": "host=lab-gw で 200 ポートへの通信を検知。スキャンか確認したい。 / Port scan: what should I verify?",
+    "question": "host=lab-gw で 200 ポートへの通信を検知。ポートスキャンか確認したい。 / Port scan: what should I verify?",
     "context": [
       {
         "kind": "observation",

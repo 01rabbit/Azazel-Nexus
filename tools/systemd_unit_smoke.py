@@ -13,11 +13,14 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from azazel_nexus_runtime.unit_relocation import (
+# Non-production helpers live with the separate lab package, outside daemon runtime.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lab/src"))
+from azazel_nexus_lab.unit_relocation import (
     assert_write_isolation,
     build_command,
     create_scratch_tree,
@@ -32,8 +35,8 @@ UNITS = {
     "azazel-knowledge-lited": ("knowledge", "azknowledge", "knowledge.status", {}),
 }
 # Preserve the smoke tool's public seams while sharing verification with lab.
-from azazel_nexus_runtime import unit_sandbox as sandbox
-from azazel_nexus_runtime.unit_sandbox import (
+from azazel_nexus_lab import unit_sandbox as sandbox
+from azazel_nexus_lab.unit_sandbox import (
     SHOW,
     expected_properties,
     native_unknown_syscalls,

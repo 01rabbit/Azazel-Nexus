@@ -13,8 +13,7 @@ from nacl.signing import SigningKey
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "lab/src"))
-from azazel_nexus_lab import artifacts, cli, provision, services
-from azazel_nexus_runtime import unit_relocation
+from azazel_nexus_lab import artifacts, cli, provision, services, unit_relocation
 
 from azazel_nexus import lab_host
 
@@ -278,7 +277,7 @@ def test_mocked_up_keeps_real_pack_refusal_visible_and_down_erases_keys(tmp_path
     monkeypatch.setattr(services, "start", lambda *args: [{"unit": "mocked-real-wrapper"}])
     monkeypatch.setattr(services, "stop", lambda root: None)
     result = cli.up(root)
-    assert result["state"] == "degraded"
+    assert result["state"] == "ready"
     assert result["pack_cli"]["exit_code"] == 1
     assert (root / "keys/ephemeral.key").exists()
     assert (root / "keys/revocation.key").exists()
@@ -346,13 +345,14 @@ def test_production_pack_refuses_lab_domain_even_for_its_native_schema(tmp_path,
     assert not context.root.exists()
 
 
-def test_production_pack_refuses_lab_schema_with_native_signature(tmp_path, monkeypatch):
+@pytest.mark.parametrize("schema", ["azazel-nexus-lab/mission-pack/1", "azazel-nexus-lab/bench/v1"])
+def test_production_pack_refuses_lab_schema_with_native_signature(tmp_path, monkeypatch, schema):
     from test_mission_pack import NOW, node
 
     from azazel_nexus.mission_pack import MissionPack, PackRefused
 
     context, document, media = node.__wrapped__(tmp_path, monkeypatch)
-    document["schema"] = "azazel-nexus-lab/mission-pack/1"
+    document["schema"] = schema
     with pytest.raises(PackRefused):
         MissionPack(context).verify(media(document), now=NOW)
     assert not context.root.exists()
@@ -363,3 +363,318 @@ def test_status_first_line_marks_host(marker, tmp_path, capsys):
 
     assert main(["--sysfs", str(tmp_path), "status"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "LAB HOST"
+
+
+@pytest.mark.parametrize("scenario,kind", [
+    ("ssh-brute-force", "playbook"), ("port-scan", "playbook"),
+    ("phishing", "playbook"), ("ransomware", "playbook"),
+    ("out-of-scope", "out_of_scope"),
+])
+def test_lab_inprocess_real_library_rendering(scenario, kind):
+    from azazel_nexus_lab.inprocess import load_frame, reference, render
+
+    frame = load_frame(ROOT / "lab/src/azazel_nexus_lab/scenarios" / (scenario + ".json"))
+    result = reference(frame)
+    document = result["document"]
+    assert result["retrieval"] == "keyword"
+    assert "LAB-INPROCESS — 受け入れ外・サービス経路外" in render(result)
+    if kind == "out_of_scope":
+        assert document["outcome"] == kind
+    else:
+        assert document["candidate"]["kind"] == kind
+        assert document["provenance"]["source"] == "keyword"
+        assert document["provenance"]["model_id"] == "deterministic"
+        assert any(option["kind"] == "benign" for option in document["alternatives"])
+        for name in ("trusted_checks_0", "trusted_first_response_0", "trusted_missing_0"):
+            assert document["fields"][name] in render(result)
+        assert "テンプレート" in render(result)
+
+
+def test_ask_service_reply_is_separate_and_unchanged(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "session.json").write_text("{}")
+    monkeypatch.setattr(cli, "BASE", tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    reply = {"exit_code": 0, "stdout": json.dumps({"outcome": "handoff",
+             "reason": "no_provider", "reference_status": "unavailable"}), "stderr": ""}
+    monkeypatch.setattr(cli, "worker", lambda *args, **kwargs: reply)
+    scenario = ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json"
+    assert cli.main(["ask", str(scenario)]) == 0
+    text = capsys.readouterr().out
+    assert text.index("SERVICE PATH") < text.index("LAB-INPROCESS")
+    result = json.loads(text.splitlines()[-1])
+    assert result["service_path"] == reply
+    assert result["lab_inprocess"]["document"]["provenance"]["retrieval"] == "keyword"
+
+
+def test_embedding_unavailable_falls_back_with_visible_banner(tmp_path, monkeypatch):
+    from azazel_nexus_lab import embedding
+    from azazel_nexus_lab.inprocess import render
+
+    monkeypatch.setattr(embedding, "available_mib", lambda: embedding.MODEL_RSS_MIB + 255)
+    scenario = ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json"
+    result = cli.lab_reference(tmp_path, scenario, True, tmp_path / "absent.gguf")
+    assert result["retrieval"] == "keyword" and result["fallback"] == "ValueError"
+    assert "keyword fallback" in render(result)
+    assert not (tmp_path / "embedding").exists()
+
+
+def test_embedding_runtime_pin_failure_also_falls_back(tmp_path, monkeypatch):
+    from azazel_nexus_lab import embedding
+
+    from azazel_nexus.model_runtime import RuntimeRefused
+
+    monkeypatch.setattr(embedding, "available_mib", lambda: 10000)
+    def refuse(record, path):
+        assert path == Path("/usr/libexec/azazel/llama-server")
+        assert record.digest in __import__("azazel_nexus.model_runtime", fromlist=["LLAMA_RUNTIME_DIGESTS"]).LLAMA_RUNTIME_DIGESTS.values()
+        raise RuntimeRefused("bad pin")
+    monkeypatch.setattr(embedding, "open_verified_runtime", refuse)
+    result = cli.lab_reference(tmp_path, ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json",
+                               True, tmp_path / "absent")
+    assert result["fallback"] == "RuntimeRefused"
+    assert result["retrieval"] == "keyword"
+
+
+def test_real_embedding_retriever_composition_uses_library_and_cache(tmp_path):
+    from azazel_nexus_lab.inprocess import DATA, load_frame, reference
+    from azazel_nexus_runtime.mio_embedding import EmbeddingRetriever, document_text
+
+    from azazel_nexus.reasoning_playbook import read_library
+
+    library = read_library(DATA.read_bytes())
+    chosen = next(i for i, entry in enumerate(library.entries) if "ssh" in entry.id)
+    class Server:
+        calls = 0
+        def start(self, **kwargs):
+            pass
+        def embed(self, texts, **kwargs):
+            self.calls += 1
+            if len(texts) == 1:
+                return [[1., 0.]]
+            return [[1., 0.] if text == document_text(library.entries[chosen]) else [0., 1.] for text in texts]
+    server = Server()
+    retriever = EmbeddingRetriever(server, model_digest="sha256:" + "a" * 64, cache_dir=tmp_path)
+    frame = load_frame(ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json")
+    result = reference(frame, retriever=retriever)
+    assert result["retrieval"] == "embedding"
+    assert result["document"]["candidate"]["option_id"] == library.entries[chosen].id
+    assert result["document"]["provenance"]["retrieval"] == "embedding"
+    calls = server.calls
+    reference(frame, retriever=retriever)
+    assert server.calls == calls + 1
+    assert list(tmp_path.glob("*.json"))
+
+
+def test_lab_does_not_edit_production_admission_or_digest_pins():
+    from azazel_nexus.model_admission import LOCAL_MODEL_ADMISSION_ENABLED
+    from azazel_nexus.model_runtime import LLAMA_RUNTIME_DIGESTS
+
+    assert LOCAL_MODEL_ADMISSION_ENABLED is False
+    assert LLAMA_RUNTIME_DIGESTS == {
+        "aarch64": "sha256:eca8b1abbd8f7a5b121d2d0b7486829fc191736206cacf8556e878175c4ca8a6",
+        "x86_64": "sha256:e1671cd4167b39b29fe34bb906f62d610b289aed19301445c4844764467fb701",
+    }
+    for name in ("model_admission.py", "model_runtime.py"):
+        assert "azazel_nexus_lab" not in (ROOT / "src/azazel_nexus" / name).read_text()
+
+
+def test_bench_schema_refused_by_production_reserve():
+    from azazel_nexus_lab.bench import LABEL, SCHEMA
+
+    from azazel_nexus.core_reserve import ReserveRefused, parse_record
+    from azazel_nexus.hil_records import Status, validate_record
+
+    document = {**artifacts.output(), "schema": SCHEMA, "banner": artifacts.BANNER,
+                "performance_label": LABEL, "reserve_mib": 512}
+    with pytest.raises(ReserveRefused):
+        parse_record(json.dumps(document))
+    assert validate_record(document).status == Status.REFUSED
+    assert "unsupported versioned HIL record schema" in validate_record(document).reasons
+
+
+def test_bench_measures_and_saves_only_lab_outputs(tmp_path, monkeypatch):
+    from argparse import Namespace
+
+    from azazel_nexus_lab import bench
+
+    root = tmp_path / "demo"
+    root.mkdir()
+    monkeypatch.setattr(services, "stop", lambda root: None)
+    monkeypatch.setattr(services, "prepare", lambda root: {})
+    monkeypatch.setattr(services, "start", lambda *args: [
+        {"unit": "lab-only", "active_ms": 2., "socket_ready_ms": 3.}])
+    memory = {name: {"VmRSS_kib": 10, "VmHWM_kib": 11, "cgroup_memory_peak_bytes": 12000}
+              for name in services.UNITS}
+    monkeypatch.setattr(bench, "service_memory", lambda root: memory)
+    concurrencies = []
+    def rounds(root, count, concurrency):
+        concurrencies.append(concurrency)
+        return {"n": count, "p50_ms": 2., "p95_ms": 4., "concurrency": concurrency, "samples": []}
+    monkeypatch.setattr(bench, "roundtrips", rounds)
+    monkeypatch.setattr(bench, "recoveries", lambda root: [])
+    args = Namespace(requests=2, duration=.001, interval=.1, embedding=False, model=None)
+    result = bench.run_bench(root, args)
+    assert concurrencies[:3] == [1, 2, 4]
+    assert result["schema"] == "azazel-nexus-lab/bench/v1"
+    assert result["keyword"]["n"] == 2
+    assert result["sustained"]["samples"]
+    for key in ("saved_json", "saved_summary"):
+        path = Path(result[key])
+        assert path.is_relative_to(root / "bench")
+        assert bench.LABEL in path.read_text() and "LAB" in path.read_text()
+    stored = json.loads(Path(result["saved_json"]).read_text())
+    assert stored["not_hardware_evidence"] is True
+
+
+def test_bench_refuses_symlink_output(tmp_path):
+    from argparse import Namespace
+
+    from azazel_nexus_lab.bench import run_bench
+
+    (tmp_path / "bench").symlink_to(tmp_path.parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        run_bench(tmp_path, Namespace(requests=1, duration=1, interval=1))
+
+
+def test_recovery_observes_refusal_and_restores_each_break(tmp_path, monkeypatch):
+    from azazel_nexus_lab import bench
+
+    paths = [tmp_path / relative for relative in (
+        "var/lib/azazel/lite-trust/trust.json", "var/lib/azazel/state/mio/route.jsonl")]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"original")
+    monkeypatch.setattr(services, "stop", lambda root: None)
+    monkeypatch.setattr(services, "prepare", lambda root: {})
+    monkeypatch.setattr(services, "start", lambda *args: [])
+    monkeypatch.setattr(cli, "masked_snapshot", dict)
+    monkeypatch.setattr(services, "run", lambda argv: "")
+    monkeypatch.setattr(cli, "worker", lambda *args: {"exit_code": 0, "stdout": "{}"})
+    monkeypatch.setattr(cli, "audit", lambda root: (_ for _ in ()).throw(ValueError("refused")))
+    result = bench.recoveries(tmp_path)
+    assert [row["target"] for row in result] == ["knowledge-trust", "locald", "audit-tamper"]
+    assert [row["state"] for row in result] == ["stable_refused", "stable_handoff_or_refusal", "stable_refused"]
+    assert all(path.read_bytes() == b"original" for path in paths)
+
+
+def test_embedding_checks_model_digest_holds_copy_and_preserves_kill_switch(tmp_path, monkeypatch):
+    import hashlib
+
+    from azazel_nexus_lab import embedding
+    from azazel_nexus_runtime.mio_serve import LocalServer
+
+    from azazel_nexus.model_admission import LOCAL_MODEL_ADMISSION_ENABLED
+
+    model = tmp_path / "input.gguf"
+    model.write_bytes(b"GGUF unit fixture, no inference")
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"unit fixture, never executed")
+    monkeypatch.setattr(embedding, "available_mib", lambda: embedding.MODEL_RSS_MIB + 256)
+    monkeypatch.setattr(embedding, "MODEL_BYTES", model.stat().st_size)
+    monkeypatch.setattr(embedding, "DIGEST", hashlib.sha256(model.read_bytes()).hexdigest())
+    monkeypatch.setattr(embedding, "open_verified_runtime", lambda record, path: os.open(binary, os.O_RDONLY))
+    with embedding.retriever(tmp_path, model) as (retriever, server):
+        assert isinstance(server, LocalServer)
+        assert type(server).embed is LocalServer.embed
+        assert type(server).start is LocalServer.start
+        assert retriever.server is server
+        assert LOCAL_MODEL_ADMISSION_ENABLED is False
+        copy = tmp_path / "embedding/bge-m3.gguf"
+        assert copy.read_bytes() == model.read_bytes()
+        assert copy.stat().st_mode & 0o777 == 0o400
+        descriptors = server.descriptors
+        server._check_admission()
+        model.write_bytes(b"source changed")
+        assert os.pread(descriptors[1], 4, 0) == b"GGUF"
+        copy.chmod(0o600)
+        copy.write_bytes(b"changed lab inode")
+        with pytest.raises(ValueError, match="descriptor"):
+            server._check_admission()
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_bad_embedding_model_hash_never_constructs_server(tmp_path, monkeypatch):
+    from azazel_nexus_lab import embedding
+
+    model = tmp_path / "wrong.gguf"
+    model.write_bytes(b"wrong")
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"not executed")
+    monkeypatch.setattr(embedding, "available_mib", lambda: 10000)
+    monkeypatch.setattr(embedding, "MODEL_BYTES", 5)
+    monkeypatch.setattr(embedding, "open_verified_runtime", lambda record, path: os.open(binary, os.O_RDONLY))
+    with pytest.raises(ValueError, match="sha256"), embedding.retriever(tmp_path, model):
+        pytest.fail("bad model accepted")
+    assert not (tmp_path / "embedding/bge-m3.gguf").exists()
+    assert not list((tmp_path / "embedding").glob("model.staging-*"))
+
+
+def test_ask_freezes_frame_before_service_and_inprocess(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "session.json").write_text("{}")
+    scenario = tmp_path / "scenario.json"
+    source = ROOT / "lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json"
+    scenario.write_bytes(source.read_bytes())
+    original = json.loads(source.read_text())["frame"]
+    monkeypatch.setattr(cli, "BASE", tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    def exchange(root, operation, *, payload):
+        assert operation == "ask-frame" and payload == original
+        scenario.write_text("{}")
+        return {"exit_code": 0, "stdout": "{}", "stderr": ""}
+    monkeypatch.setattr(cli, "worker", exchange)
+    assert cli.main(["ask", str(scenario)]) == 0
+    result = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result["lab_inprocess"]["document"]["candidate"]["option_id"] == "auth-ssh-brute-force"
+
+
+def test_bench_roundtrips_keep_errors_as_samples(tmp_path, monkeypatch):
+    from azazel_nexus_lab.bench import roundtrips
+
+    rows = [{"ms": 1., "status": {"outcome": "handoff", "reference_status": "unavailable"}},
+            {"ms": 4., "status": {"error_type": "TimeoutError"}}]
+    def worker(root, operation, *args):
+        assert operation == "roundtrips" and args[1:] == (2, 4)
+        return {"exit_code": 0, "stdout": json.dumps(rows)}
+    monkeypatch.setattr(cli, "worker", worker)
+    result = roundtrips(tmp_path, 2, 4)
+    assert result["p50_ms"] == 2.5 and result["p95_ms"] == 4.
+    assert result["samples"] == rows
+
+
+def test_bench_knowledge_probe_uses_real_status_socket_contract(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from azazel_nexus_lab import worker
+    from azazel_nexus_runtime import mio_socket_client
+
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["worker", "knowledge-status"])
+    monkeypatch.setattr(worker.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=1234))
+    gids = []
+    monkeypatch.setattr(worker.os, "setegid", gids.append)
+    def exchange(socket, owner, verb, arguments, *, deadline_s):
+        assert (socket, owner, verb, arguments) == ("knowledge", "azknowledge", "knowledge.status", {})
+        assert deadline_s == 3
+        return {"state": "unavailable"}
+    monkeypatch.setattr(mio_socket_client, "_exchange", exchange)
+    assert worker.main() == 0
+    assert gids == [1234]
+    assert json.loads(capsys.readouterr().out) == {"state": "unavailable"}
+
+
+def test_bench_refusal_is_still_labelled_software_performance(monkeypatch, capsys):
+    from azazel_nexus_lab.bench import LABEL, SCHEMA
+
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert cli.main(["bench"]) == 2
+    text = capsys.readouterr().out
+    assert text.startswith(artifacts.BANNER) and LABEL in text
+    refusal = json.loads(text.splitlines()[-1])
+    assert refusal["schema"] == SCHEMA
+    assert refusal["banner"] == artifacts.BANNER and refusal["performance_label"] == LABEL

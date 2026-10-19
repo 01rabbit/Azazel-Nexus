@@ -1,7 +1,7 @@
 """Relocate parsed service sandboxes without applying production dependencies.
 
 Used by the opt-in smoke tool and the separately installed lab distribution.
-No lab package is imported by the runtime.
+This module is outside production runtime; daemons never import it.
 """
 from __future__ import annotations
 

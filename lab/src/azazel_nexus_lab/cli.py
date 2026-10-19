@@ -15,8 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from azazel_nexus_runtime.mio_supervisor import SupervisorRefused
+
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.lab_host import LAB_HOST_MARKER
+from azazel_nexus.model_runtime import RuntimeRefused
 
 from . import services
 from .artifacts import BANNER, canonical, create_key, envelope, output, shred_keys
@@ -57,11 +60,13 @@ def mark_host():
         os.fsync(stream.fileno())
 
 
-def worker(root, operation, *args):
+def worker(root, operation, *args, payload=None):
     process = subprocess.run(
         [sys.executable, "-m", "azazel_nexus_lab.worker", operation, *map(str, args)],
         env={**os.environ, "AZAZEL_ROOT": str(root), "PYTHONDONTWRITEBYTECODE": "1"},
-        capture_output=True, text=True, timeout=30, check=False,
+        capture_output=True, text=True,
+        input=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+        timeout=30 + (3 * int(args[1]) if operation == "roundtrips" else 0), check=False,
     )
     return {"exit_code": process.returncode, "stdout": process.stdout, "stderr": process.stderr}
 
@@ -135,9 +140,9 @@ def up(root):
         after = masked_snapshot()
         if after != before:
             raise ValueError("production authority/lease snapshot changed")
-        result = output(state="degraded", root=str(root), fixture=fixture, units=units,
+        result = output(state="ready", root=str(root), fixture=fixture, units=units,
                         pack_cli=pack, unchanged_edge_snapshot=after,
-                        limitation="Mission Pack fixture promotion requires a design decision; "
+                        limitation="Mission Pack selection is refused by design; "
                         "production resource/encryption/architecture gates were not bypassed")
         (root / "session.lab-signed").write_bytes(envelope(canonical(result), key, "session"))
         (root / "session.json").write_bytes(canonical(result))
@@ -204,6 +209,25 @@ def down(root):
     return output(state="down", marker_retained=True)
 
 
+def lab_reference(root, scenario, embedding=False, model=None, *, frame=None):
+    from .inprocess import load_frame, read_frame, reference
+
+    frame = read_frame(frame) if frame is not None else load_frame(scenario)
+    if embedding:
+        from .embedding import retriever
+
+        try:
+            with retriever(root, model) as (engine, server):
+                result = reference(frame, retriever=engine)
+                result["embedding_memory"] = server.memory()
+                return result
+        except (OSError, ValueError, RuntimeError, RuntimeRefused, SupervisorRefused) as error:
+            result = reference(frame)
+            result["fallback"] = type(error).__name__
+            return result
+    return reference(frame)
+
+
 def main(argv=None):
     print(BANNER, flush=True)
     parser = argparse.ArgumentParser(prog="az-nexus-lab", description=__doc__)
@@ -212,10 +236,23 @@ def main(argv=None):
     for name in ("up", "status", "audit", "down"):
         commands.add_parser(name)
     commands.add_parser("knowledge").add_argument("technique")
-    commands.add_parser("ask").add_argument("scenario", type=Path)
+    ask = commands.add_parser("ask")
+    ask.add_argument("scenario", type=Path)
+    ask.add_argument("--embedding", action="store_true")
+    ask.add_argument("--model", type=Path)
+    bench = commands.add_parser("bench")
+    bench.add_argument("--requests", type=int, default=20)
+    bench.add_argument("--duration", type=float, default=300)
+    bench.add_argument("--interval", type=float, default=5)
+    bench.add_argument("--embedding", action="store_true")
+    bench.add_argument("--model", type=Path)
     commands.add_parser("break").add_argument("target", choices=(
         "knowledge-trust", "locald", "pack-expire", "audit-tamper"))
     args = parser.parse_args(argv)
+    if args.command == "bench":
+        from .bench import LABEL, SCHEMA
+
+        print(LABEL, flush=True)
     try:
         if os.geteuid() != 0:
             raise ValueError("root required")
@@ -230,6 +267,20 @@ def main(argv=None):
             result = output(status=worker(root, "status"), setup=worker(root, "setup"))
         elif args.command == "audit":
             result = audit(root)
+        elif args.command == "bench":
+            from .bench import run_bench
+
+            result = run_bench(root, args)
+        elif args.command == "ask":
+            from .inprocess import load_frame, render
+
+            frame = load_frame(args.scenario.resolve())
+            service = worker(root, "ask-frame", payload=frame)
+            print("SERVICE PATH — 実 entryd 応答 / real entryd reply")
+            print(json.dumps(service, ensure_ascii=False, sort_keys=True))
+            local = lab_reference(root, args.scenario.resolve(), args.embedding, args.model, frame=frame)
+            print(render(local))
+            result = output(service_path=service, lab_inprocess=local)
         elif args.command == "break":
             result = break_target(root, args.target)
         else:
@@ -238,7 +289,10 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 1 if result.get("state") == "degraded" else 0
     except Exception as error:  # noqa: BLE001 - no untrusted payload or key in diagnostics
-        print(json.dumps(output(state="refused", error_type=type(error).__name__), sort_keys=True))
+        refusal = output(state="refused", error_type=type(error).__name__)
+        if args.command == "bench":
+            refusal.update(schema=SCHEMA, banner=BANNER, performance_label=LABEL)
+        print(json.dumps(refusal, ensure_ascii=False, sort_keys=True))
         return 2
 
 

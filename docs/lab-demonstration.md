@@ -2,54 +2,58 @@
 
 「LAB — 実機の根拠ではありません／受け入れではありません／本番の起動ではありません」
 
-Debian 13 aarch64 VMware・2 GiB の所有者向けデモです。別配布の `lab/`
-だけを導入し、一時鍵・データ・ソケットを `/var/lib/azazel-lab/demo` に隔離します。
-本番 unit は masked のままです。ホストには `/etc/azazel-lab/LAB-HOST` が残り、
-HIL・reserve 測定・model admission・commission review・bootstrap approval 公開を拒否します。
-マーカーを消しても admission、署名、hardware gate の条件は満たされません。
+Debian 13 aarch64 VMware・2 GiB の所有者向けデモです。`ask` は **SERVICE PATH**
+（実 entryd の応答）と **LAB-INPROCESS — 受け入れ外・サービス経路外**（lab プロセス内の
+実ライブラリ照合）を分けて表示します。Mission Pack の選択は設計どおり拒否します。
+実測 reserve・LUKS・x86_64 の本番条件を偽装しません。SERVICE PATH は deterministic
+handoff と `reference_status: unavailable`、元の routing reason をそのまま示します。
+LAB-INPROCESS は lab 同梱 baseline の template から候補、代替仮説、信頼データの
+確認手順・初動対応・不足情報を表示します。サービスがこの baseline を選択したという意味ではありません。
 
-**現在は部分実装です。** `up` は Knowledge fixture と実 daemon の隔離起動を準備しますが、
-Mission Pack の本番検証は lab schema/domain、aarch64、実測 reserve 不在、暗号化されていない
-ストレージを受け入れません。本番検証を弱めずに baseline を選択する lab 専用 fixture
-provisioning の設計判断が未解決です。`up` はその拒否を表示して degraded（終了コード 1）に
-なり、baseline reference と `pack-expire` の完全デモはできません。
-この状態を issue #164 の完成や VM 動作確認として扱わないでください。
+`bench` は「仮想マシン・ソフトウェア性能（実機の根拠ではない）」だけを測定します。
+出力は lab root 内の JSON と日本語表です。実機 evidence、admission、activation には使えません。
+Live Edge authority と lease は未観測です。relocation では `Type=notify` が `exec` に変わります。
+VM での実起動・実モデル性能は VM 上で下記手順を実行して確認してください。
 
 LAB — NOT hardware evidence / NOT admission / NOT production activation.
 
-The current tool exposes the production refusal instead of fabricating a reserve,
-compatibility tuple, encrypted-storage assertion or native pack admission receipt.
-It starts only independently named transient copies of the installed daemon wrappers.
-No activation controller, remote provider or model is started. The existing
-`LOCAL_MODEL_ADMISSION_ENABLED` remains `False`.
+## VM installation
 
-## Separate installation
+Use a disposable Debian 13 test VM, a reviewed checkout at `/opt/src/Azazel-Nexus`,
+a separately prepared offline wheel directory `/opt/lab-wheels`, and the pinned
+architecture-specific b11716 binary at `/opt/lab-assets/llama-server`.
+Place bge-m3 Q8_0 at `/opt/lab-assets/bge-m3-Q8_0.gguf` if using embedding.
+The model is 634553760 bytes, SHA-256
+`950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167`.
+Nothing is downloaded by the lab. The production installer verifies the runtime
+against the existing architecture digest pins; the lab verifies the installed binary again.
+The VM must have Python 3.11+ with venv and the production offline staging inputs
+prepared as described in [the systemd runbook](evidence/milestone1-real-systemd-smoke-RUNBOOK.md).
 
-Use a disposable test VM with the reviewed production build already installed and
-**all production units masked and stopped**. The lab checks this prerequisite.
-It does not mask, unmask, enable or start any production unit.
-
-From this checkout, provision a separate Python environment and a separately
-prepared offline wheel directory containing setuptools, PyNaCl, PyYAML and
-runtime dependencies. These wheels and the lab are deliberately absent from the
-production offline bundle and installed-file manifest.
+On a fresh VM, install the reviewed production files/accounts first. The installer
+masks operational services; explicitly stop and mask the activation controller too.
+If the reviewed build is already installed, omit the installer command.
 
 ```sh
+cd /opt/src/Azazel-Nexus
+sudo sh packaging/install.sh --llama-runtime /opt/lab-assets/llama-server
+sudo systemctl stop azazel-activated.service
+sudo systemctl mask azazel-activated.service
 sudo python3 -m venv /opt/azazel-lab/venv
-sudo /opt/azazel-lab/venv/bin/python -m pip install --no-index --find-links /path/to/lab-wheels . ./runtime ./lab
+sudo /opt/azazel-lab/venv/bin/python -m pip install --no-index --find-links /opt/lab-wheels . ./runtime ./lab
 ```
 
-The lab distribution declares `az-nexus-lab`; `packaging/install.sh` does not install it.
-Do not install the lab into the production interpreter or add its sources to a daemon's
-import path. The production loaded-module verifier explicitly refuses its package.
+`up` checks that **all production units are already masked and stopped**, including
+the activation controller. The lab never enables, unmasks or starts production units.
+The separate lab distribution is absent from the production bundle and installed-file
+manifest. Do not install it into the production interpreter or daemon import path;
+the production loaded-module verifier refuses it.
 
 ## Owner demo script
 
-Run these commands individually from the checkout; `up` currently returns 1 with
-its explicit degraded result. Do not interpret that as a completed baseline demo.
-Each invocation prints the Japanese warning followed by the English warning,
-then lab-labelled JSON with `lab: true` and `not_hardware_evidence: true`.
-Captured production CLI output remains inside this labelled JSON.
+Run from `/opt/src/Azazel-Nexus`. Each command starts with the Japanese and English LAB
+banner. `up` succeeds when the three isolated services start and Pack inspection
+returns the expected refusal. Its result still records that production refusal.
 
 ```sh
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo up
@@ -60,74 +64,125 @@ sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_la
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/phishing.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/ransomware.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/out-of-scope.json
+sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask --embedding --model /opt/lab-assets/bge-m3-Q8_0.gguf lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo audit
+sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo bench --requests 20 --duration 300 --interval 5
+sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo bench --embedding --model /opt/lab-assets/bge-m3-Q8_0.gguf --requests 20 --duration 300 --interval 5
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break knowledge-trust
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo knowledge T1110
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break locald
+sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo ask lab/src/azazel_nexus_lab/scenarios/ssh-brute-force.json
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break pack-expire
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo break audit-tamper
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo audit
 sudo /opt/azazel-lab/venv/bin/az-nexus-lab --id demo down
 ```
 
-What the owner can inspect:
+The final `audit` is expected to refuse after tampering; run commands individually.
+Copy any wanted `demo/bench/*.json` and `*.txt` results **before** `down`, which deletes
+that lab root. Keep copies labelled as lab software measurements, outside hardware
+evidence directories. `pack-expire` reports unavailable: no active Pack was selected.
+For a quick bench plumbing check use `--requests 2 --duration 1 --interval 0.1`;
+this short run cannot establish sustained stability.
 
-- `up`: three real installed wrappers, relocated sandbox properties, an ephemeral
-  public trust pin, a re-signed Knowledge fixture, and the real production Pack
-  CLI refusing the lab envelope. The refusal is an explicit limitation.
-- `status`: real `azazel-nexus status` and `setup` against relocated state. Both
-  begin with `LAB HOST` on a marked machine. Unknown prerequisites remain unknown.
-- `knowledge T1110`: the producer fixture's Brute Force reference through the real
-  trusted reader. This operator command reads locally; Knowledge socket lookup
-  remains restricted to service principals.
-- `ask`: `mio.advise` sent over the real entryd socket, with production principal
-  checks and route auditing. Until baseline fixture selection is resolved, security
-  questions retain deterministic fallback without a selected baseline reference.
-  Out-of-scope requests retain their bounded refusal.
+## What each part demonstrates
+
+- `up`: three real installed daemon wrappers under independently named transient
+  units, relocated sandbox properties, ephemeral test trust pins and a real LiteImport
+  of the unchanged producer Knowledge fixture. Production Pack inspection refuses
+  the lab envelope. That expected refusal does not make the lab startup fail.
+- `status`: real `azazel-nexus status` and `setup` against relocated state, beginning
+  with `LAB HOST`. Unknown prerequisites remain unknown.
+- `knowledge T1110`: real trusted local reader of the fixture. This is an operator
+  read; Knowledge socket lookup remains restricted to service principals.
+- `ask` SERVICE PATH: actual `mio.advise` over entryd's socket, production principal
+  checks and route auditing. Its raw reply, reason and reference status are retained.
+  No lab playbook loader is added to production entryd or locald.
+- `ask` LAB-INPROCESS: the **same validated frame**, `gate_frame`, real keyword
+  `match`, `build_options`, `retrieval_decision`, `delivered_document` and the strict
+  delivered-document reader. Provenance is `keyword` and model id `deterministic`.
+  Baseline procedures remain unreviewed templates. Out-of-scope input shows its gate
+  refusal, rather than an invented candidate. The English header is
+  `LAB-INPROCESS — NOT admission / OUTSIDE service path`.
+- `--embedding`: real `EmbeddingRetriever` and inherited `LocalServer` HTTP,
+  readiness, embedding, deadline and stop methods. The shared non-production
+  composition helper was extracted from `tests/e2e_local_inference/harness.py`.
+  The lab adapter supplies its own construction, descriptor checks and launcher;
+  production construction/launch remain admission-disabled. No production flag is
+  mutated, no reserve measurement or admission receipt is fabricated. The binary
+  is fixed at `/usr/libexec/azazel/llama-server`; `--model` is copied, hashed and held
+  read-only inside the lab root. CPU only, AF_UNIX, no remote provider.
+  `MemAvailable` must be at least the explicit **1024 MiB RSS estimate + 256 MiB**.
+  This is a conservative lab estimate, not an HG measurement or a cgroup guarantee.
+  Missing assets, low memory, invalid digests, startup and retrieval failures fall
+  back to keyword with an explicit bilingual banner. On a 2 GiB VM this fallback
+  is a valid result. Model/load cold time is separate from warm retrieval latency.
 - `audit`: route/local/Lite-import hash-chain verification. Knowledge daemon events
-  are an **unhashed event log**; the command validates JSON framing and labels that
-  limitation instead of claiming a cryptographic chain.
-- `break`: Knowledge trust becomes unreadable, locald stops, or the route ledger
-  is tampered. `pack-expire` currently reports unavailable because no pack was
-  selected. Every break prints the unchanged production-unit and activation-approval
-  snapshot. Live Edge authority and live lease are explicitly unobserved: this
-  build has no live authority-query transport, so file hashes cannot certify them.
-- `down`: stop the exact lab units, overwrite/sync/unlink both ephemeral private
-  keys, remove the lab root, retain the host marker. Failure to stop a unit retains
-  the root and keys for recovery. Overwriting cannot guarantee physical erasure
-  on SSD, snapshot or copy-on-write storage; discard the disposable VM as well.
+  are an **unhashed event log**; JSON framing is checked without a cryptographic claim.
+- `break`: trust corruption, stopped locald, or route-ledger tampering. Each prints
+  production unit state and activation-approval hashes before/after. Live Edge
+  authority and live lease are **unobserved**; file hashes cannot certify them.
+- `down`: exact lab-unit stop, overwrite/fsync/unlink of both ephemeral private keys,
+  lab-root removal, retained `/etc/azazel-lab/LAB-HOST`. Stop failure retains recovery
+  state. Overwriting cannot guarantee physical erasure on SSD/COW/snapshots; discard
+  the VM as well. The marker blocks HIL/reserve/model admission/commission review/
+  bootstrap approval publication; removing it grants no admission.
 
-## Boundaries and principal
+## Bench contract and interpretation
 
-The root-run client sets its **primary effective GID** to `azazel-operator` in a
-fresh child process. Existing `PrincipalPolicy` explicitly classifies this combination
-as an operator. Root's supplementary group membership alone does not do so.
-No new operator account, operator private key or production trust enrollment is
-created. The lab never reads `~/azazel-operator-key`.
+Schema: `azazel-nexus-lab/bench/v1`. JSON and Japanese summary are created exclusively
+under `/var/lib/azazel-lab/<id>/bench/<UTC timestamp>.{json,txt}`, with both LAB banners
+and **仮想マシン・ソフトウェア性能（実機の根拠ではない）**. No output-directory flag exists. JSON records package/Python/kernel versions,
+architecture, baseline/scenario SHA-256 and, when used, verified model/runtime digests.
+Production HIL, reserve and Pack validators refuse the lab schema/domain.
 
-The root is fixed under `/var/lib/azazel-lab/<id>`; ids contain at most twelve ASCII
-letters/digits. There is no arbitrary root or trust override. `AZAZEL_ROOT` is used
-only for the existing relocation mechanism in fresh daemon/client processes. No
-production gate gains an environment-variable bypass.
+Bench restarts the lab stack before measurement and records per-service elapsed time
+from launch to active and socket-file readiness (50 ms polling; socket creation is
+not a completed application request). It then measures N actual entryd round trips
+**at each concurrency 1, 2, 4**, with individual durations/statuses, median p50 and
+nearest-rank p95. The fresh client's process startup is outside the timed exchange.
+Keyword latency includes reading/parsing the packaged baseline and document construction.
+Embedding latency includes real retrieval and document construction, with cold/cache
+preparation separate; keyword fallback samples are explicitly labelled.
 
-Relocation reuses the smoke tool's parser, command builder, effective-property and
-syscall verification. Production `[Unit]` activation dependencies are never applied.
-`Type=notify` becomes `exec`, because the existing relocated runtime suppresses READY.
-The exact locald production identity pre-start hook is omitted: it provisions a
-production model identity, and no model may be admitted here. All remaining sandbox
-directives are retained and checked after startup. Effective `ReadWritePaths` must
-resolve within the lab root. An unreviewed hook, drop-in or executable refuses.
+Each service reports `/proc/<MainPID>/status` VmRSS/VmHWM and cgroup-v2 `memory.peak`.
+Missing kernel counters are `unavailable`/null, never zero evidence. The embedding
+child's VmHWM is sampled while it is still alive. The sustained run repeats serial
+entryd batches, reference retrieval and service memory sampling for the configured
+wall duration (default 300 s), recording first-to-last RSS and p50/reference latency
+deltas plus all samples. Startup/polling and final requests can extend the duration.
+The model stays loaded during an embedding sustained run.
 
-Exported lab envelopes and scenarios use `azazel-nexus-lab/` schemas and the signature
-domain `azazel-nexus-lab/v1\0`. Native Knowledge importer input retains its producer's
-signature format *inside* the lab envelope, signed with an ephemeral test key pinned
-only under the lab root. The fixture tables come unchanged from the existing producer
-fixture builder output pinned in `contract/azazel-knowledge-lite/FIXTURE.json`; the
-builder's source is not vendored here. Production Pack/reserve validators refuse lab
-schemas, and production Pack signatures refuse the lab domain even with a trusted key.
-The lab envelope is never converted into production hardware evidence.
+For each of knowledge-trust, locald and audit-tamper, bench records elapsed time from
+break initiation to three identical responses/refusals 100 ms apart, or a 15 s
+observation timeout. It probes the affected surface (Knowledge status socket, entryd, audit validator),
+retains the responses, and samples service memory. A stable refusal counts as stable
+refusal, not successful recovery. Before/after each experiment it stops lab writers,
+restores only the affected lab trust/ledger snapshot, and recreates the lab services.
+No production file is restored or modified. Results represent this VM, build,
+fixture, concurrency and workload; host contention, paging and cache state affect them.
 
+## Boundaries and relocation
+
+Root clients set primary effective GID to `azazel-operator` in a fresh child;
+existing PrincipalPolicy classifies this as OPERATOR. Supplementary membership alone
+does not grant root that class. No real keys or production trust enrollment are used.
+The fixed lab root is `/var/lib/azazel-lab/<id>` with 1–12 lowercase ASCII letters/digits;
+there is no arbitrary root, admission or trust bypass. `AZAZEL_ROOT` is only the
+existing relocation mechanism, established before runtime imports in fresh children.
+
+Relocation uses the smoke parser, command builder, effective-property and syscall
+checks, shared as non-production helpers in the lab package. The repository smoke
+tool loads those helpers directly; daemon runtime contains no relocation executor. Production `[Unit]` activation dependencies are not applied. **Type=notify →
+exec** matches existing relocated READY suppression; it does not establish production
+notify readiness. The exact locald production model-identity pre-start hook is omitted.
+Other sandbox directives remain checked; effective ReadWritePaths must remain under
+the lab root. Unknown hooks, drop-ins or executable paths refuse.
+
+Lab envelopes use `azazel-nexus-lab/` and `azazel-nexus-lab/v1\0`. Native Knowledge
+input retains its producer format inside the envelope, re-signed by ephemeral test
+keys pinned only under the lab root. Baseline library data is loaded only by the lab
+process. Production `src` and `runtime` never import the lab package;
+`LOCAL_MODEL_ADMISSION_ENABLED` remains `False`, and `LLAMA_RUNTIME_DIGESTS` is unchanged.
 See [hardware gates](hardware-gates.md), [Knowledge trust](knowledge-lite-trust.md),
-and [the real systemd smoke runbook](evidence/milestone1-real-systemd-smoke-RUNBOOK.md).
-This work is stacked on `work/issue-163`; it does not import or depend on sibling
-`work/issue-162` or substitute for that lane's HIL virtualization/refusal corpus.
+and [model catalog](model-catalog.md). This work does not depend on sibling issue #162.

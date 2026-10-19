@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from azazel_nexus_runtime.unit_relocation import (
+from .unit_relocation import (
     assert_write_isolation,
     build_command,
     create_scratch_tree,
@@ -15,7 +15,7 @@ from azazel_nexus_runtime.unit_relocation import (
     relocate,
     require_strict,
 )
-from azazel_nexus_runtime.unit_sandbox import (
+from .unit_sandbox import (
     SHOW,
     compare_properties,
     expected_properties,
@@ -79,12 +79,20 @@ def start(root, all_properties):
     for name, leaf in zip(UNITS, LEAVES, strict=True):
         props = relocate(all_properties[name], root, name, prefix=prefix(root))
         unit = prefix(root) + name + ".service"
+        began = time.perf_counter()
         run(build_command(name, props, prefix=prefix(root)))
         socket = root / "var/lib/azazel/run" / leaf / (leaf + ".sock")
         if len(os.fsencode(socket)) >= 108:
             raise ValueError("lab socket exceeds AF_UNIX length")
         deadline = time.monotonic() + 15
-        while not socket.exists():
+        active_ms = None
+        socket_ms = None
+        while active_ms is None or socket_ms is None:
+            elapsed = (time.perf_counter() - began) * 1000
+            if socket.is_socket() and socket_ms is None:
+                socket_ms = elapsed
+            if show(unit, ("ActiveState",)).get("ActiveState") == "active" and active_ms is None:
+                active_ms = elapsed
             if time.monotonic() >= deadline:
                 raise ValueError("lab daemon socket startup timeout")
             time.sleep(0.05)
@@ -96,7 +104,8 @@ def start(root, all_properties):
             raise ValueError("effective lab ReadWritePaths escape")
         if observed["ActiveState"] != "active" or compare_properties(props, observed):
             raise ValueError("effective lab service sandbox differs")
-        evidence.append({"unit": unit, "observed": observed})
+        evidence.append({"unit": unit, "observed": observed,
+                         "active_ms": active_ms, "socket_ready_ms": socket_ms})
     return evidence
 
 

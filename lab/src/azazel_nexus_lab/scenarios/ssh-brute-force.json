@@ -5,7 +5,7 @@
   "frame": {
     "request_id": "lab-ssh-brute-force",
     "privacy_class": "P0-public",
-    "question": "host=lab-ssh で SSH ログイン失敗が 60 秒に 120 回。確認の順序は？ / SSH brute force: which checks come first?",
+    "question": "host=lab-ssh で SSH認証失敗が 60 秒に 120 回。確認の順序は？ / SSH brute force: which checks come first?",
     "context": [
       {
         "kind": "observation",

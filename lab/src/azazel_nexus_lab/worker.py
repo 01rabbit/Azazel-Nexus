@@ -23,7 +23,7 @@ def main():
                         "--edge-probe", str(root / "var/lib/azazel/run/edge-probe/edge-probe.json"),
                         "status"])
         return cli(["setup"])
-    if operation == "ask":
+    if operation in {"ask", "ask-frame", "roundtrips"}:
         from azazel_nexus_runtime.mio_socket_client import _exchange
 
         from azazel_nexus.local_advisory import MAX_FRAME_BYTES, read_frame
@@ -32,15 +32,43 @@ def main():
         # PrincipalPolicy explicitly classifies root with this primary GID as
         # OPERATOR. Supplementary membership alone never grants root that class.
         os.setegid(grp.getgrnam("azazel-operator").gr_gid)
-        scenario = Path(args[0])
-        if scenario.suffix != ".json":
-            raise ValueError("scenario JSON file required")
-        document = json.loads(bounded_read(scenario, MAX_FRAME_BYTES))
-        if document.get("schema") == "azazel-nexus-lab/scenario/1":
-            document = document["frame"]
+        if operation == "ask-frame":
+            raw = sys.stdin.read(MAX_FRAME_BYTES + 1)
+            document = json.loads(raw)
+        else:
+            scenario = Path(args[0])
+            if scenario.suffix != ".json":
+                raise ValueError("scenario JSON file required")
+            document = json.loads(bounded_read(scenario, MAX_FRAME_BYTES))
+            if document.get("schema") == "azazel-nexus-lab/scenario/1":
+                document = document["frame"]
         frame = read_frame(document)
-        result = _exchange("mio-entry", "azmioentry", "mio.advise",
-                           {"deadline_ms": 2000}, payload=frame, deadline_s=3)
+        def exchange():
+            return _exchange("mio-entry", "azmioentry", "mio.advise",
+                             {"deadline_ms": 2000}, payload=frame, deadline_s=3)
+
+        if operation in {"ask", "ask-frame"}:
+            result = exchange()
+        else:
+            import time
+            from concurrent.futures import ThreadPoolExecutor
+
+            def timed(_):
+                began = time.perf_counter()
+                try:
+                    reply = exchange()
+                    status = {key: reply.get(key) for key in ("outcome", "reason", "reference_status")}
+                except Exception as error:  # noqa: BLE001 - report bounded sample failure, never content
+                    status = {"error_type": type(error).__name__}
+                return {"ms": (time.perf_counter() - began) * 1000, "status": status}
+
+            with ThreadPoolExecutor(max_workers=int(args[2])) as pool:
+                result = list(pool.map(timed, range(int(args[1]))))
+    elif operation == "knowledge-status":
+        from azazel_nexus_runtime.mio_socket_client import _exchange
+
+        os.setegid(grp.getgrnam("azazel-operator").gr_gid)
+        result = _exchange("knowledge", "azknowledge", "knowledge.status", {}, deadline_s=3)
     elif operation == "knowledge":
         from dataclasses import asdict
 
