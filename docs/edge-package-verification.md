@@ -21,7 +21,7 @@ Five checks, and nothing else:
 | `version_matches` | the manifest's version is the pinned one |
 | `digest_matches` | the artifact re-derives to the digest the manifest declares |
 | `health_endpoint_healthy` | the Edge health contract answered, and all four of its conditions held |
-| `running` | a probe established that the payload is up |
+| `running` | a probe established that the shipped `azazel-edge-core.service` payload is up |
 
 `edge-baseline-ready` needs **all five**. `activation.EdgeBaselineState` holds
 them, and `edge_package.py` is the only module in the product that builds one
@@ -264,3 +264,40 @@ screen cannot describe two nodes.
   itself observe-only and refuses one that does not. It grants no enforcement
   authority, and the deterministic arbiter in Azazel-Edge remains the only
   thing that decides.
+
+### The Edge Core payload unit (I0)
+
+Nexus ships `azazel-edge-core.service`, running the fixed verified-package
+binary `/opt/azazel/edge-core/bin/azazel-edge-core` as `azedge`. No manifest
+supplies its command or environment. The unit fixes the health contract's
+observe-only posture: `AZAZEL_DEFENSE_ENFORCE=false`,
+`AZAZEL_DEFENSE_DRY_RUN=true`, `AZAZEL_DEFENSE_ENFORCE_LEVEL=advisory`, and
+`AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO=false`.
+
+It reads `/var/log/suricata/eve.json` through the optional
+`ReadOnlyPaths=-/var/log/suricata` (a host without Suricata yet still starts
+it; Edge Core waits for the file) and the packaged `config/redirect_policy.yaml`. Deployment must provide
+`azedge` narrowly scoped read/search permission on the Suricata directory and
+file (including rotated files); the installer grants no broad group membership.
+The installer creates `/var/lib/azazel/edge-core` as `azedge:root 0700` for
+`release-ledger.json`. Only that leaf is writable;
+no capabilities or internet address families are granted. The private ledger
+must not be populated from an enforcing deployment: Edge reconciles due
+releases at startup even when new enforcement is disabled.
+
+`AZAZEL_FORWARD_AI=true` sends events to
+`/var/lib/azazel/run/edge-intake/edge-intake.sock`. `AZAZEL_FORWARD_LOG=false`: Edge's own
+JSONL copy has no rotation and no ceiling, so the bounded record is the
+intake's; every event still reaches the journal through stdout, rate limited.
+The unit declares no `RuntimeDirectory` (it owns nothing under `/run`, and one
+would chown `/run/azazel` and remove it on stop; the intake socket
+follows the node's socket layout under `/var/lib/azazel/run`) and runs with
+`PrivateNetwork=yes`. Intake and its socket permissions belong to I1. No intake
+receiver ships in I0, and the unit adds no dependency on it.
+
+The installer masks the unit and its preset disables it. It is registered
+only in the existing `EDGE_BASELINE` activation tier, with all five readiness
+checks unchanged; the supporting probe starts nothing. In particular, this
+does not solve first-start admission: an inactive payload still fails the
+running check. Activation enables admitted units for a later boot and has no
+`StartUnit` operation. I0 introduces no startup bypass or control channel.

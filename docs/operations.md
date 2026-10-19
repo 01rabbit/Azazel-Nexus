@@ -227,3 +227,13 @@ A deployment kit is intentionally serviceable and equipment-neutral:
 The primary interface is a touch-friendly status-first console. It must make four questions answerable within one screen: What changed? What evidence supports it? What is currently enforced? What needs an operator decision?
 
 The UI groups information by mission state rather than by internal service. Every recommendation shows source, freshness, confidence, and cited evidence. An approval screen restates action scope, duration, policy rule, and rollback path before it can reach the Action Arbiter.
+
+## Observe-only Edge Core unit
+
+`azazel-edge-core.service` is shipped masked and preset-disabled, runs as
+`azedge`, and belongs to the existing `EDGE_BASELINE` activation tier.
+`azazel-edge-probed.service` remains a supporting one-shot observer; it reads
+the payload's running state and never starts it. See
+[Edge package verification](edge-package-verification.md#the-edge-core-payload-unit-i0)
+for fixed paths, posture, deployment-specific Suricata read permissions, and
+the unchanged first-start readiness limitation. Intake is implemented in I1.

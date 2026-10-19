@@ -217,8 +217,8 @@ def test_every_required_module_is_present_at_the_pin():
 def test_the_presence_probe_reports_rather_than_assumes():
     """A probe is not adoption, and its result is a report either way.
 
-    All four families §3 maps exist at this pin. That is a fact about Fabric,
-    not evidence that any Nexus record maps onto them: no adapter consumes one.
+    The remaining planned families exist at this pin. Presence alone does
+    not attest a mapping; provisioning already has commissioning consumers.
     """
 
     projection = project_capability(CapabilityState.CORE, CORE_CAPABILITIES)
@@ -228,4 +228,4 @@ def test_the_presence_probe_reports_rather_than_assumes():
         f"mapped families absent at {FABRIC_PIN}: {projection.missing_planned}"
     )
     assert "azazel_fabric.mio_contracts" in PLANNED_FABRIC_MODULES
-    assert "azazel_fabric.provisioning_contracts" in PLANNED_FABRIC_MODULES
+    assert "azazel_fabric.provisioning_contracts" not in PLANNED_FABRIC_MODULES

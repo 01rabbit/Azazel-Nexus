@@ -21,12 +21,16 @@ Fabric or to Nexus and marks which Fabric contracts do not exist yet.
 
 Status: **target contract**. It carries a package (`pyproject.toml`,
 `src/azazel_nexus/`) with a deliberately empty required-dependency list, a unit
-suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc2`,
+suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`,
 ADR-0001), consumed through one boundary module. One mapping is attested by
 that boundary — capability/mode publication; every other contract mapping
 remains a design assertion awaiting a conformance attestation, not verified
 evidence. Nothing below is implemented or
 verified here.
+
+The rc3/rc4 fixes to `effect_contracts` references and authority classes are
+already relied on by Edge and Deception; rc2 → rc5 changes only
+`effect_contracts`, which Nexus does not import yet.
 
 ## 2. Deployment topology
 

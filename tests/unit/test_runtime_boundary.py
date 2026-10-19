@@ -276,7 +276,8 @@ def test_every_governed_unit_has_an_executable_to_start():
 
     declared = _declared_scripts()
     missing = sorted(
-        unit for unit in _governed_units() if _script_for(unit) not in declared
+        unit for unit in _governed_units()
+        if unit != "azazel-edge-core.service" and _script_for(unit) not in declared
     )
     assert missing == [], (
         f"{missing} are governed units whose executable nothing declares. "
@@ -297,7 +298,8 @@ def test_the_installer_requires_exactly_the_unit_backed_executables():
     match = re.search(r"for binary in ([^;]+); do", installer)
     assert match, "the installer no longer checks that the unit executables exist"
     required = set(match.group(1).split())
-    assert required == {_script_for(unit) for unit in _governed_units()} | {"az-mio-identity"}, (
+    assert required == {_script_for(unit) for unit in _governed_units()
+                        if unit != "azazel-edge-core.service"} | {"az-mio-identity"}, (
         "the installer's required binaries and the governed units disagree"
     )
 

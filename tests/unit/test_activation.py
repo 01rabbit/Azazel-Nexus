@@ -293,9 +293,10 @@ def test_a_repeated_unit_in_the_governed_set_is_refused():
 #: The governed units this build actually wires. `azazel-model-fetchd.service`
 #: is governed, shipped and masked, and is withheld for having no transport
 #: rather than for anything about the node -- so a pass on a default node
-#: grants these and not that one.
+#: grants wired supporting units; Edge Core also needs baseline evidence.
 def _wired_units() -> set:
-    return {d.name for d in CORE_UNITS if d.wiring is None}
+    return {d.name for d in CORE_UNITS
+            if d.wiring is None and d.tier is UnitTier.SUPPORTING}
 
 
 def test_with_no_generation_nothing_is_unmasked(tmp_path):
@@ -475,7 +476,7 @@ def test_a_grant_is_recorded_before_the_unit_is_widened(tmp_path):
 
     expected = []
     for definition in CORE_UNITS:
-        if definition.wiring is not None:
+        if definition.wiring is not None or definition.tier is UnitTier.EDGE_BASELINE:
             # Withheld for having nothing to serve, and a withholding is
             # recorded too -- but it is recorded *instead of* a widening, so
             # it contributes one entry rather than a pair.
@@ -909,3 +910,23 @@ def test_entry_and_knowledge_are_supporting_without_provider_wiring():
         assert definitions[name].account == account
         assert definitions[name].tier is UnitTier.SUPPORTING
         assert definitions[name].wiring is None
+
+
+@pytest.mark.parametrize("missing", [None, "package_present", "version_matches",
+                                    "digest_matches", "health_endpoint_healthy", "running"])
+def test_shipped_edge_core_stays_masked_without_every_baseline_check(tmp_path, missing):
+    """Shipping a payload unit must not weaken its existing readiness gate."""
+    controller, units, _, _ = _controller(tmp_path)
+    checks = dict.fromkeys(("package_present", "version_matches", "digest_matches",
+                            "health_endpoint_healthy", "running"), True)
+    if missing is not None:
+        checks[missing] = False
+    edge = None if missing is None else EdgeBaselineState(**checks)
+    outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease(), edge=edge)
+    name = "azazel-edge-core.service"
+    assert name in outcome.withheld
+    assert units.state(name) is UnitState.MASKED
+    verdict = next(verdict for verdict in outcome.verdicts if verdict.unit == name)
+    assert verdict.reason.startswith("edge_unknown" if missing is None else "edge_not_ready")
+    if missing is not None:
+        assert missing in verdict.reason

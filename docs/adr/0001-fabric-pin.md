@@ -27,7 +27,7 @@ the dependency should take:
 ## Decision
 
 **Fabric is declared as the optional `fabric` extra, pinned to the exact tag
-`v0.9.0rc2`, and imported in exactly one module.**
+`v0.9.0rc5`, and imported in exactly one module.**
 
 1. **Optional, not required.** §4.1's reasoning holds for a Nexus *release*;
    it does not describe `CORE`. Integration across products is what a release
@@ -40,11 +40,11 @@ the dependency should take:
    release candidate is still an exact tag; it promises no stability, so the
    pin moves to `v0.9.0` when Fabric cuts it.
 
-3. **`v0.9.0rc2` specifically.** It is the newest published candidate and it is
-   signed (`release/v0.9.0rc2.digest.json.sig`). Azazel-Edge, Azazel-Deception
-   and Azazel-Knowledge are all on it. It carries all four families
-   `contract-ownership.md` §3 maps, including `provisioning_contracts` and
-   `mio_contracts`, which `v0.8.0` did not.
+3. **`v0.9.0rc5` (I0, #191).** rc3/rc4 fix `effect_contracts`
+   references and authority classes that Edge and Deception already rely on;
+   rc2 → rc5 changes only `effect_contracts`, which Nexus does not import yet.
+   The initial decision selected rc2; this revision retains the exact-tag
+   policy and does not attest new contract mappings.
 
 4. **One import site.** `azazel_nexus.fabric_boundary` is the only module that
    may import `azazel_fabric`, enforced by a static scan over the package

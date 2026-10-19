@@ -208,8 +208,8 @@ REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 #: module-manager units belong to slices that are not built yet. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
 #:
-#: `EDGE_BASELINE` still has no members. The Edge probe is `SUPPORTING`, and
-#: the comment on its definition says why.
+#: Edge Core belongs to `EDGE_BASELINE`; its probe remains `SUPPORTING`
+#: so observation does not depend on the readiness it establishes.
 CORE_UNITS = (
     UnitDefinition(
         "azazel-commissiond.service",
@@ -228,6 +228,12 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azwatch",
         "degradation coordinator; never restarts into a broader authority state",
+    ),
+    UnitDefinition(
+        "azazel-edge-core.service",
+        UnitTier.EDGE_BASELINE,
+        "azedge",
+        "verified Edge Core payload; fixed observe-only posture",
     ),
     UnitDefinition(
         "azazel-edge-probed.service",

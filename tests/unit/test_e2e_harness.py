@@ -711,4 +711,5 @@ def test_activation_stage_withholds_locald_without_model_admission(short_root):
         if row.event["event_type"] == "activation.unit_granted"
     }
     assert "azazel-mio-entryd.service" in granted
+    assert "azazel-edge-core.service" not in granted
     assert "azazel-mio-locald.service" not in granted

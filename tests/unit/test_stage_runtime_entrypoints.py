@@ -26,7 +26,8 @@ def test_staged_set_is_derived_from_the_installed_units_and_runtime_scripts() ->
             if line.startswith(("ExecStart=", "ExecStartPre=+")):
                 unit_names.add(Path(line.split("=", 1)[1].removeprefix("+")).name)
 
-    assert set(daemons) == unit_names
+    assert set(daemons) == unit_names - {"azazel-edge-core"}
+    assert "azazel-edge-core" not in daemons
     assert "az-core-reserve-probe" not in daemons
 
 
@@ -484,3 +485,19 @@ def test_new_daemon_entrypoints_import_in_isolated_staging_check():
         str(Path(path).resolve()) for path in sys.path if path and Path(path).exists()
     ))
     staging._check_runtime_imports(Path(sys.executable), targets, import_paths=paths)
+
+
+@pytest.mark.parametrize("directive", [
+    "ExecStart=/tmp/azazel-edge-core",
+    "ExecStart=/opt/azazel/edge-core/bin/azazel-edge-core --health",
+    "ExecStartPre=+/opt/azazel/edge-core/bin/azazel-edge-core",
+])
+def test_edge_package_unit_cannot_supply_another_staging_command(tmp_path, directive):
+    """The external package exception is one fixed unit and command pair."""
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "runtime/pyproject.toml").write_text("[project.scripts]\n")
+    units = tmp_path / "packaging/systemd"
+    units.mkdir(parents=True)
+    (units / "azazel-edge-core.service").write_text("[Service]\n" + directive + "\n")
+    with pytest.raises(ValueError):
+        declared_daemons(tmp_path)
