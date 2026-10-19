@@ -774,7 +774,10 @@ def _edge_probe(harness: Harness) -> str:
 
     state = harness.root / "run" / "edge-probe" / "edge-probe.json"
     edge_probed.write_result(outcome, state)
-    result = load_probe_result(state)
+    # The harness plays azprobe: it wrote the file, so it is the writer the
+    # reader is told to trust. An installed reader resolves the account.
+    writer = os.geteuid()
+    result = load_probe_result(state, owner_uid=writer)
     if result is None:
         raise RuntimeError("the state file the probe just wrote read back as absent")
 
@@ -802,7 +805,8 @@ def _edge_probe(harness: Harness) -> str:
     other_state = harness.root / "run" / "edge-probe-other.json"
     other_state.write_text(json.dumps(other), encoding="utf-8")
     mismatched_version = inspect(
-        root, probe=load_probe_result(other_state), now="2026-09-21T04:01:00Z"
+        root, probe=load_probe_result(other_state, owner_uid=writer),
+        now="2026-09-21T04:01:00Z"
     )
     if mismatched_version.ready:
         raise RuntimeError("a result about another version was promoted to ready")
