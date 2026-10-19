@@ -996,3 +996,17 @@ def test_explanation_store_is_held_to_monotonic_time_and_reports_future(tmp_path
     assert len(records(restarted)) == 2
     assert not (directory / "2098-01-01.jsonl").exists()
     assert (directory / "2026-01-10.jsonl").exists()
+
+
+def test_a_segment_vanishing_during_seeding_is_not_a_broken_chain(tmp_path, monkeypatch):
+    e = make(tmp_path, prepare=False)
+    e.prepare()
+    e.cursor["segment"] = "1970-01-01"
+
+    def vanished(**_):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(e, "ingest", vanished)
+    e.seed()
+    assert not e.chain_broken and not e.cursor["broken"]
+    assert e.refused["read_failed"] == 1
