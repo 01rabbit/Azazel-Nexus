@@ -113,7 +113,7 @@ def main(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         additional_sockets=((socket_path("knowledge-read"),
                              grp.getgrnam("azknowledge-read").gr_gid, READ_REGISTRY),),
-        policy=PrincipalPolicy.resolve(service_accounts=("azmioentry", "azarbiter", "azmio")),
+        policy=PrincipalPolicy.resolve(service_accounts=("azmioentry", "azarbiter", "azmio", "azexplain")),
         audit=audit, handler=service.handle, stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),
     )

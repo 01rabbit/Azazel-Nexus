@@ -208,6 +208,18 @@ def test_tracker_open_throttle_update_idle_and_ids():
     assert tracker.add(record(962))[0]["incident_id"] != opened["incident_id"]
 
 
+def test_escalation_is_recorded_without_waiting_for_the_throttle():
+    tracker = IncidentTracker(lambda: 1000)
+    tracker.add(record(0, severity=3))
+    # Same or less severe within the interval stays throttled.
+    assert tracker.add(record(5, severity=3)) == []
+    assert tracker.add(record(6, severity=5)) == []
+    (escalated,) = tracker.add(record(7, severity=1))
+    assert (escalated["transition"], escalated["most_severe"]) == ("updated", 1)
+    # Once escalated, the throttle applies again.
+    assert tracker.add(record(8, severity=1)) == []
+
+
 def test_capacity_closes_oldest_idle_and_technique_union_is_bounded():
     tracker = IncidentTracker(lambda: 0, max_open=2)
     tracker.add(record(0, sid=1, ids=[f"T{i:04}" for i in range(8)]))

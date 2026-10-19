@@ -16,7 +16,7 @@ TMPFILES_RULE = PACKAGING / "tmpfiles.d" / "azazel-nexus-bootstrap.conf"
 EXPECTED_RULE = b"d /run/systemd/system.control :0755 :root :root - -\n"
 _ENTRYPOINTS = (
     "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
-    "az-edge-probed", "az-edge-intaked", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+    "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
     "az-mio-entryd", "az-knowledge-lited", "az-mio-identity",
 )
 

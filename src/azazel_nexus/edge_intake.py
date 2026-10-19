@@ -444,6 +444,7 @@ class IncidentTracker:
                 "last_update": now,
             }
         item = self.incidents[key]
+        escalated = not opened and n["severity"] < item["most_severe"]
         item.update(
             count=item["count"] + 1,
             last_seen=now,
@@ -451,12 +452,16 @@ class IncidentTracker:
             edge_would=d["action"],
             policy_reason=d["policy_reason"],
             attack_type=n["attack_type"],
+            category=n["category"],
+            protocol=n["protocol"],
             latest_evidence=record.digest,
             technique_ids=sorted(
                 set(item["technique_ids"]) | set(n.get("technique_ids", []))
             )[:8],
         )
-        if opened or now - item["last_update"] >= UPDATE_INTERVAL_S:
+        # An escalation is recorded at once: the explainer acts on it, and a
+        # throttle that delayed it would delay the explanation that matters.
+        if opened or escalated or now - item["last_update"] >= UPDATE_INTERVAL_S:
             item["last_update"] = now
             transitions.append(dict(item, transition="opened" if opened else "updated"))
         return transitions
