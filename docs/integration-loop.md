@@ -566,7 +566,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   the bounded refusal `rate_limited` before routing or writing anything. The
   explainer has its own 28 MiB daily share that no operator or other service
   can spend, so a flooding caller cannot make the explainer's advice
-  unavailable. The
+  unavailable. The arbiter (`azarbiter`) likewise has its own 4 MiB share
+  outside the 12 MiB pool the operators share, so operators cannot refuse
+  its `mio.route` (#227). The
   explainer treats that like any refusal from entryd: the explanation is
   still recorded, with route `unavailable` and failure code `mio_unavailable`,
   and the next explanation asks again; nothing latches. Six advice requests a
