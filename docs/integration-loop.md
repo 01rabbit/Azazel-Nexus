@@ -190,8 +190,12 @@ socket. Edge Core connects once per event and writes one line.
   `edge_forward` (`dropped`, `failed`, `sent`, `since`, `reported_at` (intake
   receive time) and `restarts`, the number of reports this intake run whose
   `since` changed or whose counts went back, that is Edge restarts), absent
-  until a report arrives in this intake run; readers that predate it are not
-  affected because it is optional. The peer is authenticated only as the
+  until a report arrives in this intake run. A reader with this change accepts
+  a status without it; a reader that predates it holds status to the older
+  closed shape and reads a status carrying it as unavailable. The intake and
+  the CLI ship in the same package. Deploy order matters across products:
+  update Nexus before an Edge Core with #432, because an older intake refuses
+  the stats line as a malformed event (counted under `refused`). The peer is authenticated only as the
   `azedge` account (`SO_PEERCRED`), so the values are Edge's claim, bounded
   and shown as such, and nothing decides on them. They are lost when the
   intake restarts until Edge's next report (at most 5 minutes). An Edge Core
