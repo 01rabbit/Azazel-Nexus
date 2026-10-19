@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import grp
+import hashlib
+import io
 import json
 import os
 import pwd
 import queue
+import re
 import selectors
 import signal
 import stat
@@ -64,8 +67,20 @@ TRUNCATION_RESERVE = 1024
 # the tracker lets an ordinary incident's severity fall into the severe range
 # only after it took a severe opening.
 SEVERE_RESERVE = 1024 * 1024
+LEDGER_RECOVERED = "edge.incident.ledger_recovered"
 RESERVED_CONTROL = frozenset({"edge.incident.reset", "edge.incident.truncated",
-                              "edge.incident.retention"})
+                              "edge.incident.retention", LEDGER_RECOVERED})
+# A torn incident tail (bytes after the last newline of the last segment, left
+# by a power cut during the shutdown batch) is recovered only up to this size:
+# the explainer refuses any ledger line longer than this, so no record this
+# ledger writes is longer. Anything larger is not one torn record.
+TORN_TAIL_MAX = 64 * 1024
+# Quarantined tails held before recovery refuses again and needs the
+# operator: at most 64 x 64 KiB = 4 MiB in the private state area.
+QUARANTINE_MAX = 64
+SEGMENT_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl", re.ASCII)
+# <segment>.<offset of the cut>.<sha256 of the bytes>.(pending|torn)
+QUARANTINED = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl\.\d{1,12}\.[0-9a-f]{64}\.(pending|torn)", re.ASCII)
 WORKER_JOIN_S = 20
 # How far a segment's day may run ahead of the clock. During a run the clock
 # is also held to monotonic elapsed time from the first write, so a forward
@@ -239,16 +254,22 @@ class EvidenceStore(DailySegments):
 
 
 class IncidentLedgerTorn(Exception):
-    """An unterminated segment needs explicit operator recovery."""
+    """An unterminated segment that automatic recovery may not repair."""
 
 
 class IncidentLedger(DailySegments):
     """One chain through retained daily segments, with a durable left boundary."""
 
-    def __init__(self, root, now, *, leaf="incidents", severe_reserve=SEVERE_RESERVE, **limits):
+    def __init__(self, root, now, *, leaf="incidents", severe_reserve=SEVERE_RESERVE,
+                 quarantine=None, **limits):
         limits.setdefault("segment_bytes", INCIDENT_SEGMENT_BYTES)
         super().__init__(root, leaf, mode=0o2750, **limits)
         self.severe_reserve = severe_reserve
+        # Private directory for torn tails; None refuses a torn tail as before.
+        self.quarantine = quarantine
+        self.recovered = 0
+        if quarantine is not None:
+            self._open_quarantine()
         # Lowest severity recorded per open incident, so only a fall in
         # severity (not a routine refresh or an unknown incident) may use the
         # severe reserve. Closes remove entries even when they cannot be
@@ -275,17 +296,168 @@ class IncidentLedger(DailySegments):
             paths = sorted(self.directory.glob("????-??-??.jsonl"))
             if not paths or paths[0] != oldest:
                 raise AuditChainBroken("retained incident boundary does not match")
+        recorded = set()
         for path in paths:
-            self.check_segment(path)
+            try:
+                self.check_segment(path)
+            except IncidentLedgerTorn:
+                # Only the newest segment can be torn by an interrupted append;
+                # a torn older one is damage, not a power cut.
+                if path != paths[-1] or self.quarantine is None:
+                    raise
+                self._recover(path)
             for entry in AuditLedger(path, private=True, file_mode=0o640):
                 if (entry.sequence != self.head[0] + 1 or
                         entry.previous_hash != self.head[1] or
                         entry.recomputed() != entry.event_hash):
                     raise AuditChainBroken("incident chain does not continue")
                 self.head = (entry.sequence, entry.event_hash)
+                if entry.event.get("event_type") == LEDGER_RECOVERED:
+                    # Short torn tails share a record's opening bytes, so the
+                    # digest alone does not name one recovery.
+                    recorded.add((entry.event.get("segment"), entry.event.get("offset"),
+                                  entry.event.get("sha256")))
         self.current = paths[-1] if paths else None
         self.select(now)
+        if self.quarantine is not None:
+            self._record_recoveries(recorded, now)
         self.retain()
+
+    def _open_quarantine(self):
+        store_directory(self.quarantine, 0o700)
+        fd = os.open(self.quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            # It may hold addresses from a torn record: owner only.
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+        # A temporary file left by a power cut before its rename names nothing.
+        for stale in self.quarantine.glob(".torn-*"):
+            stale.unlink()
+
+    def _held(self):
+        return sorted(path for path in self.quarantine.iterdir()
+                      if QUARANTINED.fullmatch(path.name))
+
+    def _fsync_quarantine(self):
+        fd = os.open(self.quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _recover(self, path):
+        """Quarantine a torn tail after a verified prefix, then cut it off.
+
+        Refuses (IncidentLedgerTorn, as without recovery) unless the bytes
+        after the last newline are bounded and every complete line before
+        them continues the chain from the previous segment. Each step is
+        durable before the next, so a power cut here is redone on restart:
+        quarantine first (idempotent for the same bytes), then truncate,
+        then `_record_recoveries` writes the chain record and only then
+        marks the quarantined file done.
+        """
+        # The name must be one the quarantine bound and the record can name.
+        if not SEGMENT_NAME.fullmatch(path.name):
+            raise IncidentLedgerTorn()
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > self.segment_bytes:
+                raise IncidentLedgerTorn()
+            chunks, remaining = [], info.st_size
+            while remaining > 0:
+                chunk = os.read(fd, min(remaining, 1 << 20))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            cut = data.rfind(b"\n") + 1
+            tail = data[cut:]
+            if not tail or len(tail) > TORN_TAIL_MAX:
+                raise IncidentLedgerTorn()
+            head, parser = self.head, AuditLedger(path)
+            try:
+                # The same line splitting AuditLedger.__iter__ applies to a file.
+                lines = io.TextIOWrapper(io.BytesIO(data[:cut]), encoding="utf-8")
+                for number, line in enumerate(lines, start=1):
+                    if not line.strip():
+                        continue
+                    entry = parser._parse(line, f"line {number}")
+                    if (entry.sequence != head[0] + 1 or entry.previous_hash != head[1] or
+                            entry.recomputed() != entry.event_hash):
+                        raise AuditChainBroken("incident chain does not continue")
+                    head = (entry.sequence, entry.event_hash)
+            except (AuditChainBroken, UnicodeDecodeError):
+                raise IncidentLedgerTorn() from None
+            def unchanged():
+                after = os.fstat(fd)
+                return (after.st_ino, after.st_dev, after.st_size) == (
+                    info.st_ino, info.st_dev, len(data))
+
+            if not unchanged():
+                raise IncidentLedgerTorn()
+            digest = hashlib.sha256(tail).hexdigest()
+            name = f"{path.name}.{cut}.{digest}"
+            created = False
+            pending = self.quarantine / (name + ".pending")
+            if os.path.lexists(self.quarantine / (name + ".torn")):
+                # These bytes were already recovered here once; tearing again at
+                # the same place is not an interrupted append.
+                raise IncidentLedgerTorn()
+            if os.path.lexists(pending):
+                # Written before a power cut that came before the truncation.
+                if (not stat.S_ISREG(pending.lstat().st_mode) or
+                        hashlib.sha256(pending.read_bytes()).hexdigest() != digest):
+                    raise IncidentLedgerTorn()
+            else:
+                if len(self._held()) >= QUARANTINE_MAX:
+                    raise IncidentLedgerTorn()
+                held, temporary = tempfile.mkstemp(dir=self.quarantine, prefix=".torn-")
+                try:
+                    with os.fdopen(held, "wb") as stream:
+                        os.fchmod(stream.fileno(), 0o600)
+                        stream.write(tail)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.rename(temporary, pending)
+                    created = True
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                self._fsync_quarantine()
+            # Cut only the file that was verified, still exactly as it was
+            # read; otherwise leave no quarantine that a later start would
+            # record as a recovery that never happened.
+            if not unchanged():
+                if created:
+                    pending.unlink()
+                    self._fsync_quarantine()
+                raise IncidentLedgerTorn()
+            os.ftruncate(fd, cut)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _record_recoveries(self, recorded, now):
+        """Put each quarantined tail on the chain once, then mark it done."""
+        for pending in self._held():
+            if pending.suffix != ".pending":
+                continue
+            segment, offset, digest = pending.stem.rsplit(".", 2)
+            if (segment, int(offset), digest) not in recorded:
+                try:
+                    self.append({"event_type": LEDGER_RECOVERED, "at": now,
+                                 "segment": segment, "offset": int(offset),
+                                 "torn_bytes": pending.stat().st_size,
+                                 "sha256": digest}, now)
+                except SegmentFull:
+                    # No room today: kept pending, recorded on a later start.
+                    continue
+            os.rename(pending, pending.with_suffix(".torn"))
+            self._fsync_quarantine()
+        self.recovered = len(self._held())
 
     def check_segment(self, path):
         if not stat.S_ISREG(path.lstat().st_mode):
@@ -422,6 +594,7 @@ class IntakeServer:
         self.finished = threading.Event()
         self.storage_failed = False
         self.open_incidents = 0
+        self.ledger_recovered = 0
 
     def refuse(self, code):
         with self.lock:
@@ -440,6 +613,7 @@ class IntakeServer:
                 "open_incidents": self.open_incidents,
                 "queue_drops": self.refused["queue_full"],
                 "storage_failed": self.storage_failed,
+                "ledger_recovered": self.ledger_recovered,
             }
 
     def _status(self):
@@ -456,8 +630,15 @@ class IntakeServer:
     def _open_storage(self):
         store = EvidenceStore(self.state)
         store.prepare(self.clock())
-        ledger = (IncidentLedger(self.incident_root.parent, self.clock(), leaf=self.incident_root.name)
-                  if self.incident_root != self.state else IncidentLedger(self.state, self.clock()))
+        # Torn tails go to the intake's private state, never to the incident
+        # leaf the explainer's group reads: they may hold addresses.
+        quarantine = self.state / "incident-quarantine"
+        ledger = (IncidentLedger(self.incident_root.parent, self.clock(),
+                                 leaf=self.incident_root.name, quarantine=quarantine)
+                  if self.incident_root != self.state
+                  else IncidentLedger(self.state, self.clock(), quarantine=quarantine))
+        with self.lock:
+            self.ledger_recovered = ledger.recovered
         try:
             ledger.append(
                 {"event_type": "edge.incident.reset", "at": self.clock(),

@@ -102,6 +102,18 @@ def read_control(value):
         expected = "intake_started" if kind == "edge.incident.reset" else "incident_segment_full"
         if value["reason"] != expected:
             raise ValueError("control_refused")
+    elif kind == "edge.incident.ledger_recovered":
+        # A torn tail the intake cut off at start: where, how much, and the
+        # digest of the bytes it kept privately. Never their content.
+        _shape(value, ("event_type", "at", "segment", "offset", "torn_bytes", "sha256"))
+        _number(value["at"])
+        if type(value["segment"]) is not str or not re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}\.jsonl", value["segment"], re.ASCII):
+            raise ValueError("control_refused")
+        _int(value["offset"], 2**63-1)
+        _int(value["torn_bytes"], 64 * 1024, 1)
+        if type(value["sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
+            raise ValueError("control_refused")
     else:
         return False
     return True

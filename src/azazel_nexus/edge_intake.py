@@ -543,6 +543,8 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "queue_drops",
                 "storage_failed",
             ),
+            # Absent from a snapshot an older intake wrote.
+            ("ledger_recovered",),
         )
         _require(value["schema"] == STATUS_SCHEMA)
         _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
@@ -552,6 +554,8 @@ def read_intake_status(raw: bytes) -> dict | None:
                 _number(value[key])
         for key in ("accepted", "processed", "open_incidents", "queue_drops"):
             _int(value[key], 2**64 - 1)
+        value.setdefault("ledger_recovered", 0)
+        _int(value["ledger_recovered"], 2**64 - 1)
         # Processed counts every tracked event, accepted only stored ones.
         _require(value["processed"] >= value["accepted"])
         _require(
