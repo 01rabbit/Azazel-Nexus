@@ -132,3 +132,48 @@ def _load_trust():
     from .operator_store import load_operator_trust
 
     return load_operator_trust()
+
+
+def load_observe_baseline_approval(
+    *, expected, policy, now: str, security_epoch_floor: int, approval_seq_floor: int,
+):
+    """Load and verify the fixed v2 (observe-baseline) approval (#206 §3.1).
+
+    Same files and protections as the v1 reader above; only the verifier
+    differs. `expected`, `policy`, `now` and both floors are supplied by the
+    caller from independent local readers, never from the approval. The
+    bytes and the operator trust are re-read after verification; any change
+    refuses. Every failure is the same redacted refusal.
+    """
+    from .activation_approval_v2 import (
+        ActivationApprovalPolicy,
+        ObserveBaselineContext,
+        verify_observe_baseline_approval,
+    )
+
+    try:
+        if type(expected) is not ObserveBaselineContext:
+            raise ApprovalRefused("independent observe-baseline context required")
+        if type(policy) is not ActivationApprovalPolicy:
+            raise ApprovalRefused("activation policy required")
+        with _approval_directory() as directory_fd:
+            payload, signature = _read_at(directory_fd, owner=0)
+            trust = _load_trust()
+            approved = verify_observe_baseline_approval(
+                trust=trust, expected=expected, policy=policy, payload=payload,
+                signature=signature, now=now,
+                security_epoch_floor=security_epoch_floor,
+                approval_seq_floor=approval_seq_floor,
+            )
+            original = os.fstat(directory_fd)
+            with _approval_directory() as current_fd:
+                current = os.fstat(current_fd)
+                if (original.st_dev, original.st_ino) != (current.st_dev, current.st_ino):
+                    raise ApprovalRefused("activation approval directory changed")
+                if _read_at(current_fd, owner=0) != (payload, signature):
+                    raise ApprovalRefused("activation approval changed during verification")
+            if _load_trust() != trust:
+                raise ApprovalRefused("operator trust changed during verification")
+            return approved
+    except Exception:
+        raise ApprovalRefused("protected activation approval refused") from None

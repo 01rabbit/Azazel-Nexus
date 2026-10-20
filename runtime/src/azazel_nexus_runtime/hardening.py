@@ -54,10 +54,12 @@ from typing import Mapping, Sequence
 from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
+from azazel_nexus_runtime.activation_markers import grant_marker_path
 
 __all__ = [
     "ALL_PROFILES",
     "EDGE_PROBE_PREFLIGHT_UNIT",
+    "GRANT_MARKER_UNITS",
     "PROFILES",
     "UNGOVERNED_PROFILES",
     "SHARED_HARDENING",
@@ -262,11 +264,15 @@ class ServiceProfile:
                 )
         declared = {spec.path for spec in LAYOUT} | {
             "/etc/systemd/system", "/run/systemd/system.control",
-            "/run/azazel-nexus-bootstrap",
+            "/run/azazel-nexus-bootstrap", "/run/azazel-activation",
         }
         if ("/run/systemd/system.control" in self.read_write_paths
                 and self.unit != ACTIVATION_CONTROLLER_UNIT):
             raise ValueError("bootstrap overlay is writable only by the activation controller")
+        if (("/run/azazel-activation" in self.read_write_paths
+                or "/run/azazel-activation" in self.optional_read_write_paths)
+                and self.unit != ACTIVATION_CONTROLLER_UNIT):
+            raise ValueError("grant markers are writable only by the activation controller")
         outside = sorted((set(self.read_write_paths)
                           | set(self.optional_read_write_paths)) - declared)
         if outside:
@@ -275,6 +281,34 @@ class ServiceProfile:
                 "layout does not declare. A writable path nobody declared is a "
                 "path nobody set the mode or the owner of"
             )
+
+
+#: The governed units that start only with this boot's grant marker (#206
+#: §5): the six loop units, and the four other `Requires=` dependents of the
+#: controller (watchdog, fetch, local and remote model hosts), for which no
+#: pass writes a marker, so the controller's READY can never release a stale
+#: queued start of theirs. Not auditd or commissiond: the supporting-only
+#: bootstrap starts those and writes no marker; they stay masked on the
+#: ordinary path and are bound to the controller (`BindsTo=`).
+GRANT_MARKER_UNITS = (
+    "azazel-edge-core.service",
+    "azazel-edge-intaked.service",
+    "azazel-edge-probed.service",
+    "azazel-incident-explaind.service",
+    "azazel-knowledge-lited.service",
+    "azazel-mio-entryd.service",
+    "azazel-mio-locald.service",
+    "azazel-mio-remoted.service",
+    "azazel-model-fetchd.service",
+    "azazel-watchdog.service",
+)
+
+
+def _grant_condition(unit: str) -> tuple[tuple[str, str], ...]:
+    """`ConditionPathExists=` on this boot's grant marker for `unit`."""
+    if unit not in GRANT_MARKER_UNITS:
+        raise ValueError(f"{unit} is not a grant-marker unit")
+    return (("ConditionPathExists", grant_marker_path(unit)),)
 
 
 #: The accounts the installer creates. `root` is not among them: it exists.
@@ -311,6 +345,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/run/systemd/system.control",
             "/run/azazel-nexus-bootstrap",
         ),
+        # Optional: a node upgraded without re-running install.sh lacks the
+        # tmpfiles-created directory, and the controller must still narrow.
+        # Without it no marker can be written, so nothing granted can start.
+        optional_read_write_paths=("/run/azazel-activation",),
         conditions=(
             ("ConditionPathExists", "!/run/azazel-nexus-bootstrap/controller-used"),
         ),
@@ -365,6 +403,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-model-fetchd.service"),
         is_artifact_fetcher=True,
         # Its own runtime directory, not the one shared with the operator
         # plane: the socket this service answers on is reachable only by
@@ -403,6 +442,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/remote", "/var/lib/azazel/run/remote"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-remoted.service"),
         is_inference_transport=True,
         # Its own runtime directory. The socket that could send what this
         # node observed is not the socket everything else answers on, and it
@@ -445,6 +485,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/mio", "/var/lib/azazel/run/mio"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-locald.service"),
         is_model_host=True,
         supplementary_groups=("azknowledge-read", "azmission-read"),
         # Its own runtime directory. The socket that could start a process is
@@ -582,6 +623,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         after=("azazel-auditd.service",),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-watchdog.service"),
         rationale=(
             "Can mask and cannot unmask. Masking a unit it does not own is "
             "brokered by the activation controller's socket, so it needs no "
@@ -598,6 +640,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/edge-core",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-edge-core.service"),
         unit_type="exec",
         # It only connects to the intake socket, which lives under
         # /var/lib/azazel/run and belongs to the intake.
@@ -645,6 +688,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
                           "/var/lib/azazel/run/edge-intake-status"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-edge-intaked.service"),
         # No Restart=: systemd's default is no, and only the bootstrap pair
         # may declare lifecycle settings (test_runtime_bootstrap_lifetime).
         extra=(("PrivateNetwork", "yes"),
@@ -669,6 +713,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         supplementary_groups=("azincident-read", "azknowledge-read", "azaudit-submit", "azmio-advise"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-incident-explaind.service"),
         # No Restart=: systemd's default is no, and only the bootstrap pair
         # may declare lifecycle settings (test_runtime_bootstrap_lifetime).
         extra=(("PrivateNetwork", "yes"),
@@ -691,6 +736,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/run/edge-probe",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-edge-probed.service"),
         unit_type="oneshot",
         rationale=(
             "Runs once and exits. It executes exactly two things -- the Edge "
@@ -724,6 +770,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-entryd.service"),
         rationale=(
             "Routes and records handoffs over Unix sockets only. "
             "Holds no provider, network family or capability."
@@ -743,6 +790,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-knowledge-lited.service"),
         extra=(("ReadOnlyPaths", "/var/lib/azazel/lite-trust"),),
         rationale=(
             "Serves read-only Lite verbs with read-only public trust. "
@@ -777,6 +825,8 @@ def _edge_probe_preflight() -> ServiceProfile:
         requires=(),
         before=(ACTIVATION_CONTROLLER_UNIT,),
         runtime_directory="",
+        # Ungoverned and run before the pass: no grant marker can exist yet.
+        conditions=(),
         extra=(("TimeoutStartSec", "60s"),),
         rationale=(
             "Not governed by the activation controller: it runs before it, at "

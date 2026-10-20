@@ -66,6 +66,7 @@ def test_bootstrap_tmpfiles_rule_is_exact_and_does_not_clean_other_paths():
         b"d /run/azazel-nexus-bootstrap :0700 :root :root - -",
         b"d /run/azazel-mio-identity 0750 root azmio - -",
         b"d /etc/azazel/mio-profile 0700 root root - -",
+        b"d /run/azazel-activation 0755 root root - -",
     ]
 
 

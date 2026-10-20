@@ -8,6 +8,7 @@
 Description=Azazel-Nexus receive-only Edge findings intake
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/integration-loop.md
 After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-edge-intaked.service
 Requires=azazel-activated.service
 
 [Service]

@@ -11,6 +11,7 @@
 Description=Azazel-Nexus remote inference transport
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/remote-inference.md
 After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-mio-remoted.service
 Requires=azazel-activated.service
 
 [Service]

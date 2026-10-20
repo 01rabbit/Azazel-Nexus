@@ -23,7 +23,8 @@ consulted, so a daemon cannot vouch for itself. Any exception, absence or
 unexpected type is a failed check, and one failed check makes the node
 unhealthy. Findings are fixed labels; no exception text leaves this module.
 
-Inert in phase P2: `az-activated` does not call it yet.
+Since phase P4 the activation pass calls it, after narrowing, through
+`activation_pass`; it still only reports.
 """
 
 from __future__ import annotations

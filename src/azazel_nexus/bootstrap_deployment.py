@@ -93,3 +93,18 @@ def bind_bootstrap_deployment(deployment: BootstrapDeployment, *, context: Boots
             or any(getattr(context, name) != getattr(deployment, name)
                    for name in _FIELDS - {"operator"})):
         raise ApprovalRefused("bootstrap deployment binding differs")
+
+
+def declared_node_binding(deployment: BootstrapDeployment, node_id: str) -> str:
+    """The node digest an activation context carries, or a refusal (#206).
+
+    The protected node label, hashed with `declared_node_digest`, must equal
+    the administrator deployment declaration's `node_digest`. `az-activation`
+    and the activation pass both call this one function, so they cannot
+    derive different node identities.
+    """
+    if type(deployment) is not BootstrapDeployment:
+        raise ApprovalRefused("administrator deployment declaration required")
+    if declared_node_digest(node_id) != deployment.node_digest:
+        raise ApprovalRefused("declared node differs from the deployment declaration")
+    return deployment.node_digest

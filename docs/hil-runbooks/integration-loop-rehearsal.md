@@ -24,10 +24,12 @@ and the [commissioning rehearsal](commissioning-rehearsal.md), a VM rehearses
 campaign, it is not an [HG-07](hg-07.md) record, and every artefact is
 labelled `rehearsal`.
 
-**What this run cannot show today.** The production activation pass supplies
-no lease (§5), so no regular path admits the loop's units on this build
-([#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)). The
-loop is therefore started by the rehearsal-only procedure of §6, and the
+**What this run cannot show today.** Since #206 P4 the production pass has
+a regular path that can grant the SUPPORTING loop units (§5) from the inputs
+`az-activation` produces, but its reboot sequence is not yet confirmed on a
+VM (P6 of
+[#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)). The
+loop is therefore still started by the rehearsal-only procedure of §6, and the
 result says *activation admission: not exercised*. On real hardware that
 procedure is forbidden ([HG-07](hg-07.md) step 3).
 
@@ -241,18 +243,18 @@ is admitted. The result must also be from **this boot** (probe contract v2,
 ungoverned `azazel-edge-probe-preflight.service` runs the same probe before
 the controller at every boot, so the boot pass sees health from this boot.
 
-**On this build no lease exists.** `az-activated` composes its pass with
-`lease=None` and `healthy=False` (`runtime/src/azazel_nexus_runtime/activated.py`),
-so it grants nothing, and it appends `activation.inputs_incomplete` naming
-the producers it lacks, including `activation_approval_loader`, `node_health`
-and `edge_evidence`. The approval reader in `activation_store.py`
-(`/etc/azazel/activation/approval.json` and `approval.sig`) is not wired
-into that pass ([runtime activation](../runtime-activation-remaining.md#activation-approval-storage-versus-independent-context)),
-and `tools/operator_sign.py` can sign a v2 activation approval payload that
-`az-activation request` produces and `az-activation install` places
-([§3.1](../activation-observe-baseline.md#31-activation-approval-schema-v2-boot-free),
-phase P3b), but nothing reads it into the pass. No command produces a lease,
-and no approval may be requested, installed or hand-written for this run.
+**The regular path exists, but is not yet confirmed here.** Since #206 P4
+`az-activated` verifies the observe-baseline inputs (activation policy, high
+water and clock, an observe-baseline generation over the installed unit
+files, a signed v2 approval, node health) and, only when every one verifies,
+grants the five SUPPORTING loop units and writes their per-boot grant markers
+under `/run/azazel-activation/granted/`
+([§8](../activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass)).
+`az-activation generation-publish`, `request` and `install` (P3b) produce its
+inputs, and `tools/operator_sign.py` signs the approval off-host. Edge Core is
+not granted before P5, and the reboot sequence (grant → reboot → started) is
+P6's VM confirmation, which this runbook does not perform: no approval may be
+requested, installed or hand-written for this run.
 
 Record what the last boot's pass did:
 
@@ -262,9 +264,11 @@ sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
 ```
 
 Expect `az-activated completed safely: granted=0, ...` and, as the last
-ledger entry, `activation.inputs_incomplete` whose `missing_producers`
-include `activation_approval_loader`. If that name is absent, a later build
-has wired the approval path: stop and revise this section before using §6
+ledger entry, `activation.inputs_incomplete` whose `missing_producers` name
+the inputs that failed (typically `activation_policy` and `epoch_high_water`
+while nothing installs them), with `observed_inputs.producers` showing
+`failed` or `not_attempted` for the rest. If `granted` is not 0, the regular
+path admitted units: stop and use it (P6) instead of §6
 (**要確認** on every new build).
 
 The supporting-only bootstrap covers only `azazel-auditd.service` and
@@ -287,6 +291,24 @@ It is **only** for a disposable VM, and the run record must say it was used.
 > a running process; a `failed` unit also counts as unconfirmed).
 
 Here the same applies to the four loop units as well (§10).
+
+Every governed loop unit also carries
+`ConditionPathExists=/run/azazel-activation/granted/<unit>` (#206 §5), so
+`systemctl start` skips it (`unmet condition check`) without this boot's
+grant marker. For this rehearsal only, create the markers by hand; they are
+not a grant, they vanish at reboot, and the next activation pass removes
+them before it decides anything:
+
+```sh
+sudo install -d -m 0755 -o root -g root /run/azazel-activation/granted
+for unit in azazel-knowledge-lited azazel-mio-entryd azazel-edge-intaked azazel-incident-explaind azazel-edge-probed azazel-edge-core; do
+  sudo install -m 0644 -o root -g root /dev/null "/run/azazel-activation/granted/$unit.service"
+done
+```
+
+If `/run/azazel-activation` is missing, the installed tmpfiles rule predates
+#206 P4: re-run the installer rather than creating the directory with other
+ownership. Record in the run that the markers were hand-made.
 `--job-mode=ignore-requirements` is required: every loop unit has
 `Requires=azazel-activated.service`, and pulling in the controller would run
 an activation pass, which first re-masks every governed unit.
@@ -577,6 +599,7 @@ sudo systemctl stop azn-rehearsal-auditd.service
 sudo systemctl reset-failed
 sudo systemctl mask azazel-knowledge-lited.service azazel-mio-entryd.service azazel-edge-intaked.service azazel-incident-explaind.service azazel-edge-probed.service azazel-edge-core.service
 sudo rm -f /run/systemd/system/azn-rehearsal-auditd.service && sudo systemctl daemon-reload
+sudo rm -rf /run/azazel-activation/granted
 systemctl is-enabled azazel-edge-core.service azazel-edge-intaked.service azazel-incident-explaind.service azazel-edge-probed.service azazel-mio-entryd.service azazel-knowledge-lited.service
 systemctl is-active azazel-edge-core.service azazel-edge-intaked.service azazel-incident-explaind.service azazel-mio-entryd.service azazel-knowledge-lited.service azn-rehearsal-auditd.service
 ```
@@ -614,8 +637,8 @@ Record in issue #195, labelled `rehearsal`:
   architecture. No hostname, address, interface name, MAC, boot id, machine
   id or serial ([inventory confidentiality](../inventory-confidentiality.md)).
 - The activation outcome line and the `missing_producers` list from §5, and
-  that §6 substituted for admission (plus the auditd copy, the probe method,
-  and synthetic eve or Suricata).
+  that §6 substituted for admission (plus the hand-made grant markers, the
+  auditd copy, the probe method, and synthetic eve or Suricata).
 - The probe results before and after Edge started (`health`, `running`,
   version, digest, `observed_at`) and the five edge findings from status.
 - Edge's posture fields and its decision list (`notify`/`isolate`,

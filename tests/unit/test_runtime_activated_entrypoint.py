@@ -400,3 +400,75 @@ def test_selection_failure_labels_preserve_each_reviewed_cause():
     error = SelectionReadRefused(reason)
     error.args = ("private detail",)
     assert activated._failure_label(error) == "SelectionReadRefused"
+
+
+def _ordinary_context(monkeypatch):
+    monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("INVOCATION_ID", "c" * 32)
+    monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
+    monkeypatch.setattr(Path, "is_dir", lambda path: path == Path("/run/systemd/system"))
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            return None
+
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: Session()))
+
+
+@pytest.mark.parametrize("notify_fails", [False, True])
+def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, notify_fails):
+    from azazel_nexus_runtime import systemd_notify
+
+    _ordinary_context(monkeypatch)
+    order = []
+
+    def run_once(**_kwargs):
+        order.append("pass")
+        return SimpleNamespace(granted=("u",), withheld=(), verdicts=())
+
+    def ready():
+        order.append("ready")
+        if notify_fails:
+            raise RuntimeError("no notify socket")
+
+    monkeypatch.setattr(activated, "_run_once", run_once)
+    monkeypatch.setattr(systemd_notify, "notify_ready", ready)
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: order.append("barrier"))
+    assert activated.main([]) == 0
+    assert order == (["pass", "ready"] if notify_fails else ["pass", "ready", "barrier"])
+    captured = capsys.readouterr()
+    assert "granted=1" in captured.out
+    assert ("readiness notification unavailable" in captured.err) is notify_fails
+
+
+def test_no_ready_on_a_failed_pass(monkeypatch, capsys):
+    from azazel_nexus_runtime import systemd_notify
+
+    _ordinary_context(monkeypatch)
+
+    def run_once(**_kwargs):
+        raise RuntimeError("private failure")
+
+    monkeypatch.setattr(activated, "_run_once", run_once)
+    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: pytest.fail("READY on failure"))
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: pytest.fail("barrier on failure"))
+    assert activated.main([]) == 1
+    assert "failed before completing a safe pass" in capsys.readouterr().err
+
+
+def test_no_ready_from_the_ordinary_code_on_the_bootstrap_path(monkeypatch, capsys):
+    """The selected bootstrap keeps its own READY protocol; main adds none."""
+    from azazel_nexus import bootstrap_selection_optional
+    from azazel_nexus_runtime import bootstrap_entrypoint, systemd_notify
+
+    _ordinary_context(monkeypatch)
+    monkeypatch.setattr(bootstrap_selection_optional, "load_optional_bootstrap_selection",
+                        lambda: object())
+    monkeypatch.setattr(bootstrap_entrypoint, "run_selected_bootstrap",
+                        lambda selected, *, narrow: SimpleNamespace())
+    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: pytest.fail("ordinary READY"))
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: pytest.fail("ordinary barrier"))
+    assert activated.main([]) == 0

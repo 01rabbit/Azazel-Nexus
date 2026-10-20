@@ -45,6 +45,7 @@ ReadWritePaths=/var/lib/azazel/state
 ReadWritePaths=/etc/systemd/system
 ReadWritePaths=/run/systemd/system.control
 ReadWritePaths=/run/azazel-nexus-bootstrap
+ReadWritePaths=-/run/azazel-activation
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

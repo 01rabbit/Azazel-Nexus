@@ -3,16 +3,20 @@
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
-P0, P1 (library only), P2 (inert readers, §7), P3a (the off-host signer's
+P0, P1 (library only), P2 (readers, §7), P3a (the off-host signer's
 `activation` purpose), P3b (the node's `az-activation` tool:
-`generation-publish`, `request`, `install`) and the probe half of P5 (§3.4:
-probe contract v2 and the boot preflight) implemented, nothing wired into the
-pass**. Phases land as separate PRs (§4).
+`generation-publish`, `request`, `install`), the probe half of P5 (§3.4:
+probe contract v2 and the boot preflight) and P4 (SUPPORTING wired into the
+pass, §8) implemented; edge-core in scope (rest of P5) and the P6 VM
+confirmation pending**. Phases land as separate PRs (§4).
 
-Today no regular path admits the integrated loop's units. `az-activated`
-composes its production pass with `lease=None` and `healthy=False`, grants
-nothing and records `activation.inputs_incomplete`
-(`runtime/src/azazel_nexus_runtime/activated.py`). The VM rehearsal
+Before P4 no regular path admitted the integrated loop's units: `az-activated`
+composed its production pass with `lease=None` and `healthy=False`, granted
+nothing and recorded `activation.inputs_incomplete`
+(`runtime/src/azazel_nexus_runtime/activated.py`). Since P4 the pass can grant
+the five SUPPORTING loop units (§8) from the generation, approval and high
+water that `az-activation` (P3b) produces, but no VM has confirmed the boot
+sequence (P6). The VM rehearsal
 ([#195](https://github.com/01rabbit/Azazel-Nexus/issues/195)) therefore starts
 the loop by the rehearsal-only procedure, and the result says *activation
 admission: not exercised*. This document proposes the smallest set of
@@ -166,7 +170,7 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   leaves a pair whose signature does not verify, which every reader refuses.
   Exit 1 means nothing changed; exit 2 means a step after the first write did
   not complete (inspect, do not retry blindly). It creates no key and enables
-  nothing; the pass still composes `lease=None` until P4.
+  nothing; the next boot's pass (§8) is what may grant.
 - **Verification** on every pass: the existing trust verification and
   canonical re-encoding against independently collected context; the operator
   must be authorized by the activation policy (enrollment alone is not
@@ -352,7 +356,7 @@ pass keeps `lease=None`.
   unit, which had a pending start job, stayed loaded and started right after).
   So masking at the pass can never withhold a unit the previous pass enabled
   in the same boot. **Resolution adopted for P4:** every governed loop unit
-  carries `ConditionPathExists=/run/azazel/activation/granted/<unit>`, and the
+  carries `ConditionPathExists=/run/azazel-activation/granted/<unit>`, and the
   controller writes that marker (root-owned, under a root `0755` directory on
   the volatile `/run`) only for the units granted by this boot's pass, after
   recording the decision. A unit without its marker is skipped
@@ -401,7 +405,7 @@ A later change to one of them is recorded here with its date.
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports
-none of them (`tests/unit/test_activation_p2_inert.py`).
+none of them (P4 then wired them, §8; `tests/unit/test_activation_p4_wiring.py`).
 
 - `src/azazel_nexus/activation_policy.py`: `/etc/azazel/activation/policy.json`
   (`azazel-nexus/activation-policy/v1`), read like the approval (root `0700`
@@ -477,3 +481,123 @@ flag or an environment variable:
    `activation.high_water_recovered` (retained floor, ledger floors, new
    floor) **before** writing the new floor, then installs as usual. The
    retained file is left in place.
+
+## 8. P4: SUPPORTING wired into the pass
+
+`_run_once` (`runtime/src/azazel_nexus_runtime/activated.py`) composes §3.6
+through `runtime/src/azazel_nexus_runtime/activation_pass.py`, which the
+controller imports only inside the pass, after narrowing; importing the
+controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
+
+1. **Grant markers reset**, then the unchanged preflight remask. Stale markers
+   that cannot be removed are recorded (`activation.grant_markers_unclean`)
+   and the pass fails after narrowing.
+2. **Producers**, in order: full commissioning evidence; node identity
+   (`declared_node_binding`: the protected `/etc/azazel/node.yaml` label
+   hashed with `declared_node_digest` must equal the administrator
+   deployment declaration's `node_digest`, whose `security_epoch` is the
+   declared epoch); the activation policy; the high water
+   (`require_high_water_for_pass`; absent refuses, since only the operator's
+   install initializes it) with the declared epoch at or above its floor; the
+   clock (`now ≥ time_floor − max_clock_skew_seconds`); the current
+   generation verified as an observe-baseline tree against the policy scope
+   and the unit files **measured now**, its evidence binding equal to the
+   evidence's and its `commissioning_digest` equal to the SHA-256 of the
+   signed commissioning proposal (`evidence_commissioning_digest`), at or above
+   the generation floor; the v2 approval (`load_observe_baseline_approval`
+   in `activation_store.py`) against that context with the epoch and
+   sequence floors; and node health (`collect_node_health`).
+3. **All or nothing.** Unless every producer verified, the decision gets
+   `lease=None` and `healthy=False`, exactly as before.
+   `activation.inputs_incomplete` (kept as the event name) now names only the
+   producers that failed, plus the three not required or not built for this
+   scope (`authoritative_commissioning_admission`, `renderer_measurement`,
+   `edge_evidence`); producers that could not run because an earlier one
+   failed read `not_attempted` in `observed_inputs.producers`. No identity,
+   digest or reader message is written.
+4. **Decision**: `activate(lease, healthy, record=None,
+   require_commissioning_evidence=True)`; the library withholds every unit
+   outside `lease.units` as `outside_lease_scope`.
+5. **Tripwire**: any grant without lease and health, outside `lease.units`,
+   or outside the five SUPPORTING loop units removes every marker, masks
+   every governed unit and raises.
+6. **High water** is raised after the decision is recorded, only when the
+   approval verified: each counter to the maximum of floor and approval,
+   `time_floor` to `max(floor, now)` (so at most `now + skew`). The raise is
+   recorded as `activation.high_water_raised` with the floors nested under
+   `high_water`, like `az-activation`'s own records; it is one of
+   `FLOOR_EVENTS`, so a node with it never re-initializes a missing
+   high-water file, and recovery counts its floors. The floors follow the
+   accepted approval, not the number of grants: a verified approval raises
+   them even on a pass whose units were all withheld. A refused raise
+   remasks everything and raises.
+7. **Markers** for exactly the granted units, unless the pass rolled back.
+   A marker that cannot be written remasks everything and raises.
+8. `main` prints `granted=N` and, because the controller is `Type=notify`,
+   sends `READY=1` after the pass, then waits (bounded, 5 s) on the
+   `BARRIER=1` protocol of `sd_notify_barrier(3)` so that systemd has
+   processed READY before the process exits. Without READY the controller's
+   start fails and every unit with `Requires=`/`After=` on it fails as a
+   dependency; a refused notification or barrier is logged and leaves exit 0
+   (the pass was recorded), and the dependent units then simply do not start.
+   READY is never sent on a failed pass, and the selected bootstrap path
+   keeps its own READY protocol unchanged.
+
+**What READY releases.** Twelve units `Requires=` the controller: the ten
+that carry the marker condition and auditd and commissiond. READY would
+release a start job queued at boot for any of them still enabled (a manual
+unmask, an older build), and §5 showed that masking at the pass cannot stop
+such a job. So every governed unit except the bootstrap pair carries the
+marker condition: the six loop units, and the watchdog, the fetch service and
+the two model hosts, for which no pass writes a marker (`write_grant_markers`
+refuses any unit outside the five grantable ones), so they stay unstartable
+on the ordinary path.
+
+**Residual window (auditd, commissiond).** They carry no condition because
+the supporting-only bootstrap starts them and writes no marker; its
+behaviour is unchanged. On the ordinary path, if either was left unmasked
+when the boot began, its start job is already queued, the preflight mask
+does not cancel it, and READY releases it: the unit then runs until the
+controller exits and `BindsTo=` stops it, which is at most the bounded
+barrier wait (about 5 s) after READY. P6 must observe this window on the VM.
+
+**Edge-core is refused in P4.** A policy naming `azazel-edge-core.service`
+fails `activation_policy` as a whole, so nothing is granted until P5 replaces
+this with its probe preflight and boot-bound evidence. The edge-core unit
+already carries its marker condition.
+
+**Marker path.** The markers live under `/run/azazel-activation/granted/`, not
+`/run/azazel/activation/`: `/run/azazel` is the shared `RuntimeDirectory=` of
+several units, which systemd chowns to the starting unit's account and
+removes when that unit (including the controller itself) stops.
+`/run/azazel-activation` is a root `0755` directory created at boot by the
+packaged tmpfiles rule; the controller has it as an optional
+`ReadWritePaths=-`, so a node without it still narrows and simply cannot
+grant. `ConditionPathExists=` is on every governed unit except auditd and
+commissiond, which the bootstrap path starts
+(`tests/unit/test_runtime_hardening.py`).
+
+**One derivation for the pass and `az-activation`.** The pass measures unit
+files with `measure_scoped_unit_files` (`activation_unit_files.py`, P3b): the
+vendor file in `/usr/lib/systemd/system`, bracketed by
+`require_no_unit_overrides` over all twelve directories of the reviewed
+Debian 13 unit search path (same-name files other than a `/dev/null` mask,
+and any non-empty `<unit>.d`, dash-prefix or `service.d` drop-in; an empty
+drop-in directory changes nothing and is accepted by both). The
+`commissioning_digest` is `observe_baseline.evidence_commissioning_digest` and
+the node digest is `bootstrap_deployment.declared_node_binding`, called by
+both. `tests/unit/test_runtime_activation_cli.py` runs `generation-publish` →
+`request` → `operator_sign` → `install` → one pass on one temporary root and
+checks that exactly the requested units are granted and marked.
+
+Tests (`tests/unit/test_runtime_activation_pass.py`, fake manager, tmp root,
+in-memory ephemeral key): only scoped units are granted and only they get
+markers; each absent or failed producer refuses and is named alone; epoch
+bump, epoch and generation floors, clock rollback beyond the skew, expiry,
+a unit file changed after publishing, an altered tree, other evidence,
+sequence below the floor, a revoked or unauthorized operator and edge-core in
+scope all refuse; the tripwire fires on an out-of-scope grant; stale markers
+are removed before any decision; the high water is raised after the decision
+and never lowered. None of this is VM or hardware evidence: P6 still has to
+show reboot → granted → reboot → started, and every negative run masked and
+not started.

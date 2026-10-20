@@ -5,7 +5,8 @@
 `security_epoch`, `approval_seq` and `generation` a pass has accepted and the
 `time_floor` the OS clock may not fall below (less the policy skew).
 
-Inert in phase P2: `az-activated` neither reads nor writes it yet.
+Since phase P4 the activation pass reads it before its decision and raises it
+after recording the decision, through `activation_pass`.
 
 Three properties, each a refusal rather than a convention:
 

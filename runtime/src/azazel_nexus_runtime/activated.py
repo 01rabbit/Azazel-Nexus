@@ -73,6 +73,7 @@ from .commissioning_input import load_commissioning_evidence
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
+from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
 from .units import DbusUnitManager, UnitManager, UnitOperationFailed
 
 __all__ = [
@@ -138,8 +139,8 @@ def wired_capabilities() -> frozenset:
     Artifact transport requires a nonempty legacy endpoint table or fully
     loadable fetch commissioning. Merely having a signed registry is insufficient.
     A fresh node has neither and keeps the unit withheld. Local model wiring
-    requires independently verified embedding evidence. The admission kill
-    switch is closed in this build; lease and health remain absent.
+    requires independently verified embedding evidence. Wiring never supplies
+    a lease or health; those come from the pass's own producers (#206).
     """
 
     wired = set()
@@ -450,17 +451,50 @@ def _collect_input_status(root: Path) -> dict[str, str]:
     return result
 
 
-def _run_once(
-    *, manager: UnitManager, root: Path, now: str, actor: str
-) -> ActivationOutcome:
-    """Compose the existing decision engine with fixed persistent paths.
+#: Every producer, for a pass whose input collection itself failed.
+_ALL_PRODUCERS = (
+    "authoritative_commissioning_admission", "renderer_measurement", "edge_evidence",
+    "authenticated_commissioning", "inventory_binding", "node_identity",
+    "activation_policy", "epoch_high_water", "trusted_clock",
+    "operational_generation_publisher", "activation_approval_loader", "node_health",
+)
 
-    Full commissioning evidence is loaded after mandatory narrowing. Production
-    readers for the lease, measured health and Edge baseline are still absent.
-    Those remain
-    explicit absences, not guessed values or data loaded from unauthenticated
-    files. ``healthy=False`` is important: the library API's test-friendly
-    default is not evidence a production daemon may inherit.
+def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
+    """Remove every grant marker, mask every governed unit, then raise."""
+    failures: list[str] = []
+    try:
+        reset_grant_markers(root)
+    except Exception as exc:  # noqa: BLE001 - recorded, and the remask still runs
+        failures.append(f"grant_markers: {type(exc).__name__}")
+        print("az-activated could not remove grant markers during emergency narrowing",
+              file=sys.stderr)
+    for definition in CORE_UNITS:
+        try:
+            _mask_and_confirm_inactive(manager, definition.name)
+        except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
+            failures.append(f"{definition.name}: {type(exc).__name__}")
+    raise RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
+
+
+def _run_once(
+    *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
+) -> ActivationOutcome:
+    """One observe-baseline pass (#206 §3.6), SUPPORTING units only (P4).
+
+    Order: remove this boot's grant markers; preflight remask; commissioning
+    evidence; independent context (declared node, policy, high water and
+    clock, the current generation verified as an observe-baseline tree over
+    the unit files installed now, evidence binding, declared epoch); the v2
+    approval verified against it; node health; the library decision with
+    ``require_commissioning_evidence=True``. Unless every producer verified,
+    the decision gets ``lease=None`` and ``healthy=False``: the library API's
+    test-friendly defaults are not evidence a production daemon may inherit.
+
+    After the decision is recorded: a grant outside the lease, or any grant
+    without lease and health, remasks everything and raises; otherwise the
+    high-water floors are raised and the per-boot grant markers written for
+    exactly the granted units. ``producers`` is a test seam; ``main`` never
+    passes it, and a relocated root reads no host producer.
     """
 
     state = root / "var/lib/azazel/state"
@@ -470,57 +504,127 @@ def _run_once(
         manager=manager,
         definitions=CORE_UNITS,
     )
+    # Stale markers go first, before any decision: a marker left from an
+    # earlier pass in this boot must never admit a queued start.
+    marker_failure = None
+    try:
+        reset_grant_markers(root)
+    except Exception as exc:  # noqa: BLE001 - refuses below, after narrowing
+        marker_failure = type(exc).__name__
     failures = daemon._remask_all(now=now, actor=actor,
         event_type="activation.evidence_preflight_masked", error_type="preflight")
     if failures:
         daemon._narrow_everything(now=now, actor=actor, after=failures)
-    evidence = None
-    if root == Path("/"):
-        try:
-            evidence = load_commissioning_evidence()
-        except Exception:  # noqa: BLE001 - evidence failure never bypasses the refusing pass
-            evidence = None
+    if marker_failure is not None:
+        daemon._record({
+            "event_type": "activation.grant_markers_unclean",
+            "error_type": marker_failure, "occurred_at": now, "actor": actor,
+        })
+        raise RuntimeError("stale activation grant markers could not be removed")
+
+    inputs = None
+    try:
+        from .activation_pass import (
+            collect_pass_inputs, production_producers, staged_inputs,
+        )
+        if producers is None and root == Path("/"):
+            producers = production_producers(commissioning_evidence=load_commissioning_evidence)
+        if producers is None:
+            inputs = staged_inputs()
+        else:
+            inputs = collect_pass_inputs(producers=producers, generations=daemon.generations,
+                                         ledger=daemon.ledger, now=now)
+    except Exception:  # noqa: BLE001 - collection failure is absent evidence
+        inputs = None
+    lease = inputs.lease if inputs is not None else None
+    healthy = inputs is not None and lease is not None and inputs.healthy is True
+    if not healthy:
+        lease = None
     outcome = daemon.activate(
         now=now,
         actor=actor,
-        lease=None,
+        lease=lease,
         record=None,
         edge=None,
-        healthy=False,
+        healthy=healthy,
         wired=wired_capabilities(),
-        commissioning_evidence=evidence,
+        commissioning_evidence=inputs.evidence if inputs is not None else None,
         require_commissioning_evidence=True,
     )
-    if outcome.granted:
-        # Full commissioning evidence does not supply a lease or node health.
-        # A grant here would mean a future change silently supplied authority.
-        failures: list[str] = []
-        for definition in CORE_UNITS:
-            try:
-                _mask_and_confirm_inactive(manager, definition.name)
-            except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
-                failures.append(f"{definition.name}: {type(exc).__name__}")
-        raise RuntimeError(
-            "production activation composed without lease/health admission evidence "
-            "but the decision engine granted a unit; emergency remask failures: "
-            f"{sorted(failures)}"
+    granted = set(outcome.granted)
+    if granted and (lease is None or not healthy or lease.units is None
+                    or not granted <= lease.units or not granted <= GRANTABLE_UNITS):
+        # A grant without verified lease and health, or outside the lease's
+        # scope, means a change silently supplied authority.
+        _emergency_narrow(
+            manager, root,
+            "production activation granted a unit outside a verified lease and "
+            "health or outside the lease scope",
         )
+    rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
+    high_water = "not_attempted"
+    if lease is not None and inputs.approval is not None:
+        # After the decision is recorded; raise-only, bounded by now + skew.
+        from .activation_pass import raised_high_water
+        try:
+            floor = producers.raise_high_water(raised_high_water(inputs, now=now), now=now,
+                                               skew_seconds=inputs.skew_seconds)
+            high_water = "raised"
+            # A floor event: a node with this history refuses a missing file.
+            # Nested like az-activation's floor events (`FLOOR_EVENTS`), so
+            # a later install or recovery never re-initializes below it.
+            daemon.ledger.append({
+                "event_type": "activation.high_water_raised",
+                "high_water": {
+                    "security_epoch": floor.security_epoch,
+                    "approval_seq": floor.approval_seq,
+                    "generation": floor.generation,
+                    "time_floor": floor.time_floor,
+                },
+                "occurred_at": now, "actor": actor,
+            })
+        except Exception:  # noqa: BLE001 - an unraised floor admits nothing
+            # The record must never stand between this failure and the remask.
+            try:
+                daemon._record({
+                    "event_type": "activation.high_water_unraised",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _emergency_narrow(manager, root, "activation high water could not be raised")
+    markers: tuple[str, ...] = ()
+    if granted and not rolled_back:
+        try:
+            markers = write_grant_markers(sorted(granted), root)
+        except Exception:  # noqa: BLE001 - a unit without a marker never starts
+            # The record must never stand between this failure and the remask.
+            try:
+                daemon._record({
+                    "event_type": "activation.grant_markers_unwritten",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _emergency_narrow(manager, root, "activation grant markers could not be written")
     # Do not gather optional diagnostic inputs before mandatory narrowing.
     # Merely loading an enrolled key or observing a boot is not admission.
-    inputs = _collect_input_status(root)
-    inputs["full_commissioning"] = "verified_current_binding" if evidence is not None else "unavailable"
-    missing = [
-        "authoritative_commissioning_admission", "activation_approval_loader",
-        "node_identity", "activation_policy", "renderer_measurement",
-        "epoch_high_water", "trusted_clock", "node_health", "edge_evidence",
-        "operational_generation_publisher",
-    ]
-    if evidence is None:
-        missing.extend(("authenticated_commissioning", "inventory_binding"))
+    observed = _collect_input_status(root)
+    evidence = inputs.evidence if inputs is not None else None
+    observed["full_commissioning"] = "verified_current_binding" if evidence is not None else "unavailable"
+    if inputs is None:
+        missing = list(_ALL_PRODUCERS)
+        observed["producers"] = "collection_failed"
+    else:
+        missing = inputs.missing()
+        observed["producers"] = dict(inputs.status)
+        observed["node_health_findings"] = dict(inputs.health_findings)
+    observed["high_water"] = high_water
     daemon.ledger.append({
         "event_type": "activation.inputs_incomplete",
-        "observed_inputs": inputs,
+        "observed_inputs": observed,
         "missing_producers": missing,
+        "grant_markers": list(markers),
         "generation": outcome.generation,
         "occurred_at": now,
         "actor": actor,
@@ -825,9 +929,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run one fail-closed activation pass against systemd's system bus.
 
     A zero exit status means the pass completed and its decision was recorded;
-    it does **not** mean any unit was granted. Full commissioning evidence may
-    be available, but lease, authoritative admission and health producers remain
-    absent, so this composition cannot widen a unit.
+    it does **not** mean any unit was granted. Since #206 P4 a pass may grant
+    the SUPPORTING loop units named by a verified v2 approval on a healthy
+    node; a grant enables a unit for a later boot and writes its per-boot
+    marker, and never starts it.
     """
 
     if argv is None:
@@ -896,9 +1001,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     reasons = sorted({verdict.reason.split(":", 1)[0] for verdict in outcome.verdicts})
     print(
-        f"az-activated completed safely: granted=0, "
+        f"az-activated completed safely: granted={len(outcome.granted)}, "
         f"withheld={len(outcome.withheld)}, reasons={','.join(reasons)}"
     )
+    # Type=notify: without READY the controller's start fails and every unit
+    # with Requires=/After= on it fails as a dependency. READY is sent only
+    # after the pass, its markers and its record are complete; a refused
+    # notification leaves those units unstarted, which is the safe direction.
+    # The process exits right after READY, so wait (bounded) for systemd to
+    # process it first (BARRIER=1); otherwise the exit may be seen first.
+    try:
+        from . import systemd_notify
+
+        systemd_notify.notify_ready()
+        systemd_notify.notify_barrier()
+    except Exception:  # noqa: BLE001 - startup stays unsuccessful, nothing widens
+        print("az-activated readiness notification unavailable", file=sys.stderr)
     return 0
 
 

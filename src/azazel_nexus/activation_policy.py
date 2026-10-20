@@ -4,8 +4,8 @@
 required producer: the operators authorized to approve activation, the lease
 cap, the exact unit scope, the health floors and the clock skew. This module
 decodes and reads that one fixed file. It does not verify an approval, build a
-lease, measure health or widen anything, and `az-activated` does not call it
-yet (phase P2).
+lease, measure health or widen anything. Since phase P4 the activation pass
+reads it through `azazel_nexus_runtime.activation_pass`.
 
 Every value can only narrow what a pass may grant:
 
