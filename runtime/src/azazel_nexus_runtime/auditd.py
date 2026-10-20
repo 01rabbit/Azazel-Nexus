@@ -555,6 +555,7 @@ class AuditService:
         self.status_path = status_path
         self._status_written = float("-inf")
         self._status_failing = False
+        self._status_swept = False
         self.clock = clock
         self.monotonic = monotonic
         self.warn = warn
@@ -798,6 +799,8 @@ class AuditService:
         if self.status_path is None:
             return
         self._status_written = self.monotonic()
+        if not self._status_swept:
+            self._sweep_status_temp()
         name = None
         try:
             body = json.dumps(self.status_snapshot(), sort_keys=True,
@@ -824,6 +827,24 @@ class AuditService:
                     os.unlink(name)
                 except OSError:
                     pass
+
+    def _sweep_status_temp(self) -> None:
+        """Remove `.status-*` temp files a killed predecessor left. Never raises.
+
+        Only this daemon writes in the leaf, and only its own temp files start
+        with `.status-`; a live write of this process cannot be among them.
+        """
+
+        try:
+            for leftover in self.status_path.parent.glob(".status-*"):
+                try:
+                    if leftover.is_file() and not leftover.is_symlink():
+                        leftover.unlink()
+                except OSError:
+                    pass
+            self._status_swept = True
+        except OSError:
+            pass
 
     def handle(self, request) -> dict:
         # No principal is never the explainer, so an incident event without

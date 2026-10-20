@@ -284,20 +284,26 @@ def test_the_reader_accepts_the_declared_shape_only():
 
 
 def test_health_is_unknown_when_absent_stale_or_without_a_clock():
-    healthy, detail = audit_health(None, 1000)
+    healthy, detail, advisory = audit_health(None, 1000)
     assert healthy is None and "install.sh" in detail and "not inspected" in detail
+    assert advisory is None
     value = _snapshot()
-    healthy, detail = audit_health(value, 1000.0 + STATUS_STALE_S + 1)
+    healthy, detail, _ = audit_health(value, 1000.0 + STATUS_STALE_S + 1)
     assert healthy is None and "stale" in detail and "last snapshot: chain 4.0 KiB" in detail
-    healthy, detail = audit_health(value, 1000.0 - 60)
+    healthy, detail, _ = audit_health(value, 1000.0 - 60)
     assert healthy is None and "future" in detail
-    healthy, detail = audit_health(value, None)
+    healthy, detail, _ = audit_health(value, None)
     assert healthy is None and "age unknown" in detail
+    # A stale warning is still shown, labelled as the last snapshot's, and is
+    # not turned into a current next action.
+    warn = _snapshot(chain_bytes=2 << 30, warning=True, warning_reasons=["chain_size"])
+    healthy, detail, advisory = audit_health(warn, 1000.0 + STATUS_STALE_S + 1)
+    assert healthy is None and "capacity warning (chain_size)" in detail and advisory is None
 
 
 def test_health_reports_fresh_values_warning_and_broken_chain():
-    healthy, detail = audit_health(_snapshot(), 1012.0)
-    assert healthy is True
+    healthy, detail, advisory = audit_health(_snapshot(), 1012.0)
+    assert healthy is True and advisory is None
     assert detail == ("chain verified at auditd start; chain 4.0 KiB in 2 segment(s); "
                       "50.0 GiB free on its filesystem; warns at >= 1.0 GiB chain or "
                       "< 1.0 GiB free; rate_limited: none (snapshot 12s old)")
@@ -306,14 +312,18 @@ def test_health_reports_fresh_values_warning_and_broken_chain():
                      rate_limited={"rate:edge.incident.opened:ordinary": 7,
                                    "daily:edge.incident.closed:ordinary": 2},
                      rate_limit_summaries_dropped=3)
-    healthy, detail = audit_health(warn, 1000.0)
-    assert healthy is False
-    assert detail.startswith("capacity warning (filesystem_free): nothing is deleted")
+    healthy, detail, advisory = audit_health(warn, 1000.0)
+    # A capacity warning is not a failure: ok, with the warning stated first.
+    assert healthy is True
+    assert detail.startswith("WARNING: capacity warning (filesystem_free): nothing is deleted")
+    assert advisory.startswith("capacity warning (filesystem_free): nothing is deleted")
     assert "5.0 MiB free" in detail
     assert ("rate_limited: 9 (rate:edge.incident.opened:ordinary=7, "
             "daily:edge.incident.closed:ordinary=2); summaries dropped: 3") in detail
-    healthy, detail = audit_health(_snapshot(chain_verified=False), 1000.0)
+    # FAILED is reserved for a chain that did not verify at auditd's start.
+    healthy, detail, advisory = audit_health(_snapshot(chain_verified=False), 1000.0)
     assert healthy is False and detail.startswith("chain did not verify at auditd start")
+    assert advisory is None
 
 
 # -- the status screen ---------------------------------------------------------
@@ -346,7 +356,7 @@ def test_status_says_absent_refused_and_stale_honestly(tmp_path, monkeypatch):
     assert "    audit: unknown -- auditd status snapshot is stale" in stale
 
 
-def test_a_capacity_warning_becomes_a_next_action(tmp_path, monkeypatch):
+def test_a_capacity_warning_is_ok_with_a_note_and_a_next_action(tmp_path, monkeypatch):
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     path = tmp_path / "var/lib/azazel/run/audit-status/status.json"
     path.parent.mkdir(parents=True)
@@ -355,8 +365,14 @@ def test_a_capacity_warning_becomes_a_next_action(tmp_path, monkeypatch):
     path.write_bytes(_raw(_snapshot(chain_bytes=2 << 30, warning=True,
                                     warning_reasons=["chain_size"], written_at=1789948795)))
     text = _status(tmp_path)
-    assert "    audit: FAILED -- capacity warning (chain_size): nothing is deleted" in text
-    assert text.index("audit: capacity warning") > text.index("next:")
+    assert "    audit: ok -- WARNING: capacity warning (chain_size): nothing is deleted" in text
+    assert "audit: FAILED" not in text
+    assert text.index("    audit: capacity warning (chain_size)") > text.index("next:")
+
+
+def test_a_broken_chain_is_failed_and_a_next_action(tmp_path, monkeypatch):
+    text = _health(tmp_path, monkeypatch, _snapshot(chain_verified=False))
+    assert "    audit: FAILED -- chain did not verify at auditd start" in text
 
 
 def test_a_reader_fault_never_stops_the_health_section(tmp_path, monkeypatch):
@@ -365,3 +381,13 @@ def test_a_reader_fault_never_stops_the_health_section(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_status, "audit_health", boom)
     text = _health(tmp_path, monkeypatch, _snapshot())
     assert "    audit: unknown -- auditd status snapshot unavailable (internal)" in text
+
+
+def test_temp_files_a_killed_predecessor_left_are_removed_once(tmp_path, monkeypatch):
+    service, clocks = _with_status(tmp_path, monkeypatch)
+    leaf = service.status_path.parent
+    (leaf / ".status-abandoned").write_text("partial")
+    (leaf / "other").write_text("kept")
+    service.write_status()
+    assert sorted(p.name for p in leaf.iterdir()) == ["other", "status.json"]
+    assert _read(service) is not None

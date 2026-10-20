@@ -874,15 +874,24 @@ nothing latches.
   `rate_limit_summaries_dropped`. No record content, no uid, no incident id.
   The reader is `azazel_nexus.audit_status.read_audit_status`; anything
   outside the shape is refused. Status prints one health line, `audit:`:
-  `ok` (verified, no warning), `FAILED` for a capacity warning (also listed
-  under `next:`, with "nothing is deleted") or a chain that did not verify,
-  and `unknown` when the snapshot is absent or refused (auditd not running,
+  `ok` when the chain verified at auditd's start; a capacity warning is not
+  a failure, so the line stays `ok`, its detail starts with `WARNING:
+  capacity warning (...)`, says nothing is deleted, and the warning is also
+  listed under `next:`. `FAILED` is reserved for a chain that did not verify
+  at auditd's start. `unknown` when the snapshot is absent or refused (auditd not running,
   or install.sh not re-run after an upgrade) or stale (older than 300 s,
-  `STATUS_STALE_S`, or dated in the future; the last values are shown,
-  labelled as such). `--ledger PATH` still verifies a ledger file directly
-  and prints `audit chain:` instead. A missing or unwritable leaf never stops
-  auditd: it logs `cannot write .../status.json` once (again only after a
-  later success) and keeps serving.
+  `STATUS_STALE_S`, or dated in the future; the last values, including a
+  warning, are shown labelled as such and are not listed under `next:`).
+  `--ledger PATH` still verifies a ledger file directly and prints `audit chain:` instead. `chain_verified` is the result of the
+  verification auditd makes at its start only: damage to a segment after
+  that is not reflected until auditd restarts or an operator runs
+  `audit.verify`. A missing or unwritable leaf never stops auditd. The unit
+  grants the leaf as `ReadWritePaths=-/var/lib/azazel/run/audit-status` (the
+  `-` lets systemd start the unit when the directory does not exist, which a
+  plain entry would refuse with 226/NAMESPACE); auditd then logs `cannot
+  write .../status.json` once (again only after a later success) and keeps
+  serving. auditd also removes `.status-*` temp files a killed predecessor
+  left in the leaf.
 - **Refusal logs are bounded separately.** Every daemon's `refusals.jsonl`
   (including auditd's, for refusals other than `rate_limited`) is diagnostic
   state, not part of the chain. It is aggregated per (caller uid, reason) and

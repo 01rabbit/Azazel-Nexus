@@ -157,11 +157,12 @@ def _audit_snapshot_report(now: Optional[float]) -> HealthReport:
     """
 
     from .audit_status import STATUS_BYTES, audit_health, read_audit_status
-    from .edge_loop_status import _read
+    from .edge_loop_status import read_snapshot
     from .runtime_paths import audit_status_path
 
-    healthy, detail = audit_health(_read(audit_status_path(), read_audit_status, STATUS_BYTES), now)
-    return HealthReport("audit", healthy, detail)
+    healthy, detail, advisory = audit_health(
+        read_snapshot(audit_status_path(), read_audit_status, STATUS_BYTES), now)
+    return HealthReport("audit", healthy, detail, advisory)
 
 
 def _health_reports(ledger_path: Optional[Path],

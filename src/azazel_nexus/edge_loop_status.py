@@ -15,7 +15,12 @@ from .incident_explain import RECENT_BYTES, read_explainer_status, read_recent_i
 FORWARD_STALE_S = 900
 
 
-def _read(path, reader, limit):
+def read_snapshot(path, reader, limit):
+    """Read one operator-readable snapshot file, or `None`. Never raises.
+
+    No symlink is followed and only a regular file is read, at most `limit`
+    + 1 bytes, so `reader`'s own size check sees an oversized file.
+    """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
@@ -54,9 +59,9 @@ def _render_edge_loop(out, now):
     from .runtime_paths import (
         edge_intake_status_path, incident_explain_status_path, incident_recent_path,
     )
-    intake = _read(edge_intake_status_path(), read_intake_status, 8192)
-    explain = _read(incident_explain_status_path(), read_explainer_status, 8192)
-    recent = _read(incident_recent_path(), read_recent_incidents, RECENT_BYTES)
+    intake = read_snapshot(edge_intake_status_path(), read_intake_status, 8192)
+    explain = read_snapshot(incident_explain_status_path(), read_explainer_status, 8192)
+    recent = read_snapshot(incident_recent_path(), read_recent_incidents, RECENT_BYTES)
     for name, value in (("intake", intake), ("explainer", explain)):
         if value is None:
             print(f"    {name}: unavailable (snapshot absent or refused)", file=out)

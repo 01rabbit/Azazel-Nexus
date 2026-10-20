@@ -21,8 +21,8 @@ import re
 STATUS_SCHEMA = "azazel-nexus/audit-status/v1"
 #: The file never legitimately reaches this; anything larger is refused.
 STATUS_BYTES = 8192
-#: auditd rewrites the snapshot this often (and at start, and as soon as the
-#: capacity warning turns on or off).
+#: auditd writes the snapshot at start and then this often; a capacity
+#: warning turning on or off therefore reaches status within one interval.
 STATUS_INTERVAL_S = 60
 #: Five missed rewrites: older than this, auditd is not known to be running.
 STATUS_STALE_S = 300
@@ -112,24 +112,29 @@ def _size(value) -> str:
 
 
 def audit_health(value, now) -> tuple:
-    """`(healthy, detail)` for the status `audit` line.
+    """`(healthy, detail, advisory)` for the status `audit` line.
 
     `healthy` is `None` when nothing current is known (no snapshot, a refused
-    one, a stale one, or no clock), `False` for a broken chain or a capacity
-    warning, `True` otherwise. A warning never deletes anything; the detail
-    says so, because the obvious reaction to "disk filling" is the one this
-    node refuses to take on the owner's behalf.
+    one, a stale one, or no clock), `False` only when the chain did not verify
+    at auditd's start, `True` otherwise. A capacity warning is **not** a
+    failure: the line stays `ok`, its detail starts with `WARNING:`, and
+    `advisory` carries it to the next actions. A warning never deletes
+    anything; both say so, because the obvious reaction to "disk filling" is
+    the one this node refuses to take on the owner's behalf.
     """
 
     if value is None:
-        return None, ("no readable auditd status snapshot (auditd not running, or "
-                      "install.sh not re-run since the upgrade); audit capacity unknown; "
-                      "audit ledger not inspected")
+        return None, ("no readable auditd status snapshot (auditd not running, "
+                      "install.sh not re-run since the upgrade, or this user cannot read "
+                      "run/audit-status: that needs the azazel-operator group); audit "
+                      "capacity unknown; audit ledger not inspected"), None
     free = value["filesystem_free_bytes"]
     facts = (f"chain {_size(value['chain_bytes'])} in {value['segments']} segment(s); "
              + ("filesystem free unknown" if free is None else f"{_size(free)} free on its filesystem")
              + f"; warns at >= {_size(value['warn_chain_bytes'])} chain or "
              f"< {_size(value['warn_free_bytes'])} free")
+    if value["warning"]:
+        facts += "; capacity warning (" + ", ".join(value["warning_reasons"]) + ")"
     total = sum(value["rate_limited"].values())
     top = sorted(value["rate_limited"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
     limited = ("rate_limited: none" if not total else
@@ -137,18 +142,22 @@ def audit_health(value, now) -> tuple:
     if value["rate_limit_summaries_dropped"]:
         limited += f"; summaries dropped: {value['rate_limit_summaries_dropped']}"
     if type(now) not in (int, float):
-        return None, f"current time unknown, so snapshot age unknown; last snapshot: {facts}"
+        return None, f"current time unknown, so snapshot age unknown; last snapshot: {facts}", None
     age = now - value["written_at"]
     if age > STATUS_STALE_S or age < -STATUS_FUTURE_S:
         when = (f"written {int(age)}s ago" if age > 0 else "dated in the future")
         return None, (f"auditd status snapshot is stale ({when}; auditd rewrites it every "
-                      f"{STATUS_INTERVAL_S}s while running); last snapshot: {facts}")
+                      f"{STATUS_INTERVAL_S}s while running); last snapshot: {facts}"), None
     tail = f"{facts}; {limited} (snapshot {max(0, int(age))}s old)"
+    advisory = None
+    if value["warning"]:
+        advisory = ("capacity warning (" + ", ".join(value["warning_reasons"]) + "): "
+                    "nothing is deleted; how long to keep the chain is the owner's "
+                    "decision; see docs/integration-loop.md (Audit chain limits)")
     if not value["chain_verified"]:
         return False, ("chain did not verify at auditd start; appends are refused; "
-                       "inspect with audit.verify; " + tail)
-    if value["warning"]:
-        return False, ("capacity warning (" + ", ".join(value["warning_reasons"]) + "): "
-                       "nothing is deleted; see docs/integration-loop.md "
-                       "(Audit chain limits); " + tail)
-    return True, "chain verified at auditd start; " + tail
+                       "inspect with audit.verify; " + tail), advisory
+    if advisory:
+        return True, ("WARNING: " + advisory + "; chain verified at auditd start; "
+                      + tail), advisory
+    return True, "chain verified at auditd start; " + tail, None

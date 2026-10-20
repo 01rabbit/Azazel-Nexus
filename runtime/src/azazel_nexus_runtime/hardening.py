@@ -106,6 +106,11 @@ class ServiceProfile:
     documentation: str
     address_families: tuple[str, ...]
     read_write_paths: tuple[str, ...]
+    #: Writable when present, rendered `ReadWritePaths=-PATH`. Only for a leaf
+    #: the daemon can run without: a runtime upgraded without re-running
+    #: install.sh lacks it, and a plain entry would fail the unit's namespace
+    #: setup (226/NAMESPACE) before the daemon could log and carry on.
+    optional_read_write_paths: tuple[str, ...] = ()
     after: tuple[str, ...] = ()
     requires: tuple[str, ...] = ()
     binds_to: tuple[str, ...] = ()
@@ -259,7 +264,8 @@ class ServiceProfile:
         if ("/run/systemd/system.control" in self.read_write_paths
                 and self.unit != ACTIVATION_CONTROLLER_UNIT):
             raise ValueError("bootstrap overlay is writable only by the activation controller")
-        outside = sorted(set(self.read_write_paths) - declared)
+        outside = sorted((set(self.read_write_paths)
+                          | set(self.optional_read_write_paths)) - declared)
         if outside:
             raise ValueError(
                 f"{self.unit} would write to {outside}, which the filesystem "
@@ -524,16 +530,18 @@ PROFILES: tuple[ServiceProfile, ...] = (
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         address_families=("AF_UNIX",),
         # Its socket leaves (azaudit:azazel-operator 2710, and the explainer's
-        # append-only azaudit:azaudit-submit 2710), its operator-readable
-        # capacity snapshot (azaudit:azazel-operator 2750, #211), its chain and
-        # its refusal records. Nothing else under the run tree is its to write.
+        # append-only azaudit:azaudit-submit 2710), its chain and its refusal
+        # records. Nothing else under the run tree is its to write, except
+        # its operator-readable capacity snapshot (azaudit:azazel-operator
+        # 2750, #211), which is optional: auditd is bootstrap-critical and
+        # must start on a node where install.sh has not created that leaf.
         read_write_paths=(
             "/var/lib/azazel/run/audit",
             "/var/lib/azazel/run/audit-submit",
-            "/var/lib/azazel/run/audit-status",
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),
+        optional_read_write_paths=("/var/lib/azazel/run/audit-status",),
         after=(ACTIVATION_CONTROLLER_UNIT, "sysinit.target", "basic.target"),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         binds_to=(ACTIVATION_CONTROLLER_UNIT,),
@@ -803,6 +811,8 @@ def render_unit(profile: ServiceProfile) -> str:
     )
     for path in profile.read_write_paths:
         lines.append(f"ReadWritePaths={path}")
+    for path in profile.optional_read_write_paths:
+        lines.append(f"ReadWritePaths=-{path}")
     for key, value in SHARED_HARDENING:
         if key == "CapabilityBoundingSet" and profile.capability_bounding_set:
             value = " ".join(profile.capability_bounding_set)
