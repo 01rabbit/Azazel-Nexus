@@ -3,9 +3,9 @@
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
-P0, P1 (library only) and P3a (the off-host signer's `activation` purpose)
-implemented, nothing wired into the pass**. Phases
-land as separate PRs (§4).
+P0, P1 (library only), P2 (inert readers, §7) and P3a (the off-host signer's
+`activation` purpose) implemented, nothing wired into the pass**. Phases land
+as separate PRs (§4).
 
 Today no regular path admits the integrated loop's units. `az-activated`
 composes its production pass with `lease=None` and `healthy=False`, grants
@@ -270,3 +270,40 @@ A later change to one of them is recorded here with its date.
 9. Same-boot mask semantics? **[P4 does not go live until P6 confirms it]**
    Answered by the VM on 2026-10-20: masking does not stop a queued start;
    P4 uses the per-boot grant marker of §5 instead.
+
+## 7. P2 readers (inert)
+
+Phase P2 adds the readers of §3 without wiring them; `az-activated` imports
+none of them (`tests/unit/test_activation_p2_inert.py`).
+
+- `src/azazel_nexus/activation_policy.py`: `/etc/azazel/activation/policy.json`
+  (`azazel-nexus/activation-policy/v1`), read like the approval (root `0700`
+  directory, root `0600` single-link file, read twice). Closed canonical shape;
+  `policy_digest` is the SHA-256 of the exact bytes. `units` must be a subset
+  of the code-fixed `ACTIVATION_UNIT_ALLOWLIST` (the five SUPPORTING loop
+  units and edge-core); `max_lease_seconds` ≤ 72 h and
+  `max_clock_skew_seconds` ≤ 300 are capped in code. `state_floors` and
+  `resource_floors` use the field names of the bootstrap capacity and resource
+  checks. Reusing them means the capacity floors measure
+  `state/bootstrap` and `state/audit`, not a dedicated activation volume.
+- `src/azazel_nexus/observe_baseline.py`: builder and verifier of the
+  `baseline.json` tree, against a caller-supplied scope and installed unit
+  file bytes. `edge_pin` holds the pin `version`, a `contract_digest` (the
+  SHA-256 of the canonical `edge_package.PIN` record, which carries no
+  artifact digest of its own) and, exactly when `azazel-edge-core.service` is
+  in scope, the caller-supplied `package_digest` of the installed archive (the
+  value the manifest check compares). The operator's signature over
+  `generation_digest` therefore binds one specific Edge package; outside that
+  scope the field is forbidden. The tree is refused by the bootstrap verifier
+  and refuses every other tree.
+- `runtime/src/azazel_nexus_runtime/activation_high_water.py`: read
+  (absent is `None`, anything malformed refuses), initialize once, raise-only
+  update (temporary file, fsync, rename, directory fsync, read-back), and
+  `require_high_water_for_pass`, which refuses a missing file when
+  `/var/lib/azazel/state/activation.jsonl` exists.
+- `runtime/src/azazel_nexus_runtime/activation_health.py`: the five checks of
+  §3.3 as `(healthy, findings)`. The ledger check appends one
+  `activation.health_ledger_probe` event per collection. A missing `fences.json` inside the
+  watchdog's own directory is the watchdog's "never fenced" state and reads as
+  no fence; a missing directory, a foreign owner or a malformed file is a
+  fence.
