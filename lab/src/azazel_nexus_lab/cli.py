@@ -196,8 +196,13 @@ def audit(root):
         chains[name] = {"state": "verified", "head": ledger.head()}
     # knowledge_lited emits per-daemon events, not AuditLedger chain entries.
     # Check JSON framing without presenting it as a verified hash chain.
-    events = root / "var/lib/azazel/state/knowledge/refusals.jsonl"
-    rows = [json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
+    # Refusals and lookups are separate bounded files (#211); count the live
+    # ones, not the rotated `.1`/`.2` files.
+    rows = []
+    for name in ("refusals.jsonl", "events.jsonl"):
+        events = root / "var/lib/azazel/state/knowledge" / name
+        if events.exists():
+            rows += [json.loads(line) for line in events.read_text().splitlines()]
     chains["knowledge"] = {"state": "unhashed-event-log", "events": len(rows)}
     return output(ledgers=chains)
 

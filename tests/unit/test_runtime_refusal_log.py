@@ -81,7 +81,7 @@ def test_the_count_is_written_when_the_flood_stops_and_then_the_key_is_forgotten
     summary = _lines(log.path)[-1]
     assert summary == {"event_type": REFUSAL_SUMMARY_EVENT, "uid": 1001,
                        "reason": "malformed_frame", "suppressed": 4, "window_s": 60,
-                       "unrecorded": 0}
+                       "unrecorded": 0, "last_request_fingerprint": "0" * 16}
     clock.now += 60
     log.flush_due()  # an empty window writes nothing and closes the key
     assert len(_lines(log.path)) == 2
@@ -99,11 +99,38 @@ def test_keys_are_caller_uid_and_reason(tmp_path):
         (1001, "malformed_frame"), (1001, "unknown_verb"), (1002, "malformed_frame")]
 
 
-def test_other_events_are_size_bounded_but_not_aggregated(tmp_path):
+def test_other_events_go_to_their_own_file_and_are_not_aggregated(tmp_path):
     log, _ = _log(tmp_path)
     for _ in range(3):
         log({"event_type": "knowledge.lookup", "technique_ids": ["T1110"], "count": 1})
-    assert len(_lines(log.path)) == 3
+    assert not log.path.exists()
+    assert log.events_path == tmp_path / "events.jsonl"
+    assert len(_lines(log.events_path)) == 3
+
+
+def test_a_lookup_flood_never_rotates_a_refusal_line_away(tmp_path):
+    log, _ = _log(tmp_path, max_bytes=1024, keep=2)
+    log(_refusal(uid=7, reason="principal_denied"))
+    for _ in range(2000):
+        log({"event_type": "knowledge.lookup", "technique_ids": ["T1110"], "count": 1})
+    assert log.counters()["rotations"] > 2
+    assert [line["uid"] for line in _lines(log.path)] == [7]
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "events.jsonl", "events.jsonl.1", "events.jsonl.2", "refusals.jsonl"]
+    assert all(path.stat().st_size <= 1024 for path in tmp_path.iterdir())
+
+
+def test_a_summary_names_the_last_suppressed_fingerprint_and_verb(tmp_path):
+    log, clock = _log(tmp_path, window_s=60)
+    log(_refusal(reason="principal_denied", verb="watchdog.probe"))
+    log(_refusal(reason="principal_denied", verb="watchdog.probe", request_fingerprint="a" * 16))
+    log(_refusal(reason="principal_denied", request_fingerprint="b" * 16, verb="watchdog.status"))
+    clock.now += 60
+    log.flush_due()
+    summary = _lines(log.path)[-1]
+    assert summary["suppressed"] == 2
+    assert summary["last_request_fingerprint"] == "b" * 16
+    assert summary["last_verb"] == "watchdog.status"
 
 
 def test_tracked_keys_are_bounded_and_an_evicted_count_is_written(tmp_path):
@@ -154,6 +181,20 @@ def test_a_failure_to_log_is_counted_never_raised(tmp_path):
     log.flush_due()
     assert log.counters()["unrecorded"] == 2
     assert log.counters()["written"] == 0
+
+
+def test_a_lost_summary_counts_every_refusal_it_stood_for(tmp_path):
+    directory = tmp_path / "leaf"
+    directory.mkdir()
+    clock = Clock()
+    log = BoundedRefusalLog(directory / "refusals.jsonl", clock=clock)
+    for _ in range(5):
+        log(_refusal())
+    (directory / "refusals.jsonl").unlink()
+    directory.rmdir()
+    clock.now += 60
+    log.flush_due()
+    assert log.counters() == {"written": 1, "suppressed": 4, "unrecorded": 4, "rotations": 0}
 
 
 def test_a_symlink_is_not_followed(tmp_path):

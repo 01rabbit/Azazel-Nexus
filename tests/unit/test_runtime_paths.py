@@ -47,8 +47,13 @@ def test_service_audit_sinks_and_watchdog_state_use_private_installed_leaves(
     ):
         leaf = state_root / leaf_name
         leaf.mkdir(parents=True)
-        runtime_paths.audit_sink(service)({"service": service})
+        sink = runtime_paths.audit_sink(service)
+        sink({"event_type": "runtime.request_refused", "reason": service})
+        sink({"service": service})
         assert (leaf / "refusals.jsonl").read_text(encoding="utf-8") == (
+            f'{{"event_type":"runtime.request_refused","reason":"{service}"}}\n'
+        )
+        assert (leaf / "events.jsonl").read_text(encoding="utf-8") == (
             f'{{"service":"{service}"}}\n'
         )
 
@@ -56,6 +61,7 @@ def test_service_audit_sinks_and_watchdog_state_use_private_installed_leaves(
     assert runtime_paths.watchdog_state_dir() == state_root / "watchdog"
     assert not (state_root / "audit" / "refusals.jsonl").exists()
     assert list(state_root.glob("refusals.jsonl")) == []
+    assert list(state_root.glob("events.jsonl")) == []
 
 
 def test_service_audit_sink_rejects_undeclared_names():

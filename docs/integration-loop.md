@@ -881,8 +881,9 @@ a node upgraded from the single `route.jsonl`, the `legacy-route.jsonl`
 archive at whatever size that file had reached, kept until the owner removes
 it (`docs/mio-runtime.md`). The per-daemon refusal logs are bounded too: at
 most 12 MiB each (a 4 MiB `refusals.jsonl` and two rotated files) for
-auditd, commissiond, watchdog, Knowledge Lite and the fetch daemon, so at
-most 60 MiB together, whatever a caller sends; M.I.O. entry's refusals are
+auditd, commissiond, watchdog, Knowledge Lite and the fetch daemon, plus at
+most 12 MiB of Knowledge Lite's lookup events (`events.jsonl`), so at most
+72 MiB together, whatever a caller sends; M.I.O. entry's refusals are
 records in the route ledger above. Size `/var/lib` for the normal
 yearly growth plus headroom, and treat the capacity warning as the prompt for
 the owner's retention decision.

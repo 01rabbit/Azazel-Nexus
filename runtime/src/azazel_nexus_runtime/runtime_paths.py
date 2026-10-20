@@ -192,8 +192,10 @@ def audit_sink(service: str) -> Callable[[dict], None]:
     writer; this is a per-daemon diagnostic record, and it is labelled so by
     living in a different file. It is bounded (#211): refusals are aggregated
     per caller uid and reason, and the file is rotated at a fixed size with a
-    fixed number of rotated files kept (`refusal_log.BoundedRefusalLog`). A
-    line that cannot be written is counted, never raised into the request.
+    fixed number of rotated files kept (`refusal_log.BoundedRefusalLog`).
+    Events that are not refusals go to a sibling `events.jsonl` with its own
+    rotation. A line that cannot be written is counted, never raised into the
+    request.
     """
 
     from .refusal_log import BoundedRefusalLog
