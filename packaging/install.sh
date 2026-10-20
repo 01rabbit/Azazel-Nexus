@@ -263,6 +263,8 @@ make_dir 0711 root /var/lib/azazel/run
 # host does not provide the declared behavior.
 make_owned_dir 2710 azaudit azazel-operator /var/lib/azazel/run/audit
 make_owned_dir 2710 azaudit azaudit-submit /var/lib/azazel/run/audit-submit
+# auditd's capacity snapshot (#211): sizes and counts only, never records.
+make_owned_dir 2750 azaudit azazel-operator /var/lib/azazel/run/audit-status
 make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
 make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.

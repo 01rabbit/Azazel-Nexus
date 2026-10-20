@@ -149,7 +149,23 @@ def _module_reports() -> tuple[ModuleReport, ...]:
     )
 
 
-def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
+def _audit_snapshot_report(now: Optional[float]) -> HealthReport:
+    """auditd's capacity snapshot (#211), when no ledger path was supplied.
+
+    Read from its operator-readable leaf; never from the `0700` ledger and
+    never over auditd's socket. Absent, refused or stale is said as such.
+    """
+
+    from .audit_status import STATUS_BYTES, audit_health, read_audit_status
+    from .edge_loop_status import _read
+    from .runtime_paths import audit_status_path
+
+    healthy, detail = audit_health(_read(audit_status_path(), read_audit_status, STATUS_BYTES), now)
+    return HealthReport("audit", healthy, detail)
+
+
+def _health_reports(ledger_path: Optional[Path],
+                    now: Optional[float] = None) -> tuple[HealthReport, ...]:
     from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 
     checks = [
@@ -162,13 +178,18 @@ def _health_reports(ledger_path: Optional[Path]) -> tuple[HealthReport, ...]:
             ),
         )
     ]
-    if ledger_path is None or not ledger_path.exists():
+    if ledger_path is None:
+        try:
+            checks.append(_audit_snapshot_report(now))
+        except Exception:  # noqa: BLE001 - presentation only; status continues
+            checks.append(HealthReport("audit", None, "auditd status snapshot unavailable (internal)"))
+        return tuple(checks)
+    if not ledger_path.exists():
         checks.append(
             HealthReport(
                 subject="audit chain",
                 healthy=None,
-                detail=("audit ledger not inspected; no --ledger path supplied" if ledger_path is None
-                        else "no ledger exists at the supplied --ledger path; audit history unknown"),
+                detail="no ledger exists at the supplied --ledger path; audit history unknown",
             )
         )
         return tuple(checks)
@@ -272,13 +293,14 @@ def _report(
     sysfs: Optional[Path],
     ledger: Optional[Path],
     permanent_mac_reader=no_permanent_mac,
+    now: Optional[float] = None,
 ) -> OperatorReport:
     return build_report(
         readouts=read_interfaces(sysfs, permanent_mac_reader=permanent_mac_reader),
         profile=_profile_report(),
         capabilities=_capability_report(),
         modules=_module_reports(),
-        health=_health_reports(ledger),
+        health=_health_reports(ledger, now),
     )
 
 
@@ -1069,7 +1091,7 @@ def main(
             args, stream, ask, confirm, text, permanent_mac_reader
         )
 
-    report = _report(args.sysfs, args.ledger, permanent_mac_reader)
+    report = _report(args.sysfs, args.ledger, permanent_mac_reader, _instant(args.as_of))
     if args.command == "inventory":
         _render_interfaces(report, stream)
     elif args.command == "profile":
@@ -1106,6 +1128,16 @@ def main(
             as_of,
         )
     return 0
+
+
+def _instant(as_of: Optional[str]) -> Optional[float]:
+    """`--as-of` (or now) as a timestamp; `None` when it cannot be read."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(as_of or _now()).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _now() -> str:

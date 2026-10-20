@@ -464,7 +464,11 @@ def integrated_loop(harness: Harness) -> str:
         assert verify["result"]["capacity"]["chain_bytes"] > 0
         assert not any(e["event_type"] == "audit.rate_limited"
                        for e in ledger_events(base / "state/audit")), "audit rate limit summary"
-        assert_private(harness, events, _cli(harness, ["status"]))
+        status = _cli(harness, ["status"])
+        # auditd's capacity snapshot reaches status through its installed
+        # leaf, without the CLI reading the 0700 ledger or the socket.
+        assert "    audit: ok -- chain verified at auditd start; chain " in status, "audit status line"
+        assert_private(harness, events, status)
     assert all(d.process.returncode == 0 for d in daemons), "daemon shutdown failed"
     assert sockets(harness.root) == baseline_sockets, "stage sockets remain after shutdown"
     source = "real Edge Core binary" if producer else "golden fixture replay"
@@ -474,7 +478,8 @@ def integrated_loop(harness: Harness) -> str:
                "status says they were not reported. ")
     return (f"{source}; {forward}azedge producer, azintake/azexplain/azaudit/azmioentry/azknowledge daemons "
             "with real uid/gid and unit supplementary groups; two alerts, escalation, evidence digests, "
-            "deterministic handoff, T1110 citation, private status and verified audit; shutdown close. "
+            "deterministic handoff, T1110 citation, private status, verified audit and its capacity "
+            "snapshot in status; shutdown close. "
             + ("Edge decided notify then isolate (dry run); network syscalls: intake only."
                if producer else
                "Replay sends only producer fixture lines; Edge's non-alert filtering is not exercised."))

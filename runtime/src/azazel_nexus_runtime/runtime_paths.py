@@ -23,6 +23,7 @@ from azazel_nexus import runtime_paths as observation_paths
 __all__ = [
     "ROOT",
     "audit_sink",
+    "audit_status_path",
     "incident_segments_dir",
     "incident_explain_state_dir",
     "incident_explain_status_path",
@@ -252,6 +253,11 @@ def mission_pack_root() -> Path:
 def edge_intake_state_dir() -> Path:
     """Private evidence, outside the separate incident and liveness leaves."""
     return _under("/var/lib/azazel/edge-intake")
+
+
+def audit_status_path() -> Path:
+    """auditd's capacity snapshot; the only part of auditd operators read."""
+    return observation_paths.audit_status_path(ROOT)
 
 
 def edge_intake_status_path() -> Path:

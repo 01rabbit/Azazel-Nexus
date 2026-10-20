@@ -38,6 +38,7 @@ UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/run/audit
 ReadWritePaths=/var/lib/azazel/run/audit-submit
+ReadWritePaths=/var/lib/azazel/run/audit-status
 ReadWritePaths=/var/lib/azazel/state/audit
 ReadWritePaths=/var/lib/azazel/state/auditd
 NoNewPrivileges=yes

@@ -524,11 +524,13 @@ PROFILES: tuple[ServiceProfile, ...] = (
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         address_families=("AF_UNIX",),
         # Its socket leaves (azaudit:azazel-operator 2710, and the explainer's
-        # append-only azaudit:azaudit-submit 2710), its chain and its refusal
-        # records. Nothing else under the run tree is its to write.
+        # append-only azaudit:azaudit-submit 2710), its operator-readable
+        # capacity snapshot (azaudit:azazel-operator 2750, #211), its chain and
+        # its refusal records. Nothing else under the run tree is its to write.
         read_write_paths=(
             "/var/lib/azazel/run/audit",
             "/var/lib/azazel/run/audit-submit",
+            "/var/lib/azazel/run/audit-status",
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),

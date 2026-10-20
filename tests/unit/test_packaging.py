@@ -327,6 +327,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
     assert set(socket_dirs) == {
         "/var/lib/azazel/run/audit",
         "/var/lib/azazel/run/audit-submit",
+        "/var/lib/azazel/run/audit-status",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",

@@ -63,14 +63,28 @@ would let a flood fill `refusals.jsonl` instead of the chain. At most one
 `SUMMARY_WINDOW_S`, and at most `SUMMARY_DAILY_CAP` of them a day, carry the
 counts; summaries are not themselves rate-limited writers' records, so they
 cannot feed back into the limiter.
+
+## Capacity snapshot for operators (#211)
+
+`azazel-nexus status` neither talks to this socket nor reads the `0700`
+ledger, so the serve loop also writes `run/audit-status/status.json` into its
+own `2750 azaudit:azazel-operator` leaf: at start and every
+`STATUS_INTERVAL_S` seconds, by temp file and rename. It holds the capacity
+reading, whether the chain verified at start, and the `rate_limited` totals --
+sizes, counts and fixed reason codes, never record content or a uid. The leaf
+is optional for this daemon: auditd is bootstrap-critical, so a missing or
+unwritable leaf (a runtime upgraded without re-running install.sh) is logged
+once and serving continues without the snapshot.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -83,6 +97,12 @@ from azazel_nexus.audit import (
     AuditEntry,
     AuditLedger,
     AuditUnavailable,
+)
+from azazel_nexus.audit_status import (
+    RATE_LIMITED_KEYS,
+    STATUS_INTERVAL_S,
+    STATUS_SCHEMA,
+    warning_reasons,
 )
 from azazel_nexus.edge_intake import ACTIONS
 from azazel_nexus.incident_explain import CLOSE_REASONS
@@ -528,8 +548,13 @@ class AuditService:
                  clock: Callable[[], float] = time.time,
                  monotonic: Callable[[], float] = time.monotonic,
                  warn: Callable[[str], None] = lambda line: print(line, file=sys.stderr, flush=True),
+                 status_path: Optional[Path] = None,
                  ) -> None:
         self.ledger = ledger
+        #: Where the operator-readable snapshot goes; `None` writes none.
+        self.status_path = status_path
+        self._status_written = float("-inf")
+        self._status_failing = False
         self.clock = clock
         self.monotonic = monotonic
         self.warn = warn
@@ -715,12 +740,16 @@ class AuditService:
         """Called by the serve loop between connections. Never raises.
 
         Flushes rate-limit summaries whose window has passed, so a flood that
-        stops is still summarized, and re-reads capacity once an hour.
+        stops is still summarized, rewrites the status snapshot every
+        `STATUS_INTERVAL_S` (so a capacity warning turning on or off reaches
+        status within that), and re-reads capacity for the journal hourly.
         """
 
         try:
             self._summarize()
             now = self.monotonic()
+            if now - self._status_written >= STATUS_INTERVAL_S:
+                self.write_status()
             if now - self._capacity_checked < CAPACITY_CHECK_S:
                 return
             self._capacity_checked = now
@@ -735,6 +764,66 @@ class AuditService:
                 )
         except Exception:  # noqa: BLE001 - housekeeping must not stop serving
             return
+
+    def status_snapshot(self) -> dict:
+        """The operator-readable snapshot: sizes, counts and codes only."""
+
+        capacity = self.ledger.capacity()
+        reasons = warning_reasons(capacity["chain_bytes"], capacity["filesystem_free_bytes"],
+                                  capacity["warn_chain_bytes"], capacity["warn_free_bytes"])
+        # Bounded however many keys exist: the largest counts are kept.
+        limited = sorted(self.rate_limited.items(), key=lambda kv: (-kv[1], kv[0]))
+        return {
+            "schema": STATUS_SCHEMA,
+            "written_at": self.clock(),
+            "chain_verified": self.verified,
+            "chain_bytes": capacity["chain_bytes"],
+            "segments": capacity["segments"],
+            "filesystem_free_bytes": capacity["filesystem_free_bytes"],
+            "warning": bool(reasons),
+            "warning_reasons": reasons,
+            "warn_chain_bytes": capacity["warn_chain_bytes"],
+            "warn_free_bytes": capacity["warn_free_bytes"],
+            "rate_limited": dict(sorted(limited[:RATE_LIMITED_KEYS])),
+            "rate_limit_summaries_dropped": self.summaries_dropped,
+        }
+
+    def write_status(self) -> None:
+        """Replace the snapshot by temp file and rename. Never raises.
+
+        A failure is logged once until a write succeeds again; the daemon
+        keeps serving, because the chain matters more than its status line.
+        """
+
+        if self.status_path is None:
+            return
+        self._status_written = self.monotonic()
+        name = None
+        try:
+            body = json.dumps(self.status_snapshot(), sort_keys=True,
+                              separators=(",", ":")).encode() + b"\n"
+            fd, name = tempfile.mkstemp(dir=self.status_path.parent, prefix=".status-")
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(body)
+                os.fchmod(stream.fileno(), 0o640)
+            os.replace(name, self.status_path)
+            name = None
+            self._status_failing = False
+        except Exception as exc:  # noqa: BLE001 - the snapshot is optional
+            if not self._status_failing:
+                self._status_failing = True
+                self.warn(
+                    f"azazel-auditd: cannot write {self.status_path} ({type(exc).__name__}); "
+                    "auditd continues and `azazel-nexus status` shows audit capacity as "
+                    "unknown. Re-run install.sh, then systemctl daemon-reload and restart "
+                    "azazel-auditd.service (docs/operations.md)"
+                )
+        finally:
+            if name is not None:
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
 
     def handle(self, request) -> dict:
         # No principal is never the explainer, so an incident event without
@@ -896,12 +985,17 @@ def main(
     """
 
     from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
-    from .runtime_paths import audit_sink, dedicated_listener, ledger_dir, socket_path
+    from .runtime_paths import (
+        audit_sink, audit_status_path, dedicated_listener, ledger_dir, socket_path,
+    )
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
 
-    service = AuditService(SegmentedLedger(ledger_dir()))
+    service = AuditService(SegmentedLedger(ledger_dir()), status_path=audit_status_path())
     service.start()
+    # Before serving, so status reflects this start (and a broken chain) at
+    # once. Never raises: a missing leaf is logged and serving continues.
+    service.write_status()
     # ``start`` reports a broken ledger as ``verified=False`` rather than
     # raising, preserving the read-only diagnostic endpoint.  Do not pass a
     # READY callback in that case: serve_forever binds the listener before
