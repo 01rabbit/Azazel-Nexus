@@ -574,9 +574,18 @@ def _run_once(
         # After the decision is recorded; raise-only, bounded by now + skew.
         from .activation_pass import raised_high_water
         try:
-            producers.raise_high_water(raised_high_water(inputs, now=now), now=now,
-                                       skew_seconds=inputs.skew_seconds)
+            floor = producers.raise_high_water(raised_high_water(inputs, now=now), now=now,
+                                               skew_seconds=inputs.skew_seconds)
             high_water = "raised"
+            # A floor event: a node with this history refuses a missing file.
+            daemon.ledger.append({
+                "event_type": "activation.high_water_raised",
+                "security_epoch": floor.security_epoch,
+                "approval_seq": floor.approval_seq,
+                "generation": floor.generation,
+                "time_floor": floor.time_floor,
+                "occurred_at": now, "actor": actor,
+            })
         except Exception:  # noqa: BLE001 - an unraised floor admits nothing
             daemon._record({
                 "event_type": "activation.high_water_unraised",

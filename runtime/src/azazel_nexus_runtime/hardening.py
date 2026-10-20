@@ -813,6 +813,8 @@ def _edge_probe_preflight() -> ServiceProfile:
         requires=(),
         before=(ACTIVATION_CONTROLLER_UNIT,),
         runtime_directory="",
+        # Ungoverned and run before the pass: no grant marker can exist yet.
+        conditions=(),
         extra=(("TimeoutStartSec", "60s"),),
         rationale=(
             "Not governed by the activation controller: it runs before it, at "

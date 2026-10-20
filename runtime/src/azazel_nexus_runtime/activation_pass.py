@@ -365,6 +365,17 @@ def _walk(root_fd: int, components) -> int | None:
             os.close(fd)
 
 
+def _drop_in_names(unit: str) -> tuple[str, ...]:
+    """Every drop-in directory systemd applies to `unit`.
+
+    `<unit>.d`, the type-wide `service.d`, and the dash-prefix forms
+    (`azazel-.service.d`, `azazel-mio-.service.d`, ...).
+    """
+    stem = unit[: -len(".service")]
+    prefixes = [stem[: index + 1] for index, char in enumerate(stem) if char == "-"]
+    return (unit + ".d", "service.d", *(prefix + ".service.d" for prefix in prefixes))
+
+
 def _read_unit_file_at(root_fd: int, unit: str) -> bytes:
     """Private descriptor seam: measure `usr/lib/systemd/system/<unit>` under root_fd."""
     if (type(unit) is not str or unit not in P4_UNIT_SCOPE | {EDGE_CORE_UNIT}):
@@ -387,11 +398,12 @@ def _read_unit_file_at(root_fd: int, unit: str) -> bytes:
         if directory is None:
             continue
         try:
-            try:
-                os.stat(unit + ".d", dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            raise _Refused("a drop-in changes the installed unit")
+            for name in _drop_in_names(unit):
+                try:
+                    os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise _Refused("a drop-in changes the installed unit")
         finally:
             os.close(directory)
     directory = os.dup(root_fd)

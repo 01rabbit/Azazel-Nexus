@@ -523,8 +523,10 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    every governed unit and raises.
 6. **High water** is raised after the decision is recorded, only when the
    approval verified: each counter to the maximum of floor and approval,
-   `time_floor` to `max(floor, now)` (so at most `now + skew`). A refused
-   raise remasks everything and raises.
+   `time_floor` to `max(floor, now)` (so at most `now + skew`). The raise is
+   recorded as `activation.high_water_raised` (a floor event: a node with
+   it refuses a missing high-water file). A refused raise remasks everything
+   and raises.
 7. **Markers** for exactly the granted units, unless the pass rolled back.
    A marker that cannot be written remasks everything and raises.
 8. `main` prints `granted=N` and, because the controller is `Type=notify`,
@@ -555,8 +557,9 @@ on merged-`/usr` Debian 13) without following links, root-owned, single
 link, not group- or world-writable, read twice. It refuses when
 `/etc/systemd/system`, `/run/systemd/system` or
 `/usr/local/lib/systemd/system` holds anything for the unit except the
-persistent mask (a symlink to `/dev/null`), or when a `<unit>.d` drop-in
-directory exists in any of those, `/run/systemd/system.control` or
+persistent mask (a symlink to `/dev/null`), or when any drop-in directory
+that applies to it (`<unit>.d`, `service.d`, or a dash prefix such as
+`azazel-.service.d`) exists in any of those, `/run/systemd/system.control` or
 `/usr/lib/systemd/system`. It does not ask systemd for the loaded fragment;
 generators and transient units are outside the check. The generation
 publisher (P3b) must hash the same bytes and use the same

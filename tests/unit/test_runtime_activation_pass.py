@@ -574,3 +574,29 @@ def test_a_missing_relocated_root_holds_no_marker_and_cannot_grant(tmp_path):
     activation_markers.reset_grant_markers(missing)
     with pytest.raises(activation_markers.GrantMarkerRefused):
         activation_markers.write_grant_markers([SCOPE[0]], missing)
+
+
+def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
+    world.run()
+    events = world.events()
+    raised = [e for e in events if e["event_type"] == "activation.high_water_raised"]
+    assert len(raised) == 1
+    assert raised[0]["approval_seq"] == 5 and raised[0]["time_floor"] == NOW
+    kinds = [e["event_type"] for e in events]
+    assert kinds.index("activation.high_water_raised") > max(
+        i for i, kind in enumerate(kinds) if kind == "activation.unit_granted")
+
+
+@pytest.mark.parametrize("drop_in", [
+    "service.d", "azazel-.service.d", "azazel-mio-.service.d", "azazel-mio-entryd.service.d",
+])
+@pytest.mark.parametrize("where", ["etc/systemd/system", "run/systemd/system",
+                                   "usr/lib/systemd/system"])
+def test_any_drop_in_that_applies_to_the_unit_refuses(tmp_path, monkeypatch, drop_in, where):
+    monkeypatch.setattr(activation_pass, "_OWNER", os.getuid())
+    tmp_path.chmod(0o755)
+    unit = "azazel-mio-entryd.service"
+    _vendor(tmp_path, unit)
+    (tmp_path / where / drop_in).mkdir(parents=True, exist_ok=True)
+    with pytest.raises(Exception):
+        _read(tmp_path, unit)

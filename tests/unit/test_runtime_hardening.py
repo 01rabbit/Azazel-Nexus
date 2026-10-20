@@ -473,7 +473,7 @@ def test_condition_path_exists_is_present_exactly_on_the_governed_loop_units():
     from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
 
     assert set(GRANT_MARKER_UNITS) == GRANT_LOOP_UNITS
-    for profile in PROFILES:
+    for profile in ALL_PROFILES:
         markers = [value for value in _settings(profile.unit).get("ConditionPathExists", [])
                    if "azazel-activation" in value]
         if profile.unit in GRANT_LOOP_UNITS:
@@ -485,7 +485,7 @@ def test_condition_path_exists_is_present_exactly_on_the_governed_loop_units():
 
 
 def test_only_the_controller_may_write_grant_markers_and_it_stays_optional():
-    writers = [profile.unit for profile in PROFILES
+    writers = [profile.unit for profile in ALL_PROFILES
                if any(path.removeprefix("-") == "/run/azazel-activation"
                       for path in _settings(profile.unit).get("ReadWritePaths", []))]
     assert writers == [ACTIVATION_CONTROLLER_UNIT]
@@ -498,14 +498,14 @@ def test_only_the_controller_may_write_grant_markers_and_it_stays_optional():
     from pathlib import PurePosixPath
     from azazel_nexus_runtime.activation_markers import GRANT_MARKER_DIRECTORY
     marker = PurePosixPath(GRANT_MARKER_DIRECTORY)
-    for profile in PROFILES:
+    for profile in ALL_PROFILES:
         declared = [value for value in _settings(profile.unit).get("RuntimeDirectory", [])]
         for name in declared + ([profile.runtime_directory] if profile.runtime_directory else []):
             for item in name.split():
                 runtime = PurePosixPath("/run") / item
                 assert runtime != marker and runtime not in marker.parents, (profile.unit, item)
     from dataclasses import replace
-    entry = next(profile for profile in PROFILES if profile.unit == "azazel-mio-entryd.service")
+    entry = next(profile for profile in ALL_PROFILES if profile.unit == "azazel-mio-entryd.service")
     with pytest.raises(ValueError, match="grant markers are writable only"):
         replace(entry, optional_read_write_paths=("/run/azazel-activation",))
 
@@ -917,10 +917,13 @@ def test_the_probe_preflight_is_read_only_with_the_probe_sandbox():
     preflight, probed = _preflight(), _probed()
     for field in ("executable", "account", "address_families", "read_write_paths",
                   "optional_read_write_paths", "supplementary_groups",
-                  "capability_bounding_set", "unit_type", "conditions",
+                  "capability_bounding_set", "unit_type", 
                   "is_artifact_fetcher", "is_model_host", "is_inference_transport",
                   "default_dependencies"):
         assert getattr(preflight, field) == getattr(probed, field), field
+    # The governed probe waits for its grant marker; the ungoverned preflight
+    # runs before the pass, when no marker can exist, so it has no condition.
+    assert preflight.conditions == ()
     settings = _settings(EDGE_PROBE_PREFLIGHT_UNIT)
     assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
     assert settings["IPAddressDeny"] == ["any"]
