@@ -28,15 +28,15 @@ raw inventory, evidence binding or exception text.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 import fcntl
-from hashlib import sha256
 import os
-from pathlib import Path
 import re
 import stat
 import sys
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
 
 from azazel_nexus.activation_approval_v2 import (
     ActivationApprovalPolicy,
@@ -146,7 +146,7 @@ def _load_trust():
 
 def _now() -> str:
     # The OS clock. Not trusted time: §3.5 bounds it by the persisted floor.
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _is_root() -> bool:
@@ -671,7 +671,7 @@ def _place_approval(payload: bytes, signature: bytes, *, replace: bool) -> None:
                     or _read_protected_at(fd, "approval.sig", limit=_SIGNATURE_BYTES,
                                           private=True) != signature):
                 raise Refused("installed approval read-back differs")
-        except Exception:
+        except Exception:  # noqa: BLE001 - renamed; durability or read-back unconfirmed
             raise _PlacementUncertain() from None
     finally:
         os.close(fd)

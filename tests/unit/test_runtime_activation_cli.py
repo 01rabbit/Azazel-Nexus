@@ -6,14 +6,14 @@ commissioning evidence, operator trust) are replaced by in-memory values that
 their own tests cover. No real key, host path or service manager is touched.
 """
 
-from contextlib import contextmanager
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import stat
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from nacl.signing import SigningKey
@@ -336,7 +336,7 @@ def test_publish_refuses_a_symlinked_unit_directory(node, tmp_path):
     (node.units_dir).rename(real)
     node.units_dir.symlink_to(real)
     code, out = node.publish("sha256:" + "0" * 64, "PUBLISH")
-    assert code == 1 and node.store.numbers() == ()
+    assert code == 1 and "unit files" in out and node.store.numbers() == ()
 
 
 def test_publish_refuses_when_inputs_change_during_confirmation(node, monkeypatch):
@@ -580,7 +580,7 @@ def test_install_refuses_symlinked_inputs_and_approval_entries(published, tmp_pa
                            confirm_sha256=hashlib.sha256(payload).hexdigest(), replace=False,
                            recover=None, source=Tty(), out=out) == 1
     (published.approvals / "approval.json").symlink_to(tmp_path / "elsewhere.json")
-    code, text = published.install(payload, signature, "REPLACE", replace=True)
+    code, _ = published.install(payload, signature, "REPLACE", replace=True)
     assert code == 1 and not (tmp_path / "elsewhere.json").exists()
     assert not (published.state / "activation").exists()
 
