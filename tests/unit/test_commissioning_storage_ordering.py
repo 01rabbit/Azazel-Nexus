@@ -46,7 +46,29 @@ def _controller() -> str:
     return (UNIT_DIR / ACTIVATION_CONTROLLER_UNIT).read_text(encoding="utf-8")
 
 
+STORAGE_PATHS = ("/etc/azazel/commissioning", "/var/lib/azazel/secrets")
+#: Settings whose paths make systemd add an implicit `RequiresMountsFor=`, or
+#: that would otherwise tie the controller to a path below the storage.
+PATH_SETTINGS = (
+    "ReadWritePaths", "ReadOnlyPaths", "InaccessiblePaths", "ExecPaths",
+    "NoExecPaths", "BindPaths", "BindReadOnlyPaths", "WorkingDirectory",
+    "RootDirectory", "RootImage", "TemporaryFileSystem", "StateDirectory",
+    "ConfigurationDirectory", "LoadCredential", "LoadCredentialEncrypted",
+    "EnvironmentFile",
+)
+
+
+def _mount_unit(path: str) -> str:
+    """systemd's path escaping, for plain ASCII paths without `-` or `\\`."""
+
+    assert path.startswith("/") and "-" not in path and "\\" not in path
+    return path.strip("/").replace("/", "-") + ".mount"
+
+
 def test_mount_names_are_the_escaped_storage_paths():
+    assert COMMISSIONING_STORAGE_MOUNTS == tuple(
+        _mount_unit(path) for path in STORAGE_PATHS
+    )
     assert COMMISSIONING_STORAGE_MOUNTS == MOUNTS
 
 
@@ -82,3 +104,21 @@ def test_only_the_controller_is_ordered_after_storage():
         if profile.unit == ACTIVATION_CONTROLLER_UNIT:
             continue
         assert not set(MOUNTS) & set(profile.after), profile.unit
+
+
+def _below_storage(value: str) -> bool:
+    for token in value.split():
+        path = token.lstrip("-+:").split(":")[0]
+        for storage in STORAGE_PATHS:
+            if path == storage or path.startswith(storage + "/"):
+                return True
+    return False
+
+
+def test_controller_paths_do_not_reach_into_storage():
+    settings = _settings(_controller())
+    for key in PATH_SETTINGS:
+        for value in settings.get(key, []):
+            assert not _below_storage(value), f"{key}={value}"
+    assert _below_storage("-/var/lib/azazel/secrets/x")
+    assert not _below_storage("/var/lib/azazel")

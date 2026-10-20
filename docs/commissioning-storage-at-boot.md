@@ -54,11 +54,17 @@ the fallback.
   (and the secrets mount, §5 Q3). Only `After=`: a `Requires=`,
   `BindsTo=` or `RequiresMountsFor=` on storage would stop the controller from
   running when the storage fails, and its preflight remask is what narrows.
-  `After=` on a mount that does not exist is a no-op.
+  `After=` on a mount that does not exist is a no-op. While a mount job is
+  pending the controller waits for it, up to the device timeout below.
 - **crypttab / fstab** (documented, installed by the operator, never with a key
   file): `azn-commissioning <device> none nofail,timeout=<T>` and
   `/dev/mapper/azn-commissioning /etc/azazel/commissioning ext4
-  nodev,nosuid,noexec,nofail`. Key files and `systemd-creds` with the host key
+  nodev,nosuid,noexec,nofail,x-systemd.device-timeout=<T> 0 0`. The device
+  timeout matches the crypttab `timeout=`; otherwise the mount job waits for
+  the mapped device only for the default start timeout (90 s) and may fail
+  before the prompt ends and not be retried after a later unlock. That an
+  untyped passphrase leaves the volume locked and the boot continuing after
+  `<T>` is to be verified in P1. Key files and `systemd-creds` with the host key
   are forbidden.
 - **Diagnostic only.** The pass may record a fixed label
   `commissioning_storage: luks_backed | not_luks_backed` in its observed inputs;
