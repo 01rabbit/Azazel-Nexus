@@ -346,8 +346,15 @@ previous boot, reads `stale` and is `not-checked`, never `failed`.
 
 The boot preflight `azazel-edge-probe-preflight.service` (same binary, same
 `azprobe`, same sandbox; not governed, enabled by the installer, never masked)
-will already have written a result at boot, before the controller, with
-`running` `failed` because Edge had not started. Record
+runs at every boot, before any approval is consulted, and executes the
+digest-verified package's `bin/azazel-edge-core --health` as `azprobe`; it
+grants nothing. It will already have written a result at boot, before the
+controller, with `running` `failed` because Edge had not started. **`running`
+keeps reading `failed` after the preflight until the governed
+`azazel-edge-probed.service` runs again after edge-core has started** (§6.3);
+that is expected, not a fault. A failing preflight leaves its unit `failed`
+and `systemctl is-system-running` reports `degraded`, but it does not block
+the boot: the controller still runs and Edge stays withheld. Record
 `systemctl show -p Result,ExecMainStatus azazel-edge-probe-preflight.service`
 and the result's `observed_at`; `systemctl is-enabled` must say `enabled` and
 it must not appear among the masked units. Without unmasking the probe unit, the same

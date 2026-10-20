@@ -717,13 +717,6 @@ def _verified_package(tmp_path):
 STATUS_BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
 
-def _boot_id_file(tmp_path, value=STATUS_BOOT + "\n"):
-    path = tmp_path / "boot_id"
-    path.write_text(value, encoding="ascii")
-    path.chmod(0o444)
-    return path
-
-
 def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **overrides):
     import json
 
@@ -750,10 +743,30 @@ def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **over
 
 
 def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z",
-                      boot_id_path=None):
+                      boot=STATUS_BOOT):
+    """`status` with the boot id reader replaced -- a test seam, not a flag.
+
+    `status` has no option to read a boot id from anywhere but the kernel's
+    root-owned file; the reader it imported is swapped for the duration.
+    """
+
+    from unittest import mock
+
+    from azazel_nexus import cli
+    from azazel_nexus.edge_package import EdgePackageRefused
+
+    def reader():
+        if boot is None:
+            raise EdgePackageRefused("the boot id could not be read: test")
+        return boot
+
     out = io.StringIO()
-    if boot_id_path is None and not (tmp_path / "boot_id").exists():
-        boot_id_path = _boot_id_file(tmp_path)
+    with mock.patch.object(cli, "read_current_boot_id", reader):
+        _run_status(tmp_path, root, state, as_of, out)
+    return out.getvalue()
+
+
+def _run_status(tmp_path, root, state, as_of, out):
     main(
         [
             "--sysfs",
@@ -762,8 +775,6 @@ def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z",
             str(root),
             "--edge-probe",
             str(state),
-            "--edge-boot-id",
-            str(boot_id_path or tmp_path / "boot_id"),
             "--as-of",
             as_of,
             "status",
@@ -834,8 +845,7 @@ def test_status_treats_a_v1_result_as_stale(tmp_path):
 def test_status_says_so_when_this_boot_cannot_be_read(tmp_path):
     root, digest = _verified_package(tmp_path)
     state = _probe_state(tmp_path, digest)
-    text = _status_with_edge(tmp_path, root, state,
-                             boot_id_path=tmp_path / "no-such-boot-id")
+    text = _status_with_edge(tmp_path, root, state, boot=None)
     assert "this boot's id could not be read" in text
     assert "edge-baseline-ready: no" in text
     assert "health_endpoint_healthy: not-checked" in text
@@ -1215,3 +1225,26 @@ def test_launchable_inactive_edge_is_not_ready_in_status_or_projection(tmp_path)
     assert inspection.state().launchable
     assert not inspection.as_event()["ready"]
     assert not inspection.ready
+
+
+def test_status_reads_only_the_kernel_boot_id_with_no_flag_or_relaxation():
+    """No option bypasses the boot binding: no flag names another boot id
+    file, and the reader is called with no path and no trusted owner, so only
+    the root-owned `/proc/sys/kernel/random/boot_id` is read (#206 P5)."""
+
+    import ast
+    import contextlib
+
+    from azazel_nexus import cli
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    assert "--edge-boot-id" not in source
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "read_current_boot_id"
+    ]
+    assert len(calls) == 1
+    assert calls[0].args == [] and calls[0].keywords == []
+    with pytest.raises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+        main(["--edge-boot-id", "/tmp/x", "status"], out=io.StringIO())

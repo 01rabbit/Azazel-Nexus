@@ -549,11 +549,14 @@ def read_current_boot_id(
     """This boot's id, read the protected way, or `EdgePackageRefused`.
 
     No symlink is followed, the file must be a regular one (procfs reports the
-    sysctl as one) owned by root -- or by `owner_uid` when a caller names one,
-    as `status` names itself -- and writable by nobody else, the read is
+    sysctl as one) owned by root and writable by nobody else, the read is
     bounded, and the value must be a canonical lowercase UUID. Anything else
     refuses: the probe then writes nothing, and a reader treats every result
     as stale.
+
+    `owner_uid` exists for unit tests of these checks against a file the test
+    owns. No production caller passes it -- the probe, the activation pass
+    and `status` all call this with no argument -- and no flag reaches it.
     """
 
     trusted = (0,) if owner_uid is None else (0, owner_uid)

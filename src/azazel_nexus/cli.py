@@ -31,7 +31,6 @@ from .operator_trust import ApprovalRefused
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
 from .edge_package import (
-    BOOT_ID_PATH as EDGE_BOOT_ID_PATH,
     EDGE_PACKAGE_ROOT,
     PROBE_STATE_PATH,
     EdgeInspection,
@@ -449,17 +448,17 @@ def _probe_result(path: Path, out: TextIO):
         return None
 
 
-def _current_boot(path: Path, out: TextIO):
+def _current_boot(out: TextIO):
     """This boot's id, or `None` -- which makes every probe result stale.
 
-    Said on the screen rather than swallowed: without it the operator would
-    see every Edge result go stale and not know why.
+    Only the kernel's root-owned `/proc/sys/kernel/random/boot_id` is read,
+    through the library's protected reader with no relaxation and no flag to
+    point it elsewhere. Said on the screen rather than swallowed: without it
+    the operator would see every Edge result go stale and not know why.
     """
 
     try:
-        # The operator's own file is as trusted as root's to the operator's
-        # own screen; on a node the path is procfs, which root owns.
-        return read_current_boot_id(path, owner_uid=os.geteuid())
+        return read_current_boot_id()
     except EdgePackageRefused as exc:
         print(
             f"this boot's id could not be read ({exc}); no edge probe result "
@@ -786,9 +785,6 @@ def main(
     )
     parser.add_argument(
         "--edge-probe", type=Path, default=PROBE_STATE_PATH, help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "--edge-boot-id", type=Path, default=EDGE_BOOT_ID_PATH, help=argparse.SUPPRESS
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1139,7 +1135,7 @@ def main(
         probe = _probe_result(args.edge_probe, stream)
         edge = inspect_edge(
             args.edge_root, probe=probe, now=as_of,
-            boot_id=_current_boot(args.edge_boot_id, stream) if probe else None,
+            boot_id=_current_boot(stream) if probe else None,
         )
         knowledge = _knowledge_reading(args.knowledge_lite, as_of=as_of)
         _render_status(

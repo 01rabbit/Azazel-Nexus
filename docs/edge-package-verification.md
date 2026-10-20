@@ -185,9 +185,11 @@ says nothing about the file next to it that actually executes.
 ### The boot id is read the protected way
 
 Both the probe and every reader use `edge_package.read_current_boot_id`: no
-symlink is followed, the file must be a regular file owned by root (status
-also accepts a file it owns itself, for its own screen) and writable by nobody
-else, the read is bounded, and the value must be a canonical lowercase UUID.
+symlink is followed, the file must be a regular file owned by root and
+writable by nobody else, the read is bounded, and the value must be a
+canonical lowercase UUID. Every production caller reads the kernel's
+`/proc/sys/kernel/random/boot_id` with no argument: `status` has no flag that
+names another boot id file and no relaxed owner rule.
 The probe reads it **before** probing; when it cannot, it probes nothing,
 writes nothing and exits 2, and `write_result` refuses any outcome without a
 canonical boot id. `azazel-nexus status` prints a line saying the boot id
@@ -241,6 +243,14 @@ or unmasks it, and no lease admits it. It is `Type=oneshot`,
 `RuntimeDirectory=`. The installer installs it and enables it beside the
 controller (the preset enables both, exactly); it is never masked.
 
+**What it runs, and when.** It runs at **every boot, before any approval or
+lease is consulted** -- it is not admitted by anything -- and it executes the
+digest-verified package's `bin/azazel-edge-core --health` (the fixed argv, only
+after the archive and the unpacked binary re-derive their manifest digests) as
+`azprobe`, plus a read-only D-Bus property query. It **grants nothing**: it
+starts, enables and unmasks no unit, and its result can only narrow what the
+pass grants.
+
 It exists because the governed probe runs only after the controller, so at the
 boot pass no result from this boot existed and edge-core was always withheld
 (`edge_not_ready`). With the preflight, the pass reads health from this boot.
@@ -248,7 +258,9 @@ boot pass no result from this boot existed and edge-core was always withheld
 expected: launch admission needs the four package checks, of which health is
 the only one from the probe, and `edge-baseline-ready` still needs all five.
 If the preflight fails or is slow, the controller still runs (it is ordered
-after, not dependent) and Edge stays withheld. It opens no network socket,
+after, not dependent) and Edge stays withheld. A failed preflight leaves the
+unit `failed`, so systemd reports the system `degraded`; it does not block
+the boot. It opens no network socket,
 grants nothing and can only narrow what the pass grants.
 
 The result is `/var/lib/azazel/run/edge-probe/edge-probe.json`
