@@ -311,6 +311,20 @@ def _grant_condition(unit: str) -> tuple[tuple[str, str], ...]:
     return (("ConditionPathExists", grant_marker_path(unit)),)
 
 
+#: The commissioning storage mounts the controller is ordered after (#242,
+#: docs/commissioning-storage-at-boot.md §4, §5 Q3): the operator-installed
+#: LUKS volume at /etc/azazel/commissioning and, on the same device,
+#: /var/lib/azazel/secrets. Ordering only -- never `Requires=`, `Wants=`,
+#: `BindsTo=` or `RequiresMountsFor=`: storage that is absent, locked or
+#: failed must not stop the controller, whose preflight remask is what
+#: narrows, and whose pass then refuses because the evidence is not
+#: LUKS-backed. `After=` on a mount that does not exist is a no-op.
+COMMISSIONING_STORAGE_MOUNTS = (
+    "etc-azazel-commissioning.mount",
+    "var-lib-azazel-secrets.mount",
+)
+
+
 #: The accounts the installer creates. `root` is not among them: it exists.
 SYSTEM_ACCOUNTS = (
     "azcommission",
@@ -335,7 +349,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="root",
         description="Azazel-Nexus activation controller",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
-        after=("systemd-tmpfiles-setup.service", "sysinit.target", "basic.target"),
+        after=("systemd-tmpfiles-setup.service", "sysinit.target", "basic.target",
+               *COMMISSIONING_STORAGE_MOUNTS),
         address_families=("AF_UNIX", "AF_NETLINK"),
         read_write_paths=(
             "/var/lib/azazel",

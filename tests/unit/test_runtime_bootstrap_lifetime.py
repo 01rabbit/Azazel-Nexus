@@ -46,6 +46,10 @@ def test_controller_requires_explicit_readiness_and_kills_its_control_group():
         "systemd-tmpfiles-setup.service",
         "sysinit.target",
         "basic.target",
+        # Ordering only on the commissioning storage (#242): never a
+        # requirement, so locked or absent storage cannot stop the controller.
+        "etc-azazel-commissioning.mount",
+        "var-lib-azazel-secrets.mount",
     ]
     assert not any(
         key in settings for key in ("Requires", "BindsTo", "Wants")
