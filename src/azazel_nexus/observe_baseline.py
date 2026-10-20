@@ -31,6 +31,7 @@ from .generation import Generation, GenerationRefused, tree_digest
 from .operator_store import _unique_object
 
 __all__ = [
+    "EDGE_CORE_UNIT",
     "OBSERVE_BASELINE_FILE",
     "OBSERVE_BASELINE_SCHEMA",
     "VerifiedObserveBaseline",
@@ -45,6 +46,7 @@ OBSERVE_BASELINE_FILE = "baseline.json"
 _LIMIT = 65536
 _UNIT_FILE_LIMIT = 1 << 20
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+EDGE_CORE_UNIT = "azazel-edge-core.service"
 
 
 def _canonical(document: dict) -> bytes:
@@ -70,7 +72,19 @@ def _scope(units) -> list[str]:
     return list(units)
 
 
-def _document(units, unit_files: Mapping[str, bytes]) -> dict:
+def _edge_pin(scope, package_digest) -> dict:
+    """The pin; the installed package digest exactly when edge-core is in scope."""
+    pin = {"version": PIN.version, "contract_digest": edge_pin_digest()}
+    if EDGE_CORE_UNIT in scope:
+        if type(package_digest) is not str or not _DIGEST.match(package_digest):
+            raise GenerationRefused("edge-core scope requires the installed package digest")
+        pin["package_digest"] = package_digest
+    elif package_digest is not None:
+        raise GenerationRefused("package digest is forbidden without edge-core in scope")
+    return pin
+
+
+def _document(units, unit_files: Mapping[str, bytes], package_digest) -> dict:
     scope = _scope(units)
     snapshot = dict(unit_files)
     if set(snapshot) != set(scope) or any(
@@ -81,18 +95,24 @@ def _document(units, unit_files: Mapping[str, bytes]) -> dict:
     return {
         "schema": OBSERVE_BASELINE_SCHEMA,
         "units": scope,
-        "edge_pin": {"version": PIN.version, "digest": edge_pin_digest()},
+        "edge_pin": _edge_pin(scope, package_digest),
         "unit_files": {unit: "sha256:" + sha256(snapshot[unit]).hexdigest() for unit in scope},
     }
 
 
-def build_observe_baseline(*, units, unit_files: Mapping[str, bytes]) -> dict[str, bytes]:
+def build_observe_baseline(
+    *, units, unit_files: Mapping[str, bytes], package_digest: str | None = None,
+) -> dict[str, bytes]:
     """The complete tree for `GenerationStore.create`; nothing is written here.
 
     `unit_files` maps each scoped unit name to the bytes of its installed unit
     file, measured by the caller. Exactly the scoped units, no others.
+    `package_digest` is the installed Edge archive digest from its manifest
+    (the value `edge_package` compares); required exactly when edge-core is
+    in scope, so the operator's signature over the generation digest binds
+    one specific Edge package. Forbidden otherwise.
     """
-    return {OBSERVE_BASELINE_FILE: _canonical(_document(units, unit_files))}
+    return {OBSERVE_BASELINE_FILE: _canonical(_document(units, unit_files, package_digest))}
 
 
 @dataclass(frozen=True)
@@ -116,9 +136,13 @@ def decode_observe_baseline(raw: bytes) -> dict:
             raise GenerationRefused("observe-baseline fields refused")
         scope = _scope(document["units"])
         pin, files = document["edge_pin"], document["unit_files"]
-        if (type(pin) is not dict or set(pin) != {"version", "digest"}
+        pin_fields = {"version", "contract_digest"}
+        if EDGE_CORE_UNIT in scope:
+            pin_fields.add("package_digest")
+        if (type(pin) is not dict or set(pin) != pin_fields
                 or type(pin["version"]) is not str
-                or type(pin["digest"]) is not str or not _DIGEST.match(pin["digest"])):
+                or any(type(pin[name]) is not str or not _DIGEST.match(pin[name])
+                       for name in pin_fields - {"version"})):
             raise GenerationRefused("observe-baseline edge pin refused")
         if (type(files) is not dict or set(files) != set(scope)
                 or any(type(value) is not str or not _DIGEST.match(value)
@@ -133,13 +157,14 @@ def decode_observe_baseline(raw: bytes) -> dict:
 
 def verify_observe_baseline(
     *, generation: Generation, files: Mapping[str, bytes],
-    units, unit_files: Mapping[str, bytes],
+    units, unit_files: Mapping[str, bytes], package_digest: str | None = None,
 ) -> VerifiedObserveBaseline:
     """Compare a stored tree with independently supplied scope and measurements.
 
     `generation` comes from the ordinary store's verified metadata, `files` is
-    its tree, `units` the policy scope and `unit_files` a fresh measurement of
-    the installed unit files. Any difference refuses. A match establishes that
+    its tree, `units` the policy scope, `unit_files` a fresh measurement of
+    the installed unit files and `package_digest` the installed Edge archive
+    digest (exactly when edge-core is in scope). Any difference refuses. A match establishes that
     the tree describes these bytes; it is not an approval or a health signal.
     """
     try:
@@ -152,7 +177,7 @@ def verify_observe_baseline(
             raise GenerationRefused("observe-baseline tree must hold only baseline.json")
         raw = snapshot[OBSERVE_BASELINE_FILE]
         document = decode_observe_baseline(raw)
-        expected = _document(units, unit_files)
+        expected = _document(units, unit_files, package_digest)
         if document["edge_pin"] != expected["edge_pin"]:
             raise GenerationRefused("observe-baseline edge pin differs")
         if document["units"] != expected["units"]:

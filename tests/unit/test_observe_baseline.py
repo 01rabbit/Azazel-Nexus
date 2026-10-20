@@ -48,10 +48,11 @@ def published(tmp_path):
     return store, generation
 
 
-def _verify(generation, files, *, units=UNITS, unit_files=None):
+def _verify(generation, files, *, units=UNITS, unit_files=None, package_digest=None):
     return verify_observe_baseline(
         generation=generation, files=files, units=units,
         unit_files=_unit_files() if unit_files is None else unit_files,
+        package_digest=package_digest,
     )
 
 
@@ -62,7 +63,7 @@ def test_built_tree_is_one_canonical_document():
     assert document == {
         "schema": OBSERVE_BASELINE_SCHEMA,
         "units": UNITS,
-        "edge_pin": {"version": PIN.version, "digest": edge_pin_digest()},
+        "edge_pin": {"version": PIN.version, "contract_digest": edge_pin_digest()},
         "unit_files": {unit: "sha256:" + sha256(data).hexdigest()
                        for unit, data in _unit_files().items()},
     }
@@ -84,16 +85,68 @@ def test_published_ordinary_generation_verifies(published):
     assert verified.units == tuple(UNITS)
 
 
+EDGE_UNITS = sorted(UNITS + ["azazel-edge-core.service"])
+PACKAGE = "sha256:" + "c" * 64
+
+
 def test_edge_core_in_scope_is_hashed_like_any_unit(tmp_path):
-    units = sorted(UNITS + ["azazel-edge-core.service"])
+    units = EDGE_UNITS
     files = _unit_files(units)
     files["azazel-edge-core.service"] += b"Environment=AZAZEL_EDGE_MODE=observe\n"
-    store, generation = _publish(tmp_path, build_observe_baseline(units=units, unit_files=files))
-    _verify(generation, store.read_tree(1), units=units, unit_files=files)
+    store, generation = _publish(tmp_path, build_observe_baseline(
+        units=units, unit_files=files, package_digest=PACKAGE))
+    _verify(generation, store.read_tree(1), units=units, unit_files=files,
+            package_digest=PACKAGE)
     files["azazel-edge-core.service"] = files["azazel-edge-core.service"].replace(
         b"observe", b"enforce")
     with pytest.raises(GenerationRefused):
-        _verify(generation, store.read_tree(1), units=units, unit_files=files)
+        _verify(generation, store.read_tree(1), units=units, unit_files=files,
+                package_digest=PACKAGE)
+
+
+def test_edge_core_scope_binds_the_installed_package_digest(tmp_path):
+    tree = build_observe_baseline(units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
+                                  package_digest=PACKAGE)
+    pin = json.loads(tree["baseline.json"])["edge_pin"]
+    assert pin == {"version": PIN.version, "contract_digest": edge_pin_digest(),
+                   "package_digest": PACKAGE}
+    store, generation = _publish(tmp_path, tree)
+    for other in ("sha256:" + "d" * 64, None):
+        with pytest.raises(GenerationRefused):
+            _verify(generation, store.read_tree(1), units=EDGE_UNITS,
+                    unit_files=_unit_files(EDGE_UNITS), package_digest=other)
+
+
+@pytest.mark.parametrize("digest", [
+    None, "", "sha256:" + "C" * 64, "sha512:" + "c" * 64, "c" * 64, b"sha256:" + b"c" * 64,
+])
+def test_edge_core_scope_requires_a_wellformed_package_digest(digest):
+    with pytest.raises(GenerationRefused):
+        build_observe_baseline(units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
+                               package_digest=digest)
+
+
+def test_package_digest_forbidden_without_edge_core(published):
+    with pytest.raises(GenerationRefused):
+        build_observe_baseline(units=UNITS, unit_files=_unit_files(), package_digest=PACKAGE)
+    store, generation = published
+    with pytest.raises(GenerationRefused):
+        _verify(generation, store.read_tree(1), package_digest=PACKAGE)
+
+
+def test_stored_pin_shape_must_match_the_scope():
+    edge = json.loads(build_observe_baseline(
+        units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
+        package_digest=PACKAGE)["baseline.json"])
+    without = {**edge, "edge_pin": {k: v for k, v in edge["edge_pin"].items()
+                                    if k != "package_digest"}}
+    with pytest.raises(GenerationRefused):
+        decode_observe_baseline(_bytes(without))
+    plain = _document()
+    plain["edge_pin"] = {**plain["edge_pin"], "package_digest": PACKAGE}
+    with pytest.raises(GenerationRefused):
+        decode_observe_baseline(_bytes(plain))
+    assert decode_observe_baseline(_bytes(edge)) == edge
 
 
 @pytest.mark.parametrize("units", [
@@ -136,7 +189,8 @@ def test_mismatch_policy_scope_narrower_or_wider(published):
         _verify(generation, store.read_tree(1), units=UNITS[1:], unit_files=_unit_files(UNITS[1:]))
     wider = sorted(UNITS + ["azazel-edge-core.service"])
     with pytest.raises(GenerationRefused):
-        _verify(generation, store.read_tree(1), units=wider, unit_files=_unit_files(wider))
+        _verify(generation, store.read_tree(1), units=wider, unit_files=_unit_files(wider),
+                package_digest="sha256:" + "c" * 64)
 
 
 def test_mismatch_edge_pin(published, monkeypatch):
@@ -179,7 +233,8 @@ def _bytes(document):
     _bytes({**_document(), "schema": "azazel-nexus/observe-baseline-generation/v2"}),
     _bytes({k: v for k, v in _document().items() if k != "edge_pin"}),
     _bytes({**_document(), "edge_pin": {"version": PIN.version}}),
-    _bytes({**_document(), "edge_pin": {"version": PIN.version, "digest": "md5:x"}}),
+    _bytes({**_document(), "edge_pin": {"version": PIN.version, "contract_digest": "md5:x"}}),
+    _bytes({**_document(), "edge_pin": {"version": PIN.version, "digest": edge_pin_digest()}}),
     _bytes({**_document(), "unit_files": {}}),
     _bytes({**_document(), "unit_files": {u: "sha256:" + "z" * 64 for u in UNITS}}),
     _bytes(_document()).replace(b'"units"', b'"units":[],"units"', 1),
