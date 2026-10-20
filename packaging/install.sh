@@ -328,6 +328,7 @@ install -m 0644 "$HERE"/systemd/azazel-auditd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-watchdog.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-core.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-probed.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-edge-probe-preflight.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-incident-explaind.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-intaked.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
@@ -374,6 +375,12 @@ systemd-tmpfiles --create azazel-nexus-bootstrap.conf
 # revalidation belongs. Starting it here would activate against a generation
 # that the operator has not yet promoted.
 systemctl enable azazel-activated.service
+
+# The Edge probe's boot preflight (#206 P5) is not governed and not masked:
+# it runs the same fixed, read-only, AF_UNIX-only probe as azprobe before the
+# controller, so the pass sees Edge health from this boot. It opens no
+# network socket and can only narrow what a pass grants. Enabled, not started.
+systemctl enable azazel-edge-probe-preflight.service
 
 echo "Azazel-Nexus installed. Operational units are masked."
 echo "The next boot records a fail-closed activation decision; no unit is"

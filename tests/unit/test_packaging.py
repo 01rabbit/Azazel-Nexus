@@ -36,7 +36,10 @@ EXPECTED_BOOTSTRAP_TMPFILES = (
 )
 
 GOVERNED = tuple(d.name for d in CORE_UNITS)
-ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT,)
+#: Installed and enabled beside the controller, and governed by nothing:
+#: the read-only Edge probe preflight (#206 P5).
+PROBE_PREFLIGHT = "azazel-edge-probe-preflight.service"
+ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT)
 
 
 def _installer() -> str:
@@ -93,7 +96,8 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
     present = sorted(path.name for path in UNIT_DIR.glob("*.service"))
     assert present == sorted(ALL_UNITS), (
         f"the packaged units are {present}; the controller governs "
-        f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}"
+        f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT} and "
+        f"{PROBE_PREFLIGHT}"
     )
 
 
@@ -171,9 +175,10 @@ def test_the_preset_disables_every_governed_unit():
         )
 
 
-def test_the_preset_enables_exactly_one_unit_and_it_is_the_controller():
+def test_the_preset_enables_only_the_controller_and_the_probe_preflight():
     enabled = [unit for verb, unit in _preset_directives() if verb == "enable"]
-    assert enabled == [ACTIVATION_CONTROLLER_UNIT]
+    assert enabled == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT]
+    assert PROBE_PREFLIGHT not in GOVERNED
 
 
 def test_the_preset_uses_no_glob():
@@ -212,8 +217,16 @@ def test_the_installer_masks_every_governed_unit():
     )
 
 
-def test_the_installer_enables_only_the_activation_controller():
-    assert _systemctl_calls("enable") == [ACTIVATION_CONTROLLER_UNIT]
+def test_the_installer_enables_only_the_controller_and_the_probe_preflight():
+    assert _systemctl_calls("enable") == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT]
+
+
+def test_the_installer_installs_and_never_masks_the_probe_preflight():
+    """Masking it would stop the boot-time Edge evidence it exists to give."""
+
+    assert f'"$HERE"/systemd/{PROBE_PREFLIGHT} "$UNIT_DIR"' in _installer()
+    assert PROBE_PREFLIGHT not in _systemctl_calls("mask")
+    assert PROBE_PREFLIGHT not in _systemctl_calls("unmask")
 
 
 def test_the_installer_refuses_while_the_daemons_it_names_are_absent():

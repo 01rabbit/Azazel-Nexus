@@ -316,7 +316,8 @@ def test_the_preset_names_every_governed_unit():
         for line in preset.splitlines()
         if line.startswith(("enable ", "disable "))
     }
-    assert stated == _governed_units()
+    # Plus the ungoverned Edge probe preflight, which the preset enables.
+    assert stated == _governed_units() | {"azazel-edge-probe-preflight.service"}
 
 
 def test_the_operator_tools_really_have_no_unit():

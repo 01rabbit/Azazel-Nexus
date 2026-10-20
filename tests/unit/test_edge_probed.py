@@ -26,6 +26,7 @@ from azazel_nexus.edge_package import (
     PIN,
     PROBE_CONTRACT,
     PROBE_STATE_PATH,
+    EdgePackageRefused,
     Evidence,
     parse_probe_result,
 )
@@ -43,6 +44,8 @@ MODULE = ROOT / "runtime" / "src" / "azazel_nexus_runtime" / "edge_probed.py"
 HEALTHY = json.dumps(
     {"contract": PIN.health_contract, "status": "healthy", "version": PIN.version}
 )
+
+BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
 
 class _Completed:
@@ -168,10 +171,44 @@ def test_main_probes_the_fixed_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(edge_probed, "probe", fake_probe)
     monkeypatch.setattr(edge_probed, "write_result", lambda outcome: tmp_path / "x")
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", lambda: BOOT)
     assert edge_probed.main([]) == 0
     assert seen["args"] == ()
-    assert list(seen["kwargs"]) == ["unit_reader"]
+    assert list(seen["kwargs"]) == ["unit_reader", "boot_id"]
     assert isinstance(seen["kwargs"]["unit_reader"], EdgeUnitStateReader)
+    assert seen["kwargs"]["boot_id"] == BOOT
+
+
+def test_main_reads_the_boot_id_from_the_fixed_path_only():
+    """`read_current_boot_id()` with no argument: the kernel's path, nothing else."""
+
+    tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [
+        node for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "read_current_boot_id"
+    ]
+    assert len(calls) == 1
+    assert calls[0].args == [] and calls[0].keywords == []
+
+
+def test_main_with_an_unreadable_boot_id_probes_nothing_and_writes_nothing(
+    tmp_path, monkeypatch, capsys,
+):
+    """Contract v2: a result that cannot name its boot is never written."""
+
+    def unreadable():
+        raise EdgePackageRefused("the boot id could not be read: denied")
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("probed although the boot id was unreadable")
+
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", unreadable)
+    monkeypatch.setattr(edge_probed, "probe", must_not_run)
+    monkeypatch.setattr(edge_probed, "write_result", must_not_run)
+    assert edge_probed.main([]) == 2
+    assert "boot's id could not be read" in capsys.readouterr().err
 
 
 # -- main reads running over the fixed, read-only system bus (#195) --------
@@ -243,12 +280,14 @@ def _main_against(tmp_path, monkeypatch, connect):
         lambda **kwargs: real_probe(root, clock=_clock(), runner=_runner(), **kwargs),
     )
     monkeypatch.setattr(SystemdBusSession, "connect", classmethod(lambda cls: connect()))
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", lambda: BOOT)
     written = {}
     monkeypatch.setattr(
         edge_probed, "write_result",
         lambda outcome: written.setdefault("outcome", outcome),
     )
     assert edge_probed.main([]) == 0
+    assert written["outcome"].boot_id == BOOT
     return written["outcome"]
 
 
@@ -432,7 +471,8 @@ def test_the_running_state_is_still_read_when_health_could_not_be(tmp_path):
 
 def test_a_healthy_report_passes(tmp_path):
     outcome = edge_probed.probe(
-        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units()
+        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
+        boot_id=BOOT,
     )
     assert outcome.health is Evidence.PASSED
     assert outcome.health_security is False
@@ -545,10 +585,13 @@ def test_an_answer_this_node_cannot_read_is_not_checked(tmp_path):
 
 def test_the_result_parses_as_what_the_reader_expects(tmp_path):
     outcome = edge_probed.probe(
-        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units()
+        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
+        boot_id=BOOT,
     )
     parsed = parse_probe_result(json.dumps(outcome.as_document()))
-    assert parsed.contract == PROBE_CONTRACT
+    assert parsed.contract == PROBE_CONTRACT == "azazel-nexus/edge-probe/v2"
+    assert parsed.boot_id == BOOT
+    assert parsed.from_boot(BOOT)
     assert parsed.health is Evidence.PASSED
     assert parsed.running is Evidence.PASSED
     assert parsed.package_version == PIN.version
@@ -565,7 +608,8 @@ def test_the_result_names_the_package_it_observed(tmp_path):
 
 def test_the_result_is_written_atomically_and_leaves_no_debris(tmp_path):
     outcome = edge_probed.probe(
-        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units()
+        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
+        boot_id=BOOT,
     )
     target = tmp_path / "state" / "edge-probe.json"
     edge_probed.write_result(outcome, target)
@@ -575,7 +619,8 @@ def test_the_result_is_written_atomically_and_leaves_no_debris(tmp_path):
 
 def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
     outcome = edge_probed.probe(
-        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units()
+        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
+        boot_id=BOOT,
     )
     target = tmp_path / "state" / "edge-probe.json"
     target.parent.mkdir(parents=True)
@@ -587,6 +632,29 @@ def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         edge_probed.write_result(outcome, target)
     assert list(target.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("boot_id", ["", "not-a-boot", BOOT.upper()])
+def test_an_outcome_naming_no_boot_is_never_written(tmp_path, boot_id):
+    outcome = edge_probed.probe(
+        _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
+        boot_id=boot_id,
+    )
+    target = tmp_path / "state" / "edge-probe.json"
+    with pytest.raises(ValueError, match="names no boot"):
+        edge_probed.write_result(outcome, target)
+    assert not target.parent.exists()
+
+
+def test_every_outcome_shape_carries_the_boot(tmp_path):
+    """Absent package, refused command and a full run all record the boot."""
+
+    absent = edge_probed.probe(tmp_path / "nothing", clock=_clock(), boot_id=BOOT)
+    full = edge_probed.probe(_package(tmp_path), clock=_clock(), runner=_runner(),
+                             unit_reader=_units(), boot_id=BOOT)
+    for outcome in (absent, full):
+        assert outcome.as_document()["boot_id"] == BOOT
+        assert parse_probe_result(json.dumps(outcome.as_document())).boot_id == BOOT
 
 
 def test_the_defaults_are_the_fixed_locations():

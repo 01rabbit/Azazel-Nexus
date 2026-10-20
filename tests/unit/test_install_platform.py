@@ -125,11 +125,14 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
     assert all(Path(item.path).is_absolute() for item in plan.directories)
     assert {item.source for item in plan.files if item.source.startswith("packaging/systemd/")} == {
         f"packaging/systemd/{service.unit}" for service in PROFILES
-    }
+    } | {"packaging/systemd/azazel-edge-probe-preflight.service"}
     assert plan.service_manager.mask_units == tuple(
         unit for action, unit in parse_preset_declarations(PRESET_TEXT) if action == "disable"
     )
-    assert plan.service_manager.enable_units == ("azazel-activated.service",)
+    assert plan.service_manager.enable_units == (
+        "azazel-activated.service", "azazel-edge-probe-preflight.service",
+    )
+    assert "azazel-edge-probe-preflight.service" not in plan.service_manager.mask_units
     assert plan.service_manager.start_units == ()
     assert plan.architecture_evaluated is False
     assert plan.hardware_compatibility_established is False
@@ -219,7 +222,7 @@ def test_installer_field_resolver_emits_plan_derived_current_paths(tmp_path):
     ) == "/usr/libexec/azazel"
     assert resolve_profile_field(
         field="enable_units", os_release_path=os_release
-    ) == "azazel-activated.service"
+    ) == "azazel-activated.service\nazazel-edge-probe-preflight.service"
     assert "systemctl" in resolve_profile_field(
         field="required_tools", os_release_path=os_release
     ).splitlines()

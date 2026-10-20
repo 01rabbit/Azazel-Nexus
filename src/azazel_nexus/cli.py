@@ -37,6 +37,7 @@ from .edge_package import (
     EdgePackageRefused,
     inspect as inspect_edge,
     load_probe_result,
+    read_current_boot_id,
 )
 from .audit import AuditLedger
 from .hil_preflight import (
@@ -443,6 +444,27 @@ def _probe_result(path: Path, out: TextIO):
         return load_probe_result(path)
     except EdgePackageRefused as exc:
         print(f"edge probe state at {path} was refused: {exc}", file=out)
+        print(file=out)
+        return None
+
+
+def _current_boot(out: TextIO):
+    """This boot's id, or `None` -- which makes every probe result stale.
+
+    Only the kernel's root-owned `/proc/sys/kernel/random/boot_id` is read,
+    through the library's protected reader with no relaxation and no flag to
+    point it elsewhere. Said on the screen rather than swallowed: without it
+    the operator would see every Edge result go stale and not know why.
+    """
+
+    try:
+        return read_current_boot_id()
+    except EdgePackageRefused as exc:
+        print(
+            f"this boot's id could not be read ({exc}); no edge probe result "
+            "can be shown to be from this boot",
+            file=out,
+        )
         print(file=out)
         return None
 
@@ -1110,8 +1132,10 @@ def main(
         # `status` never probes. It reads what `az-edge-probed` last
         # wrote (Nexus#72) and passes it in; package, version and digest
         # are still derived here, from the files, every time.
+        probe = _probe_result(args.edge_probe, stream)
         edge = inspect_edge(
-            args.edge_root, probe=_probe_result(args.edge_probe, stream), now=as_of
+            args.edge_root, probe=probe, now=as_of,
+            boot_id=_current_boot(stream) if probe else None,
         )
         knowledge = _knowledge_reading(args.knowledge_lite, as_of=as_of)
         _render_status(

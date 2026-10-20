@@ -16,7 +16,7 @@ from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
 from azazel_nexus.layout import LAYOUT
-from .hardening import PROFILES, SYSTEM_ACCOUNTS
+from .hardening import ALL_PROFILES, EDGE_PROBE_PREFLIGHT_UNIT, PROFILES, SYSTEM_ACCOUNTS
 
 __all__ = [
     "CURRENT_INSTALL_PLATFORM_PROFILES",
@@ -334,7 +334,7 @@ def build_install_plan(
     if type(with_accounts) is not bool or type(with_service_manager) is not bool:
         raise ValueError("install modes must be explicit booleans")
 
-    declared_units = {service.unit for service in PROFILES}
+    declared_units = {service.unit for service in ALL_PROFILES}
     declarations = tuple(preset_declarations)
     if not declarations or any(
         action not in {"enable", "disable"} or unit not in declared_units
@@ -346,8 +346,13 @@ def build_install_plan(
 
     enabled = tuple(unit for action, unit in declarations if action == "enable")
     disabled = tuple(unit for action, unit in declarations if action == "disable")
-    if enabled != ("azazel-activated.service",):
-        raise ValueError("install plan must enable only the activation controller")
+    # The controller, and the ungoverned read-only Edge probe preflight that
+    # runs before it (#206 P5). Nothing governed is ever enabled here.
+    if enabled != ("azazel-activated.service", EDGE_PROBE_PREFLIGHT_UNIT):
+        raise ValueError(
+            "install plan must enable only the activation controller and the "
+            "Edge probe preflight"
+        )
 
     # Nexus stages Python wrappers; the separately verified Edge package owns its binary.
     for service in PROFILES:
@@ -368,7 +373,7 @@ def build_install_plan(
             source=f"packaging/systemd/{service.unit}",
             destination=f"{profile.unit_directory}/{service.unit}",
         )
-        for service in PROFILES
+        for service in ALL_PROFILES
     ) + (
         FileDestination(
             source="packaging/azazel-nexus.preset",

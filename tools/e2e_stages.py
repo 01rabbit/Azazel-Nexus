@@ -766,11 +766,17 @@ def _edge_probe(harness: Harness) -> str:
     def units(method, unit):
         return {"ActiveState": "active", "SubState": "running", "LoadState": "loaded"}
 
+    # Probe contract v2 (#206 P5): the result names the boot it was observed
+    # in, and a reader uses it only in that boot. A fixed id stands for this
+    # harness's boot, another for the previous one.
+    boot = "0f0e0d0c-0b0a-4908-8706-050403020100"
+    previous_boot = "11111111-2222-4333-8444-555555555555"
     outcome = edge_probed.probe(
         root,
         clock=lambda: "2026-09-21T04:00:00Z",
         runner=runner,
         unit_reader=units,
+        boot_id=boot,
     )
     if ran != [[str(root / "bin/azazel-edge-core"), "--health"]]:
         raise RuntimeError(f"the probe ran {ran}, not the command fixed in code")
@@ -784,7 +790,7 @@ def _edge_probe(harness: Harness) -> str:
     if result is None:
         raise RuntimeError("the state file the probe just wrote read back as absent")
 
-    ready = inspect(root, probe=result, now="2026-09-21T04:01:00Z")
+    ready = inspect(root, probe=result, now="2026-09-21T04:01:00Z", boot_id=boot)
     if not ready.ready or ready.presence is not EdgePresence.VERIFIED_READY:
         raise RuntimeError(
             f"a verified package with a fresh probe read {ready.presence.value}"
@@ -794,11 +800,20 @@ def _edge_probe(harness: Harness) -> str:
     # may report a failure of the Edge Core.
     withheld = 0
 
-    stale = inspect(root, probe=result, now="2026-09-21T04:10:00Z")
+    stale = inspect(root, probe=result, now="2026-09-21T04:10:00Z", boot_id=boot)
     if stale.ready:
         raise RuntimeError("a stale probe result was promoted to ready")
     if stale.finding("running").evidence is not Evidence.NOT_CHECKED:
         raise RuntimeError("a stale result was reported as a failure of Edge")
+    withheld += 1
+
+    # Inside its TTL, but from another boot: stale by the boot binding alone.
+    rebooted = inspect(root, probe=result, now="2026-09-21T04:01:00Z",
+                       boot_id=previous_boot)
+    if rebooted.ready:
+        raise RuntimeError("a probe result from another boot was promoted to ready")
+    if rebooted.finding("running").evidence is not Evidence.NOT_CHECKED:
+        raise RuntimeError("a result from another boot was reported as a failure of Edge")
     withheld += 1
 
     # A result about another package: the same file with the version changed,
@@ -809,7 +824,7 @@ def _edge_probe(harness: Harness) -> str:
     other_state.write_text(json.dumps(other), encoding="utf-8")
     mismatched_version = inspect(
         root, probe=load_probe_result(other_state, owner_uid=writer),
-        now="2026-09-21T04:01:00Z"
+        now="2026-09-21T04:01:00Z", boot_id=boot,
     )
     if mismatched_version.ready:
         raise RuntimeError("a result about another version was promoted to ready")
@@ -821,19 +836,21 @@ def _edge_probe(harness: Harness) -> str:
     (tampered / "bin").mkdir(parents=True, exist_ok=True)
     (tampered / PIN.artifact_name).write_bytes(b"swapped")
     (tampered / PIN.manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
-    mismatched = inspect(tampered, probe=result, now="2026-09-21T04:01:00Z")
+    mismatched = inspect(tampered, probe=result, now="2026-09-21T04:01:00Z",
+                         boot_id=boot)
     if mismatched.presence is not EdgePresence.DIGEST_MISMATCH:
         raise RuntimeError("a tampered artifact with a passing probe was not a mismatch")
     if mismatched.ready:
         raise RuntimeError("a probe result made a tampered package ready")
     withheld += 1
 
-    if withheld != 3:
-        raise RuntimeError(f"{withheld} of 3 withholding cases were exercised")
+    if withheld != 4:
+        raise RuntimeError(f"{withheld} of 4 withholding cases were exercised")
     return (
-        "the probe ran the command fixed in code, wrote a bounded result, and "
-        "the library read it back to verified-ready; stale, mismatched and "
-        "tampered cases each withheld without reporting a failure"
+        "the probe ran the command fixed in code, wrote a bounded result bound "
+        "to its boot, and the library read it back to verified-ready; stale, "
+        "other-boot, mismatched and tampered cases each withheld without "
+        "reporting a failure"
     )
 
 

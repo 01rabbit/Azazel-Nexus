@@ -10,6 +10,11 @@
 # revalidates the current generation on every boot. A preset that enabled
 # `azazel-*` would have re-enabled the operational units on the next
 # preset-all, which is the whole failure this file prevents.
+#
+# The Edge probe's boot preflight is the second, also exact: it is not a
+# governed unit, opens no network socket (AF_UNIX only, IPAddressDeny=any),
+# runs the fixed read-only probe as azprobe before the controller, and can
+# only narrow what the controller grants (#206 P5).
 disable azazel-commissiond.service
 disable azazel-auditd.service
 disable azazel-watchdog.service
@@ -23,3 +28,4 @@ disable azazel-mio-remoted.service
 disable azazel-mio-entryd.service
 disable azazel-knowledge-lited.service
 enable azazel-activated.service
+enable azazel-edge-probe-preflight.service

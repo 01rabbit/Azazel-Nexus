@@ -23,8 +23,11 @@ import pytest
 from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.hardening import (
+    ALL_PROFILES,
+    EDGE_PROBE_PREFLIGHT_UNIT,
     PROFILES,
     SHARED_HARDENING,
+    UNGOVERNED_PROFILES,
     SYSTEM_ACCOUNTS,
     ServiceProfile,
     render_unit,
@@ -64,7 +67,7 @@ def test_every_committed_unit_is_exactly_what_the_table_renders():
     generation.
     """
 
-    for profile in PROFILES:
+    for profile in ALL_PROFILES:
         assert _unit(profile.unit) == render_unit(profile), (
             f"{profile.unit} differs from what the hardening table renders. "
             "Run tools/render_units.py"
@@ -73,7 +76,7 @@ def test_every_committed_unit_is_exactly_what_the_table_renders():
 
 def test_the_table_covers_every_unit_the_packaging_installs():
     packaged = {path.name for path in UNIT_DIR.glob("*.service")}
-    declared = {profile.unit for profile in PROFILES}
+    declared = {profile.unit for profile in ALL_PROFILES}
     assert packaged == declared
 
 
@@ -800,3 +803,82 @@ def test_edge_core_posture_matches_the_packaged_health_contract():
     definition = next(definition for definition in CORE_UNITS if definition.name == EDGE_UNIT)
     assert definition.tier is UnitTier.EDGE_BASELINE
     assert UNIT_NAMES[UnitKey.EDGE_CORE] == EDGE_UNIT
+
+
+# -- the Edge probe boot preflight (#206 P5, design E1) ---------------------
+
+
+def _preflight():
+    return next(p for p in UNGOVERNED_PROFILES if p.unit == EDGE_PROBE_PREFLIGHT_UNIT)
+
+
+def _probed():
+    return next(p for p in PROFILES if p.unit == "azazel-edge-probed.service")
+
+
+def test_the_only_ungoverned_unit_is_the_probe_preflight():
+    assert [p.unit for p in UNGOVERNED_PROFILES] == [EDGE_PROBE_PREFLIGHT_UNIT]
+    assert ALL_PROFILES == PROFILES + UNGOVERNED_PROFILES
+
+
+def test_the_probe_preflight_is_not_governed_anywhere():
+    """Not in the controller's lists, so a pass never masks or unmasks it."""
+
+    from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT as controller
+    from azazel_nexus_runtime.hardening import governed_units
+    from azazel_nexus_runtime.units import UNIT_NAMES
+
+    assert EDGE_PROBE_PREFLIGHT_UNIT not in {d.name for d in CORE_UNITS}
+    assert EDGE_PROBE_PREFLIGHT_UNIT not in governed_units()
+    assert EDGE_PROBE_PREFLIGHT_UNIT not in UNIT_NAMES.values()
+    assert EDGE_PROBE_PREFLIGHT_UNIT not in {p.unit for p in PROFILES}
+    assert EDGE_PROBE_PREFLIGHT_UNIT != controller
+
+
+def test_the_probe_preflight_runs_only_the_fixed_probe_binary_as_azprobe():
+    settings = _settings(EDGE_PROBE_PREFLIGHT_UNIT)
+    assert settings["ExecStart"] == ["/usr/libexec/azazel/az-edge-probed"]
+    assert settings["ExecStart"] == _settings("azazel-edge-probed.service")["ExecStart"]
+    assert settings["User"] == ["azprobe"]
+    assert settings["Type"] == ["oneshot"]
+    for key in ("ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost",
+                "ExecReload", "ExecCondition", "Group", "SupplementaryGroups",
+                "Environment", "EnvironmentFile", "LoadCredential",
+                "SetCredential", "RuntimeDirectory"):
+        assert key not in settings, f"the preflight unexpectedly sets {key}"
+
+
+def test_the_probe_preflight_is_read_only_with_the_probe_sandbox():
+    """Same sandbox as the governed probe: AF_UNIX only, no addresses, one leaf."""
+
+    preflight, probed = _preflight(), _probed()
+    for field in ("executable", "account", "address_families", "read_write_paths",
+                  "optional_read_write_paths", "supplementary_groups",
+                  "capability_bounding_set", "unit_type", "conditions",
+                  "is_artifact_fetcher", "is_model_host", "is_inference_transport",
+                  "default_dependencies"):
+        assert getattr(preflight, field) == getattr(probed, field), field
+    settings = _settings(EDGE_PROBE_PREFLIGHT_UNIT)
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert settings["IPAddressDeny"] == ["any"]
+    assert "IPAddressAllow" not in settings
+    assert settings["ReadWritePaths"] == ["/var/lib/azazel/run/edge-probe"]
+    for key, value in SHARED_HARDENING:
+        assert settings.get(key) == [value], key
+    probed_settings = _settings("azazel-edge-probed.service")
+    for key in [key for key, _ in SHARED_HARDENING] + ["RestrictAddressFamilies",
+                                                        "ReadWritePaths", "User"]:
+        assert settings[key] == probed_settings[key], key
+
+
+def test_the_probe_preflight_runs_before_the_controller_and_needs_nothing_of_it():
+    settings = _settings(EDGE_PROBE_PREFLIGHT_UNIT)
+    assert settings["Before"] == [ACTIVATION_CONTROLLER_UNIT]
+    for key in ("After", "Requires", "BindsTo", "Wants", "Requisite", "PartOf",
+                "Conflicts"):
+        assert key not in settings, f"the preflight sets {key}"
+    assert settings["WantedBy"] == ["multi-user.target"]
+    assert settings["TimeoutStartSec"] == ["60s"]
+    # Ordered before the controller, so its result is from this boot when the
+    # pass reads it; nothing it does is a precondition of the pass.
+    assert "azazel-edge-probe-preflight" not in _unit(ACTIVATION_CONTROLLER_UNIT)

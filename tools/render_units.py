@@ -15,13 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
-from azazel_nexus_runtime.hardening import PROFILES, render_unit  # noqa: E402
+from azazel_nexus_runtime.hardening import ALL_PROFILES, render_unit  # noqa: E402
 
 
 def main() -> int:
     target = ROOT / "packaging" / "systemd"
     target.mkdir(parents=True, exist_ok=True)
-    for profile in PROFILES:
+    for profile in ALL_PROFILES:
         (target / profile.unit).write_text(render_unit(profile), encoding="utf-8")
         print(f"wrote {profile.unit}")
     return 0
