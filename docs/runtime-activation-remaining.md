@@ -321,7 +321,9 @@ for the software prototype:
   `healthy=False`. The fixed approval reader cannot supply independently
   expected context or establish health. (Superseded for the five
   SUPPORTING loop units by #206 P4, which composes the observe-baseline
-  inputs: [§8](activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass).)
+  inputs: [§8](activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass),
+  and for `azazel-edge-core.service` by P5:
+  [§8.1](activation-observe-baseline.md#81-p5-edge-core-in-the-pass).)
 - `ActivationContext` currently requires commissioning/inventory/policy/
   renderer digests and epoch information. No accepted bootstrap representation
   of these inputs is specified. Empty or fabricated digests are not a solution.

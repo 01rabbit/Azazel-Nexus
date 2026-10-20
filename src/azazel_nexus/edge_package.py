@@ -95,7 +95,7 @@ import os
 import pwd
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -126,11 +126,16 @@ __all__ = [
     "HealthAnswer",
     "PIN",
     "UNSIGNED_CAVEAT",
+    "BOUND_COMPONENTS",
+    "bound_to_signed_package",
     "inspect",
     "installed_baseline_state",
+    "installed_package_components",
     "installed_package_digest",
+    "measure_extracted_components",
     "no_health_probe",
     "no_running_probe",
+    "nothing_established",
     "presence_of",
 ]
 
@@ -743,7 +748,199 @@ def installed_baseline_state(
         boot_id = _optional_boot_id(boot_id_path) if probe is not None else None
         return inspect(package_root, probe=probe, now=now, boot_id=boot_id).state()
     except Exception:  # noqa: BLE001 - inspection failure establishes nothing
-        return EdgeBaselineState(False, False, False, False, False)
+        return nothing_established()
+
+
+def nothing_established() -> EdgeBaselineState:
+    """Every check False: what an absent, failed or unreadable reading establishes.
+
+    The activation pass (#206 P5) hands this to the library when its own Edge
+    reader failed, so that a lease-bearing pass never falls back to reading
+    host paths it did not choose. It is not launchable and claims nothing.
+    """
+
+    return EdgeBaselineState(False, False, False, False, False)
+
+
+def bound_to_signed_package(
+    state: EdgeBaselineState, signed_package_digest: Optional[str],
+) -> EdgeBaselineState:
+    """`state`, with `digest_matches` False unless it describes the signed package.
+
+    The activation pass (#206 P5) passes the observe-baseline generation's
+    `edge_pin.package_digest` only after it has derived the same digest from
+    the installed package (`installed_package_digest`) and the extracted
+    components it runs (`measure_extracted_components`); otherwise None. The
+    probe's package digest must be exactly that one: a state that names no
+    probed package is never launchable here, whatever its other fields say.
+    This only narrows: no field becomes True here.
+    """
+
+    if type(state) is not EdgeBaselineState:
+        return nothing_established()
+    if (type(signed_package_digest) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", signed_package_digest)
+            and type(state.package_digest) is str
+            and state.package_digest == signed_package_digest):
+        return state
+    return replace(state, digest_matches=False)
+
+
+#: The extracted files `azazel-edge-core.service` actually uses: the binary it
+#: executes and the redirect policy its observe-only `Environment=` names. The
+#: archive digest says nothing about them once unpacked (#206 P5).
+BOUND_COMPONENTS = ("bin/azazel-edge-core", "config/redirect_policy.yaml")
+#: Ceilings for one extracted component, the archive and its member count.
+_COMPONENT_MAX_BYTES = 256 << 20
+_ARCHIVE_MAX_BYTES = 512 << 20
+_ARCHIVE_MAX_MEMBERS = 4096
+_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _protected(fd: int, owner_uid: int, *, directory: bool) -> None:
+    info = os.fstat(fd)
+    kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (not kind or info.st_uid != owner_uid or info.st_mode & 0o022
+            or (not directory and info.st_nlink != 1)):
+        raise EdgePackageRefused("an extracted Edge component has unsafe type, ownership or mode")
+
+
+def measure_extracted_components(
+    *, package_root: Path = EDGE_PACKAGE_ROOT, owner_uid: int = 0,
+) -> dict[str, str]:
+    """SHA-256 of each `BOUND_COMPONENTS` file as unpacked under the package root.
+
+    Each path component is opened without following links, and the root,
+    every directory and the file must be owned by `owner_uid` (root in
+    production) and not group or other writable; the file must be a regular
+    file with a single link, at most 256 MiB. It returns what is there, equal
+    to anything or not: comparing is the caller's job. Anything unreadable or
+    unsafe raises `EdgePackageRefused`. Reads files only.
+    """
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    result: dict[str, str] = {}
+    try:
+        root_fd = os.open(package_root, flags | os.O_DIRECTORY)
+    except OSError as exc:
+        raise EdgePackageRefused(f"the Edge package root could not be opened: {exc}") from exc
+    try:
+        _protected(root_fd, owner_uid, directory=True)
+        for relative in BOUND_COMPONENTS:
+            parent, name = relative.split("/")
+            fds: list[int] = []
+            try:
+                fds.append(os.open(parent, flags | os.O_DIRECTORY, dir_fd=root_fd))
+                _protected(fds[-1], owner_uid, directory=True)
+                fds.append(os.open(name, flags | os.O_NONBLOCK, dir_fd=fds[0]))
+                _protected(fds[-1], owner_uid, directory=False)
+                digest, total = hashlib.sha256(), 0
+                while chunk := os.read(fds[-1], 1 << 20):
+                    total += len(chunk)
+                    if total > _COMPONENT_MAX_BYTES:
+                        raise EdgePackageRefused("an extracted Edge component is too large")
+                    digest.update(chunk)
+                result[relative] = "sha256:" + digest.hexdigest()
+            except OSError as exc:
+                raise EdgePackageRefused(
+                    f"the extracted Edge component {relative} could not be read: {exc}"
+                ) from exc
+            finally:
+                for fd in fds:
+                    os.close(fd)
+    finally:
+        os.close(root_fd)
+    return result
+
+
+def _manifest_components(manifest: dict) -> dict[str, str]:
+    declared: dict[str, str] = {}
+    components = manifest.get("components")
+    if type(components) is not list:
+        raise EdgePackageRefused("the Edge manifest lists no components")
+    for component in components:
+        if type(component) is not dict:
+            raise EdgePackageRefused("an Edge manifest component is not an object")
+        path, digest = component.get("path"), component.get("digest")
+        if path in BOUND_COMPONENTS:
+            if path in declared or type(digest) is not str or not _DIGEST_PATTERN.match(digest):
+                raise EdgePackageRefused("an Edge manifest component digest is refused")
+            declared[path] = digest
+    if set(declared) != set(BOUND_COMPONENTS):
+        raise EdgePackageRefused("the Edge manifest does not record every bound component")
+    return declared
+
+
+def _archive_components(data: bytes) -> dict[str, str]:
+    """The bound members of the verified archive bytes, hashed without extracting."""
+    import io
+    import tarfile
+
+    found: dict[str, str] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            for count, member in enumerate(archive):
+                if count >= _ARCHIVE_MAX_MEMBERS:
+                    raise EdgePackageRefused("the Edge archive has too many members")
+                name = member.name[2:] if member.name.startswith("./") else member.name
+                if name not in BOUND_COMPONENTS:
+                    continue
+                if name in found or not member.isreg() or member.size > _COMPONENT_MAX_BYTES:
+                    raise EdgePackageRefused("an Edge archive member is refused")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise EdgePackageRefused("an Edge archive member is unreadable")
+                digest, total = hashlib.sha256(), 0
+                while chunk := stream.read(1 << 20):
+                    total += len(chunk)
+                    if total > _COMPONENT_MAX_BYTES:
+                        raise EdgePackageRefused("an Edge archive member is too large")
+                    digest.update(chunk)
+                found[name] = "sha256:" + digest.hexdigest()
+    except EdgePackageRefused:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a malformed archive binds nothing
+        raise EdgePackageRefused("the Edge archive could not be read") from exc
+    if set(found) != set(BOUND_COMPONENTS):
+        raise EdgePackageRefused("the Edge archive lacks a bound component")
+    return found
+
+
+def installed_package_components(
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN, owner_uid: int = 0,
+) -> tuple[str, dict[str, str]]:
+    """The archive digest and the bound components, only when all three agree.
+
+    For `az-activation generation-publish` (#206 P5): the package checks of
+    `installed_package_digest`; then, for each of `BOUND_COMPONENTS`, the
+    digest the manifest records, the digest of that member of the archive
+    bytes just verified against the manifest (read bounded, never
+    extracted) and the digest of the extracted file
+    (`measure_extracted_components`) must be equal. The manifest is
+    unsigned, so the equality is integrity at publication; the operator's
+    signature over the generation is what binds the values afterwards.
+    """
+
+    digest = installed_package_digest(package_root=package_root, pin=pin)
+    manifest_path = package_root / pin.manifest_name
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fd = os.open(package_root / pin.artifact_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            data = stream.read(_ARCHIVE_MAX_BYTES + 1)
+    except (OSError, ValueError) as exc:
+        raise EdgePackageRefused("the installed Edge package could not be re-read") from exc
+    if len(data) > _ARCHIVE_MAX_BYTES or "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+        raise EdgePackageRefused("the Edge archive changed or is too large")
+    if type(manifest) is not dict or manifest.get("digest") != digest:
+        raise EdgePackageRefused("the Edge manifest changed")
+    declared = _manifest_components(manifest)
+    archived = _archive_components(data)
+    extracted = measure_extracted_components(package_root=package_root, owner_uid=owner_uid)
+    if not declared == archived == extracted:
+        raise EdgePackageRefused(
+            "an extracted Edge component differs from its manifest or its archive member")
+    return digest, dict(sorted(extracted.items()))
 
 
 def installed_package_digest(

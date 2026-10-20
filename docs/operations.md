@@ -283,8 +283,24 @@ The boot-time `az-activated` pass can grant the five SUPPORTING loop units
 verifies: full commissioning evidence, the declared node and epoch from the
 deployment declaration, `/etc/azazel/activation/policy.json`, the high-water
 floors and clock, an observe-baseline generation matching the installed unit
-files, a signed v2 approval naming the units, and node health. Edge Core is
-not granted yet (P5): a policy naming it refuses the whole pass.
+files, a signed v2 approval naming the units, and node health. Since P5 the
+same pass can also grant `azazel-edge-core.service` when the policy, the
+generation and the approval name it
+([§8.1](activation-observe-baseline.md#81-p5-edge-core-in-the-pass)):
+`generation-publish` then pins the installed Edge package digest and the
+digests of the extracted `bin/azazel-edge-core` and
+`config/redirect_policy.yaml` (which must equal the manifest's component
+digests and the archive's members, and be root-owned, not group or other
+writable, and not links), and the pass grants edge-core only when the
+package checks pass, the installed package and extracted files are the
+pinned ones, and `azazel-edge-probe-preflight.service` wrote a
+healthy result in this boot (`running` is not required). Otherwise edge-core
+is withheld (`edge_not_ready`) and the SUPPORTING units are still granted;
+an installed package other than the signed one, or an extracted binary or
+policy rewritten after publication, refuses the whole pass, and needs a new
+publish, request and signature. Health is trust in the `azprobe` account:
+it can report the signed package healthy, never make another one
+launchable.
 
 - A grant **enables** a unit for the next boot and writes
   `/run/azazel-activation/granted/<unit>`; it never starts anything. Each
@@ -295,9 +311,12 @@ not granted yet (P5): a policy naming it refuses the whole pass.
 - Read the result with `journalctl -b -u azazel-activated.service -o cat`
   (`granted=N`) and the last `activation.inputs_incomplete` entry of
   `/var/lib/azazel/state/activation.jsonl`: `missing_producers` lists only the
-  inputs that failed (plus the three not required for this scope), and
+  inputs that failed (plus the two not required for this scope, and
+  `edge_evidence` unless edge-core was launchable), and
   `observed_inputs.producers` shows `verified`, `failed` or `not_attempted`
-  for each. It contains no identity or digest.
+  for each. `observed_inputs.edge_evidence` and `edge_package_binding` say
+  why edge-core was or was not launchable, and the `activation.unit_withheld`
+  entry for it names the failed checks. It contains no identity or digest.
 - To withdraw: remove `approval.json`/`approval.sig`, raise the declared
   `security_epoch`, revoke the operator, or let the approval expire. The next
   boot's pass then grants nothing, writes no marker, and the units stay

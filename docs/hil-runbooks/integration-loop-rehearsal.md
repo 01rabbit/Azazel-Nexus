@@ -251,8 +251,13 @@ grants the five SUPPORTING loop units and writes their per-boot grant markers
 under `/run/azazel-activation/granted/`
 ([§8](../activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass)).
 `az-activation generation-publish`, `request` and `install` (P3b) produce its
-inputs, and `tools/operator_sign.py` signs the approval off-host. Edge Core is
-not granted before P5, and the reboot sequence (grant → reboot → started) is
+inputs, and `tools/operator_sign.py` signs the approval off-host. Since P5
+the same pass can grant Edge Core when the policy, the generation (with the
+installed package digest) and the approval name it and this boot's probe
+preflight reported it healthy
+([§8.1](../activation-observe-baseline.md#81-p5-edge-core-in-the-pass));
+otherwise it is withheld with `edge_not_ready` while the SUPPORTING units
+are still granted. The reboot sequence (grant → reboot → started) is
 P6's VM confirmation, which this runbook does not perform: no approval may be
 requested, installed or hand-written for this run.
 

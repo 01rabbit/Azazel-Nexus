@@ -20,6 +20,9 @@ from azazel_nexus.observe_baseline import (
 from test_bootstrap_generation import _config, _context
 
 NOW = "2026-10-20T00:00:00Z"
+#: The extracted binary and redirect policy the edge-core unit uses (#206 P5).
+COMPONENTS = {"bin/azazel-edge-core": "sha256:" + "e" * 64,
+              "config/redirect_policy.yaml": "sha256:" + "f" * 64}
 COMMISSIONING = "sha256:" + "a" * 64
 BINDING = "hmac-sha256:" + "b" * 64
 UNITS = [
@@ -48,11 +51,14 @@ def published(tmp_path):
     return store, generation
 
 
-def _verify(generation, files, *, units=UNITS, unit_files=None, package_digest=None):
+def _verify(generation, files, *, units=UNITS, unit_files=None, package_digest=None,
+            package_components=None):
+    if package_digest is not None and package_components is None:
+        package_components = COMPONENTS
     return verify_observe_baseline(
         generation=generation, files=files, units=units,
         unit_files=_unit_files() if unit_files is None else unit_files,
-        package_digest=package_digest,
+        package_digest=package_digest, package_components=package_components,
     )
 
 
@@ -94,7 +100,7 @@ def test_edge_core_in_scope_is_hashed_like_any_unit(tmp_path):
     files = _unit_files(units)
     files["azazel-edge-core.service"] += b"Environment=AZAZEL_EDGE_MODE=observe\n"
     store, generation = _publish(tmp_path, build_observe_baseline(
-        units=units, unit_files=files, package_digest=PACKAGE))
+        units=units, unit_files=files, package_digest=PACKAGE, package_components=COMPONENTS))
     _verify(generation, store.read_tree(1), units=units, unit_files=files,
             package_digest=PACKAGE)
     files["azazel-edge-core.service"] = files["azazel-edge-core.service"].replace(
@@ -106,15 +112,42 @@ def test_edge_core_in_scope_is_hashed_like_any_unit(tmp_path):
 
 def test_edge_core_scope_binds_the_installed_package_digest(tmp_path):
     tree = build_observe_baseline(units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
-                                  package_digest=PACKAGE)
+                                  package_digest=PACKAGE, package_components=COMPONENTS)
     pin = json.loads(tree["baseline.json"])["edge_pin"]
     assert pin == {"version": PIN.version, "contract_digest": edge_pin_digest(),
-                   "package_digest": PACKAGE}
+                   "package_digest": PACKAGE, "components": COMPONENTS}
     store, generation = _publish(tmp_path, tree)
+    _verify(generation, store.read_tree(1), units=EDGE_UNITS,
+            unit_files=_unit_files(EDGE_UNITS), package_digest=PACKAGE)
     for other in ("sha256:" + "d" * 64, None):
         with pytest.raises(GenerationRefused):
             _verify(generation, store.read_tree(1), units=EDGE_UNITS,
                     unit_files=_unit_files(EDGE_UNITS), package_digest=other)
+    # The extracted binary or redirect policy the unit uses is bound too.
+    for name in COMPONENTS:
+        changed = {**COMPONENTS, name: "sha256:" + "0" * 64}
+        with pytest.raises(GenerationRefused):
+            _verify(generation, store.read_tree(1), units=EDGE_UNITS,
+                    unit_files=_unit_files(EDGE_UNITS), package_digest=PACKAGE,
+                    package_components=changed)
+
+
+@pytest.mark.parametrize("components", [
+    None, {}, {"bin/azazel-edge-core": "sha256:" + "e" * 64},
+    {**COMPONENTS, "bin/other": "sha256:" + "e" * 64},
+    {**COMPONENTS, "bin/azazel-edge-core": "sha256:" + "E" * 64},
+    {**COMPONENTS, "bin/azazel-edge-core": None},
+], ids=["none", "empty", "one", "extra", "uppercase", "not-a-digest"])
+def test_edge_core_scope_requires_exactly_the_bound_components(components):
+    with pytest.raises(GenerationRefused):
+        build_observe_baseline(units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
+                               package_digest=PACKAGE, package_components=components)
+
+
+def test_components_are_forbidden_without_edge_core():
+    with pytest.raises(GenerationRefused):
+        build_observe_baseline(units=UNITS, unit_files=_unit_files(),
+                               package_components=COMPONENTS)
 
 
 @pytest.mark.parametrize("digest", [
@@ -123,7 +156,7 @@ def test_edge_core_scope_binds_the_installed_package_digest(tmp_path):
 def test_edge_core_scope_requires_a_wellformed_package_digest(digest):
     with pytest.raises(GenerationRefused):
         build_observe_baseline(units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
-                               package_digest=digest)
+                               package_digest=digest, package_components=COMPONENTS)
 
 
 def test_package_digest_forbidden_without_edge_core(published):
@@ -137,11 +170,12 @@ def test_package_digest_forbidden_without_edge_core(published):
 def test_stored_pin_shape_must_match_the_scope():
     edge = json.loads(build_observe_baseline(
         units=EDGE_UNITS, unit_files=_unit_files(EDGE_UNITS),
-        package_digest=PACKAGE)["baseline.json"])
-    without = {**edge, "edge_pin": {k: v for k, v in edge["edge_pin"].items()
-                                    if k != "package_digest"}}
-    with pytest.raises(GenerationRefused):
-        decode_observe_baseline(_bytes(without))
+        package_digest=PACKAGE, package_components=COMPONENTS)["baseline.json"])
+    for field in ("package_digest", "components"):
+        without = {**edge, "edge_pin": {k: v for k, v in edge["edge_pin"].items()
+                                        if k != field}}
+        with pytest.raises(GenerationRefused):
+            decode_observe_baseline(_bytes(without))
     plain = _document()
     plain["edge_pin"] = {**plain["edge_pin"], "package_digest": PACKAGE}
     with pytest.raises(GenerationRefused):
