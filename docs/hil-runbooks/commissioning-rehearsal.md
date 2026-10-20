@@ -32,7 +32,11 @@ is selected ([M.I.O. runtime](../mio-runtime.md), [operations §0](../operations
   [`tools/operator_sign.py`](../../tools/operator_sign.py), and copies back only
   the 64-byte signature. The assistant or any remote helper never reads the seed.
   Run the signer from a reviewed checkout with a pinned, hash-verified PyNaCl:
-  the seed shares that process with the imported code.
+  the seed shares that process with the imported code. This rehearsal uses
+  its `commissioning` and `commissioning-proposal` purposes only; its
+  `activation` purpose (boot-free v2 approval) is described in
+  [observe-baseline activation §3.1](../activation-observe-baseline.md#31-activation-approval-schema-v2-boot-free)
+  and is not part of commissioning.
 - **Confidentiality.** The draft and proposal contain raw interface identity.
   Keep workstation copies in a private `0700` directory, delete them after
   signing, and never paste them into issues, logs or chat

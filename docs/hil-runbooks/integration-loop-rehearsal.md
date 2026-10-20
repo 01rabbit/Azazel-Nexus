@@ -245,9 +245,11 @@ the producers it lacks, including `activation_approval_loader`, `node_health`
 and `edge_evidence`. The approval reader in `activation_store.py`
 (`/etc/azazel/activation/approval.json` and `approval.sig`) is not wired
 into that pass ([runtime activation](../runtime-activation-remaining.md#activation-approval-storage-versus-independent-context)),
-and `tools/operator_sign.py` signs only the two commissioning purposes. There
-is no command that produces an activation approval or a lease, and none may
-be hand-written for this run.
+and `tools/operator_sign.py` can sign a v2 activation approval payload
+([§3.1](../activation-observe-baseline.md#31-activation-approval-schema-v2-boot-free))
+but nothing produces that payload, installs the signature or reads it into
+the pass. There is no command that produces an activation approval or a
+lease, and none may be hand-written for this run.
 
 Record what the last boot's pass did:
 
