@@ -236,7 +236,10 @@ package-bound `health_endpoint_healthy`. Running is not required to admit the
 unit, and `edge-baseline-ready` still needs all five checks
 ([I0](../integration-loop.md#i0--foundations)). Health comes from
 `az-edge-probed` (§6.2), which is `SUPPORTING` so that it can run before Edge
-is admitted.
+is admitted. The result must also be from **this boot** (probe contract v2,
+[#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) P5): the
+ungoverned `azazel-edge-probe-preflight.service` runs the same probe before
+the controller at every boot, so the boot pass sees health from this boot.
 
 **On this build no lease exists.** `az-activated` composes its pass with
 `lease=None` and `healthy=False` (`runtime/src/azazel_nexus_runtime/activated.py`),
@@ -332,11 +335,22 @@ sudo cat /var/lib/azazel/run/edge-probe/edge-probe.json
 sudo /opt/azazel-nexus/venv/bin/azazel-nexus status
 ```
 
-`azazel-edge-probed.service` is a one-shot: it runs the fixed
-`bin/azazel-edge-core --health` after re-checking the archive and binary
-digests, reads the payload unit's state over D-Bus, writes
-`/var/lib/azazel/run/edge-probe/edge-probe.json` (`azazel-nexus/edge-probe/v1`,
-`0644`, 300 s TTL) and exits. Without unmasking the probe unit, the same
+`azazel-edge-probed.service` is a one-shot: it reads this boot's id from
+`/proc/sys/kernel/random/boot_id` (when it cannot, it writes nothing and
+exits 2), runs the fixed `bin/azazel-edge-core --health` after re-checking the
+archive and binary digests, reads the payload unit's state over D-Bus, writes
+`/var/lib/azazel/run/edge-probe/edge-probe.json` (`azazel-nexus/edge-probe/v2`
+with `boot_id`, `0644`, 300 s TTL) and exits. A reader uses the result only in
+the boot it names; a v1 file left from an earlier build, or any file from the
+previous boot, reads `stale` and is `not-checked`, never `failed`.
+
+The boot preflight `azazel-edge-probe-preflight.service` (same binary, same
+`azprobe`, same sandbox; not governed, enabled by the installer, never masked)
+will already have written a result at boot, before the controller, with
+`running` `failed` because Edge had not started. Record
+`systemctl show -p Result,ExecMainStatus azazel-edge-probe-preflight.service`
+and the result's `observed_at`; `systemctl is-enabled` must say `enabled` and
+it must not appear among the masked units. Without unmasking the probe unit, the same
 installed wrapper can be run as its account outside the unit sandbox:
 `sudo runuser -u azprobe -- /usr/libexec/azazel/az-edge-probed --print`.
 **要確認:** that this gives the same result as the unit (its sandbox and

@@ -74,6 +74,21 @@ sees half of one.
 Nothing it can say makes a node ready on its own: the library re-derives
 package, version and digest itself on every read and only takes health and
 running from here.
+
+## The result names the boot it was observed in (contract v2, #206 P5)
+
+`main` reads this boot's id from `/proc/sys/kernel/random/boot_id` with the
+library's protected reader (`edge_package.read_current_boot_id`) **before**
+probing, and `write_result` refuses an outcome that does not carry a canonical
+one. When the id cannot be read nothing is written: a result that cannot say
+which boot it is from is one a reader could not use anyway, and leaving the
+previous file in place costs nothing because that one names another boot.
+
+The same binary runs twice per boot: once as
+`azazel-edge-probe-preflight.service`, ungoverned, before the activation
+controller (so the pass sees fresh health, while `running` is still `failed`
+because edge-core has not started), and once as the governed
+`azazel-edge-probed.service` after it.
 """
 
 from __future__ import annotations
@@ -98,7 +113,10 @@ from azazel_nexus.edge_package import (
     PIN,
     PROBE_CONTRACT,
     PROBE_STATE_PATH,
+    EdgePackageRefused,
     Evidence,
+    is_boot_id,
+    read_current_boot_id,
 )
 
 from .systemd_bus import EdgeUnitStateReader
@@ -150,10 +168,14 @@ class ProbeOutcome:
     running_reason: str
     health_security: bool = False
     ttl_seconds: int = DEFAULT_TTL_SECONDS
+    #: The boot this run observed. Empty when none was supplied, and an
+    #: outcome without a canonical one is never written.
+    boot_id: str = ""
 
     def as_document(self) -> dict:
         return {
             "contract": PROBE_CONTRACT,
+            "boot_id": self.boot_id,
             "observed_at": self.observed_at,
             "ttl_seconds": self.ttl_seconds,
             "package_version": self.package_version,
@@ -195,6 +217,7 @@ def probe(
     runner: Optional[Callable[[Sequence[str], Optional[Path]], object]] = None,
     unit_reader: Callable[[str, str], object] = no_unit_reader,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    boot_id: str = "",
 ) -> ProbeOutcome:
     """Run once. Never raises for anything the node could be doing wrong.
 
@@ -202,6 +225,9 @@ def probe(
     `systemd_bus.EdgeUnitStateReader`, which can read one unit's state and
     nothing else -- so a deployment gets the fixed spawn and a read-only bus,
     and a test gets to drive both without a systemd or an Edge Core.
+
+    `boot_id` is recorded, not checked here: `write_result` refuses an
+    outcome without a canonical one, and `main` reads it before probing.
     """
 
     run = runner if runner is not None else _run
@@ -219,6 +245,7 @@ def probe(
         running=Evidence.NOT_CHECKED,
         running_reason=reason,
         ttl_seconds=ttl_seconds,
+        boot_id=boot_id,
     )
 
     try:
@@ -250,6 +277,7 @@ def probe(
             observed_at,
             artifact_digest,
             ttl_seconds,
+            boot_id=boot_id,
             health=Evidence.NOT_CHECKED,
             health_reason=(
                 "the manifest declares a health command other than the one "
@@ -267,6 +295,7 @@ def probe(
             observed_at,
             artifact_digest,
             ttl_seconds,
+            boot_id=boot_id,
             health=Evidence.NOT_CHECKED,
             health_reason=(
                 f"{binary} could not be read ({exc}); the package is present "
@@ -279,6 +308,7 @@ def probe(
             observed_at,
             artifact_digest,
             ttl_seconds,
+            boot_id=boot_id,
             health=Evidence.NOT_CHECKED,
             health_reason=(
                 f"{binary} does not match the digest the manifest records for "
@@ -301,6 +331,7 @@ def probe(
         running=running,
         running_reason=running_reason,
         ttl_seconds=ttl_seconds,
+        boot_id=boot_id,
     )
 
 
@@ -309,6 +340,7 @@ def _bound(
     artifact_digest: str,
     ttl_seconds: int,
     *,
+    boot_id: str,
     health: Evidence,
     health_reason: str,
     running: tuple,
@@ -325,6 +357,7 @@ def _bound(
         running=running_evidence,
         running_reason=running_reason,
         ttl_seconds=ttl_seconds,
+        boot_id=boot_id,
     )
 
 
@@ -465,8 +498,17 @@ def _run(argv: Sequence[str], cwd: Optional[Path]):
 
 
 def write_result(outcome: ProbeOutcome, path: Path = PROBE_STATE_PATH) -> Path:
-    """Write the state file atomically, with no window on a partial one."""
+    """Write the state file atomically, with no window on a partial one.
 
+    Refuses (`ValueError`, nothing written) an outcome that does not name the
+    boot it was observed in: a v2 reader could not use it, and a v1-shaped
+    file would read as stale anyway.
+    """
+
+    if not is_boot_id(outcome.boot_id):
+        raise ValueError(
+            "the probe outcome names no boot it was observed in; nothing was written"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(outcome.as_document(), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
@@ -504,18 +546,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    # This boot, read before anything is probed. Unreadable means nothing is
+    # run and nothing is written (contract v2): a result that cannot name its
+    # boot is one no reader may use.
+    try:
+        boot_id = read_current_boot_id()
+    except EdgePackageRefused as exc:
+        print(f"refused: this boot's id could not be read, so nothing was "
+              f"probed or written: {exc}", file=sys.stderr)
+        return 2
+
     # The one systemd view the probe gets: read-only, one unit, connected on
     # first read. A refused or absent bus is `not-checked`, never `failed`,
     # and health does not wait on it (#195: without this, `running` was never
     # read on an installed node).
     reader = EdgeUnitStateReader()
     try:
-        outcome = probe(unit_reader=reader)
+        outcome = probe(unit_reader=reader, boot_id=boot_id)
     finally:
         reader.close()
     try:
         write_result(outcome)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"refused: the probe result could not be written: {exc}", file=sys.stderr)
         return 2
     if args.echo:

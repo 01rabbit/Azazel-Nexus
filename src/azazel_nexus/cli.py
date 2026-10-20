@@ -31,12 +31,14 @@ from .operator_trust import ApprovalRefused
 from .compatibility import TestedTupleSet
 from .decoy import IsolationCheck, evaluate as evaluate_decoy
 from .edge_package import (
+    BOOT_ID_PATH as EDGE_BOOT_ID_PATH,
     EDGE_PACKAGE_ROOT,
     PROBE_STATE_PATH,
     EdgeInspection,
     EdgePackageRefused,
     inspect as inspect_edge,
     load_probe_result,
+    read_current_boot_id,
 )
 from .audit import AuditLedger
 from .hil_preflight import (
@@ -447,6 +449,27 @@ def _probe_result(path: Path, out: TextIO):
         return None
 
 
+def _current_boot(path: Path, out: TextIO):
+    """This boot's id, or `None` -- which makes every probe result stale.
+
+    Said on the screen rather than swallowed: without it the operator would
+    see every Edge result go stale and not know why.
+    """
+
+    try:
+        # The operator's own file is as trusted as root's to the operator's
+        # own screen; on a node the path is procfs, which root owns.
+        return read_current_boot_id(path, owner_uid=os.geteuid())
+    except EdgePackageRefused as exc:
+        print(
+            f"this boot's id could not be read ({exc}); no edge probe result "
+            "can be shown to be from this boot",
+            file=out,
+        )
+        print(file=out)
+        return None
+
+
 def _render_knowledge(reading: dict, out: TextIO) -> None:
     """Render only facts returned by the commissioned trust status reader."""
 
@@ -763,6 +786,9 @@ def main(
     )
     parser.add_argument(
         "--edge-probe", type=Path, default=PROBE_STATE_PATH, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--edge-boot-id", type=Path, default=EDGE_BOOT_ID_PATH, help=argparse.SUPPRESS
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1110,8 +1136,10 @@ def main(
         # `status` never probes. It reads what `az-edge-probed` last
         # wrote (Nexus#72) and passes it in; package, version and digest
         # are still derived here, from the files, every time.
+        probe = _probe_result(args.edge_probe, stream)
         edge = inspect_edge(
-            args.edge_root, probe=_probe_result(args.edge_probe, stream), now=as_of
+            args.edge_root, probe=probe, now=as_of,
+            boot_id=_current_boot(args.edge_boot_id, stream) if probe else None,
         )
         knowledge = _knowledge_reading(args.knowledge_lite, as_of=as_of)
         _render_status(

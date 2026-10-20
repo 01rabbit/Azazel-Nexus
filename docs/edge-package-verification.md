@@ -34,8 +34,8 @@ contract, independently of the payload unit. Running is the consequence of
 starting. An activation grant permits launch and never implies readiness;
 `ready`, status, projections and inspection events keep all five checks.
 The lease-bearing daemon path reads the installed package and fresh probe file
-on every pass. Missing, stale or unreadable probe results leave health and
-running false; inspection errors establish no checks. Lease, node health and
+on every pass. Missing, stale, other-boot or unreadable probe results leave
+health and running false; inspection errors establish no checks. Lease, node health and
 commissioning requirements are unchanged. The boot refusing pass still supplies
 no lease, no Edge evidence and `healthy=False`, and grants nothing.
 
@@ -147,15 +147,22 @@ that is not there. It is used only when it names the same version and the same
 artifact digest the library just derived; a result about a different package
 is a result about something else.
 
-### Three ways a result supplies nothing
+### Four ways a result supplies nothing
 
 * **Stale** — older than its own TTL. An old answer about a running process is
   not a weak answer, it is an answer about a different moment.
+* **From another boot** — probe contract v2
+  (`azazel-nexus/edge-probe/v2`, #206 P5) records `boot_id`, the kernel's
+  `/proc/sys/kernel/random/boot_id` when the probe ran. A reader uses a result
+  only when it equals the current boot's id, in addition to the TTL; the
+  reason reads `stale: from another boot`. A v1 result names no boot and is
+  always stale (`stale: the probe result is azazel-nexus/edge-probe/v1 ...`),
+  and so is every result when the current boot's id cannot be read.
 * **Mismatched** — it names another version or another digest.
 * **Unverifiable** — the artifact on disk does not match its own manifest, so
   a result agreeing with that manifest agrees with nothing to rely on.
 
-All three produce `not-checked`, never `failed`. **Staleness never promotes,
+All four produce `not-checked`, never `failed`. **Staleness never promotes,
 and it never accuses either**: an operator sent to restart a healthy Edge
 because a probe went stale is an operator doing harm on our word.
 
@@ -174,6 +181,17 @@ Before running anything the probe requires the package present, the version
 pinned, the archive digest re-derived, **and the unpacked binary about to run
 to match the digest the manifest records for it** — because an intact archive
 says nothing about the file next to it that actually executes.
+
+### The boot id is read the protected way
+
+Both the probe and every reader use `edge_package.read_current_boot_id`: no
+symlink is followed, the file must be a regular file owned by root (status
+also accepts a file it owns itself, for its own screen) and writable by nobody
+else, the read is bounded, and the value must be a canonical lowercase UUID.
+The probe reads it **before** probing; when it cannot, it probes nothing,
+writes nothing and exits 2, and `write_result` refuses any outcome without a
+canonical boot id. `azazel-nexus status` prints a line saying the boot id
+could not be read rather than letting every result go stale silently.
 
 ### It starts nothing
 
@@ -208,6 +226,30 @@ install like every other governed unit. It is `SUPPORTING` rather than
 it may be granted, and this is the unit that establishes whether one is
 healthy and running. A probe that could only run once Edge was established
 could never establish it.
+
+### The boot preflight (#206 P5, design E1)
+
+`azazel-edge-probe-preflight.service` runs the same
+`/usr/libexec/azazel/az-edge-probed` as the same `azprobe`, with the same
+sandbox (`RestrictAddressFamilies=AF_UNIX`, `IPAddressDeny=any`, the shared
+hardening, `ReadWritePaths` limited to the result leaf). Its profile is derived
+from the governed probe's in `hardening.py`, so the two cannot drift. It is
+**not governed**: it is not in `activation.CORE_UNITS`, the pass never masks
+or unmasks it, and no lease admits it. It is `Type=oneshot`,
+`Before=azazel-activated.service`, `WantedBy=multi-user.target`,
+`TimeoutStartSec=60s`, with no `After=`/`Requires=` on the controller and no
+`RuntimeDirectory=`. The installer installs it and enables it beside the
+controller (the preset enables both, exactly); it is never masked.
+
+It exists because the governed probe runs only after the controller, so at the
+boot pass no result from this boot existed and edge-core was always withheld
+(`edge_not_ready`). With the preflight, the pass reads health from this boot.
+`running` at that moment is `failed` (edge-core has not started yet), which is
+expected: launch admission needs the four package checks, of which health is
+the only one from the probe, and `edge-baseline-ready` still needs all five.
+If the preflight fails or is slow, the controller still runs (it is ordered
+after, not dependent) and Edge stays withheld. It opens no network socket,
+grants nothing and can only narrow what the pass grants.
 
 The result is `/var/lib/azazel/run/edge-probe/edge-probe.json`
 (`edge_package.PROBE_STATE_PATH`), in a leaf of its own that the installer

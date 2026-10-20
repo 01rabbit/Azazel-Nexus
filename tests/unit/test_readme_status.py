@@ -91,6 +91,12 @@ def test_every_shipped_unit_is_one_the_runtime_provides():
     entry_points = (REPO / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
     assert "azazel-edge-core" in shipped
     shipped.remove("azazel-edge-core")  # The verified Edge package supplies its binary.
+    # The boot preflight runs the probe's own entry point (#206 P5).
+    assert "azazel-edge-probe-preflight" in shipped
+    shipped.remove("azazel-edge-probe-preflight")
+    preflight = (REPO / "packaging" / "systemd" / "azazel-edge-probe-preflight.service")
+    assert "ExecStart=/usr/libexec/azazel/az-edge-probed\n" in preflight.read_text(
+        encoding="utf-8")
     for unit in sorted(shipped):
         script = unit.replace("azazel-", "az-")
         assert f"{script} =" in entry_points, f"{unit} has no entry point"

@@ -70,6 +70,18 @@ went stale. **Staleness never promotes**: there is no path by which an old
 result, a mismatched result, or an unparseable one produces anything but
 `not-checked`, and `edge-baseline-ready` needs all five checks `passed`.
 
+## A result is bound to the boot it was observed in (#206, P5)
+
+Probe contract v2 adds `boot_id`, the kernel's
+`/proc/sys/kernel/random/boot_id` at the time of the probe. A reader uses a
+result only when that equals the current boot's id, read by the same
+protected reader (`read_current_boot_id`), **in addition to** the TTL: the
+boot-time probe preflight runs moments before the activation pass, so a
+result written just before a reboot would otherwise still be inside its TTL
+after it. A result from another boot, a v1 result (which carries no boot and
+so cannot be shown to be from this one), or any result when this boot's id
+cannot be read is `not-checked` and says it is stale -- never `failed`.
+
 The injected callables remain for tests and for a deployment that supplies
 these another way. Passing both a probe result and a non-default callable is
 refused: two sources for one finding is one source too many.
@@ -96,12 +108,16 @@ __all__ = [
     "EDGE_PACKAGE_ROOT",
     "EDGE_UNIT",
     "HEALTH_ARGV",
+    "BOOT_ID_PATH",
     "PROBE_CONTRACT",
+    "PROBE_CONTRACT_V1",
     "PROBE_MAX_BYTES",
     "PROBE_STATE_PATH",
     "ProbeResult",
     "load_probe_result",
     "parse_probe_result",
+    "is_boot_id",
+    "read_current_boot_id",
     "EdgeInspection",
     "EdgePin",
     "Evidence",
@@ -146,11 +162,24 @@ HEALTH_ARGV = ("bin/azazel-edge-core", "--health")
 #: The operator group may list and read the leaf, and the result itself is
 #: `0644`, so the operator who runs `azazel-nexus status` (and root) reads it
 #: by name. Durability across a reboot is not a problem the location has to
-#: solve; the TTL solves it, and a result from before a reboot is stale by
-#: exactly the rule that makes any other old result stale.
+#: solve; the boot binding solves it (contract v2): a result from before a
+#: reboot names another boot and is stale whatever its TTL says.
 PROBE_STATE_PATH = Path("/var/lib/azazel/run/edge-probe/edge-probe.json")
 PROBE_CLOCK_SKEW_SECONDS = 5
-PROBE_CONTRACT = "azazel-nexus/edge-probe/v1"
+#: The contract the probe writes and readers use. v2 adds `boot_id`.
+PROBE_CONTRACT = "azazel-nexus/edge-probe/v2"
+#: The previous contract. Still parsed, so that `status` can say why it is not
+#: used, and always stale: it names no boot, so it cannot be shown to be from
+#: this one.
+PROBE_CONTRACT_V1 = "azazel-nexus/edge-probe/v1"
+
+#: The kernel's identifier for the current boot. Fixed, like every other path
+#: here; tests inject another one.
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+
+#: The most this reads from the boot id file: 36 characters and a newline.
+_BOOT_ID_MAX_BYTES = 64
+_BOOT_ID_HEX = "0123456789abcdef"
 
 #: A ceiling on what is read from the state file. A reader with no ceiling is
 #: a reader whose memory is decided by whatever wrote the file.
@@ -401,9 +430,24 @@ class ProbeResult:
     running_reason: str
     #: True only when the probe found a healthy report from the wrong version.
     health_security: bool = False
+    #: The boot the probe ran in (v2). `None` only on a v1 result, which is
+    #: parsed so that a reader can say why it is not used, and never used.
+    boot_id: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if self.contract != PROBE_CONTRACT:
+        if self.contract == PROBE_CONTRACT:
+            if not is_boot_id(self.boot_id):
+                raise EdgePackageRefused(
+                    f"a {PROBE_CONTRACT} result names the boot it was observed "
+                    "in as a canonical boot id"
+                )
+        elif self.contract == PROBE_CONTRACT_V1:
+            if self.boot_id is not None:
+                raise EdgePackageRefused(
+                    f"a {PROBE_CONTRACT_V1} result carries no boot_id; one that "
+                    "does is neither contract"
+                )
+        else:
             raise EdgePackageRefused(
                 f"the probe result declares contract {self.contract!r} and this "
                 f"node reads {PROBE_CONTRACT!r}"
@@ -454,8 +498,21 @@ class ProbeResult:
             _instant(now) + timedelta(seconds=PROBE_CLOCK_SKEW_SECONDS)
         )
 
+    def from_boot(self, boot_id: Optional[str]) -> bool:
+        """Whether this result was observed in the boot `boot_id` names.
+
+        False for a v1 result, for an unknown current boot (`None`), and for
+        any other boot. Only an exact match of two canonical ids is True.
+        """
+
+        return (
+            self.contract == PROBE_CONTRACT
+            and is_boot_id(boot_id)
+            and self.boot_id == boot_id
+        )
+
     def as_event(self) -> dict:
-        return {
+        document = {
             "contract": self.contract,
             "observed_at": self.observed_at,
             "ttl_seconds": self.ttl_seconds,
@@ -467,6 +524,68 @@ class ProbeResult:
             "running": self.running.value,
             "running_reason": self.running_reason,
         }
+        if self.boot_id is not None:
+            document["boot_id"] = self.boot_id
+        return document
+
+
+def is_boot_id(value: object) -> bool:
+    """A canonical lowercase UUID, as the kernel writes it. Nothing else."""
+
+    if type(value) is not str or len(value) != 36:
+        return False
+    for index, char in enumerate(value):
+        if index in (8, 13, 18, 23):
+            if char != "-":
+                return False
+        elif char not in _BOOT_ID_HEX:
+            return False
+    return True
+
+
+def read_current_boot_id(
+    path: Path = BOOT_ID_PATH, *, owner_uid: Optional[int] = None,
+) -> str:
+    """This boot's id, read the protected way, or `EdgePackageRefused`.
+
+    No symlink is followed, the file must be a regular one (procfs reports the
+    sysctl as one) owned by root -- or by `owner_uid` when a caller names one,
+    as `status` names itself -- and writable by nobody else, the read is
+    bounded, and the value must be a canonical lowercase UUID. Anything else
+    refuses: the probe then writes nothing, and a reader treats every result
+    as stale.
+    """
+
+    trusted = (0,) if owner_uid is None else (0, owner_uid)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode)
+                    or info.st_uid not in trusted
+                    or info.st_mode & 0o022):
+                raise EdgePackageRefused("the boot id has unsafe ownership or mode")
+            raw = stream.read(_BOOT_ID_MAX_BYTES + 1)
+    except OSError as exc:
+        raise EdgePackageRefused(f"the boot id could not be read: {exc}") from exc
+    if len(raw) > _BOOT_ID_MAX_BYTES:
+        raise EdgePackageRefused("the boot id is longer than a boot id")
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise EdgePackageRefused("the boot id is not ASCII") from exc
+    if text.endswith("\n"):
+        text = text[:-1]
+    if not is_boot_id(text):
+        raise EdgePackageRefused("the boot id is not a canonical boot id")
+    return text
+
+
+def _optional_boot_id(path: Path) -> Optional[str]:
+    try:
+        return read_current_boot_id(path)
+    except EdgePackageRefused:
+        return None
 
 
 def _zulu(isoformat: str) -> str:
@@ -545,6 +664,8 @@ def parse_probe_result(text: str) -> ProbeResult:
         running = Evidence(document["running"])
     except ValueError as exc:
         raise EdgePackageRefused(f"the probe state names an unknown evidence: {exc}") from exc
+    if document["contract"] == PROBE_CONTRACT and "boot_id" not in document:
+        raise EdgePackageRefused("the probe state is missing ['boot_id']")
     return ProbeResult(
         contract=document["contract"],
         observed_at=document["observed_at"],
@@ -556,6 +677,7 @@ def parse_probe_result(text: str) -> ProbeResult:
         running=running,
         running_reason=document["running_reason"],
         health_security=bool(document.get("health_security", False)),
+        boot_id=document.get("boot_id"),
     )
 
 
@@ -598,20 +720,23 @@ def load_probe_result(
 
 def installed_baseline_state(
     *, now: str, package_root: Path = EDGE_PACKAGE_ROOT,
-    probe_path: Path = PROBE_STATE_PATH,
+    probe_path: Path = PROBE_STATE_PATH, boot_id_path: Path = BOOT_ID_PATH,
 ) -> EdgeBaselineState:
     """Activation evidence from fixed installed paths, re-derived each pass.
 
-    Only a fresh, package-bound probe supplies health or running. An unreadable
-    probe supplies neither; an inspection error establishes no checks at all.
-    This reads files only and never invokes the binary or the service manager.
+    Only a fresh, package-bound probe from this boot supplies health or
+    running. An unreadable probe supplies neither, and neither does any probe
+    when this boot's id cannot be read; an inspection error establishes no
+    checks at all. This reads files only and never invokes the binary or the
+    service manager.
     """
     try:
         try:
             probe = load_probe_result(probe_path)
         except Exception:  # noqa: BLE001 - unreadable evidence never grants
             probe = None
-        return inspect(package_root, probe=probe, now=now).state()
+        boot_id = _optional_boot_id(boot_id_path) if probe is not None else None
+        return inspect(package_root, probe=probe, now=now, boot_id=boot_id).state()
     except Exception:  # noqa: BLE001 - inspection failure establishes nothing
         return EdgeBaselineState(False, False, False, False, False)
 
@@ -645,6 +770,7 @@ def inspect(
     pin: EdgePin = PIN,
     probe: Optional[ProbeResult] = None,
     now: str = "",
+    boot_id: Optional[str] = None,
     health: Callable[[], Optional[HealthAnswer]] = no_health_probe,
     running: Callable[[], Optional[bool]] = no_running_probe,
 ) -> EdgeInspection:
@@ -652,8 +778,11 @@ def inspect(
 
     `probe` is `az-edge-probed`'s last result. When it is given, it supplies
     `health_endpoint_healthy` and `running` -- and only when it names the same
-    version and artifact digest derived here, and only while it is fresh at
-    `now`. Package, version and digest are always derived here regardless.
+    version and artifact digest derived here, only when it was observed in
+    the boot `boot_id` names (the current one, read by the caller with
+    `read_current_boot_id`; `None` when it could not be read, which makes
+    every result stale), and only while it is fresh at `now`. Package, version
+    and digest are always derived here regardless.
 
     `now` is passed in rather than read: a verifier that read a clock would
     give two different answers about one unchanged node.
@@ -725,6 +854,7 @@ def inspect(
             _probe_findings(
                 probe,
                 now=now,
+                boot_id=boot_id,
                 manifest_version=manifest["version"],
                 artifact_digest=manifest["digest"],
                 digest_held=digest_finding.held,
@@ -744,6 +874,7 @@ def _probe_findings(
     probe: ProbeResult,
     *,
     now: str,
+    boot_id: Optional[str],
     manifest_version: str,
     artifact_digest: str,
     digest_held: bool,
@@ -756,7 +887,8 @@ def _probe_findings(
     * the artifact on disk does not match its own manifest -- so "the same
       version and digest" is agreement between two things that are both
       suspect;
-    * it is older than its own TTL -- an old answer about a running process is
+    * it is from another boot (or names none, or this boot is unknown), or it
+      is older than its own TTL -- an old answer about a running process is
       not a weak answer, it is an answer about a different moment.
 
     None of the three is a failure of the Edge Core, and none of them may
@@ -782,6 +914,25 @@ def _probe_findings(
             f"{probe.package_digest}, and the package here is "
             f"{manifest_version}/{artifact_digest}. A result about a different "
             "package is a result about something else"
+        )
+    if probe.contract != PROBE_CONTRACT:
+        return unusable(
+            f"stale: the probe result is {probe.contract}, which names no boot, "
+            "so it cannot be shown to be from this boot. It is not used, and it "
+            "is not a failure of the Edge Core either"
+        )
+    if not is_boot_id(boot_id):
+        return unusable(
+            "stale: this boot's id could not be read, so no probe result can be "
+            "shown to be from this boot. It is not used, and it is not a "
+            "failure of the Edge Core either"
+        )
+    if not probe.from_boot(boot_id):
+        return unusable(
+            f"stale: from another boot. The probe result observed at "
+            f"{probe.observed_at} names a boot other than this one, so it is "
+            "not used whatever its TTL says, and it is not a failure of the "
+            "Edge Core either"
         )
     if probe.future_at(now):
         return unusable("the probe observed_at is more than 5 seconds in the future; not checked")

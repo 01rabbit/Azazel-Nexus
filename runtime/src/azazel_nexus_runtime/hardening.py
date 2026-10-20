@@ -48,7 +48,7 @@ actually blocks a socket, whether an unprivileged account is refused
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
@@ -56,7 +56,10 @@ from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 
 __all__ = [
+    "ALL_PROFILES",
+    "EDGE_PROBE_PREFLIGHT_UNIT",
     "PROFILES",
+    "UNGOVERNED_PROFILES",
     "SHARED_HARDENING",
     "ServiceProfile",
     "SYSTEM_ACCOUNTS",
@@ -747,6 +750,56 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
     ),
 )
+
+
+#: The Edge probe's boot preflight (#206 P5, design E1).
+EDGE_PROBE_PREFLIGHT_UNIT = "azazel-edge-probe-preflight.service"
+
+
+def _edge_probe_preflight() -> ServiceProfile:
+    """`azazel-edge-probed.service`'s profile, ordered before the controller.
+
+    Derived from the governed probe's declaration rather than restated, so the
+    account, executable, address families, writable leaf and shared sandbox
+    cannot drift apart: a change to one is a change to both. Only what makes
+    it a boot preflight differs -- no `After=`/`Requires=` on the controller,
+    `Before=` it instead, a start deadline so a hung probe cannot hold the
+    boot, and no `RuntimeDirectory=` (it owns nothing under `/run`, and the
+    controller's `/run/azazel` is not its to create or remove).
+    """
+
+    probed = next(item for item in PROFILES if item.unit == "azazel-edge-probed.service")
+    return replace(
+        probed,
+        unit=EDGE_PROBE_PREFLIGHT_UNIT,
+        description="Azazel-Nexus Edge probe boot preflight",
+        after=(),
+        requires=(),
+        before=(ACTIVATION_CONTROLLER_UNIT,),
+        runtime_directory="",
+        extra=(("TimeoutStartSec", "60s"),),
+        rationale=(
+            "Not governed by the activation controller: it runs before it, at "
+            "every boot, so that the pass reads Edge health from this boot "
+            "(probe contract v2 binds the result to the boot id). It runs the "
+            "same fixed az-edge-probed as the same unprivileged azprobe "
+            "account, in the same sandbox as azazel-edge-probed.service, and "
+            "writes only the same result leaf. It opens no network socket: "
+            "`AF_UNIX` is all it is allowed, and `IPAddressDeny=any` holds. "
+            "It grants nothing; a result it writes only narrows what the pass "
+            "may grant, and its failure leaves Edge withheld"
+        ),
+    )
+
+
+#: Units installed and enabled beside the controller that the controller
+#: does **not** govern: never in `activation.CORE_UNITS`, never masked or
+#: unmasked by a pass, and not admitted by any lease. Each is read-only with
+#: respect to activation -- it can only narrow what a pass grants.
+UNGOVERNED_PROFILES: tuple[ServiceProfile, ...] = (_edge_probe_preflight(),)
+
+#: Every packaged unit, governed or not, for the renderer and the installer.
+ALL_PROFILES: tuple[ServiceProfile, ...] = PROFILES + UNGOVERNED_PROFILES
 
 
 def render_unit(profile: ServiceProfile) -> str:

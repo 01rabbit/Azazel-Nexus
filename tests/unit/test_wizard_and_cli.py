@@ -714,6 +714,16 @@ def _verified_package(tmp_path):
     return root, "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+STATUS_BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
+
+
+def _boot_id_file(tmp_path, value=STATUS_BOOT + "\n"):
+    path = tmp_path / "boot_id"
+    path.write_text(value, encoding="ascii")
+    path.chmod(0o444)
+    return path
+
+
 def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **overrides):
     import json
 
@@ -721,6 +731,7 @@ def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **over
 
     document = {
         "contract": PROBE_CONTRACT,
+        "boot_id": STATUS_BOOT,
         "observed_at": observed_at,
         "ttl_seconds": 300,
         "package_version": PIN.version,
@@ -732,13 +743,17 @@ def _probe_state(tmp_path, digest, *, observed_at="2026-09-21T04:00:00Z", **over
         "running_reason": "azazel-edge-core.service is active/running",
     }
     document.update(overrides)
+    document = {key: value for key, value in document.items() if value is not None}
     path = tmp_path / "edge-probe.json"
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
 
 
-def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z"):
+def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z",
+                      boot_id_path=None):
     out = io.StringIO()
+    if boot_id_path is None and not (tmp_path / "boot_id").exists():
+        boot_id_path = _boot_id_file(tmp_path)
     main(
         [
             "--sysfs",
@@ -747,6 +762,8 @@ def _status_with_edge(tmp_path, root, state, *, as_of="2026-09-21T04:01:00Z"):
             str(root),
             "--edge-probe",
             str(state),
+            "--edge-boot-id",
+            str(boot_id_path or tmp_path / "boot_id"),
             "--as-of",
             as_of,
             "status",
@@ -785,6 +802,43 @@ def test_status_withholds_when_the_probe_reports_another_package(tmp_path):
     text = _status_with_edge(tmp_path, root, state)
     assert "edge-baseline-ready: no" in text
     assert "A result about a different package" in text
+
+
+def test_status_withholds_a_fresh_result_from_another_boot(tmp_path):
+    """Probe contract v2 (#206 P5): inside its TTL, but not from this boot."""
+
+    root, digest = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, digest, boot_id="11111111-2222-4333-8444-555555555555")
+    text = _status_with_edge(tmp_path, root, state)
+    assert "edge-baseline-ready: no" in text
+    assert "stale: from another boot" in text
+    assert "health_endpoint_healthy: not-checked" in text
+    assert "running: not-checked" in text
+    # Package, version and digest are still derived from the files.
+    assert "package_present: passed" in text
+    assert "digest_matches: passed" in text
+
+
+def test_status_treats_a_v1_result_as_stale(tmp_path):
+    from azazel_nexus.edge_package import PROBE_CONTRACT_V1
+
+    root, digest = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, digest, contract=PROBE_CONTRACT_V1, boot_id=None)
+    text = _status_with_edge(tmp_path, root, state)
+    assert "was refused" not in text
+    assert "edge-baseline-ready: no" in text
+    assert f"stale: the probe result is {PROBE_CONTRACT_V1}" in text
+    assert "health_endpoint_healthy: not-checked" in text
+
+
+def test_status_says_so_when_this_boot_cannot_be_read(tmp_path):
+    root, digest = _verified_package(tmp_path)
+    state = _probe_state(tmp_path, digest)
+    text = _status_with_edge(tmp_path, root, state,
+                             boot_id_path=tmp_path / "no-such-boot-id")
+    assert "this boot's id could not be read" in text
+    assert "edge-baseline-ready: no" in text
+    assert "health_endpoint_healthy: not-checked" in text
 
 
 def test_status_says_so_when_the_probe_state_is_garbage_and_carries_on(tmp_path):
@@ -1156,7 +1210,8 @@ def test_launchable_inactive_edge_is_not_ready_in_status_or_projection(tmp_path)
     assert "edge core (local): not-running" in text
     assert "baseline-ready: yes" not in text
     from azazel_nexus.edge_package import inspect, load_probe_result
-    inspection = inspect(root, probe=load_probe_result(state), now="2026-09-21T04:01:00Z")
+    inspection = inspect(root, probe=load_probe_result(state), now="2026-09-21T04:01:00Z",
+                         boot_id=STATUS_BOOT)
     assert inspection.state().launchable
     assert not inspection.as_event()["ready"]
     assert not inspection.ready

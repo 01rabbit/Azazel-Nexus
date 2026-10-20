@@ -29,7 +29,9 @@ from azazel_nexus.activation import EdgeBaselineState
 from azazel_nexus.edge_package import (
     CHECKS,
     PROBE_CONTRACT,
+    PROBE_CONTRACT_V1,
     ProbeResult,
+    read_current_boot_id,
     load_probe_result,
     parse_probe_result,
     HEALTHY_STATUS,
@@ -779,9 +781,21 @@ def test_nothing_reads_the_startup_block_of_an_edge_manifest():
 # and the one way it supplies something.
 
 
+BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
+OTHER_BOOT = "11111111-2222-4333-8444-555555555555"
+
+
+def _boot_file(tmp_path, value=BOOT + "\n", name="boot_id"):
+    path = tmp_path / name
+    path.write_text(value, encoding="ascii")
+    path.chmod(0o444)
+    return path
+
+
 def _result(**overrides) -> ProbeResult:
     fields = {
         "contract": PROBE_CONTRACT,
+        "boot_id": BOOT,
         "observed_at": "2026-09-21T03:00:00Z",
         "ttl_seconds": 300,
         "package_version": PIN.version,
@@ -804,7 +818,7 @@ def test_a_fresh_matching_result_supplies_both_findings(tmp_path):
     inspection = inspect(
         root,
         probe=_result(package_digest=_digest_of(tmp_path)),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.ready is True
     assert inspection.presence is EdgePresence.VERIFIED_READY
@@ -816,7 +830,7 @@ def test_a_result_about_another_version_supplies_nothing(tmp_path):
     inspection = inspect(
         root,
         probe=_result(package_version="9.9.9", package_digest=_digest_of(tmp_path)),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.unchecked == ("health_endpoint_healthy", "running")
     assert "A result about a different package" in inspection.finding("running").reason
@@ -827,7 +841,7 @@ def test_a_result_about_another_digest_supplies_nothing(tmp_path):
     inspection = inspect(
         root,
         probe=_result(package_digest="sha256:" + "0" * 64),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.unchecked == ("health_endpoint_healthy", "running")
 
@@ -839,7 +853,7 @@ def test_a_stale_result_supplies_nothing_and_is_not_a_failure(tmp_path):
     inspection = inspect(
         root,
         probe=_result(package_digest=_digest_of(tmp_path)),
-        now="2026-09-21T03:06:00Z",
+        now="2026-09-21T03:06:00Z", boot_id=BOOT,
     )
     assert inspection.unchecked == ("health_endpoint_healthy", "running")
     assert inspection.finding("running").evidence is not Evidence.FAILED
@@ -851,8 +865,8 @@ def test_the_boundary_of_freshness_is_the_ttl(tmp_path):
     root = _package(tmp_path)
     probe = _result(package_digest=_digest_of(tmp_path))
     assert probe.expires_at() == "2026-09-21T03:05:00Z"
-    assert inspect(root, probe=probe, now="2026-09-21T03:04:59Z").ready is True
-    assert inspect(root, probe=probe, now="2026-09-21T03:05:00Z").ready is False
+    assert inspect(root, probe=probe, now="2026-09-21T03:04:59Z", boot_id=BOOT).ready is True
+    assert inspect(root, probe=probe, now="2026-09-21T03:05:00Z", boot_id=BOOT).ready is False
 
 
 def test_a_result_agreeing_with_a_tampered_manifest_supplies_nothing(tmp_path):
@@ -862,7 +876,7 @@ def test_a_result_agreeing_with_a_tampered_manifest_supplies_nothing(tmp_path):
     inspection = inspect(
         root,
         probe=_result(package_digest="sha256:" + "0" * 64),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.presence is EdgePresence.DIGEST_MISMATCH
     assert inspection.unchecked == ("health_endpoint_healthy", "running")
@@ -876,7 +890,7 @@ def test_a_probe_result_can_only_withhold_never_invent_a_package(tmp_path):
     inspection = inspect(
         empty,
         probe=_result(package_digest="sha256:" + "0" * 64),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.presence is EdgePresence.ABSENT
     assert inspection.ready is False
@@ -887,7 +901,7 @@ def test_a_probe_result_and_a_callable_together_are_refused(tmp_path):
         inspect(
             _package(tmp_path),
             probe=_result(),
-            now="2026-09-21T03:01:00Z",
+            now="2026-09-21T03:01:00Z", boot_id=BOOT,
             running=lambda: True,
         )
 
@@ -908,7 +922,7 @@ def test_a_failed_probe_verdict_is_carried_through_with_its_reason(tmp_path):
             running=Evidence.FAILED,
             running_reason="the unit is inactive/dead, which is not running",
         ),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.presence is EdgePresence.NOT_RUNNING
     assert "inactive/dead" in inspection.finding("running").reason
@@ -924,7 +938,7 @@ def test_a_probe_security_finding_survives_into_the_inspection(tmp_path):
             health_reason="the health report is from version 9.9.9",
             health_security=True,
         ),
-        now="2026-09-21T03:01:00Z",
+        now="2026-09-21T03:01:00Z", boot_id=BOOT,
     )
     assert inspection.security_findings != ()
     assert inspection.presence is EdgePresence.UNHEALTHY
@@ -1026,6 +1040,10 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
     # Retain the real file reader, substituting only the fixed path for this test.
     read_probe = edge_package.load_probe_result
     monkeypatch.setattr(edge_package, "load_probe_result", lambda path: read_probe(path, owner_uid=os.geteuid()))
+    read_boot = edge_package.read_current_boot_id
+    monkeypatch.setattr(edge_package, "read_current_boot_id",
+                        lambda path: read_boot(path, owner_uid=os.geteuid()))
+    boot_path = _boot_file(tmp_path)
     now = "2026-09-21T03:01:00Z"
     if case == "stale":
         now = "2026-09-21T03:05:00Z"
@@ -1047,7 +1065,7 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
             raise OSError("package unreadable")
         monkeypatch.setattr(edge_package, "inspect", broken_inspection)
     state = edge_package.installed_baseline_state(
-        now=now, package_root=root, probe_path=state_path,
+        now=now, package_root=root, probe_path=state_path, boot_id_path=boot_path,
     )
     if case == "fresh":
         assert state.observed_at == result.observed_at
@@ -1075,7 +1093,7 @@ def test_installed_activation_producer(tmp_path, monkeypatch, case):
     monkeypatch.setattr(
         "azazel_nexus_runtime.activated.installed_baseline_state",
         lambda *, now: edge_package.installed_baseline_state(
-            now=now, package_root=root, probe_path=state_path,
+            now=now, package_root=root, probe_path=state_path, boot_id_path=boot_path,
         ),
     )
     definition = next(d for d in CORE_UNITS if d.name == "azazel-edge-core.service")
@@ -1108,7 +1126,7 @@ def test_future_probe_is_not_evidence_beyond_clock_skew(tmp_path, seconds, fresh
                      observed_at=f"2026-09-21T03:00:0{seconds}Z")
     now = "2026-09-21T03:00:00Z"
     assert result.fresh_at(now) is fresh
-    inspection = inspect(root, probe=result, now=now)
+    inspection = inspect(root, probe=result, now=now, boot_id=BOOT)
     if not fresh:
         for check in ("health_endpoint_healthy", "running"):
             finding = inspection.finding(check)
@@ -1137,3 +1155,164 @@ def test_probe_reader_refuses_unsafe_file(tmp_path, unsafe):
         pytest.skip("root is an allowed probe owner")
     with pytest.raises(EdgePackageRefused, match="unsafe ownership or mode"):
         load_probe_result(path, owner_uid=os.geteuid() + 1 if unsafe == "owner" else os.geteuid())
+
+
+# -- probe contract v2: a result is bound to the boot it was observed in -----
+#
+# #206 P5. The boot-time preflight runs moments before the activation pass, so
+# a result written just before a reboot would still be inside its TTL after
+# it. The TTL alone cannot tell the two boots apart; the boot id does.
+
+
+def test_a_fresh_result_from_this_boot_supplies_both_findings(tmp_path):
+    root = _package(tmp_path)
+    probe = _result(package_digest=_digest_of(tmp_path))
+    assert probe.from_boot(BOOT)
+    inspection = inspect(root, probe=probe, now="2026-09-21T03:01:00Z", boot_id=BOOT)
+    assert inspection.ready is True
+
+
+def test_a_fresh_result_from_another_boot_is_stale_not_failed(tmp_path):
+    root = _package(tmp_path)
+    probe = _result(package_digest=_digest_of(tmp_path))
+    inspection = inspect(root, probe=probe, now="2026-09-21T03:01:00Z",
+                         boot_id=OTHER_BOOT)
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+    for check in ("health_endpoint_healthy", "running"):
+        finding = inspection.finding(check)
+        assert finding.evidence is Evidence.NOT_CHECKED
+        assert finding.reason.startswith("stale: from another boot")
+    assert inspection.ready is False
+    # Package, version and digest are still derived from the files.
+    state = inspection.state()
+    assert state.launchable is False
+    assert state.package_present and state.version_matches and state.digest_matches
+
+
+@pytest.mark.parametrize("current", [None, "", "not-a-boot", BOOT.upper()])
+def test_an_unknown_current_boot_makes_every_result_stale(tmp_path, current):
+    root = _package(tmp_path)
+    inspection = inspect(root, probe=_result(package_digest=_digest_of(tmp_path)),
+                         now="2026-09-21T03:01:00Z", boot_id=current)
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+    assert inspection.finding("running").reason.startswith(
+        "stale: this boot's id could not be read")
+
+
+def test_a_v1_result_parses_and_is_always_stale(tmp_path):
+    """v1 named no boot, so it cannot be shown to be from this one."""
+
+    root = _package(tmp_path)
+    document = _result(package_digest=_digest_of(tmp_path)).as_event()
+    document["contract"] = PROBE_CONTRACT_V1
+    del document["boot_id"]
+    legacy = parse_probe_result(json.dumps(document))
+    assert legacy.boot_id is None
+    assert not legacy.from_boot(BOOT)
+    inspection = inspect(root, probe=legacy, now="2026-09-21T03:01:00Z", boot_id=BOOT)
+    assert inspection.unchecked == ("health_endpoint_healthy", "running")
+    reason = inspection.finding("health_endpoint_healthy").reason
+    assert reason.startswith("stale:") and PROBE_CONTRACT_V1 in reason
+    assert inspection.finding("running").evidence is not Evidence.FAILED
+
+
+def test_a_v2_result_without_a_boot_id_is_refused():
+    document = _result(package_digest="d").as_event()
+    del document["boot_id"]
+    with pytest.raises(EdgePackageRefused, match="boot_id"):
+        parse_probe_result(json.dumps(document))
+
+
+@pytest.mark.parametrize("boot_id", ["", "x", BOOT.upper(), BOOT + "\n", "{" + BOOT[1:], None])
+def test_a_v2_result_with_a_malformed_boot_id_is_refused(boot_id):
+    with pytest.raises(EdgePackageRefused, match="canonical boot id"):
+        _result(boot_id=boot_id)
+
+
+def test_a_v1_result_carrying_a_boot_id_is_neither_contract():
+    with pytest.raises(EdgePackageRefused, match="neither contract"):
+        _result(contract=PROBE_CONTRACT_V1)
+
+
+def test_the_boot_id_round_trips_through_the_event(tmp_path):
+    original = _result(package_digest=_digest_of(tmp_path))
+    assert original.as_event()["boot_id"] == BOOT
+    assert parse_probe_result(json.dumps(original.as_event())) == original
+
+
+def test_the_boot_id_reader_reads_a_protected_canonical_id(tmp_path):
+    path = _boot_file(tmp_path)
+    assert read_current_boot_id(path, owner_uid=os.geteuid()) == BOOT
+
+
+@pytest.mark.parametrize("value", ["", "garbage\n", BOOT.upper() + "\n", BOOT + "\n\n",
+                                   BOOT + " \n", "x" * 100])
+def test_the_boot_id_reader_refuses_anything_but_a_canonical_id(tmp_path, value):
+    path = _boot_file(tmp_path, value)
+    with pytest.raises(EdgePackageRefused):
+        read_current_boot_id(path, owner_uid=os.geteuid())
+
+
+def test_the_boot_id_reader_refuses_a_missing_file_and_a_symlink(tmp_path):
+    with pytest.raises(EdgePackageRefused, match="could not be read"):
+        read_current_boot_id(tmp_path / "absent", owner_uid=os.geteuid())
+    link = tmp_path / "link"
+    link.symlink_to(_boot_file(tmp_path))
+    with pytest.raises(EdgePackageRefused, match="could not be read"):
+        read_current_boot_id(link, owner_uid=os.geteuid())
+
+
+@pytest.mark.parametrize("unsafe", ["owner", "mode"])
+def test_the_boot_id_reader_refuses_an_unsafe_file(tmp_path, unsafe):
+    path = _boot_file(tmp_path)
+    if unsafe == "mode":
+        path.chmod(0o666)
+        owner = os.geteuid()
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root owns the file and root is always trusted")
+        owner = None  # only root is trusted by default
+    with pytest.raises(EdgePackageRefused, match="unsafe ownership or mode"):
+        read_current_boot_id(path, owner_uid=owner)
+
+
+@pytest.mark.parametrize("case", ["same", "other", "unreadable", "v1"])
+def test_installed_evidence_is_bound_to_this_boot(tmp_path, monkeypatch, case):
+    from azazel_nexus import edge_package
+
+    root = _package(tmp_path)
+    state_path = tmp_path / "probe.json"
+    result = _result(package_digest=_digest_of(tmp_path),
+                     boot_id=OTHER_BOOT if case == "other" else BOOT)
+    document = result.as_event()
+    if case == "v1":
+        document["contract"] = PROBE_CONTRACT_V1
+        del document["boot_id"]
+    state_path.write_text(json.dumps(document), encoding="utf-8")
+    read_probe = edge_package.load_probe_result
+    monkeypatch.setattr(edge_package, "load_probe_result",
+                        lambda path: read_probe(path, owner_uid=os.geteuid()))
+    read_boot = edge_package.read_current_boot_id
+    monkeypatch.setattr(edge_package, "read_current_boot_id",
+                        lambda path: read_boot(path, owner_uid=os.geteuid()))
+    boot_path = (tmp_path / "absent-boot-id" if case == "unreadable"
+                 else _boot_file(tmp_path))
+    state = edge_package.installed_baseline_state(
+        now="2026-09-21T03:01:00Z", package_root=root, probe_path=state_path,
+        boot_id_path=boot_path,
+    )
+    assert state.launchable is (case == "same")
+    assert state.ready is (case == "same")
+    if case != "same":
+        assert state.missing_for_launch() == ("health_endpoint_healthy",)
+
+
+def test_the_installed_reader_uses_the_kernel_boot_id_by_default():
+    import inspect as introspect
+
+    from azazel_nexus import edge_package
+
+    signature = introspect.signature(edge_package.installed_baseline_state)
+    assert signature.parameters["boot_id_path"].default == Path(
+        "/proc/sys/kernel/random/boot_id")
+    assert edge_package.BOOT_ID_PATH == Path("/proc/sys/kernel/random/boot_id")
