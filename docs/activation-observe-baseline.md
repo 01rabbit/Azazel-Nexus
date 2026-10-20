@@ -211,9 +211,19 @@ reads the scope from the activation policy and measures each scoped unit file
 in `/usr/lib/systemd/system` through descriptors (root-owned, not group or
 other writable, single link, no symbolic link at any component; the profile's
 `/lib/systemd/system` is the merged-/usr link to it). When edge-core is in
-scope it adds the installed package digest, and only if the package's own
-checks pass (`edge_package.installed_package_digest`: present, observe-only,
-unsigned, pinned version, artifact digest equal to the manifest). The
+scope it adds the installed package digest and the digests of the extracted
+files the unit actually uses -- `bin/azazel-edge-core` (executed) and
+`config/redirect_policy.yaml` (named by its observe-only `Environment=`) --
+as `edge_pin.components`, and only if the package's own checks pass and the
+components agree (`edge_package.installed_package_components`: present,
+observe-only, unsigned, pinned version, artifact digest equal to the
+manifest; then, for each component, the manifest's component digest, the
+digest of that member of the verified archive (read bounded, never
+extracted) and the digest of the extracted file (opened without following
+links at any component, root-owned, not group or other writable, single
+link, bounded) must be equal). The manifest is unsigned: the equality is
+integrity at publication, and the operator's signature over the generation
+is what binds the values afterwards. The
 commissioning digest is the SHA-256 of the signed full proposal that
 `load_commissioning_evidence()` verified, and the binding is its HMAC; without
 verified evidence it refuses. It prints the units, the next generation number
@@ -432,9 +442,13 @@ none of them (P4 then wired them, §8; `tests/unit/test_activation_p4_wiring.py`
   SHA-256 of the canonical `edge_package.PIN` record, which carries no
   artifact digest of its own) and, exactly when `azazel-edge-core.service` is
   in scope, the caller-supplied `package_digest` of the installed archive (the
-  value the manifest check compares). The operator's signature over
-  `generation_digest` therefore binds one specific Edge package; outside that
-  scope the field is forbidden. The tree is refused by the bootstrap verifier
+  value the manifest check compares) and, since P5, `components`: the SHA-256
+  of exactly `bin/azazel-edge-core` and `config/redirect_policy.yaml` as
+  extracted. The operator's signature over `generation_digest` therefore
+  binds one specific Edge package and the extracted files the unit uses;
+  outside that scope both fields are forbidden. A generation published
+  before P5 with edge-core in scope lacks `components` and is refused; it
+  was never admissible (P4 refused edge-core) and is re-published. The tree is refused by the bootstrap verifier
   and refuses every other tree.
 - `runtime/src/azazel_nexus_runtime/activation_high_water.py`: read
   (absent is `None`, anything malformed refuses), initialize once, raise-only
@@ -625,19 +639,27 @@ approval names it, and the library decides it like any other
 **The signed package.** When the policy names edge-core the generation
 step derives the installed package digest
 (`edge_package.installed_package_digest`: present, observe-only, unsigned,
-pinned version, artifact equal to its manifest) and compares it with the
-tree's `edge_pin.package_digest`:
+pinned version, artifact equal to its manifest) and re-measures the
+extracted binary and redirect policy
+(`edge_package.measure_extracted_components`, the same protected no-follow
+reads as at publication), and compares them with the tree's
+`edge_pin.package_digest` and `edge_pin.components`. The archive digest alone
+would not do: the unit executes the extracted binary and reads the extracted
+policy, which root could rewrite after extraction while the archive stays
+intact.
 
-- equal: the tree is verified with that digest (`edge_package_binding:
+- all equal: the tree is verified with them (`edge_package_binding:
   bound`);
-- different (a self-consistent package other than the signed one): the
+- readable and different (a self-consistent package other than the signed
+  one, or an extracted binary or policy rewritten after publication): the
   generation is refused (`operational_generation_publisher`) and nothing is
   granted, as for a changed unit file. The operator's signature over
-  `generation_digest` binds one package; another one needs a new
-  `generation-publish`, `request` and signature;
-- no digest (the package checks fail, or the package is absent): the tree is
-  verified against its own pin so the SUPPORTING units can still be granted,
-  and edge-core is withheld (`package_refused`).
+  `generation_digest` binds one package and its extracted files; another one
+  needs a new `generation-publish`, `request` and signature;
+- unreadable (the package checks fail, the package is absent, or an extracted
+  component is missing, a link or not protected): the tree is verified
+  against its own pin so the SUPPORTING units can still be granted, and
+  edge-core is withheld (`package_refused`).
 
 The edge-core unit file, with its observe-only `Environment=` lines, is in
 the measured set like every scoped unit; a changed line refuses the
@@ -647,7 +669,8 @@ generation.
 lease was formed, the pass reads `installed_baseline_state` (the four
 package checks, and health and running from the probe result only when it is
 v2, names this boot, is within its TTL and describes the installed package).
-Unless the package was bound and the probe's package digest is the pinned one,
+Unless the package was bound and the probe's package digest is exactly the
+pinned one (a state naming no probed package is never accepted),
 `edge_package.bound_to_signed_package` reports `digest_matches` false (it only
 narrows; `edge_package` stays the only module that produces an Edge state, and
 a reader failure becomes `edge_package.nothing_established()`). The result is
@@ -671,14 +694,34 @@ controller and the controller names it nowhere (no `Requires=`, `Wants=` or
 `After=`; `tests/unit/test_runtime_hardening.py`). The controller only reads
 its result file. If the preflight failed, timed out (`TimeoutStartSec=60s`)
 or wrote nothing, the controller still runs; the pass finds no result from
-this boot, withholds edge-core with `edge_not_ready: health_endpoint_healthy`
+this boot, withholds edge-core with `edge_not_ready:
+digest_matches,health_endpoint_healthy` (no result names no probed package)
 and grants the SUPPORTING units it otherwise would. The next boot's
 preflight is the retry; nothing is started to recover.
 
-**Residual.** The package is checked at the pass; edge-core starts later in
-the boot. A package replaced between the two is not caught by this pass
-(the next boot's pass refuses it). Edge remains observe-only and the sole
-decider: Nexus decides only whether the package may launch.
+**Health is trust in `azprobe`.** The health check is what
+`az-edge-probed` wrote, as `azprobe`, into its result leaf. That account can
+write a fresh, same-boot, healthy result for the bound package without having
+run anything; it cannot make another package launchable, because the result
+must name the package digest the pass derived and the operator signed, and
+the package and its extracted files are measured by the pass itself. A
+compromised `azprobe` can therefore admit the signed package early, never a
+different one.
+
+**Residual windows.** Two checks precede the launch they admit:
+
+- *probe → pass*: the preflight's result is read at the pass, up to its TTL
+  after it was observed (and only in the same boot); Edge health can change
+  in between;
+- *pass → launch*: the package, the extracted binary and redirect policy and
+  the unit file are measured at the pass; edge-core starts later in the boot.
+  A file replaced between the two is not caught by this pass (the next boot's
+  pass refuses it, the whole lease when it is readable and different).
+
+Both are local-trust limits like the high water's (§3.5); closing the second
+would need the launch itself to verify the binary, which is Edge's side.
+Edge remains observe-only and the sole decider: Nexus decides only whether
+the package may launch.
 
 Tests (`tests/unit/test_runtime_activation_pass.py`, real `edge_package`
 readers over a package, probe result and boot id in the tmp root): edge-core
@@ -687,8 +730,10 @@ with the SUPPORTING units still granted and marked, on a probe from another
 boot, a v1 probe, an expired probe, failed or unchecked health, no result (a
 failed or timed-out preflight), an unreadable boot id, a reader error, a
 damaged, enforcing or absent package, no digest for the pass and a probe of
-another package; the lease refused for a self-consistent package other than
-the signed one, for a changed edge-core `Environment=` line and for a
+another package, and an extracted binary that is absent, a link or group
+writable; the lease refused for a self-consistent package other than the
+signed one, for an extracted binary or redirect policy rewritten after
+publication, for a changed edge-core `Environment=` line and for a
 generation without the package pin; edge-core outside a narrower approval;
 the edge tripwire. `tests/unit/test_runtime_activation_cli.py` runs
 `generation-publish` → `request` (including edge-core) → `operator_sign` →

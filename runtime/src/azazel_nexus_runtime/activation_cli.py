@@ -5,7 +5,8 @@ none of which grants anything:
 
 * ``generation-publish`` (root, interactive) measures the installed unit files
   of the activation policy's scope, the Edge pin and -- exactly when
-  edge-core is in scope -- the installed Edge package digest (refusing any
+  edge-core is in scope -- the installed Edge package digest and the digests
+  of the extracted binary and redirect policy it runs (refusing any
   unit override or drop-in, `activation_unit_files`), builds the
   observe-baseline tree, binds it to verified commissioning evidence and,
   after the digest is re-entered and ``PUBLISH`` typed, publishes it as an
@@ -50,7 +51,7 @@ from azazel_nexus.audit import AuditLedger
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.bootstrap_deployment import declared_node_binding
 from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
-from azazel_nexus.edge_package import installed_package_digest
+from azazel_nexus.edge_package import installed_package_components
 from azazel_nexus.generation import (
     GenerationCommitUncertain,
     GenerationRefused,
@@ -244,9 +245,23 @@ def _measure_unit_files(units) -> dict[str, bytes]:
 
 
 def _package_digest(units):
+    """`(archive digest, extracted component digests)` when edge-core is in scope.
+
+    `installed_package_components`: the package checks pass, and the
+    extracted binary and redirect policy equal both the manifest's component
+    digests and the archive's members (#206 P5).
+    """
     if EDGE_CORE_UNIT not in units:
         return None
-    return installed_package_digest(package_root=_ROOT.joinpath(*_EDGE_PACKAGE))
+    return installed_package_components(package_root=_ROOT.joinpath(*_EDGE_PACKAGE),
+                                        owner_uid=_OWNER)
+
+
+def _pin_arguments(package) -> dict:
+    if package is None:
+        return {"package_digest": None, "package_components": None}
+    digest, components = package
+    return {"package_digest": digest, "package_components": components}
 
 
 def _store() -> GenerationStore:
@@ -272,7 +287,11 @@ class _Baseline:
     commissioning_digest: str
     binding: str = field(repr=False)
     tree: dict = field(repr=False)
-    package_digest: str | None = None
+    package: tuple | None = None
+
+    @property
+    def package_digest(self) -> str | None:
+        return None if self.package is None else self.package[0]
 
 
 def _measure_baseline() -> _Baseline:
@@ -283,7 +302,7 @@ def _measure_baseline() -> _Baseline:
                        _measure_unit_files, units)
     package = _step("installed Edge package checks did not pass", _package_digest, units)
     tree = _step("observe-baseline tree refused", build_observe_baseline,
-                 units=units, unit_files=unit_files, package_digest=package)
+                 units=units, unit_files=unit_files, **_pin_arguments(package))
     return _Baseline(policy, _step("verified commissioning evidence unavailable",
                                    evidence_commissioning_digest, evidence),
                      evidence.binding, tree, package)
@@ -311,7 +330,7 @@ def _current_baseline(policy, unit_files, package, commissioning_digest, binding
     generation = store.verify(current.number)
     verify_observe_baseline(generation=generation, files=store.read_tree(generation.number),
                             units=list(policy.units), unit_files=unit_files,
-                            package_digest=package)
+                            **_pin_arguments(package))
     if (generation.commissioning_digest != commissioning_digest
             or generation.commissioning_evidence_binding != binding):
         raise Refused("current generation is bound to other commissioning evidence")
@@ -400,6 +419,8 @@ def run_generation_publish(*, source, out) -> int:
         print("Units: " + ",".join(measured.policy.units), file=out)
         if measured.package_digest is not None:
             print("Edge package digest: " + measured.package_digest, file=out)
+            for name, component in measured.package[1].items():
+                print(f"Edge component {name}: {component}", file=out)
         print(f"Next generation number: {number}", file=out)
         print("Generation digest: " + digest, file=out)
         print("Publishing is NOT admission: only an operator's signature over this "
@@ -448,7 +469,7 @@ def _after_publication(generation, measured: _Baseline, store, out) -> int:
         if current is None or current.number != generation.number:
             raise Refused("another generation became current")
         _current_baseline(measured.policy, _measure_unit_files(list(measured.policy.units)),
-                          measured.package_digest, measured.commissioning_digest,
+                          measured.package, measured.commissioning_digest,
                           measured.binding)
         verified = True
     except Exception:  # noqa: BLE001 - published but not verified; labels only

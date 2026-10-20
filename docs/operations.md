@@ -287,13 +287,20 @@ files, a signed v2 approval naming the units, and node health. Since P5 the
 same pass can also grant `azazel-edge-core.service` when the policy, the
 generation and the approval name it
 ([§8.1](activation-observe-baseline.md#81-p5-edge-core-in-the-pass)):
-`generation-publish` then pins the installed Edge package digest, and the
-pass grants edge-core only when the package checks pass, the installed
-package is the pinned one, and `azazel-edge-probe-preflight.service` wrote a
+`generation-publish` then pins the installed Edge package digest and the
+digests of the extracted `bin/azazel-edge-core` and
+`config/redirect_policy.yaml` (which must equal the manifest's component
+digests and the archive's members, and be root-owned, not group or other
+writable, and not links), and the pass grants edge-core only when the
+package checks pass, the installed package and extracted files are the
+pinned ones, and `azazel-edge-probe-preflight.service` wrote a
 healthy result in this boot (`running` is not required). Otherwise edge-core
 is withheld (`edge_not_ready`) and the SUPPORTING units are still granted;
-an installed package other than the signed one refuses the whole pass, and
-needs a new publish, request and signature.
+an installed package other than the signed one, or an extracted binary or
+policy rewritten after publication, refuses the whole pass, and needs a new
+publish, request and signature. Health is trust in the `azprobe` account:
+it can report the signed package healthy, never make another one
+launchable.
 
 - A grant **enables** a unit for the next boot and writes
   `/run/azazel-activation/granted/<unit>`; it never starts anything. Each

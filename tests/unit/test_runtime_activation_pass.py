@@ -39,6 +39,7 @@ from azazel_nexus.edge_package import (
     ProbeResult,
     installed_baseline_state,
     installed_package_digest,
+    measure_extracted_components,
 )
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.observe_baseline import build_observe_baseline, evidence_commissioning_digest
@@ -52,6 +53,7 @@ from azazel_nexus_runtime.activation_pass import (
 )
 from azazel_nexus_runtime.node_config import DeclaredNode
 from azazel_nexus_runtime.units import RecordingUnitManager
+from _edge_package_fixture import write_package
 
 NOW = "2026-10-21T00:00:00Z"
 DIGEST = "sha256:" + "d" * 64
@@ -121,14 +123,15 @@ class World:
         self.boot_path.parent.mkdir(parents=True)
         self.boot_path.write_text(BOOT + "\n")
         self.boot_path.chmod(0o444)
-        self.package_digest = self.package()
+        self.package_digest, self.components = self.package()
         self.probe()
         self.store = GenerationStore(root / "var/lib/azazel/generations")
         self.generation = self.store.create(
             build_observe_baseline(
                 units=list(self.policy.units),
                 unit_files={unit: self.unit_files[unit] for unit in self.policy.units},
-                package_digest=self.package_digest if EDGE in self.units else None),
+                package_digest=self.package_digest if EDGE in self.units else None,
+                package_components=self.components if EDGE in self.units else None),
             created_at="2026-10-20T00:00:00Z",
             commissioning_digest=evidence_commissioning_digest(self.evidence),
             commissioning_evidence_binding=self.evidence.binding,
@@ -147,18 +150,9 @@ class World:
         ) | overrides
         return ObserveBaselineContext(**values)
 
-    def package(self, payload=b"edge-core-payload"):
-        self.edge_root.mkdir(parents=True, exist_ok=True)
-        (self.edge_root / PIN.artifact_name).write_bytes(payload)
-        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-        (self.edge_root / PIN.manifest_name).write_text(json.dumps({
-            "contract": PIN.manifest_contract, "package": PIN.package,
-            "version": PIN.version, "architecture": PIN.architecture,
-            "artifact": PIN.artifact_name, "digest": digest, "signed": False,
-            "health": {"contract": PIN.health_contract},
-            "posture": {"observe_only": True, "enforcement": False},
-        }))
-        return digest
+    def package(self, **contents):
+        """The archive, its manifest and the extracted binary and redirect policy."""
+        return write_package(self.edge_root, **contents)
 
     def probe(self, *, health=Evidence.PASSED, boot=BOOT, contract=PROBE_CONTRACT,
               observed_at="2026-10-20T23:59:00Z", digest=None):
@@ -210,6 +204,8 @@ class World:
             edge_state=lambda *, now: installed_baseline_state(
                 now=now, package_root=self.edge_root, probe_path=self.probe_path,
                 boot_id_path=self.boot_path),
+            edge_components=lambda: measure_extracted_components(
+                package_root=self.edge_root, owner_uid=os.getuid()),
         ) | replaced
         return PassProducers(**values)
 
@@ -765,9 +761,43 @@ def test_edge_core_is_withheld_on_stale_or_failed_health_and_supporting_proceed(
 
 
 def test_a_failed_or_timed_out_preflight_withholds_edge_core_only(edge_world):
-    """No result this boot (the preflight failed or timed out) is no health."""
+    """No result this boot (the preflight failed or timed out) is no health.
+
+    It also names no probed package, which is never bound (L3).
+    """
     edge_world.probe_path.unlink()
-    _assert_edge_withheld(edge_world, edge_world.run(), ["health_endpoint_healthy"])
+    _assert_edge_withheld(edge_world, edge_world.run(),
+                          ["digest_matches", "health_endpoint_healthy"])
+
+
+@pytest.mark.parametrize("name", ["bin/azazel-edge-core", "config/redirect_policy.yaml"])
+def test_an_extracted_component_changed_after_publication_refuses_the_lease(edge_world, name):
+    """The archive is intact, but the file the unit runs or reads is not the signed one."""
+    path = edge_world.edge_root / name
+    path.write_bytes(path.read_bytes() + b"# rewritten after extraction\n")
+    assert installed_package_digest(package_root=edge_world.edge_root) == (
+        edge_world.package_digest)
+    _assert_refused(edge_world, edge_world.run(), ["operational_generation_publisher"])
+
+
+@pytest.mark.parametrize("damage", ["absent", "symlink", "group-writable"])
+def test_an_unreadable_extracted_component_withholds_edge_core_only(edge_world, damage):
+    path = edge_world.edge_root / "bin/azazel-edge-core"
+    if damage == "absent":
+        path.unlink()
+    elif damage == "symlink":
+        target = edge_world.root / "elsewhere"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+    else:
+        path.chmod(0o775)
+    outcome = edge_world.run()
+    _supporting_granted(edge_world, outcome)
+    assert _reasons(outcome)[EDGE] == "edge_not_ready: digest_matches"
+    event = edge_world.inputs_event()
+    assert event["observed_inputs"]["edge_package_binding"] == "package_refused"
+    assert event["observed_inputs"]["edge_evidence"] == "not_launchable"
 
 
 def test_an_unreadable_boot_id_withholds_edge_core_only(edge_world):
@@ -817,7 +847,7 @@ def test_a_package_digest_unreadable_by_the_pass_withholds_edge_core_only(edge_w
 
 def test_an_installed_package_other_than_the_signed_one_refuses_the_lease(edge_world):
     """The operator's signature binds the package: another one is another baseline."""
-    edge_world.package_digest = edge_world.package(b"another-edge-core-payload")
+    edge_world.package_digest, _ = edge_world.package(binary=b"another edge-core")
     edge_world.probe()  # even a fresh, healthy probe of the new package
     _assert_refused(edge_world, edge_world.run(), ["operational_generation_publisher"])
 
@@ -899,6 +929,7 @@ def test_the_production_pass_reads_edge_evidence_at_the_fixed_paths(monkeypatch)
     assert producers.edge_state(now=NOW) == "state"
     assert seen == [{"now": NOW}]
     assert producers.edge_package_digest is edge_package.installed_package_digest
+    assert producers.edge_components is edge_package.measure_extracted_components
     source = Path(activation_pass.__file__).read_text()
     for forbidden in ("StartUnit", "subprocess", "HEALTH_ARGV", "azazel-edge-probe-preflight"):
         assert forbidden not in source

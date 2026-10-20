@@ -25,12 +25,16 @@ SUPPORTING units to the rest of the decision. Two things bind it:
 * **the package the operator signed.** When the policy names edge-core, the
   generation's `edge_pin.package_digest` is compared with the installed
   package digest this pass derives (`edge_package.installed_package_digest`:
-  the on-disk package checks). A different, self-consistent package means the
-  signed baseline no longer describes this node, and the generation is
-  refused like a changed unit file -- everything is withheld. A package whose
-  own checks fail yields no digest; the tree is then verified against its
-  own pin, so the SUPPORTING units can still be granted, and edge-core is
-  withheld because nothing bound the package to the signature;
+  the on-disk package checks), and `edge_pin.components` with the extracted
+  binary and redirect policy the unit actually uses, re-measured now
+  (`edge_package.measure_extracted_components`). Readable and different -- a
+  self-consistent package other than the signed one, or an extracted file
+  rewritten after publication -- means the signed baseline no longer
+  describes this node, and the generation is refused like a changed unit
+  file: everything is withheld. Unreadable (a failing package check, an
+  absent, linked or unprotected component) binds nothing; the tree is then
+  verified against its own pin, so the SUPPORTING units can still be
+  granted, and edge-core is withheld;
 * **this boot's health.** `edge_package.installed_baseline_state` reads the
   boot preflight's probe result (contract v2), which supplies health only
   when it names this boot, is within its TTL and describes the installed
@@ -139,6 +143,10 @@ class PassProducers:
     #: `edge_package.installed_baseline_state` (keyword `now`): the five
     #: checks, health and running only from this boot's fresh probe result.
     edge_state: Callable[..., EdgeBaselineState]
+    #: `edge_package.measure_extracted_components`: the SHA-256 of the
+    #: extracted binary and redirect policy the unit uses, as they are now;
+    #: raises when unreadable or unprotected.
+    edge_components: Callable[[], dict]
 
 
 @dataclass
@@ -298,24 +306,31 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             tree = generations.read_tree(verified.number)
             scope = list(active_policy.units)
             measured = producers.unit_files(scope)
-            package_digest, binding = None, "not_in_scope"
+            package_digest, components, binding = None, None, "not_in_scope"
             if edge_in_scope:
                 raw = dict(tree).get(OBSERVE_BASELINE_FILE)
-                package_digest = decode_observe_baseline(raw)["edge_pin"]["package_digest"]
+                pin = decode_observe_baseline(raw)["edge_pin"]
+                package_digest, components = pin["package_digest"], pin["components"]
                 try:
                     installed = producers.edge_package_digest()
                 except Exception:  # noqa: BLE001 - no digest binds nothing; edge-core withheld
                     installed = None
-                if installed is None:
-                    binding = "package_refused"
-                elif installed != package_digest:
-                    # The operator signed another package: the baseline no
-                    # longer describes this node, like a changed unit file.
+                try:
+                    extracted = producers.edge_components()
+                except Exception:  # noqa: BLE001 - unreadable binds nothing; edge-core withheld
+                    extracted = None
+                # Readable and different from what the operator signed: the
+                # baseline no longer describes this node, like a changed unit
+                # file. Unreadable: nothing is bound, and only edge-core waits.
+                if installed is not None and installed != package_digest:
                     raise _Refused("installed Edge package differs from the generation")
-                else:
-                    binding = "bound"
+                if extracted is not None and dict(extracted) != components:
+                    raise _Refused("extracted Edge components differ from the generation")
+                binding = ("bound" if installed is not None and extracted is not None
+                           else "package_refused")
             verify_observe_baseline(generation=verified, files=tree, units=scope,
-                                    unit_files=measured, package_digest=package_digest)
+                                    unit_files=measured, package_digest=package_digest,
+                                    package_components=components)
             if (verified.commissioning_evidence_binding != result.evidence.binding
                     or verified.commissioning_digest
                     != evidence_commissioning_digest(result.evidence)):
@@ -410,7 +425,11 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
     from azazel_nexus.activation_policy import load_activation_policy
     from azazel_nexus.activation_store import load_observe_baseline_approval
     from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
-    from azazel_nexus.edge_package import installed_baseline_state, installed_package_digest
+    from azazel_nexus.edge_package import (
+        installed_baseline_state,
+        installed_package_digest,
+        measure_extracted_components,
+    )
 
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
@@ -431,4 +450,5 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         # before this pass (`Before=`); the pass only reads it.
         edge_package_digest=installed_package_digest,
         edge_state=lambda *, now: installed_baseline_state(now=now),
+        edge_components=measure_extracted_components,
     )

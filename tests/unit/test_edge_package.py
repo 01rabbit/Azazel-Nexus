@@ -717,7 +717,8 @@ def test_the_verifier_writes_nothing():
 def test_the_verifier_runs_no_process():
     """The boundary in `test_boundary_static.py`, asserted where it matters.
 
-    File descriptor operations protect probe reads; none may execute a process.
+    File descriptor operations protect probe reads and (#206 P5) the no-follow
+    reads of the extracted components; none may execute a process.
     """
 
     module = ROOT / "src" / "azazel_nexus" / "edge_package.py"
@@ -734,7 +735,7 @@ def test_the_verifier_runs_no_process():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
     }
-    assert os_calls <= {"open", "fdopen", "fstat"}
+    assert os_calls <= {"open", "fdopen", "fstat", "read", "close"}
 
 
 def test_nothing_reads_the_startup_block_of_an_edge_manifest():
@@ -1360,7 +1361,8 @@ _LAUNCHABLE = EdgeBaselineState(True, True, True, True, False, package_digest=_S
 
 @pytest.mark.parametrize("signed,probe_digest,launchable", [
     (_SIGNED, _SIGNED, True),
-    (_SIGNED, None, True),
+    # A launchable-looking state that names no probed package is refused (L3).
+    (_SIGNED, None, False),
     (_SIGNED, "sha256:" + "cd" * 32, False),
     (None, _SIGNED, False),
     ("sha256:short", _SIGNED, False),
@@ -1377,3 +1379,59 @@ def test_binding_to_the_signed_package_only_narrows(signed, probe_digest, launch
     unlaunchable = replace(state, health_endpoint_healthy=False)
     assert not bound_to_signed_package(unlaunchable, signed).launchable
     assert not bound_to_signed_package(object(), _SIGNED).launchable
+
+
+# -- the extracted components the unit actually uses (#206 P5) -------------
+
+
+def test_the_installed_components_agree_with_manifest_archive_and_extraction(tmp_path):
+    from _edge_package_fixture import write_package
+    from azazel_nexus.edge_package import (
+        BOUND_COMPONENTS, installed_package_components, measure_extracted_components)
+    root = tmp_path / "edge"
+    digest, components = write_package(root)
+    assert tuple(sorted(components)) == BOUND_COMPONENTS
+    assert installed_package_components(package_root=root, owner_uid=os.getuid()) == (
+        digest, components)
+    assert measure_extracted_components(package_root=root, owner_uid=os.getuid()) == components
+    # Root ownership is required in production; the test user is not root.
+    if os.getuid() != 0:
+        with pytest.raises(EdgePackageRefused):
+            measure_extracted_components(package_root=root)
+
+
+@pytest.mark.parametrize("damage", ["extracted", "member", "manifest", "link", "mode",
+                                    "hardlink", "directory-mode", "absent"])
+def test_the_installed_components_refuse_any_disagreement(tmp_path, damage):
+    from _edge_package_fixture import archive, write_package
+    from azazel_nexus.edge_package import installed_package_components
+    root = tmp_path / "edge"
+    write_package(root)
+    binary = root / "bin/azazel-edge-core"
+    manifest_path = root / PIN.manifest_name
+    manifest = json.loads(manifest_path.read_text())
+    if damage == "extracted":
+        binary.write_bytes(b"rewritten")
+    elif damage == "member":
+        data = archive({"bin/azazel-edge-core": b"other",
+                        "config/redirect_policy.yaml": (root / "config/redirect_policy.yaml").read_bytes()})
+        (root / PIN.artifact_name).write_bytes(data)
+        manifest["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+    elif damage == "manifest":
+        manifest["components"][0]["digest"] = "sha256:" + "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif damage == "link":
+        (tmp_path / "real").write_bytes(binary.read_bytes())
+        binary.unlink()
+        binary.symlink_to(tmp_path / "real")
+    elif damage == "mode":
+        binary.chmod(0o775)
+    elif damage == "hardlink":
+        os.link(binary, tmp_path / "second-link")
+    elif damage == "directory-mode":
+        (root / "config").chmod(0o777)
+    else:
+        binary.unlink()
+    with pytest.raises(EdgePackageRefused):
+        installed_package_components(package_root=root, owner_uid=os.getuid())

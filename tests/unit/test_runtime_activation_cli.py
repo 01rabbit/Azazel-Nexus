@@ -37,6 +37,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from tools import operator_sign  # noqa: E402
+from _edge_package_fixture import archive, write_package  # noqa: E402
 
 LOOP = ("azazel-edge-intaked.service", "azazel-edge-probed.service",
         "azazel-incident-explaind.service", "azazel-knowledge-lited.service",
@@ -135,25 +136,17 @@ class Node:
     def unit_files(self):
         return {unit: (self.units_dir / unit).read_bytes() for unit in self.policy.units}
 
-    def package(self, payload=b"edge-core-payload", digest=None):
-        root = self.root / "opt/azazel/edge-core"
-        root.mkdir(parents=True, exist_ok=True)
-        (root / PIN.artifact_name).write_bytes(payload)
-        manifest = {
-            "contract": PIN.manifest_contract, "package": PIN.package,
-            "version": PIN.version, "architecture": PIN.architecture,
-            "artifact": PIN.artifact_name,
-            "digest": digest or "sha256:" + hashlib.sha256(payload).hexdigest(),
-            "signed": False, "health": {"contract": PIN.health_contract},
-            "posture": {"observe_only": True, "enforcement": False},
-        }
-        (root / PIN.manifest_name).write_text(json.dumps(manifest))
-        return manifest["digest"]
+    def package(self, **contents):
+        """The archive, its manifest and the extracted binary and redirect policy."""
+        digest, self.components = write_package(self.root / "opt/azazel/edge-core",
+                                                **contents)
+        return digest
 
     def expected_digest(self, package=None):
-        return tree_digest(build_observe_baseline(units=list(self.policy.units),
-                                                  unit_files=self.unit_files(),
-                                                  package_digest=package))
+        return tree_digest(build_observe_baseline(
+            units=list(self.policy.units), unit_files=self.unit_files(),
+            package_digest=package,
+            package_components=self.components if package is not None else None))
 
     # -- the three commands --------------------------------------------------
 
@@ -269,6 +262,47 @@ def test_publish_binds_the_installed_edge_package_when_edge_core_is_in_scope(nod
     assert code == 0, out
     document = json.loads(node.store.read_tree(1)["baseline.json"])
     assert document["edge_pin"]["package_digest"] == digest
+    assert document["edge_pin"]["components"] == node.components
+    assert set(node.components) == {"bin/azazel-edge-core", "config/redirect_policy.yaml"}
+
+
+@pytest.mark.parametrize("damage", ["extracted-bin", "extracted-config", "archive-member",
+                                    "manifest-component", "linked-bin", "writable-config"])
+def test_publish_refuses_extracted_components_that_do_not_match(node, damage):
+    """The unit runs the extracted binary and reads the extracted policy: both
+    must equal the manifest's component digest and the archive's member."""
+    node.policy = _policy((*LOOP, EDGE))
+    node.package()
+    package = node.root / "opt/azazel/edge-core"
+    binary, config = package / "bin/azazel-edge-core", package / "config/redirect_policy.yaml"
+    if damage == "extracted-bin":
+        binary.write_bytes(binary.read_bytes() + b"rewritten")
+    elif damage == "extracted-config":
+        config.write_bytes(b"redirect: everything\n")
+    elif damage == "archive-member":
+        # Archive and manifest re-made consistently, with another binary inside;
+        # the manifest's component digests still describe the extracted files.
+        manifest = json.loads((package / PIN.manifest_name).read_text())
+        data = archive({"bin/azazel-edge-core": b"another", "config/redirect_policy.yaml":
+                        config.read_bytes()})
+        (package / PIN.artifact_name).write_bytes(data)
+        manifest["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
+        (package / PIN.manifest_name).write_text(json.dumps(manifest))
+    elif damage == "manifest-component":
+        manifest = json.loads((package / PIN.manifest_name).read_text())
+        manifest["components"] = [c for c in manifest["components"]
+                                  if c["path"] != "config/redirect_policy.yaml"]
+        (package / PIN.manifest_name).write_text(json.dumps(manifest))
+    elif damage == "linked-bin":
+        target = node.root / "elsewhere"
+        target.write_bytes(binary.read_bytes())
+        binary.unlink()
+        binary.symlink_to(target)
+    else:
+        config.chmod(0o666)
+    code, out = node.publish("sha256:" + "0" * 64, "PUBLISH")
+    assert code == 1 and "Edge package" in out
+    assert node.store.numbers() == ()
 
 
 @pytest.mark.parametrize("damage", ["absent", "artifact", "enforcing"])
@@ -980,6 +1014,7 @@ def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(nod
         raise_high_water=hw.raise_high_water,
         edge_package_digest=lambda: pytest.fail("edge-core is not in this scope"),
         edge_state=lambda *, now: EdgeBaselineState(False, False, False, False, False),
+        edge_components=lambda: pytest.fail("edge-core is not in this scope"),
     )
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
@@ -1032,7 +1067,8 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
     from azazel_nexus.activation_approval_v2 import verify_observe_baseline_approval
     from azazel_nexus.activation_store import _read_at
     from azazel_nexus.edge_package import (
-        PROBE_CONTRACT, Evidence, ProbeResult, installed_baseline_state, installed_package_digest)
+        PROBE_CONTRACT, Evidence, ProbeResult, installed_baseline_state, installed_package_digest,
+        measure_extracted_components)
     from azazel_nexus_runtime import activated, activation_markers
     from azazel_nexus_runtime.activation_pass import PassProducers
     from azazel_nexus_runtime.units import RecordingUnitManager
@@ -1094,6 +1130,8 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
         edge_state=lambda *, now: installed_baseline_state(
             now=now, package_root=package_root, probe_path=probe_path,
             boot_id_path=boot_path),
+        edge_components=lambda: measure_extracted_components(
+            package_root=package_root, owner_uid=os.getuid()),
     )
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
@@ -1126,10 +1164,27 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
     assert manager.state(EDGE) is UnitState.MASKED
     assert sorted(p.name for p in granted.iterdir()) == list(LOOP)
     verdict = next(v for v in outcome.verdicts if v.unit == EDGE)
-    assert verdict.reason == "edge_not_ready: health_endpoint_healthy"
+    # No result names no probed package either, which is never bound.
+    assert verdict.reason == "edge_not_ready: digest_matches,health_endpoint_healthy"
+
+    # The extracted binary rewritten after the signature refuses the lease,
+    # although the archive is intact.
+    probe_path.write_text(json.dumps(ProbeResult(
+        contract=PROBE_CONTRACT, boot_id=boot, observed_at="2027-01-09T23:59:30Z",
+        ttl_seconds=300, package_version=PIN.version, package_digest=digest,
+        health=Evidence.PASSED, health_reason="az-edge-probed --health",
+        running=Evidence.FAILED, running_reason="not started at boot").as_event()))
+    binary = package_root / "bin/azazel-edge-core"
+    original = binary.read_bytes()
+    binary.write_bytes(original + b"rewritten")
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+    assert outcome.granted == ()
+    assert node.events()[-1]["missing_producers"][-1] == "operational_generation_publisher"
+    binary.write_bytes(original)
 
     # A different package installed after the signature refuses the lease.
-    node.package(b"a-different-edge-core-payload")
+    node.package(binary=b"a-different-edge-core")
     outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
                                   actor="azazel-activated", producers=producers)
     assert outcome.granted == ()
