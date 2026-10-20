@@ -513,6 +513,7 @@ def _run_once(
         "authoritative_commissioning_admission", "activation_approval_loader",
         "node_identity", "activation_policy", "renderer_measurement",
         "epoch_high_water", "trusted_clock", "node_health", "edge_evidence",
+        "operational_generation_publisher",
     ]
     if evidence is None:
         missing.extend(("authenticated_commissioning", "inventory_binding"))

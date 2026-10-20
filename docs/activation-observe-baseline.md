@@ -3,7 +3,8 @@
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
-nothing implemented yet**. Phases land as separate PRs (§4).
+P0 and P1 (library only) implemented, nothing wired into the pass**. Phases
+land as separate PRs (§4).
 
 Today no regular path admits the integrated loop's units. `az-activated`
 composes its production pass with `lease=None` and `healthy=False`, grants
@@ -28,7 +29,8 @@ it is today: `lease=None` or `healthy=False`, everything masked.
    verified generation, and no production code writes there (the mission pack
    uses its own store; a bootstrap generation is a distinct variant ordinary
    readers refuse). A valid lease alone therefore grants nothing. The
-   generation publisher is missing from `missing_producers` and is added (§3.2).
+   generation publisher is missing from `missing_producers` and is added as
+   `operational_generation_publisher` (§3.2).
 2. **A boot-bound approval cannot serve "a grant enables a later boot".**
    `ActivationContext.boot_id` (`src/azazel_nexus/activation_approval.py`)
    binds today's approval to the boot it was signed for, while a grant only
@@ -60,7 +62,7 @@ Scope: `azazel-edge-intaked`, `azazel-incident-explaind`,
 | `epoch_high_water` | required | anti-replay and rollback floor (§3.5) |
 | `trusted_clock` | required | a persisted monotonic time floor (§3.5) |
 | `node_health` | required | controller-owned local prerequisites only (§3.3) |
-| operational generation publisher (new) | required | observe-baseline generation (§3.2) |
+| `operational_generation_publisher` (new) | required | observe-baseline generation (§3.2) |
 | `edge_evidence` | edge-core only | exists (#198); needs the ordering fix (§3.4) |
 | `authenticated_commissioning`, `inventory_binding` | required | already satisfied by `load_commissioning_evidence()` on a commissioned node |
 | `authoritative_commissioning_admission` | not required | only ENFORCEMENT consumes the record |
@@ -107,6 +109,14 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   Approvals: raise `security_epoch` or the `approval_seq` floor. Expiry:
   `expires_at` against the time floor (§3.5).
 - **Failure.** Any error → `ApprovalRefused` (already redacted) → `lease=None`.
+- **Library (P1).** `src/azazel_nexus/activation_approval_v2.py`:
+  `observe_baseline_payload` builds the canonical bytes and
+  `verify_observe_baseline_approval` checks them against an
+  `ObserveBaselineContext`, an `ActivationApprovalPolicy` (authorized
+  operators, `max_lease_seconds` capped at 72 h, unit scope) and the epoch and
+  sequence floors, all supplied by the caller; it returns the scoped lease
+  plus the `approval_seq` and `security_epoch` a later pass raises its floors
+  to. `tests/unit/test_activation_approval_v2.py` uses in-memory keys only.
 
 ### 3.2 Observe-baseline generation
 
