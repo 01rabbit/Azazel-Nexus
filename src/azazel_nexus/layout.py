@@ -88,7 +88,7 @@ class PathSpec:
 #: here would let create_layout create state before the encrypted mount check.
 #: Its reader modes and conditional creation are covered by installer tests.
 LAYOUT = (
-    PathSpec("/etc/azazel/mio-profile", 0o700, "minimal entryd proposal credential source"),
+    PathSpec("/etc/azazel/mio-profile", 0o700, "reviewed proposal signature for entryd; never proposal bytes"),
     PathSpec("/etc/azazel", 0o755, "node configuration; world-readable by design"),
     PathSpec(
         "/etc/azazel/commissioning",

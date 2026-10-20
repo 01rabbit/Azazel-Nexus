@@ -33,6 +33,7 @@ def _repo(root: Path) -> Path:
         "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf": b"d /run/systemd/system.control :0755 :root :root - -\n",
         "tools/stage_runtime_entrypoints.py": b"def stage(): return 0\n",
         "tools/install_profile_fields.py": b"def install_profile(): return 0\n",
+        "tools/purge_mio_profile_copies.py": b"def purge(): return []\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
@@ -116,6 +117,7 @@ def test_manifest_matches_bundle_contents_and_normalized_metadata(tmp_path: Path
     assert members["runtime/src/azazel_nexus_runtime/_bootstrap_deadline.c"][0] == b"/* native source */\n"
     assert members["tools/stage_runtime_entrypoints.py"][0] == b"def stage(): return 0\n"
     assert members["tools/install_profile_fields.py"][0] == b"def install_profile(): return 0\n"
+    assert members["tools/purge_mio_profile_copies.py"][0] == b"def purge(): return []\n"
     assert members["runtime/src/azazel_nexus_runtime/install_platform.py"][0] == b"def install(): pass\n"
     for item in manifest["files"]:
         data, info = members[item["path"]]

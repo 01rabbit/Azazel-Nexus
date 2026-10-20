@@ -197,13 +197,15 @@ The v2 Nexus wrapper includes the explicit M.I.O. CORE / LITE / FULL ceiling
 in the same signed bytes; v1 remains reviewable but supplies no M.I.O. choice.
 `proposal-review --operator LABEL` validates a detached signature against those
 retained expectations and current node/trust, then rereads the protected inputs
-before reporting historical approval. Retention also publishes the two proposal
-copies atomically into the installer-created root:root 0700
-`/etc/azazel/mio-profile/`; successful review publishes the detached signature
-there as well (all source files root-owned 0600). A publication failure is a
-refusal, never a successful review. Entryd receives only this minimal proposal
-projection, plus individual node and public-trust credentials; see
-[M.I.O. runtime](mio-runtime.md) for setup and restart/revocation requirements.
+before reporting historical approval. The proposal holds raw identity, so
+both copies stay in the encrypted directory only; successful review publishes
+just the 64-byte detached signature atomically into the installer-created
+root:root 0700 `/etc/azazel/mio-profile/` (root-owned 0600). A publication
+failure is a refusal, never a successful review. Entryd loads the two proposal
+files from the encrypted directory and the signature from that directory, plus
+individual node and public-trust credentials; see
+[M.I.O. runtime](mio-runtime.md) for setup, restart/revocation requirements and
+the migration of copies earlier releases left there (#244).
 There is no authoritative-record import
 or activation and no raw identity output. Old exports without retained context
 are refused, not migrated. See the [runtime adapter](../runtime/README.md) for

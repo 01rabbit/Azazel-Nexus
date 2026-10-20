@@ -771,9 +771,21 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="azmioentry",
         supplementary_groups=("azazel-operator",),
         # Private read-only snapshot: no commissioning key or permission change.
-        extra=(("LoadCredential", "mio-profile:/etc/azazel/mio-profile"),
+        # The two proposal files carry raw identity and are read from the
+        # encrypted commissioning volume itself, never copied out (#244); only
+        # the reviewed signature lives in /etc/azazel/mio-profile. A locked
+        # volume leaves the sources missing, and the fallback selects CORE.
+        extra=(("LoadCredential", "mio-profile_commissioning-proposal.expected.json:"
+                                  "/etc/azazel/commissioning/commissioning-proposal.expected.json"),
+               ("LoadCredential", "mio-profile_commissioning-proposal.json:"
+                                  "/etc/azazel/commissioning/commissioning-proposal.json"),
+               ("LoadCredential", "mio-profile_commissioning-proposal.sig:"
+                                  "/etc/azazel/mio-profile/commissioning-proposal.sig"),
                ("LoadCredential", "mio-trust:/etc/azazel/operator-trust/operators.json"),
                ("LoadCredential", "mio-node:/etc/azazel/node.yaml"),
+               ("SetCredential", "mio-profile_commissioning-proposal.expected.json:absent"),
+               ("SetCredential", "mio-profile_commissioning-proposal.json:absent"),
+               ("SetCredential", "mio-profile_commissioning-proposal.sig:absent"),
                ("SetCredential", "mio-trust:absent"),
                ("SetCredential", "mio-node:absent")),
         description="Azazel-Nexus M.I.O. routing entry service",

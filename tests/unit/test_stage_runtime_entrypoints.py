@@ -368,6 +368,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
         encoding="utf-8",
     )
     shutil.copy(ROOT / "tools/provision_mission_read.py", tools)
+    shutil.copy(ROOT / "tools/purge_mio_profile_copies.py", tools)
     shutil.copytree(ROOT / "src", root / "src")
     destdir = tmp_path / "image"
     env_report = destdir / "stager-environment.json"

@@ -37,7 +37,7 @@ def _copy_installer_tree(tmp_path: Path) -> Path:
     shutil.copytree(PACKAGING, root / "packaging")
     (root / "tools").mkdir()
     for name in ("install_profile_fields.py", "stage_runtime_entrypoints.py",
-                 "provision_mission_read.py"):
+                 "provision_mission_read.py", "purge_mio_profile_copies.py"):
         shutil.copy2(REPO_ROOT / "tools" / name, root / "tools" / name)
     shutil.copytree(REPO_ROOT / "src", root / "src")
     shutil.copytree(REPO_ROOT / "runtime" / "src", root / "runtime" / "src")
@@ -124,3 +124,45 @@ def test_staged_install_copies_rule_without_running_tmpfiles(tmp_path):
     profile = destdir / "etc/azazel/mio-profile"
     assert profile.is_dir() and profile.stat().st_mode & 0o777 == 0o700
     assert list(profile.iterdir()) == []
+
+
+def test_staged_install_stops_when_the_legacy_copy_purge_refuses(tmp_path):
+    """A refused #244 purge exits non-zero before any unit file is written."""
+    if not Path("/etc/os-release").is_file():
+        pytest.skip("installer requires the host's os-release install profile")
+
+    installer_root = _copy_installer_tree(tmp_path)
+    destdir = tmp_path / "stage"
+    profile = destdir / "etc/azazel/mio-profile"
+    profile.mkdir(parents=True, mode=0o700)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b'{"board_serial":"SYNTHETIC-SERIAL-0000"}')
+    (profile / "commissioning-proposal.json").symlink_to(outside)
+    (profile / "commissioning-proposal.expected.json").write_bytes(b"synthetic")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_tmpfiles = fake_bin / "systemd-tmpfiles"
+    fake_tmpfiles.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_tmpfiles.chmod(0o755)
+    env = os.environ.copy()
+    env.update({
+        "DESTDIR": str(destdir),
+        "PATH": f"{fake_bin}:/usr/sbin:/usr/bin:/bin:/sbin",
+        "PYTHON": _installer_python(),
+    })
+    result = subprocess.run(
+        ["sh", str(installer_root / "packaging" / "install.sh"),
+         "--without-accounts", "--without-service-manager"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode != 0
+    assert "refusing to remove legacy M.I.O. proposal copies" in result.stderr
+    assert "SYNTHETIC" not in result.stdout + result.stderr
+    # Nothing was removed and the symlink target was never touched.
+    assert outside.read_bytes() == b'{"board_serial":"SYNTHETIC-SERIAL-0000"}'
+    assert (profile / "commissioning-proposal.json").is_symlink()
+    assert (profile / "commissioning-proposal.expected.json").read_bytes() == b"synthetic"
+    # The install stopped before units and the tmpfiles rule were written.
+    assert not list(destdir.rglob("azazel-mio-entryd.service"))
+    assert not (destdir / "usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf").exists()

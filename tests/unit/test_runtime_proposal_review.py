@@ -87,9 +87,10 @@ def test_proposal_review_cli_accepts_retained_historical_signature_without_activ
     assert proposal.read_bytes() == retained_proposal.payload
     assert signature.read_bytes() == retained_proposal.signature
     assert len(signature.read_bytes()) == 64
-    for name, value in zip(commissioning_draft._PROPOSAL_FILES,
-                           (retained_proposal.payload, retained_proposal.payload, retained_proposal.signature)):
-        assert (commissioning_draft.MIO_PROFILE_DIR / name).read_bytes() == value
+    # Only the signature leaves encrypted storage; the proposal bytes never do (#244).
+    assert _names(commissioning_draft.MIO_PROFILE_DIR) == {"commissioning-proposal.sig"}
+    assert (commissioning_draft.MIO_PROFILE_DIR / "commissioning-proposal.sig").read_bytes() == (
+        retained_proposal.signature)
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in (expected, proposal, signature))
     assert _names(retained_proposal.directory) == {
         "commissioning-proposal.expected.json",

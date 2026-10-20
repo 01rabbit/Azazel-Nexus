@@ -275,3 +275,32 @@ def test_systemd_credential_ownership_is_accepted_as_systemd_presents_it(uid, mo
     assert commissioning_draft._credential_owner_ok(info) is accepted
     # Ordinary private drafts keep the strict owner-only rule.
     assert commissioning_draft._private_owner_ok(info) is (uid == "self" and mode == 0o100400)
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_a_locked_commissioning_volume_is_core_without_verifying(credentials, monkeypatch, index):
+    # systemd supplies the fallback for a proposal file missing at unit start,
+    # which is what a locked volume (an empty mount point) looks like (#244).
+    inputs = [b'{"operator":"operator-a"}', b'{"operator":"operator-a"}', b"s" * 64,
+              b"trust", b"node"]
+    inputs[index] = mio_commissioning.MISSING_CREDENTIAL
+    monkeypatch.setattr(mio_commissioning, "read_mio_verification_inputs", lambda: tuple(inputs))
+    monkeypatch.setattr(mio_commissioning, "verify_retained_commissioning_proposal",
+                        lambda **kw: pytest.fail("fallback reached verification"))
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+@pytest.mark.parametrize("names", [
+    ("commissioning-proposal.expected.json", "commissioning-proposal.json"),
+    ("commissioning-proposal.sig",),
+])
+def test_unit_fallback_files_for_the_proposal_are_core(credentials, context, monkeypatch, names):
+    _node(monkeypatch, context)
+    credentials.save(commissioning_proposal_payload(**context, mio_profile="FULL"))
+    assert mio_commissioning.commissioned_profile() is MioProfile.FASTEST_PERMITTED
+    for name in names:
+        path = credentials.directory / ("mio-profile_" + name)
+        path.chmod(0o600)
+        path.write_bytes(mio_commissioning.MISSING_CREDENTIAL)
+        path.chmod(0o400)
+    assert mio_commissioning.commissioned_profile() is MioProfile.CORE

@@ -73,11 +73,8 @@ def test_retention_writes_canonical_equal_copies_and_reads_manual_signature(cont
     assert expected.stat().st_mode & 0o777 == 0o600
     assert payload.stat().st_mode & 0o777 == 0o600
     assert not signature.exists()
-    profile = commissioning_draft.MIO_PROFILE_DIR
-    assert {p.name for p in profile.iterdir()} == set(commissioning_draft._PROPOSAL_FILES[:2])
-    for name in commissioning_draft._PROPOSAL_FILES[:2]:
-        assert (profile / name).read_bytes() == expected_bytes
-        assert (profile / name).stat().st_mode & 0o777 == 0o600
+    # The raw-identity proposal stays in encrypted storage only (#244).
+    assert list(commissioning_draft.MIO_PROFILE_DIR.iterdir()) == []
 
     _write_private(signature, b"x" * 64)
     assert commissioning_draft.read_proposal_review_inputs() == (
@@ -238,3 +235,32 @@ def test_retention_cannot_substitute_candidate_bytes_for_local_models(context, p
     with pytest.raises(CommissioningRecordUnavailable):
         commissioning_draft.retain_proposal_context(**context)
     assert list(protected_dir.iterdir()) == []
+
+
+def _raw_identity_values(context) -> set[str]:
+    """Every serial, model name and permanent MAC in the synthetic inventory."""
+    inventory = context["inventory"].model_dump(mode="json")
+    values = {inventory["platform"]["board_serial"]}
+    for device in inventory["storage_devices"]:
+        values |= {device["serial"], device["model_name"]}
+    for interface in inventory["interfaces"]:
+        values |= {interface["permanent_mac"], interface["serial"]}
+    return {value for value in values if value}
+
+
+def test_no_raw_identity_reaches_the_unencrypted_profile_directory(context, protected_dir):
+    """Retention and a successful publication leave only the 64-byte signature."""
+    commissioning_draft.retain_proposal_context(**context)
+    expected, payload, signature = _proposal_files(protected_dir)
+    identity = _raw_identity_values(context)
+    assert identity, "the synthetic inventory must carry identity for this test to mean anything"
+    assert all(value.encode() in payload.read_bytes() for value in identity)
+    _write_private(signature, b"s" * 64)
+    commissioning_draft.publish_mio_profile_signature(*commissioning_draft.read_proposal_review_inputs())
+    profile = commissioning_draft.MIO_PROFILE_DIR
+    assert [p.name for p in profile.iterdir()] == ["commissioning-proposal.sig"]
+    published = (profile / "commissioning-proposal.sig").read_bytes()
+    assert published == b"s" * 64
+    assert not any(value.encode() in published for value in identity)
+    # The encrypted originals are untouched and still what entryd will load.
+    assert expected.read_bytes() == payload.read_bytes() == commissioning_proposal_payload(**context)
