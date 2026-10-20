@@ -5,10 +5,10 @@ Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
 P0, P1 (library only), P2 (readers, §7), P3a (the off-host signer's
 `activation` purpose), P3b (the node's `az-activation` tool:
-`generation-publish`, `request`, `install`), the probe half of P5 (§3.4:
-probe contract v2 and the boot preflight) and P4 (SUPPORTING wired into the
-pass, §8) implemented; edge-core in scope (rest of P5) and the P6 VM
-confirmation pending**. Phases land as separate PRs (§4).
+`generation-publish`, `request`, `install`), P4 (SUPPORTING wired into the
+pass, §8) and P5 (§3.4: probe contract v2, the boot preflight and edge-core
+in the pass's scope, §8.1) implemented; the P6 VM confirmation pending**.
+Phases land as separate PRs (§4).
 
 Before P4 no regular path admitted the integrated loop's units: `az-activated`
 composed its production pass with `lease=None` and `healthy=False`, granted
@@ -70,7 +70,7 @@ Scope: `azazel-edge-intaked`, `azazel-incident-explaind`,
 | `trusted_clock` | required | a persisted monotonic time floor (§3.5) |
 | `node_health` | required | controller-owned local prerequisites only (§3.3) |
 | `operational_generation_publisher` (new) | required | observe-baseline generation (§3.2) |
-| `edge_evidence` | edge-core only | exists (#198); needs the ordering fix (§3.4) |
+| `edge_evidence` | edge-core only | #198, boot-bound by the preflight (§3.4); withholds edge-core only, never the pass (§8.1) |
 | `authenticated_commissioning`, `inventory_binding` | required | already satisfied by `load_commissioning_evidence()` on a commissioned node |
 | `authoritative_commissioning_admission` | not required | only ENFORCEMENT consumes the record |
 | `renderer_measurement` | not required | no renderer exists; no ENFORCEMENT unit is in scope |
@@ -283,8 +283,15 @@ before any approval is consulted, executes the digest-verified package's
 and enabled (never masked) by `install.sh` and the preset, and absent from
 every governed list. At boot its `running` is `failed`, since edge-core has
 not started; launch needs only the four package checks with fresh health.
-Bringing edge-core into the activation scope is the rest of P5 and depends on
-P4's wiring.
+
+**Status (P5, edge-core in scope): implemented (§8.1).** The pass reads the
+preflight's result through `installed_baseline_state` and grants edge-core
+only when the four package checks pass with fresh health from this boot and
+the installed package is the one the generation pins. The controller does not
+require the preflight (`Before=` on the preflight, nothing on the
+controller): when the preflight failed, timed out or wrote nothing, the pass
+runs as usual, edge-core is withheld with `edge_not_ready:
+health_endpoint_healthy`, and the SUPPORTING units are decided without it.
 
 ### 3.5 Clock floor and high water
 
@@ -343,7 +350,7 @@ pass keeps `lease=None`.
 | P2 | inert readers: activation policy, high-water store, health collector, observe-baseline verifier (file-race, symlink and permission refusals) |
 | P3 | operator tooling, still no grant path: `operator_sign.py` `activation` purpose; `az-activation request`, `install`, `generation-publish` |
 | P4 | wire SUPPORTING in `_run_once` (fake manager tests: only scoped units granted; each absent producer refuses; epoch, clock, expiry and tree tampering refuse; tripwire on out-of-scope grant) |
-| P5 | EDGE_BASELINE: probe preflight (E1), probe v2 boot binding (both implemented, §3.4), edge-core in scope |
+| P5 | EDGE_BASELINE: probe preflight (E1), probe v2 boot binding (§3.4), edge-core in scope (§8.1); all implemented |
 | P6 | VM rehearsal with a VM-only rehearsal key: publish → request → sign on the workstation → install → reboot → granted → reboot → started; negative runs (approval removed, epoch raised, operator revoked, clock moved back, tree altered, probe stale) each leave units masked **and not started**. Recorded as rehearsal, never evidence |
 
 ## 5. Risks
@@ -510,16 +517,20 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
 3. **All or nothing.** Unless every producer verified, the decision gets
    `lease=None` and `healthy=False`, exactly as before.
    `activation.inputs_incomplete` (kept as the event name) now names only the
-   producers that failed, plus the three not required or not built for this
-   scope (`authoritative_commissioning_admission`, `renderer_measurement`,
-   `edge_evidence`); producers that could not run because an earlier one
+   producers that failed, plus the two not required or not built for this
+   scope (`authoritative_commissioning_admission`, `renderer_measurement`)
+   and, unless edge-core is in scope with launchable bound evidence (§8.1),
+   `edge_evidence`; producers that could not run because an earlier one
    failed read `not_attempted` in `observed_inputs.producers`. No identity,
    digest or reader message is written.
 4. **Decision**: `activate(lease, healthy, record=None,
    require_commissioning_evidence=True)`; the library withholds every unit
    outside `lease.units` as `outside_lease_scope`.
 5. **Tripwire**: any grant without lease and health, outside `lease.units`,
-   or outside the five SUPPORTING loop units removes every marker, masks
+   or outside `activation_markers.GRANTABLE_UNITS` (the five SUPPORTING loop
+   units and, since P5, edge-core: the one set the policy check, the tripwire
+   and the marker writer share), and edge-core granted without launchable
+   evidence bound to the signed package (§8.1), removes every marker, masks
    every governed unit and raises.
 6. **High water** is raised after the decision is recorded, only when the
    approval verified: each counter to the maximum of floor and approval,
@@ -550,7 +561,7 @@ unmask, an older build), and §5 showed that masking at the pass cannot stop
 such a job. So every governed unit except the bootstrap pair carries the
 marker condition: the six loop units, and the watchdog, the fetch service and
 the two model hosts, for which no pass writes a marker (`write_grant_markers`
-refuses any unit outside the five grantable ones), so they stay unstartable
+refuses any unit outside the six grantable ones), so they stay unstartable
 on the ordinary path.
 
 **Residual window (auditd, commissiond).** They carry no condition because
@@ -561,10 +572,9 @@ does not cancel it, and READY releases it: the unit then runs until the
 controller exits and `BindsTo=` stops it, which is at most the bounded
 barrier wait (about 5 s) after READY. P6 must observe this window on the VM.
 
-**Edge-core is refused in P4.** A policy naming `azazel-edge-core.service`
-fails `activation_policy` as a whole, so nothing is granted until P5 replaces
-this with its probe preflight and boot-bound evidence. The edge-core unit
-already carries its marker condition.
+**Edge-core was refused in P4.** A policy naming `azazel-edge-core.service`
+failed `activation_policy` as a whole. P5 lifts that refusal (§8.1); the
+edge-core unit already carried its marker condition.
 
 **Marker path.** The markers live under `/run/azazel-activation/granted/`, not
 `/run/azazel/activation/`: `/run/azazel` is the shared `RuntimeDirectory=` of
@@ -595,9 +605,89 @@ in-memory ephemeral key): only scoped units are granted and only they get
 markers; each absent or failed producer refuses and is named alone; epoch
 bump, epoch and generation floors, clock rollback beyond the skew, expiry,
 a unit file changed after publishing, an altered tree, other evidence,
-sequence below the floor, a revoked or unauthorized operator and edge-core in
-scope all refuse; the tripwire fires on an out-of-scope grant; stale markers
-are removed before any decision; the high water is raised after the decision
-and never lowered. None of this is VM or hardware evidence: P6 still has to
-show reboot → granted → reboot → started, and every negative run masked and
-not started.
+sequence below the floor and a revoked or unauthorized operator all refuse;
+the tripwire fires on an out-of-scope grant; stale markers are removed before
+any decision; the high water is raised after the decision and never lowered.
+None of this is VM or hardware evidence: P6 still has to show reboot →
+granted → reboot → started, and every negative run masked and not started.
+
+### 8.1 P5: edge-core in the pass
+
+`activation_markers.GRANTABLE_UNITS` now holds the five SUPPORTING loop units
+and `azazel-edge-core.service`; it is still the one set behind the pass's
+policy check (`activation_pass.UNIT_SCOPE` is the same object), the tripwire
+and the marker writer, and it equals the policy's `ACTIVATION_UNIT_ALLOWLIST`.
+No new authority, approval field, flag or environment variable is added: the
+policy names edge-core, the generation pins its package, the operator's
+approval names it, and the library decides it like any other
+`EDGE_BASELINE` unit (`edge_not_ready` unless `launchable`).
+
+**The signed package.** When the policy names edge-core the generation
+step derives the installed package digest
+(`edge_package.installed_package_digest`: present, observe-only, unsigned,
+pinned version, artifact equal to its manifest) and compares it with the
+tree's `edge_pin.package_digest`:
+
+- equal: the tree is verified with that digest (`edge_package_binding:
+  bound`);
+- different (a self-consistent package other than the signed one): the
+  generation is refused (`operational_generation_publisher`) and nothing is
+  granted, as for a changed unit file. The operator's signature over
+  `generation_digest` binds one package; another one needs a new
+  `generation-publish`, `request` and signature;
+- no digest (the package checks fail, or the package is absent): the tree is
+  verified against its own pin so the SUPPORTING units can still be granted,
+  and edge-core is withheld (`package_refused`).
+
+The edge-core unit file, with its observe-only `Environment=` lines, is in
+the measured set like every scoped unit; a changed line refuses the
+generation.
+
+**This boot's health.** After the all-or-nothing producers, and only when a
+lease was formed, the pass reads `installed_baseline_state` (the four
+package checks, and health and running from the probe result only when it is
+v2, names this boot, is within its TTL and describes the installed package).
+Unless the package was bound and the probe's package digest is the pinned one,
+`digest_matches` is handed to the library as false. The result is passed to
+`activate(edge=...)`; the daemon's own host read is not used on this path.
+`running` is not required (the preflight runs before edge-core can start), and
+`edge-baseline-ready` is not claimed.
+
+**Edge evidence never refuses the pass.** It is not one of the all-or-nothing
+producers: a stale result (another boot, a v1 result, expired), failed or
+unchecked health, an unreadable boot id, a failing package check or a reader
+error withholds edge-core with `edge_not_ready: <checks>`, while the five
+SUPPORTING units are decided as before. `activation.inputs_incomplete` records
+`observed_inputs.edge_package_binding` (`not_in_scope`, `bound`,
+`package_refused`, `not_attempted`), `observed_inputs.edge_evidence`
+(`not_in_scope`, `launchable`, `not_launchable`, `not_attempted`) and, when
+not launchable, `edge_missing_for_launch` (check names only, no digest).
+
+**Ordering.** `azazel-edge-probe-preflight.service` is `Before=` the
+controller and the controller names it nowhere (no `Requires=`, `Wants=` or
+`After=`; `tests/unit/test_runtime_hardening.py`). The controller only reads
+its result file. If the preflight failed, timed out (`TimeoutStartSec=60s`)
+or wrote nothing, the controller still runs; the pass finds no result from
+this boot, withholds edge-core with `edge_not_ready: health_endpoint_healthy`
+and grants the SUPPORTING units it otherwise would. The next boot's
+preflight is the retry; nothing is started to recover.
+
+**Residual.** The package is checked at the pass; edge-core starts later in
+the boot. A package replaced between the two is not caught by this pass
+(the next boot's pass refuses it). Edge remains observe-only and the sole
+decider: Nexus decides only whether the package may launch.
+
+Tests (`tests/unit/test_runtime_activation_pass.py`, real `edge_package`
+readers over a package, probe result and boot id in the tmp root): edge-core
+granted and marked with package and fresh health (running failed); withheld,
+with the SUPPORTING units still granted and marked, on a probe from another
+boot, a v1 probe, an expired probe, failed or unchecked health, no result (a
+failed or timed-out preflight), an unreadable boot id, a reader error, a
+damaged, enforcing or absent package, no digest for the pass and a probe of
+another package; the lease refused for a self-consistent package other than
+the signed one, for a changed edge-core `Environment=` line and for a
+generation without the package pin; edge-core outside a narrower approval;
+the edge tripwire. `tests/unit/test_runtime_activation_cli.py` runs
+`generation-publish` → `request` (including edge-core) → `operator_sign` →
+`install` → pass on one temporary root, then a boot with no preflight result
+and a boot with another package.

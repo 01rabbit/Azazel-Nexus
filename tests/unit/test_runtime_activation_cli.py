@@ -941,7 +941,7 @@ def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(nod
     one controller pass with the real unit-file, high-water and approval
     readers; it grants exactly the requested units and marks exactly them.
     """
-    from azazel_nexus.activation import CORE_UNITS, UnitState
+    from azazel_nexus.activation import CORE_UNITS, EdgeBaselineState, UnitState
     from azazel_nexus.activation_approval_v2 import verify_observe_baseline_approval
     from azazel_nexus.activation_store import _read_at
     from azazel_nexus_runtime import activated, activation_markers
@@ -978,6 +978,8 @@ def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(nod
         approval=approval,
         health=lambda policy, ledger: (True, (("state_capacity", "ok"),)),
         raise_high_water=hw.raise_high_water,
+        edge_package_digest=lambda: pytest.fail("edge-core is not in this scope"),
+        edge_state=lambda *, now: EdgeBaselineState(False, False, False, False, False),
     )
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
@@ -1010,6 +1012,124 @@ def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(nod
                  node.root / "etc/systemd/system", drop_in):
         path.chmod(0o755)
     (drop_in / "override.conf").write_text("[Service]\nExecStartPre=/bin/true\n")
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+    assert outcome.granted == ()
+    assert not granted.exists()
+    assert node.events()[-1]["missing_producers"][-1] == "operational_generation_publisher"
+
+
+def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(node, monkeypatch):
+    """P5 end to end: edge-core in the policy, the published generation (with
+    the installed package digest), the request and the signature; one pass
+    with the real `edge_package` readers over the tmp root's package, this
+    boot's id and the boot preflight's fresh result grants and marks it beside
+    the SUPPORTING units. Then the next boot, whose preflight left no result,
+    withholds only edge-core.
+    """
+    from azazel_nexus import edge_package
+    from azazel_nexus.activation import CORE_UNITS, UnitState
+    from azazel_nexus.activation_approval_v2 import verify_observe_baseline_approval
+    from azazel_nexus.activation_store import _read_at
+    from azazel_nexus.edge_package import (
+        PROBE_CONTRACT, Evidence, ProbeResult, installed_baseline_state, installed_package_digest)
+    from azazel_nexus_runtime import activated, activation_markers
+    from azazel_nexus_runtime.activation_pass import PassProducers
+    from azazel_nexus_runtime.units import RecordingUnitManager
+
+    scope = tuple(sorted((*LOOP, EDGE)))
+    node.policy = _policy(scope)
+    digest = node.package()
+    assert node.publish(digest=node.expected_digest(digest))[0] == 0
+    document = json.loads(node.store.read_tree(1)["baseline.json"])
+    assert document["edge_pin"]["package_digest"] == digest
+    code, payload, _ = node.request(units=",".join(scope))
+    assert code == 0 and json.loads(payload)["units"] == list(scope)
+    signature, _facts = operator_sign.sign(
+        purpose="activation", payload=payload,
+        expect_payload_sha256=hashlib.sha256(payload).hexdigest(),
+        seed=bytes(node.key), expect_public=bytes(node.key.verify_key).hex())
+    code, out = node.install(payload, signature)
+    assert code == 0, out
+
+    boot = "0f0e0d0c-0b0a-4908-8706-050403020100"
+    boot_path = node.root / "proc-boot_id"
+    boot_path.write_text(boot + "\n")
+    boot_path.chmod(0o444)
+    probe_path = node.root / "var/lib/azazel/run/edge-probe/edge-probe.json"
+    probe_path.parent.mkdir(parents=True)
+    probe_path.write_text(json.dumps(ProbeResult(
+        contract=PROBE_CONTRACT, boot_id=boot, observed_at="2027-01-09T23:59:30Z",
+        ttl_seconds=300, package_version=PIN.version, package_digest=digest,
+        health=Evidence.PASSED, health_reason="az-edge-probed --health",
+        running=Evidence.FAILED, running_reason="not started at boot").as_event()))
+    probe_path.chmod(0o644)
+    read_probe, read_boot = edge_package.load_probe_result, edge_package.read_current_boot_id
+    monkeypatch.setattr(edge_package, "load_probe_result",
+                        lambda path: read_probe(path, owner_uid=os.geteuid()))
+    monkeypatch.setattr(edge_package, "read_current_boot_id",
+                        lambda path: read_boot(path, owner_uid=os.geteuid()))
+
+    def approval(**kwargs):
+        fd = os.open(node.approvals, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            stored, stored_signature = _read_at(fd, owner=os.getuid())
+        finally:
+            os.close(fd)
+        return verify_observe_baseline_approval(
+            trust=node.trust, payload=stored, signature=stored_signature, **kwargs)
+
+    package_root = node.root / "opt/azazel/edge-core"
+    producers = PassProducers(
+        commissioning_evidence=lambda: node.evidence,
+        declared_node=lambda: node.node,
+        deployment=lambda: node.declaration,
+        policy=lambda: node.policy,
+        high_water=hw.require_high_water_for_pass,
+        unit_files=scoped_unit_files.measure_scoped_unit_files,
+        approval=approval,
+        health=lambda policy, ledger: (True, (("state_capacity", "ok"),)),
+        raise_high_water=hw.raise_high_water,
+        edge_package_digest=lambda: installed_package_digest(package_root=package_root),
+        edge_state=lambda *, now: installed_baseline_state(
+            now=now, package_root=package_root, probe_path=probe_path,
+            boot_id_path=boot_path),
+    )
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
+    (node.root / "run/azazel-activation").mkdir(parents=True)
+    (node.root / "run/azazel-activation").chmod(0o755)
+    manager = RecordingUnitManager(d.name for d in CORE_UNITS)
+    for definition in CORE_UNITS:
+        manager.unmask_and_enable(definition.name)
+
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+
+    assert sorted(outcome.granted) == list(scope)
+    for definition in CORE_UNITS:
+        expected = UnitState.ENABLED if definition.name in scope else UnitState.MASKED
+        assert manager.state(definition.name) is expected, definition.name
+    granted = node.root / "run/azazel-activation/granted"
+    assert sorted(p.name for p in granted.iterdir()) == list(scope)
+    last = node.events()[-1]
+    assert last["observed_inputs"]["edge_evidence"] == "launchable"
+    assert last["observed_inputs"]["edge_package_binding"] == "bound"
+    assert "edge_evidence" not in last["missing_producers"]
+
+    # The next boot: the preflight failed or timed out and left no result.
+    # Edge-core is withheld; the SUPPORTING units are still granted.
+    probe_path.unlink()
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+    assert sorted(outcome.granted) == list(LOOP)
+    assert manager.state(EDGE) is UnitState.MASKED
+    assert sorted(p.name for p in granted.iterdir()) == list(LOOP)
+    verdict = next(v for v in outcome.verdicts if v.unit == EDGE)
+    assert verdict.reason == "edge_not_ready: health_endpoint_healthy"
+
+    # A different package installed after the signature refuses the lease.
+    node.package(b"a-different-edge-core-payload")
     outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
                                   actor="azazel-activated", producers=producers)
     assert outcome.granted == ()

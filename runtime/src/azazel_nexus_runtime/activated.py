@@ -64,7 +64,7 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
-from azazel_nexus.edge_package import installed_baseline_state
+from azazel_nexus.edge_package import EDGE_UNIT as EDGE_CORE_UNIT, installed_baseline_state
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
@@ -479,7 +479,7 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
 def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
 ) -> ActivationOutcome:
-    """One observe-baseline pass (#206 §3.6), SUPPORTING units only (P4).
+    """One observe-baseline pass (#206 §3.6): SUPPORTING (P4) and edge-core (P5).
 
     Order: remove this boot's grant markers; preflight remask; commissioning
     evidence; independent context (declared node, policy, high water and
@@ -490,8 +490,16 @@ def _run_once(
     the decision gets ``lease=None`` and ``healthy=False``: the library API's
     test-friendly defaults are not evidence a production daemon may inherit.
 
-    After the decision is recorded: a grant outside the lease, or any grant
-    without lease and health, remasks everything and raises; otherwise the
+    Edge evidence (P5) comes from the pass too: edge-core is launchable only
+    with the four package checks, fresh health from this boot's probe
+    preflight (which ran ``Before=`` this unit and is not required by it), and
+    the installed package equal to the generation's signed pin. Otherwise the
+    library withholds edge-core (``edge_not_ready``) and decides the
+    SUPPORTING units without it.
+
+    After the decision is recorded: a grant outside the lease, any grant
+    without lease and health, or edge-core granted without launchable bound
+    evidence remasks everything and raises; otherwise the
     high-water floors are raised and the per-boot grant markers written for
     exactly the granted units. ``producers`` is a test seam; ``main`` never
     passes it, and a relocated root reads no host producer.
@@ -540,12 +548,17 @@ def _run_once(
     healthy = inputs is not None and lease is not None and inputs.healthy is True
     if not healthy:
         lease = None
+    # The pass's own Edge evidence (P5), never the daemon's host read: a
+    # lease-bearing pass without it hands the library nothing launchable.
+    edge = inputs.edge if inputs is not None else None
+    if lease is not None and type(edge) is not EdgeBaselineState:
+        edge = EdgeBaselineState(False, False, False, False, False)
     outcome = daemon.activate(
         now=now,
         actor=actor,
         lease=lease,
         record=None,
-        edge=None,
+        edge=edge,
         healthy=healthy,
         wired=wired_capabilities(),
         commissioning_evidence=inputs.evidence if inputs is not None else None,
@@ -560,6 +573,15 @@ def _run_once(
             manager, root,
             "production activation granted a unit outside a verified lease and "
             "health or outside the lease scope",
+        )
+    if EDGE_CORE_UNIT in granted and (
+            inputs is None or inputs.edge_evidence != "launchable"
+            or inputs.edge_package_binding != "bound"):
+        # Edge-core without launchable evidence bound to the signed package.
+        _emergency_narrow(
+            manager, root,
+            "production activation granted edge-core without launchable Edge "
+            "evidence bound to the signed package",
         )
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"
@@ -620,6 +642,12 @@ def _run_once(
         observed["producers"] = dict(inputs.status)
         observed["node_health_findings"] = dict(inputs.health_findings)
     observed["high_water"] = high_water
+    if inputs is not None:
+        # Fixed labels and check names only; no digest or probe text.
+        observed["edge_package_binding"] = inputs.edge_package_binding
+        observed["edge_evidence"] = inputs.edge_evidence
+        if inputs.edge_missing:
+            observed["edge_missing_for_launch"] = list(inputs.edge_missing)
     daemon.ledger.append({
         "event_type": "activation.inputs_incomplete",
         "observed_inputs": observed,

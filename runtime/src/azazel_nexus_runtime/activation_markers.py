@@ -43,10 +43,13 @@ __all__ = [
     "write_grant_markers",
 ]
 
-#: The only units a pass may grant and mark in phase P4: the five SUPPORTING
-#: loop units (§6.2). The single source for the pass's scope check, its
-#: tripwire and this writer; edge-core joins in P5.
+#: The only units a pass may grant and mark: the five SUPPORTING loop units
+#: (§6.2, phase P4) and `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
+#: which the library still grants only on launchable, boot-bound Edge
+#: evidence. The single source for the pass's scope check, its tripwire and
+#: this writer.
 GRANTABLE_UNITS = frozenset({
+    "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
@@ -154,7 +157,7 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
     if not names:
         return ()
     if not set(names) <= GRANTABLE_UNITS:
-        raise GrantMarkerRefused("grant marker for a unit this phase never grants")
+        raise GrantMarkerRefused("grant marker for a unit no pass grants")
     parent = _open_parent(root)
     if parent is None:
         raise GrantMarkerRefused("grant marker directory unavailable")

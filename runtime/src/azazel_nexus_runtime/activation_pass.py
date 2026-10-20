@@ -1,4 +1,4 @@
-"""The observe-baseline inputs of one activation pass (#206 phase P4).
+"""The observe-baseline inputs of one activation pass (#206 phases P4 and P5).
 
 `docs/activation-observe-baseline.md` §3.6. After the controller's preflight
 remask, this collects, in order: full commissioning evidence; the
@@ -16,19 +16,39 @@ verified, the pass gets `lease=None` and `healthy=False`, exactly as before
 P4. A complete result is still only an input; the library decides per unit,
 and a lease can only narrow.
 
-Phase P4 wires SUPPORTING only. A policy naming `azazel-edge-core.service`
-is refused as a whole here (`activation_policy` fails), so no lease or
-generation in this phase can include edge-core; P5 lifts this with its own
-Edge evidence ordering and probe binding.
+Phase P4 wired SUPPORTING. Phase P5 admits `azazel-edge-core.service`
+(EDGE_BASELINE) into the same pass, but never into the all-or-nothing set:
+Edge evidence only decides whether the library may launch the Edge package,
+so a failure there withholds edge-core (`edge_not_ready`) and leaves the
+SUPPORTING units to the rest of the decision. Two things bind it:
+
+* **the package the operator signed.** When the policy names edge-core, the
+  generation's `edge_pin.package_digest` is compared with the installed
+  package digest this pass derives (`edge_package.installed_package_digest`:
+  the on-disk package checks). A different, self-consistent package means the
+  signed baseline no longer describes this node, and the generation is
+  refused like a changed unit file -- everything is withheld. A package whose
+  own checks fail yields no digest; the tree is then verified against its
+  own pin, so the SUPPORTING units can still be granted, and edge-core is
+  withheld because nothing bound the package to the signature;
+* **this boot's health.** `edge_package.installed_baseline_state` reads the
+  boot preflight's probe result (contract v2), which supplies health only
+  when it names this boot, is within its TTL and describes the installed
+  package. `running` is not required to launch. The probe's package digest
+  must also equal the signed pin; otherwise `digest_matches` is reported
+  False here and the library withholds edge-core.
+
+Neither half adds an authority: the lease, the policy scope and node health
+still decide every grant; Edge evidence can only narrow it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from azazel_nexus.activation import ActivationLease
+from azazel_nexus.activation import ActivationLease, EdgeBaselineState
 from azazel_nexus.activation_approval_v2 import (
     ActivationApprovalPolicy,
     ObserveBaselineApproval,
@@ -41,6 +61,8 @@ from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.generation import Generation
 from azazel_nexus.observe_baseline import (
     EDGE_CORE_UNIT,
+    OBSERVE_BASELINE_FILE,
+    decode_observe_baseline,
     evidence_commissioning_digest,
     verify_observe_baseline,
 )
@@ -51,8 +73,9 @@ from .node_config import DeclaredNode
 
 __all__ = [
     "ALWAYS_MISSING",
-    "P4_UNIT_SCOPE",
+    "EDGE_EVIDENCE",
     "PRODUCERS",
+    "UNIT_SCOPE",
     "PassInputs",
     "PassProducers",
     "collect_pass_inputs",
@@ -61,8 +84,9 @@ __all__ = [
     "staged_inputs",
 ]
 
-#: The units phase P4 may grant: the five SUPPORTING loop units (§6.2).
-P4_UNIT_SCOPE = GRANTABLE_UNITS
+#: The units a pass may grant: the five SUPPORTING loop units (§6.2, P4) and
+#: edge-core (P5). The same object as the tripwire's and the marker writer's.
+UNIT_SCOPE = GRANTABLE_UNITS
 
 #: The producers this pass runs, as named in `missing_producers`.
 PRODUCERS = (
@@ -76,12 +100,17 @@ PRODUCERS = (
     "activation_approval_loader",
     "node_health",
 )
-#: Not required for the SUPPORTING scope (§2) or not built yet; always named.
+#: Not required for the observe baseline (§2) or not built yet; always named.
 ALWAYS_MISSING = (
     "authoritative_commissioning_admission",
     "renderer_measurement",
-    "edge_evidence",
 )
+#: Named after them unless edge-core is in scope and its evidence is
+#: launchable and bound to the signed package. Never part of `complete`:
+#: Edge evidence withholds edge-core only, never the SUPPORTING units.
+EDGE_EVIDENCE = "edge_evidence"
+#: What a pass that established nothing about Edge hands the library.
+_NO_EDGE = EdgeBaselineState(False, False, False, False, False)
 
 _TIME = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -105,6 +134,12 @@ class PassProducers:
     health: Callable
     #: `raise_high_water` (value, keyword `now` and `skew_seconds`).
     raise_high_water: Callable[..., HighWater]
+    #: `edge_package.installed_package_digest`: the installed archive digest,
+    #: only when the on-disk package checks pass; raises otherwise.
+    edge_package_digest: Callable[[], str]
+    #: `edge_package.installed_baseline_state` (keyword `now`): the five
+    #: checks, health and running only from this boot's fresh probe result.
+    edge_state: Callable[..., EdgeBaselineState]
 
 
 @dataclass
@@ -120,16 +155,30 @@ class PassInputs:
     high_water: Optional[HighWater] = None
     generation: Optional[int] = None
     skew_seconds: Optional[int] = None
+    #: The Edge state handed to the library (None: no lease was formed).
+    edge: Optional[EdgeBaselineState] = None
+    #: Fixed labels: `not_attempted`, `not_in_scope`, `bound` (installed
+    #: digest equals the signed pin) or `package_refused` (no digest).
+    edge_package_binding: str = "not_attempted"
+    #: Fixed labels: `not_attempted`, `not_in_scope`, `launchable` or
+    #: `not_launchable` (with the failed launch checks in `edge_missing`).
+    edge_evidence: str = "not_attempted"
+    edge_missing: tuple = ()
 
     @property
     def complete(self) -> bool:
         return all(self.status.get(name) == "verified" for name in PRODUCERS)
 
     def missing(self) -> list[str]:
-        """Only the producers that failed (or were not collected), plus the unbuilt."""
+        """Only the producers that failed (or were not collected), plus the unbuilt.
+
+        `edge_evidence` is named unless edge-core is in scope with launchable,
+        bound evidence; it never makes the pass incomplete.
+        """
         failed = [name for name in PRODUCERS
                   if self.status.get(name) in ("failed", "not_collected_staged_root")]
-        return list(ALWAYS_MISSING) + failed
+        edge = [] if self.edge_evidence == "launchable" else [EDGE_EVIDENCE]
+        return list(ALWAYS_MISSING) + edge + failed
 
 
 def staged_inputs() -> PassInputs:
@@ -201,13 +250,13 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         return declared_node_binding(deployment, declared.node_id), deployment.security_epoch
     identity = attempt(("node_identity",), node)
 
-    # 3. Activation policy, SUPPORTING scope only in P4.
+    # 3. Activation policy: the five SUPPORTING units and edge-core at most.
     def policy():
         value = producers.policy()
         if type(value) is not ActivationPolicy:
             raise _Refused("activation policy required")
-        if EDGE_CORE_UNIT in value.units or not set(value.units) <= P4_UNIT_SCOPE:
-            raise _Refused("edge-core scope is not wired before phase P5")
+        if not set(value.units) <= UNIT_SCOPE:
+            raise _Refused("policy scope outside the grantable units")
         return value
     active_policy = attempt(("activation_policy",), policy)
     if active_policy is not None:
@@ -235,8 +284,12 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         attempt(("trusted_clock",), clock)
 
     # 6. The current generation, as an observe-baseline tree over the unit
-    #    files installed now, bound to this evidence.
+    #    files installed now (edge-core's, with its observe-only Environment=
+    #    lines, among them when in scope), bound to this evidence and -- when
+    #    edge-core is in scope -- to the Edge package installed now.
     generation: Optional[Generation] = None
+    edge_in_scope = active_policy is not None and EDGE_CORE_UNIT in active_policy.units
+    pinned: list = []
     if active_policy is not None and result.evidence is not None:
         def current_generation():
             current = generations.current()
@@ -246,8 +299,24 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             tree = generations.read_tree(verified.number)
             scope = list(active_policy.units)
             measured = producers.unit_files(scope)
+            package_digest, binding = None, "not_in_scope"
+            if edge_in_scope:
+                raw = dict(tree).get(OBSERVE_BASELINE_FILE)
+                package_digest = decode_observe_baseline(raw)["edge_pin"]["package_digest"]
+                try:
+                    installed = producers.edge_package_digest()
+                except Exception:  # noqa: BLE001 - no digest binds nothing; edge-core withheld
+                    installed = None
+                if installed is None:
+                    binding = "package_refused"
+                elif installed != package_digest:
+                    # The operator signed another package: the baseline no
+                    # longer describes this node, like a changed unit file.
+                    raise _Refused("installed Edge package differs from the generation")
+                else:
+                    binding = "bound"
             verify_observe_baseline(generation=verified, files=tree, units=scope,
-                                    unit_files=measured)
+                                    unit_files=measured, package_digest=package_digest)
             if (verified.commissioning_evidence_binding != result.evidence.binding
                     or verified.commissioning_digest
                     != evidence_commissioning_digest(result.evidence)):
@@ -255,6 +324,8 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             # A unit file changed during measurement is a different baseline.
             if producers.unit_files(scope) != measured:
                 raise _Refused("installed unit files changed during measurement")
+            pinned[:] = [package_digest]
+            result.edge_package_binding = binding
             return verified
         generation = attempt(("operational_generation_publisher",), current_generation)
     if generation is not None:
@@ -310,6 +381,32 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         result.healthy = True
     else:
         result.lease, result.healthy = None, False
+
+    # 9. Edge evidence (P5), read-only and never part of `complete`: the
+    #    library withholds edge-core unless it is launchable; the SUPPORTING
+    #    units are decided without it.
+    if result.lease is not None:
+        try:
+            state = producers.edge_state(now=now)
+        except Exception:  # noqa: BLE001 - unreadable evidence establishes nothing
+            state = None
+        if type(state) is not EdgeBaselineState:
+            state = _NO_EDGE
+        if not edge_in_scope:
+            result.edge_evidence = "not_in_scope"
+        else:
+            # A probe that observed no package supplies no health, so it is
+            # already not launchable; one that observed another package than
+            # the signed pin is a digest mismatch, whatever its health says.
+            bound = (result.edge_package_binding == "bound" and len(pinned) == 1
+                     and pinned[0] is not None
+                     and state.package_digest in (None, pinned[0]))
+            if not bound:
+                # Nothing ties this package to the operator's signature.
+                state = replace(state, digest_matches=False)
+            result.edge_evidence = "launchable" if state.launchable else "not_launchable"
+            result.edge_missing = state.missing_for_launch()
+        result.edge = state
     return result
 
 
@@ -318,6 +415,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
     from azazel_nexus.activation_policy import load_activation_policy
     from azazel_nexus.activation_store import load_observe_baseline_approval
     from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
+    from azazel_nexus.edge_package import installed_baseline_state, installed_package_digest
 
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
@@ -334,4 +432,8 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         approval=load_observe_baseline_approval,
         health=lambda policy, ledger: collect_node_health(policy=policy, ledger=ledger),
         raise_high_water=raise_high_water,
+        # The fixed installed paths. The boot preflight wrote the probe result
+        # before this pass (`Before=`); the pass only reads it.
+        edge_package_digest=installed_package_digest,
+        edge_state=lambda *, now: installed_baseline_state(now=now),
     )
