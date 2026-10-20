@@ -3,7 +3,8 @@
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
-P0 and P1 (library only) implemented, nothing wired into the pass**. Phases
+P0, P1 (library only) and P3a (the off-host signer's `activation` purpose)
+implemented, nothing wired into the pass**. Phases
 land as separate PRs (§4).
 
 Today no regular path admits the integrated loop's units. `az-activated`
@@ -90,6 +91,25 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   gains an `activation` purpose using the existing
   `ApprovalPurpose.ACTIVATION` transcript. No seed reaches the node, Git or a
   log.
+- **Signer (P3a).** `tools/operator_sign.py --purpose activation` keeps the
+  existing checks (payload SHA-256 typed from the node, derived public key
+  equal to the enrolled one, owner-only single-link seed file, create-only
+  `0600` signature, nothing else written or logged). Before signing it also
+  requires the payload to be a well-formed v2 document that re-encodes to
+  exactly the same bytes, with a validity window of at most 72 hours, so v1
+  or arbitrary bytes are refused and not signed. It prints the operator,
+  approval id, units, generation and its digest, node digest, epoch,
+  sequence and validity window; the commissioning evidence binding is
+  checked but not printed. This is a shape check only: the node verifier
+  still decides against its own context, policy and floors. Until
+  `az-activation request` exists nothing on the node produces the payload.
+
+  ```sh
+  PYTHONPATH=src uv run --no-project --with 'pynacl>=1.5' python -m tools.operator_sign \
+    --purpose activation --payload approval.json \
+    --expect-payload-sha256 NODE_PRINTED_SHA256 --expect-public ENROLLED_PUBLIC_HEX \
+    --seed /path/outside/any/checkout/operator.seed --out approval.sig
+  ```
 - **Request and install.** A runtime CLI `az-activation request` collects the
   independent context and prints the canonical payload and its SHA-256; it
   never signs or writes approval files. `az-activation install --payload

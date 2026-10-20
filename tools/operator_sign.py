@@ -1,4 +1,4 @@
-"""Off-host signer for the commissioning draft and full commissioning proposal.
+"""Off-host signer for commissioning and observe-baseline activation approvals.
 
 Run it on the operator's own workstation, from a reviewed checkout (the seed
 shares this process with the imported code), with a pinned PyNaCl, for example
@@ -13,9 +13,19 @@ Before signing, the payload SHA-256 must equal the value printed on the node,
 and the derived public key must equal the enrolled one, so a wrong file or a
 wrong key stops here instead of producing a signature.
 
-Only the two commissioning purposes are offered. Local model admission has its
-own ceremony (docs/hil-runbooks/mio-admission.md) and activation/bootstrap
-approvals are out of scope. See docs/hil-runbooks/commissioning-rehearsal.md.
+Three purposes are offered: the commissioning draft, the full commissioning
+proposal and the boot-free v2 activation approval
+(``azazel-nexus/activation-approval/v2``, docs/activation-observe-baseline.md
+§3.1). For ``activation`` the payload must also be a well-formed canonical v2
+document (it must re-encode to exactly the same bytes, with a validity window
+inside the 72-hour ceiling) before anything is signed, so neither v1 bytes nor
+arbitrary bytes can become an activation signature; a human summary of what is
+being approved is printed with the result. This is a shape check only: the
+node still verifies the approval against its own independently collected
+context, activation policy and floors, and a signature grants nothing by
+itself. Local model admission has its own ceremony
+(docs/hil-runbooks/mio-admission.md) and v1 activation and bootstrap approvals
+are out of scope. See docs/hil-runbooks/commissioning-rehearsal.md.
 """
 
 from __future__ import annotations
@@ -30,9 +40,17 @@ from pathlib import Path
 
 from nacl.signing import SigningKey
 
+from azazel_nexus.activation_approval import _utc
+from azazel_nexus.activation_approval_v2 import (
+    MAX_LEASE_CEILING_SECONDS,
+    ObserveBaselineContext,
+    _parse,
+    observe_baseline_payload,
+)
 from azazel_nexus.operator_trust import MAX_APPROVAL_BYTES, ApprovalPurpose, approval_message
 
 PURPOSES = {
+    "activation": ApprovalPurpose.ACTIVATION,
     "commissioning": ApprovalPurpose.COMMISSIONING,
     "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
 }
@@ -73,6 +91,55 @@ def read_seed(path: Path) -> bytes:
     return bytes.fromhex(text)
 
 
+def activation_summary(payload: bytes) -> dict:
+    """What a v2 activation payload approves, or `SignRefused`.
+
+    The document must re-encode to exactly these bytes. The context is taken
+    from the payload itself, so this proves well-formedness and canonical form
+    only; whether it matches the node is decided by the node's verifier. The
+    commissioning evidence binding is checked but not printed.
+    """
+
+    try:
+        document = _parse(payload)
+        context = ObserveBaselineContext(
+            node_digest=document["node_digest"], generation=document["generation"],
+            generation_digest=document["generation_digest"],
+            commissioning_digest=document["commissioning_digest"],
+            commissioning_evidence_binding=document["commissioning_evidence_binding"],
+            policy_digest=document["policy_digest"],
+            security_epoch=document["security_epoch"],
+        )
+        canonical = observe_baseline_payload(
+            context=context, approval_id=document["approval_id"],
+            operator=document["operator"], approval_seq=document["approval_seq"],
+            units=document["units"], granted_at=document["granted_at"],
+            expires_at=document["expires_at"],
+        )
+        seconds = int((_utc(document["expires_at"])
+                       - _utc(document["granted_at"])).total_seconds())
+    except Exception:  # never echo payload content in a refusal
+        raise SignRefused("payload is not a well-formed v2 activation approval; not signed") from None
+    if payload != canonical:
+        raise SignRefused("payload is not canonical v2 activation approval bytes; not signed")
+    if seconds > MAX_LEASE_CEILING_SECONDS:
+        raise SignRefused("approval validity exceeds the 72-hour ceiling; not signed")
+    return {
+        "schema": document["schema"],
+        "approval_id": document["approval_id"],
+        "operator": document["operator"],
+        "units": ",".join(document["units"]),
+        "generation": document["generation"],
+        "generation_digest": document["generation_digest"],
+        "node_digest": document["node_digest"],
+        "security_epoch": document["security_epoch"],
+        "approval_seq": document["approval_seq"],
+        "granted_at": document["granted_at"],
+        "expires_at": document["expires_at"],
+        "validity_seconds": seconds,
+    }
+
+
 def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: bytes,
          expect_public: str) -> tuple[bytes, dict]:
     if purpose not in PURPOSES:
@@ -82,6 +149,7 @@ def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: byte
     digest = hashlib.sha256(payload).hexdigest()
     if digest != expect_payload_sha256.strip().lower():
         raise SignRefused("payload SHA-256 does not match the value shown on the node; not signed")
+    summary = activation_summary(payload) if purpose == "activation" else {}
     key = SigningKey(seed)
     public = bytes(key.verify_key).hex()
     if public != expect_public.strip().lower():
@@ -91,6 +159,7 @@ def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: byte
     key.verify_key.verify(message, signature)
     return signature, {
         "purpose": purpose,
+        **summary,
         "payload_sha256": digest,
         "message_sha256": hashlib.sha256(message).hexdigest(),
         "public_key": public,
