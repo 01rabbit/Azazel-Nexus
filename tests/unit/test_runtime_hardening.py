@@ -803,13 +803,31 @@ def test_entry_gets_private_commissioning_snapshot_without_a_protection_key():
     settings = _settings("azazel-mio-entryd.service")
     assert settings["User"] == ["azmioentry"]
     assert settings["LoadCredential"] == [
-        "mio-profile:/etc/azazel/mio-profile",
+        "mio-profile_commissioning-proposal.expected.json:"
+        "/etc/azazel/commissioning/commissioning-proposal.expected.json",
+        "mio-profile_commissioning-proposal.json:"
+        "/etc/azazel/commissioning/commissioning-proposal.json",
+        "mio-profile_commissioning-proposal.sig:/etc/azazel/mio-profile/commissioning-proposal.sig",
         "mio-trust:/etc/azazel/operator-trust/operators.json",
         "mio-node:/etc/azazel/node.yaml",
     ]
-    assert settings["SetCredential"] == ["mio-trust:absent", "mio-node:absent"]
-    assert all(source.split(":", 1)[1] != "/etc/azazel/commissioning"
-               for source in settings["LoadCredential"])
+    # Every source has a non-empty fallback, so a locked commissioning volume
+    # (missing source files) starts the unit with CORE instead of failing it.
+    assert settings["SetCredential"] == [
+        source.split(":", 1)[0] + ":absent" for source in settings["LoadCredential"]
+    ]
+    sources = [source.split(":", 1)[1] for source in settings["LoadCredential"]]
+    # Never a directory source on the commissioning volume (drafts, records):
+    # only the two fixed proposal files, read in place and never copied (#244).
+    assert [s for s in sources if s.startswith("/etc/azazel/commissioning")] == [
+        "/etc/azazel/commissioning/commissioning-proposal.expected.json",
+        "/etc/azazel/commissioning/commissioning-proposal.json",
+    ]
+    # The unencrypted profile directory supplies only the reviewed signature.
+    assert [s for s in sources if s.startswith("/etc/azazel/mio-profile")] == [
+        "/etc/azazel/mio-profile/commissioning-proposal.sig",
+    ]
+    assert not any("secrets" in s or s.endswith(".key") for s in sources)
     assert settings["CapabilityBoundingSet"] == [""]
 
 

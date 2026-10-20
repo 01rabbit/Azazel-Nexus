@@ -194,7 +194,7 @@ ssh -t NODE 'cd / && sudo PYTHON -I -m azazel_nexus_runtime.commission_cli propo
 
 Enter `CORE`, `LITE` or `FULL`, then `EXPORT`. The proposal (`schema`
 `azazel-nexus/commissioning-proposal/v2`) is written to the encrypted
-directory, and the two copies are published to `/etc/azazel/mio-profile/`.
+directory only; nothing is published to `/etc/azazel/mio-profile/` (#244).
 Print `sha256sum /etc/azazel/commissioning/commissioning-proposal.json` on the
 node, then sign that file exactly as in §4 with
 `--purpose commissioning-proposal` and the newly printed SHA-256, install it as
@@ -205,7 +205,7 @@ sudo PYTHON -I -m azazel_nexus_runtime.commission_cli proposal-review --operator
 ```
 
 Expected: `Full proposal signature verified; current hardware fields match
-retained evidence.` The signature is then published to
+retained evidence.` The signature alone is then published to
 `/etc/azazel/mio-profile/`. Files in both directories are create-only; another
 ceiling needs a new proposal.
 
@@ -225,7 +225,10 @@ sudo ls -l /run/credentials/azazel-mio-entryd.service/
 ```
 
 Expect five credentials: `mio-node`, `mio-trust` and three `mio-profile_*`
-files, each root:root `0440` with an ACL for `azmioentry` on systemd 257.
+files, each root:root `0440` with an ACL for `azmioentry` on systemd 257. The
+two proposal files come from the unlocked `/etc/azazel/commissioning/`; with the
+volume locked they hold `absent` and the ceiling is CORE.
+`sudo ls /etc/azazel/mio-profile/` shows only `commissioning-proposal.sig`.
 `azazel-nexus status` and `setup`, run as root, then show
 `recorded ceiling: LITE; capability state: CORE` (or the chosen ceiling)
 with the reasons from the last `mio.capability.transition`.
@@ -242,9 +245,9 @@ Delete the workstation copies of the draft and proposal (`draft.json`,
 `proposal.json`); only the signatures ever return to the node. Destroy the
 rehearsal operator's seed. Revert to the
 snapshot to undo everything, including ledger appends. Without a snapshot,
-`mv` the lab marker back if the VM returns to lab use, and move the published
-proposal files out of `/etc/azazel/mio-profile/` while keeping the directory,
-since entryd will not start without it.
+`mv` the lab marker back if the VM returns to lab use, and remove the
+published `commissioning-proposal.sig` from `/etc/azazel/mio-profile/` while
+keeping the directory.
 
 ## 8. Not covered on a VM
 

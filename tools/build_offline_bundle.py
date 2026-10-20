@@ -84,6 +84,10 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             root / "tools" / "install_profile_fields.py",
             "tools/install_profile_fields.py",
         ),
+        (
+            root / "tools" / "purge_mio_profile_copies.py",
+            "tools/purge_mio_profile_copies.py",
+        ),
     )
     for source, archive_name in fixed:
         _regular_file(source)

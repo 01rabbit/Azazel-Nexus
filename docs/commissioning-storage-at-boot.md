@@ -94,9 +94,10 @@ Recommended defaults in brackets.
    dependents wait this long]**
 5. LVM on LUKS? **[not supported; the volume must be plain LUKS, as
    `luks_backed` checks the immediate device]**
-6. The raw-identity copy in `/etc/azazel/mio-profile/`? **[separate issue
-   [#244](https://github.com/01rabbit/Azazel-Nexus/issues/244); never a source
-   for the activation pass]**
+6. The raw-identity copy in `/etc/azazel/mio-profile/`? **[removed by
+   [#244](https://github.com/01rabbit/Azazel-Nexus/issues/244): only the
+   reviewed signature is published there and entryd loads the proposal from
+   this volume; never a source for the activation pass]**
 7. Gate bookkeeping? **[new HG-08 in [hardware gates](hardware-gates.md),
    hardware-unverified]**
 8. A vTPM on the VM? **[not needed for P1; a swtpm run is a mechanics

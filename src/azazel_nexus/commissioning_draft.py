@@ -274,21 +274,30 @@ MIO_PROFILE_DIR = Path("/etc/azazel/mio-profile")
 _PROPOSAL_FILES = ("commissioning-proposal.expected.json", "commissioning-proposal.json",
                    "commissioning-proposal.sig")
 
+#: Only the reviewed detached signature is published outside encrypted storage.
+#: The expected and signed proposal bytes carry raw identity (board serial,
+#: storage serials, permanent MACs), which inventory confidentiality §3 allows
+#: only in the encrypted commissioning record; entryd loads those two files
+#: from `/etc/azazel/commissioning` itself (#244).
+_MIO_PROFILE_FILES = (_PROPOSAL_FILES[2],)
+
 
 def _publish_mio_files(values: tuple[bytes, ...]) -> None:
     """Atomically publish each fixed file; never replace preexisting state.
 
-    Only the retained proposal copies and reviewed signature belong here.
+    Only the reviewed signature belongs here, never proposal bytes.
     The installer creates this root-private directory, including before setup.
     Partial publication fails closed and requires administrator inspection.
     """
+    if len(values) != len(_MIO_PROFILE_FILES):
+        raise DraftRefused("profile publication inputs inconsistent")
     fd = os.open(MIO_PROFILE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise DraftRefused("profile directory protection refused")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        for name, value in zip(_PROPOSAL_FILES, values):
+        for name, value in zip(_MIO_PROFILE_FILES, values):
             try:
                 existing = _read_private(fd, name, maximum=MAX_APPROVAL_BYTES)
             except FileNotFoundError:
@@ -311,10 +320,14 @@ def _publish_mio_files(values: tuple[bytes, ...]) -> None:
 
 
 def publish_mio_profile_signature(expected: bytes, payload: bytes, signature: bytes) -> None:
-    """Called only after successful full proposal review and input rechecks."""
+    """Called only after successful full proposal review and input rechecks.
+
+    Publishes the 64-byte signature alone; the reviewed proposal bytes stay in
+    encrypted storage, and the signature pins them exactly for entryd.
+    """
     if expected != payload or len(signature) != 64:
         raise DraftRefused("profile publication inputs inconsistent")
-    _publish_mio_files((expected, payload, signature))
+    _publish_mio_files((signature,))
 
 
 def retain_proposal_context(*, inventory, resource_profile, topology_profile,
@@ -323,8 +336,9 @@ def retain_proposal_context(*, inventory, resource_profile, topology_profile,
     """Retain validated local model inputs, never imported payload bytes.
 
     Two copies separate local expectations from the signing view. Their common
-    privileged owner remains trusted. Failure leaves evidence for inspection;
-    no automatic cleanup/migration/overwrite or rollback guarantee is offered.
+    privileged owner remains trusted. Both stay in encrypted storage only; no
+    copy is written to `MIO_PROFILE_DIR` (#244). Failure leaves evidence for
+    inspection; no automatic cleanup/overwrite or rollback guarantee is offered.
     """
     from .commissioning_approval import commissioning_proposal_payload
 
@@ -346,7 +360,6 @@ def retain_proposal_context(*, inventory, resource_profile, topology_profile,
             raise DraftRefused("existing proposal state requires inspection")
         _create_private_at(directory_fd, _PROPOSAL_FILES[0], payload)
         _create_private_at(directory_fd, _PROPOSAL_FILES[1], payload)
-        _publish_mio_files((payload, payload))
     except OSError:
         raise DraftRefused("proposal retention incomplete; inspect protected storage") from None
     finally:
@@ -394,8 +407,12 @@ def _open_credentials() -> int:
 def read_mio_profile_review_inputs() -> tuple[bytes, bytes, bytes]:
     """Read the entry unit's private snapshot, never its protection key.
 
-    systemd copies only the minimal profile directory for the unprivileged
-    unit as read-only credentials (see `_credential_owner_ok`). Sources remain
+    systemd copies three fixed files for the unprivileged unit as read-only
+    credentials (see `_credential_owner_ok`): the expected and signed proposal
+    from the encrypted `/etc/azazel/commissioning`, and the reviewed signature
+    from `MIO_PROFILE_DIR`. The IDs keep their `mio-profile_` prefix. A source
+    missing at unit start (a locked volume leaves an empty mount point) is the
+    unit's `absent` fallback, which never verifies. Sources remain
     root-owned 0600; only the existing signature verifier may
     establish a confirmed ceiling from these bounded bytes. No environment or
     caller-selected path may replace the system-unit credential directory.

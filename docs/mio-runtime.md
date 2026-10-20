@@ -468,33 +468,79 @@ proposal, absent/unreadable input, unknown value, invalid signature or lab host
 selects CORE. RAM never substitutes for that selection.
 
 The entry unit uses a private [systemd credential snapshot](https://www.freedesktop.org/software/systemd/man/257/systemd.exec.html#Credentials).
-This setup requires directory-source support for `LoadCredential`; the target
-is Debian 13 with systemd 257, which supports it. The directory source is exactly
-`/etc/azazel/mio-profile/`, never
-`/etc/azazel/commissioning/`. Installation and tmpfiles always create this
-root:root 0700 directory, even when empty. Retention atomically publishes only
-`commissioning-proposal.expected.json` and `commissioning-proposal.json` there;
-a successful `az-nexus-commission proposal-review --operator LABEL` publishes
-`commissioning-proposal.sig` after verification and input rechecks. Source files
-are root-owned 0600. Do not place other files in this directory: systemd copies
-all its contents. Raw role drafts, commissioning records, active records and
-protection keys remain outside it.
+The proposal carries raw identity (board serial, storage serials and models,
+permanent MACs), which [inventory confidentiality](inventory-confidentiality.md)
+§3 allows only in the encrypted commissioning record, so it is never copied out
+of it. The Ed25519 signature covers the whole payload, and the verifier rebuilds
+the payload from the retained inventory, so no digest or identity-free subset
+could be verified instead. The unit therefore loads exactly five individual
+files, no directory:
+
+| credential | source |
+| --- | --- |
+| `mio-profile_commissioning-proposal.expected.json` | `/etc/azazel/commissioning/commissioning-proposal.expected.json` |
+| `mio-profile_commissioning-proposal.json` | `/etc/azazel/commissioning/commissioning-proposal.json` |
+| `mio-profile_commissioning-proposal.sig` | `/etc/azazel/mio-profile/commissioning-proposal.sig` |
+| `mio-trust` | `/etc/azazel/operator-trust/operators.json` |
+| `mio-node` | `/etc/azazel/node.yaml` |
+
+The two proposal files are read in place on the encrypted volume; no other file
+there (role drafts, commissioning records, active records) and no protection key
+is loaded. Installation and tmpfiles always create `/etc/azazel/mio-profile/`
+as root:root 0700, even when empty. A successful
+`az-nexus-commission proposal-review --operator LABEL` publishes only the 64-byte
+`commissioning-proposal.sig` there, atomically and create-only, after
+verification and input rechecks; the signature holds no identity and pins the
+reviewed proposal bytes exactly, so an unreviewed or later-changed proposal does
+not verify. Source files are root-owned 0600.
+
+Every credential has a `SetCredential=ID:absent` fallback. entryd is ordered
+after `azazel-activated.service`, which is ordered after
+`etc-azazel-commissioning.mount` ([commissioning storage at boot](commissioning-storage-at-boot.md));
+a volume that is locked or not mounted when entryd starts leaves an empty mount
+point, the two proposal credentials become `absent`, and the reader selects CORE
+without verifying. entryd does not itself check that the source is LUKS-backed:
+only root can place files under the bare mount point, and any such file still
+has to verify against the reviewed signature. After unlocking, restart entryd to
+pick up the proposal.
+
+**Migration from earlier releases (#244).** Earlier releases also published
+`commissioning-proposal.expected.json` and `commissioning-proposal.json` into
+`/etc/azazel/mio-profile/`, in plain bytes outside the encrypted volume. entryd
+no longer loads them. `packaging/install.sh` runs
+`tools/purge_mio_profile_copies.py` on every install, which removes exactly those
+two names, only as ordinary files, inside that directory opened without
+following a symlink; the signature and any other file are kept. A symlink or
+other object at either name, or a symlinked directory, refuses the whole step
+and the install, with nothing removed, for administrator inspection. On a node
+not upgraded through the installer, run as root from the reviewed checkout:
+
+```sh
+sudo python3 -I tools/purge_mio_profile_copies.py /etc/azazel/mio-profile
+sudo ls -la /etc/azazel/mio-profile   # expect at most commissioning-proposal.sig
+```
+
+Deleting a file does not scrub the blocks it used on the unencrypted file
+system; where that matters, treat the old copies under the node's storage
+disposal procedure. The proposal and its signature on the encrypted volume are
+unchanged, so no re-commissioning or re-review is needed; restart entryd so it
+loads from the new sources.
 
 Two individual credentials supply `/etc/azazel/node.yaml` as `mio-node` and
 `/etc/azazel/operator-trust/operators.json` as `mio-trust`. The latter contains
 only enrolled public keys and revocations, never private signing keys. Provision
 these through the existing administrator setup without widening their source
-permissions. `SetCredential=mio-trust:absent` and `SetCredential=mio-node:absent`
-are the fallbacks when a source file is missing; the reader treats the value
-`absent` as no source and yields CORE. (systemd 257 drops an empty
-`SetCredential=ID:` line as invalid syntax, so an empty fallback would leave
-entryd unable to start, 243/CREDENTIALS, rather than CORE.) The proposal directory must exist and be readable by systemd;
-if it is removed or unreadable, credential setup can fail before entryd starts.
-An empty installed directory starts with CORE.
+permissions. The `SetCredential=ID:absent` lines are the fallbacks when a source file is
+missing; the reader treats the value `absent` in any of the five as no source
+and yields CORE. (systemd 257 drops an empty `SetCredential=ID:` line as invalid
+syntax, so an empty fallback would leave entryd unable to start,
+243/CREDENTIALS, rather than CORE.) A node without a reviewed signature starts
+with CORE.
 
 The five credential copies are read-only (observed on systemd 257: root:root
 0440 with an ACL granting `azmioentry` read); proposal
-names are prefixed `mio-profile_`. The reader uses the fixed system-unit
+names keep the `mio-profile_` prefix of the earlier directory source. They live
+in the unit's credential directory in memory, never on persistent storage. The reader uses the fixed system-unit
 credential directory, with no environment path override. All five exact byte
 strings are hashed on each read; YAML parsing, trust decoding, proposal rebuild
 and signature verification are cached until any bytes change. Unexpected reader

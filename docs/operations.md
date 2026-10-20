@@ -48,17 +48,19 @@ Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --ope
 The whole sequence, including off-host signing with `tools/operator_sign.py`, is
 rehearsed step by step in the [commissioning VM rehearsal](hil-runbooks/commissioning-rehearsal.md).
 Installation creates `/etc/azazel/mio-profile/` as root:root 0700 even before
-commissioning. Keep it limited to the two retained proposal copies and the
-reviewed detached signature (root-owned 0600). `proposal-export` publishes the
-copies; successful `proposal-review --operator LABEL` publishes the signature.
-Do not copy commissioning records, drafts or protection keys there. Debian 13
-(systemd 257) supports the required directory `LoadCredential` source. The unit
+commissioning. It holds only the reviewed detached signature (root-owned 0600),
+which a successful `proposal-review --operator LABEL` publishes. The proposal
+itself carries raw identity and stays in the encrypted
+`/etc/azazel/commissioning/`, from which the unit loads its two fixed files;
+never copy a proposal, record, draft or protection key into
+`/etc/azazel/mio-profile/`. Installation removes the two proposal copies earlier
+releases put there ([M.I.O. runtime](mio-runtime.md), #244). The unit
 separately loads only the node declaration and the
 operator trust store's public enrollment/revocation document. Keep their existing
 protected permissions; no access grant to `azmioentry` is needed. Missing node
-or trust credentials, an empty proposal directory, or an absent optional Fabric
-extra yield CORE. Do not delete the installed source directory: a missing or
-unreadable directory can prevent systemd from starting the unit. Credential
+or trust credentials, a missing signature, a locked commissioning volume, or
+an absent optional Fabric extra yield CORE: every credential source has an
+`absent` fallback. Credential
 copies are 0400 owned by the service user. Restart entryd using the existing
 operational procedure after changing any proposal, node declaration or trust
 material: a revocation becomes effective at the next entryd restart. Admission
