@@ -435,6 +435,46 @@ systems without `SO_PEERGROUPS` can still classify root/primary-group peers,
 but supplementary-group operator access is denied; this is not a claim that
 those systems are otherwise supported.
 
+### Commissioning storage at boot
+
+The installer does not create, open or mount the commissioning LUKS volume and
+writes nothing to `crypttab` or `fstab`. For the boot-time activation pass to
+read the commissioning evidence, the operator adds both entries
+([commissioning storage at boot](commissioning-storage-at-boot.md), #242).
+The passphrase is typed at boot; a key file and `systemd-creds` with the host
+key are not supported:
+
+```text
+# /etc/crypttab -- "none": no key file
+azn-commissioning  <device>  none  nofail,timeout=300
+```
+
+```text
+# /etc/fstab
+/dev/mapper/azn-commissioning  /etc/azazel/commissioning  ext4  nodev,nosuid,noexec,nofail,x-systemd.device-timeout=300s  0  0
+```
+
+`x-systemd.device-timeout=300s` matches the crypttab `timeout=300`: without it
+the mount job waits for the mapped device only for the default start timeout
+(90 s), and could fail before the prompt ends and not be retried after a later
+unlock.
+
+`azazel-activated.service` is ordered `After=etc-azazel-commissioning.mount`
+and `After=var-lib-azazel-secrets.mount` and has no `Requires=`, `Wants=`,
+`BindsTo=` or `RequiresMountsFor=` on either. A volume left locked, absent or
+failed therefore does not stop the controller: it still remasks, and its pass
+refuses because `/etc/azazel/commissioning` is not LUKS-backed. While a mount
+job is still pending, the controller waits for it, up to that 300 s timeout,
+before it starts. `After=` on a mount that does not exist has no effect. That
+an untyped passphrase leaves the volume locked after 300 s and the boot
+continues is the intended behaviour and is **not yet verified**; the P1 VM
+rehearsal checks it. When `/var/lib/azazel/secrets` shares the device, its
+`fstab` line also carries `nofail` and the same device timeout. The volume
+must be plain LUKS (not LVM on LUKS): `luks_backed` in
+`src/azazel_nexus/hil_preflight.py` reads `dm/uuid` of the directory's own
+device (`st_dev`) and accepts only a `CRYPT-LUKS` prefix, which an LVM volume
+on top of LUKS does not carry.
+
 ## Adding a future physical-install target
 
 Hardware installation is not limited by the Python implementation to amd64;

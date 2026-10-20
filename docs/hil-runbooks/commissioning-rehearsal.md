@@ -98,7 +98,39 @@ sudo rmdir /etc/azazel/commissioning/lost+found
 sudo chown root:azcommission /etc/azazel/commissioning && sudo chmod 0750 /etc/azazel/commissioning
 ```
 
-Do not add it to `crypttab` or `fstab`; reopen it by hand after a reboot.
+For a by-hand rehearsal, leave it out of `crypttab` and `fstab` and reopen it
+by hand after a reboot. A boot-time activation pass can only succeed if the
+volume is opened before it runs
+([commissioning storage at boot](../commissioning-storage-at-boot.md), #242).
+That design opens it at boot with a passphrase typed at the console (or
+through `systemd-tty-ask-password-agent` over SSH) and **never a key file**:
+
+```text
+# /etc/crypttab -- third field "none": no key file, the passphrase is typed
+azn-commissioning  /var/lib/azn-rehearsal-luks/commissioning.img  none  nofail,timeout=300
+```
+
+```text
+# /etc/fstab
+/dev/mapper/azn-commissioning  /etc/azazel/commissioning  ext4  nodev,nosuid,noexec,nofail,x-systemd.device-timeout=300s  0  0
+```
+
+Do not add a key file, a `systemd-creds` credential sealed with the host key,
+or any other stored unlock factor. `nofail` on both lines is required.
+`x-systemd.device-timeout=300s` matches the crypttab `timeout=300`: without it
+the mount job waits for `/dev/mapper/azn-commissioning` only for the default
+start timeout (90 s), so it could fail before the passphrase prompt ends and
+not be retried after a later unlock. The intended behaviour -- a passphrase not
+typed within 300 s leaves the volume locked and the boot continues; the
+controller (`azazel-activated.service`, ordered `After=` the mount and never
+`Requires=` it) still runs, and its pass refuses because the directory is not
+LUKS-backed -- is **not yet verified** and is checked in the P1 VM rehearsal.
+Being ordered `After=` a pending mount job, the controller waits up to that
+timeout before it starts. Whether systemd 257 sets up the loop device for a
+regular-file source is also a P1 rehearsal item, not something this runbook
+has shown. If `/var/lib/azazel/secrets` is moved onto the same device (the
+design's recommended default), its `fstab` line carries `nofail` and the same
+device timeout as well.
 The check cannot tell a loop file on an unencrypted disk from a real encrypted
 volume. The loop file substitutes for the mechanics only; a real node uses a
 real dm-crypt device ([HIL preflight](../hil-preflight.md)).
