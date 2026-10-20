@@ -46,6 +46,26 @@ def _read(service):
     return read_audit_status(service.status_path.read_bytes())
 
 
+def _no_uid(value):
+    """The writer's uid (901) is no key and no string anywhere in the snapshot.
+
+    Sizes are numbers that may contain those digits by chance, so only keys
+    and strings are searched.
+    """
+
+    def walk(item):
+        if isinstance(item, dict):
+            for key, inner in item.items():
+                assert "901" not in key
+                walk(inner)
+        elif isinstance(item, list):
+            for inner in item:
+                walk(inner)
+        elif isinstance(item, str):
+            assert "901" not in item
+    walk(value)
+
+
 def _snapshot(**overrides):
     value = {"schema": STATUS_SCHEMA, "written_at": 1000.0, "chain_verified": True,
              "chain_bytes": 4096, "segments": 2, "filesystem_free_bytes": 50 << 30,
@@ -75,7 +95,8 @@ def test_auditd_writes_a_readable_snapshot_without_record_content(tmp_path, monk
     assert value["warn_chain_bytes"] == auditd.CAPACITY_WARN_CHAIN_BYTES
     assert value["warn_free_bytes"] == auditd.CAPACITY_WARN_FREE_BYTES
     raw = service.status_path.read_text()
-    assert "inc-" not in raw and "occurred_at" not in raw and "901" not in raw
+    assert "inc-" not in raw and "occurred_at" not in raw
+    _no_uid(value)
     assert stat.S_IMODE(service.status_path.stat().st_mode) == 0o640
     # Only the snapshot is left in the leaf: no temp files.
     assert [p.name for p in service.status_path.parent.iterdir()] == ["status.json"]
@@ -89,7 +110,7 @@ def test_rate_limited_totals_reach_the_snapshot_by_class_not_uid(tmp_path, monke
     service.write_status()
     value = _read(service)
     assert value["rate_limited"] == {"rate:edge.incident.opened:ordinary": 1}
-    assert "901" not in service.status_path.read_text()
+    _no_uid(value)
 
 
 def test_the_snapshot_is_bounded_however_many_keys_are_limited(tmp_path, monkeypatch):
