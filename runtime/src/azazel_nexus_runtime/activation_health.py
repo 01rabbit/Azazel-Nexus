@@ -1,14 +1,22 @@
 """`node_health` for the activation pass: fixed local checks only (#206).
 
-`docs/activation-observe-baseline.md` §3.3. `healthy` is computed from five
-controller-owned prerequisites, with thresholds from the activation policy:
+`docs/activation-observe-baseline.md` §3.3. `healthy` is computed from the
+five controller-owned prerequisites of §3.3, reported as six findings
+(capacity and resources separately), with thresholds from the activation
+policy, in this order:
 
-1. the activation ledger verifies, accepts an append, and verifies again;
-2. state capacity and resources meet the policy floors (the bootstrap
-   capacity and resource checks, reused unchanged);
-3. operator trust loads with at least one active key;
-4. no lab marker;
-5. the watchdog fence store is readable and holds no fence.
+1. ``state_capacity`` and 2. ``resources`` meet the policy floors (the
+   bootstrap capacity and resource checks, reused unchanged);
+3. ``activation_ledger``: the injected activation ledger, if present, is a
+   single-link regular file owned by root and writable by its owner only, and
+   its chain verifies. The check is **read-only**: it never creates, appends
+   to or modifies the ledger. A missing ledger is an empty chain and passes;
+   whether the ledger can be written is proven by the controller's own
+   decision record, which a pass must append anyway;
+4. ``operator_trust`` loads with at least one active key;
+5. ``lab_marker``: no lab marker;
+6. ``watchdog_fences``: the watchdog fence store is readable and holds no
+   fence.
 
 It never asks a service how it is: no socket, status file or self-report is
 consulted, so a daemon cannot vouch for itself. Any exception, absence or
@@ -29,14 +37,12 @@ from typing import Callable
 
 from azazel_nexus.activation_policy import ActivationPolicy
 from azazel_nexus.audit import AuditLedger
-from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.lab_host import is_lab_host
 from azazel_nexus.operator_store import load_operator_trust
 from azazel_nexus.operator_trust import OperatorTrust
 
 from .bootstrap_resources import BootstrapResourceThresholds, require_bootstrap_resources
 from .bootstrap_state_capacity import BootstrapStateFloors, require_bootstrap_state_capacity
-from .runtime_paths import watchdog_state_dir
 
 __all__ = [
     "HEALTH_CHECKS",
@@ -47,32 +53,46 @@ __all__ = [
 ]
 
 HEALTH_CHECKS = (
-    "activation_ledger", "state_capacity", "resources",
+    "state_capacity", "resources", "activation_ledger",
     "operator_trust", "lab_marker", "watchdog_fences",
 )
 _FENCE_LIMIT = 65536
 _FENCES = "fences.json"
+_WATCHDOG = ("var", "lib", "azazel", "state", "watchdog")
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+#: The owner of every path component above the watchdog's own directory, and
+#: of the activation ledger. Private test seam only.
+_OWNER = 0
 
 
 class _Unhealthy(Exception):
     pass
 
 
-def read_watchdog_fences() -> dict:
-    """The watchdog's stored fences, read without following links.
+def _directory(fd: int, owner: int) -> None:
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022:
+        raise _Unhealthy("store directory protection")
 
-    The store directory must exist, belong to `azwatch` and not be writable
-    by anyone else. A missing `fences.json` inside it is the watchdog's own
-    "never fenced" state (`FenceStore.load`) and reads as empty; any other
+
+def read_watchdog_fences() -> dict:
+    """The watchdog's stored fences, read without following any link.
+
+    Traverses `/var/lib/azazel/state/watchdog` from `/`: each component above
+    it root-owned and not writable by group or others, the store directory
+    owned by `azwatch`. A missing `fences.json` inside it is the watchdog's
+    own "never fenced" state (`FenceStore.load`) and reads as empty; any other
     failure is raised, so the caller treats it as a fence.
     """
     owner = pwd.getpwnam("azwatch").pw_uid
-    directory = os.open(watchdog_state_dir(),
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    directory = os.open("/", _DIR_FLAGS)
     try:
-        info = os.fstat(directory)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022:
-            raise _Unhealthy("watchdog state directory protection")
+        for component in _WATCHDOG:
+            _directory(directory, _OWNER)
+            child = os.open(component, _DIR_FLAGS, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        _directory(directory, owner)
         try:
             fd = os.open(_FENCES, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                          dir_fd=directory)
@@ -119,14 +139,25 @@ PRODUCTION_PROBES = NodeHealthProbes(
 )
 
 
-def _ledger(ledger, now):
+def _ledger_entry(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != _OWNER or info.st_nlink != 1
+            or not info.st_mode & stat.S_IWUSR or info.st_mode & 0o022):
+        raise _Unhealthy("activation ledger protection")
+    return info.st_dev, info.st_ino
+
+
+def _ledger(ledger):
+    """Read-only: protection, one chain verification, unchanged identity."""
     if type(ledger) is not AuditLedger:
         raise _Unhealthy("activation ledger required")
+    before = _ledger_entry(ledger.path)
     ledger.verify()
-    _, head = ledger.head()
-    ledger.append({"event_type": "activation.health_ledger_probe", "occurred_at": now},
-                  expected_head=head)
-    ledger.verify()
+    if _ledger_entry(ledger.path) != before:
+        raise _Unhealthy("activation ledger changed during verification")
 
 
 def _trust(probes):
@@ -147,26 +178,25 @@ def _fences(probes):
 
 
 def collect_node_health(
-    *, policy: ActivationPolicy, ledger: AuditLedger, now: str,
+    *, policy: ActivationPolicy, ledger: AuditLedger,
     probes: NodeHealthProbes = PRODUCTION_PROBES,
 ) -> tuple[bool, tuple[tuple[str, str], ...]]:
     """`(healthy, findings)`; every check runs, each finding is `ok` or `failed`.
 
     Without a decoded `ActivationPolicy` there are no floors, so the node is
-    unhealthy. The ledger append is the one write: it proves the ledger the
-    pass will record into is writable now, not that anything was granted.
+    unhealthy. Nothing here writes: the capacity checks run first, and the
+    ledger is only inspected and verified.
     """
-    try:
-        if type(probes) is not NodeHealthProbes:
-            raise _Unhealthy("fixed health probes required")
-        parse_bootstrap_time(now)
-        valid_policy = type(policy) is ActivationPolicy
-        state = resources = None
-        if valid_policy:
+    if type(probes) is not NodeHealthProbes:
+        return False, tuple((name, "failed") for name in HEALTH_CHECKS)
+    valid_policy = type(policy) is ActivationPolicy
+    state = resources = None
+    if valid_policy:
+        try:
             state = BootstrapStateFloors(**policy.state_floor_values())
             resources = BootstrapResourceThresholds(**policy.resource_floor_values())
-    except Exception:  # noqa: BLE001 - no inputs means no health
-        return False, tuple((name, "failed") for name in HEALTH_CHECKS)
+        except Exception:  # noqa: BLE001 - no floors means no health
+            valid_policy = False
 
     def floors_state():
         if state is None:
@@ -179,9 +209,9 @@ def collect_node_health(
         probes.resources(resources)
 
     checks = {
-        "activation_ledger": lambda: _ledger(ledger, now),
         "state_capacity": floors_state,
         "resources": floors_resources,
+        "activation_ledger": lambda: _ledger(ledger),
         "operator_trust": lambda: _trust(probes),
         "lab_marker": lambda: _lab(probes),
         "watchdog_fences": lambda: _fences(probes),

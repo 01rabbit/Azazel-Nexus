@@ -18,7 +18,9 @@ refused, whatever the administrator wrote.
 
 *The shape is closed and canonical.* Unknown, missing or duplicate fields,
 non-canonical bytes and unsorted lists are refused, so `policy_digest` names
-exactly one policy.
+exactly one policy. The file is exactly `json.dumps(..., sort_keys=True,
+separators=(",", ":"))` in UTF-8 with no trailing newline; an editor that
+appends one makes the policy refused, deliberately.
 """
 
 from __future__ import annotations

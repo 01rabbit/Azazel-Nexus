@@ -279,7 +279,9 @@ none of them (`tests/unit/test_activation_p2_inert.py`).
 - `src/azazel_nexus/activation_policy.py`: `/etc/azazel/activation/policy.json`
   (`azazel-nexus/activation-policy/v1`), read like the approval (root `0700`
   directory, root `0600` single-link file, read twice). Closed canonical shape;
-  `policy_digest` is the SHA-256 of the exact bytes. `units` must be a subset
+  `policy_digest` is the SHA-256 of the exact bytes. The file must be the
+  canonical bytes themselves (sorted keys, no whitespace, **no trailing
+  newline**); anything else is refused rather than normalized. `units` must be a subset
   of the code-fixed `ACTIVATION_UNIT_ALLOWLIST` (the five SUPPORTING loop
   units and edge-core); `max_lease_seconds` ≤ 72 h and
   `max_clock_skew_seconds` ≤ 300 are capped in code. `state_floors` and
@@ -300,10 +302,37 @@ none of them (`tests/unit/test_activation_p2_inert.py`).
   (absent is `None`, anything malformed refuses), initialize once, raise-only
   update (temporary file, fsync, rename, directory fsync, read-back), and
   `require_high_water_for_pass`, which refuses a missing file when
-  `/var/lib/azazel/state/activation.jsonl` exists.
+  `/var/lib/azazel/state/activation.jsonl` exists. Initializing and raising
+  take the caller's `now` and the policy skew and refuse a `time_floor`
+  beyond `now + skew`, so one pass with a fast clock cannot set a floor the
+  node then never reaches.
 - `runtime/src/azazel_nexus_runtime/activation_health.py`: the five checks of
-  §3.3 as `(healthy, findings)`. The ledger check appends one
-  `activation.health_ledger_probe` event per collection. A missing `fences.json` inside the
+  five prerequisites of §3.3 as `(healthy, findings)`, with six findings
+  (capacity and resources reported separately), capacity first. The ledger
+  check is read-only: the file, if present, must be a single-link regular file
+  owned by root and writable by its owner only, and its chain is verified
+  once. It never creates or appends; a missing ledger is an empty chain, and
+  writability is proven by the controller's own decision record. A missing `fences.json` inside the
   watchdog's own directory is the watchdog's "never fenced" state and reads as
   no fence; a missing directory, a foreign owner or a malformed file is a
   fence.
+
+### Recovering from a time floor set too far ahead
+
+The code never lowers a floor. If `time_floor` is nonetheless ahead of the
+real time (a clock that was wrong when the floor was raised within its skew,
+or a file written by hand), every pass refuses on the clock check, which is
+the safe state. Recovery is an explicit, root-only administrator act, not a
+flag or an environment variable:
+
+1. Keep the node masked; confirm the real time from an independent source.
+2. Record the decision in the audit trail (who, why, the old floor) before
+   touching anything.
+3. Move `high-water.json` aside (keep it for the record). The pass then
+   refuses on "high water absent on a node with an activation ledger", so
+   nothing is admitted in between.
+4. Re-initialize through `az-activation install` (P3), which writes a fresh
+   floor no lower in `security_epoch`, `approval_seq` and `generation` than
+   the retained file, with `time_floor` from the confirmed clock, and appends
+   its own audit event. Approvals signed against the old floor remain valid
+   only if their sequence still meets it.

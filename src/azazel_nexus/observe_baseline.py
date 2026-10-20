@@ -166,6 +166,11 @@ def verify_observe_baseline(
     the installed unit files and `package_digest` the installed Edge archive
     digest (exactly when edge-core is in scope). Any difference refuses. A match establishes that
     the tree describes these bytes; it is not an approval or a health signal.
+
+    The commissioning digest and evidence binding in `generation` are not
+    re-derived here: binding them to the current commissioning evidence is the
+    store's and the activation controller's job, as for every ordinary
+    generation. This only requires that a binding is present.
     """
     try:
         if type(generation) is not Generation:

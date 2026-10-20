@@ -18,6 +18,13 @@ A node that already has an activation ledger but no high-water file is a
 refusal the caller can ask for (`require_high_water_for_pass`): deleting the
 file must not reopen replay.
 
+*Bounded above.* Initializing or raising takes the caller's `now` (the same
+clock read the pass uses) and the policy skew, and refuses a `time_floor`
+beyond `now + skew`. A single pass with a fast clock therefore cannot push the
+floor so far ahead that the node refuses forever; recovering from a floor
+that is already too far ahead is the explicit administrator procedure in the
+design document (§7), never code here.
+
 *Crash-safe.* A write goes to a private temporary file, is fsynced, renamed
 over the old file and the directory is fsynced. A crash leaves either the old
 or the new floor, never a mixture; a stale temporary file is never read.
@@ -30,11 +37,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 import fcntl
 import json
 import os
 import stat
 
+from azazel_nexus.activation_policy import MAX_CLOCK_SKEW_SECONDS
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 
 __all__ = [
@@ -256,9 +265,21 @@ def _write_at(leaf_fd: int, value: HighWater) -> HighWater:
     return value
 
 
-def _initialize_at(state_fd: int, value: HighWater) -> HighWater:
+def _within_clock(value: HighWater, now: str, skew_seconds: int) -> None:
     if type(value) is not HighWater:
         raise HighWaterRefused("high-water record required")
+    if (type(skew_seconds) is not int
+            or not 0 <= skew_seconds <= MAX_CLOCK_SKEW_SECONDS):
+        raise HighWaterRefused("bounded clock skew required")
+    try:
+        instant = parse_bootstrap_time(now)
+    except Exception:
+        raise HighWaterRefused("current time must be whole-second UTC") from None
+    if parse_bootstrap_time(value.time_floor) > instant + timedelta(seconds=skew_seconds):
+        raise HighWaterRefused("high-water time floor ahead of the current clock")
+
+
+def _initialize_at(state_fd: int, value: HighWater) -> HighWater:
     leaf = _open_leaf(state_fd, create=True)
     try:
         _lock(leaf, fcntl.LOCK_EX)
@@ -270,8 +291,6 @@ def _initialize_at(state_fd: int, value: HighWater) -> HighWater:
 
 
 def _raise_at(state_fd: int, value: HighWater) -> HighWater:
-    if type(value) is not HighWater:
-        raise HighWaterRefused("high-water record required")
     leaf = _open_leaf(state_fd, create=False)
     if leaf is None:
         raise HighWaterRefused("high-water absent; it is initialized, never raised from nothing")
@@ -334,11 +353,17 @@ def require_high_water_for_pass() -> HighWater | None:
     return _guard(check)
 
 
-def initialize_high_water(value: HighWater) -> HighWater:
-    """Create the first floor; refuses when one already exists."""
+def initialize_high_water(value: HighWater, *, now: str, skew_seconds: int) -> HighWater:
+    """Create the first floor; refuses when one already exists or is ahead of `now + skew`."""
+    _within_clock(value, now, skew_seconds)
     return _guard(lambda state_fd: _initialize_at(state_fd, value))
 
 
-def raise_high_water(value: HighWater) -> HighWater:
-    """Replace the floor with one at or above it in every field, or refuse."""
+def raise_high_water(value: HighWater, *, now: str, skew_seconds: int) -> HighWater:
+    """Replace the floor with one at or above it in every field, or refuse.
+
+    `time_floor` must also be at most `now + skew_seconds`, with `now` from the
+    same clock read the caller checked against the stored floor.
+    """
+    _within_clock(value, now, skew_seconds)
     return _guard(lambda state_fd: _raise_at(state_fd, value))

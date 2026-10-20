@@ -23,6 +23,18 @@ from azazel_nexus_runtime.activation_high_water import (
     require_high_water_for_pass,
 )
 
+NOW = "2027-06-01T00:00:00Z"
+SKEW = 120
+
+
+def _init(value, now=NOW, skew=SKEW):
+    return initialize_high_water(value, now=now, skew_seconds=skew)
+
+
+def _raise(value, now=NOW, skew=SKEW):
+    return raise_high_water(value, now=now, skew_seconds=skew)
+
+
 FLOOR = HighWater(security_epoch=3, approval_seq=10, generation=2,
                   time_floor="2026-10-20T00:00:00Z")
 
@@ -54,12 +66,12 @@ def test_absent_is_none_and_distinct_from_present(state):
     assert read_high_water() is None
     (state / "activation").mkdir(mode=0o700)
     assert read_high_water() is None
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     assert read_high_water() == FLOOR
 
 
 def test_initialize_creates_private_canonical_file(state):
-    assert initialize_high_water(FLOOR) == FLOOR
+    assert _init(FLOOR) == FLOOR
     leaf = os.stat(state / "activation")
     assert stat.S_IMODE(leaf.st_mode) == 0o700
     info = os.stat(_file(state))
@@ -70,27 +82,27 @@ def test_initialize_creates_private_canonical_file(state):
 
 
 def test_initialize_never_overwrites(state):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     with pytest.raises(HighWaterRefused):
-        initialize_high_water(replace(FLOOR, security_epoch=0))
+        _init(replace(FLOOR, security_epoch=0))
     assert read_high_water() == FLOOR
 
 
 def test_raise_requires_an_existing_floor(state):
     with pytest.raises(HighWaterRefused):
-        raise_high_water(FLOOR)
+        _raise(FLOOR)
     (state / "activation").mkdir(mode=0o700)
     with pytest.raises(HighWaterRefused):
-        raise_high_water(FLOOR)
+        _raise(FLOOR)
     assert read_high_water() is None
 
 
 def test_raise_moves_every_field_forward(state):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     higher = HighWater(4, 11, 3, "2026-10-21T00:00:00Z")
-    assert raise_high_water(higher) == higher
+    assert _raise(higher) == higher
     assert read_high_water() == higher
-    assert raise_high_water(higher) == higher  # equal is a no-op, not a refusal
+    assert _raise(higher) == higher  # equal is a no-op, not a refusal
 
 
 @pytest.mark.parametrize("lower", [
@@ -101,11 +113,11 @@ def test_raise_moves_every_field_forward(state):
     HighWater(99, 99, 1, "2027-01-01T00:00:00Z"),
 ])
 def test_raise_refuses_any_lower_field_and_changes_nothing(state, lower):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     before = _file(state).read_bytes()
     stamp = os.stat(_file(state)).st_ino
     with pytest.raises(HighWaterRefused):
-        raise_high_water(lower)
+        _raise(lower)
     assert _file(state).read_bytes() == before
     assert os.stat(_file(state)).st_ino == stamp
 
@@ -118,7 +130,7 @@ def test_ledger_presence_and_pass_requirement(state):
     with pytest.raises(HighWaterRefused) as error:
         require_high_water_for_pass()
     assert "activation ledger" in str(error.value)
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     assert require_high_water_for_pass() == FLOOR
 
 
@@ -162,19 +174,19 @@ def test_closed_shape_refusals(raw):
 
 
 def test_malformed_stored_file_is_refused_not_absent(state):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     _file(state).write_bytes(b'{"schema":"x"}')
     with pytest.raises(HighWaterRefused):
         read_high_water()
     with pytest.raises(HighWaterRefused):
         require_high_water_for_pass()
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, security_epoch=9))
+        _raise(replace(FLOOR, security_epoch=9))
 
 
 @pytest.mark.parametrize("mode", [0o640, 0o644, 0o604, 0o660])
 def test_file_wider_than_owner_only_refused(state, mode):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     _file(state).chmod(mode)
     with pytest.raises(HighWaterRefused):
         read_high_water()
@@ -182,16 +194,16 @@ def test_file_wider_than_owner_only_refused(state, mode):
 
 @pytest.mark.parametrize("mode", [0o750, 0o755, 0o701])
 def test_leaf_directory_wider_than_owner_only_refused(state, mode):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     (state / "activation").chmod(mode)
     with pytest.raises(HighWaterRefused):
         read_high_water()
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, security_epoch=9))
+        _raise(replace(FLOOR, security_epoch=9))
 
 
 def test_wrong_owner_refused(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     monkeypatch.setattr(hw, "_OWNER", os.getuid() + 1)
     with pytest.raises(HighWaterRefused):
         read_high_water()
@@ -206,7 +218,7 @@ def test_symlinked_file_refused(state, tmp_path):
     with pytest.raises(HighWaterRefused):
         read_high_water()
     with pytest.raises(HighWaterRefused):
-        initialize_high_water(FLOOR)
+        _init(FLOOR)
 
 
 def test_symlinked_leaf_directory_refused(state, tmp_path):
@@ -216,12 +228,12 @@ def test_symlinked_leaf_directory_refused(state, tmp_path):
     with pytest.raises(HighWaterRefused):
         read_high_water()
     with pytest.raises(HighWaterRefused):
-        initialize_high_water(FLOOR)
+        _init(FLOOR)
     assert not (real / "high-water.json").exists()
 
 
 def test_hard_linked_file_refused(state, tmp_path):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     os.link(_file(state), tmp_path / "second-name")
     with pytest.raises(HighWaterRefused):
         read_high_water()
@@ -235,7 +247,7 @@ def test_directory_in_place_of_file_refused(state):
 
 
 def test_file_replaced_between_stat_and_read_refused(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     replacement = state / "activation" / "replacement"
     original = os.read
 
@@ -253,7 +265,7 @@ def test_file_replaced_between_stat_and_read_refused(state, monkeypatch):
 
 
 def test_file_rewritten_in_place_while_reading_refused(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.read
     done = False
 
@@ -272,12 +284,12 @@ def test_file_rewritten_in_place_while_reading_refused(state, monkeypatch):
 
 
 def test_concurrent_writer_is_refused_as_busy(state):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     fd = os.open(state / "activation", os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         with pytest.raises(HighWaterRefused):
-            raise_high_water(replace(FLOOR, security_epoch=4))
+            _raise(replace(FLOOR, security_epoch=4))
         with pytest.raises(HighWaterRefused):
             read_high_water()
     finally:
@@ -289,7 +301,7 @@ def test_concurrent_writer_is_refused_as_busy(state):
 
 
 def test_crash_before_rename_keeps_the_old_floor(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.replace
 
     def crash(*args, **kwargs):
@@ -297,16 +309,16 @@ def test_crash_before_rename_keeps_the_old_floor(state, monkeypatch):
 
     monkeypatch.setattr(os, "replace", crash)
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, security_epoch=4))
+        _raise(replace(FLOOR, security_epoch=4))
     monkeypatch.setattr(os, "replace", original)
     assert (state / "activation" / ".high-water.json.partial").exists()
     assert read_high_water() == FLOOR
-    assert raise_high_water(replace(FLOOR, security_epoch=4)).security_epoch == 4
+    assert _raise(replace(FLOOR, security_epoch=4)).security_epoch == 4
     assert not (state / "activation" / ".high-water.json.partial").exists()
 
 
 def test_crash_during_write_keeps_the_old_floor(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.write
 
     def partial(fd, data):
@@ -315,14 +327,14 @@ def test_crash_during_write_keeps_the_old_floor(state, monkeypatch):
 
     monkeypatch.setattr(os, "write", partial)
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, approval_seq=11))
+        _raise(replace(FLOOR, approval_seq=11))
     assert _file(state).read_bytes() == encode_high_water(FLOOR)
     monkeypatch.setattr(os, "write", original)
     assert read_high_water() == FLOOR
 
 
 def test_crash_before_file_fsync_keeps_the_old_floor(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.fsync
     calls = []
 
@@ -334,13 +346,13 @@ def test_crash_before_file_fsync_keeps_the_old_floor(state, monkeypatch):
 
     monkeypatch.setattr(os, "fsync", failing)
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, generation=3))
+        _raise(replace(FLOOR, generation=3))
     monkeypatch.setattr(os, "fsync", original)
     assert read_high_water() == FLOOR
 
 
 def test_directory_fsync_failure_after_rename_is_uncertain_not_success(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.fsync
 
     def failing(fd):
@@ -350,13 +362,13 @@ def test_directory_fsync_failure_after_rename_is_uncertain_not_success(state, mo
 
     monkeypatch.setattr(os, "fsync", failing)
     with pytest.raises(HighWaterCommitUncertain):
-        raise_high_water(replace(FLOOR, generation=3))
+        _raise(replace(FLOOR, generation=3))
     monkeypatch.setattr(os, "fsync", original)
     assert read_high_water() == replace(FLOOR, generation=3)
 
 
 def test_write_syncs_file_then_directory_in_order(state, monkeypatch):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     original = os.fsync
     kinds = []
 
@@ -365,15 +377,15 @@ def test_write_syncs_file_then_directory_in_order(state, monkeypatch):
         return original(fd)
 
     monkeypatch.setattr(os, "fsync", recording)
-    raise_high_water(replace(FLOOR, generation=5))
+    _raise(replace(FLOOR, generation=5))
     assert kinds == ["file", "dir"]
 
 
 def test_partial_entry_of_wrong_type_refused(state):
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     (state / "activation" / ".high-water.json.partial").mkdir()
     with pytest.raises(HighWaterRefused):
-        raise_high_water(replace(FLOOR, generation=5))
+        _raise(replace(FLOOR, generation=5))
     assert read_high_water() == FLOOR
 
 
@@ -401,7 +413,7 @@ def rooted(tmp_path, monkeypatch):
 
 def test_fixed_traversal_reads_and_writes_under_var_lib_azazel_state(rooted):
     assert read_high_water() is None
-    initialize_high_water(FLOOR)
+    _init(FLOOR)
     assert (rooted / "var/lib/azazel/state/activation/high-water.json").is_file()
     assert read_high_water() == FLOOR
 
@@ -413,7 +425,7 @@ def test_symlinked_path_component_refused(rooted, tmp_path):
     with pytest.raises(HighWaterRefused):
         read_high_water()
     with pytest.raises(HighWaterRefused):
-        initialize_high_water(FLOOR)
+        _init(FLOOR)
 
 
 def test_group_writable_path_component_refused(rooted):
@@ -428,4 +440,82 @@ def test_public_api_has_no_path_or_owner_override():
     for function in (read_high_water, activation_ledger_present, require_high_water_for_pass):
         assert list(inspect.signature(function).parameters) == []
     for function in (initialize_high_water, raise_high_water):
-        assert list(inspect.signature(function).parameters) == ["value"]
+        assert list(inspect.signature(function).parameters) == ["value", "now", "skew_seconds"]
+
+
+# -- upper bound and equal-value / concurrent cases ------------------------------
+
+
+def test_raise_refuses_a_time_floor_beyond_now_plus_skew(state):
+    _init(FLOOR)
+    now = "2026-10-21T00:00:00Z"
+    assert _raise(replace(FLOOR, time_floor="2026-10-21T00:02:00Z"), now=now).time_floor \
+        == "2026-10-21T00:02:00Z"
+    before = _file(state).read_bytes()
+    with pytest.raises(HighWaterRefused):
+        _raise(replace(FLOOR, time_floor="2026-10-21T00:02:01Z"), now=now)
+    with pytest.raises(HighWaterRefused):
+        _raise(replace(FLOOR, time_floor="2036-01-01T00:00:00Z"), now=now)
+    assert _file(state).read_bytes() == before
+
+
+def test_initialize_refuses_a_time_floor_beyond_now_plus_skew(state):
+    with pytest.raises(HighWaterRefused):
+        _init(FLOOR, now="2026-10-19T23:57:59Z")
+    assert read_high_water() is None
+    assert not (state / "activation").exists()
+    _init(FLOOR, now="2026-10-19T23:58:00Z")
+    assert read_high_water() == FLOOR
+
+
+@pytest.mark.parametrize("now, skew", [
+    (None, SKEW), ("2027-06-01 00:00:00", SKEW), ("2027-06-01T00:00:00.1Z", SKEW),
+    (NOW, -1), (NOW, 301), (NOW, True), (NOW, 1.0), (NOW, None),
+])
+def test_clock_inputs_are_validated_before_touching_the_store(state, now, skew):
+    with pytest.raises(HighWaterRefused):
+        _init(FLOOR, now=now, skew=skew)
+    assert not (state / "activation").exists()
+    _init(FLOOR)
+    with pytest.raises(HighWaterRefused):
+        _raise(replace(FLOOR, generation=9), now=now, skew=skew)
+    assert read_high_water() == FLOOR
+
+
+def test_clock_and_skew_are_required_keywords(state):
+    with pytest.raises(TypeError):
+        raise_high_water(FLOOR)
+    with pytest.raises(TypeError):
+        initialize_high_water(FLOOR, NOW, SKEW)
+
+
+def test_equal_value_raise_does_not_write(state, monkeypatch):
+    _init(FLOOR)
+    before = os.stat(_file(state))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an equal raise must not write")
+
+    monkeypatch.setattr(hw, "_write_at", forbidden)
+    assert _raise(FLOOR) == FLOOR
+    after = os.stat(_file(state))
+    assert (before.st_ino, before.st_mtime_ns, before.st_size) == (
+        after.st_ino, after.st_mtime_ns, after.st_size)
+    assert not (state / "activation" / ".high-water.json.partial").exists()
+
+
+def test_concurrent_initialization_is_refused_as_busy(state):
+    (state / "activation").mkdir(mode=0o700)
+    fd = os.open(state / "activation", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with pytest.raises(HighWaterRefused) as error:
+            _init(FLOOR)
+        assert "busy" in str(error.value)
+        assert not _file(state).exists()
+    finally:
+        os.close(fd)
+    _init(FLOOR)
+    with pytest.raises(HighWaterRefused):
+        _init(replace(FLOOR, generation=7))
+    assert read_high_water() == FLOOR
