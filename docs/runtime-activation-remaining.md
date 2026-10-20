@@ -319,7 +319,9 @@ for the software prototype:
   valid lease before returning the SUPPORTING grant.
 - The production `_run_once` deliberately supplies `lease=None` and
   `healthy=False`. The fixed approval reader cannot supply independently
-  expected context or establish health.
+  expected context or establish health. (Superseded for the five
+  SUPPORTING loop units by #206 P4, which composes the observe-baseline
+  inputs: [§8](activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass).)
 - `ActivationContext` currently requires commissioning/inventory/policy/
   renderer digests and epoch information. No accepted bootstrap representation
   of these inputs is specified. Empty or fabricated digests are not a solution.

@@ -8,8 +8,8 @@ metadata carrying the commissioning digest and evidence binding.
 
 This module is pure. It does not measure installed files, publish, read the
 store, verify an approval or grant anything; the measurement is supplied by
-the caller, independently of the tree being checked. `az-activated` does not
-use it yet (phase P2).
+the caller, independently of the tree being checked. Since phase P4 the
+activation pass calls it through `azazel_nexus_runtime.activation_pass`.
 
 The tree is distinct from the other variants in both directions: it holds no
 `bootstrap.json`, so the bootstrap verifier refuses it, and this verifier

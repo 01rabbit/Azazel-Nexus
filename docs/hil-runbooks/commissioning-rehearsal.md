@@ -180,9 +180,13 @@ ceiling needs a new proposal.
 ## 6. entryd reads the ceiling
 
 Start entryd by hand as in [§17](mio-admission.md#17-vm-rehearsal-never-evidence)
-(production activation of entryd does not exist yet):
+(no regular path admits entryd on this node yet, #206). entryd starts only
+with this boot's grant marker (`ConditionPathExists=`, #206 §5); for the
+rehearsal create it by hand. It is not a grant and vanishes at reboot:
 
 ```sh
+sudo install -d -m 0755 -o root -g root /run/azazel-activation/granted
+sudo install -m 0644 -o root -g root /dev/null /run/azazel-activation/granted/azazel-mio-entryd.service
 sudo systemctl unmask azazel-mio-entryd.service && sudo systemctl daemon-reload
 sudo systemctl start --job-mode=ignore-requirements azazel-mio-entryd.service
 sudo ls -l /run/credentials/azazel-mio-entryd.service/

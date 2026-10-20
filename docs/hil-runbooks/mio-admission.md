@@ -659,6 +659,12 @@ must be stopped and cleared before the next activation pass:
 `systemctl reset-failed`, then re-mask. Otherwise azazel-activated's normal pass
 cannot confirm them stopped and ends with `RollbackFailed` (masking does not stop
 a running process; a `failed` unit also counts as unconfirmed).
+The loop units (`azazel-edge-intaked`, `azazel-incident-explaind`,
+`azazel-edge-probed`, `azazel-mio-entryd`, `azazel-knowledge-lited`,
+`azazel-edge-core`) also start only with this boot's grant marker
+`/run/azazel-activation/granted/<unit>` (#206 §5): a rehearsal creates it by
+hand (root `0644` in a root `0755` directory), records that it did, and the
+next activation pass removes it before deciding anything.
 
 A supporting-bootstrap selection left from an earlier rehearsal is bound to the boot
 it was made in. On a later boot every activation pass then fails closed, granting

@@ -407,7 +407,7 @@ def test_every_writable_path_is_one_the_layout_declares():
 
     declared = {spec.path for spec in LAYOUT} | {
         "/etc/systemd/system", "/run/systemd/system.control",
-        "/run/azazel-nexus-bootstrap",
+        "/run/azazel-nexus-bootstrap", "/run/azazel-activation",
     }
     for profile in PROFILES:
         for path in _settings(profile.unit).get("ReadWritePaths", []):
@@ -437,7 +437,12 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
     assert controller.conditions == (
         ("ConditionPathExists", "!/run/azazel-nexus-bootstrap/controller-used"),
     )
+    # Besides the controller's once-claim, only the per-boot grant markers
+    # (#206 §5), and only on the governed loop units.
     assert all(
+        profile.conditions == (
+            ("ConditionPathExists", f"/run/azazel-activation/granted/{profile.unit}"),
+        ) if profile.unit in GRANT_LOOP_UNITS else
         not any(key == "ConditionPathExists" for key, _ in profile.conditions)
         for profile in PROFILES
         if profile.unit != ACTIVATION_CONTROLLER_UNIT
@@ -445,6 +450,64 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
     from dataclasses import replace
     with pytest.raises(ValueError, match="only by the activation controller"):
         replace(controller, unit="azazel-other.service")
+
+
+#: The governed loop units (§2 of docs/activation-observe-baseline.md).
+GRANT_LOOP_UNITS = frozenset({
+    "azazel-edge-core.service",
+    "azazel-edge-intaked.service",
+    "azazel-edge-probed.service",
+    "azazel-incident-explaind.service",
+    "azazel-knowledge-lited.service",
+    "azazel-mio-entryd.service",
+})
+
+
+def test_condition_path_exists_is_present_exactly_on_the_governed_loop_units():
+    """Each loop unit starts only with this boot's grant marker; nothing else waits on one.
+
+    auditd and commissiond are started by the supporting-only bootstrap,
+    which writes no marker, so they must not carry the condition.
+    """
+    from azazel_nexus_runtime.activation_markers import GRANT_MARKER_DIRECTORY
+    from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
+
+    assert set(GRANT_MARKER_UNITS) == GRANT_LOOP_UNITS
+    for profile in PROFILES:
+        markers = [value for value in _settings(profile.unit).get("ConditionPathExists", [])
+                   if "azazel-activation" in value]
+        if profile.unit in GRANT_LOOP_UNITS:
+            assert markers == [f"{GRANT_MARKER_DIRECTORY}/{profile.unit}"], profile.unit
+        else:
+            assert markers == [], profile.unit
+    for unit in ("azazel-auditd.service", "azazel-commissiond.service"):
+        assert "ConditionPathExists" not in _settings(unit)
+
+
+def test_only_the_controller_may_write_grant_markers_and_it_stays_optional():
+    writers = [profile.unit for profile in PROFILES
+               if any(path.removeprefix("-") == "/run/azazel-activation"
+                      for path in _settings(profile.unit).get("ReadWritePaths", []))]
+    assert writers == [ACTIVATION_CONTROLLER_UNIT]
+    # Optional so a node without the tmpfiles directory still narrows; then no
+    # marker can be written and nothing granted can start.
+    assert "-/run/azazel-activation" in _settings(ACTIVATION_CONTROLLER_UNIT)["ReadWritePaths"]
+    # A separate root-owned directory, never under any unit's RuntimeDirectory:
+    # systemd chowns a runtime directory to the unit's account and removes it
+    # when that unit stops, which would hand over or delete the markers.
+    from pathlib import PurePosixPath
+    from azazel_nexus_runtime.activation_markers import GRANT_MARKER_DIRECTORY
+    marker = PurePosixPath(GRANT_MARKER_DIRECTORY)
+    for profile in PROFILES:
+        declared = [value for value in _settings(profile.unit).get("RuntimeDirectory", [])]
+        for name in declared + ([profile.runtime_directory] if profile.runtime_directory else []):
+            for item in name.split():
+                runtime = PurePosixPath("/run") / item
+                assert runtime != marker and runtime not in marker.parents, (profile.unit, item)
+    from dataclasses import replace
+    entry = next(profile for profile in PROFILES if profile.unit == "azazel-mio-entryd.service")
+    with pytest.raises(ValueError, match="grant markers are writable only"):
+        replace(entry, optional_read_write_paths=("/run/azazel-activation",))
 
 
 def test_only_the_three_lifetime_units_override_default_shutdown_dependencies():

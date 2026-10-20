@@ -274,6 +274,40 @@ The primary interface is a touch-friendly status-first console. It must make fou
 
 The UI groups information by mission state rather than by internal service. Every recommendation shows source, freshness, confidence, and cited evidence. An approval screen restates action scope, duration, policy rule, and rollback path before it can reach the Action Arbiter.
 
+## Activating the integrated loop (observe baseline, #206)
+
+The boot-time `az-activated` pass can grant the five SUPPORTING loop units
+(`azazel-edge-intaked`, `azazel-incident-explaind`, `azazel-edge-probed`,
+`azazel-mio-entryd`, `azazel-knowledge-lited`) when every input of
+[§8 of the design](activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass)
+verifies: full commissioning evidence, the declared node and epoch from the
+deployment declaration, `/etc/azazel/activation/policy.json`, the high-water
+floors and clock, an observe-baseline generation matching the installed unit
+files, a signed v2 approval naming the units, and node health. Edge Core is
+not granted yet (P5): a policy naming it refuses the whole pass.
+
+- A grant **enables** a unit for the next boot and writes
+  `/run/azazel-activation/granted/<unit>`; it never starts anything. Each
+  governed loop unit has `ConditionPathExists=` on its marker, so at boot a
+  unit enabled by an earlier pass starts only if this boot's pass granted it
+  again; otherwise systemd skips it (`unmet condition check`). Markers vanish
+  at reboot and are recreated by every pass.
+- Read the result with `journalctl -b -u azazel-activated.service -o cat`
+  (`granted=N`) and the last `activation.inputs_incomplete` entry of
+  `/var/lib/azazel/state/activation.jsonl`: `missing_producers` lists only the
+  inputs that failed (plus the three not required for this scope), and
+  `observed_inputs.producers` shows `verified`, `failed` or `not_attempted`
+  for each. It contains no identity or digest.
+- To withdraw: remove `approval.json`/`approval.sig`, raise the declared
+  `security_epoch`, revoke the operator, or let the approval expire. The next
+  boot's pass then grants nothing, writes no marker, and the units stay
+  masked and unstarted.
+- Nothing on the node publishes the generation, requests or installs the
+  approval, or initializes the high water yet (the P3b activation commands), and the
+  reboot sequence is not yet confirmed on a VM (P6). Until then the
+  [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)
+  still uses its rehearsal-only start.
+
 ## Observe-only Edge Core unit
 
 `azazel-edge-core.service` is shipped masked and preset-disabled, runs as
