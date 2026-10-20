@@ -18,7 +18,6 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
-from azazel_nexus.audit import AuditUnavailable
 from azazel_nexus import runtime_paths as observation_paths
 
 __all__ = [
@@ -190,9 +189,16 @@ def audit_sink(service: str) -> Callable[[dict], None]:
     depend on that socket being well.
 
     These are *not* chain entries. The chain is `az-auditd`'s and has one
-    writer; this is a per-daemon record, and it is labelled so by living in a
-    different file.
+    writer; this is a per-daemon diagnostic record, and it is labelled so by
+    living in a different file. It is bounded (#211): refusals are aggregated
+    per caller uid and reason, and the file is rotated at a fixed size with a
+    fixed number of rotated files kept (`refusal_log.BoundedRefusalLog`).
+    Events that are not refusals go to a sibling `events.jsonl` with its own
+    rotation. A line that cannot be written is counted, never raised into the
+    request.
     """
+
+    from .refusal_log import BoundedRefusalLog
 
     try:
         leaf = _STATE_LEAVES[service]
@@ -200,20 +206,7 @@ def audit_sink(service: str) -> Callable[[dict], None]:
         raise ValueError("service state name is not declared by this runtime") from None
     # Fetch has no writable state tree; keep its refusals alongside partials.
     directory = fetch_partial_dir() if service == "fetch" else state_dir() / leaf
-    path = directory / "refusals.jsonl"
-
-    def record(event: dict) -> None:
-        import json
-
-        try:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
-                )
-        except OSError as exc:
-            raise AuditUnavailable(f"{path} could not be appended to: {exc}") from exc
-
-    return record
+    return BoundedRefusalLog(directory / "refusals.jsonl")
 
 
 def fetch_dir() -> Path:

@@ -273,7 +273,9 @@ gate.
 SERVICE; production service principals are limited to `azmioentry`,
 `azarbiter` and `azmio` (the locald systemd User). Lookup admits SERVICE only. Kernel credentials and the shared `PrincipalPolicy`/transport
 perform admission. Protocol refusals go to this daemon's
-`/var/lib/azazel/state/knowledge/refusals.jsonl`.
+`/var/lib/azazel/state/knowledge/refusals.jsonl`, and lookup events to
+`events.jsonl` beside it; both are bounded diagnostic logs (#211, "Refusal
+logs" in [operations](operations.md)).
 
 The installed store root is `/var/lib/azazel/knowledge`, as listed in §7 above.
 `LiteImport` still owns
@@ -365,9 +367,11 @@ constant-memory archive verification or a new admission path.
 
 Each lookup rechecks the same separate commissioned trust, signatures
 and cumulative revocations as status; a repin observed during the read withholds
-the result. Only the admitted tar is read. Lookup audit events contain requested
-technique IDs and the result count, never names or descriptions. Status remains
-free of read events. Existing protocol refusal auditing remains in place.
+the result. Only the admitted tar is read. Lookup events contain requested
+technique IDs and the result count, never names or descriptions. They are
+diagnostic records in the daemon's bounded `events.jsonl`, not audit evidence:
+not hash-chained, and rotated away at a fixed size. Status remains free of read
+events. Protocol refusals are still recorded, in the bounded `refusals.jsonl`.
 
 `azazel_nexus_runtime.knowledge_client.lookup_context` uses the existing
 AF_UNIX exchange with a default 0.5-second monotonic deadline, verifies the

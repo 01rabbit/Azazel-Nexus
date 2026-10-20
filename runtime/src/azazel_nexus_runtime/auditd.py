@@ -842,6 +842,10 @@ def summarized_refusals(sink: Callable[[dict], None]) -> Callable[[dict], None]:
             return
         sink(event)
 
+    # The bounded log's window flush and counters stay reachable (#211).
+    for name in ("flush_due", "counters"):
+        if callable(getattr(sink, name, None)):
+            setattr(record, name, getattr(sink, name))
     return record
 
 
