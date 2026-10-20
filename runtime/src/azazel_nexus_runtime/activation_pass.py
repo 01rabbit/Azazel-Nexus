@@ -44,7 +44,7 @@ still decide every grant; Edge evidence can only narrow it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
@@ -58,6 +58,7 @@ from azazel_nexus.activation_policy import ActivationPolicy
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.bootstrap_deployment import BootstrapDeployment, declared_node_binding
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
+from azazel_nexus.edge_package import bound_to_signed_package, nothing_established
 from azazel_nexus.generation import Generation
 from azazel_nexus.observe_baseline import (
     EDGE_CORE_UNIT,
@@ -109,8 +110,6 @@ ALWAYS_MISSING = (
 #: launchable and bound to the signed package. Never part of `complete`:
 #: Edge evidence withholds edge-core only, never the SUPPORTING units.
 EDGE_EVIDENCE = "edge_evidence"
-#: What a pass that established nothing about Edge hands the library.
-_NO_EDGE = EdgeBaselineState(False, False, False, False, False)
 
 _TIME = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -391,19 +390,15 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         except Exception:  # noqa: BLE001 - unreadable evidence establishes nothing
             state = None
         if type(state) is not EdgeBaselineState:
-            state = _NO_EDGE
+            state = nothing_established()
         if not edge_in_scope:
             result.edge_evidence = "not_in_scope"
         else:
-            # A probe that observed no package supplies no health, so it is
-            # already not launchable; one that observed another package than
-            # the signed pin is a digest mismatch, whatever its health says.
-            bound = (result.edge_package_binding == "bound" and len(pinned) == 1
-                     and pinned[0] is not None
-                     and state.package_digest in (None, pinned[0]))
-            if not bound:
-                # Nothing ties this package to the operator's signature.
-                state = replace(state, digest_matches=False)
+            # The signed pin only when the installed package was derived equal
+            # to it; then the probe must also have observed that package.
+            signed = (pinned[0] if result.edge_package_binding == "bound"
+                      and len(pinned) == 1 else None)
+            state = bound_to_signed_package(state, signed)
             result.edge_evidence = "launchable" if state.launchable else "not_launchable"
             result.edge_missing = state.missing_for_launch()
         result.edge = state

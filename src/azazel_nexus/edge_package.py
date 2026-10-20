@@ -95,7 +95,7 @@ import os
 import pwd
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -126,11 +126,13 @@ __all__ = [
     "HealthAnswer",
     "PIN",
     "UNSIGNED_CAVEAT",
+    "bound_to_signed_package",
     "inspect",
     "installed_baseline_state",
     "installed_package_digest",
     "no_health_probe",
     "no_running_probe",
+    "nothing_established",
     "presence_of",
 ]
 
@@ -743,7 +745,40 @@ def installed_baseline_state(
         boot_id = _optional_boot_id(boot_id_path) if probe is not None else None
         return inspect(package_root, probe=probe, now=now, boot_id=boot_id).state()
     except Exception:  # noqa: BLE001 - inspection failure establishes nothing
-        return EdgeBaselineState(False, False, False, False, False)
+        return nothing_established()
+
+
+def nothing_established() -> EdgeBaselineState:
+    """Every check False: what an absent, failed or unreadable reading establishes.
+
+    The activation pass (#206 P5) hands this to the library when its own Edge
+    reader failed, so that a lease-bearing pass never falls back to reading
+    host paths it did not choose. It is not launchable and claims nothing.
+    """
+
+    return EdgeBaselineState(False, False, False, False, False)
+
+
+def bound_to_signed_package(
+    state: EdgeBaselineState, signed_package_digest: Optional[str],
+) -> EdgeBaselineState:
+    """`state`, with `digest_matches` False unless it describes the signed package.
+
+    The activation pass (#206 P5) passes the observe-baseline generation's
+    `edge_pin.package_digest` only after it has derived the same digest from
+    the installed package (`installed_package_digest`); otherwise None. The
+    probe's package digest must be that one too (a probe that observed no
+    package supplies no health, so it stays unlaunchable on its own). This
+    only narrows: no field becomes True here.
+    """
+
+    if type(state) is not EdgeBaselineState:
+        return nothing_established()
+    if (type(signed_package_digest) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", signed_package_digest)
+            and state.package_digest in (None, signed_package_digest)):
+        return state
+    return replace(state, digest_matches=False)
 
 
 def installed_package_digest(

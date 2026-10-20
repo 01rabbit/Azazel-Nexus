@@ -1342,3 +1342,38 @@ def test_installed_package_digest_refuses_any_failed_check(tmp_path, manifest):
         installed_package_digest(package_root=root)
     with pytest.raises(EdgePackageRefused):
         installed_package_digest(package_root=tmp_path / "missing")
+
+
+# -- binding the launch state to the signed package (#206 P5) ---------------
+
+
+def test_nothing_established_is_not_launchable_and_claims_nothing():
+    from azazel_nexus.edge_package import nothing_established
+    state = nothing_established()
+    assert not state.launchable and not state.ready
+    assert state.missing() == CHECKS
+
+
+_SIGNED = "sha256:" + "ab" * 32
+_LAUNCHABLE = EdgeBaselineState(True, True, True, True, False, package_digest=_SIGNED)
+
+
+@pytest.mark.parametrize("signed,probe_digest,launchable", [
+    (_SIGNED, _SIGNED, True),
+    (_SIGNED, None, True),
+    (_SIGNED, "sha256:" + "cd" * 32, False),
+    (None, _SIGNED, False),
+    ("sha256:short", _SIGNED, False),
+    ("SHA256:" + "AB" * 32, _SIGNED, False),
+], ids=["bound", "no-probe-digest", "other-probe", "unsigned", "malformed", "not-canonical"])
+def test_binding_to_the_signed_package_only_narrows(signed, probe_digest, launchable):
+    from dataclasses import replace
+    from azazel_nexus.edge_package import bound_to_signed_package
+    state = replace(_LAUNCHABLE, package_digest=probe_digest)
+    bound = bound_to_signed_package(state, signed)
+    assert bound.launchable is launchable
+    if not launchable:
+        assert bound.missing_for_launch() == ("digest_matches",)
+    unlaunchable = replace(state, health_endpoint_healthy=False)
+    assert not bound_to_signed_package(unlaunchable, signed).launchable
+    assert not bound_to_signed_package(object(), _SIGNED).launchable

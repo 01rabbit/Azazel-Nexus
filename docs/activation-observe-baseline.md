@@ -648,8 +648,11 @@ lease was formed, the pass reads `installed_baseline_state` (the four
 package checks, and health and running from the probe result only when it is
 v2, names this boot, is within its TTL and describes the installed package).
 Unless the package was bound and the probe's package digest is the pinned one,
-`digest_matches` is handed to the library as false. The result is passed to
-`activate(edge=...)`; the daemon's own host read is not used on this path.
+`edge_package.bound_to_signed_package` reports `digest_matches` false (it only
+narrows; `edge_package` stays the only module that produces an Edge state, and
+a reader failure becomes `edge_package.nothing_established()`). The result is
+passed to `activate(edge=...)`; the daemon's own host read is not used on this
+path.
 `running` is not required (the preflight runs before edge-core can start), and
 `edge-baseline-ready` is not claimed.
 

@@ -64,7 +64,11 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
-from azazel_nexus.edge_package import EDGE_UNIT as EDGE_CORE_UNIT, installed_baseline_state
+from azazel_nexus.edge_package import (
+    EDGE_UNIT as EDGE_CORE_UNIT,
+    installed_baseline_state,
+    nothing_established,
+)
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
@@ -552,7 +556,7 @@ def _run_once(
     # lease-bearing pass without it hands the library nothing launchable.
     edge = inputs.edge if inputs is not None else None
     if lease is not None and type(edge) is not EdgeBaselineState:
-        edge = EdgeBaselineState(False, False, False, False, False)
+        edge = nothing_established()
     outcome = daemon.activate(
         now=now,
         actor=actor,
