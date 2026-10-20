@@ -136,9 +136,13 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   policy's `max_lease_seconds`. The operator must be named by the policy and
   hold an active enrolled key. It writes the canonical payload, without a
   trailing newline, to stdout or to a create-only `0600` `--out` file, and a
-  summary with `payload_sha256` to stderr. The evidence binding and the
-  commissioning digest are not printed. It never signs and never writes an
-  approval file.
+  summary with `payload_sha256` to stderr. The summary omits the evidence
+  binding and the commissioning digest, but the payload itself contains both
+  (the operator signs them), so prefer `--out`: the file is created through
+  a parent reached without following any link and not writable by group or
+  others (a shared directory such as `/tmp` is refused), instead of leaving
+  the bytes in a terminal or a redirect with the caller's umask. It never
+  signs and never writes an approval file.
 
   `install` (root) reads the payload and the 64-byte signature (regular,
   single-link files, never followed links), requires `--confirm-sha256` to
@@ -154,7 +158,11 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   under an exclusive lock, the directory fsynced and the pair read back; then
   `activation.approval_installed` is appended to
   `/var/lib/azazel/state/activation.jsonl`. An installed pair is replaced only
-  with `--replace` **and** typing `REPLACE`. A crash between the two renames
+  with `--replace` **and** typing `REPLACE`; the presence of a pair is checked
+  again after confirmation and once more under the directory's exclusive lock,
+  and a pair that appeared in between refuses. `/etc/azazel/activation` is
+  created root `0700` by `packaging/install.sh`; the policy is placed there by
+  the administrator. A crash between the two renames
   leaves a pair whose signature does not verify, which every reader refuses.
   Exit 1 means nothing changed; exit 2 means a step after the first write did
   not complete (inspect, do not retry blindly). It creates no key and enables
@@ -208,8 +216,23 @@ verified evidence it refuses. It prints the units, the next generation number
 and the generation digest, requires the digest to be re-entered and
 `PUBLISH` typed, measures everything again, publishes through the ordinary
 `GenerationStore`, re-verifies the published generation and appends
-`activation.generation_published` to the activation ledger. If the current
-generation already is that baseline it publishes nothing.
+`activation.generation_published` (with `verified`) to the activation ledger.
+Any failure after the store accepted the generation exits 2 and names it as
+published but not verified, so it is never reported as "nothing published".
+If the current generation already is that baseline it publishes nothing.
+
+The hash describes the loaded unit only if nothing else contributes to it, so
+measuring refuses overrides
+(`runtime/src/azazel_nexus_runtime/activation_unit_files.py`, the same check
+P4's pass makes every boot; `request` and `install` make it too). Across the
+reviewed Debian 13 systemd search path it refuses: a same-name entry in any
+directory other than `/usr/lib/systemd/system`, unless it is a symbolic link
+to exactly `/dev/null` (a mask, the governed state before a grant); and any
+entry in a drop-in directory -- `<unit>.d/`, the dashed-prefix forms
+(`azazel-.service.d/`, `azazel-edge-.service.d/`) and the global
+`service.d/` -- in every search-path directory, the vendor one included. An
+`/etc` or `/run` drop-in changing, for example, edge-core's `Environment=` or
+`ExecStart=` therefore refuses rather than passing under an unchanged hash.
 
 ### 3.3 node_health
 
@@ -282,6 +305,18 @@ ledger refuses rather than reading as empty. P4 adds the events its pass
 records when it raises the floor. The initial floor is the approved epoch,
 sequence and generation with `time_floor = now`. With a floor history and no
 file, only the §7 recovery applies.
+
+Limits, stated rather than solved: root can truncate the tail of the
+hash-chained ledger (a shorter chain still verifies) **and** delete
+`high-water.json`, after which `install` initializes a low floor; only an
+external record of the chain head would catch that. The rule also differs
+from P2's `require_high_water_for_pass`, which refuses a missing file whenever
+the ledger exists at all: a pass never initializes, so on a booted node it
+refuses until `install` has written the first floor. `install` and
+`generation-publish` append to the same ledger as `az-activated` without a
+shared lock (`AuditLedger` re-reads the head on each append but offers no
+cross-process lock); an interleaving would break the chain, which every
+reader then refuses. Run them while no pass is running.
 
 ### 3.6 Composition
 

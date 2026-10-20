@@ -458,6 +458,13 @@ def test_administrator_bootstrap_configuration_directory_is_root_private():
     assert "make_dir 0700 root /etc/azazel/bootstrap" in _installer()
 
 
+def test_activation_approval_directory_is_root_private_and_installed():
+    # Read by activation_store/activation_policy and written by az-activation install.
+    spec = next(s for s in LAYOUT if s.path == "/etc/azazel/activation")
+    assert spec.mode == 0o700 and spec.group == "root"
+    assert "make_dir 0700 root /etc/azazel/activation" in _installer()
+
+
 def test_bootstrap_overlay_journal_has_an_isolated_root_private_directory():
     spec = next(s for s in LAYOUT if s.path == "/var/lib/azazel/state/bootstrap-overlay")
     assert spec.mode == 0o700 and spec.group == "root"

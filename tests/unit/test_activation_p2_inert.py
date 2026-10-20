@@ -19,6 +19,7 @@ INERT = {
     "azazel_nexus_runtime.activation_high_water": "activation_high_water",
     "azazel_nexus_runtime.activation_health": "activation_health",
     "azazel_nexus_runtime.activation_cli": "activation_cli",
+    "azazel_nexus_runtime.activation_unit_files": "activation_unit_files",
 }
 PUBLIC = {
     "load_activation_policy", "decode_activation_policy", "build_observe_baseline",
@@ -26,7 +27,8 @@ PUBLIC = {
     "initialize_high_water", "require_high_water_for_pass", "activation_ledger_present",
     "collect_node_health", "read_watchdog_fences",
     "run_generation_publish", "run_request", "run_install", "installed_package_digest",
-    "evidence_commissioning_digest",
+    "evidence_commissioning_digest", "measure_scoped_unit_files",
+    "require_no_unit_overrides",
 }
 
 

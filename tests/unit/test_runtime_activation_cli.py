@@ -29,6 +29,7 @@ from azazel_nexus.observe_baseline import build_observe_baseline
 from azazel_nexus.operator_trust import ApprovalPurpose, OperatorTrust, approval_message
 from azazel_nexus_runtime import activation_cli as cli
 from azazel_nexus_runtime import activation_high_water as hw
+from azazel_nexus_runtime import activation_unit_files as scoped_unit_files
 from azazel_nexus_runtime.activation_high_water import HighWater, encode_high_water
 from azazel_nexus_runtime.node_config import DeclaredNode
 
@@ -219,6 +220,8 @@ def node(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_ROOT", root)
     monkeypatch.setattr(cli, "_OWNER", os.getuid())
+    monkeypatch.setattr(scoped_unit_files, "_ROOT", root)
+    monkeypatch.setattr(scoped_unit_files, "_OWNER", os.getuid())
     monkeypatch.setattr(hw, "_OWNER", os.getuid())
     monkeypatch.setattr(hw, "_state_directory", state_directory)
     return Node(root, monkeypatch)
@@ -736,3 +739,174 @@ def test_the_tool_creates_no_key_and_contacts_no_service_manager():
     for forbidden in ("SigningKey", "systemd_bus", "DbusUnitManager", "unmask_and_enable",
                       "os.environ", "getenv", "subprocess"):
         assert forbidden not in source, forbidden
+
+
+# -- overrides and drop-ins ------------------------------------------------------
+
+
+def _override(node, kind):
+    etc = node.root / "etc/systemd/system"
+    etc.mkdir(parents=True, exist_ok=True)
+    for path in (node.root / "etc", node.root / "etc/systemd", etc):
+        path.chmod(0o755)
+    if kind == "drop-in":
+        (etc / "azazel-edge-intaked.service.d").mkdir()
+        (etc / "azazel-edge-intaked.service.d/override.conf").write_text("[Service]\n")
+    elif kind == "full":
+        (etc / "azazel-edge-intaked.service").write_text("[Service]\nExecStart=/bin/true\n")
+    else:
+        (etc / "azazel-edge-intaked.service").symlink_to("/dev/null")
+
+
+@pytest.mark.parametrize("kind", ["drop-in", "full"])
+def test_publish_refuses_overrides_and_drop_ins(node, kind):
+    _override(node, kind)
+    code, out = node.publish("sha256:" + "0" * 64, "PUBLISH")
+    assert code == 1 and "override" in out
+    assert node.store.numbers() == ()
+
+
+def test_publish_accepts_the_masked_state(node):
+    _override(node, "mask")
+    assert node.publish()[0] == 0
+
+
+def test_request_and_install_refuse_a_drop_in_added_after_publication(published):
+    payload, signature = published.approved()
+    _override(published, "drop-in")
+    code, _, err = published.request()
+    assert code == 1 and "drop-in" in err
+    code, out = published.install(payload, signature)
+    assert code == 1 and "drop-in" in out
+    assert not (published.approvals / "approval.json").exists()
+
+
+# -- interrupted and racing paths ------------------------------------------------
+
+
+def test_publish_reports_a_published_but_unverified_generation(node, monkeypatch):
+    def unreadable(*args, **kwargs):
+        raise OSError("read-back failed")
+
+    original = cli._current_baseline
+    monkeypatch.setattr(cli, "_current_baseline", unreadable)
+    code, out = node.publish()
+    monkeypatch.setattr(cli, "_current_baseline", original)
+    assert code == 2 and "Generation 1 published, NOT verified" in out
+    assert "Nothing published" not in out and "read-back failed" not in out
+    assert node.store.numbers() == (1,)
+    event = node.events()[-1]
+    assert event["event_type"] == "activation.generation_published"
+    assert event["verified"] is False
+
+
+def test_publish_reports_a_missing_record_after_publication(node, monkeypatch):
+    def broken(event):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "_append", broken)
+    code, out = node.publish()
+    assert code == 2 and "did not record it" in out and node.store.numbers() == (1,)
+
+
+def test_publish_hides_unexpected_errors_before_publication(node, monkeypatch):
+    def explode():
+        raise ValueError("secret detail")
+
+    monkeypatch.setattr(cli, "_store", explode)
+    code, out = node.publish()
+    assert code == 1 and "secret detail" not in out
+
+
+def test_published_event_is_verified_on_success(published):
+    assert published.events()[-1]["verified"] is True
+
+
+def test_install_refuses_context_that_changes_during_confirmation(published, monkeypatch):
+    payload, signature = published.approved()
+    original = cli._collect_context
+    calls = []
+
+    def collect():
+        calls.append(1)
+        if len(calls) == 2:
+            published.declaration = _declaration(epoch=7)
+        return original()
+
+    monkeypatch.setattr(cli, "_collect_context", collect)
+    code, out = published.install(payload, signature)
+    assert code == 1 and "changed during confirmation" in out
+    assert not (published.approvals / "approval.json").exists()
+    assert not (published.state / "activation").exists()
+
+
+def test_install_refuses_an_approval_that_appears_during_confirmation(published, monkeypatch):
+    payload, signature = published.approved()
+    original = cli._collect_context
+    calls = []
+
+    def collect():
+        calls.append(1)
+        if len(calls) == 2:
+            for name in ("approval.json", "approval.sig"):
+                (published.approvals / name).write_bytes(b"x")
+                (published.approvals / name).chmod(0o600)
+        return original()
+
+    monkeypatch.setattr(cli, "_collect_context", collect)
+    code, out = published.install(payload, signature, replace=True)
+    assert code == 1 and "changed during confirmation" in out
+    assert (published.approvals / "approval.json").read_bytes() == b"x"
+
+
+def test_placement_refuses_a_pair_that_appears_after_the_last_check(published, monkeypatch):
+    payload, signature = published.approved()
+    original = cli.initialize_high_water
+
+    def initialize(*args, **kwargs):
+        result = original(*args, **kwargs)
+        for name in ("approval.json", "approval.sig"):
+            (published.approvals / name).write_bytes(b"x")
+            (published.approvals / name).chmod(0o600)
+        return result
+
+    monkeypatch.setattr(cli, "initialize_high_water", initialize)
+    code, out = published.install(payload, signature, replace=True)
+    assert code == 2 and "changed after confirmation" in out
+    assert (published.approvals / "approval.json").read_bytes() == b"x"
+
+
+def test_install_exit_two_when_the_record_is_missing(published, monkeypatch):
+    payload, signature = published.approved()
+
+    def broken(event):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "_append", broken)
+    code, out = published.install(payload, signature)
+    assert code == 2 and "ledger record missing" in out and "disk full" not in out
+    assert (published.approvals / "approval.json").read_bytes() == payload
+
+
+def test_install_exit_two_when_placement_is_unconfirmed(published, monkeypatch):
+    payload, signature = published.approved()
+
+    def uncertain(*args, **kwargs):
+        raise cli._PlacementUncertain()
+
+    monkeypatch.setattr(cli, "_place_approval", uncertain)
+    code, out = published.install(payload, signature)
+    assert code == 2 and "UNCONFIRMED" in out
+    assert _high_water(published)["approval_seq"] == 5
+
+
+def test_request_refuses_a_shared_output_directory(published, tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    code, _, err = published.request(out=str(shared / "request.json"))
+    assert code == 1 and not (shared / "request.json").exists()
+    linked = tmp_path / "linked"
+    linked.symlink_to(tmp_path)
+    assert published.request(out=str(linked / "request.json"))[0] == 1
+    assert not (tmp_path / "request.json").exists()

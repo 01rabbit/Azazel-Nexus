@@ -5,7 +5,8 @@ none of which grants anything:
 
 * ``generation-publish`` (root, interactive) measures the installed unit files
   of the activation policy's scope, the Edge pin and -- exactly when
-  edge-core is in scope -- the installed Edge package digest, builds the
+  edge-core is in scope -- the installed Edge package digest (refusing any
+  unit override or drop-in, `activation_unit_files`), builds the
   observe-baseline tree, binds it to verified commissioning evidence and,
   after the digest is re-entered and ``PUBLISH`` typed, publishes it as an
   ordinary generation. Publishing is not admission.
@@ -74,16 +75,16 @@ from .activation_high_water import (
     raise_high_water,
     read_high_water,
 )
+from .activation_unit_files import (
+    UnitFilesRefused,
+    UnitOverrideRefused,
+    measure_scoped_unit_files,
+)
 from .commissioning_input import load_commissioning_evidence
 from .node_config import load_declared_node
 
 __all__ = ["FLOOR_EVENTS", "main"]
 
-#: Installed unit files are measured here. The Debian 13 profile names
-#: `/lib/systemd/system`, which on that merged-/usr release is a symbolic
-#: link to this directory; the measurement follows no link, so it reads the
-#: real directory.
-_UNIT_DIRECTORY = ("usr", "lib", "systemd", "system")
 _APPROVAL_DIRECTORY = ("etc", "azazel", "activation")
 _GENERATIONS = ("var", "lib", "azazel", "generations")
 _STATE = ("var", "lib", "azazel", "state")
@@ -96,7 +97,6 @@ _ROOT = Path("/")
 _OWNER = 0
 
 _ACTOR = "az-activation"
-_UNIT_LIMIT = 1 << 20
 _SIGNATURE_BYTES = 64
 _LEDGER_LIMIT = 64 << 20
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -232,12 +232,14 @@ def _read_operator_file(path: Path, *, limit: int) -> bytes:
 
 
 def _measure_unit_files(units) -> dict[str, bytes]:
-    """The installed bytes of each scoped unit file, read through descriptors."""
-    fd = _open_directory(_UNIT_DIRECTORY)
+    """The vendor unit file bytes, refused when any override or drop-in exists."""
     try:
-        return {unit: _read_protected_at(fd, unit, limit=_UNIT_LIMIT) for unit in units}
-    finally:
-        os.close(fd)
+        return measure_scoped_unit_files(units)
+    except UnitOverrideRefused:
+        raise Refused("a scoped unit has an override, a non-mask unit file elsewhere "
+                      "or a drop-in") from None
+    except UnitFilesRefused:
+        raise Refused("installed unit files unavailable or not protected") from None
 
 
 def _package_digest(units):
@@ -385,7 +387,7 @@ def run_generation_publish(*, source, out) -> int:
                         and store.read_tree(latest.number) == measured.tree
                         and latest.commissioning_digest == measured.commissioning_digest
                         and latest.commissioning_evidence_binding == measured.binding)
-            except GenerationRefused:
+            except Exception:  # noqa: BLE001 - unreadable is "not this baseline"
                 same = False
             if same:
                 print(f"Generation {latest.number} already is this observe baseline "
@@ -414,32 +416,65 @@ def run_generation_publish(*, source, out) -> int:
                 commissioning_evidence_binding=measured.binding,
                 expected_latest_generation=None if latest is None else latest.number,
             )
-        except GenerationCommitUncertain:
-            print("Generation may be published; durability UNCONFIRMED. Inspect the store; "
-                  "do not retry automatically. Nothing admitted.", file=out)
-            return 2
-        except GenerationRefused:
+        except GenerationRefused as error:
+            if isinstance(error, GenerationCommitUncertain):
+                print("Generation may be published; durability UNCONFIRMED. Inspect the "
+                      "store; do not retry automatically. Nothing admitted.", file=out)
+                return 2
             raise Refused("generation publication refused; inspect the store") from None
-        _step("published generation read-back refused", _current_baseline,
-              measured.policy, _measure_unit_files(list(measured.policy.units)),
-              measured.package_digest, measured.commissioning_digest, measured.binding)
-        try:
-            _append({
-                "event_type": "activation.generation_published",
-                "generation": generation.number,
-                "digest": generation.digest,
-                "units": list(measured.policy.units),
-                "policy_digest": measured.policy.policy_digest,
-                "occurred_at": generation.created_at,
-                "actor": _ACTOR,
-            })
-        except Exception:  # noqa: BLE001 - published, but the record is missing
-            print(f"Generation {generation.number} published, but the activation ledger "
-                  "did not record it. Inspect the ledger before continuing.", file=out)
+        except Exception:  # noqa: BLE001 - unknown outcome: it may be visible
+            print("Generation publication interrupted; it may be published. Inspect the "
+                  "store; do not retry automatically. Nothing admitted.", file=out)
             return 2
     except Refused as error:
         print(f"Generation publication refused: {error}. Nothing published.", file=out)
         return 1
+    except Exception:  # noqa: BLE001 - before publication; labels only
+        print("Generation publication refused. Nothing published.", file=out)
+        return 1
+    return _after_publication(generation, measured, store, out)
+
+
+def _after_publication(generation, measured: _Baseline, store, out) -> int:
+    """Read back and record a generation that is already published.
+
+    Nothing here may claim "nothing published": every failure exits 2 and
+    names the number. The record is appended whether or not the read-back
+    verified, with `verified` saying which.
+    """
+    try:
+        current = store.current()
+        if current is None or current.number != generation.number:
+            raise Refused("another generation became current")
+        _current_baseline(measured.policy, _measure_unit_files(list(measured.policy.units)),
+                          measured.package_digest, measured.commissioning_digest,
+                          measured.binding)
+        verified = True
+    except Exception:  # noqa: BLE001 - published but not verified; labels only
+        verified = False
+    try:
+        _append({
+            "event_type": "activation.generation_published",
+            "generation": generation.number,
+            "digest": generation.digest,
+            "units": list(measured.policy.units),
+            "policy_digest": measured.policy.policy_digest,
+            "verified": verified,
+            "occurred_at": generation.created_at,
+            "actor": _ACTOR,
+        })
+        recorded = True
+    except Exception:  # noqa: BLE001 - published, but the record is missing
+        recorded = False
+    if not verified:
+        print(f"Generation {generation.number} published, NOT verified on read-back"
+              + ("" if recorded else "; the activation ledger did not record it")
+              + ". Inspect the store before any request. Nothing admitted.", file=out)
+        return 2
+    if not recorded:
+        print(f"Generation {generation.number} published, but the activation ledger "
+              "did not record it. Inspect the ledger before continuing.", file=out)
+        return 2
     print(f"Generation {generation.number} published ({generation.digest}); NOT admitted "
           "and no unit enabled.", file=out)
     return 0
@@ -458,20 +493,48 @@ def _units_argument(text, policy: ActivationPolicy) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _write_create_only(path: Path, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                 0o600)
+def _open_output_parent(path: Path) -> tuple[int, str]:
+    """The output's parent, walked from `/` without following any link.
+
+    The parent must not be writable by group or others (a shared directory
+    such as `/tmp` is refused), so nobody else can swap the name.
+    """
+    absolute = Path(os.path.abspath(path))
+    if absolute.name in {"", ".", ".."}:
+        raise Refused("output file name refused")
+    fd = os.open("/", _DIR)
     try:
-        os.fchmod(fd, 0o600)
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view):]
-        os.fsync(fd)
+        for component in absolute.parent.parts[1:]:
+            child = os.open(component, _DIR, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if info.st_mode & 0o022 or info.st_uid not in {0, os.geteuid()}:
+            raise Refused("output directory is shared or foreign")
+        return fd, absolute.name
     except BaseException:
         os.close(fd)
-        path.unlink(missing_ok=True)
         raise
-    os.close(fd)
+
+
+def _write_create_only(path: Path, data: bytes) -> None:
+    parent, name = _open_output_parent(path)
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                     | os.O_CLOEXEC, 0o600, dir_fd=parent)
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        except BaseException:
+            os.close(fd)
+            os.unlink(name, dir_fd=parent)
+            raise
+        os.close(fd)
+    finally:
+        os.close(parent)
 
 
 def _summary(payload: bytes, *, operator, approval_id, seq, units, context, granted, expires):
@@ -524,6 +587,9 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stdou
     except Refused as error:
         print(f"Activation request refused: {error}. Nothing written.", file=stderr)
         return 1
+    except Exception:  # noqa: BLE001 - labels only, never exception text
+        print("Activation request refused. Nothing written.", file=stderr)
+        return 1
     for line in _summary(payload, operator=operator, approval_id=approval_id, seq=seq,
                          units=scope, context=collected.context, granted=granted,
                          expires=expires):
@@ -545,7 +611,7 @@ def _ledger_entry():
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != _OWNER or info.st_nlink != 1
             or info.st_mode & 0o022 or info.st_size > _LEDGER_LIMIT):
         raise Refused("activation ledger protection refused")
-    return info.st_dev, info.st_ino
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _ledger_history() -> tuple[bool, tuple[int, int, int]]:
@@ -628,7 +694,7 @@ class _PlacementUncertain(Exception):
     pass
 
 
-def _place_approval(payload: bytes, signature: bytes, *, replace: bool) -> None:
+def _place_approval(payload: bytes, signature: bytes, *, expect_present: bool) -> None:
     """Private temporary files, fsync, rename, directory fsync, protected read-back.
 
     The pair is renamed one after the other; a crash between the renames
@@ -640,8 +706,10 @@ def _place_approval(payload: bytes, signature: bytes, *, replace: bool) -> None:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             raise Refused("activation approval store is busy") from None
-        if _existing_approval(fd) and not replace:
-            raise Refused("an approval is already installed")
+        # Under the exclusive lock: what is installed now must be what the
+        # operator confirmed (REPLACE only covers a pair that was shown).
+        if _existing_approval(fd) != expect_present:
+            raise Refused("installed approval changed after confirmation")
         for name, data in zip(_APPROVAL_FILES, (payload, signature)):
             partial = f".{name}.partial"
             try:
@@ -779,7 +847,9 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
         # Nothing was written yet. Re-collect and compare before touching state.
         if (_collect_context() != collected or _step(
                 "operator trust unavailable or refused", _load_trust) != trust
-                or _step("high-water store unavailable or refused", read_high_water) != current):
+                or _step("high-water store unavailable or refused", read_high_water) != current
+                or _step("activation approval directory unavailable or not private",
+                         _approval_present) != present):
             raise Refused("node context changed during confirmation")
         if retained is not None:
             stage = "recovery recorded; high water not yet written"
@@ -798,7 +868,7 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
         else:
             raise_high_water(new_floor, now=now, skew_seconds=skew)
         stage = "high water written; approval placement unconfirmed"
-        _place_approval(payload, signature, replace=replace)
+        _place_approval(payload, signature, expect_present=present)
         stage = "approval placed; activation ledger record missing"
         _step("activation ledger refused the install record", _append, {
             "event_type": "activation.approval_installed",

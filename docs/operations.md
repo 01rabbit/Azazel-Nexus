@@ -417,12 +417,15 @@ starts or enables a unit.
 
 1. `sudo az-activation generation-publish` measures the installed unit files
    of the activation policy's scope (and the installed Edge package when
-   edge-core is in scope), binds verified commissioning evidence, prints the
+   edge-core is in scope), refuses any override or drop-in of those units
+   other than a `/dev/null` mask, binds verified commissioning evidence, prints the
    generation digest and publishes after the digest is re-entered and
    `PUBLISH` typed. Publishing is not admission.
 2. `az-activation request --operator LABEL --approval-id ID --seq N
-   --valid-for SECONDS [--units …] [--out FILE]` prints the unsigned v2
-   payload and its `payload_sha256`. It writes nothing else.
+   --valid-for SECONDS [--units …] --out FILE` writes the unsigned v2
+   payload (create-only `0600`; prefer it to stdout, since the payload carries
+   the evidence binding) and prints its `payload_sha256`. It writes nothing
+   else.
 3. Sign it on the operator's workstation with `tools/operator_sign.py
    --purpose activation`.
 4. `sudo az-activation install --payload FILE --signature FILE

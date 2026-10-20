@@ -102,6 +102,11 @@ LAYOUT = (
         "root-private administrator declarations, approvals and selected-file manifest",
     ),
     PathSpec(
+        "/etc/azazel/activation",
+        0o700,
+        "root-private activation policy and installed observe-baseline approval",
+    ),
+    PathSpec(
         "/etc/azazel/systemd",
         0o755,
         "unit drop-ins installed by packages",
