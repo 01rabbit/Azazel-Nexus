@@ -187,11 +187,25 @@ pass keeps `lease=None`.
 
 ## 5. Risks
 
-- **Same-boot masking.** `MaskUnitFiles` without a reload may not cancel start
-  jobs queued at boot for units the previous pass enabled, so a unit withheld
-  at this boot might still start. P6 must test this before P4 is relied on;
-  if it fails, reuse the bootstrap path's reviewed reload operation rather than
-  adding a verb.
+- **Same-boot masking does not stop a queued start (VM-confirmed,
+  2026-10-20).** On the rehearsal VM (Debian 13, systemd 257) a harmless
+  enabled unit ordered after a oneshot that masked it during boot still
+  started, both with `systemctl mask --runtime --no-reload` and with a mask
+  followed by a daemon reload (the reload ran, `Reloading finished`, and the
+  unit, which had a pending start job, stayed loaded and started right after).
+  So masking at the pass can never withhold a unit the previous pass enabled
+  in the same boot. **Resolution adopted for P4:** every governed loop unit
+  carries `ConditionPathExists=/run/azazel/activation/granted/<unit>`, and the
+  controller writes that marker (root-owned, under a root `0755` directory on
+  the volatile `/run`) only for the units granted by this boot's pass, after
+  recording the decision. A unit without its marker is skipped
+  (`unmet condition check`) rather than started; with it, it starts normally
+  (both VM-confirmed with the same harmless test units). The marker grants
+  nothing by itself: absence only withholds, it is cleared at every boot, the
+  controller still never starts a unit, and masking remains for the next boot.
+  This replaces default 9's fallback (reusing the bootstrap reload), which the
+  VM showed would not work. The test units were removed afterwards; this is
+  VM rehearsal, not hardware evidence.
 - **Local trust.** The high-water mark and time floor are protected by local
   trust only.
 - **Keys.** Rehearsal keys are VM-only and never enrolled on a real node; test
@@ -224,3 +238,5 @@ A later change to one of them is recorded here with its date.
 8. Audit for loop daemons when auditd runs only under the bootstrap path?
    **[confirm sink behaviour before P4; auditd stays bootstrap-only]**
 9. Same-boot mask semantics? **[P4 does not go live until P6 confirms it]**
+   Answered by the VM on 2026-10-20: masking does not stop a queued start;
+   P4 uses the per-boot grant marker of §5 instead.
