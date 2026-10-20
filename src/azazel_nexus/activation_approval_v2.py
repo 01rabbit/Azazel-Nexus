@@ -18,14 +18,19 @@ service manager.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import re
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from .activation import CORE_UNITS, ActivationLease, UnitTier
 from .activation_approval import _DIGEST, _utc
-from .operator_trust import MAX_APPROVAL_BYTES, ApprovalPurpose, ApprovalRefused, OperatorTrust
+from .operator_trust import (
+    MAX_APPROVAL_BYTES,
+    ApprovalPurpose,
+    ApprovalRefused,
+    OperatorTrust,
+)
 
 __all__ = [
     "MAX_LEASE_CEILING_SECONDS",
@@ -247,7 +252,7 @@ def verify_observe_baseline_approval(
         )
     except ApprovalRefused:
         raise
-    except Exception as exc:  # noqa: BLE001 - every other failure is the same redacted refusal
+    except Exception as exc:  # every other failure is the same redacted refusal
         raise ApprovalRefused("activation approval document refused") from exc
     return ObserveBaselineApproval(lease=lease, approval_id=document["approval_id"],
                                    approval_seq=document["approval_seq"],

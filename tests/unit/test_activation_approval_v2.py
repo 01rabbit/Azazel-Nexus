@@ -1,26 +1,38 @@
 """Boot-free v2 approval with ephemeral in-memory keys; no host input or persisted key."""
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 
 import pytest
 from nacl.signing import SigningKey
 
 from azazel_nexus.activation import (
-    ActivationController, ActivationLease, ActivationRefused, CORE_UNITS,
-    RecordingUnitController, UnitState,
+    CORE_UNITS,
+    ActivationController,
+    ActivationLease,
+    ActivationRefused,
+    RecordingUnitController,
+    UnitState,
 )
 from azazel_nexus.activation_approval import (
-    ActivationContext, approval_payload, verify_activation_approval,
+    ActivationContext,
+    approval_payload,
+    verify_activation_approval,
 )
 from azazel_nexus.activation_approval_v2 import (
-    MAX_LEASE_CEILING_SECONDS, ActivationApprovalPolicy, ObserveBaselineContext,
-    observe_baseline_payload, verify_observe_baseline_approval,
+    MAX_LEASE_CEILING_SECONDS,
+    ActivationApprovalPolicy,
+    ObserveBaselineContext,
+    observe_baseline_payload,
+    verify_observe_baseline_approval,
 )
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.operator_trust import (
-    ApprovalPurpose, ApprovalRefused, OperatorTrust, approval_message,
+    ApprovalPurpose,
+    ApprovalRefused,
+    OperatorTrust,
+    approval_message,
 )
 
 DIGEST = "sha256:" + "a" * 64
@@ -200,7 +212,7 @@ def test_sequence_below_floor_is_refused(approved):
 
 
 def test_epoch_mismatch_and_below_floor_are_refused(approved):
-    key, args = approved
+    _, args = approved
     with pytest.raises(ApprovalRefused):
         verify_observe_baseline_approval(**(args | {"expected": replace(CONTEXT, security_epoch=1)}))
     with pytest.raises(ApprovalRefused, match="epoch below"):
