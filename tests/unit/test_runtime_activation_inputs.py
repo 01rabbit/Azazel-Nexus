@@ -64,6 +64,7 @@ def test_actual_pass_narrows_before_collecting_and_never_grants(
     event = list(AuditLedger(path))[-1].event
     assert event["event_type"] == "activation.inputs_incomplete"
     assert "node_health" in event["missing_producers"]
+    assert "operational_generation_publisher" in event["missing_producers"]
     assert event["observed_inputs"]["boot"] == ("observed" if boot == BOOT else "unavailable_or_invalid")
     expected = {"active": "active_keys_present", "revoked": "no_active_keys",
                 "empty": "no_active_keys", "error": "unavailable_or_refused"}
@@ -74,6 +75,24 @@ def test_actual_pass_narrows_before_collecting_and_never_grants(
     assert BOOT not in audit_text
     assert "private" not in audit_text
     assert public.hex() not in audit_text
+
+
+def test_production_pass_still_supplies_no_lease_or_health(tmp_path, monkeypatch):
+    """P1 adds a scoped lease to the library only; the pass stays lease-free (#206)."""
+    manager = RecordingUnitManager(d.name for d in CORE_UNITS)
+    seen = []
+    original = activated.ActivationDaemon.activate
+
+    def spy(self, **kwargs):
+        seen.append(kwargs)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(activated.ActivationDaemon, "activate", spy)
+    outcome = activated._run_once(manager=manager, root=tmp_path, now=NOW, actor="test")
+    assert outcome.granted == ()
+    assert len(seen) == 1
+    assert seen[0]["lease"] is None
+    assert seen[0]["healthy"] is False
 
 
 def test_staged_root_never_reads_host_inputs(tmp_path, monkeypatch):

@@ -365,8 +365,17 @@ class ActivationLease:
     generation_number: Optional[int] = None
     commissioning_digest: Optional[str] = None
     commissioning_evidence_binding: Optional[str] = field(default=None, repr=False)
+    # An optional exact unit scope (#206). It can only remove units from what
+    # the other gates would grant: a unit outside it is withheld as
+    # `outside_lease_scope`, and None keeps the unscoped behaviour.
+    units: Optional[frozenset[str]] = None
 
     def __post_init__(self) -> None:
+        if self.units is not None and (
+            type(self.units) is not frozenset
+            or any(type(unit) is not str or not unit for unit in self.units)
+        ):
+            raise ActivationRefused("lease unit scope must be a frozenset of unit names")
         if self.commissioning_evidence_binding is not None and (
             self.generation_number is None or type(self.commissioning_evidence_binding) is not str
             or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", self.commissioning_evidence_binding)
@@ -951,6 +960,12 @@ class ActivationController:
         lease_refusal = self._lease_refusal(generation_digest)
         if lease_refusal is not None:
             return lease_refusal
+        # Narrowing only: a scoped lease removes units, never adds one.
+        if self._lease.units is not None and definition.name not in self._lease.units:
+            return (
+                "outside_lease_scope: the approval behind this lease does not "
+                f"name {definition.name}"
+            )
 
         if definition.tier is UnitTier.SUPPORTING:
             return None
