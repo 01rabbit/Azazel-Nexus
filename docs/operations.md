@@ -319,6 +319,17 @@ leaf, before it binds anything or reports READY. To upgrade:
 Operators' sockets, leaves and group membership do not change. Nobody is
 added to the two new groups; only the explainer unit carries them.
 
+**Upgrading to the audit status snapshot (#211).** auditd writes its capacity
+snapshot into a new leaf, `run/audit-status` (`2750 azaudit:azazel-operator`),
+granted by a new optional `ReadWritePaths=-/var/lib/azazel/run/audit-status`
+in `azazel-auditd.service`. Unlike the listeners above, a missing leaf does
+not stop auditd, which is bootstrap-critical: the `-` lets systemd start the
+unit without the directory, and auditd logs `azazel-auditd: cannot write
+.../audit-status/status.json` once and serves without the snapshot, and
+status shows `audit: unknown`. (The same `unknown` appears for an operator
+not in `azazel-operator`, who cannot read the leaf.) To enable it, re-run `packaging/install.sh`,
+`systemctl daemon-reload`, and restart `azazel-auditd.service`.
+
 For `chain_broken`, the explainer latches closed across polls, days and restarts.
 Status shows `inspect_incident_chain_then_remove_cursor_and_restart`. Stop
 `azazel-incident-explaind.service` before recovery. Inspect the incident segment
@@ -383,7 +394,15 @@ more than the intake budgets allow: inspect it before anything else. auditd
 never deletes segments; when the chain reaches 1 GiB or its filesystem has
 less than 1 GiB free it logs `audit chain capacity warning` to the journal once
 a day, and `audit.verify` reports `capacity` (see `docs/integration-loop.md`,
-"Audit chain limits").
+"Audit chain limits"). `azazel-nexus status` shows the same reading as the
+`audit:` health line, from auditd's snapshot
+`/var/lib/azazel/run/audit-status/status.json` (rewritten every 60 s; stale
+after 300 s). `audit: ok -- WARNING: capacity warning (...)`, also listed
+under `next:`, means the chain or its filesystem crossed a threshold. It is
+not a failure: nothing is deleted, and what to keep is the owner's decision.
+`audit: FAILED` means only that the chain did not verify at auditd's start. `audit: unknown` means no readable snapshot (auditd not
+running, or install.sh not re-run after the upgrade that added the leaf) or a
+stale one.
 Queue overflow, exhausted retries and clean-shutdown abandonment count as
 audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and

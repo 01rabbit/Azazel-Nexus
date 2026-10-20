@@ -860,10 +860,38 @@ nothing latches.
   while the chain is at least 1 GiB or the filesystem has less than 1 GiB
   free, writes one line a day to the journal
   (`azazel-auditd: audit chain capacity warning: ...`). Nothing is removed.
-  `azazel-nexus status` does not show this yet: it does not talk to auditd's
-  socket and cannot read its `0700` ledger, and a status line needs either a
-  status snapshot leaf (install/hardening change) or an auditd client in the
-  CLI. That remains open in #211.
+- **Capacity in `azazel-nexus status`.** The CLI neither talks to auditd's
+  socket nor reads its `0700` ledger. auditd writes a snapshot instead,
+  `/var/lib/azazel/run/audit-status/status.json`, in its own `2750
+  azaudit:azazel-operator` leaf (file `0640`, temp file and rename), at start
+  and every 60 s (`STATUS_INTERVAL_S`), so the warning turning on or off
+  reaches status within a minute. Schema `azazel-nexus/audit-status/v1`, at
+  most 8 KiB, closed shape: `written_at`, `chain_verified` (did the chain
+  verify at auditd's start), `chain_bytes`, `segments`,
+  `filesystem_free_bytes`, `warning` with `warning_reasons` (`chain_size`,
+  `filesystem_free`, exactly what the numbers imply), the two thresholds,
+  `rate_limited` totals (`<limit>:<event_type>:<tier>`, the 48 largest) and
+  `rate_limit_summaries_dropped`. No record content, no uid, no incident id.
+  The reader is `azazel_nexus.audit_status.read_audit_status`; anything
+  outside the shape is refused. Status prints one health line, `audit:`:
+  `ok` when the chain verified at auditd's start; a capacity warning is not
+  a failure, so the line stays `ok`, its detail starts with `WARNING:
+  capacity warning (...)`, says nothing is deleted, and the warning is also
+  listed under `next:`. `FAILED` is reserved for a chain that did not verify
+  at auditd's start. `unknown` when the snapshot is absent or refused (auditd not running,
+  or install.sh not re-run after an upgrade) or stale (older than 300 s,
+  `STATUS_STALE_S`, or dated in the future; the last values, including a
+  warning, are shown labelled as such and are not listed under `next:`).
+  `--ledger PATH` still verifies a ledger file directly and prints `audit chain:` instead. `chain_verified` is the result of the
+  verification auditd makes at its start only: damage to a segment after
+  that is not reflected until auditd restarts or an operator runs
+  `audit.verify`. A missing or unwritable leaf never stops auditd. The unit
+  grants the leaf as `ReadWritePaths=-/var/lib/azazel/run/audit-status` (the
+  `-` lets systemd start the unit when the directory does not exist, which a
+  plain entry would refuse with 226/NAMESPACE); auditd then logs `cannot
+  write .../status.json` once (again only after a later success) and keeps
+  serving. auditd also removes `.status-*` temp files a killed predecessor
+  left in the leaf.
 - **Refusal logs are bounded separately.** Every daemon's `refusals.jsonl`
   (including auditd's, for refusals other than `rate_limited`) is diagnostic
   state, not part of the chain. It is aggregated per (caller uid, reason) and
@@ -884,9 +912,20 @@ most 12 MiB each (a 4 MiB `refusals.jsonl` and two rotated files) for
 auditd, commissiond, watchdog, Knowledge Lite and the fetch daemon, plus at
 most 12 MiB of Knowledge Lite's lookup events (`events.jsonl`), so at most
 72 MiB together, whatever a caller sends; M.I.O. entry's refusals are
-records in the route ledger above. Size `/var/lib` for the normal
+records in the route ledger above. The audit status snapshot adds at
+most 8 KiB. Size `/var/lib` for the normal
 yearly growth plus headroom, and treat the capacity warning as the prompt for
 the owner's retention decision.
+
+| Threshold (auditd constant) | Value | Effect |
+| --- | --- | --- |
+| `CAPACITY_WARN_CHAIN_BYTES` | 1 GiB of segments | warning `chain_size`; at normal growth, roughly two to three months of chain |
+| `CAPACITY_WARN_FREE_BYTES` | under 1 GiB free on the ledger's filesystem | warning `filesystem_free` |
+| `CAPACITY_CHECK_S` / `CAPACITY_REWARN_S` | 1 h / 24 h | journal re-read / one journal line a day while warning |
+| `STATUS_INTERVAL_S` / `STATUS_STALE_S` | 60 s / 300 s | snapshot rewrite / status calls it stale |
+
+A warning is a prompt, never a deletion: status and the journal say so, and
+nothing in auditd removes or truncates a segment.
 
 ### I4 — redirect to Deception Lite (later)
 

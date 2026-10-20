@@ -133,6 +133,13 @@ LAYOUT = (
         group="azaudit-submit",
     ),
     PathSpec(
+        "/var/lib/azazel/run/audit-status",
+        0o2750,
+        "auditd's capacity snapshot; operator-readable sizes and counts, no records",
+        owner="azaudit",
+        group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/commission",
         0o2710,
         "commission socket leaf; daemon-owned with operator-group socket inheritance",

@@ -408,7 +408,8 @@ def test_every_writable_path_is_one_the_layout_declares():
     }
     for profile in PROFILES:
         for path in _settings(profile.unit).get("ReadWritePaths", []):
-            assert path in declared, f"{profile.unit} writes to undeclared {path}"
+            # "-" marks an optional path; it is still one the layout declares.
+            assert path.removeprefix("-") in declared, f"{profile.unit} writes to undeclared {path}"
 
 
 def test_only_the_activation_controller_may_write_unit_files():
@@ -629,7 +630,8 @@ def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
          ["/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"]),
         ("azazel-auditd.service", ("audit", "audit-submit"),
          ["/var/lib/azazel/run/audit", "/var/lib/azazel/run/audit-submit",
-          "/var/lib/azazel/state/audit", "/var/lib/azazel/state/auditd"]),
+          "/var/lib/azazel/state/audit", "/var/lib/azazel/state/auditd",
+          "-/var/lib/azazel/run/audit-status"]),
         ("azazel-watchdog.service", ("watchdog",),
          ["/var/lib/azazel/run/watchdog", "/var/lib/azazel/state/watchdog"]),
     ],
@@ -637,15 +639,20 @@ def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
 def test_socket_daemons_write_only_their_own_run_leaf(unit, sockets, paths):
     """Each of these creates only its sockets under the run tree, each in its
     installer-owned leaf, so those leaves are the whole of its run-tree grant.
-    auditd has two: the operator socket and the explainer's append-only one."""
+    auditd has two: the operator socket and the explainer's append-only one,
+    plus its capacity snapshot leaf (#211), which holds no socket."""
 
-    from azazel_nexus_runtime.runtime_paths import socket_path
+    from azazel_nexus_runtime.runtime_paths import audit_status_path, socket_path
 
     written = _settings(unit)["ReadWritePaths"]
     assert written == paths
-    run_grants = [p for p in written if p == "/var/lib/azazel/run"
-                  or p.startswith("/var/lib/azazel/run/")]
-    assert run_grants == ["/var/lib/azazel/run/" + socket_path(name).parent.name for name in sockets]
+    run_grants = [p for p in written if p.lstrip("-") == "/var/lib/azazel/run"
+                  or p.lstrip("-").startswith("/var/lib/azazel/run/")]
+    # Optional ("-"): a missing snapshot leaf must not stop auditd's start.
+    snapshot = (["-/var/lib/azazel/run/" + audit_status_path().parent.name]
+                if unit == "azazel-auditd.service" else [])
+    assert run_grants == ["/var/lib/azazel/run/" + socket_path(name).parent.name
+                          for name in sockets] + snapshot
 
 
 def test_no_unprivileged_unit_holds_the_run_root():

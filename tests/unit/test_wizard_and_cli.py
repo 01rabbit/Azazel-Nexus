@@ -1124,7 +1124,7 @@ def test_status_vm_lab_guidance_and_unknown_mio(tmp_path, monkeypatch):
     assert "CLI baseline capability state: CORE (fixed CORE component set; no live provider assessment)" in text
     assert "\ncapability state:" not in text
     assert "ships no daemon" not in text
-    assert "no --ledger path supplied" in text
+    assert "audit: unknown -- no readable auditd status snapshot" in text
     assert "the path given" not in text
 
 

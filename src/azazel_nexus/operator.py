@@ -227,6 +227,10 @@ class HealthReport:
     subject: str
     healthy: Optional[bool]
     detail: str
+    #: A condition that is not a failure but that the operator should act on
+    #: (for example an audit capacity warning). Listed under next actions;
+    #: it never turns `healthy` false.
+    advisory: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.detail.strip():
@@ -442,5 +446,7 @@ def _next_actions(report: OperatorReport) -> tuple[NextAction, ...]:
     for check in report.health:
         if check.healthy is False:
             actions.append(NextAction(f"{check.subject}: {check.detail}"))
+        elif check.advisory:
+            actions.append(NextAction(f"{check.subject}: {check.advisory}"))
 
     return tuple(actions)

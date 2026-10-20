@@ -19,3 +19,7 @@ def incident_explain_status_path(root=None) -> Path:
 
 def incident_recent_path(root=None) -> Path:
     return incident_explain_status_path(root).with_name("recent.json")
+
+
+def audit_status_path(root=None) -> Path:
+    return _root(root) / "var/lib/azazel/run/audit-status/status.json"
