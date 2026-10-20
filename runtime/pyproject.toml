@@ -33,6 +33,7 @@ dependencies = ["azazel-nexus", "dbus-next==0.2.3", "PyYAML==6.0.3"]
 az-nexus-model-admission = "azazel_nexus_runtime.model_admission_cli:main"
 az-nexus-commission = "azazel_nexus_runtime.commission_cli:main"
 az-nexus-bootstrap = "azazel_nexus_runtime.bootstrap_cli:main"
+az-activation = "azazel_nexus_runtime.activation_cli:main"
 az-commissiond = "azazel_nexus_runtime.commissiond:main"
 az-activated = "azazel_nexus_runtime.activated:main"
 az-auditd = "azazel_nexus_runtime.auditd:main"

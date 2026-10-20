@@ -93,6 +93,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import stat
 from dataclasses import dataclass
 from enum import Enum
@@ -127,6 +128,7 @@ __all__ = [
     "UNSIGNED_CAVEAT",
     "inspect",
     "installed_baseline_state",
+    "installed_package_digest",
     "no_health_probe",
     "no_running_probe",
     "presence_of",
@@ -742,6 +744,35 @@ def installed_baseline_state(
         return inspect(package_root, probe=probe, now=now, boot_id=boot_id).state()
     except Exception:  # noqa: BLE001 - inspection failure establishes nothing
         return EdgeBaselineState(False, False, False, False, False)
+
+
+def installed_package_digest(
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN,
+) -> str:
+    """The installed archive digest, only when the on-disk package checks pass.
+
+    Runs the three checks `inspect` always derives itself -- `package_present`
+    (observe-only posture, unsigned, pinned contracts), `version_matches` and
+    `digest_matches` -- and returns the manifest's `digest`, which the artifact
+    on disk was just re-derived to equal. Anything else refuses. No probe,
+    binary or service manager is consulted, and health or running are not
+    claimed. Integrity against accidental change, not authenticity
+    (`UNSIGNED_CAVEAT`). The observe-baseline generation (#206) binds this
+    value so an operator's signature names one specific Edge package.
+    """
+
+    manifest_path = package_root / pin.manifest_name
+    artifact_path = package_root / pin.artifact_name
+    _, package, manifest = _read_package(package_root, manifest_path, artifact_path, pin)
+    if not package.held or manifest is None:
+        raise EdgePackageRefused("the installed Edge package check did not pass")
+    if (not _version_finding(manifest, pin).held
+            or not _digest_finding(artifact_path, manifest).held):
+        raise EdgePackageRefused("the installed Edge package differs from its pin or manifest")
+    digest = manifest["digest"]
+    if type(digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise EdgePackageRefused("the installed Edge package digest is malformed")
+    return digest
 
 
 # -- probes, whose defaults refuse ----------------------------------------

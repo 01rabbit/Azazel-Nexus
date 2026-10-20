@@ -2,7 +2,8 @@
 
 `docs/activation-observe-baseline.md` §4: P0-P3 do not change production
 behaviour; the pass keeps `lease=None` and `healthy=False`. The four inert
-readers must not reach `az-activated` until P4 wires them with its own tests.
+readers and the P3 operator tool (`az-activation`) must not reach
+`az-activated` until P4 wires them with its own tests.
 """
 
 import ast
@@ -17,12 +18,17 @@ INERT = {
     "azazel_nexus.observe_baseline": "observe_baseline",
     "azazel_nexus_runtime.activation_high_water": "activation_high_water",
     "azazel_nexus_runtime.activation_health": "activation_health",
+    "azazel_nexus_runtime.activation_cli": "activation_cli",
+    "azazel_nexus_runtime.activation_unit_files": "activation_unit_files",
 }
 PUBLIC = {
     "load_activation_policy", "decode_activation_policy", "build_observe_baseline",
     "verify_observe_baseline", "read_high_water", "raise_high_water",
     "initialize_high_water", "require_high_water_for_pass", "activation_ledger_present",
     "collect_node_health", "read_watchdog_fences",
+    "run_generation_publish", "run_request", "run_install", "installed_package_digest",
+    "evidence_commissioning_digest", "measure_scoped_unit_files",
+    "require_no_unit_overrides",
 }
 
 

@@ -1316,3 +1316,29 @@ def test_the_installed_reader_uses_the_kernel_boot_id_by_default():
     assert signature.parameters["boot_id_path"].default == Path(
         "/proc/sys/kernel/random/boot_id")
     assert edge_package.BOOT_ID_PATH == Path("/proc/sys/kernel/random/boot_id")
+
+
+def test_installed_package_digest_only_when_the_disk_checks_pass(tmp_path):
+    from azazel_nexus.edge_package import installed_package_digest
+
+    root = _package(tmp_path)
+    expected = "sha256:" + hashlib.sha256(b"edge-core-payload").hexdigest()
+    assert installed_package_digest(package_root=root) == expected
+    (root / PIN.artifact_name).write_bytes(b"tampered")
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root)
+
+
+@pytest.mark.parametrize("manifest", [
+    _manifest(version="9.9.9"),
+    _manifest(signed=True),
+    _manifest(posture={"observe_only": False, "enforcement": True}),
+])
+def test_installed_package_digest_refuses_any_failed_check(tmp_path, manifest):
+    from azazel_nexus.edge_package import installed_package_digest
+
+    root = _package(tmp_path, manifest=manifest)
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root)
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=tmp_path / "missing")

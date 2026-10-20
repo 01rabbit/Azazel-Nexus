@@ -304,3 +304,15 @@ def test_ordinary_reader_accepts_the_metadata_and_refuses_a_bootstrap_variant(pu
     meta.write_text(json.dumps({**document, "variant": "observe-baseline"}))
     with pytest.raises(GenerationRefused):
         store.read(1)
+
+
+def test_commissioning_digest_is_the_verified_proposal_digest():
+    from azazel_nexus.commissioning_evidence import CommissioningEvidence
+
+    payload = b'{"schema":"synthetic-full-proposal"}'
+    evidence = CommissioningEvidence(payload, b"s" * 64, b"{}", "hmac-sha256:" + "c" * 64)
+    assert observe_baseline.evidence_commissioning_digest(evidence) == (
+        "sha256:" + sha256(payload).hexdigest())
+    for value in (None, object(), b"raw"):
+        with pytest.raises(GenerationRefused):
+            observe_baseline.evidence_commissioning_digest(value)
