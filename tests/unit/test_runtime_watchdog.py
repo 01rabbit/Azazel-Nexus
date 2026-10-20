@@ -355,6 +355,21 @@ def test_watchdog_composition_uses_its_private_state_and_audit_leaf(monkeypatch,
     assert service.fences.path == expected_state / "fences.json"
     assert captured["audit_service"] == "watchdog"
     assert captured["path"] == tmp_path / "watchdog.sock"
+    assert service.refusal_log is captured["audit"]
+
+
+def test_the_status_verb_reports_the_refusal_log_counters(tmp_path):
+    from azazel_nexus_runtime.refusal_log import BoundedRefusalLog
+
+    log = BoundedRefusalLog(tmp_path / "refusals.jsonl")
+    log({"event_type": "runtime.request_refused", "reason": "malformed_frame", "uid": 5})
+    log({"event_type": "runtime.request_refused", "reason": "malformed_frame", "uid": 5})
+    service = _service(tmp_path)
+    service.refusal_log = log
+    answer = service.handle(Request(verb=REGISTRY.resolve("watchdog.status", OPERATOR),
+                                    arguments={}, principal=OPERATOR))
+    assert answer == {"fenced": {}, "refusal_log": {
+        "written": 1, "suppressed": 1, "unrecorded": 0, "rotations": 0}}
 
 
 # -- a fence survives the watchdog ---------------------------------------

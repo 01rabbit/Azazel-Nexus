@@ -167,6 +167,9 @@ class WatchdogService:
     generations: Optional[GenerationStore] = None
     #: Monotonic milliseconds, injected. Nothing here reads a clock.
     clock: Callable[[], int] = lambda: 0
+    #: The daemon's bounded refusal log, whose counters `watchdog.status`
+    #: reports (#211). Absent, the answer is exactly `{"fenced": ...}`.
+    refusal_log: Optional[object] = None
 
     def __post_init__(self) -> None:
         self._fenced = self.fences.load()
@@ -332,7 +335,11 @@ class WatchdogService:
 
     def handle(self, request) -> dict:
         if request.verb.name == "watchdog.status":
-            return {"fenced": self.fenced}
+            answer = {"fenced": self.fenced}
+            counters = getattr(self.refusal_log, "counters", None)
+            if callable(counters):
+                answer["refusal_log"] = counters()
+            return answer
         # `watchdog.probe` is declared (root only) but is driven by the
         # service loop in #42, which is what supplies the call it times. Until
         # then it is a fixed refusal, never an exception: an unhandled error
@@ -361,16 +368,18 @@ def main(
             "injects its own"
         )
 
+    refusals = audit_sink("watchdog")
     service = WatchdogService(
         manager=DbusUnitManager(call=refuse),
         ledger=AuditLedger(watchdog_state_dir() / "watchdog.jsonl"),
         fences=FenceStore(watchdog_state_dir() / "fences.json"),
+        refusal_log=refusals,
     )
     return serve_forever(
         path=socket_path("watchdog"),
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(),
-        audit=audit_sink("watchdog"),
+        audit=refusals,
         handler=service.handle,
         stop=stop,
         # Type=notify: READY=1 only once serve_forever has bound the socket.

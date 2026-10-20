@@ -201,6 +201,43 @@ Azazel-Fabric contracts, not Nexus-local inventions. See
 | Clock anomaly | trusted-time comparison | Mark temporal confidence degraded; block actions whose policy depends on trustworthy time. |
 | Privileged adapter fault | command/verification failure | Roll back only verified reversible operation; lock new intents for affected scope; require acknowledgement. |
 
+### Refusal logs
+
+Each socket daemon (auditd, commissiond, watchdog, Knowledge Lite and the
+fetch daemon) writes the requests it refused to its own `refusals.jsonl`:
+`/var/lib/azazel/state/<daemon>/refusals.jsonl`, and
+`/var/lib/azazel/fetch/partial/refusals.jsonl` for fetch. These files are
+diagnostic, not audit evidence: they are not hash-chained, nothing verifies
+them, and the audit chain and the M.I.O. route ledger are separate files with
+their own limits. They are bounded (#211), so a caller that can reach a socket
+cannot fill `/var/lib` through them:
+
+- **Aggregated per caller.** The first refusal of a (caller uid, reason) is
+  written as a `runtime.request_refused` line. Further refusals of that key in
+  the next 60 s are only counted; when the window ends, one
+  `runtime.request_refused_summary` line carries `suppressed` (the count),
+  `window_s` and `unrecorded`, and a new window opens. A continuing flood
+  therefore writes one line a minute per key; once it stops, the last count
+  is written within about a minute (the serve loop checks between
+  connections). At most 1024 keys are tracked; the oldest is summarized and
+  dropped to make room. Knowledge Lite's `knowledge.lookup` lines share the
+  file and are size-bounded but not aggregated.
+- **Rotated by size.** Before a line would take `refusals.jsonl` past 4 MiB
+  it is renamed to `refusals.jsonl.1`, the previous `.1` to `.2`, and the
+  previous `.2` is deleted. A daemon's refusal logs take at most 12 MiB. The
+  newest lines are in `refusals.jsonl`; read `.2`, `.1` and then the live file
+  for chronological order. Rotated files keep the original owner and mode.
+- **Never fatal.** A refused request did nothing, so a refusal line that
+  cannot be written (a full disk, a removed directory) is counted, not raised;
+  the daemon keeps answering. `watchdog.status` reports the watchdog's
+  counters as `refusal_log`: `written`, `suppressed`, `unrecorded`,
+  `rotations` since start. The other daemons have no status answer that
+  carries them; a summary line's `unrecorded` shows earlier losses.
+
+The counts are since the daemon started and are not persisted: a restart
+begins new windows, so the first refusal of each key after a restart is
+written again.
+
 ## 4. Field deployment kit
 
 A deployment kit is intentionally serviceable and equipment-neutral:

@@ -63,9 +63,14 @@ def serve_forever(
         engines = {bound: SocketServer(registry=verbs, policy=policy, audit=audit)
                    for _, bound, verbs in listeners}
         next_listener = 0
+        # A bounded refusal log (#211) writes a flood's summary when its
+        # window ends, even if no further refusal arrives to carry it.
+        flush_due = getattr(audit, "flush_due", None)
         if ready is not None:
             ready()
         while not stop():
+            if callable(flush_due):
+                flush_due()
             try:
                 active = listener
                 if additional_sockets:

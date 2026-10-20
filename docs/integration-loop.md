@@ -864,10 +864,10 @@ nothing latches.
   socket and cannot read its `0700` ledger, and a status line needs either a
   status snapshot leaf (install/hardening change) or an auditd client in the
   CLI. That remains open in #211.
-- **Not covered here.** Every daemon's `refusals.jsonl` (including auditd's,
-  for refusals other than `rate_limited`) is still unbounded: a writer that
-  sends malformed frames grows it at one line each. That is a runtime-wide
-  property, not the audit chain's, and is left to a separate change.
+- **Refusal logs are bounded separately.** Every daemon's `refusals.jsonl`
+  (including auditd's, for refusals other than `rate_limited`) is diagnostic
+  state, not part of the chain. It is aggregated per (caller uid, reason) and
+  rotated at a fixed size; see "Refusal logs" in `docs/operations.md`.
 
 `/var/lib` capacity estimate. The records with limits and retention total
 about 0.9 GiB (#211). The audit chain has no retention: in normal operation it
@@ -879,7 +879,11 @@ ledger is now bounded (#211 S4): at most about 238 MiB of daily segments
 (46 MiB a day, 192 MiB / 14 days retained plus the current segment), plus, on
 a node upgraded from the single `route.jsonl`, the `legacy-route.jsonl`
 archive at whatever size that file had reached, kept until the owner removes
-it (`docs/mio-runtime.md`). Size `/var/lib` for the normal
+it (`docs/mio-runtime.md`). The per-daemon refusal logs are bounded too: at
+most 12 MiB each (a 4 MiB `refusals.jsonl` and two rotated files) for
+auditd, commissiond, watchdog, Knowledge Lite and the fetch daemon, so at
+most 60 MiB together, whatever a caller sends; M.I.O. entry's refusals are
+records in the route ledger above. Size `/var/lib` for the normal
 yearly growth plus headroom, and treat the capacity warning as the prompt for
 the owner's retention decision.
 

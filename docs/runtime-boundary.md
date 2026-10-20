@@ -122,6 +122,13 @@ The fingerprint is what an operator uses to see that one unknown verb arrived
 four hundred times, without the ledger carrying four hundred copies of
 whatever it said.
 
+Each daemon writes these to its own `refusals.jsonl`, which is diagnostic
+state, not the audit chain. It is bounded (#211): repeats of one (caller uid,
+reason) within a minute are counted into one summary line rather than written
+one by one, the file is rotated at 4 MiB with two rotated files kept, and a
+line that cannot be written is counted rather than failing the daemon. See
+"Refusal logs" in [operations](operations.md).
+
 
 Local model hosting pins exactly one llama.cpp b11716 runtime with architecture
 specific executable digests. Only runtime mio_supervisor executes it; the
