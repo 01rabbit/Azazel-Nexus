@@ -499,21 +499,52 @@ after `azazel-activated.service`, which is ordered after
 `etc-azazel-commissioning.mount` ([commissioning storage at boot](commissioning-storage-at-boot.md));
 a volume that is locked or not mounted when entryd starts leaves an empty mount
 point, the two proposal credentials become `absent`, and the reader selects CORE
-without verifying. entryd does not itself check that the source is LUKS-backed:
-only root can place files under the bare mount point, and any such file still
-has to verify against the reviewed signature. After unlocking, restart entryd to
-pick up the proposal.
+without verifying. After unlocking, restart entryd to pick up the proposal.
+
+entryd does not itself check that the source is LUKS-backed or that it is an
+ordinary file: systemd reads the source before entryd runs. The directory is
+`root:azcommission 0750` on the mounted volume and as the bare mount point
+(`packaging/install.sh`, [commissioning rehearsal](hil-runbooks/commissioning-rehearsal.md)
+§3); the group gets read and search only, and the commissioning tools refuse a
+group- or other-writable directory, so only root can create or replace entries
+at the two fixed names. Whatever is placed there still has to verify against
+the reviewed signature in the root-only `/etc/azazel/mio-profile/`, which pins
+the payload exactly, so it can never select more than CORE. What it can do is
+stop entryd from starting: a fixed name that is a symlink to a device such as
+`/dev/zero` fails credential setup with 243/CREDENTIALS instead of using the
+fallback. That is an availability effect on entryd only (no routing handoffs,
+Edge unaffected), recovered by removing the entry. Granting the group write on
+that directory, or any other write path into it, would widen this to the
+grantee. No reader-side check can sit in front of `LoadCredential`, so this is
+documented rather than mitigated.
+
+Mechanism check on a Debian 13 aarch64 VM with systemd 257, using a throwaway
+unit with `LoadCredential=probe:<path under a mount>/file`,
+`SetCredential=probe:absent` and `After=` the mount (a mechanics check, not
+hardware evidence): `After=` adds no implicit `Requires=`, `Wants=` or
+`RequiresMountsFor=`; with the mount inactive and the file absent the unit
+starts and the credential is `absent`; a symlink to `/dev/zero` fails the start
+with 243/CREDENTIALS without the fallback; a symlink to an ordinary file is
+followed; a directory at the name is loaded as a directory.
 
 **Migration from earlier releases (#244).** Earlier releases also published
 `commissioning-proposal.expected.json` and `commissioning-proposal.json` into
 `/etc/azazel/mio-profile/`, in plain bytes outside the encrypted volume. entryd
 no longer loads them. `packaging/install.sh` runs
 `tools/purge_mio_profile_copies.py` on every install, which removes exactly those
-two names, only as ordinary files, inside that directory opened without
-following a symlink; the signature and any other file are kept. A symlink or
-other object at either name, or a symlinked directory, refuses the whole step
-and the install, with nothing removed, for administrator inspection. On a node
-not upgraded through the installer, run as root from the reviewed checkout:
+two names and any temporary file a crashed publication left (`.proposal-` and
+32 lowercase hex digits), only as ordinary files, inside that directory opened
+without following a symlink and required, as review requires, to be owned by
+root with mode 0700; the signature and any other file are kept. A symlink or
+other object at a matching name, a symlinked directory or a different owner or
+mode refuses the whole step and the install, with nothing removed, for
+administrator inspection. The installer then stops right after creating the
+accounts and the `/etc/azazel`, `/etc/azazel/commissioning` and
+`/etc/azazel/mio-profile` directories: no other directory, unit file, preset or
+tmpfiles rule is updated, so an upgraded node keeps its previous units, whose
+entryd still loads the old copies, until the entry is fixed and the install is
+rerun. On a node not upgraded through the installer, run as root from the
+reviewed checkout:
 
 ```sh
 sudo python3 -I tools/purge_mio_profile_copies.py /etc/azazel/mio-profile

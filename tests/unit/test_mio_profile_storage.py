@@ -197,3 +197,40 @@ def test_installer_runs_the_purge_on_the_installed_directory():
             '"${DESTDIR:-}/etc/azazel/mio-profile"')
     assert line in text
     assert text.index("make_dir 0700 root /etc/azazel/mio-profile") < text.index(line)
+
+
+def test_purge_removes_a_crashed_publication_temporary(profile):
+    _legacy(profile)
+    leftover = ".proposal-" + "0123456789abcdef" * 2
+    (profile / leftover).write_bytes(FAKE_IDENTITY)
+    # Near misses are not the publisher's form and are left alone.
+    near = (".proposal-" + "0" * 31, ".proposal-" + "A" * 32, ".proposal-" + "0" * 33,
+            "proposal-" + "0" * 32)
+    for name in near:
+        (profile / name).write_bytes(b"kept")
+    assert purge_tool.purge(profile) == [*LEGACY, leftover]
+    assert sorted(p.name for p in profile.iterdir()) == sorted(
+        ["commissioning-proposal.sig", *near])
+
+
+def test_purge_never_follows_a_symlinked_temporary(profile, tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(FAKE_IDENTITY)
+    (profile / LEGACY[0]).write_bytes(FAKE_IDENTITY)
+    (profile / (".proposal-" + "f" * 32)).symlink_to(outside)
+    with pytest.raises(purge_tool.PurgeRefused):
+        purge_tool.purge(profile)
+    assert outside.read_bytes() == FAKE_IDENTITY
+    assert (profile / LEGACY[0]).exists()
+
+
+@pytest.mark.parametrize("kind", ["mode", "owner"])
+def test_purge_refuses_a_directory_review_would_refuse(profile, monkeypatch, kind):
+    _legacy(profile)
+    if kind == "mode":
+        profile.chmod(0o750)
+    else:
+        monkeypatch.setattr(os, "geteuid", lambda: profile.stat().st_uid + 1)
+    with pytest.raises(purge_tool.PurgeRefused):
+        purge_tool.purge(profile)
+    assert len(list(profile.iterdir())) == 3
