@@ -408,3 +408,33 @@ audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and
 ledger reads continue through an audit outage. `recent.json` is a projection,
 not a replacement for either verified ledger.
+
+### Observe-baseline activation tooling (#206, P3)
+
+`az-activation` prepares the inputs the observe-baseline activation pass will
+verify; on this build the pass still composes `lease=None`, so nothing it does
+starts or enables a unit.
+
+1. `sudo az-activation generation-publish` measures the installed unit files
+   of the activation policy's scope (and the installed Edge package when
+   edge-core is in scope), binds verified commissioning evidence, prints the
+   generation digest and publishes after the digest is re-entered and
+   `PUBLISH` typed. Publishing is not admission.
+2. `az-activation request --operator LABEL --approval-id ID --seq N
+   --valid-for SECONDS [--units …] [--out FILE]` prints the unsigned v2
+   payload and its `payload_sha256`. It writes nothing else.
+3. Sign it on the operator's workstation with `tools/operator_sign.py
+   --purpose activation`.
+4. `sudo az-activation install --payload FILE --signature FILE
+   --confirm-sha256 HEX` verifies it against freshly collected context, the
+   activation policy and the high-water floors, raises the floor and places
+   `/etc/azazel/activation/approval.json` and `approval.sig`. Replacing an
+   installed approval needs `--replace` and typing `REPLACE`.
+
+Exit 1 means nothing changed; exit 2 means a later step was not confirmed and
+the state must be inspected before any retry. A missing high-water file on a
+node whose activation ledger records a floor is never re-initialized from
+zero; follow the
+[recovery procedure](activation-observe-baseline.md#recovering-from-a-time-floor-set-too-far-ahead)
+(`--recover-high-water`). Details:
+[observe-baseline activation §3.1, §3.2](activation-observe-baseline.md#31-activation-approval-schema-v2-boot-free).

@@ -253,6 +253,10 @@ and `tools/operator_sign.py` can sign a v2 activation approval payload
 but nothing produces that payload, installs the signature or reads it into
 the pass. There is no command that produces an activation approval or a
 lease, and none may be hand-written for this run.
+(Pointer: `az-activation request` and `install` now exist
+([§3.1](../activation-observe-baseline.md#31-activation-approval-schema-v2-boot-free),
+phase P3b), but the pass still does not read an installed approval; they are
+not part of this run.)
 
 Record what the last boot's pass did:
 

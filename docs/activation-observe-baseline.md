@@ -4,9 +4,10 @@ Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
 Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
 P0, P1 (library only), P2 (inert readers, §7), P3a (the off-host signer's
-`activation` purpose) and the probe half of P5 (§3.4: probe contract v2 and
-the boot preflight) implemented, nothing wired into the pass**. Phases land
-as separate PRs (§4).
+`activation` purpose), P3b (the node's `az-activation` tool:
+`generation-publish`, `request`, `install`) and the probe half of P5 (§3.4:
+probe contract v2 and the boot preflight) implemented, nothing wired into the
+pass**. Phases land as separate PRs (§4).
 
 Today no regular path admits the integrated loop's units. `az-activated`
 composes its production pass with `lease=None` and `healthy=False`, grants
@@ -102,8 +103,8 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   approval id, units, generation and its digest, node digest, epoch,
   sequence and validity window; the commissioning evidence binding is
   checked but not printed. This is a shape check only: the node verifier
-  still decides against its own context, policy and floors. Until
-  `az-activation request` exists nothing on the node produces the payload.
+  still decides against its own context, policy and floors. The payload
+  comes from `az-activation request` (below).
 
   ```sh
   PYTHONPATH=src uv run --no-project --with 'pynacl>=1.5' python -m tools.operator_sign \
@@ -111,12 +112,53 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
     --expect-payload-sha256 NODE_PRINTED_SHA256 --expect-public ENROLLED_PUBLIC_HEX \
     --seed /path/outside/any/checkout/operator.seed --out approval.sig
   ```
-- **Request and install.** A runtime CLI `az-activation request` collects the
-  independent context and prints the canonical payload and its SHA-256; it
-  never signs or writes approval files. `az-activation install --payload
-  --signature --confirm-sha256` re-verifies against freshly collected context,
-  places the files atomically, refuses to replace without a separate
-  confirmation, and appends an audit event. It creates no key.
+- **Request and install (P3b).** The runtime operator tool `az-activation`
+  (console script of `azazel-nexus-runtime`, like `az-nexus-bootstrap`; no
+  unit, no libexec wrapper) has no path, root or context override.
+
+  ```sh
+  # read-only; root in practice, since the protected inputs are root-only
+  az-activation request --operator LABEL --approval-id ID --seq N \
+    --valid-for SECONDS [--units UNIT,UNIT] [--out request.json]
+  # off-host: tools/operator_sign.py --purpose activation (above)
+  sudo az-activation install --payload request.json --signature approval.sig \
+    --confirm-sha256 PAYLOAD_SHA256 [--replace] [--recover-high-water NAME]
+  ```
+
+  `request` collects the context independently: the declared node digest
+  (`/etc/azazel/node.yaml` cross-checked against the administrator deployment
+  declaration), the current generation verified as an observe baseline
+  against freshly measured unit files (§3.2), the commissioning digest and
+  evidence binding from `load_commissioning_evidence()`, the activation
+  policy digest, and `security_epoch` from the declaration. `units` is the
+  policy scope or a `--units` subset, `granted_at` is now (UTC, whole
+  seconds) and `expires_at` is `now + --valid-for`, which must be within the
+  policy's `max_lease_seconds`. The operator must be named by the policy and
+  hold an active enrolled key. It writes the canonical payload, without a
+  trailing newline, to stdout or to a create-only `0600` `--out` file, and a
+  summary with `payload_sha256` to stderr. The evidence binding and the
+  commissioning digest are not printed. It never signs and never writes an
+  approval file.
+
+  `install` (root) reads the payload and the 64-byte signature (regular,
+  single-link files, never followed links), requires `--confirm-sha256` to
+  equal the payload SHA-256, collects the same context again and verifies
+  with `verify_observe_baseline_approval` against the activation policy, the
+  current high-water floors and the OS clock (refusing a clock behind
+  `time_floor - skew`); an approved generation below the floor also
+  refuses. It shows what was verified, then re-collects and compares
+  everything before writing. Order: the high water is raised to the approved
+  epoch, sequence and generation with `time_floor = now` (never lowered,
+  bounded by `now + skew`), or initialized as below; `approval.json` and
+  `approval.sig` are written as private temporary files, fsynced, renamed
+  under an exclusive lock, the directory fsynced and the pair read back; then
+  `activation.approval_installed` is appended to
+  `/var/lib/azazel/state/activation.jsonl`. An installed pair is replaced only
+  with `--replace` **and** typing `REPLACE`. A crash between the two renames
+  leaves a pair whose signature does not verify, which every reader refuses.
+  Exit 1 means nothing changed; exit 2 means a step after the first write did
+  not complete (inspect, do not retry blindly). It creates no key and enables
+  nothing; the pass still composes `lease=None` until P4.
 - **Verification** on every pass: the existing trust verification and
   canonical re-encoding against independently collected context; the operator
   must be authorized by the activation policy (enrollment alone is not
@@ -151,6 +193,23 @@ generation-publish` writes it after a printed SHA-256 and typed confirmation.
 Publishing is not admission; the operator's signature over
 `generation_digest` is. The pass re-verifies it every time; a missing or
 altered tree withholds everything (`no_generation`, `generation_unverified`).
+
+`sudo az-activation generation-publish` (P3b, interactive terminal only)
+reads the scope from the activation policy and measures each scoped unit file
+in `/usr/lib/systemd/system` through descriptors (root-owned, not group or
+other writable, single link, no symbolic link at any component; the profile's
+`/lib/systemd/system` is the merged-/usr link to it). When edge-core is in
+scope it adds the installed package digest, and only if the package's own
+checks pass (`edge_package.installed_package_digest`: present, observe-only,
+unsigned, pinned version, artifact digest equal to the manifest). The
+commissioning digest is the SHA-256 of the signed full proposal that
+`load_commissioning_evidence()` verified, and the binding is its HMAC; without
+verified evidence it refuses. It prints the units, the next generation number
+and the generation digest, requires the digest to be re-entered and
+`PUBLISH` typed, measures everything again, publishes through the ordinary
+`GenerationStore`, re-verifies the published generation and appends
+`activation.generation_published` to the activation ledger. If the current
+generation already is that baseline it publishes nothing.
 
 ### 3.3 node_health
 
@@ -212,6 +271,17 @@ and the OS clock at or above `time_floor − skew`; then raises the floor after
 recording its decision. A fast clock only expires leases early; a slow clock
 is caught by the floor. This is local trust, not authenticated time or a
 tamper-proof record, and the documentation says so.
+
+`az-activation install` initializes a missing floor only when the activation
+ledger records no floor: no `activation.approval_installed`,
+`activation.high_water_recovered` or `activation.unit_granted` event (the
+pass's `activation.inputs_incomplete` records and generation publications are
+not floors, since every booted node has them). The ledger must be a
+protected, single-link file whose chain verifies; an unreadable or broken
+ledger refuses rather than reading as empty. P4 adds the events its pass
+records when it raises the floor. The initial floor is the approved epoch,
+sequence and generation with `time_floor = now`. With a floor history and no
+file, only the §7 recovery applies.
 
 ### 3.6 Composition
 
@@ -358,3 +428,17 @@ flag or an environment variable:
    the retained file, with `time_floor` from the confirmed clock, and appends
    its own audit event. Approvals signed against the old floor remain valid
    only if their sequence still meets it.
+
+   Concretely: keep the moved-aside file inside
+   `/var/lib/azazel/state/activation/` (root `0600`, single link, for example
+   `high-water.json.retained-YYYYMMDD`) and run
+   `sudo az-activation install --payload … --signature … --confirm-sha256 …
+   --recover-high-water high-water.json.retained-YYYYMMDD` (with `--replace`
+   if an approval is installed). It is refused while `high-water.json`
+   exists. It decodes the retained file, takes the highest counters of that
+   file and of every floor the activation ledger records, verifies the
+   approval against those floors, prints the retained floor and the node's
+   clock, and requires `RECOVER` to be typed. It appends
+   `activation.high_water_recovered` (retained floor, ledger floors, new
+   floor) **before** writing the new floor, then installs as usual. The
+   retained file is left in place.

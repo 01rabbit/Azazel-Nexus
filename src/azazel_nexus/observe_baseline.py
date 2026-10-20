@@ -38,6 +38,7 @@ __all__ = [
     "build_observe_baseline",
     "decode_observe_baseline",
     "edge_pin_digest",
+    "evidence_commissioning_digest",
     "verify_observe_baseline",
 ]
 
@@ -61,6 +62,21 @@ def edge_pin_digest() -> str:
     baseline built against a different pin is a different baseline.
     """
     return "sha256:" + sha256(_canonical(asdict(PIN))).hexdigest()
+
+
+def evidence_commissioning_digest(evidence) -> str:
+    """The `commissioning_digest` an observe-baseline generation and approval carry.
+
+    The SHA-256 of the signed full commissioning proposal bytes
+    (`CommissioningEvidence.payload`) that the protected evidence loader has
+    just verified. The operator already holds and signed those bytes, so the
+    digest discloses nothing new; raw inventory stays behind the HMAC
+    `binding`. Publisher, request, install and the pass derive it the same way.
+    """
+    payload = getattr(evidence, "payload", None)
+    if type(payload) is not bytes or not payload:
+        raise GenerationRefused("verified commissioning evidence required")
+    return "sha256:" + sha256(payload).hexdigest()
 
 
 def _scope(units) -> list[str]:
