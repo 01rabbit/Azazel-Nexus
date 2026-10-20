@@ -543,17 +543,23 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    READY is never sent on a failed pass, and the selected bootstrap path
    keeps its own READY protocol unchanged.
 
-**What READY releases.** Thirteen units `Requires=` the controller. READY
-would release a start job queued at boot for any of them still enabled (a
-manual unmask, an older build), and §5 showed that masking at the pass cannot
-stop such a job. So every governed unit except the bootstrap pair carries the
+**What READY releases.** Twelve units `Requires=` the controller: the ten
+that carry the marker condition and auditd and commissiond. READY would
+release a start job queued at boot for any of them still enabled (a manual
+unmask, an older build), and §5 showed that masking at the pass cannot stop
+such a job. So every governed unit except the bootstrap pair carries the
 marker condition: the six loop units, and the watchdog, the fetch service and
 the two model hosts, for which no pass writes a marker (`write_grant_markers`
 refuses any unit outside the five grantable ones), so they stay unstartable
-on the ordinary path. **Residual:** auditd and commissiond carry no condition
-because the supporting-only bootstrap starts them and writes no marker; on
-the ordinary path they are masked by the preflight and `BindsTo=` the
-controller, which stops them when the pass exits.
+on the ordinary path.
+
+**Residual window (auditd, commissiond).** They carry no condition because
+the supporting-only bootstrap starts them and writes no marker; its
+behaviour is unchanged. On the ordinary path, if either was left unmasked
+when the boot began, its start job is already queued, the preflight mask
+does not cancel it, and READY releases it: the unit then runs until the
+controller exits and `BindsTo=` stops it, which is at most the bounded
+barrier wait (about 5 s) after READY. P6 must observe this window on the VM.
 
 **Edge-core is refused in P4.** A policy naming `azazel-edge-core.service`
 fails `activation_policy` as a whole, so nothing is granted until P5 replaces

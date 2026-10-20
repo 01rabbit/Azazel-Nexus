@@ -580,3 +580,24 @@ def test_a_verified_approval_raises_the_floors_even_when_every_unit_is_withheld(
     assert outcome.granted == ()
     assert len(world.raised) == 1
     assert world.markers() is None
+
+
+@pytest.mark.parametrize("failing", ["high_water", "markers"])
+def test_a_failing_failure_record_never_skips_the_emergency_remask(world, monkeypatch, failing):
+    original = activated.ActivationDaemon._record
+
+    def record(self, event):
+        if event["event_type"] in ("activation.high_water_unraised",
+                                   "activation.grant_markers_unwritten"):
+            raise ValueError("synthetic non-audit failure")
+        return original(self, event)
+
+    monkeypatch.setattr(activated.ActivationDaemon, "_record", record)
+    replaced = {"raise_high_water": _raises()} if failing == "high_water" else {}
+    if failing == "markers":
+        import shutil
+        shutil.rmtree(world.root / "run/azazel-activation")
+    with pytest.raises(RuntimeError, match="emergency remask failures"):
+        world.run(**replaced)
+    assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert world.markers() is None

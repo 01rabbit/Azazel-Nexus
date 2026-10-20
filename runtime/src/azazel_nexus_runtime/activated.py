@@ -584,20 +584,28 @@ def _run_once(
                 "occurred_at": now, "actor": actor,
             })
         except Exception:  # noqa: BLE001 - an unraised floor admits nothing
-            daemon._record({
-                "event_type": "activation.high_water_unraised",
-                "occurred_at": now, "actor": actor,
-            })
+            # The record must never stand between this failure and the remask.
+            try:
+                daemon._record({
+                    "event_type": "activation.high_water_unraised",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
             _emergency_narrow(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
     if granted and not rolled_back:
         try:
             markers = write_grant_markers(sorted(granted), root)
         except Exception:  # noqa: BLE001 - a unit without a marker never starts
-            daemon._record({
-                "event_type": "activation.grant_markers_unwritten",
-                "occurred_at": now, "actor": actor,
-            })
+            # The record must never stand between this failure and the remask.
+            try:
+                daemon._record({
+                    "event_type": "activation.grant_markers_unwritten",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
             _emergency_narrow(manager, root, "activation grant markers could not be written")
     # Do not gather optional diagnostic inputs before mandatory narrowing.
     # Merely loading an enrolled key or observing a boot is not admission.
