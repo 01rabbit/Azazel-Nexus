@@ -2,7 +2,8 @@
 
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (parent
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **proposed; awaiting owner decisions (§6); nothing implemented**.
+Status: **accepted with the recommended defaults of §6 (owner, 2026-10-20);
+nothing implemented yet**. Phases land as separate PRs (§4).
 
 Today no regular path admits the integrated loop's units. `az-activated`
 composes its production pass with `lease=None` and `healthy=False`, grants
@@ -204,7 +205,8 @@ pass keeps `lease=None`.
 
 ## 6. Owner decisions
 
-Recommended defaults in brackets.
+The owner accepted every recommended default (in brackets) on 2026-10-20.
+A later change to one of them is recorded here with its date.
 
 1. Boot binding: keep v1 (re-sign and start by hand every boot) or boot-free
    v2 with a short cap? **[v2, `max_lease_seconds` ≤ 72 h]**
