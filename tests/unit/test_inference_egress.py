@@ -741,3 +741,49 @@ def test_a_send_that_fails_for_another_reason_is_still_an_interruption():
     report, _ = _attempt(lambda raw: _BrokenSocket(raw=raw, at="send"))
     assert report.outcome is TransportOutcome.INTERRUPTED
     assert "the send failed" in report.reason
+
+
+class _ResetBeforeTheAlertIsRead(_AlertingSocket):
+    """What #232 caught on Linux. The peer rejected our identity, sent its
+    alert and closed; the close reached our write first, so the write fails
+    with a plain reset. The alert is still in the receive buffer."""
+
+    def sendall(self, _):
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    def recv(self, _):
+        self._alert()
+
+
+class _ResetWithBytesPending(_AlertingSocket):
+    """A reset with something other than an alert waiting behind it."""
+
+    def sendall(self, _):
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    def recv(self, _):
+        return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
+
+
+@pytest.mark.injected
+def test_a_reset_write_with_the_peers_alert_waiting_is_a_tls_failure():
+    """#232. Same fact as an alert at the write or at the read, so the same
+    outcome and the same reason -- not an interruption."""
+
+    reset, body = _attempt(lambda raw: _ResetBeforeTheAlertIsRead(raw=raw, at="send"))
+    reading, _ = _attempt(lambda raw: _AlertingSocket(raw=raw, at="read"))
+    assert reset.outcome is TransportOutcome.TLS_FAILED
+    assert reset.reason == reading.reason
+    assert body == b""
+
+
+@pytest.mark.injected
+def test_a_reset_write_without_an_alert_is_not_promoted_and_not_received():
+    """Only an alert the peer actually sent changes the classification.
+    Whatever else is waiting is not read as a response: the request was
+    never fully sent, so nothing that follows is an answer to it."""
+
+    report, body = _attempt(lambda raw: _ResetWithBytesPending(raw=raw, at="send"))
+    assert report.outcome is TransportOutcome.INTERRUPTED
+    assert "the send failed" in report.reason
+    assert body == b"" and report.received == 0

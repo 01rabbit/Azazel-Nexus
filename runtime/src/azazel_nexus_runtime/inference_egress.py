@@ -381,6 +381,25 @@ def send_inference(
                     b"",
                 )
             except OSError as exc:
+                # A server that rejects our client certificate sends its alert
+                # and closes. If the alert and the close both land before our
+                # write, the write fails with a plain reset and OpenSSL never
+                # reads the alert -- but the alert is still sitting in the
+                # receive buffer (#232). Look before calling it a network
+                # fault. Only an alert the peer actually sent turns this into
+                # TLS_FAILED; anything else stays INTERRUPTED, and neither is
+                # ever RECEIVED.
+                verdict = _pending_alert(tls, remaining)
+                if verdict is not None:
+                    return (
+                        EgressReport(
+                            TransportOutcome.TLS_FAILED,
+                            0,
+                            0,
+                            f"mutual TLS did not hold: {verdict.reason or 'alert'}",
+                        ),
+                        b"",
+                    )
                 return (
                     EgressReport(
                         TransportOutcome.INTERRUPTED, 0, 0, f"the send failed: {exc}"
@@ -400,6 +419,30 @@ def send_inference(
             raw.close()
         except OSError:
             pass
+
+
+#: How long a failed write may wait for the alert that explains it. The alert,
+#: when there is one, is already in the receive buffer; this only bounds a
+#: socket that has nothing to say.
+_ALERT_GRACE_SECONDS = 0.25
+
+
+def _pending_alert(tls, remaining: Callable[[], float]):
+    """The TLS alert the peer sent before a write failed, or None.
+
+    One bounded read. Bytes, EOF, a timeout or another socket error are not an
+    alert, and return None -- the caller then reports what it saw, which is an
+    interruption. Never consumed as a response.
+    """
+
+    try:
+        tls.settimeout(max(min(remaining(), _ALERT_GRACE_SECONDS), 0.001))
+        tls.recv(1)
+    except ssl.SSLError as alert:
+        return alert
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _read_response(
