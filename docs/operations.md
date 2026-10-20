@@ -302,9 +302,9 @@ not granted yet (P5): a policy naming it refuses the whole pass.
   `security_epoch`, revoke the operator, or let the approval expire. The next
   boot's pass then grants nothing, writes no marker, and the units stay
   masked and unstarted.
-- Nothing on the node publishes the generation, requests or installs the
-  approval, or initializes the high water yet (the P3b activation commands), and the
-  reboot sequence is not yet confirmed on a VM (P6). Until then the
+- The inputs come from `az-activation generation-publish`, `request` and
+  `install` (below) and the off-host signer. The reboot sequence is not yet
+  confirmed on a VM (P6). Until then the
   [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)
   still uses its rehearsal-only start.
 
@@ -445,9 +445,9 @@ not a replacement for either verified ledger.
 
 ### Observe-baseline activation tooling (#206, P3)
 
-`az-activation` prepares the inputs the observe-baseline activation pass will
-verify; on this build the pass still composes `lease=None`, so nothing it does
-starts or enables a unit.
+`az-activation` prepares the inputs the observe-baseline activation pass
+verifies at the next boot (see "Activating the integrated loop" above).
+Nothing it does starts or enables a unit itself.
 
 1. `sudo az-activation generation-publish` measures the installed unit files
    of the activation policy's scope (and the installed Edge package when

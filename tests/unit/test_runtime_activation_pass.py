@@ -29,14 +29,13 @@ from azazel_nexus.audit import AuditLedger
 from azazel_nexus.bootstrap_deployment import BootstrapDeployment, declared_node_digest
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.generation import GenerationStore
-from azazel_nexus.observe_baseline import build_observe_baseline
+from azazel_nexus.observe_baseline import build_observe_baseline, evidence_commissioning_digest
 from azazel_nexus.operator_trust import ApprovalPurpose, ApprovalRefused, OperatorTrust, approval_message
 from azazel_nexus_runtime import activated, activation_markers, activation_pass
 from azazel_nexus_runtime.activation_high_water import HighWater, HighWaterRefused
 from azazel_nexus_runtime.activation_pass import (
     ALWAYS_MISSING,
     PassProducers,
-    commissioning_payload_digest,
 )
 from azazel_nexus_runtime.node_config import DeclaredNode
 from azazel_nexus_runtime.units import RecordingUnitManager
@@ -95,7 +94,7 @@ class World:
         self.generation = self.store.create(
             build_observe_baseline(units=list(self.policy.units), unit_files=self.unit_files),
             created_at="2026-10-20T00:00:00Z",
-            commissioning_digest=commissioning_payload_digest(self.evidence),
+            commissioning_digest=evidence_commissioning_digest(self.evidence),
             commissioning_evidence_binding=self.evidence.binding,
         )
         (root / "run/azazel-activation").mkdir(parents=True, mode=0o755)
@@ -106,7 +105,7 @@ class World:
         values = dict(
             node_digest=declared_node_digest(NODE), generation=self.generation.number,
             generation_digest=self.generation.digest,
-            commissioning_digest=commissioning_payload_digest(self.evidence),
+            commissioning_digest=evidence_commissioning_digest(self.evidence),
             commissioning_evidence_binding=self.evidence.binding,
             policy_digest=self.policy.policy_digest, security_epoch=2,
         ) | overrides
@@ -132,8 +131,8 @@ class World:
             self.high_water = value
             return value
 
-        def unit_file(unit):
-            return self.unit_files[unit]
+        def unit_files(units):
+            return {unit: self.unit_files[unit] for unit in units}
 
         values = dict(
             commissioning_evidence=lambda: self.evidence,
@@ -141,7 +140,7 @@ class World:
             deployment=lambda: self.deployment,
             policy=lambda: self.policy,
             high_water=lambda: self.high_water,
-            unit_file=unit_file,
+            unit_files=unit_files,
             approval=approval,
             health=lambda policy, ledger: (
                 self.healthy, (("state_capacity", "ok" if self.healthy else "failed"),)),
@@ -246,7 +245,7 @@ def _raises(message="private reader detail"):
     ({"policy": _raises()}, ["activation_policy"]),
     ({"high_water": lambda: None}, ["epoch_high_water"]),
     ({"high_water": _raises()}, ["epoch_high_water"]),
-    ({"unit_file": _raises()}, ["operational_generation_publisher"]),
+    ({"unit_files": _raises()}, ["operational_generation_publisher"]),
     ({"approval": _raises()}, ["activation_approval_loader"]),
     ({"health": _raises()}, ["node_health"]),
     ({"health": lambda policy, ledger: (False, (("watchdog_fences", "failed"),))},
@@ -512,60 +511,8 @@ def test_markers_refuse_a_foreign_parent_and_an_existing_leaf(tmp_path, monkeypa
         activation_markers.write_grant_markers(["../escape.service"], tmp_path)
 
 
-def _vendor(tmp_path, unit, data=b"[Unit]\n"):
-    directory = tmp_path / "usr/lib/systemd/system"
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / unit).write_bytes(data)
-    (directory / unit).chmod(0o644)
-    return directory
-
-
-def _read(tmp_path, unit):
-    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        return activation_pass._read_unit_file_at(fd, unit)
-    finally:
-        os.close(fd)
-
-
-def test_installed_unit_file_is_read_and_shadowing_refuses(tmp_path, monkeypatch):
-    monkeypatch.setattr(activation_pass, "_OWNER", os.getuid())
-    tmp_path.chmod(0o755)
-    unit = "azazel-mio-entryd.service"
-    _vendor(tmp_path, unit, b"[Unit]\nDescription=x\n")
-    assert _read(tmp_path, unit) == b"[Unit]\nDescription=x\n"
-    etc = tmp_path / "etc/systemd/system"
-    etc.mkdir(parents=True)
-    (etc / unit).symlink_to("/dev/null")  # the preflight's persistent mask
-    assert _read(tmp_path, unit) == b"[Unit]\nDescription=x\n"
-    (etc / unit).unlink()
-    (etc / unit).write_bytes(b"[Unit]\n")
-    with pytest.raises(Exception):
-        _read(tmp_path, unit)
-    (etc / unit).unlink()
-    (tmp_path / "run/systemd/system.control" / (unit + ".d")).mkdir(parents=True)
-    with pytest.raises(Exception):
-        _read(tmp_path, unit)
-    with pytest.raises(Exception):
-        _read(tmp_path, "azazel-watchdog.service")
-
-
-def test_installed_unit_file_protection_refuses(tmp_path, monkeypatch):
-    monkeypatch.setattr(activation_pass, "_OWNER", os.getuid())
-    tmp_path.chmod(0o755)
-    unit = "azazel-edge-intaked.service"
-    directory = _vendor(tmp_path, unit)
-    (directory / unit).chmod(0o666)
-    with pytest.raises(Exception):
-        _read(tmp_path, unit)
-    (directory / unit).chmod(0o644)
-    os.link(directory / unit, directory / "second-link")
-    with pytest.raises(Exception):
-        _read(tmp_path, unit)
-
-
 def test_commissioning_digest_is_the_signed_proposal_digest(world):
-    assert commissioning_payload_digest(world.evidence) == (
+    assert evidence_commissioning_digest(world.evidence) == (
         "sha256:" + hashlib.sha256(EVIDENCE_PAYLOAD).hexdigest())
 
 
@@ -581,22 +528,55 @@ def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
     events = world.events()
     raised = [e for e in events if e["event_type"] == "activation.high_water_raised"]
     assert len(raised) == 1
-    assert raised[0]["approval_seq"] == 5 and raised[0]["time_floor"] == NOW
+    assert raised[0]["high_water"] == {"security_epoch": 2, "approval_seq": 5,
+                                       "generation": world.generation.number,
+                                       "time_floor": NOW}
+    from azazel_nexus_runtime.activation_cli import FLOOR_EVENTS
+    assert "activation.high_water_raised" in FLOOR_EVENTS
     kinds = [e["event_type"] for e in events]
     assert kinds.index("activation.high_water_raised") > max(
         i for i, kind in enumerate(kinds) if kind == "activation.unit_granted")
 
 
-@pytest.mark.parametrize("drop_in", [
-    "service.d", "azazel-.service.d", "azazel-mio-.service.d", "azazel-mio-entryd.service.d",
-])
-@pytest.mark.parametrize("where", ["etc/systemd/system", "run/systemd/system",
-                                   "usr/lib/systemd/system"])
-def test_any_drop_in_that_applies_to_the_unit_refuses(tmp_path, monkeypatch, drop_in, where):
-    monkeypatch.setattr(activation_pass, "_OWNER", os.getuid())
-    tmp_path.chmod(0o755)
-    unit = "azazel-mio-entryd.service"
-    _vendor(tmp_path, unit)
-    (tmp_path / where / drop_in).mkdir(parents=True, exist_ok=True)
-    with pytest.raises(Exception):
-        _read(tmp_path, unit)
+def test_the_pass_scope_and_tripwire_share_one_unit_set():
+    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+    assert activation_pass.P4_UNIT_SCOPE is GRANTABLE_UNITS
+    assert GRANTABLE_UNITS == frozenset(SCOPE)
+    import ast
+    source = Path(activated.__file__).read_text()
+    names = {node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)}
+    assert "GRANTABLE_UNITS" in names and "_P4_GRANTABLE" not in names
+
+
+def test_markers_are_never_written_for_a_unit_this_phase_cannot_grant(tmp_path, monkeypatch):
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    (tmp_path / "run/azazel-activation").mkdir(parents=True, mode=0o755)
+    for unit in ("azazel-edge-core.service", "azazel-watchdog.service",
+                 "azazel-mio-locald.service"):
+        with pytest.raises(activation_markers.GrantMarkerRefused):
+            activation_markers.write_grant_markers([unit], tmp_path)
+    assert not (tmp_path / "run/azazel-activation/granted").exists()
+
+
+def test_emergency_narrowing_remasks_even_when_markers_cannot_be_removed(world, monkeypatch, capsys):
+    def broken(_root):
+        raise activation_markers.GrantMarkerRefused("synthetic")
+    monkeypatch.setattr(activated, "reset_grant_markers", broken)
+    with pytest.raises(RuntimeError, match="grant_markers: GrantMarkerRefused"):
+        activated._emergency_narrow(world.manager, world.root, "synthetic emergency")
+    assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert "could not remove grant markers" in capsys.readouterr().err
+
+
+def test_a_verified_approval_raises_the_floors_even_when_every_unit_is_withheld(world, monkeypatch):
+    """Documented: the floor follows the accepted approval, not the grant count."""
+    original = activated.ActivationDaemon.activate
+
+    def nothing_granted(self, **kwargs):
+        return original(self, **(kwargs | {"lease": None}))
+
+    monkeypatch.setattr(activated.ActivationDaemon, "activate", nothing_granted)
+    outcome = world.run()
+    assert outcome.granted == ()
+    assert len(world.raised) == 1
+    assert world.markers() is None

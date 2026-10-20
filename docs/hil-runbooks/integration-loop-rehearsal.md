@@ -25,9 +25,9 @@ campaign, it is not an [HG-07](hg-07.md) record, and every artefact is
 labelled `rehearsal`.
 
 **What this run cannot show today.** Since #206 P4 the production pass has
-a regular path that can grant the SUPPORTING loop units (§5), but nothing on
-the node yet produces its generation, approval and high water (P3b), and its
-reboot sequence is not yet confirmed on a VM (P6 of
+a regular path that can grant the SUPPORTING loop units (§5) from the inputs
+`az-activation` produces, but its reboot sequence is not yet confirmed on a
+VM (P6 of
 [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)). The
 loop is therefore still started by the rehearsal-only procedure of §6, and the
 result says *activation admission: not exercised*. On real hardware that

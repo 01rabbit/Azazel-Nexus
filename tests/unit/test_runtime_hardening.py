@@ -452,7 +452,9 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
         replace(controller, unit="azazel-other.service")
 
 
-#: The governed loop units (§2 of docs/activation-observe-baseline.md).
+#: Every governed unit except the bootstrap pair: the six loop units (§2 of
+#: docs/activation-observe-baseline.md) and the four other controller
+#: dependents (watchdog, fetch, local and remote model hosts).
 GRANT_LOOP_UNITS = frozenset({
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -460,15 +462,33 @@ GRANT_LOOP_UNITS = frozenset({
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
+    "azazel-mio-locald.service",
+    "azazel-mio-remoted.service",
+    "azazel-model-fetchd.service",
+    "azazel-watchdog.service",
 })
 
 
-def test_condition_path_exists_is_present_exactly_on_the_governed_loop_units():
-    """Each loop unit starts only with this boot's grant marker; nothing else waits on one.
+def test_condition_path_exists_is_present_exactly_on_the_marker_units():
+    """Each governed unit but the bootstrap pair starts only with this boot's marker.
 
-    auditd and commissiond are started by the supporting-only bootstrap,
-    which writes no marker, so they must not carry the condition.
+    The controller's READY releases queued starts of every unit that
+    Requires= it; with the condition, none of them starts without a marker
+    this boot's pass wrote. auditd and commissiond are started by the
+    supporting-only bootstrap, which writes no marker, so they must not carry
+    the condition (residual: masked on the ordinary path and BindsTo= the
+    controller).
     """
+    from azazel_nexus.activation import CORE_UNITS
+    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+
+    assert GRANT_LOOP_UNITS == {d.name for d in CORE_UNITS} - {
+        "azazel-auditd.service", "azazel-commissiond.service"}
+    assert GRANTABLE_UNITS < GRANT_LOOP_UNITS
+    for profile in ALL_PROFILES:
+        if ACTIVATION_CONTROLLER_UNIT in profile.requires and profile.unit not in (
+                "azazel-auditd.service", "azazel-commissiond.service"):
+            assert profile.unit in GRANT_LOOP_UNITS, profile.unit
     from azazel_nexus_runtime.activation_markers import GRANT_MARKER_DIRECTORY
     from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
 

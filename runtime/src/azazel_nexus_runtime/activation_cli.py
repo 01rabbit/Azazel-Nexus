@@ -48,7 +48,7 @@ from azazel_nexus.activation_approval_v2 import (
 from azazel_nexus.activation_policy import ActivationPolicy, load_activation_policy
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
-from azazel_nexus.bootstrap_deployment import declared_node_digest
+from azazel_nexus.bootstrap_deployment import declared_node_binding
 from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
 from azazel_nexus.edge_package import installed_package_digest
 from azazel_nexus.generation import (
@@ -109,11 +109,12 @@ _RETAINED = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 #: holds any of them is "history": a missing high-water file is then never
 #: initialized from zero, only recovered through §7. The pass's own
 #: `activation.inputs_incomplete` records and generation publications are
-#: not floors. Phase P4 adds the floor events its pass records.
+#: not floors. Phase P4's pass records `activation.high_water_raised`.
 FLOOR_EVENTS = frozenset({
     "activation.approval_installed",
     "activation.high_water_recovered",
     "activation.unit_granted",
+    "activation.high_water_raised",
 })
 
 
@@ -323,9 +324,9 @@ def _collect_context() -> _Collected:
     declaration = _step("administrator deployment declaration unavailable or refused",
                         _load_declaration)
     node = _step("declared node unavailable or refused", _load_node)
-    if _step("declared node unavailable or refused", declared_node_digest,
-             node.node_id) != declaration.node_digest:
-        raise Refused("declared node differs from the deployment declaration")
+    # The same function the activation pass uses (`activation_pass`).
+    node_digest = _step("declared node differs from the deployment declaration",
+                        declared_node_binding, declaration, node.node_id)
     evidence = _step("verified commissioning evidence unavailable", _load_evidence)
     commissioning = _step("verified commissioning evidence unavailable",
                           evidence_commissioning_digest, evidence)
@@ -337,7 +338,7 @@ def _collect_context() -> _Collected:
                        _current_baseline, policy, unit_files, package, commissioning,
                        evidence.binding)
     context = _step("activation context refused", ObserveBaselineContext,
-                    node_digest=declaration.node_digest, generation=generation.number,
+                    node_digest=node_digest, generation=generation.number,
                     generation_digest=generation.digest, commissioning_digest=commissioning,
                     commissioning_evidence_binding=evidence.binding,
                     policy_digest=policy.policy_digest,

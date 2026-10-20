@@ -56,6 +56,57 @@ def notify_ready() -> None:
     _send_ready(_ADDRESS)
 
 
+_BARRIER_PAYLOAD = b"BARRIER=1"
+_BARRIER_TIMEOUT = 5.0
+
+
+def _barrier(address, timeout):
+    """Private ordinary-socket seam: sd_notify_barrier(3) on `address`.
+
+    Sends `BARRIER=1` with the write end of a fresh pipe (SCM_RIGHTS), closes
+    our copy, and waits for EOF on the read end: systemd closes its copy only
+    after it has processed every earlier notification from this process.
+    """
+    import array
+    import select
+
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+                connection.settimeout(_TIMEOUT)
+                fds = array.array("i", [write_fd])
+                sent = connection.sendmsg([_BARRIER_PAYLOAD],
+                                          [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)],
+                                          0, address)
+                if sent != len(_BARRIER_PAYLOAD):
+                    raise UnitOperationFailed("systemd notification incomplete")
+        finally:
+            os.close(write_fd)
+        poller = select.poll()
+        poller.register(read_fd, select.POLLIN | select.POLLHUP)
+        if not poller.poll(int(timeout * 1000)):
+            raise UnitOperationFailed("systemd notification barrier timed out")
+        if os.read(read_fd, 1) != b"":
+            raise UnitOperationFailed("systemd notification barrier refused")
+    except UnitOperationFailed:
+        raise
+    except Exception:
+        raise UnitOperationFailed("systemd notification barrier refused") from None
+    finally:
+        os.close(read_fd)
+
+
+def notify_barrier() -> None:
+    """Wait (bounded) until systemd has processed this process's notifications.
+
+    For a main process that exits right after READY: without the barrier the
+    exit can be seen before READY, and the start is then a failure.
+    """
+    _require_fixed_context()
+    _barrier(_ADDRESS, _BARRIER_TIMEOUT)
+
+
 def notify_watchdog() -> None:
     """Send the fixed watchdog ping from the same guarded main-process context."""
     _require_fixed_context()

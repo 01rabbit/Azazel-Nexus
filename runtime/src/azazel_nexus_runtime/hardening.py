@@ -283,9 +283,13 @@ class ServiceProfile:
             )
 
 
-#: The governed loop units that start only with this boot's grant marker
-#: (#206 §5). Not auditd or commissiond: the supporting-only bootstrap starts
-#: those, and it writes no marker.
+#: The governed units that start only with this boot's grant marker (#206
+#: §5): the six loop units, and the four other `Requires=` dependents of the
+#: controller (watchdog, fetch, local and remote model hosts), for which no
+#: pass writes a marker, so the controller's READY can never release a stale
+#: queued start of theirs. Not auditd or commissiond: the supporting-only
+#: bootstrap starts those and writes no marker; they stay masked on the
+#: ordinary path and are bound to the controller (`BindsTo=`).
 GRANT_MARKER_UNITS = (
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -293,6 +297,10 @@ GRANT_MARKER_UNITS = (
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
+    "azazel-mio-locald.service",
+    "azazel-mio-remoted.service",
+    "azazel-model-fetchd.service",
+    "azazel-watchdog.service",
 )
 
 
@@ -395,6 +403,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/fetch", "/var/lib/azazel/run/fetch"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-model-fetchd.service"),
         is_artifact_fetcher=True,
         # Its own runtime directory, not the one shared with the operator
         # plane: the socket this service answers on is reachable only by
@@ -433,6 +442,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/remote", "/var/lib/azazel/run/remote"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-remoted.service"),
         is_inference_transport=True,
         # Its own runtime directory. The socket that could send what this
         # node observed is not the socket everything else answers on, and it
@@ -475,6 +485,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         read_write_paths=("/var/lib/azazel/mio", "/var/lib/azazel/run/mio"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-locald.service"),
         is_model_host=True,
         supplementary_groups=("azknowledge-read", "azmission-read"),
         # Its own runtime directory. The socket that could start a process is
@@ -612,6 +623,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         after=("azazel-auditd.service",),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-watchdog.service"),
         rationale=(
             "Can mask and cannot unmask. Masking a unit it does not own is "
             "brokered by the activation controller's socket, so it needs no "

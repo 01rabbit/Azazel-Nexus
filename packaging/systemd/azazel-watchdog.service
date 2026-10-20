@@ -9,6 +9,7 @@
 Description=Azazel-Nexus degradation coordinator
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/capability-model.md
 After=azazel-auditd.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-watchdog.service
 Requires=azazel-activated.service
 
 [Service]

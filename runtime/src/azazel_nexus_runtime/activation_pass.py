@@ -26,9 +26,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
-import os
-import stat
 from typing import Callable, Optional
 
 from azazel_nexus.activation import ActivationLease
@@ -39,12 +36,17 @@ from azazel_nexus.activation_approval_v2 import (
 )
 from azazel_nexus.activation_policy import ActivationPolicy
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
-from azazel_nexus.bootstrap_deployment import BootstrapDeployment, declared_node_digest
+from azazel_nexus.bootstrap_deployment import BootstrapDeployment, declared_node_binding
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.generation import Generation
-from azazel_nexus.observe_baseline import EDGE_CORE_UNIT, verify_observe_baseline
+from azazel_nexus.observe_baseline import (
+    EDGE_CORE_UNIT,
+    evidence_commissioning_digest,
+    verify_observe_baseline,
+)
 
 from .activation_high_water import HighWater
+from .activation_markers import GRANTABLE_UNITS
 from .node_config import DeclaredNode
 
 __all__ = [
@@ -54,21 +56,13 @@ __all__ = [
     "PassInputs",
     "PassProducers",
     "collect_pass_inputs",
-    "commissioning_payload_digest",
     "production_producers",
     "raised_high_water",
-    "read_installed_unit_file",
     "staged_inputs",
 ]
 
 #: The units phase P4 may grant: the five SUPPORTING loop units (§6.2).
-P4_UNIT_SCOPE = frozenset({
-    "azazel-edge-intaked.service",
-    "azazel-edge-probed.service",
-    "azazel-incident-explaind.service",
-    "azazel-knowledge-lited.service",
-    "azazel-mio-entryd.service",
-})
+P4_UNIT_SCOPE = GRANTABLE_UNITS
 
 #: The producers this pass runs, as named in `missing_producers`.
 PRODUCERS = (
@@ -102,8 +96,9 @@ class PassProducers:
     policy: Callable[[], ActivationPolicy]
     #: `require_high_water_for_pass`: None for a node with no floor at all.
     high_water: Callable[[], Optional[HighWater]]
-    #: Bytes of one installed unit file, measured now.
-    unit_file: Callable[[str], bytes]
+    #: `measure_scoped_unit_files`: the scoped units' vendor file bytes,
+    #: measured now and refused on any override or drop-in.
+    unit_files: Callable[[list], dict]
     #: `load_observe_baseline_approval` (keyword arguments).
     approval: Callable[..., ObserveBaselineApproval]
     #: `(policy, ledger) -> (healthy, findings)`.
@@ -144,18 +139,6 @@ def staged_inputs() -> PassInputs:
 
 class _Refused(Exception):
     pass
-
-
-def commissioning_payload_digest(evidence: CommissioningEvidence) -> str:
-    """The observe-baseline `commissioning_digest`: SHA-256 of the signed proposal.
-
-    Derived from the verified evidence on every pass, so neither the
-    generation metadata nor the approval can supply it. The generation
-    publisher and `az-activation request` must use this same derivation.
-    """
-    if type(evidence) is not CommissioningEvidence:
-        raise _Refused("commissioning evidence required")
-    return "sha256:" + sha256(evidence.payload).hexdigest()
 
 
 def _utc(instant: datetime) -> str:
@@ -214,10 +197,8 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         declared, deployment = producers.declared_node(), producers.deployment()
         if type(declared) is not DeclaredNode or type(deployment) is not BootstrapDeployment:
             raise _Refused("declared node and deployment required")
-        digest = declared_node_digest(declared.node_id)
-        if digest != deployment.node_digest:
-            raise _Refused("declared node differs from the deployment declaration")
-        return digest, deployment.security_epoch
+        # The same function az-activation request and install use.
+        return declared_node_binding(deployment, declared.node_id), deployment.security_epoch
     identity = attempt(("node_identity",), node)
 
     # 3. Activation policy, SUPPORTING scope only in P4.
@@ -264,15 +245,15 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             verified = generations.verify(current.number)
             tree = generations.read_tree(verified.number)
             scope = list(active_policy.units)
-            measured = {unit: producers.unit_file(unit) for unit in scope}
+            measured = producers.unit_files(scope)
             verify_observe_baseline(generation=verified, files=tree, units=scope,
                                     unit_files=measured)
             if (verified.commissioning_evidence_binding != result.evidence.binding
                     or verified.commissioning_digest
-                    != commissioning_payload_digest(result.evidence)):
+                    != evidence_commissioning_digest(result.evidence)):
                 raise _Refused("generation is bound to other commissioning evidence")
             # A unit file changed during measurement is a different baseline.
-            if {unit: producers.unit_file(unit) for unit in scope} != measured:
+            if producers.unit_files(scope) != measured:
                 raise _Refused("installed unit files changed during measurement")
             return verified
         generation = attempt(("operational_generation_publisher",), current_generation)
@@ -289,7 +270,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             context = ObserveBaselineContext(
                 node_digest=identity[0], generation=generation.number,
                 generation_digest=generation.digest,
-                commissioning_digest=commissioning_payload_digest(result.evidence),
+                commissioning_digest=evidence_commissioning_digest(result.evidence),
                 commissioning_evidence_binding=result.evidence.binding,
                 policy_digest=active_policy.policy_digest, security_epoch=identity[1],
             )
@@ -332,136 +313,6 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
     return result
 
 
-# -- installed unit files ------------------------------------------------------
-
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_VENDOR = ("usr", "lib", "systemd", "system")
-#: Higher-precedence unit directories: a file of the same name there would be
-#: loaded instead of the measured one. Only the persistent mask (a symlink to
-#: /dev/null, written by the preflight remask) may exist.
-_SHADOWS = (("etc", "systemd", "system"), ("run", "systemd", "system"),
-            ("usr", "local", "lib", "systemd", "system"))
-#: Drop-in locations: any `<unit>.d` directory changes the loaded unit.
-_DROP_INS = _SHADOWS + (("run", "systemd", "system.control"), _VENDOR)
-_UNIT_FILE_LIMIT = 1 << 20
-#: Owner of every component and of the unit file. Private test seam only.
-_OWNER = 0
-
-
-def _walk(root_fd: int, components) -> int | None:
-    fd = os.dup(root_fd)
-    try:
-        for component in components:
-            try:
-                child = os.open(component, _DIR_FLAGS, dir_fd=fd)
-            except FileNotFoundError:
-                return None
-            os.close(fd)
-            fd = child
-        result, fd = fd, None
-        return result
-    finally:
-        if fd is not None:
-            os.close(fd)
-
-
-def _drop_in_names(unit: str) -> tuple[str, ...]:
-    """Every drop-in directory systemd applies to `unit`.
-
-    `<unit>.d`, the type-wide `service.d`, and the dash-prefix forms
-    (`azazel-.service.d`, `azazel-mio-.service.d`, ...).
-    """
-    stem = unit[: -len(".service")]
-    prefixes = [stem[: index + 1] for index, char in enumerate(stem) if char == "-"]
-    return (unit + ".d", "service.d", *(prefix + ".service.d" for prefix in prefixes))
-
-
-def _read_unit_file_at(root_fd: int, unit: str) -> bytes:
-    """Private descriptor seam: measure `usr/lib/systemd/system/<unit>` under root_fd."""
-    if (type(unit) is not str or unit not in P4_UNIT_SCOPE | {EDGE_CORE_UNIT}):
-        raise _Refused("unit outside the activation scope")
-    for components in _SHADOWS:
-        directory = _walk(root_fd, components)
-        if directory is None:
-            continue
-        try:
-            try:
-                info = os.stat(unit, dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if not stat.S_ISLNK(info.st_mode) or os.readlink(unit, dir_fd=directory) != "/dev/null":
-                raise _Refused("an installed unit file is shadowed")
-        finally:
-            os.close(directory)
-    for components in _DROP_INS:
-        directory = _walk(root_fd, components)
-        if directory is None:
-            continue
-        try:
-            for name in _drop_in_names(unit):
-                try:
-                    os.stat(name, dir_fd=directory, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                raise _Refused("a drop-in changes the installed unit")
-        finally:
-            os.close(directory)
-    directory = os.dup(root_fd)
-    try:
-        for component in _VENDOR:
-            info = os.fstat(directory)
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != _OWNER
-                    or info.st_mode & 0o022):
-                raise _Refused("unit directory protection refused")
-            child = os.open(component, _DIR_FLAGS, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        info = os.fstat(directory)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != _OWNER or info.st_mode & 0o022:
-            raise _Refused("unit directory protection refused")
-        fd = os.open(unit, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                     dir_fd=directory)
-        try:
-            before = os.fstat(fd)
-            if (not stat.S_ISREG(before.st_mode) or before.st_uid != _OWNER
-                    or before.st_nlink != 1 or before.st_mode & 0o022
-                    or not 0 < before.st_size <= _UNIT_FILE_LIMIT):
-                raise _Refused("installed unit file protection refused")
-            chunks = bytearray()
-            while len(chunks) <= _UNIT_FILE_LIMIT:
-                part = os.read(fd, _UNIT_FILE_LIMIT + 1 - len(chunks))
-                if not part:
-                    break
-                chunks.extend(part)
-            after = os.fstat(fd)
-            if ((before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                    != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                    or len(chunks) != before.st_size):
-                raise _Refused("installed unit file changed while reading")
-            return bytes(chunks)
-        finally:
-            os.close(fd)
-    finally:
-        os.close(directory)
-
-
-def read_installed_unit_file(unit: str) -> bytes:
-    """The bytes systemd loads for one scoped unit, measured now.
-
-    Reads `/usr/lib/systemd/system/<unit>` (the Debian 13 `/lib/systemd/system`
-    of the install profile, through `/usr` so no link is followed) and refuses
-    when a higher-precedence directory holds anything for it but the
-    persistent mask, or when any drop-in directory exists for it. It does not
-    ask systemd for the loaded fragment; a generator or transient unit is
-    outside this check.
-    """
-    root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        return _read_unit_file_at(root, unit)
-    finally:
-        os.close(root)
-
-
 def production_producers(*, commissioning_evidence: Callable[[], CommissioningEvidence]) -> PassProducers:
     """The fixed host readers. Imported lazily by the controller after narrowing."""
     from azazel_nexus.activation_policy import load_activation_policy
@@ -470,6 +321,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
 
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
+    from .activation_unit_files import measure_scoped_unit_files
     from .node_config import load_declared_node
 
     return PassProducers(
@@ -478,7 +330,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         deployment=load_bootstrap_deployment,
         policy=load_activation_policy,
         high_water=require_high_water_for_pass,
-        unit_file=read_installed_unit_file,
+        unit_files=measure_scoped_unit_files,
         approval=load_observe_baseline_approval,
         health=lambda policy, ledger: collect_node_health(policy=policy, ledger=ledger),
         raise_high_water=raise_high_water,

@@ -35,12 +35,24 @@ import stat
 from typing import Iterable
 
 __all__ = [
+    "GRANTABLE_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
     "grant_marker_path",
     "reset_grant_markers",
     "write_grant_markers",
 ]
+
+#: The only units a pass may grant and mark in phase P4: the five SUPPORTING
+#: loop units (§6.2). The single source for the pass's scope check, its
+#: tripwire and this writer; edge-core joins in P5.
+GRANTABLE_UNITS = frozenset({
+    "azazel-edge-intaked.service",
+    "azazel-edge-probed.service",
+    "azazel-incident-explaind.service",
+    "azazel-knowledge-lited.service",
+    "azazel-mio-entryd.service",
+})
 
 #: The fixed marker directory; `hardening.py` renders the same path into
 #: each governed loop unit's `ConditionPathExists=`.
@@ -141,6 +153,8 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
     names = sorted({_check_unit(unit) for unit in units})
     if not names:
         return ()
+    if not set(names) <= GRANTABLE_UNITS:
+        raise GrantMarkerRefused("grant marker for a unit this phase never grants")
     parent = _open_parent(root)
     if parent is None:
         raise GrantMarkerRefused("grant marker directory unavailable")

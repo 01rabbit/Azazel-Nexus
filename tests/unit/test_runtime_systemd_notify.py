@@ -261,3 +261,64 @@ def test_runtime_ready_callback_is_enabled_only_for_host_root(monkeypatch):
 
     monkeypatch.setattr(systemd_notify, "ROOT", Path("/tmp/relocated"))
     assert systemd_notify.runtime_ready_callback() is None
+
+
+def _short_socket_path():
+    directory = tempfile.mkdtemp(prefix="azn-", dir="/tmp")
+    return directory, directory + "/n"
+
+
+def test_barrier_waits_until_the_receiver_has_closed_the_passed_descriptor():
+    import array
+    import os
+    import threading
+
+    directory, address = _short_socket_path()
+    receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    receiver.bind(address)
+    seen = []
+
+    def manager():
+        fds = array.array("i")
+        message, ancillary, _flags, _addr = receiver.recvmsg(64, socket.CMSG_LEN(fds.itemsize))
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                fds.frombytes(data[:fds.itemsize])
+        seen.append((message, len(fds)))
+        for fd in fds:
+            os.close(fd)  # "processed": the barrier's read end now sees EOF
+
+    thread = threading.Thread(target=manager)
+    thread.start()
+    try:
+        systemd_notify._barrier(address, 5.0)
+    finally:
+        thread.join(5)
+        receiver.close()
+        os.unlink(address)
+        os.rmdir(directory)
+    assert seen == [(b"BARRIER=1", 1)]
+
+
+def test_barrier_times_out_when_the_descriptor_is_kept():
+    import os
+
+    directory, address = _short_socket_path()
+    receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    receiver.bind(address)
+    try:
+        # Nobody receives: the descriptor stays queued, so no EOF arrives.
+        with pytest.raises(UnitOperationFailed, match="timed out"):
+            systemd_notify._barrier(address, 0.2)
+    finally:
+        receiver.close()
+        os.unlink(address)
+        os.rmdir(directory)
+
+
+def test_barrier_requires_the_fixed_context(monkeypatch):
+    monkeypatch.setattr(systemd_notify, "ROOT", Path("/tmp/image"))
+    monkeypatch.setattr(systemd_notify, "_barrier",
+                        lambda *_args: pytest.fail("barrier sent outside systemd"))
+    with pytest.raises(UnitOperationFailed):
+        systemd_notify.notify_barrier()

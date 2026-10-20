@@ -73,7 +73,7 @@ from .commissioning_input import load_commissioning_evidence
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
-from .activation_markers import reset_grant_markers, write_grant_markers
+from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
 from .units import DbusUnitManager, UnitManager, UnitOperationFailed
 
 __all__ = [
@@ -459,22 +459,15 @@ _ALL_PRODUCERS = (
     "operational_generation_publisher", "activation_approval_loader", "node_health",
 )
 
-#: The units a P4 pass may grant (the five SUPPORTING loop units). Kept here as
-#: well as in `activation_pass` so the tripwire does not depend on importing it.
-_P4_GRANTABLE = frozenset({
-    "azazel-edge-intaked.service", "azazel-edge-probed.service",
-    "azazel-incident-explaind.service", "azazel-knowledge-lited.service",
-    "azazel-mio-entryd.service",
-})
-
-
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
     """Remove every grant marker, mask every governed unit, then raise."""
     failures: list[str] = []
     try:
         reset_grant_markers(root)
-    except Exception as exc:  # noqa: BLE001 - recorded in the raised message
+    except Exception as exc:  # noqa: BLE001 - recorded, and the remask still runs
         failures.append(f"grant_markers: {type(exc).__name__}")
+        print("az-activated could not remove grant markers during emergency narrowing",
+              file=sys.stderr)
     for definition in CORE_UNITS:
         try:
             _mask_and_confirm_inactive(manager, definition.name)
@@ -560,7 +553,7 @@ def _run_once(
     )
     granted = set(outcome.granted)
     if granted and (lease is None or not healthy or lease.units is None
-                    or not granted <= lease.units or not granted <= _P4_GRANTABLE):
+                    or not granted <= lease.units or not granted <= GRANTABLE_UNITS):
         # A grant without verified lease and health, or outside the lease's
         # scope, means a change silently supplied authority.
         _emergency_narrow(
@@ -578,12 +571,16 @@ def _run_once(
                                                skew_seconds=inputs.skew_seconds)
             high_water = "raised"
             # A floor event: a node with this history refuses a missing file.
+            # Nested like az-activation's floor events (`FLOOR_EVENTS`), so
+            # a later install or recovery never re-initializes below it.
             daemon.ledger.append({
                 "event_type": "activation.high_water_raised",
-                "security_epoch": floor.security_epoch,
-                "approval_seq": floor.approval_seq,
-                "generation": floor.generation,
-                "time_floor": floor.time_floor,
+                "high_water": {
+                    "security_epoch": floor.security_epoch,
+                    "approval_seq": floor.approval_seq,
+                    "generation": floor.generation,
+                    "time_floor": floor.time_floor,
+                },
                 "occurred_at": now, "actor": actor,
             })
         except Exception:  # noqa: BLE001 - an unraised floor admits nothing
@@ -1003,10 +1000,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # with Requires=/After= on it fails as a dependency. READY is sent only
     # after the pass, its markers and its record are complete; a refused
     # notification leaves those units unstarted, which is the safe direction.
+    # The process exits right after READY, so wait (bounded) for systemd to
+    # process it first (BARRIER=1); otherwise the exit may be seen first.
     try:
-        from .systemd_notify import notify_ready
+        from . import systemd_notify
 
-        notify_ready()
+        systemd_notify.notify_ready()
+        systemd_notify.notify_barrier()
     except Exception:  # noqa: BLE001 - startup stays unsuccessful, nothing widens
         print("az-activated readiness notification unavailable", file=sys.stderr)
     return 0

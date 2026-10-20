@@ -910,3 +910,108 @@ def test_request_refuses_a_shared_output_directory(published, tmp_path):
     linked.symlink_to(tmp_path)
     assert published.request(out=str(linked / "request.json"))[0] == 1
     assert not (tmp_path / "request.json").exists()
+
+
+# -- P4: the pass consumes exactly what az-activation produced -----------------
+
+
+def test_a_pass_floor_event_blocks_low_reinitialization_and_low_recovery(published):
+    """`activation.high_water_raised` (the pass) is a floor like install's own."""
+    assert "activation.high_water_raised" in cli.FLOOR_EVENTS
+    published.ledger.append({
+        "event_type": "activation.high_water_raised",
+        "high_water": {"security_epoch": 2, "approval_seq": 9, "generation": 1,
+                       "time_floor": NOW},
+        "occurred_at": NOW, "actor": "azazel-activated"})
+    older, older_sig = published.approved(seq=6, approval_id="approval-6")
+    code, out = published.install(older, older_sig)
+    assert code == 1 and "recovery procedure" in out
+    (published.state / "activation").mkdir(mode=0o700, exist_ok=True)
+    retained = published.state / "activation/high-water.json.retained"
+    retained.write_bytes(encode_high_water(HighWater(0, 0, 0, "2027-01-01T00:00:00Z")))
+    retained.chmod(0o600)
+    code, out = published.install(older, older_sig, "RECOVER", recover="high-water.json.retained")
+    assert code == 1 and "sequence below the local floor" in out
+
+
+def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(node, monkeypatch):
+    """End to end on one temporary root: the CLI's outputs are the pass's inputs.
+
+    generation-publish -> request -> operator_sign (ephemeral key) -> install ->
+    one controller pass with the real unit-file, high-water and approval
+    readers; it grants exactly the requested units and marks exactly them.
+    """
+    from azazel_nexus.activation import CORE_UNITS, UnitState
+    from azazel_nexus.activation_approval_v2 import verify_observe_baseline_approval
+    from azazel_nexus.activation_store import _read_at
+    from azazel_nexus_runtime import activated, activation_markers
+    from azazel_nexus_runtime.activation_pass import PassProducers
+    from azazel_nexus_runtime.units import RecordingUnitManager
+
+    requested = LOOP[:3]
+    assert node.publish()[0] == 0
+    code, payload, _ = node.request(units=",".join(requested))
+    assert code == 0
+    signature, _facts = operator_sign.sign(
+        purpose="activation", payload=payload,
+        expect_payload_sha256=hashlib.sha256(payload).hexdigest(),
+        seed=bytes(node.key), expect_public=bytes(node.key.verify_key).hex())
+    code, out = node.install(payload, signature)
+    assert code == 0, out
+
+    def approval(**kwargs):
+        fd = os.open(node.approvals, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            stored, stored_signature = _read_at(fd, owner=os.getuid())
+        finally:
+            os.close(fd)
+        return verify_observe_baseline_approval(
+            trust=node.trust, payload=stored, signature=stored_signature, **kwargs)
+
+    producers = PassProducers(
+        commissioning_evidence=lambda: node.evidence,
+        declared_node=lambda: node.node,
+        deployment=lambda: node.declaration,
+        policy=lambda: node.policy,
+        high_water=hw.require_high_water_for_pass,
+        unit_files=scoped_unit_files.measure_scoped_unit_files,
+        approval=approval,
+        health=lambda policy, ledger: (True, (("state_capacity", "ok"),)),
+        raise_high_water=hw.raise_high_water,
+    )
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
+    (node.root / "run/azazel-activation").mkdir(parents=True)
+    (node.root / "run/azazel-activation").chmod(0o755)
+    manager = RecordingUnitManager(d.name for d in CORE_UNITS)
+    for definition in CORE_UNITS:
+        manager.unmask_and_enable(definition.name)
+
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+
+    assert sorted(outcome.granted) == sorted(requested)
+    for definition in CORE_UNITS:
+        expected = UnitState.ENABLED if definition.name in requested else UnitState.MASKED
+        assert manager.state(definition.name) is expected, definition.name
+    granted = node.root / "run/azazel-activation/granted"
+    assert sorted(p.name for p in granted.iterdir()) == sorted(requested)
+    events = node.events()
+    assert events[-1]["event_type"] == "activation.inputs_incomplete"
+    assert set(events[-1]["observed_inputs"]["producers"].values()) == {"verified"}
+    assert any(e["event_type"] == "activation.high_water_raised" for e in events)
+    assert _high_water(node)["approval_seq"] == 5
+
+    # A drop-in placed afterwards (the same reader az-activation uses) withholds
+    # everything on the next pass and leaves no marker.
+    drop_in = node.root / "etc/systemd/system/azazel-mio-entryd.service.d"
+    drop_in.mkdir(parents=True)
+    for path in (node.root / "etc", node.root / "etc/systemd",
+                 node.root / "etc/systemd/system", drop_in):
+        path.chmod(0o755)
+    (drop_in / "override.conf").write_text("[Service]\nExecStartPre=/bin/true\n")
+    outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
+                                  actor="azazel-activated", producers=producers)
+    assert outcome.granted == ()
+    assert not granted.exists()
+    assert node.events()[-1]["missing_producers"][-1] == "operational_generation_publisher"
