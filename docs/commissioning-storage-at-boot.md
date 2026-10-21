@@ -69,6 +69,11 @@ the fallback.
 - **Diagnostic only.** The pass may record a fixed label
   `commissioning_storage: luks_backed | not_luks_backed` in its observed inputs;
   it never feeds the decision and carries no device or path.
+  **Implemented (#262):** `_collect_input_status` in
+  `runtime/src/azazel_nexus_runtime/activated.py` reads
+  `hil_preflight.luks_backed` for `/etc/azazel/commissioning` after the
+  decision and records it in `activation.inputs_incomplete`; a reader that
+  raises records no label rather than a third value.
 
 ### Phases
 
