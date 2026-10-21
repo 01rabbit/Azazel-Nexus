@@ -21,6 +21,14 @@ non-canonical bytes and unsorted lists are refused, so `policy_digest` names
 exactly one policy. The file is exactly `json.dumps(..., sort_keys=True,
 separators=(",", ":"))` in UTF-8 with no trailing newline; an editor that
 appends one makes the policy refused, deliberately.
+
+*One optional field (#251 M-1).* `require_clock_synchronized` may be absent,
+`false` or `true`. Absent or `false` changes nothing; `true` makes the pass's
+`trusted_clock` producer also require proof that the OS clock was
+synchronized in this boot. The field is kept exactly as written (absent
+stays absent), so an existing policy keeps its bytes and its digest. The
+schema stays v1: a reader from before this field refuses any policy that
+carries it (closed shape), so an older package never ignores a `true`.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import os
+from typing import Optional
 
 from .activation_store import _approval_directory, _private_directory, _read_file_at
 from .operator_store import _unique_object
@@ -74,6 +83,9 @@ _FIELDS = {
     "schema", "operators", "max_lease_seconds", "units",
     "state_floors", "resource_floors", "max_clock_skew_seconds",
 }
+#: Fields a policy may omit (#251 M-1). Absent and `false` both mean "not
+#: required": the pass then behaves exactly as before the field existed.
+_OPTIONAL_FIELDS = {"require_clock_synchronized"}
 
 
 def _positive(value) -> bool:
@@ -105,6 +117,9 @@ class ActivationPolicy:
     resource_floors: tuple[tuple[str, int], ...]
     max_clock_skew_seconds: int
     policy_digest: str
+    #: None when the file omits the field. Only `True` requires the pass to
+    #: prove that the clock was synchronized (`clock_synchronization_required`).
+    require_clock_synchronized: Optional[bool] = None
 
     def __post_init__(self):
         operators, units = self.operators, self.units
@@ -123,6 +138,9 @@ class ActivationPolicy:
         if (type(self.max_clock_skew_seconds) is not int
                 or not 0 <= self.max_clock_skew_seconds <= MAX_CLOCK_SKEW_SECONDS):
             raise ApprovalRefused("activation policy clock skew refused")
+        if (self.require_clock_synchronized is not None
+                and type(self.require_clock_synchronized) is not bool):
+            raise ApprovalRefused("activation policy clock synchronization refused")
         for floors, names in ((self.state_floors, _STATE_FLOORS),
                               (self.resource_floors, _RESOURCE_FLOORS)):
             if (type(floors) is not tuple
@@ -135,6 +153,11 @@ class ActivationPolicy:
                 or self.policy_digest != "sha256:" + sha256(encode_activation_policy(self)).hexdigest()):
             raise ApprovalRefused("activation policy digest refused")
 
+    @property
+    def clock_synchronization_required(self) -> bool:
+        """True only for an explicit `"require_clock_synchronized":true`."""
+        return self.require_clock_synchronized is True
+
     def state_floor_values(self) -> dict[str, int]:
         return dict(self.state_floors)
 
@@ -143,8 +166,12 @@ class ActivationPolicy:
 
 
 def encode_activation_policy(policy) -> bytes:
-    """The one canonical byte form; `policy_digest` is SHA-256 over it."""
-    return json.dumps({
+    """The one canonical byte form; `policy_digest` is SHA-256 over it.
+
+    An absent `require_clock_synchronized` is not written, so a policy from
+    before the field encodes to exactly the bytes it always did.
+    """
+    document = {
         "schema": ACTIVATION_POLICY_SCHEMA,
         "operators": list(policy.operators),
         "max_lease_seconds": policy.max_lease_seconds,
@@ -152,7 +179,10 @@ def encode_activation_policy(policy) -> bytes:
         "state_floors": dict(policy.state_floors),
         "resource_floors": dict(policy.resource_floors),
         "max_clock_skew_seconds": policy.max_clock_skew_seconds,
-    }, sort_keys=True, separators=(",", ":")).encode()
+    }
+    if policy.require_clock_synchronized is not None:
+        document["require_clock_synchronized"] = policy.require_clock_synchronized
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
 
 
 def decode_activation_policy(raw: bytes) -> ActivationPolicy:
@@ -161,7 +191,8 @@ def decode_activation_policy(raw: bytes) -> ActivationPolicy:
         if type(raw) is not bytes or not 0 < len(raw) <= _LIMIT:
             raise ApprovalRefused("activation policy size refused")
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
-        if type(document) is not dict or set(document) != _FIELDS:
+        if (type(document) is not dict or not _FIELDS <= set(document)
+                or not set(document) <= _FIELDS | _OPTIONAL_FIELDS):
             raise ApprovalRefused("activation policy fields refused")
         if document["schema"] != ACTIVATION_POLICY_SCHEMA:
             raise ApprovalRefused("unsupported activation policy schema")
@@ -177,6 +208,7 @@ def decode_activation_policy(raw: bytes) -> ActivationPolicy:
             resource_floors=_floors(document["resource_floors"], _RESOURCE_FLOORS),
             max_clock_skew_seconds=document["max_clock_skew_seconds"],
             policy_digest=digest,
+            require_clock_synchronized=document.get("require_clock_synchronized"),
         )
         if encode_activation_policy(policy) != raw:
             raise ApprovalRefused("activation policy is not canonical")
