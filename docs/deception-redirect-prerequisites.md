@@ -1512,3 +1512,5 @@ review of #274:
   restarted (or the clock passes the record's time again). That fails
   closed, so it is an availability problem, not an exposure; a monotonic or
   boot-relative stamp would avoid it.
+
+The grant phase is designed in [granting the exposure tier](deception-exposure-grant.md) (proposed).
