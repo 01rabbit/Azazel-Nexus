@@ -114,8 +114,10 @@ def test_diagnostic_audit_failure_leaves_units_masked(tmp_path, monkeypatch):
         return original(ledger, event)
 
     monkeypatch.setattr(AuditLedger, "append", append)
-    with pytest.raises(AuditUnavailable):
+    # #251 L-2: the unrecorded pass is withdrawn (markers, remask), then fails.
+    with pytest.raises(RuntimeError, match="pass record could not be appended") as raised:
         activated._run_once(manager=manager, root=tmp_path, now=NOW, actor="test")
+    assert type(raised.value.__context__) is AuditUnavailable
     assert all(manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert all(action == "mask" for action, _ in manager.calls)
 
