@@ -50,6 +50,11 @@ def test_controller_requires_explicit_readiness_and_kills_its_control_group():
         # requirement, so locked or absent storage cannot stop the controller.
         "etc-azazel-commissioning.mount",
         "var-lib-azazel-secrets.mount",
+        # The same ordering-only rule for the mission storage (#251 M-7) and
+        # the passive time-sync target (#251 M-1), which waits for nothing
+        # unless a wait-sync service pulls it in.
+        "data.mount",
+        "time-sync.target",
     ]
     assert not any(
         key in settings for key in ("Requires", "BindsTo", "Wants")

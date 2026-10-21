@@ -402,8 +402,9 @@ pass keeps `lease=None`.
   recording the decision. A unit without its marker is skipped
   (`unmet condition check`) rather than started; with it, it starts normally
   (both VM-confirmed with the same harmless test units). The marker grants
-  nothing by itself: absence only withholds, it is cleared at every boot, the
-  controller still never starts a unit, and masking remains for the next boot.
+  nothing by itself: absence only withholds, it is cleared at every kernel
+  boot (soft-reboot: §10.2, L-7), the controller still never starts a unit,
+  and masking remains for the next boot.
   This replaces default 9's fallback (reusing the bootstrap reload), which the
   VM showed would not work. The test units were removed afterwards; this is
   VM rehearsal, not hardware evidence.
@@ -986,3 +987,183 @@ success.
   belongs to the installed systemd unit closure the bootstrap context pins
   (`unit_closure_digest`), so it is not removed without a VM run of both
   paths with it read-only. `packaging/systemd` is therefore not re-rendered.
+
+## 10. Review #251: ordering and residual risks
+
+The rest of [#251](https://github.com/01rabbit/Azazel-Nexus/issues/251)
+after §8.2 and §9. Two unit files gain `After=` lines and nothing else;
+everything below that is not an ordering change is a residual risk, stated
+rather than solved. No authority, approval field, flag, environment variable
+or unit operation is added, and no refusal becomes a success.
+
+### 10.1 Ordering (M-7, M-1, L-9)
+
+- **M-7: the controller is `After=data.mount`**
+  (`hardening.MISSION_STORAGE_MOUNTS`). The pass's node-health producer
+  checks the `resources` floor (`activation_health` →
+  `bootstrap_resources.require_bootstrap_resources` →
+  `resource_assessment.assess_resources`), and its `mission_available_mib`
+  opens `/data`, refuses a `/data` on the root filesystem, and compares the
+  free space with the policy's `min_mission_available_mib`. Without the
+  ordering a `nofail` `/data` mount could race the pass; measured before the
+  mount, the floor refuses and every unit is withheld for that boot
+  (fail-closed, an availability loss). The rule is #242's for the
+  commissioning storage (`COMMISSIONING_STORAGE_MOUNTS`): `After=` only,
+  never `Requires=`, `Wants=`, `BindsTo=` or `RequiresMountsFor=`, and no
+  controller path setting below `/data` (which would add an implicit
+  `RequiresMountsFor=`). An absent, locked or failed `/data` therefore never
+  stops the controller: it still remasks, and its pass refuses the floor.
+  While a `/data` mount job is pending, the controller waits for it, up to
+  that job's timeout. `After=` on a mount that does not exist has no effect.
+  How an encrypted mission volume is opened at boot is outside #242 and not
+  decided. Tests: `tests/unit/test_mission_storage_ordering.py`
+  (declarations only; the boot order itself is for the VM).
+- **M-1: the controller is `After=time-sync.target`**
+  (`hardening.TIME_SYNC_TARGET`). `time-sync.target` is a passive target:
+  the line orders the controller after it only when an enabled unit pulls it
+  in and holds it until the clock is synchronized (a wait-sync service such
+  as `systemd-time-wait-sync.service`, which this package neither ships nor
+  enables). Otherwise it orders nothing, so **the controller does not wait
+  for synchronization** and the residual risk in §10.2 stays. No `Wants=` or
+  `Requires=` is added, so the line never pulls the target in by itself, and
+  no packaged unit orders `time-sync.target` after the controller. An
+  administrator who enables a wait-sync service makes the controller (and
+  every unit ordered after it, the selected bootstrap path included) wait
+  until the clock is synchronized; on a node with no time source that may be
+  indefinitely. That wait holds every governed unit back rather than starting
+  one, and its length must be observed on the VM before anyone relies on it.
+- **L-9: the watchdog is `After=azazel-activated.service`.** It already
+  `Requires=` the controller and carries the marker condition, but was the
+  only `Requires=` dependent without the ordering, so its condition could be
+  evaluated in parallel with the controller instead of after its marker
+  reset and READY. No existing design depends on the watchdog running before
+  or beside the controller: the supporting-only bootstrap starts only auditd
+  and commissiond (`BOOTSTRAP_UNITS`), the bootstrap's loaded-unit inspection
+  reads only those two units, and no pass writes the watchdog's marker
+  (`write_grant_markers` refuses any unit outside `GRANTABLE_UNITS`), so it
+  still never starts on either path. The ordering changes no start; it
+  makes the watchdog like the fetch service, the model hosts and the loop
+  units. The watchdog is outside `GRANTABLE_UNITS`, so the §8.2 content and
+  loaded-unit checks do not cover it; the hardening and ordering tests do.
+
+`packaging/systemd` is re-rendered (`tools/render_units.py`): the controller
+and the watchdog files change. Like any re-render, an older install differs
+from them until it is reinstalled. A generation hashes only the policy's
+units, and neither file is one of them.
+
+### 10.2 Residual risks
+
+- **M-1: a node without a trustworthy clock can pass an expired approval.**
+  The approval is valid when `granted_at ≤ now < expires_at` with `now` the
+  OS clock at the pass, and the only lower bound on that clock is the high
+  water's `now ≥ time_floor − skew` (§3.5), where `time_floor` is at most
+  the clock reading of the last verified pass. A node without an RTC, or one
+  whose clock has not been synchronized yet at the pass, runs behind real
+  time; an approval that has already expired in real time is then accepted
+  while the node's clock is still before its `expires_at` and not below the
+  floor less the skew. `After=time-sync.target` (§10.1) does not close this:
+  with no wait-sync service it waits for nothing, and even with one it orders
+  the start, it does not prove that the clock was synchronized. Options, none
+  adopted here (owner decision):
+  - require the kernel's synchronized state (`NTPSynchronized`, or
+    `adjtimex` without `STA_UNSYNC`) as a pass producer. Every node without
+    a time source (offline, the intended field case) then refuses every
+    boot;
+  - enable a wait-sync service (`systemd-time-wait-sync.service`, or
+    `chrony-wait.service` with chrony) so that the ordering takes effect:
+    the same availability cost, and still not a check inside the pass;
+  - shorter approvals (`max_lease_seconds`) narrow the window; an RTC with a
+    battery narrows it further;
+  - accept it as local trust, like the high water itself (§3.5).
+- **M-2: a grant lasts for the boot.** Expiry and revocation are checked
+  only by a pass. Once a pass has granted, the unit's marker stays under
+  `/run/azazel-activation/granted/` until the boot ends, the controller has
+  no `StopUnit`, and nothing re-reads the approval, the operator trust or the
+  policy during the boot. An approval that expires, an operator key that is
+  revoked or a policy that is narrowed after the pass therefore stops nothing
+  that is running and does not withhold a restart of a granted unit in the
+  same boot (its own `Restart=` or an operator's `systemctl start`, which
+  still finds its marker). It takes effect at the next boot's pass, which
+  refuses and remasks. Stopping a unit at once is an operator action
+  (`systemctl stop` and `mask`), outside activation.
+- **M-4: what a generation does not bind.** The observe-baseline tree
+  (§3.2, §8.1) binds the vendor unit files of the policy's units and, when
+  edge-core is in scope, the Edge package and its extracted binary and
+  redirect policy. It does not bind:
+  - the support daemons' executables and their wrappers: the fixed
+    `/usr/libexec/azazel/az-*` entrypoints staged by
+    `tools/stage_runtime_entrypoints.py` that the unit files' `ExecStart=`
+    name;
+  - the Python runtime behind them: the interpreter, the environment and the
+    installed `azazel_nexus` and `azazel_nexus_runtime` packages, the
+    controller's own code included;
+  - the preflight unit `azazel-edge-probe-preflight.service` (ungoverned and
+    outside `ACTIVATION_UNIT_ALLOWLIST`, so never measured), whose result the
+    pass reads as Edge health (§8.1);
+  - grantable unit files outside the policy: §8.2 checks their content, but
+    their bytes are not hashed.
+
+  Replacing any of them after the operator signed is not detected by the
+  pass; the unit files and the Edge package are. This is root-level local
+  trust, like the *pass → launch* window of §8.1.
+- **M-5 (要 VM 確認): a second pass in the same boot.** The once-claim
+  `/run/azazel-nexus-bootstrap/controller-used` is written only by the
+  selected bootstrap path, so on the ordinary path the controller can be
+  started again after its first pass exited (an operator's
+  `systemctl start`). The second pass removes every marker and remasks every
+  governed unit first. A unit the first pass granted and that is now running
+  stays running (no `StopUnit`), so its remask fails with `masked unit has no
+  confirmed inactive state`, and the pass is expected to end in the
+  emergency narrowing or `RollbackFailed` and exit 1 rather than grant. That
+  is fail-closed (nothing new starts; a granted unit that stops cannot
+  restart this boot without a marker) but costs availability. The exact
+  outcome on systemd 257 has to be observed on the VM.
+- **M-6: Edge health is trust in `azprobe`** (§8.1). The probe result is
+  accepted when it is owned by `azprobe` (or root) and not group or world
+  writable, so
+  whoever controls that account (or the preflight's `ExecStart=`, M-4) can
+  write a fresh, healthy result for this boot. That admits nothing by
+  itself: edge-core is granted only by a pass with every producer verified,
+  an operator-signed approval naming edge-core over a generation that pins
+  the package, and a probe result naming exactly that package, which the
+  pass measures itself. A forged result can admit the signed package before
+  it is actually healthy, never another one, and never without the signed
+  lease.
+- **L-5: the watchdog's fence store belongs to `azwatch`.** The
+  `watchdog_fences` health check (`activation_health.read_watchdog_fences`)
+  requires every path component above `/var/lib/azazel/state/watchdog` to be
+  root-owned and not group or world writable, and the store directory and
+  `fences.json` to be owned by `azwatch`. A missing `fences.json` is the
+  watchdog's own "never fenced" state. So `azwatch` (or root) can remove its
+  fences, and the health check then stops withholding; it cannot satisfy any
+  other producer or the lease. Like M-6, a compromised service account can
+  undo a narrowing it owns, not create a grant.
+- **L-7 (推測, 要 VM 確認): soft-reboot keeps `/run`.** `systemctl
+  soft-reboot` restarts userspace without a kernel boot, and `/run` survives
+  it. The packaged tmpfiles rules create `/run/azazel-activation` and
+  `/run/azazel-nexus-bootstrap` with `d` lines (no removal), so the grant
+  markers and the once-claim survive too; §5's "cleared at every boot" holds
+  for a kernel boot only. When the next boot's controller runs the ordinary
+  pass, nothing changes: it removes the markers before any decision, and
+  every marker unit waits for its READY (`After=`). Not covered: a boot in
+  which the ordinary pass does not run before the dependents are evaluated,
+  for example a surviving once-claim that makes the controller's condition
+  fail (systemd treats a condition-skipped unit as not failed, so its
+  `Requires=` dependents still run their jobs), or the selected bootstrap
+  path, which does not reset markers. There a marker written by an earlier
+  boot's pass could admit a queued start of a unit that pass left enabled.
+  Whether this happens on systemd 257, and whether to clear the markers at
+  every userspace start (a tmpfiles removal rule, or a reset on the
+  bootstrap path), is for the VM and the owner. The probe result is not
+  affected: it is bound to the boot id, which a soft-reboot also changes.
+- **L-8: the generation store is read without owner or link checks.**
+  `GenerationStore.read` and `read_tree` follow links and do not check
+  owners or modes under `/var/lib/azazel/generations`. Every byte read is
+  re-hashed (`verify`) and compared with the digest the operator signed, so
+  a substituted tree or metadata cannot produce a lease for content other
+  than the signed one; the most it can cause is a refusal (fail-closed, a
+  denial of service by someone who can already write there as root).
+
+The other open points of #251 (a regular path to raise the declared epoch,
+the optional `commissioning_storage` diagnostic label) are not addressed
+here.

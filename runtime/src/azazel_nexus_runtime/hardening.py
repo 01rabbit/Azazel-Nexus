@@ -325,6 +325,35 @@ COMMISSIONING_STORAGE_MOUNTS = (
 )
 
 
+#: The mission storage mount the controller is ordered after (#251 M-7). The
+#: pass's node-health producer checks the `resources` floor
+#: (`activation_health` -> `bootstrap_resources.require_bootstrap_resources`
+#: -> `resource_assessment.assess_resources`), whose `mission_available_mib`
+#: opens `/data`, refuses when it is not a filesystem separate from `/`, and
+#: compares its free space with the policy's `min_mission_available_mib`.
+#: Without this ordering a `nofail` /data mount could race the pass: a
+#: measurement before the mount refuses (fail-closed, but every unit stays
+#: withheld for that boot). Ordering only, as for the commissioning storage:
+#: never `Requires=`, `Wants=`, `BindsTo=` or `RequiresMountsFor=`, and no
+#: controller path setting below /data (which would add an implicit
+#: `RequiresMountsFor=`), so an absent, locked or failed /data cannot stop the
+#: controller; the pass then refuses the resources floor. How an encrypted
+#: mission volume is opened at boot is outside #242 and undecided.
+MISSION_STORAGE_MOUNTS = ("data.mount",)
+
+
+#: Passive ordering on time synchronization (#251 M-1). `time-sync.target` is
+#: a passive target: `After=` on it waits only when some enabled unit pulls it
+#: in and holds it until the clock is synchronized (a wait-sync service such
+#: as `systemd-time-wait-sync.service`, not enabled by this package). Without
+#: one it orders nothing, so the controller does **not** wait for
+#: synchronization and a node without a trustworthy clock can still pass an
+#: approval that has expired in real time (docs/activation-observe-baseline.md
+#: §10.2). Ordering only: no `Wants=`/`Requires=`, so it never pulls the target
+#: in by itself.
+TIME_SYNC_TARGET = "time-sync.target"
+
+
 #: The accounts the installer creates. `root` is not among them: it exists.
 SYSTEM_ACCOUNTS = (
     "azcommission",
@@ -350,7 +379,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus activation controller",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         after=("systemd-tmpfiles-setup.service", "sysinit.target", "basic.target",
-               *COMMISSIONING_STORAGE_MOUNTS),
+               *COMMISSIONING_STORAGE_MOUNTS, *MISSION_STORAGE_MOUNTS,
+               TIME_SYNC_TARGET),
         address_families=("AF_UNIX", "AF_NETLINK"),
         read_write_paths=(
             "/var/lib/azazel",
@@ -636,7 +666,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/var/lib/azazel/run/watchdog",
             "/var/lib/azazel/state/watchdog",
         ),
-        after=("azazel-auditd.service",),
+        # After the controller like every other `Requires=` dependent
+        # (#251 L-9): its marker condition is then evaluated only after the
+        # controller has reset the markers and sent READY. No pass writes
+        # this marker, and the supporting-only bootstrap starts only auditd
+        # and commissiond, so ordering changes no start.
+        after=("azazel-auditd.service", ACTIVATION_CONTROLLER_UNIT),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-watchdog.service"),
         rationale=(

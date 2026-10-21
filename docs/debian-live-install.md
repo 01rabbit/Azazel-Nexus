@@ -481,6 +481,14 @@ must be plain LUKS (not LVM on LUKS): `luks_backed` in
 device (`st_dev`) and accepts only a `CRYPT-LUKS` prefix, which an LVM volume
 on top of LUKS does not carry.
 
+The controller is also ordered `After=data.mount`, under the same
+ordering-only rule (#251 M-7): its pass measures the free space of `/data`
+against the policy's `min_mission_available_mib`, and a `/data` mounted after
+the pass would refuse that boot. A `/data` that is absent, still locked or
+failed does not stop the controller; the pass refuses the resources floor
+([observe-baseline activation §10](activation-observe-baseline.md#10-review-251-ordering-and-residual-risks)).
+How an encrypted `/data` is opened at boot is not decided here.
+
 ## Adding a future physical-install target
 
 Hardware installation is not limited by the Python implementation to amd64;
