@@ -230,13 +230,21 @@ def _attempt(unit, account):
 
 
 def test_hg02_expects_every_non_root_governed_daemon_and_not_the_root_helper():
-    """The runbook never runs as root; a pre-P1 record (no azdecoy) is incomplete."""
+    """The runbook never runs as root; a pre-P1 record (no azdecoy) is incomplete.
+
+    Since #196 (a) the namespace unit is a second root unit; like the helper
+    it is not an HG-02 subject, and a record with an attempt for either is
+    refused (the accounts are matched exactly)."""
     from azazel_nexus.activation import CORE_UNITS
 
     non_root = [d for d in CORE_UNITS if d.account != "root"]
-    assert [d.name for d in CORE_UNITS if d.account == "root"] == ["azazel-decoy-netd.service"]
+    assert [d.name for d in CORE_UNITS if d.account == "root"] == [
+        "azazel-decoy-nsd.service", "azazel-decoy-netd.service"]
     assert _hg02([_attempt(d.name, d.account) for d in non_root]) == []
     before_p1 = [_attempt(d.name, d.account) for d in non_root if d.account != "azdecoy"]
     assert _hg02(before_p1) != []
     with_root = [_attempt(d.name, d.account) for d in CORE_UNITS]
     assert _hg02(with_root) != []
+    for root_unit in ("azazel-decoy-nsd.service", "azazel-decoy-netd.service"):
+        extra = [_attempt(d.name, d.account) for d in non_root] + [_attempt(root_unit, "root")]
+        assert _hg02(extra) != [], root_unit

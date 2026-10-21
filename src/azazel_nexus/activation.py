@@ -62,6 +62,7 @@ __all__ = [
     "EdgeBaselineState",
     "CORE_UNITS",
     "DECEPTION_EXPOSURE_UNITS",
+    "DECOY_NAMESPACE_UNIT",
     "DECOY_NETWORK_HELPER_UNIT",
     "DECOY_UNIT",
     "ActivationAuthorization",
@@ -211,18 +212,38 @@ LOCAL_MODEL_PROVIDER = "local_model_provider"
 REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 
 
+#: The Deception Lite namespace unit (#196, design D1, option (a)). Run once;
+#: the only governed unit with `CAP_SYS_ADMIN`, which it would use only to
+#: create the decoy network namespace at its fixed path. Its body is a later
+#: phase: the executable in this build refuses and exits.
+DECOY_NAMESPACE_UNIT = "azazel-decoy-nsd.service"
+
 #: The Deception Lite network helper (#196 P1, design D1). Run once; the only
-#: governed unit with `CAP_NET_ADMIN`, which it would use to build the decoy
-#: namespace, `az-decoy0`, the veth pair and the forwarding-deny rules. Its
-#: body is a later phase: the executable in this build refuses and exits.
+#: governed unit with `CAP_NET_ADMIN`, which it would use to build
+#: `az-decoy0`, the veth pair into the namespace the namespace unit created,
+#: and the forwarding-deny rules. Its body is a later phase: the executable
+#: in this build refuses and exits.
 DECOY_NETWORK_HELPER_UNIT = "azazel-decoy-netd.service"
 
 #: The Deception Lite decoy (#196 P1, design D1): no capability, its own
 #: account, inside the decoy network namespace. Accepts, never initiates.
 DECOY_UNIT = "azazel-decoyd.service"
 
-#: The units of the `DECEPTION_EXPOSURE` tier.
-DECEPTION_EXPOSURE_UNITS = (DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
+#: The units of the `DECEPTION_EXPOSURE` tier, in dependency order: the
+#: helper `Requires=` the namespace unit and the decoy `Requires=` the helper.
+#:
+#: **Granted together or not at all** (#196 §10, review n1). systemd counts a
+#: unit skipped for an unmet `ConditionPathExists=` (a missing grant marker)
+#: as a success for its dependents, so `Requires=` alone would let the decoy
+#: start without the helper, or the helper without the namespace unit, if
+#: only some of the three were granted. The rule closes that gap in three
+#: places: a governed set may hold all three or none
+#: (`ActivationController.__init__`); a lease that names some but not all of
+#: them withholds the whole tier (`exposure_tier_partial`); and the marker
+#: writer refuses a set holding some but not all of them
+#: (`activation_markers.write_grant_markers`). The tier is still withheld on
+#: every pass in this build (`isolation_evidence_absent`).
+DECEPTION_EXPOSURE_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
 
 
 #: The governed set for the CORE slice.
@@ -232,8 +253,8 @@ DECEPTION_EXPOSURE_UNITS = (DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
 #: leaves these unprivileged.
 #:
 #: M.I.O. entry and Knowledge Lite status are SUPPORTING services; provider
-#: units remain separately wiring-gated. The two Deception Lite exposure units
-#: are declared (#196 P1) and always withheld in this build. Enforcement and
+#: units remain separately wiring-gated. The three Deception Lite exposure
+#: units are declared (#196) and always withheld in this build. Enforcement and
 #: module-manager units belong to slices that are not built yet. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
 #:
@@ -353,6 +374,16 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azknowledge",
         "read-only Knowledge Lite service; import and repin use existing paths",
+    ),
+    UnitDefinition(
+        DECOY_NAMESPACE_UNIT,
+        # Root for the same reason as the helper: a bounding-set capability
+        # reaches only uid 0 without an ambient grant. The bounding set is
+        # exactly CAP_SYS_ADMIN (`hardening.py`).
+        UnitTier.DECEPTION_EXPOSURE,
+        "root",
+        "one-shot decoy namespace unit; the only unit with CAP_SYS_ADMIN; "
+        "creates the decoy network namespace and nothing else",
     ),
     UnitDefinition(
         DECOY_NETWORK_HELPER_UNIT,
@@ -776,6 +807,19 @@ class ActivationController:
                 f"the governed set repeats a unit: {sorted(names)}. Two "
                 "definitions for one unit means the verdict depends on order"
             )
+        # The exposure tier is governed whole or not at all (#196 §10, n1):
+        # a set holding the decoy without the helper, or the helper without
+        # the namespace unit, could grant a unit whose `Requires=` would be
+        # satisfied by a dependency systemd merely skipped.
+        exposure = [d for d in definitions if d.tier is UnitTier.DECEPTION_EXPOSURE
+                    or d.name in DECEPTION_EXPOSURE_UNITS]
+        if exposure and ({d.name for d in exposure} != set(DECEPTION_EXPOSURE_UNITS)
+                         or any(d.tier is not UnitTier.DECEPTION_EXPOSURE
+                                for d in exposure)):
+            raise ActivationRefused(
+                "the Deception Lite exposure tier is governed as exactly "
+                f"{', '.join(DECEPTION_EXPOSURE_UNITS)}, together or not at all"
+            )
         self.units = units
         self.generations = generations
         self.ledger = ledger
@@ -1015,6 +1059,19 @@ class ActivationController:
             return None
 
         if definition.tier is UnitTier.DECEPTION_EXPOSURE:
+            # Together or not at all (#196 §10, n1). Every precondition above
+            # is the same for the three units except the lease scope, so a
+            # scope naming some but not all of them is the one way their
+            # verdicts could differ; it withholds the whole tier. A grant
+            # marker missing for one of them would make systemd skip it and
+            # count the skip as success for the unit that `Requires=` it.
+            if self._lease.units is not None and not set(
+                    DECEPTION_EXPOSURE_UNITS) <= self._lease.units:
+                return (
+                    "exposure_tier_partial: the approval behind this lease names "
+                    "only part of the Deception Lite exposure tier, which is "
+                    "granted together or not at all"
+                )
             # Fail closed by construction: `activate` takes no isolation
             # evidence, so there is nothing a caller could pass to satisfy
             # this tier. The producer (a per-boot probe of the denied paths)

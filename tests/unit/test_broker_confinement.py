@@ -191,6 +191,11 @@ def test_baseline_matches_every_committed_unit_except_declared_controller_capabi
             elif path.name == "azazel-decoy-netd.service" and key == "CapabilityBoundingSet":
                 # #196 P1: the one-shot decoy network helper, and only it.
                 assert "CapabilityBoundingSet=CAP_NET_ADMIN" in lines
+            elif path.name == "azazel-decoy-nsd.service" and key in (
+                    "CapabilityBoundingSet", "RestrictNamespaces", "SystemCallFilter"):
+                # #196 (a): the one-shot decoy namespace unit, and only it;
+                # its overrides are pinned in test_runtime_hardening.py.
+                assert f"{key}={value}" not in lines, key
             else:
                 assert f"{key}={value}" in lines, (path.name, key)
 

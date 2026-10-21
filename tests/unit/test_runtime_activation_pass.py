@@ -67,9 +67,10 @@ SCOPE = (
 )
 EDGE = "azazel-edge-core.service"
 EDGE_SCOPE = tuple(sorted(SCOPE + (EDGE,)))
-#: The Deception Lite exposure units (#196 P1): grantable for the #253
+#: The Deception Lite exposure units (#196 P1, (a)): grantable for the #253
 #: checks, never nameable by a policy, always withheld by the library.
-DECOY_UNITS = ("azazel-decoy-netd.service", "azazel-decoyd.service")
+DECOY_UNITS = ("azazel-decoy-nsd.service", "azazel-decoy-netd.service",
+               "azazel-decoyd.service")
 NODE = "private-node-a"
 EVIDENCE_PAYLOAD = b'{"private-commissioning-proposal":true}'
 BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
@@ -1300,8 +1301,12 @@ def test_the_exposure_units_loaded_as_declared_are_accepted_and_still_withheld(w
     assert unit in outcome.withheld
 
 
-def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch):
-    """Even a forged lease naming it and a library that granted it are narrowed."""
+@pytest.mark.parametrize("forged_units", [
+    (DECOY_UNITS[2],), (DECOY_UNITS[0],), (DECOY_UNITS[1],), DECOY_UNITS,
+], ids=["decoy", "namespace", "helper", "all-three"])
+def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch, forged_units):
+    """Even a forged lease naming them and a library that granted them are
+    narrowed: any one exposure unit, or all three together (#196 (a))."""
     from azazel_nexus.activation import ActivationOutcome, UnitVerdict
 
     original = activated.ActivationDaemon.activate
@@ -1310,9 +1315,9 @@ def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch):
         outcome = original(self, **kwargs)
         lease = kwargs["lease"]
         if lease is not None:
-            object.__setattr__(lease, "units", lease.units | {DECOY_UNITS[1]})
-        return ActivationOutcome(outcome.generation, outcome.verdicts + (
-            UnitVerdict(DECOY_UNITS[1], True, "granted"),), edge=outcome.edge)
+            object.__setattr__(lease, "units", lease.units | set(forged_units))
+        return ActivationOutcome(outcome.generation, outcome.verdicts + tuple(
+            UnitVerdict(unit, True, "granted") for unit in forged_units), edge=outcome.edge)
 
     monkeypatch.setattr(activated.ActivationDaemon, "activate", forged)
     with pytest.raises(RuntimeError, match="Deception Lite exposure unit"):

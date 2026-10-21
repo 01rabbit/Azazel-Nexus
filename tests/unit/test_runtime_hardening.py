@@ -108,10 +108,11 @@ def test_only_the_activation_controller_is_root():
     """
 
     roots = [p.unit for p in PROFILES if p.account == "root"]
-    # The one named exception (#196 P1): the one-shot decoy network helper,
-    # root only so that its CAP_NET_ADMIN bounding set reaches it without an
-    # ambient grant. It writes nothing (test_the_decoy_network_helper_*).
-    assert roots == [ACTIVATION_CONTROLLER_UNIT, "azazel-decoy-netd.service"]
+    # The named exceptions (#196 P1, #196 (a)): the one-shot decoy namespace
+    # unit and network helper, root only so that each one's single
+    # bounding-set capability reaches it without an ambient grant.
+    assert roots == [ACTIVATION_CONTROLLER_UNIT, "azazel-decoy-nsd.service",
+                     "azazel-decoy-netd.service"]
 
 
 def test_the_unit_account_is_the_one_the_library_declares():
@@ -349,8 +350,10 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         if profile.unit == "azazel-activated.service":
             continue
         settings = _settings(profile.unit)
-        assert settings["CapabilityBoundingSet"] == (
-            ["CAP_NET_ADMIN"] if profile.unit == "azazel-decoy-netd.service" else [""])
+        assert settings["CapabilityBoundingSet"] == {
+            "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
+            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN"],
+        }.get(profile.unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         if profile.unit == "azazel-commissiond.service":
             assert settings["SupplementaryGroups"] == ["azknowledge"]
@@ -380,6 +383,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
         "azazel-activated.service", "azazel-commissiond.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
         "azazel-incident-explaind.service", "azazel-decoy-netd.service",
+        "azazel-decoy-nsd.service",
     }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
@@ -422,6 +426,7 @@ def test_every_writable_path_is_one_the_layout_declares():
     declared = {spec.path for spec in LAYOUT} | {
         "/etc/systemd/system", "/run/systemd/system.control",
         "/run/azazel-nexus-bootstrap", "/run/azazel-activation",
+        "/run/netns",
     }
     for profile in PROFILES:
         for path in _settings(profile.unit).get("ReadWritePaths", []):
@@ -444,7 +449,7 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
     assert writers == [ACTIVATION_CONTROLLER_UNIT]
     controller = next(profile for profile in PROFILES if profile.unit == ACTIVATION_CONTROLLER_UNIT)
     assert "systemd-tmpfiles-setup.service" in controller.after
-    assert not {"/run", "/run/systemd"} & set(controller.read_write_paths)
+    assert not {"/run", "/run/systemd", "/run/netns"} & set(controller.read_write_paths)
     claim_writers = [profile.unit for profile in PROFILES
                      if "/run/azazel-nexus-bootstrap" in profile.read_write_paths]
     assert claim_writers == [ACTIVATION_CONTROLLER_UNIT]
@@ -471,6 +476,7 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
 #: dependents (watchdog, fetch, local and remote model hosts).
 GRANT_LOOP_UNITS = frozenset({
     "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -660,6 +666,13 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
             if (key == "CapabilityBoundingSet"
                     and profile.unit == "azazel-decoy-netd.service"):
                 value = "CAP_NET_ADMIN"
+            if profile.unit == "azazel-decoy-nsd.service":
+                # #196 (a): the one unit with shared overrides, pinned by
+                # test_the_namespace_unit_overrides_exactly_two_shared_settings.
+                if key == "CapabilityBoundingSet":
+                    value = "CAP_SYS_ADMIN"
+                elif key in ("RestrictNamespaces", "SystemCallFilter"):
+                    continue
             assert settings.get(key) == [value], (
                 f"{profile.unit} sets {key} to {settings.get(key)} and the "
                 f"shared declaration says {value!r}"

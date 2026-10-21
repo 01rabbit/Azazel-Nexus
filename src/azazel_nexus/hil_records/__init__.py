@@ -240,10 +240,12 @@ def _gate(record: dict, reasons: list[str]) -> None:
             reasons.append("observations.attempts: daemon account attempts required")
         else:
             # Package-created (non-root) daemon accounts only: the runbook
-            # never runs the experiment as root, and the one root governed
-            # unit (the decoy network helper, #196 P1) is kept from the
-            # manager by its sandbox, not by its account. A record captured
-            # before #196 P1 lacks azdecoy and must be recaptured.
+            # never runs the experiment as root, and the root governed units
+            # (the decoy namespace unit and network helper, #196 P1 and
+            # option (a)) are kept from the manager by their sandboxes (no
+            # AF_UNIX), not by their accounts. A record captured before
+            # #196 P1 lacks azdecoy and must be recaptured; the namespace
+            # unit adds no account, so it changes no record.
             expected_accounts = {unit.name: unit.account for unit in CORE_UNITS
                                  if unit.account != "root"}
             seen = set()
