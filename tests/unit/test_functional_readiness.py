@@ -38,7 +38,7 @@ from azazel_nexus.resource_profile import ResourceProfile
 # One source of truth for which module may reach the network. Imported
 # rather than restated: two copies of an exemption list is one copy that
 # stops matching, and the one that stops matching is the one nobody reads.
-from tests.unit.test_runtime_boundary import EGRESS_EXEMPT, LISTENER_EXEMPT
+from tests.unit.test_runtime_boundary import EGRESS_EXEMPT, LISTENER_EXEMPT, _exempt
 
 
 def test_the_three_embedded_features_are_tracked() -> None:
@@ -266,7 +266,8 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
     for path in sorted(runtime_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         scanned += 1
-        if path.name in EGRESS_EXEMPT or path.name in LISTENER_EXEMPT:
+        if (_exempt(path, EGRESS_EXEMPT, runtime_root)
+                or _exempt(path, LISTENER_EXEMPT, runtime_root)):
             continue
         found = sorted(
             {
@@ -299,7 +300,7 @@ def test_the_decoy_listener_is_called_by_nothing_so_the_row_stays_loopback_only(
     assert LISTENER_EXEMPT == {"decoy_listener.py"}
     importers = []
     for path in sorted(runtime_root.rglob("*.py")):
-        if path.name in LISTENER_EXEMPT:
+        if _exempt(path, LISTENER_EXEMPT, runtime_root):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

@@ -3,7 +3,8 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # Runs once.
-# The only unit that holds CAP_NET_ADMIN, as a bounding set and never as an ambient capability: it would build the decoy namespace, az-decoy0, the veth pair and the forwarding-deny rules from the commissioning render, and reads no decoy observation and no Edge decision.
+# The only unit that holds CAP_NET_ADMIN, as a bounding set and never as an ambient capability: inside a namespace another one-shot unit creates, it would set up az-decoy0, the veth pair and the forwarding-deny rules from the commissioning render, and reads no decoy observation and no Edge decision.
+# It is root, so it gets netlink only and no AF_UNIX socket that could reach the service manager.
 # Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
 
 [Unit]
@@ -19,7 +20,7 @@ User=root
 ExecStart=/usr/libexec/azazel/az-decoy-netd
 RemainAfterExit=yes
 TimeoutStartSec=30s
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictAddressFamilies=AF_NETLINK
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

@@ -211,3 +211,32 @@ def test_no_approval_can_name_an_exposure_unit():
     from azazel_nexus.activation_approval_v2 import _V2_UNITS
 
     assert not set(DECEPTION_EXPOSURE_UNITS) & set(_V2_UNITS)
+
+
+def _hg02(attempts):
+    from azazel_nexus.hil_records import _gate
+
+    reasons: list[str] = []
+    _gate({"gate_id": "HG-02", "observations": {
+        "package_created_accounts": True, "controller_only_unmask": True,
+        "account_inventory_ref": "inventory.txt", "unmask_attempts_ref": "attempts.txt",
+        "attempts": attempts}}, reasons)
+    return [reason for reason in reasons if reason.startswith("observations.attempts")]
+
+
+def _attempt(unit, account):
+    return {"daemon": unit, "account": account, "capture_ref": f"{unit}.txt",
+            "unmask_refused": True}
+
+
+def test_hg02_expects_every_non_root_governed_daemon_and_not_the_root_helper():
+    """The runbook never runs as root; a pre-P1 record (no azdecoy) is incomplete."""
+    from azazel_nexus.activation import CORE_UNITS
+
+    non_root = [d for d in CORE_UNITS if d.account != "root"]
+    assert [d.name for d in CORE_UNITS if d.account == "root"] == ["azazel-decoy-netd.service"]
+    assert _hg02([_attempt(d.name, d.account) for d in non_root]) == []
+    before_p1 = [_attempt(d.name, d.account) for d in non_root if d.account != "azdecoy"]
+    assert _hg02(before_p1) != []
+    with_root = [_attempt(d.name, d.account) for d in CORE_UNITS]
+    assert _hg02(with_root) != []

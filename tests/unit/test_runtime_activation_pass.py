@@ -1319,3 +1319,16 @@ def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch):
         world.run()
     assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert world.markers() is None
+
+
+def test_the_pass_checks_a_decoded_policy_against_the_narrower_scope(world):
+    """Second layer (review m5): even a policy object that names an exposure
+    unit -- forged past the decoder -- is refused by the pass itself."""
+    assert activation_pass.POLICY_UNIT_SCOPE == (
+        activation_pass.UNIT_SCOPE - frozenset(DECOY_UNITS))
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    assert activation_pass.POLICY_UNIT_SCOPE == frozenset(ACTIVATION_UNIT_ALLOWLIST)
+    forged = make_policy()
+    object.__setattr__(forged, "units", tuple(sorted(SCOPE + (DECOY_UNITS[1],))))
+    world.policy = forged
+    _assert_refused(world, world.run(), ["activation_policy"])

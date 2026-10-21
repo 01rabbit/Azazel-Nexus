@@ -52,7 +52,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from azazel_nexus.activation import ActivationLease, EdgeBaselineState
+from azazel_nexus.activation import (
+    DECEPTION_EXPOSURE_UNITS,
+    ActivationLease,
+    EdgeBaselineState,
+)
 from azazel_nexus.activation_approval_v2 import (
     ActivationApprovalPolicy,
     ObserveBaselineApproval,
@@ -80,6 +84,7 @@ __all__ = [
     "ALWAYS_MISSING",
     "EDGE_EVIDENCE",
     "PRODUCERS",
+    "POLICY_UNIT_SCOPE",
     "UNIT_SCOPE",
     "PassInputs",
     "PassProducers",
@@ -95,6 +100,12 @@ __all__ = [
 #: narrower: `ACTIVATION_UNIT_ALLOWLIST` cannot name the exposure units, so a
 #: lease never holds them, and the library withholds their tier anyway.
 UNIT_SCOPE = GRANTABLE_UNITS
+
+#: The units a policy may name: the grantable set without the Deception Lite
+#: exposure units. The pass's own second check of a decoded policy, so that
+#: adding the exposure units to `GRANTABLE_UNITS` (for the #253 checks) did
+#: not widen what a policy may scope even if the decoder's allowlist did.
+POLICY_UNIT_SCOPE = GRANTABLE_UNITS - frozenset(DECEPTION_EXPOSURE_UNITS)
 
 #: The producers this pass runs, as named in `missing_producers`.
 PRODUCERS = (
@@ -279,7 +290,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         value = producers.policy()
         if type(value) is not ActivationPolicy:
             raise _Refused("activation policy required")
-        if not set(value.units) <= UNIT_SCOPE:
+        if not set(value.units) <= POLICY_UNIT_SCOPE:
             raise _Refused("policy scope outside the grantable units")
         return value
     active_policy = attempt(("activation_policy",), policy)

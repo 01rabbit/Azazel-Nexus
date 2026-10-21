@@ -107,21 +107,39 @@ EGRESS_EXEMPT = {"artifact_egress.py", "inference_egress.py", "knowledge_egress.
 #: The first ingress entry, kept apart from `EGRESS_EXEMPT` so that the two
 #: permissions never share a list: a listener may name `AF_INET`/`AF_INET6`
 #: to bind and listen, and is still refused every way to initiate traffic
-#: (`LISTENER_FORBIDDEN`). Exempt by file name, like the egress list.
+#: (`LISTENER_FORBIDDEN`). Like the egress list, each name is a module at the
+#: top of the runtime package, matched by **full path** (`_exempt`): a file of
+#: the same name in a subpackage is not exempt.
 LISTENER_EXEMPT = {"decoy_listener.py"}
 
 #: What the default scan refuses everywhere outside the exemptions.
 INTERNET_FORBIDDEN = {"AF_INET", "AF_INET6", "AF_PACKET", "create_connection"}
 
-#: What a listener module may still not name: every way to initiate traffic,
-#: and the raw packet family. `bind`, `listen` and `accept` are what it is for.
+#: What a listener module may still not name: every way to initiate traffic
+#: (including asyncio's, and raw, paired or adopted sockets) and the raw
+#: packet family. `bind`, `listen` and `accept` are what it is for.
 LISTENER_FORBIDDEN = {
-    "AF_PACKET", "create_connection", "connect", "connect_ex", "sendto", "sendmsg",
+    "AF_PACKET", "SOCK_RAW", "create_connection", "connect", "connect_ex",
+    "sendto", "sendmsg", "open_connection", "sock_connect",
+    "create_datagram_endpoint", "socketpair", "fromfd",
 }
+
+#: Modules whose star import would bring a forbidden name in unseen.
+_SOCKET_MODULES = {"socket", "_socket", "asyncio", "ssl"}
+
+
+def _exempt(path: Path, names, root: Path = RUNTIME) -> bool:
+    """True only for the exact file `root / name`, never a same-named file elsewhere."""
+
+    return any(path == root / name for name in names)
 
 
 def _attributes(path: Path, names: set[str]) -> list[str]:
-    """Each of `names` the module reaches as an attribute or imports by name."""
+    """Each of `names` the module reaches as an attribute or imports by name.
+
+    A star import from a socket-family module is reported as ``*``: it would
+    bring every forbidden name in without naming one.
+    """
 
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = set()
@@ -130,7 +148,35 @@ def _attributes(path: Path, names: set[str]) -> list[str]:
             found.add(node.attr)
         elif isinstance(node, ast.ImportFrom):
             found.update(alias.name for alias in node.names if alias.name in names)
+            if (node.module and node.module.split(".")[0] in _SOCKET_MODULES
+                    and any(alias.name == "*" for alias in node.names)):
+                found.add("*")
     return sorted(found)
+
+
+def _internet_offenders(root: Path) -> dict[str, list[str]]:
+    """The default scan: every module but the exact exempt files."""
+
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        if _exempt(path, EGRESS_EXEMPT, root) or _exempt(path, LISTENER_EXEMPT, root):
+            continue
+        found = _attributes(path, INTERNET_FORBIDDEN)
+        if found:
+            offenders[path.relative_to(root).as_posix()] = found
+    return offenders
+
+
+def _listener_offenders(root: Path) -> dict[str, list[str]]:
+    """The stricter scan, over the exact listener files."""
+
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        if _exempt(path, LISTENER_EXEMPT, root):
+            found = _attributes(path, LISTENER_FORBIDDEN)
+            if found:
+                offenders[path.relative_to(root).as_posix()] = found
+    return offenders
 
 
 def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
@@ -140,37 +186,30 @@ def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
     `IPAddressDeny=any` is the only thing standing between it and the network
     -- and that setting is enforced by systemd, which CI does not run.
 
-    The exemption is by **file name**, not by a marker a file can grant
-    itself. A module that wanted egress by writing a comment would be a
-    module that granted itself egress. A listener module is scanned too, by
-    the stricter test below, never skipped.
+    The exemption is by **full path**, not by a marker a file can grant
+    itself and not by a bare file name a subpackage could reuse. A module
+    that wanted egress by writing a comment would be a module that granted
+    itself egress. A listener module is scanned too, by the stricter test
+    below, never skipped.
     """
 
-    offenders: dict[str, list[str]] = {}
-    for path in sorted(RUNTIME.rglob("*.py")):
-        if path.name in EGRESS_EXEMPT or path.name in LISTENER_EXEMPT:
-            continue
-        found = _attributes(path, INTERNET_FORBIDDEN)
-        if found:
-            offenders[path.name] = found
+    offenders = _internet_offenders(RUNTIME)
     assert offenders == {}, f"{offenders} reach an internet address family"
 
 
 def test_a_listener_module_binds_and_listens_and_never_initiates():
     """The ingress exemption allows `bind`/`listen` only (§7 Q7).
 
-    `connect`, `connect_ex`, `create_connection`, `sendto` and `sendmsg` stay
-    forbidden in the listener module: a decoy accepts and never initiates.
-    Replies on an accepted connection (`send`/`sendall`) go back to whoever
-    connected and are not an initiation.
+    Every way to initiate traffic stays forbidden in the listener module: a
+    decoy accepts and never initiates. Replies on an accepted connection
+    (`send`/`sendall`) go back to whoever connected and are not an
+    initiation.
     """
 
+    assert _listener_offenders(RUNTIME) == {}
     for name in sorted(LISTENER_EXEMPT):
         path = RUNTIME / name
         assert path.exists(), f"{name} is exempt and does not exist"
-        assert _attributes(path, LISTENER_FORBIDDEN) == [], (
-            f"{name} may listen and may not initiate"
-        )
         source = path.read_text(encoding="utf-8")
         # An exemption nothing uses is a hole held open for nothing.
         assert _attributes(path, {"bind"}) == ["bind"]
@@ -191,9 +230,54 @@ def test_the_listener_scan_catches_what_it_forbids(tmp_path):
         assert _attributes(imported, LISTENER_FORBIDDEN) == [forbidden]
 
 
+@pytest.mark.parametrize("module", sorted(_SOCKET_MODULES))
+def test_a_star_import_from_a_socket_module_is_refused_by_both_scans(tmp_path, module):
+    probe = tmp_path / "probe_star.py"
+    probe.write_text(f"from {module} import *\n", encoding="utf-8")
+    assert _attributes(probe, LISTENER_FORBIDDEN) == ["*"]
+    assert _attributes(probe, INTERNET_FORBIDDEN) == ["*"]
+
+
+def _fake_runtime(tmp_path: Path) -> Path:
+    root = tmp_path / "azazel_nexus_runtime"
+    (root / "sub").mkdir(parents=True)
+    for name in EGRESS_EXEMPT:
+        (root / name).write_text(
+            "import socket\nsocket.AF_INET\nsocket.create_connection\n", encoding="utf-8")
+    (root / "decoy_listener.py").write_text(
+        "import socket\ns = socket.socket(socket.AF_INET)\ns.bind(('x', 1))\ns.listen(1)\n",
+        encoding="utf-8")
+    return root
+
+
+def test_the_exact_exempt_files_pass_in_a_fake_runtime(tmp_path):
+    root = _fake_runtime(tmp_path)
+    assert _internet_offenders(root) == {}
+    assert _listener_offenders(root) == {}
+
+
+@pytest.mark.parametrize("name", sorted(LISTENER_EXEMPT | EGRESS_EXEMPT))
+def test_a_same_named_file_elsewhere_is_not_exempt(tmp_path, name):
+    """Matching by bare name let `sub/decoy_listener.py` connect freely (review M2)."""
+
+    root = _fake_runtime(tmp_path)
+    (root / "sub" / name).write_text(
+        "import socket\nsocket.socket(socket.AF_INET).connect(('x', 1))\n", encoding="utf-8")
+    assert _internet_offenders(root) == {f"sub/{name}": ["AF_INET"]}
+    assert not _exempt(root / "sub" / name, EGRESS_EXEMPT | LISTENER_EXEMPT, root)
+
+
+def test_the_exact_listener_file_that_connects_is_refused(tmp_path):
+    root = _fake_runtime(tmp_path)
+    (root / "decoy_listener.py").write_text(
+        "import socket\nsocket.socket(socket.AF_INET).connect(('x', 1))\n", encoding="utf-8")
+    assert _listener_offenders(root) == {"decoy_listener.py": ["connect"]}
+
+
 def test_the_ingress_and_egress_exemptions_never_share_a_module():
     assert not LISTENER_EXEMPT & EGRESS_EXEMPT
     assert LISTENER_EXEMPT == {"decoy_listener.py"}
+    assert all("/" not in name for name in LISTENER_EXEMPT | EGRESS_EXEMPT)
 
 
 def test_the_exemption_names_a_module_that_exists_and_uses_it():

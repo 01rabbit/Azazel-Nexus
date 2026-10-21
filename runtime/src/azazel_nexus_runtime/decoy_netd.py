@@ -1,10 +1,12 @@
 """`az-decoy-netd`: the Deception Lite network helper's fixed executable (#196 P1).
 
 Design D1 (`docs/deception-redirect-prerequisites.md` §5): a one-shot unit
-that holds `CAP_NET_ADMIN` as a bounding set, and only it, to build the decoy
-network namespace, the `az-decoy0` bridge, the veth pair and the
-forwarding-deny rules from the commissioning render. It reads no decoy
-observation and no Edge decision.
+that holds `CAP_NET_ADMIN` as a bounding set, and only it, to set up the
+`az-decoy0` bridge, the veth pair into the **already created** decoy network
+namespace, and the forwarding-deny rules, from the commissioning render. It
+does not create the namespace: under option (a) a separate one-shot unit
+does that, in the same later phase. It reads no decoy observation and no Edge
+decision.
 
 **Phase P1 ships the unit profile and this boundary, not the body.** This
 executable configures nothing: it takes no argument, reads nothing, runs no

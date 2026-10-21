@@ -222,13 +222,30 @@ exposure path.
 
 | option | idea | verdict |
 | --- | --- | --- |
-| D1 | A dedicated network namespace attached to `az-decoy0` by a veth pair. A small one-shot helper unit holds `CAP_NET_ADMIN` only to create the namespace, bridge, veth and the forwarding-deny rules from the commissioning render; the decoy daemon itself runs in that namespace with no capabilities, its own account, ports ≥ 1024, and the in-code responders of `decoy_loopback.py` | **recommended** |
+| D1 | A dedicated network namespace attached to `az-decoy0` by a veth pair. A small one-shot helper unit holds `CAP_NET_ADMIN` only to set up the bridge, the veth pair and the forwarding-deny rules from the commissioning render, inside a namespace that a separate one-shot unit creates (option (a) below); the decoy daemon itself runs in that namespace with no capabilities, its own account, ports ≥ 1024, and the in-code responders of `decoy_loopback.py` | **recommended** |
 | D2 | Containers (podman or Docker) on `az-decoy0`, as `IMPLEMENTATION_SPEC.md:805` words it | adds a container runtime, an image store and a runtime socket for responders that are constant byte strings; right for AZ-06 packages, too much for Lite; **deferred** (§7 Q6) |
 | D3 | Bind the decoy on a host interface | refused by `decoy.py` already; a general network primitive; **rejected** |
 | D4 | Keep loopback and add a host-side proxy from `az-decoy0` | the proxy is a forwarder on the host stack, the path isolation exists to remove; **rejected** |
 
 ### D1 in more detail
 
+- **Three one-shot steps, one privilege each (option (a)).** Creating a
+  namespace at a fixed path needs a mount, and therefore `CAP_SYS_ADMIN`;
+  `CAP_NET_ADMIN` alone cannot do it in practice, and the helper's sandbox
+  (`RestrictNamespaces=yes`, `ProtectSystem=strict` with `/run/netns` read
+  only, `@system-service` without `mount`) would refuse it anyway. So D1 is
+  split into "one unit, one privilege, one act":
+  1. a **namespace unit** (one-shot) only creates the decoy namespace at
+     `/run/netns/azazel-decoy`. It is expected to be the only unit with
+     `CAP_SYS_ADMIN`; its exact privilege is reviewed when it is written;
+  2. the **helper** (`CAP_NET_ADMIN`) only configures `az-decoy0`, the veth
+     pair into the already created namespace, and the rules;
+  3. the **decoy** joins the namespace with no capability.
+
+  The namespace unit is written in the same later phase as the helper's
+  body; P1 does not define it. Option (a) is the implementer's choice within
+  the accepted design (review of #268, 2026-10-21), not an owner decision;
+  the owner may overrule it.
 - **Bridge and rules.** `az-decoy0` and its address come only from the
   commissioned bridge prefix (no default). The helper installs forwarding-deny
   rules toward the protected, management, control-plane and Internet zones
@@ -277,7 +294,7 @@ only prerequisite 3.
 | phase | content | needs |
 | --- | --- | --- |
 | P0 | this proposal; owner decisions in §7 | — |
-| P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only | §7 Q4–Q7 |
+| P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) is written later, with the helper's body | §7 Q4–Q7 |
 | P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge | P1, §7 Q8 |
 | P3 | VM rehearsal of P1–P2 (never evidence) | P2 |
 | P4 | hardware: `HG-06` and a new gate for the decoy unit's sandbox on the real host | P3, owner |
@@ -358,10 +375,10 @@ namespace mechanism decided below.
 
 | | `azazel-decoy-netd.service` (helper) | `azazel-decoyd.service` (decoy) |
 | --- | --- | --- |
-| account | `root`, so that the bounding set reaches it without an ambient grant | `azdecoy` (new) |
+| account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller and this unit | `azdecoy` (new) |
 | capabilities | `CapabilityBoundingSet=CAP_NET_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_NET_ADMIN` | none |
-| address families | `AF_UNIX AF_NETLINK` | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
-| network | host namespace (it would configure host links) | `NetworkNamespacePath=/run/netns/azazel-decoy`, `PrivateUsers=yes` |
+| address families | `AF_NETLINK` only: it is root, and `AF_UNIX` would reach the service manager over D-Bus | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
+| network | host namespace (it would configure host links and the veth into the decoy namespace) | `NetworkNamespacePath=/run/netns/azazel-decoy`, `PrivateUsers=yes` |
 | addresses | `IPAddressDeny=any` | `IPAddressDeny=any`, no `IPAddressAllow=` |
 | writable | nothing | `/var/lib/azazel/decoy` (`azdecoy`, `0700`) |
 | type | `oneshot`, `RemainAfterExit=yes` (stopping it stops the decoy first) | `exec`; `Requires=`/`After=` the helper |
@@ -387,34 +404,57 @@ sufficient:
   them either (it is limited to `SUPPORTING` and `EDGE_BASELINE`);
 - the pass's tripwire narrows everything if either is ever granted.
 
+The pass also checks a decoded policy against its own narrower scope
+(`activation_pass.POLICY_UNIT_SCOPE`, the grantable set without the exposure
+units), so adding them to `GRANTABLE_UNITS` did not widen what a policy may
+name even if the decoder's allowlist were changed.
+
 **Runtime boundary.** `tests/unit/test_runtime_boundary.py` now has two
 lists: `EGRESS_EXEMPT` (unchanged) and `LISTENER_EXEMPT = {"decoy_listener.py"}`.
-A listener module may name `AF_INET`/`AF_INET6` and must bind and listen; it
-may not name `connect`, `connect_ex`, `create_connection`, `sendto`, `sendmsg`
-or `AF_PACKET`. `decoy_listener.open_listener` binds only a catalogued
+Both are matched by full path (`runtime/src/azazel_nexus_runtime/<name>`), so
+a same-named file in a subpackage is not exempt. A listener module may name
+`AF_INET`/`AF_INET6` and must bind and listen; it may not name `connect`,
+`connect_ex`, `create_connection`, `sendto`, `sendmsg`, `open_connection`,
+`sock_connect`, `create_datagram_endpoint`, `socketpair`, `fromfd`, `SOCK_RAW`
+or `AF_PACKET`, and a star import from `socket`, `_socket`, `asyncio` or `ssl`
+is refused in every module. `decoy_listener.open_listener` binds only a catalogued
 `DecoyEntry` address inside the commissioned bridge prefix. Nothing imports
 it, and `tests/unit/test_functional_readiness.py` fails the day something
 does, so the Deception Lite row stays `loopback-only`.
 
 **Deferred, with what each needs:**
 
-- the helper's body (namespace, `az-decoy0`, veth, forwarding-deny rules,
-  their removal on stop). **Open question:** creating a persistent named
-  namespace (`ip netns add`) also needs `CAP_SYS_ADMIN` for its bind mount,
-  which the helper does not hold. That phase must either use a
-  `CAP_NET_ADMIN`-only mechanism or bring a reviewed widening of the
-  helper's profile; P1's tests pin the bounding set to exactly
-  `CAP_NET_ADMIN`;
+- the namespace unit of option (a) (§5) and the helper's body (`az-decoy0`,
+  veth, forwarding-deny rules, their removal on stop), in one phase. The
+  namespace unit's privilege (expected: the only `CAP_SYS_ADMIN`) is reviewed
+  then; P1's tests pin the helper to exactly `CAP_NET_ADMIN` and `AF_NETLINK`.
+  To be handled in that phase as well, from the independent review of #268:
+  - m2, the helper's further sandbox: a `SystemCallFilter=` sized to netlink
+    work, `ProtectClock=`, `ProtectHostname=`, `ProtectKernelLogs=`,
+    `RestrictRealtime=`, and `InaccessiblePaths=` over the D-Bus and systemd
+    private sockets as a second barrier to the `AF_NETLINK`-only family;
+  - n1 and n2, the review's two nits on the helper, carried as raised;
+- **generation measurement before any grant.** The day the tier can be
+  granted, the exposure units' files must be in the generation's measured
+  set (`measure_scoped_unit_files`, which takes the policy's scope) and so in
+  what the operator signs. Today they are only content-checked
+  (`require_grantable_unit_files`), which is enough while they are never
+  granted and not enough once they may be;
+- **HG-02 records.** The HG-02 record validator expects every non-root
+  governed daemon exactly once. A record captured before P1 has no `azdecoy`
+  attempt and no longer conforms; HG-02 is to be captured afresh. The root
+  helper is not an HG-02 subject (the runbook never runs as root); that it
+  cannot reach the service manager rests on its sandbox and belongs to the
+  new decoy-sandbox gate (§7 Q10);
 - the per-boot isolation probe, its boot-bound evidence and the activation
   pass consuming it (only then can the tier be granted);
 - how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
   not a drop-in, which #253 refuses on every grantable unit;
 - the decoy daemon (responders, observation socket), P2's
   `EnvironmentEvent`s, and the decoy's `ExecStartPre=` probe rerun;
-- `IMPLEMENTATION_SPEC.md:604` still names `azazel-enforced` as the only
-  daemon with `CAP_NET_ADMIN`; that daemon does not exist, and the helper is
-  this design's addition. The specification sentence is to be updated with
-  the helper's body.
+- `docs/IMPLEMENTATION_SPEC.md` §4 (near line 604) named `azazel-enforced` as
+  the only daemon with `CAP_NET_ADMIN`; this PR corrects that sentence to
+  name the decoy network helper as the one other holder.
 
 Unit tests only. No `nft` or `ip` is run, no namespace is created and no real
 socket is opened by any test; none of this is VM or hardware evidence.

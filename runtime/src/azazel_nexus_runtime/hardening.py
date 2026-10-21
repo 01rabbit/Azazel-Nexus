@@ -243,6 +243,13 @@ class ServiceProfile:
                 "out are three acts with three blast radii; a unit holding two "
                 "of them is a node where one compromise is two"
             )
+        if (self.unit == DECOY_NETWORK_HELPER_UNIT
+                and self.address_families != ("AF_NETLINK",)):
+            raise ValueError(
+                f"{self.unit} is root: with AF_UNIX it could reach the service "
+                "manager over D-Bus and unmask what the controller withholds, "
+                "so it gets route and nftables netlink only"
+            )
         # CAP_NET_ADMIN belongs to exactly one unit, the one-shot decoy
         # network helper, and that unit holds nothing else (#196 P1).
         if (("CAP_NET_ADMIN" in self.capability_bounding_set)
@@ -333,6 +340,15 @@ class ServiceProfile:
                 f"{self.unit} would write to {outside}, which the filesystem "
                 "layout does not declare. A writable path nobody declared is a "
                 "path nobody set the mode or the owner of"
+            )
+        # root is the controller's and the decoy network helper's, and no
+        # other unit's (#196 P1 review): a third root unit is a diff a
+        # reviewer sees, not a profile that quietly chose an account.
+        if self.account == "root" and self.unit not in (
+                ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT):
+            raise ValueError(
+                f"{self.unit} would run as root; only {ACTIVATION_CONTROLLER_UNIT} "
+                f"and {DECOY_NETWORK_HELPER_UNIT} do"
             )
 
 
@@ -430,13 +446,13 @@ SYSTEM_ACCOUNTS = (
 
 
 #: The decoy's network namespace (#196 P1, design D1). A fixed handle path,
-#: never a parameter. In this build nothing creates it: the helper's body is a
-#: later phase, so a decoy unit started anyway fails at namespace setup
-#: before its executable runs. Creating a named namespace (`ip netns add`)
-#: also needs CAP_SYS_ADMIN for its bind mount, which the helper does not
-#: hold; the helper phase must use a CAP_NET_ADMIN-only mechanism or bring a
-#: reviewed widening of its profile (docs/deception-redirect-prerequisites.md
-#: §10).
+#: never a parameter. In this build nothing creates it, so a decoy unit started
+#: anyway fails at namespace setup before its executable runs. Creating it
+#: needs a mount and CAP_SYS_ADMIN, which the CAP_NET_ADMIN helper does not
+#: hold and cannot under its sandbox; per the design (option (a),
+#: docs/deception-redirect-prerequisites.md §5, §10) a third one-shot unit
+#: that only creates the namespace is added with the helper's body, and its
+#: privilege is reviewed then.
 DECOY_NAMESPACE_PATH = "/run/netns/azazel-decoy"
 
 
@@ -935,8 +951,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus Deception Lite network helper",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
         # Route and nftables netlink only. No internet family: it configures
-        # links and rules, it never sends or receives traffic.
-        address_families=("AF_UNIX", "AF_NETLINK"),
+        # links and rules, it never sends or receives traffic. No AF_UNIX
+        # either: it runs as root, and an AF_UNIX socket would reach the
+        # service manager over D-Bus (HG-02's claim is that only the
+        # controller can unmask). Its journal output uses the stream systemd
+        # hands it, which needs no socket() call.
+        address_families=("AF_NETLINK",),
         # Nothing writable in this build: where the namespace handle and the
         # rendered rules live is decided with the helper's body.
         read_write_paths=(),
@@ -957,10 +977,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         rationale=(
             "Runs once. The only unit that holds CAP_NET_ADMIN, as a bounding "
-            "set and never as an ambient capability: it would build the decoy "
-            "namespace, az-decoy0, the veth pair and the forwarding-deny rules "
-            "from the commissioning render, and reads no decoy observation and "
-            "no Edge decision. Its body is a later phase of #196; in this "
+            "set and never as an ambient capability: inside a namespace another "
+            "one-shot unit creates, it would set up az-decoy0, the veth pair "
+            "and the forwarding-deny rules from the commissioning render, and "
+            "reads no decoy observation and no Edge decision. It is root, so it "
+            "gets netlink only and no AF_UNIX socket that could reach the "
+            "service manager. Its body is a later phase of #196; in this "
             "build the executable refuses and exits, and the activation pass "
             "never grants this unit"
         ),

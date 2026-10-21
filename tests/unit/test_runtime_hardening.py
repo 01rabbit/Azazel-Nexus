@@ -305,7 +305,9 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
                             "azazel-decoy-netd.service"]
     for unit in with_netlink:
         settings = _settings(unit)
-        assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK"]
+        assert settings["RestrictAddressFamilies"] == (
+            ["AF_NETLINK"] if unit == "azazel-decoy-netd.service"
+            else ["AF_UNIX AF_NETLINK"])
         assert settings["CapabilityBoundingSet"] == {
             "azazel-activated.service": ["CAP_DAC_READ_SEARCH"],
             "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
@@ -1036,7 +1038,8 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
     assert settings["CapabilityBoundingSet"] == ["CAP_NET_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
     assert settings["NoNewPrivileges"] == ["yes"]
-    assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK"]
+    # Root, so no AF_UNIX: it cannot reach the service manager over D-Bus.
+    assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
     assert settings["IPAddressDeny"] == ["any"]
     # Nothing writable in this build, no runtime directory, no namespace of
     # its own (it would configure the host's links), no credential.
@@ -1143,3 +1146,22 @@ def test_the_installer_masks_and_never_enables_the_exposure_units():
         assert f"systemctl enable {unit}" not in INSTALLER
         assert f"systemctl start {unit}" not in INSTALLER
     assert "make_owned_dir 0700 azdecoy root /var/lib/azazel/decoy" in INSTALLER
+
+
+@pytest.mark.parametrize("families", [("AF_UNIX", "AF_NETLINK"), ("AF_UNIX",),
+                                      ("AF_NETLINK", "AF_UNIX")])
+def test_the_root_helper_cannot_be_given_a_unix_socket(families):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="netlink only"):
+        replace(_profile(HELPER), address_families=families)
+
+
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", "azazel-decoyd.service",
+                                  "azazel-edge-core.service"])
+def test_only_the_controller_and_the_helper_may_run_as_root(unit):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="would run as root"):
+        replace(_profile(unit), account="root", is_decoy_listener=False,
+                address_families=("AF_UNIX",))
