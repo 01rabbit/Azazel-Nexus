@@ -169,39 +169,13 @@ def test_the_listener_module_never_initiates():
 # -- the two executables ------------------------------------------------------
 
 
-# The decoy's body (#196, §12) is tested in test_decoy_body.py; only the
-# helper still refuses here.
-@pytest.mark.parametrize("module", [decoy_netd])
-def test_the_executables_refuse_and_exit_nonzero(module, capsys):
-    assert module.main([]) == 1
-    assert module.REFUSAL in capsys.readouterr().err
-
-
+# Both bodies are tested elsewhere: the decoy in test_decoy_body.py (§12),
+# the helper in test_decoy_network_body.py (§13).
 @pytest.mark.parametrize("module", [decoy_netd, decoyd])
 @pytest.mark.parametrize("argv", [["--namespace", "x"], ["/run/netns/other"], ["--force"]])
 def test_the_executables_take_no_argument(module, argv, capsys):
     assert module.main(argv) == 2
     assert "takes no argument" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("name", ["decoy_netd.py"])
-def test_the_executables_run_nothing_and_reach_nothing(name):
-    """No process, no socket, no network configuration, no environment switch."""
-
-    source = (RUNTIME / name).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
-    assert imported <= {"__future__", "sys", "typing"}
-    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-    assert not names & {"subprocess", "socket", "environ", "getenv", "system", "popen",
-                        "execv", "execve", "spawnv", "open", "ctypes"}, name
-    assert names & {"argv", "stderr"} == {"argv", "stderr"}
 
 
 def test_the_unit_table_addresses_the_exposure_units_by_fixed_key_only():

@@ -1,9 +1,10 @@
 """The Deception Lite namespace unit, option (a) (#196, docs/deception-redirect-prerequisites.md §5, §10).
 
-Option (a) splits D1 into three one-shot steps, one privilege each: a
-namespace unit (`CAP_SYS_ADMIN`) only creates `/run/netns/azazel-decoy`, the
-helper (`CAP_NET_ADMIN`) only configures the bridge, the veth pair and the
-rules, and the decoy joins the namespace with no capability. These tests pin:
+Option (a) splits D1 into three one-shot steps: a namespace unit
+(`CAP_SYS_ADMIN` and `CAP_NET_ADMIN`) creates `/run/netns/azazel-decoy`, the
+veth pair and the inside of the namespace, the helper (`CAP_NET_ADMIN`)
+configures the host side (bridge and rules), and the decoy joins the
+namespace with no capability (§13). These tests pin:
 
 * the namespace unit's profile, exactly: the one unit without the shared
   mount-namespace settings (n3, VM-checked), and that no other unit may hold
@@ -13,7 +14,8 @@ rules, and the decoy joins the namespace with no capability. These tests pin:
   tier rule that closes review n1: the three units are governed, scoped and
   marked **together or not at all**, so a dependency skipped for a missing
   grant marker can never count as success for a granted dependent;
-* that the unit is still never granted and its executable refuses.
+* that the unit is still never granted. Its body is tested in
+  `test_decoy_network_body.py`.
 
 No test runs `ip` or `unshare`, creates a namespace or opens a socket. None
 of this is VM or hardware evidence; the VM check of n2 and n3 (a mechanism
@@ -22,7 +24,6 @@ check, not hardware evidence) is recorded in the design, §10.
 
 from __future__ import annotations
 
-import ast
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -47,7 +48,7 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.commissioning import CommissioningRecord
 from azazel_nexus.generation import GenerationStore, tree_digest
-from azazel_nexus_runtime import activation_markers, decoy_nsd
+from azazel_nexus_runtime import activation_markers
 from azazel_nexus_runtime.hardening import (
     ALL_PROFILES,
     DECOY_NAMESPACE_PATH,
@@ -60,7 +61,6 @@ from azazel_nexus_runtime.hardening import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME = ROOT / "runtime" / "src" / "azazel_nexus_runtime"
 UNIT_DIR = ROOT / "packaging" / "systemd"
 INSTALLER = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
 PRESET = (ROOT / "packaging" / "azazel-nexus.preset").read_text(encoding="utf-8")
@@ -106,22 +106,25 @@ MOUNT_NAMESPACE_SETTINGS = MOUNT_NAMESPACE_KEYS + (
 )
 
 
-def test_the_namespace_unit_runs_once_as_root_with_exactly_cap_sys_admin():
+def test_the_namespace_unit_runs_once_as_root_with_exactly_its_two_capabilities():
     settings = _settings(NSD)
     assert NSD == "azazel-decoy-nsd.service"
     assert settings["Type"] == ["oneshot"]
     assert settings["RemainAfterExit"] == ["yes"]
     assert settings["User"] == ["root"]
     assert settings["ExecStart"] == ["/usr/libexec/azazel/az-decoy-nsd"]
-    assert settings["CapabilityBoundingSet"] == ["CAP_SYS_ADMIN"]
+    assert settings["ExecStop"] == ["/usr/libexec/azazel/az-decoy-nsd stop"]
+    # CAP_NET_ADMIN as well: every act inside the namespace needs it (§13).
+    assert settings["CapabilityBoundingSet"] == ["CAP_SYS_ADMIN CAP_NET_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
     assert settings["NoNewPrivileges"] == ["yes"]
     # Route netlink only, the family `ip netns add` was VM-checked with.
     assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
     assert settings["IPAddressDeny"] == ["any"]
     assert DECOY_NAMESPACE_PATH == "/run/netns/azazel-decoy"
-    # Of every namespace type, only a network namespace.
-    assert settings["RestrictNamespaces"] == ["net"]
+    # Of every namespace type, only a network namespace, and the mount
+    # namespace `ip -n` makes for itself (§13).
+    assert settings["RestrictNamespaces"] == ["net mnt"]
     # setns allowed (ip returns to its own namespace after creating one;
     # without it, SIGSYS, VM-checked), and not in the deny list.
     assert settings["SystemCallFilter"] == [
@@ -142,7 +145,7 @@ def test_the_namespace_unit_builds_no_mount_namespace():
     for key in MOUNT_NAMESPACE_SETTINGS:
         assert key not in settings, key
     for key in ("IPAddressAllow", "SupplementaryGroups", "Environment", "EnvironmentFile",
-                "ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost",
+                "ExecStartPre", "ExecStartPost", "ExecStopPost",
                 "JoinsNamespaceOf", "DeviceAllow"):
         assert key not in settings, key
 
@@ -234,7 +237,9 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, change):
 
 
 @pytest.mark.parametrize("change", [
-    {"capability_bounding_set": ("CAP_SYS_ADMIN", "CAP_NET_ADMIN")},
+    {"capability_bounding_set": ("CAP_SYS_ADMIN",)},
+    {"capability_bounding_set": ("CAP_NET_ADMIN", "CAP_SYS_ADMIN")},
+    {"capability_bounding_set": ("CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_SYS_PTRACE")},
     {"capability_bounding_set": ("CAP_SYS_ADMIN", "CAP_SYS_PTRACE")},
     {"capability_bounding_set": ("CAP_NET_ADMIN",)},
     {"capability_bounding_set": ()},
@@ -248,7 +253,9 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, change):
     {"runtime_directory": "azazel"},
     {"unit_type": "exec"},
     {"shared_overrides": ()},
-    {"shared_overrides": (("RestrictNamespaces", "net mnt"),)
+    {"shared_overrides": (("RestrictNamespaces", "net"),)
+     + DECOY_NAMESPACE_SHARED_OVERRIDES[1:]},
+    {"shared_overrides": (("RestrictNamespaces", "net mnt user"),)
      + DECOY_NAMESPACE_SHARED_OVERRIDES[1:]},
     {"shared_overrides": DECOY_NAMESPACE_SHARED_OVERRIDES[:2]},
     {"shared_overrides": (DECOY_NAMESPACE_SHARED_OVERRIDES[0],
@@ -260,6 +267,10 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, change):
     {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS + ("IPAddressDeny",)},
     {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS[1:]},
     {"extra": DECOY_NAMESPACE_SANDBOX[:-1]},
+    {"extra": tuple(item for item in DECOY_NAMESPACE_SANDBOX if item[0] != "ExecStop")},
+    {"extra": tuple(("ExecStop", "/usr/sbin/ip netns delete azazel-decoy")
+                    if item[0] == "ExecStop" else item
+                    for item in DECOY_NAMESPACE_SANDBOX)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("NetworkNamespacePath", DECOY_NAMESPACE_PATH),)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("Environment", "AZAZEL_NETNS=other"),)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("ProtectProc", "invisible"),)},
@@ -472,37 +483,7 @@ def test_the_marker_writer_is_unchanged_for_the_rest(marker_root):
     assert written == ("azazel-mio-entryd.service",)
 
 
-# -- the executable ------------------------------------------------------------
-
-
-def test_the_executable_refuses_and_exits_nonzero(capsys):
-    assert decoy_nsd.main([]) == 1
-    assert decoy_nsd.REFUSAL in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("argv", [["--namespace", "x"], ["/run/netns/other"], ["--force"]])
-def test_the_executable_takes_no_argument(argv, capsys):
-    assert decoy_nsd.main(argv) == 2
-    assert "takes no argument" in capsys.readouterr().err
-
-
-def test_the_executable_creates_nothing_and_reaches_nothing():
-    """No process, no unshare, no mount, no socket, no environment switch."""
-
-    tree = ast.parse((RUNTIME / "decoy_nsd.py").read_text(encoding="utf-8"))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
-    assert imported <= {"__future__", "sys", "typing"}
-    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-    assert not names & {"subprocess", "socket", "environ", "getenv", "system", "popen",
-                        "execv", "execve", "spawnv", "open", "ctypes", "unshare",
-                        "setns", "mount", "os"}
-    assert names & {"argv", "stderr"} == {"argv", "stderr"}
+# -- the executable: its body is tested in test_decoy_network_body.py ------
 
 
 def test_the_unit_table_addresses_the_namespace_unit_by_fixed_key_only():
@@ -519,7 +500,8 @@ def test_the_unit_table_addresses_the_namespace_unit_by_fixed_key_only():
 
 RESERVED = sorted({key for key, _ in SHARED_HARDENING} | {
     "ReadWritePaths", "BindPaths", "InaccessiblePaths", "SystemCallFilter", "User",
-    "CapabilityBoundingSet", "AmbientCapabilities"})
+    "CapabilityBoundingSet", "AmbientCapabilities",
+    "ExecStop", "ExecStopPost", "ExecStartPost", "ExecReload"})
 
 
 @pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_NETWORK_HELPER_UNIT,
@@ -532,8 +514,10 @@ def test_no_other_unit_can_restate_a_reserved_key_in_extra(unit, key):
 
 
 def test_no_packaged_unit_states_a_reserved_key_in_extra():
+    """Except the two one-shot decoy units, whose extra is pinned whole."""
+
     for profile in ALL_PROFILES:
-        if profile.unit == NSD:
+        if profile.unit in (NSD, DECOY_NETWORK_HELPER_UNIT):
             continue
         assert not {key for key, _ in profile.extra} & set(RESERVED), profile.unit
 

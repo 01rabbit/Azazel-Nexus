@@ -1,49 +1,34 @@
-"""`az-decoy-netd`: the Deception Lite network helper's fixed executable (#196 P1).
+"""`az-decoy-netd`: the Deception Lite network helper's fixed executable (#196).
 
-Design D1 (`docs/deception-redirect-prerequisites.md` §5): a one-shot unit
-that holds `CAP_NET_ADMIN` as a bounding set, and only it, to set up the
-`az-decoy0` bridge, the veth pair into the **already created** decoy network
-namespace, and the forwarding-deny rules, from the commissioning render. It
-does not create the namespace: under option (a) a separate one-shot unit
-does that, in the same later phase. It reads no decoy observation and no Edge
-decision.
+Design D1 (`docs/deception-redirect-prerequisites.md` §5, §10, §13). A
+one-shot unit, root with exactly `CAP_NET_ADMIN` as a bounding set, in the
+host network namespace, that runs `decoy_network.HELPER_STEPS` and nothing
+else: it loads the fixed nftables table first, then creates the bridge
+`az-decoy0`, gives it the host's fixed address, attaches the host end of the
+veth pair the namespace unit created, and brings both up. It never enters the
+decoy namespace (it cannot: `setns` needs `CAP_SYS_ADMIN`).
 
-**Phase P1 ships the unit profile and this boundary, not the body.** This
-executable configures nothing: it takes no argument, reads nothing, runs no
-`ip` or `nft`, opens no netlink socket and exits non-zero, so a start of
-`azazel-decoy-netd.service` fails rather than appearing to have built an
-isolation it did not build. The activation pass never grants the unit in
-this build (`UnitTier.DECEPTION_EXPOSURE` is withheld as
-`isolation_evidence_absent`).
-
-When the body is written it stays in this one fixed module: the commands it
-runs are fixed in code, never a caller's, and no other runtime module gains
-a path to the network configuration.
+Started with no argument it builds; `ExecStop=` starts it with exactly
+`stop`, and it takes the host end down, deletes the bridge and then the
+table, so the path is cut before the rules go. Anything else is refused
+(exit 2). It reads no decoy observation, no Edge decision, no file, no
+environment and no socket; the commands and their arguments are constants of
+`decoy_network`. A failed step undoes what the earlier ones made and exits 1.
 """
 
 from __future__ import annotations
 
-import sys
 from typing import Optional, Sequence
 
-__all__ = ["REFUSAL", "main"]
+from .decoy_network import HELPER_STEPS, Runner, main_for
 
-#: What a start of the helper prints, and the whole of what it does.
-REFUSAL = (
-    "az-decoy-netd: the decoy network helper has no body in this build "
-    "(#196 P1); no namespace, bridge, link or rule was configured"
-)
+__all__ = ["main"]
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Refuse and exit 1. Takes no argument; any argument is also refused."""
+def main(argv: Optional[Sequence[str]] = None, *, run: Optional[Runner] = None) -> int:
+    """Build (no argument) or remove (`stop`) the host side of the decoy network."""
 
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments:
-        print("az-decoy-netd: takes no argument", file=sys.stderr)
-        return 2
-    print(REFUSAL, file=sys.stderr)
-    return 1
+    return main_for("az-decoy-netd", HELPER_STEPS, argv, run)
 
 
 if __name__ == "__main__":  # pragma: no cover - the wrapper calls main()

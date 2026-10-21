@@ -314,7 +314,7 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
         assert settings["CapabilityBoundingSet"] == {
             "azazel-activated.service": ["CAP_DAC_READ_SEARCH"],
             "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
-            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN"],
+            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN CAP_NET_ADMIN"],
         }.get(unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         assert settings["IPAddressDeny"] == ["any"]
@@ -355,7 +355,7 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         settings = _settings(profile.unit)
         assert settings["CapabilityBoundingSet"] == {
             "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
-            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN"],
+            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN CAP_NET_ADMIN"],
         }.get(profile.unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         if profile.unit == "azazel-commissiond.service":
@@ -675,7 +675,7 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
                 # #196 (a): the one unit with shared overrides and omissions,
                 # pinned by test_decoy_namespace_unit.py.
                 if key == "CapabilityBoundingSet":
-                    value = "CAP_SYS_ADMIN"
+                    value = "CAP_SYS_ADMIN CAP_NET_ADMIN"
                 elif key in ("RestrictNamespaces", "SystemCallFilter"):
                     continue
                 elif key in DECOY_NAMESPACE_SHARED_OMISSIONS:
@@ -1039,11 +1039,13 @@ def _profile(unit):
     return next(p for p in PROFILES if p.unit == unit)
 
 
-def test_cap_net_admin_is_held_by_the_decoy_network_helper_alone():
+def test_cap_net_admin_is_held_by_the_two_one_shot_decoy_units_alone():
+    """The helper (host side) and the namespace unit (the inside; #196 body, §13)."""
+
     holders = [p.unit for p in ALL_PROFILES if "CAP_NET_ADMIN" in p.capability_bounding_set]
-    assert holders == [HELPER]
+    assert holders == ["azazel-decoy-nsd.service", HELPER]
     for path in UNIT_DIR.glob("*.service"):
-        if path.name != HELPER:
+        if path.name not in holders:
             settings = _settings(path.name)
             for key in ("CapabilityBoundingSet", "AmbientCapabilities"):
                 assert not any("CAP_NET_ADMIN" in value
@@ -1056,6 +1058,7 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
     assert settings["RemainAfterExit"] == ["yes"]
     assert settings["User"] == ["root"]
     assert settings["ExecStart"] == ["/usr/libexec/azazel/az-decoy-netd"]
+    assert settings["ExecStop"] == ["/usr/libexec/azazel/az-decoy-netd stop"]
     assert settings["CapabilityBoundingSet"] == ["CAP_NET_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
     assert settings["NoNewPrivileges"] == ["yes"]
@@ -1068,6 +1071,37 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
                 "PrivateNetwork", "SupplementaryGroups", "LoadCredential",
                 "Environment", "EnvironmentFile", "ExecStartPre", "IPAddressAllow"):
         assert key not in settings, key
+    # m2 of the review of #268 (#196 body): the further sandbox.
+    for key in ("ProtectClock", "ProtectHostname", "ProtectKernelLogs",
+                "RestrictRealtime"):
+        assert settings[key] == ["yes"], key
+    assert settings["InaccessiblePaths"] == ["-/run/dbus/system_bus_socket",
+                                             "-/run/systemd/private"]
+    for key in ("ProtectSystem", "PrivateTmp", "PrivateDevices", "RestrictNamespaces"):
+        assert settings[key] == [dict(SHARED_HARDENING)[key]], key
+
+
+@pytest.mark.parametrize("change", [
+    (),
+    (("RemainAfterExit", "yes"), ("TimeoutStartSec", "30s")),
+    "drop-last",
+    "add-environment",
+    "other-stop",
+])
+def test_the_helper_extra_is_pinned_whole(change):
+    from dataclasses import replace
+
+    from azazel_nexus_runtime.hardening import DECOY_HELPER_SANDBOX
+
+    extra = {
+        "drop-last": DECOY_HELPER_SANDBOX[:-1],
+        "add-environment": DECOY_HELPER_SANDBOX + (("Environment", "X=1"),),
+        "other-stop": tuple(("ExecStop", "/usr/sbin/nft flush ruleset")
+                            if key == "ExecStop" else (key, value)
+                            for key, value in DECOY_HELPER_SANDBOX),
+    }.get(change, change)
+    with pytest.raises(ValueError, match="in extra"):
+        replace(_profile(HELPER), extra=extra)
 
 
 def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
@@ -1083,7 +1117,11 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     assert settings["PrivateUsers"] == ["yes"]
     assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6"]
     assert settings["IPAddressDeny"] == ["any"]
-    assert "IPAddressAllow" not in settings
+    # The fixed decoy subnet and nothing else (#196 body, §13): without it
+    # the cgroup filter drops what the decoy receives as well.
+    assert settings["IPAddressAllow"] == ["10.255.196.0/30"]
+    from azazel_nexus_runtime.decoy_network import DECOY_SUBNET
+    assert settings["IPAddressAllow"] == [DECOY_SUBNET]
     assert "PrivateNetwork" not in settings
     assert settings["ReadWritePaths"] == ["/var/lib/azazel/decoy"]
     for key in ("SupplementaryGroups", "RuntimeDirectory", "LoadCredential",
@@ -1147,10 +1185,26 @@ def test_no_other_unit_can_take_cap_net_admin(unit):
     {"unit": "azazel-other.service"},
 ])
 def test_the_decoy_listener_role_refuses_anything_wider(change):
+    """A changed or extra address allowance is refused as well (below)."""
+
     from dataclasses import replace
 
     with pytest.raises(ValueError):
         replace(_profile(DECOY), **change)
+
+
+@pytest.mark.parametrize("allowance", [
+    None, ["any"], ["localhost"], ["10.255.196.0/29"], ["10.255.196.0/30", "localhost"],
+    ["10.255.196.0/30", "10.255.196.0/30"],
+])
+def test_the_decoy_allows_exactly_the_fixed_subnet(allowance):
+    from dataclasses import replace
+
+    profile = _profile(DECOY)
+    extra = tuple(item for item in profile.extra if item[0] != "IPAddressAllow")
+    extra += tuple(("IPAddressAllow", value) for value in (allowance or ()))
+    with pytest.raises(ValueError, match="IPAddressAllow"):
+        replace(profile, extra=extra)
 
 
 def test_a_decoy_listener_without_an_internet_family_cannot_be_built():

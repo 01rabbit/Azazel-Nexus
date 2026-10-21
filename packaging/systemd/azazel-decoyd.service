@@ -4,8 +4,8 @@
 #
 # Holds no capability and runs under its own account, inside the decoy network namespace, with PrivateUsers=yes.
 # It accepts and never initiates: no outbound connect is in its code, and the runtime boundary test allows its listener module bind and listen only.
-# IPAddressDeny=any stays and no address is allowed in this build.
-# Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
+# IPAddressDeny=any stays, and the fixed decoy subnet is the only address allowed.
+# The activation pass never grants this unit in this build.
 
 [Unit]
 Description=Azazel-Nexus Deception Lite decoy
@@ -22,6 +22,7 @@ User=azdecoy
 ExecStart=/usr/libexec/azazel/az-decoyd
 NetworkNamespacePath=/run/netns/azazel-decoy
 PrivateUsers=yes
+IPAddressAllow=10.255.196.0/30
 TimeoutStartSec=30s
 MemoryMax=128M
 TasksMax=16

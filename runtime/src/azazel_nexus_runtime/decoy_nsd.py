@@ -1,48 +1,38 @@
 """`az-decoy-nsd`: the Deception Lite namespace unit's fixed executable (#196).
 
-Design D1, option (a) (`docs/deception-redirect-prerequisites.md` §5, §10):
-a one-shot unit that holds `CAP_SYS_ADMIN` as a bounding set, and only it,
-to create the decoy network namespace at the fixed path
-`/run/netns/azazel-decoy`, and to do nothing else. The network helper
-(`az-decoy-netd`, `CAP_NET_ADMIN`) then configures the bridge, the veth pair
-into that namespace and the rules, and the decoy joins it with no capability.
+Design D1, option (a) (`docs/deception-redirect-prerequisites.md` §5, §10,
+§13). A one-shot unit, root with exactly `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`
+as a bounding set, that runs `decoy_network.NAMESPACE_STEPS` and nothing
+else: it creates `/run/netns/azazel-decoy`, creates the veth pair with the
+decoy's end inside it, and configures the inside (`lo` up, the decoy's fixed
+address, link up, default route). The network helper (`az-decoy-netd`) then
+builds the host side.
 
-**This build ships the unit profile and this boundary, not the body.** This
-executable creates nothing: it takes no argument, reads nothing, calls no
-`unshare` or `mount`, runs no `ip`, opens no socket and exits non-zero, so a
-start of `azazel-decoy-nsd.service` fails rather than appearing to have
-created a namespace it did not create. The activation pass never grants the
-unit in this build (`UnitTier.DECEPTION_EXPOSURE` is withheld as
-`isolation_evidence_absent`).
+Started with no argument it builds; `ExecStop=` starts it with exactly
+`stop`, and it removes the pair and the namespace. Anything else is refused
+(exit 2). It reads no file, no environment and no socket; the commands and
+their arguments are constants of `decoy_network`. A failed step undoes what
+the earlier ones made and exits 1.
 
-When the body is written it stays in this one fixed module: the namespace
-path is fixed in code, never a caller's, and no other runtime module gains a
-path to creating or removing a namespace.
+It does not change `net.core.fb_tunnels_only_for_init_net` or any other
+sysctl, and does not delete fallback tunnel devices: a host that creates them
+in every new namespace is refused by the decoy itself (`decoy_netns`), and
+the operator sets that sysctl (§13).
 """
 
 from __future__ import annotations
 
-import sys
 from typing import Optional, Sequence
 
-__all__ = ["REFUSAL", "main"]
+from .decoy_network import NAMESPACE_STEPS, Runner, main_for
 
-#: What a start of the namespace unit prints, and the whole of what it does.
-REFUSAL = (
-    "az-decoy-nsd: the decoy namespace unit has no body in this build "
-    "(#196); no namespace was created"
-)
+__all__ = ["main"]
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Refuse and exit 1. Takes no argument; any argument is also refused."""
+def main(argv: Optional[Sequence[str]] = None, *, run: Optional[Runner] = None) -> int:
+    """Build (no argument) or remove (`stop`) the decoy namespace side."""
 
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments:
-        print("az-decoy-nsd: takes no argument", file=sys.stderr)
-        return 2
-    print(REFUSAL, file=sys.stderr)
-    return 1
+    return main_for("az-decoy-nsd", NAMESPACE_STEPS, argv, run)
 
 
 if __name__ == "__main__":  # pragma: no cover - the wrapper calls main()
