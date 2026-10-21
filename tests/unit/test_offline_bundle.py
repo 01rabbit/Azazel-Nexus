@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -34,6 +35,8 @@ def _repo(root: Path) -> Path:
         "tools/stage_runtime_entrypoints.py": b"def stage(): return 0\n",
         "tools/install_profile_fields.py": b"def install_profile(): return 0\n",
         "tools/purge_mio_profile_copies.py": b"def purge(): return []\n",
+        "tools/provision_mission_read.py": b"def provision(): return 0\n",
+        "tools/install_llama_runtime.py": b"def install(): return 0\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
@@ -118,6 +121,8 @@ def test_manifest_matches_bundle_contents_and_normalized_metadata(tmp_path: Path
     assert members["tools/stage_runtime_entrypoints.py"][0] == b"def stage(): return 0\n"
     assert members["tools/install_profile_fields.py"][0] == b"def install_profile(): return 0\n"
     assert members["tools/purge_mio_profile_copies.py"][0] == b"def purge(): return []\n"
+    assert members["tools/provision_mission_read.py"][0] == b"def provision(): return 0\n"
+    assert members["tools/install_llama_runtime.py"][0] == b"def install(): return 0\n"
     assert members["runtime/src/azazel_nexus_runtime/install_platform.py"][0] == b"def install(): pass\n"
     for item in manifest["files"]:
         data, info = members[item["path"]]
@@ -240,3 +245,23 @@ def test_real_bundle_profile_resolver_runs_without_checkout_or_installed_package
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "debian-13-systemd-installer-v1"
+
+
+def test_real_bundle_contains_every_file_the_installer_runs(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "packaging/install.sh").read_text(encoding="utf-8")
+    # Quotes and braces around the variable are optional, so a respelling of a
+    # reference cannot hide it from this check.
+    path = r'"?/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_-]+\.[A-Za-z0-9]+)'
+    referenced = {
+        name for name in re.findall(r'\$\{?REPO_ROOT\}?' + path, script)
+    } | {
+        "packaging/" + name for name in re.findall(r'\$\{?HERE\}?' + path, script)
+    }
+    assert "tools/provision_mission_read.py" in referenced
+    assert "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf" in referenced
+    output = tmp_path / "source.tar.gz"
+    build_bundle(root, output)
+    shipped = set(_members(output))
+
+    assert sorted(referenced - shipped) == []
