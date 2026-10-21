@@ -71,9 +71,12 @@ the fallback.
   it never feeds the decision and carries no device or path.
   **Implemented (#262):** `_collect_input_status` in
   `runtime/src/azazel_nexus_runtime/activated.py` reads
-  `hil_preflight.luks_backed` for `/etc/azazel/commissioning` after the
-  decision and records it in `activation.inputs_incomplete`; a reader that
-  raises records no label rather than a third value.
+  `hil_preflight.luks_backing` (the three-valued form of `luks_backed`, which
+  the refusal paths keep unchanged) for `/etc/azazel/commissioning` after the
+  decision and records it in `activation.inputs_incomplete`. When it cannot
+  tell (the path or `/sys/dev/block` unreadable, an anonymous device such as a
+  btrfs subvolume) or the reader raises, no label is recorded rather than a
+  guess or a third value.
 
 ### Phases
 

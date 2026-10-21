@@ -319,7 +319,8 @@ launchable.
   for each. `observed_inputs.edge_evidence` and `edge_package_binding` say
   why edge-core was or was not launchable, and the `activation.unit_withheld`
   entry for it names the failed checks. `observed_inputs.commissioning_storage`
-  (`luks_backed` or `not_luks_backed`, absent when it could not be read) says
+  (`luks_backed` or `not_luks_backed`; absent when it cannot be determined:
+  the path or `/sys/dev/block` unreadable, or an anonymous device) says
   whether `/etc/azazel/commissioning` was on LUKS during the pass: a volume left
   locked reads `not_luks_backed`. It is diagnostic only and decides nothing.
   The entry contains no identity, digest, device or path.

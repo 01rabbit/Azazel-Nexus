@@ -1115,12 +1115,12 @@ _COLLECT = activated._collect_input_status
 
 
 def _storage(kind):
-    """`luks_backed` as the controller would see it: True, False or a reader error."""
+    """`luks_backing` as the controller would see it: True, False, None or an error."""
     def reader(path, **_kwargs):
         assert path == Path("/etc/azazel/commissioning")
         if kind == "raises":
             raise RuntimeError("private /dev/mapper/azn-commissioning 254:3 detail")
-        return kind == "luks"
+        return {"luks": True, "plain": False, "unknown": None}[kind]
     return reader
 
 
@@ -1130,7 +1130,7 @@ def _pass_with_storage(tmp_path, monkeypatch, kind, **replaced):
     monkeypatch.setattr(activated, "load_operator_trust", lambda: world.trust)
     monkeypatch.setattr(activated, "read_boot_id", lambda: BOOT)
     monkeypatch.setattr(activated, "load_declared_node", lambda: world.node)
-    monkeypatch.setattr(activated, "luks_backed", _storage(kind))
+    monkeypatch.setattr(activated, "luks_backing", _storage(kind))
     monkeypatch.setattr(activated, "_collect_input_status", lambda _root: _COLLECT(Path("/")))
     outcome = world.run(**replaced)
     states = {d.name: world.manager.state(d.name) for d in CORE_UNITS}
@@ -1149,11 +1149,13 @@ def test_the_storage_label_never_changes_the_decision(tmp_path, monkeypatch, rep
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     _owned_by_the_test(monkeypatch)
     results = {kind: _pass_with_storage(tmp_path, monkeypatch, kind, **replaced)
-               for kind in ("luks", "plain", "raises")}
+               for kind in ("luks", "plain", "unknown", "raises")}
     assert results["luks"][1] == ["luks_backed"]
     assert results["plain"][1] == ["not_luks_backed"]
+    assert results["unknown"][1] == [None]  # undetermined: no key, no guess
     assert results["raises"][1] == [None]  # no third value and no reader text
-    assert results["luks"][0] == results["plain"][0] == results["raises"][0]
+    assert (results["luks"][0] == results["plain"][0] == results["unknown"][0]
+            == results["raises"][0])
     outcome, *_, events = results["luks"][0]
     assert sorted(outcome.granted) == ([] if replaced else list(SCOPE))
     assert any(e["event_type"] == "activation.high_water_raised" for e in events) is not bool(

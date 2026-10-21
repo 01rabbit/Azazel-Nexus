@@ -70,7 +70,7 @@ from azazel_nexus.edge_package import (
     nothing_established,
 )
 from azazel_nexus.generation import GenerationStore
-from azazel_nexus.hil_preflight import COMMISSIONING_DIR, luks_backed, read_boot_id
+from azazel_nexus.hil_preflight import COMMISSIONING_DIR, luks_backing, read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
 
 from .commissioning_input import load_commissioning_evidence
@@ -470,14 +470,21 @@ def _commissioning_storage() -> Optional[str]:
     point on the root filesystem) from other commissioning failures, from the
     ledger alone. It is read after the decision, the markers and the high
     water, and feeds none of them; it carries no device, number or path.
-    The same reader as the HIL preflight (`hil_preflight.luks_backed`): a
-    `stat` and one `/sys/dev/block` file, nothing executed. A reader that
-    raises records nothing rather than a third value.
+    The HIL preflight's reader in its three-valued form
+    (`hil_preflight.luks_backing`): a `stat` and `/sys/dev/block`, nothing
+    executed. When it cannot tell -- the path or the sysfs entry unreadable,
+    an anonymous device -- nothing is recorded rather than a guess or a
+    third value; so is a reader that raises.
     """
     try:
-        backed = luks_backed(COMMISSIONING_DIR)
+        backed = luks_backing(COMMISSIONING_DIR)
     except Exception:  # noqa: BLE001 - no label is better than an invented one
         return None
+    if backed is True:
+        return "luks_backed"
+    if backed is False:
+        return "not_luks_backed"
+    return None
     if backed is True:
         return "luks_backed"
     if backed is False:
