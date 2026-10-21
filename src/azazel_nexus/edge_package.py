@@ -77,8 +77,10 @@ Probe contract v2 adds `boot_id`, the kernel's
 result only when that equals the current boot's id, read by the same
 protected reader (`read_current_boot_id`), **in addition to** the TTL: the
 boot-time probe preflight runs moments before the activation pass, so a
-result written just before a reboot would otherwise still be inside its TTL
-after it. A result from another boot, a v1 result (which carries no boot and
+result written just before a kernel reboot would otherwise still be inside its
+TTL after it. A soft-reboot keeps the kernel and so the boot id: the boot id
+does not tell its two userspaces apart, which is why `az-edge-probed` removes
+the previous result before each run (#258 item 7). A result from another boot, a v1 result (which carries no boot and
 so cannot be shown to be from this one), or any result when this boot's id
 cannot be read is `not-checked` and says it is stale -- never `failed`.
 
