@@ -85,7 +85,7 @@ is selected ([M.I.O. runtime](../mio-runtime.md), [operations §0](../operations
 `/etc/azazel/commissioning` is on a LUKS dm-crypt device
 ([HIL preflight](../hil-preflight.md)). On a VM without a second disk, a
 loop-backed LUKS2 file passes the same check (`cryptsetup-bin` must be
-installed). The operator types the passphrase:
+installed; for the boot-time `crypttab` entry below, also `systemd-cryptsetup`). The operator types the passphrase:
 
 ```sh
 sudo install -d -m 0700 /var/lib/azn-rehearsal-luks
@@ -114,6 +114,11 @@ azn-commissioning  /var/lib/azn-rehearsal-luks/commissioning.img  none  nofail,t
 # /etc/fstab
 /dev/mapper/azn-commissioning  /etc/azazel/commissioning  ext4  nodev,nosuid,noexec,nofail,x-systemd.device-timeout=300s  0  0
 ```
+
+On Debian 13 the `crypttab` generator ships in the separate `systemd-cryptsetup`
+package: with `cryptsetup-bin` alone `/etc/crypttab` is ignored and the
+`fstab` mount only waits for a device that never appears (VM-confirmed
+2026-10-21, mechanics only; [activation rehearsal §0](activation-rehearsal.md#0-already-confirmed-on-the-vm-mechanics-only)).
 
 Do not add a key file, a `systemd-creds` credential sealed with the host key,
 or any other stored unlock factor. `nofail` on both lines is required.
