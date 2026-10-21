@@ -7,7 +7,7 @@ import re
 import stat
 from datetime import UTC, datetime
 
-from .edge_intake import read_intake_status
+from .edge_intake import DECOY_REFUSAL_CODES, read_intake_status
 from .incident_explain import RECENT_BYTES, read_explainer_status, read_recent_incidents
 
 #: Edge reports its forward counts when they change and at least every five
@@ -84,14 +84,20 @@ def _render_edge_loop(out, now):
             if value["chain_broken"]:
                 print("        inspect_incident_chain_then_remove_cursor_and_restart", file=out)
             print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}; audit_forward_refused: {value['audit_forward_refused']}", file=out)
-        refusals = sorted(value["refused"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+        refused = value["refused"]
+        if name == "intake":
+            # The decoy's refusals are shown on its own line, never as Edge's.
+            refused = {k: v for k, v in refused.items() if k not in DECOY_REFUSAL_CODES}
+        refusals = sorted(refused.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
         # Never let a full evidence day or a segment from the future hide
         # behind more frequent refusals.
         for code in ("evidence_segment_full", "segment_from_future"):
-            count = value["refused"].get(code)
+            count = refused.get(code)
             if count and (code, count) not in refusals:
                 refusals.append((code, count))
         print("        refusals: " + (", ".join(f"{k}={v}" for k, v in refusals) or "none"), file=out)
+        if name == "intake":
+            _render_decoy(out, value, now)
     if recent is None:
         print("    recent incidents: unavailable (snapshot absent or refused)", file=out)
         return
@@ -126,6 +132,28 @@ def _render_edge_forward(out, forward, now):
     if forward["restarts"]:
         print(f"            Edge restarted {forward['restarts']} time(s) since the intake "
               "started; counts shown are the current Edge process's only", file=out)
+
+
+def _render_decoy(out, intake, now):
+    """The Deception Lite decoy's interactions (#196 P2), labelled as Nexus's own.
+
+    Counts, the last time and refusal counts per fixed code only: the stored
+    interactions, any address and any payload never reach this line.
+    """
+    refused = sorted(((k, v) for k, v in intake["refused"].items()
+                      if k in DECOY_REFUSAL_CODES and v), key=lambda kv: (-kv[1], kv[0]))
+    refusals = f"refused {sum(v for _, v in refused)}" + (
+        " (" + ", ".join(f"{k}={v}" for k, v in refused) + ")" if refused else "")
+    decoy = intake.get("decoy")
+    if decoy is None:
+        print("        decoy (Deception Lite): not listening (decoy socket not open); "
+              + refusals, file=out)
+        return
+    at = decoy["last_accepted_at"]
+    last = "never" if at is None else f"{max(0, int(now - at))}s ago"
+    print("        decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware "
+          f"evidence): accepted {decoy['accepted']}; last accepted {last}; {refusals}",
+          file=out)
 
 
 def render_fabric_status(report, out):

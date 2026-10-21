@@ -615,6 +615,20 @@ availability, `audit_forward_dropped` (delivery gave up or queue full) and
 `inspect_incident_chain_then_remove_cursor_and_restart`; follow the recovery
 procedure above before removing any cursor.
 
+The intake's part ends with one line for the Deception Lite decoy
+(#196 P2). With the decoy socket open it reads
+`decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware evidence): accepted 3; last accepted 12s ago; refused 5 (DECOY_SHAPE=4, decoy_rate_limited=1)`;
+otherwise `decoy (Deception Lite): not listening (decoy socket not open); refused 0`
+(`decoy_listener_unavailable` among the refusals says why it is closed).
+These are interactions with Nexus's own decoy, not something Edge observed, and
+a count in status is not hardware evidence. Edge's `accepted`/`processed`
+never include them, and the decoy's refusal codes (`DECOY_*`, `decoy_*`) are
+shown on this line, not in the intake's `refusals:`. Only counts, the last
+time and refusal counts per fixed code are shown; the intake's bounded refusal
+log (`/var/lib/azazel/edge-intake/decoy-refusals.jsonl`) keeps the uid and code
+of each, nothing more. No address or payload is ever shown. Until the decoy daemon
+ships (a later phase of #196), nothing sends an interaction, so the count stays 0.
+
 The explainer's operator leaf also contains `recent.json` with up to 20 recent
 incidents; status renders five. Rows show pseudonymous ids, open/closed state,
 severity/count, technique ids, sanitized summaries and knowledge citations.

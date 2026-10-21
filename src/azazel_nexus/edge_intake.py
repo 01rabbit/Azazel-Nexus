@@ -79,6 +79,11 @@ REFUSAL_CODES = frozenset(
         "decoy_listener_unavailable",
     }
 )
+#: The refusals of the decoy socket (#196 P2), which status shows apart from
+#: Edge's: they are about the decoy, not about anything Edge sent.
+DECOY_REFUSAL_CODES = frozenset(
+    code for code in REFUSAL_CODES if code.startswith(("DECOY_", "decoy_"))
+)
 
 
 class EdgeEventRefused(ValueError):

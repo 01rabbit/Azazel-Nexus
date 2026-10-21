@@ -711,7 +711,15 @@ nothing in intake, detection or Edge's observe-only decisions.
   start <UTC time>; last report Ns ago`, marked `stale` once no report came
   for 900 s (three of Edge's 5-minute reports), with a line counting Edge
   restarts when there were any. Without a report it prints `Edge forward: not
-  reported since the intake started`. Explainer shows explained count,
+  reported since the intake started`. The intake section ends with the
+  Deception Lite decoy's line (#196 P2):
+  `decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware
+  evidence): accepted N; last accepted Ns ago; refused M (CODE=n, …)`, or
+  `decoy (Deception Lite): not listening (decoy socket not open); refused M`
+  when the intake has no decoy socket open. It shows counts, the last time
+  and refusal counts per fixed code only, never an address, a payload or a
+  stored interaction; the decoy's refusal codes (`DECOY_*`, `decoy_*`) are on
+  this line only, not in the intake's `refusals:`. Explainer shows explained count,
   chain break and its fixed recovery hint, storage failure, last attempted
   M.I.O./Knowledge availability, `audit_forward_dropped` and
   `audit_forward_refused`. Unchanged

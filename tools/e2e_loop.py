@@ -381,6 +381,10 @@ def assert_decoy_interaction(harness: Harness, alerts: int, baseline: tuple[int,
     intake = read_intake_status((base / "run/edge-intake-status/status.json").read_bytes())
     assert intake is not None and intake["decoy"]["accepted"] == 1
     assert intake["accepted"] == alerts and not any(intake["refused"].values())
+    from tools.e2e_stages import _cli
+    assert ("decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware "
+            "evidence): accepted 1; last accepted ") in _cli(harness, ["status"]), \
+        "status does not show the decoy's interaction as Nexus's own"
     transitions = [e for e in ledger_events(base / "edge-incidents")
                    if e["event_type"] in {"edge.incident.opened", "edge.incident.updated"}]
     assert len(transitions) == alerts, "a decoy interaction reached the incident tracker"
