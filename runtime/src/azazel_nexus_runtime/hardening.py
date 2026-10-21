@@ -67,6 +67,7 @@ from azazel_nexus_runtime.activation_markers import grant_marker_path
 __all__ = [
     "ALL_PROFILES",
     "DECOY_HELPER_SANDBOX",
+    "DECOY_MANAGER_SOCKETS_INACCESSIBLE",
     "DECOY_NAMESPACE_CAPABILITIES",
     "DECOY_NAMESPACE_PATH",
     "DECOY_NAMESPACE_SANDBOX",
@@ -342,7 +343,11 @@ class ServiceProfile:
             # beside the declared one and loosen or contradict it (systemd
             # merges or resets list settings). Each has its own field or is
             # shared; the namespace unit's `extra` is pinned whole instead.
-            restated = sorted({key for key, _ in self.extra} & _RESERVED_EXTRA_KEYS)
+            reserved = _RESERVED_EXTRA_KEYS
+            if self.unit == DECOY_UNIT:
+                # The decoy's one reserved key, checked whole below (#276 F10).
+                reserved = reserved - {"InaccessiblePaths"}
+            restated = sorted({key for key, _ in self.extra} & reserved)
             if restated:
                 raise ValueError(
                     f"{self.unit} states {restated} in extra; those come only "
@@ -357,6 +362,19 @@ class ServiceProfile:
                     "under its own account and holds no capability or group"
                 )
             allowed = [value for key, value in self.extra if key == "IPAddressAllow"]
+            # Least privilege (#276 F10): it binds the IPv4 wildcard only
+            # (`decoy_listener.open_namespace_listener`), so no AF_INET6; it
+            # writes no file, so no writable path; and the manager's sockets
+            # are out of its reach as they are out of the helper's.
+            if self.address_families != ("AF_UNIX", "AF_INET"):
+                raise ValueError(
+                    f"{self.unit} is allowed exactly AF_UNIX (its report to the "
+                    "intake) and AF_INET (its IPv4 listener)")
+            if tuple(item for item in self.extra
+                     if item[0] == "InaccessiblePaths") != DECOY_MANAGER_SOCKETS_INACCESSIBLE:
+                raise ValueError(
+                    f"{self.unit} states exactly DECOY_MANAGER_SOCKETS_INACCESSIBLE "
+                    "as its InaccessiblePaths")
             if (settings.get("NetworkNamespacePath") != DECOY_NAMESPACE_PATH
                     or settings.get("PrivateUsers") != "yes"
                     or "PrivateNetwork" in settings
@@ -463,6 +481,11 @@ class ServiceProfile:
             raise ValueError(
                 f"{self.unit} would run as root; only {', '.join(ROOT_UNITS)} do"
             )
+        # The decoy writes no file (#276 F10). Checked last, so that a path
+        # the checks above refuse for a reason of their own says so.
+        if self.is_decoy_listener and (self.read_write_paths
+                                       or self.optional_read_write_paths):
+            raise ValueError(f"{self.unit} writes no file and declares no writable path")
 
     def _check_namespace_unit(self) -> None:
         """The decoy namespace unit, pinned whole (#196 (a)).
@@ -740,6 +763,15 @@ DECOY_NAMESPACE_SANDBOX: tuple[tuple[str, str], ...] = (
 #: when compromised (see `DECOY_NAMESPACE_SHARED_OMISSIONS`).
 DECOY_NAMESPACE_CAPABILITIES: tuple[str, ...] = ("CAP_SYS_ADMIN", "CAP_NET_ADMIN")
 
+#: The D-Bus and systemd private sockets, inaccessible to the decoy network
+#: helper and to the decoy (#276 F10): a second barrier behind each unit's
+#: address families. `-` keeps a host without one of them from failing the
+#: unit at namespace setup.
+DECOY_MANAGER_SOCKETS_INACCESSIBLE: tuple[tuple[str, str], ...] = (
+    ("InaccessiblePaths", "-/run/dbus/system_bus_socket"),
+    ("InaccessiblePaths", "-/run/systemd/private"),
+)
+
 #: The decoy network helper's own settings, pinned whole (#196 body, m2 of
 #: the review of #268). On top of the shared sandbox: the clock, the host
 #: name and the kernel log are out of reach, no realtime scheduling, and
@@ -757,9 +789,7 @@ DECOY_HELPER_SANDBOX: tuple[tuple[str, str], ...] = (
     ("ProtectHostname", "yes"),
     ("ProtectKernelLogs", "yes"),
     ("RestrictRealtime", "yes"),
-    ("InaccessiblePaths", "-/run/dbus/system_bus_socket"),
-    ("InaccessiblePaths", "-/run/systemd/private"),
-)
+) + DECOY_MANAGER_SOCKETS_INACCESSIBLE
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -1356,10 +1386,15 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="azdecoy",
         description="Azazel-Nexus Deception Lite decoy",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
-        # AF_UNIX for the observation socket; the internet families only to
-        # listen inside the decoy namespace.
-        address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
-        read_write_paths=("/var/lib/azazel/decoy",),
+        # AF_UNIX for its one line to the intake's decoy socket; AF_INET only
+        # to listen on the decoy namespace's IPv4 wildcard. No AF_INET6: it
+        # binds no IPv6 address (#276 F10).
+        address_families=("AF_UNIX", "AF_INET"),
+        # No writable path (#276 F10): it reads the isolation record and
+        # /proc, connects to the intake's socket (a connect, not a write to
+        # the file system) and writes nothing. /var/lib/azazel/decoy stays in
+        # the layout, the azdecoy account's, for a later phase that needs it.
+        read_write_paths=(),
         after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
         requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
         conditions=_grant_condition(DECOY_UNIT),
@@ -1380,7 +1415,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
             ("LimitFSIZE", "16M"),
             ("LogRateLimitIntervalSec", "30"),
             ("LogRateLimitBurst", "50"),
-        ),
+        ) + DECOY_MANAGER_SOCKETS_INACCESSIBLE,
         rationale=(
             "Holds no capability and runs under its own account, inside the "
             "decoy network namespace, with PrivateUsers=yes. It accepts and "
@@ -1390,8 +1425,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "IPAddressDeny=any stays, and the fixed decoy subnet is the "
             "only address allowed. It opens no socket without the network "
             "helper's isolation record from this boot with every check "
-            "passed. The activation pass never grants this unit "
-            "in this build"
+            "passed. It binds IPv4 only and writes no file, so it gets no "
+            "AF_INET6 and no writable path, and the service manager's "
+            "private sockets are inaccessible to it. The activation pass "
+            "never grants this unit in this build"
         ),
     ),
 )

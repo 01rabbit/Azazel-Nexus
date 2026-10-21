@@ -103,6 +103,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from . import boot_id as _boot_id
 from .activation import EDGE_CHECKS, EdgeBaselineState
 from .integration import EdgePresence
 
@@ -183,13 +184,9 @@ PROBE_CONTRACT = "azazel-nexus/edge-probe/v2"
 #: this one.
 PROBE_CONTRACT_V1 = "azazel-nexus/edge-probe/v1"
 
-#: The kernel's identifier for the current boot. Fixed, like every other path
-#: here; tests inject another one.
-BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
-
-#: The most this reads from the boot id file: 36 characters and a newline.
-_BOOT_ID_MAX_BYTES = 64
-_BOOT_ID_HEX = "0123456789abcdef"
+#: The kernel's identifier for the current boot (`boot_id.BOOT_ID_PATH`, the
+#: one reader both this module and the decoy use; #276 F3).
+BOOT_ID_PATH = _boot_id.BOOT_ID_PATH
 
 #: A ceiling on what is read from the state file. A reader with no ceiling is
 #: a reader whose memory is decided by whatever wrote the file.
@@ -539,18 +536,8 @@ class ProbeResult:
         return document
 
 
-def is_boot_id(value: object) -> bool:
-    """A canonical lowercase UUID, as the kernel writes it. Nothing else."""
-
-    if type(value) is not str or len(value) != 36:
-        return False
-    for index, char in enumerate(value):
-        if index in (8, 13, 18, 23):
-            if char != "-":
-                return False
-        elif char not in _BOOT_ID_HEX:
-            return False
-    return True
+#: A canonical lowercase UUID, as the kernel writes it (`boot_id.is_boot_id`).
+is_boot_id = _boot_id.is_boot_id
 
 
 def read_current_boot_id(
@@ -558,40 +545,20 @@ def read_current_boot_id(
 ) -> str:
     """This boot's id, read the protected way, or `EdgePackageRefused`.
 
-    No symlink is followed, the file must be a regular one (procfs reports the
-    sysctl as one) owned by root and writable by nobody else, the read is
-    bounded, and the value must be a canonical lowercase UUID. Anything else
-    refuses: the probe then writes nothing, and a reader treats every result
-    as stale.
+    `boot_id.read_current_boot_id`, with its refusal raised as this module's:
+    no symlink, a regular file owned by root and writable by nobody else, a
+    bounded read and a canonical lowercase UUID. Anything else refuses: the
+    probe then writes nothing, and a reader treats every result as stale.
 
     `owner_uid` exists for unit tests of these checks against a file the test
     owns. No production caller passes it -- the probe, the activation pass
     and `status` all call this with no argument -- and no flag reaches it.
     """
 
-    trusted = (0,) if owner_uid is None else (0, owner_uid)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(info.st_mode)
-                    or info.st_uid not in trusted
-                    or info.st_mode & 0o022):
-                raise EdgePackageRefused("the boot id has unsafe ownership or mode")
-            raw = stream.read(_BOOT_ID_MAX_BYTES + 1)
-    except OSError as exc:
-        raise EdgePackageRefused(f"the boot id could not be read: {exc}") from exc
-    if len(raw) > _BOOT_ID_MAX_BYTES:
-        raise EdgePackageRefused("the boot id is longer than a boot id")
-    try:
-        text = raw.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise EdgePackageRefused("the boot id is not ASCII") from exc
-    if text.endswith("\n"):
-        text = text[:-1]
-    if not is_boot_id(text):
-        raise EdgePackageRefused("the boot id is not a canonical boot id")
-    return text
+        return _boot_id.read_current_boot_id(path, owner_uid=owner_uid)
+    except _boot_id.BootIdRefused as exc:
+        raise EdgePackageRefused(str(exc)) from exc
 
 
 def _optional_boot_id(path: Path) -> Optional[str]:

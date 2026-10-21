@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from azazel_nexus.activation import CORE_UNITS
+from azazel_nexus.activation import (
+    ACTIVATION_CONTROLLER_UNIT,
+    CORE_UNITS,
+    DECOY_NAMESPACE_UNIT,
+    DECOY_NETWORK_HELPER_UNIT,
+)
 from azazel_nexus.core_reserve import ReserveRefused, parse_record
 from azazel_nexus.core_reserve import validate as validate_reserve
 
@@ -32,6 +37,13 @@ BEHAVIOUR_SCHEMA = "azazel-nexus/hil-on-host/v1"
 DRILL_SCHEMA = "azazel-nexus/hil-degraded-drill/v1"
 SCHEMAS = (CAMPAIGN_SCHEMA, MIO_CAMPAIGN_SCHEMA, GATE_SCHEMA, BEHAVIOUR_SCHEMA, DRILL_SCHEMA)
 GATES = ("HG-01", "HG-02", "HG-04", "HG-06", "HG-07")
+#: The governed units HG-02 does not observe, by name (#276 F7): the
+#: controller (the one unit allowed to unmask) and the two root decoy
+#: one-shots, which no daemon account runs. Any other unit, root or not, is
+#: expected in a record.
+HG02_EXCLUDED_UNITS = frozenset({
+    ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT,
+})
 BEHAVIOURS = (
     "local_inference",
     "remote_fallback",
@@ -239,15 +251,18 @@ def _gate(record: dict, reasons: list[str]) -> None:
         if not isinstance(attempts, list) or not attempts:
             reasons.append("observations.attempts: daemon account attempts required")
         else:
-            # Package-created (non-root) daemon accounts only: the runbook
-            # never runs the experiment as root, and the root governed units
-            # (the decoy namespace unit and network helper, #196 P1 and
-            # option (a)) are kept from the manager by their sandboxes (no
-            # AF_UNIX), not by their accounts. A record captured before
-            # #196 P1 lacks azdecoy and must be recaptured; the namespace
-            # unit adds no account, so it changes no record.
+            # Every governed daemon but the units named in
+            # `HG02_EXCLUDED_UNITS`, by name (#276 F7): the runbook never
+            # runs the experiment as root, and the root governed units (the
+            # decoy namespace unit and network helper, #196 P1 and option
+            # (a)) are kept from the manager by their sandboxes (no AF_UNIX),
+            # not by their accounts. A unit is not left out for being root:
+            # a new root unit is expected here, as root, and the gate cannot
+            # pass until it is named below on review. A record captured
+            # before #196 P1 lacks azdecoy and must be recaptured; the
+            # namespace unit adds no account, so it changes no record.
             expected_accounts = {unit.name: unit.account for unit in CORE_UNITS
-                                 if unit.account != "root"}
+                                 if unit.name not in HG02_EXCLUDED_UNITS}
             seen = set()
             for attempt in attempts:
                 if not isinstance(attempt, dict):

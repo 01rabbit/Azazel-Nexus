@@ -510,17 +510,28 @@ RESERVED = sorted({key for key, _ in SHARED_HARDENING} | {
 @pytest.mark.parametrize("key", RESERVED)
 def test_no_other_unit_can_restate_a_reserved_key_in_extra(unit, key):
     profile = _profile(unit)
-    with pytest.raises(ValueError, match="in extra"):
+    # The decoy's one reserved key is checked whole (#276 F10): another
+    # `InaccessiblePaths=` is refused by that check instead.
+    message = ("DECOY_MANAGER_SOCKETS_INACCESSIBLE"
+               if (unit, key) == (DECOY_UNIT, "InaccessiblePaths") else "in extra")
+    with pytest.raises(ValueError, match=message):
         replace(profile, extra=profile.extra + ((key, "anything"),))
 
 
 def test_no_packaged_unit_states_a_reserved_key_in_extra():
-    """Except the two one-shot decoy units, whose extra is pinned whole."""
+    """Except the two one-shot decoy units, whose extra is pinned whole, and
+    the decoy's `InaccessiblePaths=`, exactly the helper's two (#276 F10)."""
+
+    from azazel_nexus_runtime.hardening import DECOY_MANAGER_SOCKETS_INACCESSIBLE
 
     for profile in ALL_PROFILES:
         if profile.unit in (NSD, DECOY_NETWORK_HELPER_UNIT):
             continue
-        assert not {key for key, _ in profile.extra} & set(RESERVED), profile.unit
+        extra = profile.extra
+        if profile.unit == DECOY_UNIT:
+            assert extra[-2:] == DECOY_MANAGER_SOCKETS_INACCESSIBLE
+            extra = extra[:-2]
+        assert not {key for key, _ in extra} & set(RESERVED), profile.unit
 
 
 @pytest.mark.parametrize("change", [

@@ -53,7 +53,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Optional
 
-from .edge_package import EdgePackageRefused, is_boot_id, read_current_boot_id
+from .boot_id import BootIdRefused, is_boot_id, read_current_boot_id
 
 __all__ = [
     "CHECKS",
@@ -325,7 +325,7 @@ def require_isolation_for_decoy(*, now: str) -> IsolationEvidence:
 
     try:
         boot_id = _boot_id()
-    except EdgePackageRefused:
+    except BootIdRefused:
         raise IsolationEvidenceRefused("this boot's id could not be read") from None
     evidence = load_evidence()
     if evidence is None:

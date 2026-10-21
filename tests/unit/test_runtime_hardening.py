@@ -1143,7 +1143,8 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     assert settings["NetworkNamespacePath"] == [DECOY_NAMESPACE_PATH]
     assert DECOY_NAMESPACE_PATH == "/run/netns/azazel-decoy"
     assert settings["PrivateUsers"] == ["yes"]
-    assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6"]
+    # #276 F10: it binds the IPv4 wildcard only, so no AF_INET6.
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_INET"]
     assert settings["IPAddressDeny"] == ["any"]
     # The fixed decoy subnet and nothing else (#196 body, §13): without it
     # the cgroup filter drops what the decoy receives as well.
@@ -1151,9 +1152,13 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     from azazel_nexus_runtime.decoy_addresses import DECOY_SUBNET
     assert settings["IPAddressAllow"] == [DECOY_SUBNET]
     assert "PrivateNetwork" not in settings
-    assert settings["ReadWritePaths"] == ["/var/lib/azazel/decoy"]
+    # #276 F10: it writes no file, so no writable path; the manager's private
+    # sockets are inaccessible to it, as to the helper.
+    assert settings["InaccessiblePaths"] == ["-/run/dbus/system_bus_socket",
+                                             "-/run/systemd/private"]
     for key in ("SupplementaryGroups", "RuntimeDirectory", "LoadCredential",
-                "Environment", "EnvironmentFile", "ExecStartPre"):
+                "Environment", "EnvironmentFile", "ExecStartPre", "ReadWritePaths",
+                "StateDirectory", "BindPaths"):
         assert key not in settings, key
     # After and Requires the helper as well as the controller: stopping the
     # helper stops the decoy first.
@@ -1162,6 +1167,69 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     from azazel_nexus.layout import spec_for
     spec = spec_for("/var/lib/azazel/decoy")
     assert (spec.owner, spec.group, spec.mode) == ("azdecoy", "root", 0o700)
+
+
+def test_the_decoy_and_the_helper_share_one_manager_socket_list():
+    from azazel_nexus_runtime.hardening import (
+        DECOY_HELPER_SANDBOX,
+        DECOY_MANAGER_SOCKETS_INACCESSIBLE,
+    )
+
+    assert DECOY_MANAGER_SOCKETS_INACCESSIBLE == (
+        ("InaccessiblePaths", "-/run/dbus/system_bus_socket"),
+        ("InaccessiblePaths", "-/run/systemd/private"))
+    assert DECOY_HELPER_SANDBOX[-2:] == DECOY_MANAGER_SOCKETS_INACCESSIBLE
+    assert _profile(DECOY).extra[-2:] == DECOY_MANAGER_SOCKETS_INACCESSIBLE
+
+
+@pytest.mark.parametrize("families", [
+    ("AF_UNIX", "AF_INET", "AF_INET6"), ("AF_UNIX", "AF_INET6"), ("AF_INET",),
+    ("AF_UNIX", "AF_INET", "AF_NETLINK"), ("AF_INET", "AF_UNIX"),
+])
+def test_the_decoy_gets_exactly_unix_and_ipv4(families):
+    """#276 F10: no AF_INET6 (it binds IPv4 only) and nothing else."""
+
+    from dataclasses import replace
+
+    with pytest.raises(ValueError):
+        replace(_profile(DECOY), address_families=families)
+
+
+@pytest.mark.parametrize("field,path", [
+    ("read_write_paths", "/var/lib/azazel/decoy"),
+    ("optional_read_write_paths", "/var/lib/azazel/decoy"),
+])
+def test_the_decoy_declares_no_writable_path(field, path):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="writes no file"):
+        replace(_profile(DECOY), **{field: (path,)})
+
+
+@pytest.mark.parametrize("change", ["drop-one", "drop-both", "add-other", "reorder"])
+def test_the_decoy_keeps_exactly_the_manager_sockets_inaccessible(change):
+    from dataclasses import replace
+
+    profile = _profile(DECOY)
+    rest = tuple(item for item in profile.extra if item[0] != "InaccessiblePaths")
+    paths = tuple(item for item in profile.extra if item[0] == "InaccessiblePaths")
+    extra = {
+        "drop-one": rest + paths[:1],
+        "drop-both": rest,
+        "add-other": profile.extra + (("InaccessiblePaths", "-/run/other"),),
+        "reorder": rest + paths[::-1],
+    }[change]
+    with pytest.raises(ValueError, match="InaccessiblePaths"):
+        replace(profile, extra=extra)
+
+
+@pytest.mark.parametrize("key", ["BindPaths", "ReadWritePaths", "ExecStop"])
+def test_the_decoy_may_state_no_other_reserved_key(key):
+    from dataclasses import replace
+
+    profile = _profile(DECOY)
+    with pytest.raises(ValueError, match="in extra"):
+        replace(profile, extra=profile.extra + ((key, "/run/other"),))
 
 
 def test_both_exposure_units_carry_the_three_marker_lines_and_pass_the_content_check():
