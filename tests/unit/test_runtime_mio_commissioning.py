@@ -304,3 +304,49 @@ def test_unit_fallback_files_for_the_proposal_are_core(credentials, context, mon
         path.write_bytes(mio_commissioning.MISSING_CREDENTIAL)
         path.chmod(0o400)
     assert mio_commissioning.commissioned_profile() is MioProfile.CORE
+
+
+def _bridged(context):
+    """The golden node with its second interface confirmed `deception_bridge` (#196 G1a)."""
+
+    from azazel_fabric.provisioning_contracts import TopologyProfile
+
+    topology = context["topology_profile"]
+    observation = topology.commissioned_assignments[0]
+    bridge = observation.model_copy(update={
+        "assignment_id": "assign-golden-2", "role": "deception_bridge",
+        "selector": observation.selector.model_copy(update={
+            "bus_path": "pci-0000:03:00.0", "permanent_mac": "02:00:00:00:00:0b",
+            "serial": "NIC-B-0002", "physical_label": "LAN2"})})
+    return dict(context, topology_profile=TopologyProfile.model_validate(topology.model_copy(update={
+        "commissioned_assignments": (observation, bridge),
+        "unassigned_interface_keys": ()}).model_dump(mode="json")))
+
+
+_SCOPE = {"approved_v4": ["10.20.0.0/24"], "bridge_prefix": "10.255.196.0/30",
+          "ingress_role": "deception_bridge"}
+
+
+@pytest.mark.parametrize("selection,expected", [
+    ("CORE", MioProfile.CORE), ("LITE", MioProfile.LOCAL_ONLY),
+    ("FULL", MioProfile.FASTEST_PERMITTED),
+])
+def test_a_v3_proposal_keeps_its_signed_mio_selection(credentials, context, monkeypatch,
+                                                      selection, expected):
+    _node(monkeypatch, context)
+    payload = commissioning_proposal_payload(**_bridged(context), mio_profile=selection,
+                                             deception_scope=dict(_SCOPE))
+    assert json.loads(payload)["schema"] == "azazel-nexus/commissioning-proposal/v3"
+    credentials.save(payload)
+    assert mio_entryd.commissioned_profile() is expected
+
+
+def test_a_v3_proposal_with_its_scope_tampered_is_core(credentials, context, monkeypatch):
+    _node(monkeypatch, context)
+    payload = commissioning_proposal_payload(**_bridged(context), mio_profile="FULL",
+                                             deception_scope=dict(_SCOPE))
+    signature = credentials.key.sign(
+        approval_message(ApprovalPurpose.COMMISSIONING_PROPOSAL, payload)).signature
+    tampered = payload.replace(b"10.20.0.0/24", b"10.21.0.0/24")
+    credentials.save(tampered, signature=signature)
+    assert mio_entryd.commissioned_profile() is MioProfile.CORE

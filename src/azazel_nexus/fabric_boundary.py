@@ -805,6 +805,19 @@ def assert_local_record_matches_full_proposal(*, document: dict, record: Any) ->
         raise CommissioningRecordUnavailable("local commissioning view does not match full evidence") from None
 
 
+def deception_scope_assignments(inventory: Any, topology_profile: Any) -> tuple[tuple[str, str], ...]:
+    """`(interface_key, role)` for every commissioned assignment (#196 G1a).
+
+    What `decoy_scope.decode_deception_scope` counts the `deception_bridge`
+    interfaces from. Each selector is resolved by Fabric's rule
+    (`identify_interface`), so an interface is named by role and identity,
+    never by a kernel name. Raises on any assignment that does not resolve.
+    """
+
+    return tuple((identify_interface(inventory.interfaces, assignment.selector).interface_key,
+                  assignment.role) for assignment in topology_profile.commissioned_assignments)
+
+
 def restore_commissioning_inputs(document: dict) -> dict:
     """Decode retained local expectations, not an imported candidate's authority.
 
@@ -820,20 +833,32 @@ def restore_commissioning_inputs(document: dict) -> dict:
         )
         schema = document["schema"]
         if schema not in {"azazel-nexus/commissioning-proposal/v1",
-                          "azazel-nexus/commissioning-proposal/v2"}:
+                          "azazel-nexus/commissioning-proposal/v2",
+                          "azazel-nexus/commissioning-proposal/v3"}:
             raise ValueError
         selection = {}
-        if schema == "azazel-nexus/commissioning-proposal/v2":
+        if schema != "azazel-nexus/commissioning-proposal/v1":
+            # v2 and v3 carry the M.I.O. selection; it is required in both.
             profile = document["mio_profile"]
             if type(profile) is not str or profile not in {"CORE", "LITE", "FULL"}:
                 raise ValueError
             selection["mio_profile"] = profile
-        return dict(inventory=HardwareInventory.model_validate(document["inventory"]),
-                    resource_profile=ResourceProfile.model_validate(document["resource"]),
-                    topology_profile=TopologyProfile.model_validate(document["topology"]),
-                    record_id=document["record"]["record_id"], operator=document["operator"],
-                    confirmed_at=document["record"]["created_at"], **selection)
-    except (ImportError, ValueError, TypeError, KeyError, AttributeError):
+        context = dict(inventory=HardwareInventory.model_validate(document["inventory"]),
+                       resource_profile=ResourceProfile.model_validate(document["resource"]),
+                       topology_profile=TopologyProfile.model_validate(document["topology"]),
+                       record_id=document["record"]["record_id"], operator=document["operator"],
+                       confirmed_at=document["record"]["created_at"], **selection)
+        if schema == "azazel-nexus/commissioning-proposal/v3":
+            # Required in v3, as `mio_profile` is in v2 (#196 G1a, grant §4.1):
+            # decoded whole here, so a retained view never holds a partial scope.
+            from .decoy_scope import decode_deception_scope  # noqa: PLC0415
+
+            section = document["deception_scope"]
+            decode_deception_scope(section, assignments=deception_scope_assignments(
+                context["inventory"], context["topology_profile"]))
+            context["deception_scope"] = section
+        return context
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, IdentityUnavailable):
         raise CommissioningRecordUnavailable("retained commissioning inputs unavailable") from None
 
 

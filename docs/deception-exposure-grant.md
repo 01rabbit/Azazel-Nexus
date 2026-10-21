@@ -194,7 +194,11 @@ the design decision F2 asks for.
    plus `elements = { ... }` in the set and an `iifname { ... }` match on
    the forward accept, rendered by one function from the decoded scope.
    Only `str(IPv4Network)` and the validated names reach the text, never an
-   input string. Rejected: a second `nft add element` command (two
+   input string, and every name is written **quoted** (`iifname { "<name>",
+   ... }`) even though the decoder already refuses names that nftables could
+   read otherwise (G1a: `lo`, `all`, `default`, `.`, `..` and the `az-decoy`
+   prefix in any case, a leading `-`, an all-digit name, which could be taken
+   for an interface index). Rejected: a second `nft add element` command (two
    transactions, a window with a table that does not match the record).
 2. **The isolation check.** `EXPECTED_NFT_LISTING` is computed from the same
    scope by the same renderer. The text listing wraps long element lists,
@@ -472,6 +476,7 @@ pass and the existing tests that pin it stay.
 | --- | --- | --- |
 | G0 | this proposal; owner decisions (§10) | — |
 | G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); the reply accept's `oifname { <ingress> }` and the ingress drop of [reachability](deception-exposure-reachability.md) R3; unit tests only, nothing wired into the pass | Q1–Q4 |
+| G1a *(implemented)* | the first half of G1: `commissioning-proposal/v3` (v2 plus a required `deception_scope`, `src/azazel_nexus/commissioning_approval.py`, `fabric_boundary.restore_commissioning_inputs`; M.I.O. reads its signed `mio_profile` from v2 and v3 alike), the strict decoder, the rendered scope file and its reader (`src/azazel_nexus/decoy_scope.py`, a standard-library leaf under the helper's boundary rules); tests only (`tests/unit/test_decoy_scope.py`, `tests/unit/test_commissioning_approval.py`); nothing calls it from the pass or the helper, no unit file changes. The ruleset, `nft -j`, isolation v2, masquerade and `LoadCredential=` are G1b | Q1–Q3 |
 | G2 | the watch: verify unit, timer, trip unit, decoy `Requires=`, helper `After=` (§6); the verify re-reads forwarding, the ingress rules and the routes of `main` ([reachability](deception-exposure-reachability.md) R4); unit tests | Q6, Q7 |
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
