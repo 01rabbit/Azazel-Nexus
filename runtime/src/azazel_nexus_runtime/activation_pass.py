@@ -95,7 +95,7 @@ __all__ = [
 ]
 
 #: The units a pass may grant: the five SUPPORTING loop units (§6.2, P4),
-#: edge-core (P5) and the two Deception Lite exposure units (#196 P1). The
+#: edge-core (P5) and the three Deception Lite exposure units (#196). The
 #: same object as the tripwire's and the marker writer's. The policy is
 #: narrower: `ACTIVATION_UNIT_ALLOWLIST` cannot name the exposure units, so a
 #: lease never holds them, and the library withholds their tier anyway.

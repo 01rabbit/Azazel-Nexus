@@ -11,8 +11,10 @@
 Description=Azazel-Nexus Deception Lite network helper
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md
 After=azazel-activated.service
+After=azazel-decoy-nsd.service
 ConditionPathExists=/run/azazel-activation/granted/azazel-decoy-netd.service
 Requires=azazel-activated.service
+Requires=azazel-decoy-nsd.service
 
 [Service]
 Type=oneshot

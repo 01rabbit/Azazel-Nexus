@@ -1,0 +1,41 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once.
+# The only unit that holds CAP_SYS_ADMIN, as a bounding set and never as an ambient capability: it would create the decoy network namespace at /run/netns/azazel-decoy and do nothing else.
+# It gets route netlink only, may create only a network namespace, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
+# It is the one unit without the shared file-system sandbox: a mount namespace would keep the namespace handle from the host, and with CAP_SYS_ADMIN and mount that sandbox was never a wall for it.
+# A compromised body would be host root; its containment is a fixed body that takes no input, static review and a later LSM profile.
+# Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite namespace
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md
+After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-decoy-nsd.service
+Requires=azazel-activated.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/libexec/azazel/az-decoy-nsd
+RemainAfterExit=yes
+TimeoutStartSec=30s
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_NETLINK
+NoNewPrivileges=yes
+RestrictNamespaces=net
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service mount umount2 unshare setns
+SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

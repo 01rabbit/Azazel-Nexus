@@ -1005,11 +1005,17 @@ def _exposure_definitions():
     return definitions
 
 
-def test_the_exposure_tier_holds_exactly_the_helper_and_the_decoy():
-    from azazel_nexus.activation import DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT
+def test_the_exposure_tier_holds_exactly_the_namespace_unit_the_helper_and_the_decoy():
+    from azazel_nexus.activation import (
+        DECOY_NAMESPACE_UNIT,
+        DECOY_NETWORK_HELPER_UNIT,
+        DECOY_UNIT,
+    )
 
     by_name = {d.name: d for d in _exposure_definitions()}
-    assert set(by_name) == {DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT}
+    assert set(by_name) == {DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT}
+    assert DECOY_NAMESPACE_UNIT == "azazel-decoy-nsd.service"
+    assert by_name[DECOY_NAMESPACE_UNIT].account == "root"
     assert by_name[DECOY_NETWORK_HELPER_UNIT].account == "root"
     assert by_name[DECOY_UNIT].account == "azdecoy"
     assert all(d.wiring is None for d in by_name.values())
@@ -1047,8 +1053,8 @@ def test_the_exposure_tier_is_withheld_with_every_other_gate_satisfied(tmp_path)
             assert units.state(definition.name) is UnitState.MASKED
         # The rest of the pass is unaffected: the exposure tier withholds only itself.
         assert "azazel-edge-core.service" in outcome.granted
-    assert ("unmask_and_enable", definitions[0].name) not in units.calls
-    assert ("unmask_and_enable", definitions[1].name) not in units.calls
+    for definition in definitions:
+        assert ("unmask_and_enable", definition.name) not in units.calls
     withheld = [entry.event for entry in ledger
                 if entry.event["event_type"] == "activation.unit_withheld"
                 and entry.event.get("unit") in {d.name for d in definitions}]

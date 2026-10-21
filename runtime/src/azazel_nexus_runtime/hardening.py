@@ -54,6 +54,7 @@ from typing import Mapping, Sequence
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
     CORE_UNITS,
+    DECOY_NAMESPACE_UNIT,
     DECOY_NETWORK_HELPER_UNIT,
     DECOY_UNIT,
 )
@@ -64,6 +65,9 @@ from azazel_nexus_runtime.activation_markers import grant_marker_path
 __all__ = [
     "ALL_PROFILES",
     "DECOY_NAMESPACE_PATH",
+    "DECOY_NAMESPACE_SANDBOX",
+    "DECOY_NAMESPACE_SHARED_OMISSIONS",
+    "DECOY_NAMESPACE_SHARED_OVERRIDES",
     "EDGE_PROBE_PREFLIGHT_UNIT",
     "GRANT_MARKER_UNITS",
     "PROFILES",
@@ -104,6 +108,19 @@ SHARED_HARDENING: tuple[tuple[str, str], ...] = (
     ("IPAddressDeny", "any"),
     ("UMask", "0027"),
 )
+
+#: Keys no profile but the decoy namespace unit's (whose `extra` is pinned
+#: whole) may put in `ServiceProfile.extra`: every shared key, and the
+#: identity, capability, address-family, system-call and path settings the
+#: declaration renders from its own fields (#196 (a) review). Not
+#: `ReadOnlyPaths=`: it narrows, and `azazel-mio-locald.service` states it
+#: in `extra` on purpose.
+_RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
+    "User", "Group", "SupplementaryGroups", "DynamicUser", "ExecStart",
+    "CapabilityBoundingSet", "AmbientCapabilities", "SystemCallFilter",
+    "RestrictAddressFamilies", "ReadWritePaths",
+    "InaccessiblePaths", "BindPaths", "BindReadOnlyPaths",
+}
 
 
 @dataclass(frozen=True)
@@ -197,6 +214,21 @@ class ServiceProfile:
     #: AmbientCapabilities stays empty for every unit (uid 0 gains the
     #: bounding-set capabilities on exec; nothing is granted to non-root).
     capability_bounding_set: tuple[str, ...] = ()
+    #: Replacements for `SHARED_HARDENING` entries, rendered in their place
+    #: (several entries for one key render as several lines, in order).
+    #: Empty for every unit but the Deception Lite namespace unit, whose
+    #: overrides are exactly `DECOY_NAMESPACE_SHARED_OVERRIDES` (#196 (a)):
+    #: creating a network namespace needs `unshare` of a net namespace and a
+    #: bind mount, which the shared `RestrictNamespaces=yes` and
+    #: `SystemCallFilter=@system-service` refuse. Nothing else may loosen the
+    #: shared sandbox, and that unit may loosen nothing else.
+    shared_overrides: tuple[tuple[str, str], ...] = ()
+    #: `SHARED_HARDENING` keys not rendered at all. Empty for every unit but
+    #: the Deception Lite namespace unit, whose omissions are exactly
+    #: `DECOY_NAMESPACE_SHARED_OMISSIONS` (#196 (a)): the settings that make
+    #: systemd build a mount namespace for the unit, because a mount made
+    #: inside one never reaches the host (n3, VM-checked).
+    shared_omissions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.address_families:
@@ -250,7 +282,15 @@ class ServiceProfile:
                 "manager over D-Bus and unmask what the controller withholds, "
                 "so it gets route and nftables netlink only"
             )
-        # CAP_NET_ADMIN belongs to exactly one unit, the one-shot decoy
+        # CAP_SYS_ADMIN belongs to exactly one unit, the one-shot
+        # decoy namespace unit, and that unit holds nothing else (#196 (a)).
+        if (("CAP_SYS_ADMIN" in self.capability_bounding_set)
+                != (self.unit == DECOY_NAMESPACE_UNIT)):
+            raise ValueError(
+                f"{self.unit}: CAP_SYS_ADMIN is held by "
+                f"{DECOY_NAMESPACE_UNIT} and by no other unit"
+            )
+        # CAP_NET_ADMIN likewise belongs to exactly one unit, the one-shot decoy
         # network helper, and that unit holds nothing else (#196 P1).
         if (("CAP_NET_ADMIN" in self.capability_bounding_set)
                 != (self.unit == DECOY_NETWORK_HELPER_UNIT)):
@@ -264,6 +304,25 @@ class ServiceProfile:
                 f"{self.unit} holds exactly CAP_NET_ADMIN; anything wider is "
                 "a reviewed change to this declaration"
             )
+        if self.unit == DECOY_NAMESPACE_UNIT:
+            self._check_namespace_unit()
+        elif self.shared_overrides or self.shared_omissions:
+            raise ValueError(
+                f"{self.unit} would override the shared hardening; only "
+                f"{DECOY_NAMESPACE_UNIT} does, and only as declared"
+            )
+        else:
+            # `extra` renders before the shared lines, so a shared key, an
+            # identity, a capability or a path setting placed there would sit
+            # beside the declared one and loosen or contradict it (systemd
+            # merges or resets list settings). Each has its own field or is
+            # shared; the namespace unit's `extra` is pinned whole instead.
+            restated = sorted({key for key, _ in self.extra} & _RESERVED_EXTRA_KEYS)
+            if restated:
+                raise ValueError(
+                    f"{self.unit} states {restated} in extra; those come only "
+                    "from the declaration's own fields and the shared hardening"
+                )
         if self.is_decoy_listener:
             settings = dict(self.extra)
             if (self.unit != DECOY_UNIT or self.account == "root"
@@ -326,6 +385,15 @@ class ServiceProfile:
             "/etc/systemd/system", "/run/systemd/system.control",
             "/run/azazel-nexus-bootstrap", "/run/azazel-activation",
         }
+        # No unit declares the namespace directory writable. The namespace
+        # unit writes it as root with no file-system sandbox at all (a
+        # `ReadWritePaths=` would itself build the mount namespace that keeps
+        # its mount from the host); every other unit has no business there.
+        if any(path.removeprefix("-").rstrip("/") == NETNS_DIRECTORY
+               for path in self.read_write_paths + self.optional_read_write_paths):
+            raise ValueError(
+                f"{self.unit}: {NETNS_DIRECTORY} is not a declared writable path; "
+                f"only {DECOY_NAMESPACE_UNIT} writes it, without a mount namespace")
         if ("/run/systemd/system.control" in self.read_write_paths
                 and self.unit != ACTIVATION_CONTROLLER_UNIT):
             raise ValueError("bootstrap overlay is writable only by the activation controller")
@@ -341,14 +409,67 @@ class ServiceProfile:
                 "layout does not declare. A writable path nobody declared is a "
                 "path nobody set the mode or the owner of"
             )
-        # root is the controller's and the decoy network helper's, and no
-        # other unit's (#196 P1 review): a third root unit is a diff a
-        # reviewer sees, not a profile that quietly chose an account.
-        if self.account == "root" and self.unit not in (
-                ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT):
+        # root is the controller's, the decoy network helper's and the decoy
+        # namespace unit's, and no other unit's (#196 P1 review, #196 (a)):
+        # another root unit is a diff a reviewer sees, not a profile that
+        # quietly chose an account.
+        if self.account == "root" and self.unit not in ROOT_UNITS:
             raise ValueError(
-                f"{self.unit} would run as root; only {ACTIVATION_CONTROLLER_UNIT} "
-                f"and {DECOY_NETWORK_HELPER_UNIT} do"
+                f"{self.unit} would run as root; only {', '.join(ROOT_UNITS)} do"
+            )
+
+    def _check_namespace_unit(self) -> None:
+        """The decoy namespace unit, pinned whole (#196 (a)).
+
+        One unit, one privilege, one act: root so that its bounding set
+        reaches it, exactly `CAP_SYS_ADMIN`, route netlink only, no declared
+        writable path, and the sandbox, the shared overrides and the shared
+        omissions exactly as declared. Anything different is a reviewed
+        change to this declaration, not a profile that drifted.
+        """
+
+        if (self.account != "root"
+                or self.capability_bounding_set != ("CAP_SYS_ADMIN",)
+                or self.supplementary_groups):
+            raise ValueError(
+                f"{self.unit} is root and holds exactly CAP_SYS_ADMIN and no "
+                "group; anything wider is a reviewed change to this declaration"
+            )
+        if self.address_families != ("AF_NETLINK",):
+            raise ValueError(
+                f"{self.unit} gets route netlink only: no AF_UNIX that could "
+                "reach the service manager, no internet family"
+            )
+        if (self.read_write_paths or self.optional_read_write_paths
+                or self.runtime_directory):
+            raise ValueError(
+                f"{self.unit} declares no writable path and no runtime "
+                "directory: either would build a mount namespace"
+            )
+        if (self.shared_overrides != DECOY_NAMESPACE_SHARED_OVERRIDES
+                or self.shared_omissions != DECOY_NAMESPACE_SHARED_OMISSIONS
+                or self.extra != DECOY_NAMESPACE_SANDBOX
+                or self.unit_type != "oneshot"):
+            raise ValueError(
+                f"{self.unit} is a one-shot unit with exactly the declared "
+                "sandbox, shared overrides and shared omissions"
+            )
+        if (self.is_artifact_fetcher or self.is_model_host
+                or self.is_inference_transport or self.is_decoy_listener):
+            raise ValueError(f"{self.unit} holds no network role")
+        # Where it runs from and what it is ordered against, fixed as well:
+        # the fixed executable, only the controller to wait for, and only
+        # this boot's grant marker as a condition.
+        if (self.executable != "/usr/libexec/azazel/az-decoy-nsd"
+                or self.after != (ACTIVATION_CONTROLLER_UNIT,)
+                or self.requires != (ACTIVATION_CONTROLLER_UNIT,)
+                or self.binds_to or self.before or self.conflicts
+                or not self.default_dependencies
+                or self.conditions != (
+                    ("ConditionPathExists", grant_marker_path(self.unit)),)):
+            raise ValueError(
+                f"{self.unit} runs az-decoy-nsd, after and requiring only "
+                f"{ACTIVATION_CONTROLLER_UNIT}, on its grant marker alone"
             )
 
 
@@ -361,6 +482,7 @@ class ServiceProfile:
 #: ordinary path and are bound to the controller (`BindsTo=`).
 GRANT_MARKER_UNITS = (
     "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -445,15 +567,97 @@ SYSTEM_ACCOUNTS = (
 )
 
 
+#: The units that run as root: the activation controller, and the two
+#: one-shot Deception Lite units whose single bounding-set capability reaches
+#: only uid 0 without an ambient grant (#196 P1, #196 (a)).
+ROOT_UNITS = (ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
+              DECOY_NETWORK_HELPER_UNIT)
+
+
+#: Where named network namespaces live (iproute2's convention; `ip netns
+#: add` creates it). No unit declares it writable (see `ServiceProfile`).
+NETNS_DIRECTORY = "/run/netns"
+
 #: The decoy's network namespace (#196 P1, design D1). A fixed handle path,
-#: never a parameter. In this build nothing creates it, so a decoy unit started
-#: anyway fails at namespace setup before its executable runs. Creating it
-#: needs a mount and CAP_SYS_ADMIN, which the CAP_NET_ADMIN helper does not
-#: hold and cannot under its sandbox; per the design (option (a),
-#: docs/deception-redirect-prerequisites.md §5, §10) a third one-shot unit
-#: that only creates the namespace is added with the helper's body, and its
-#: privilege is reviewed then.
-DECOY_NAMESPACE_PATH = "/run/netns/azazel-decoy"
+#: never a parameter. Creating it needs a mount and CAP_SYS_ADMIN, which the
+#: CAP_NET_ADMIN helper does not hold and cannot under its sandbox, so per
+#: the design (option (a), docs/deception-redirect-prerequisites.md §5, §10)
+#: a third one-shot unit, `azazel-decoy-nsd.service`, only creates it. In
+#: this build that unit's executable refuses and exits, so nothing creates
+#: it, and a decoy unit started anyway fails at namespace setup before its
+#: executable runs.
+DECOY_NAMESPACE_PATH = f"{NETNS_DIRECTORY}/azazel-decoy"
+
+#: The `SHARED_HARDENING` entries the decoy namespace unit does not carry
+#: (#196 (a), n3), and only it: every shared setting that makes systemd
+#: build a mount namespace for the unit. systemd cuts propagation from such
+#: a namespace to the host, so the bind mount that makes a named network
+#: namespace is never seen outside it: VM-checked on Debian 13 with systemd
+#: 257.13 (a mechanism check, not hardware evidence), `ip netns add` in a unit
+#: with `ProtectSystem=strict`/`ReadWritePaths=/run/netns` succeeded while
+#: the host's handle stayed an empty file, and a unit joining it failed with
+#: 225/NETWORK. Nothing is lost by leaving them out: a unit holding
+#: CAP_SYS_ADMIN and the `mount` system call could undo any of them inside
+#: its own mount namespace anyway, so for this unit they were never a wall.
+#:
+#: **A compromised body is host root.** Root with CAP_SYS_ADMIN and `mount`
+#: can mount a fresh /proc or /sys and rewrite `kernel.core_pattern` and the
+#: like, or remount the cgroup file system read-write; no unit setting here
+#: stops that. The bounding set, the system call filter,
+#: `RestrictNamespaces=net`, netlink as its only family and
+#: `NoNewPrivileges=` narrow what it is handed, but its containment rests on
+#: the body: fixed in code, taking no input (no argument, no file, no
+#: environment, no socket), statically reviewed, and later a mandatory
+#: access control (LSM) profile. The body phase is to weigh removing the
+#: privilege instead: let systemd hold the namespace (the helper and the
+#: decoy sharing one with `PrivateNetwork=yes` and `JoinsNamespaceOf=`, the
+#: helper moving one veth end to the host), so that no unit needs
+#: CAP_SYS_ADMIN at all (docs/deception-redirect-prerequisites.md §10).
+DECOY_NAMESPACE_SHARED_OMISSIONS: tuple[str, ...] = (
+    "ProtectSystem",
+    "ProtectHome",
+    "PrivateTmp",
+    "PrivateDevices",
+    "ProtectKernelTunables",
+    "ProtectKernelModules",
+    "ProtectControlGroups",
+)
+
+#: The two `SHARED_HARDENING` entries the decoy namespace unit replaces, and
+#: what it replaces them with (#196 (a)). Pinned: `ServiceProfile` refuses
+#: any other override, on that unit or any other.
+#:
+#: * `RestrictNamespaces=net`: of every namespace type, only a network
+#:   namespace may be created (`unshare(CLONE_NEWNET)`).
+#: * `SystemCallFilter=`, two lines in this order: the shared
+#:   `@system-service` set plus `mount`, `umount2`, `unshare` and `setns`
+#:   (the bind mount of the namespace handle, its removal, the namespace
+#:   itself, and the return to the original namespace that `ip netns add`
+#:   makes after creating it: without `setns` it is killed with SIGSYS,
+#:   VM-checked); then a deny list that takes back what creating a namespace
+#:   never needs: asynchronous I/O, ownership changes, IPC, keyrings, memory
+#:   locking, identity changes, timers and `capset`.
+DECOY_NAMESPACE_SHARED_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ("RestrictNamespaces", "net"),
+    ("SystemCallFilter", "@system-service mount umount2 unshare setns"),
+    ("SystemCallFilter",
+     "~@aio @chown @ipc @keyring @memlock @setuid @timer capset"),
+)
+
+#: The decoy namespace unit's own settings, on top of what it keeps of
+#: `SHARED_HARDENING` (#196 (a)). Pinned like the overrides. Nothing here
+#: may build a mount namespace: `ProtectProc=`, `ProcSubset=`,
+#: `InaccessiblePaths=`, `PrivateNetwork=`, `ProtectKernelLogs=`,
+#: `ProtectHostname=` and `ProtectClock=` were in the first revision and are
+#: gone for that reason (n3).
+DECOY_NAMESPACE_SANDBOX: tuple[tuple[str, str], ...] = (
+    # Stays active after it ran, so that the helper's `Requires=` holds while
+    # the namespace exists, and stopping it (and, through `Requires=`, the
+    # helper and the decoy first) is the hook for removing it last.
+    ("RemainAfterExit", "yes"),
+    ("TimeoutStartSec", "30s"),
+    ("RestrictRealtime", "yes"),
+)
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -949,6 +1153,48 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
     ),
     ServiceProfile(
+        unit=DECOY_NAMESPACE_UNIT,
+        executable="/usr/libexec/azazel/az-decoy-nsd",
+        account="root",
+        description="Azazel-Nexus Deception Lite namespace",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
+        # Route netlink only, as VM-checked with `ip netns add`. No AF_UNIX:
+        # it is root, and an AF_UNIX socket would reach the service manager
+        # over D-Bus. No internet family.
+        address_families=("AF_NETLINK",),
+        # No writable path declared: `ReadWritePaths=` would build the mount
+        # namespace that keeps the namespace handle from the host (n3). It
+        # writes /run/netns as root, with no file-system sandbox.
+        read_write_paths=(),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition(DECOY_NAMESPACE_UNIT),
+        unit_type="oneshot",
+        runtime_directory="",
+        # Root only so that the bounding set reaches it without an ambient
+        # grant; the bounding set is CAP_SYS_ADMIN and nothing else.
+        capability_bounding_set=("CAP_SYS_ADMIN",),
+        extra=DECOY_NAMESPACE_SANDBOX,
+        shared_overrides=DECOY_NAMESPACE_SHARED_OVERRIDES,
+        shared_omissions=DECOY_NAMESPACE_SHARED_OMISSIONS,
+        rationale=(
+            "Runs once. The only unit that holds CAP_SYS_ADMIN, as a bounding "
+            "set and never as an ambient capability: it would create the "
+            "decoy network namespace at /run/netns/azazel-decoy and do "
+            "nothing else. It gets route netlink only, may create only a "
+            "network namespace, and its syscall filter adds only mount, "
+            "umount2, unshare and setns to the shared set and takes back what "
+            "that act never needs. It is the one unit without the shared "
+            "file-system sandbox: a mount namespace would keep the namespace "
+            "handle from the host, and with CAP_SYS_ADMIN and mount that "
+            "sandbox was never a wall for it. A compromised body would be "
+            "host root; its containment is a fixed body that takes no input, "
+            "static review and a later LSM profile. Its body is a later phase of "
+            "#196; in this build the executable refuses and exits, and the "
+            "activation pass never grants this unit"
+        ),
+    ),
+    ServiceProfile(
         unit=DECOY_NETWORK_HELPER_UNIT,
         executable="/usr/libexec/azazel/az-decoy-netd",
         account="root",
@@ -964,8 +1210,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # Nothing writable in this build: where the namespace handle and the
         # rendered rules live is decided with the helper's body.
         read_write_paths=(),
-        after=(ACTIVATION_CONTROLLER_UNIT,),
-        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        # After and Requires the namespace unit (#196 (a)): it configures the
+        # veth into a namespace that unit created. Granted together with it
+        # or not at all, so a skipped namespace unit cannot count as success.
+        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
+        requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
         conditions=_grant_condition(DECOY_NETWORK_HELPER_UNIT),
         unit_type="oneshot",
         runtime_directory="",
@@ -1148,7 +1397,14 @@ def render_unit(profile: ServiceProfile) -> str:
         lines.append(f"ReadWritePaths={path}")
     for path in profile.optional_read_write_paths:
         lines.append(f"ReadWritePaths=-{path}")
+    overridden = {key for key, _ in profile.shared_overrides}
     for key, value in SHARED_HARDENING:
+        if key in profile.shared_omissions:
+            continue
+        if key in overridden:
+            lines += [f"{key}={override}" for name, override
+                      in profile.shared_overrides if name == key]
+            continue
         if key == "CapabilityBoundingSet" and profile.capability_bounding_set:
             value = " ".join(profile.capability_bounding_set)
         lines.append(f"{key}={value}")
