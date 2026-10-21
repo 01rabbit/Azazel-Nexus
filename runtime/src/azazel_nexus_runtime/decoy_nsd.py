@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from .decoy_network import NAMESPACE_ABSENT, NAMESPACE_STEPS, Runner, main_for
+from .decoy_network import NAMESPACE_PLAN, Runner, main_for
 
 __all__ = ["main"]
 
@@ -32,7 +32,7 @@ __all__ = ["main"]
 def main(argv: Optional[Sequence[str]] = None, *, run: Optional[Runner] = None) -> int:
     """Build (no argument) or remove (`stop`) the decoy namespace side."""
 
-    return main_for("az-decoy-nsd", NAMESPACE_STEPS, argv, run, NAMESPACE_ABSENT)
+    return main_for("az-decoy-nsd", NAMESPACE_PLAN, argv, run)
 
 
 if __name__ == "__main__":  # pragma: no cover - the wrapper calls main()

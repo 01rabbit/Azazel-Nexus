@@ -676,9 +676,27 @@ holds no address. Do not write or edit it by hand: a hand-made record is
 refused unless it is byte for byte what the helper writes, and the directory
 goes away when the helper stops
 ([prerequisites §14](deception-redirect-prerequisites.md#14-isolation-evidence)).
-A `nft_table` failure after an nftables upgrade means the listing format
-changed, not that the rules did; the decoy stays refused until the expected
-listing is updated in a release.
+The table is compared as nftables' JSON (`nft -j`) against what the helper
+rendered from its scope; the record carries the scope's digest, never a
+prefix or an interface name. A `nft_table` failure after an nftables upgrade
+can mean the JSON form changed, not that the rules did; the decoy stays
+refused until the expected listing is updated in a release. The helper's
+unit loads the scope file `/run/azazel-activation/decoy-scope.json` as the
+credential `decoy-scope`; if the file is missing the unit fails to start.
+No activation pass writes that file yet, so the helper is not started by
+a grant in this build.
+
+The check reads only the decoy's own table, `inet azazel_decoy`. NAT,
+`mark`, `notrack` or any other rule in another table is not seen, and the
+decoy table's drops (the ingress drop K2 and the reply rule R3) do nothing
+against another table's rewriting. Do not add rules that touch the decoy's
+traffic in other tables; changes there are left to the later periodic
+re-check and to the rule that no ruleset-managing service is enabled with
+the decoy units.
+
+An ingress interface is for the decoy alone (the `deception_bridge` role):
+the decoy table drops everything received on an ingress that does not go to
+`az-decoy0`, including forwarding from one ingress interface to another.
 
 **A firewall reload removes the decoy table.** Reloading `nftables.service`,
 or anything else that runs `nft flush ruleset` (Debian's default

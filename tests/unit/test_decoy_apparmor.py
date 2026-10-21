@@ -395,6 +395,21 @@ def test_the_helper_writes_only_its_runtime_directory():
         "/run/azazel-decoy-isolation/* rw,"}
 
 
+def test_the_helper_reads_its_scope_credential_and_only_there():
+    """#196 G1b: the credential path the reader opens, read only, in no other profile."""
+
+    from azazel_nexus.decoy_scope import SCOPE_CREDENTIAL_PATH
+
+    directory = SCOPE_CREDENTIAL_PATH.rpartition("/")[0] + "/"
+    blocks = _all_blocks()
+    credential = {rule for rule in blocks["azazel-decoy-netd"] if "/run/credentials" in rule}
+    assert credential == {f"{directory} r,", f"{SCOPE_CREDENTIAL_PATH} r,"}
+    for name, rules in blocks.items():
+        if name != "azazel-decoy-netd":
+            assert not any("/run/credentials" in rule or "decoy-scope" in rule
+                           for rule in rules), name
+
+
 def test_the_namespace_units_body_writes_nothing():
     assert _writes(_all_blocks()["azazel-decoy-nsd"]) == set()
 

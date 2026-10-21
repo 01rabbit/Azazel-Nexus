@@ -499,17 +499,30 @@ def test_the_scope_types_hold_no_raw_identity():
         "approved_v4", "ingress", "scope_digest"}
 
 
-def test_nothing_in_the_pass_or_the_runtime_uses_the_scope_yet():
-    """G1a only: the pass and the helper are wired in G1b and G6."""
+def _importers(root):
+    found = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                 for alias in node.names}
+        names |= {node.module or "" for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom)}
+        if any(name.split(".")[-1] == "decoy_scope" for name in names):
+            found.append(path.name)
+    return found
+
+
+def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
+    """G1b wired the helper (its one importer in the runtime); the pass is G6."""
 
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
-    users = sorted(path.name for path in runtime.rglob("*.py")
-                   if "decoy_scope" in path.read_text(encoding="utf-8"))
-    assert users == []
+    assert _importers(runtime) == ["decoy_netd.py"]
+    for name in ("activation_pass.py", "activation_markers.py", "activated.py"):
+        path = runtime / name
+        if path.is_file():
+            assert "decoy_scope" not in path.read_text(encoding="utf-8"), name
     library = REPO / "src" / "azazel_nexus"
-    users = sorted(path.name for path in library.rglob("*.py")
-                   if "decoy_scope" in path.read_text(encoding="utf-8"))
-    assert users == ["commissioning_approval.py", "decoy_scope.py", "fabric_boundary.py"]
+    assert _importers(library) == ["commissioning_approval.py", "fabric_boundary.py"]
     assert "decoy_scope" not in (library / "activation.py").read_text(encoding="utf-8")
     assert activation  # the withhold itself is pinned by test_decoy_isolation_evidence
 

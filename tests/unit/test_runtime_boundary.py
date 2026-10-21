@@ -980,8 +980,12 @@ DECOY_IMPORT_CLOSURES = {
         "azazel_nexus_runtime.decoy_report", "azazel_nexus_runtime.decoy_sender",
         "azazel_nexus_runtime.decoyd",
     },
+    # #196 G1b: the helper reads its one input, the scope file, with the
+    # standard-library leaf `decoy_scope`; one module more, and only here
+    # (the namespace unit and the decoy do not load it).
     "decoy_netd": {
         "azazel_nexus", "azazel_nexus.boot_id", "azazel_nexus.decoy_isolation",
+        "azazel_nexus.decoy_scope",
         "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
         "azazel_nexus_runtime.decoy_isolation_check", "azazel_nexus_runtime.decoy_netd",
         "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",

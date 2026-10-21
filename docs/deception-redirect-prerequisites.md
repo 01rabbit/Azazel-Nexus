@@ -1095,9 +1095,11 @@ against; and its ordering and lifetime are not VM-checked. Not clearly
 simpler, so option (a) stays.
 
 **How a command is run** (`runtime/src/azazel_nexus_runtime/decoy_network.py`).
-`os.posix_spawn` of an argument tuple that is one of the module's constants
-(`run_fixed` refuses any other, before a process is made; the set is exactly
-the goldens of the tests), with an empty environment and `SIGPIPE` reset to
+`os.posix_spawn` of an argument tuple in the run's plan (`run_fixed` refuses
+any other, before a process is made): the module's constants, which are
+exactly the goldens of the tests, and since #196 G1b, for the helper,
+exactly one more, the ruleset rendered from its scope (see below), with an
+empty environment and `SIGPIPE` reset to
 its default in the child (`setsigdef`); no shell, nothing read back, the
 program's output goes to the unit's journal stream. `posix_spawn` needs no
 pipe, which matters: the namespace unit's filter denies `@ipc`, which holds
@@ -1105,8 +1107,27 @@ pipe, which matters: the namespace unit's filter denies `@ipc`, which holds
 has 2 s (`STEP_SECONDS`), then `SIGKILL`; the longest start (checks, every
 step, every undo) is thus well inside `TimeoutStartSec=30s` (a test checks
 it), so systemd never kills a start half-undone. Neither executable reads an
-argument (other than the single word `stop`, from its own `ExecStop=`), a
-file, the environment or a socket. `decoy_network` is the only module of the
+argument (other than the single word `stop`, from its own `ExecStop=`), the
+environment or a socket. The namespace unit reads no file. **The helper
+reads exactly one** since #196 G1b, its input
+([grant §4.3](deception-exposure-grant.md#43-how-the-helper-receives-it),
+H3): the closed scope file the activation pass will render (G6), handed to
+it by `LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json`
+and read only from `/run/credentials/azazel-decoy-netd.service/decoy-scope`
+(`azazel_nexus.decoy_scope.read_scope_credential`: no link, root's and
+writable by nobody else, a regular file of at most 2048 bytes, rendered back
+to the same bytes, re-validated with the decoder's rules). Its containment
+therefore no longer rests on "no input" but on one closed, bounded input,
+decoded by one function; the namespace unit's still does. The previous
+isolation record is removed **before** the scope is read (review of #286),
+so a scope that is present and refused builds nothing and leaves no record,
+and no earlier pass survives it (exit 1); `stop` reads none. With no
+credential directory at all (the executable run outside its unit, as in the
+container runs) it has no scope and loads the table of the first build;
+under its unit a missing source file fails the start (systemd's
+`243/CREDENTIALS`), and there is no `SetCredential=` fallback. Until G6 no
+pass writes the file, so a granted helper would fail to start; no pass
+grants it. `decoy_network` is the only module of the
 distribution that names `posix_spawn`, and only the two executables import it
 (`tests/unit/test_runtime_boundary.py`; no module on the model acquisition
 path may import it either). The names and addresses live in the leaf
@@ -1153,10 +1174,19 @@ nothing.
   control plane, every host service);
 - output: everything from the host to `az-decoy0` dropped.
 
-**`approved_v4` is empty, and nothing in this build adds to it.** Until the
-commissioned scope arrives (§7 Q9), every packet to and from the decoy is
-dropped, so even a granted tier would not be reachable from outside. The set
-is the frame Q9 fills.
+**`approved_v4` is empty without a scope.** Without the commissioned scope
+(§7 Q9), every packet to and from the decoy is dropped, so even a granted
+tier would not be reachable from outside. The set is the frame Q9 fills:
+since #196 G1b the helper renders the table from its scope
+(`decoy_network.render_ruleset`, one transaction, one argument): the set's
+`elements`, an `iifname { "<ingress>", ... }` match on the accept toward the
+decoy, an `oifname { ... }` match on the reply accept and a drop of
+everything else from the ingress interfaces
+([reachability](deception-exposure-reachability.md) R3), and a `nat` chain
+on `postrouting` that masquerades approved traffic into `az-decoy0` to
+`10.255.196.1` (grant §4.4 A3, so the decoy's allowance below stays the
+fixed /30). Only `str(IPv4Network)` and the checked names reach the text,
+every name quoted. Without a scope the table is exactly the one above.
 
 **The decoy's `IPAddressAllow=`.** A VM run of the real decoy unit (Debian 13,
 systemd 257.13, `main` 454955e, with only the marker and controller
@@ -1168,7 +1198,9 @@ The decoy profile therefore states `IPAddressAllow=10.255.196.0/30`
 keeps `IPAddressDeny=any`. Not `localhost`, which helped only the test.
 `ServiceProfile` requires exactly that one allowance on the decoy. The filter
 matches the peer's address, so a peer outside the /30 is denied by the unit as
-well as by the table; prefixes Q9 approves will have to be added here too.
+well as by the table. Prefixes Q9 approves are not added here: the table's
+masquerade (A3, #196 G1b) makes every approved peer reach the decoy as
+`10.255.196.1` (VM-check pending, grant §11).
 
 **Fallback tunnel devices.** A kernel with tunnel modules loaded (`sit`,
 `ipip`, `ip_gre`, ...) creates their fallback devices (`sit0`, `tunl0`, ...)
@@ -1309,15 +1341,17 @@ second one.
 
 Two fixed commands, added to `decoy_network`'s fixed set and the only ones
 whose output is read (`HELPER_VERIFY`, run by `capture_fixed`):
-`nft list table inet azazel_decoy` (the same argument list as the helper's
-second "absent" check) and `ip -j -d address show`. The checks
-(`azazel_nexus.decoy_isolation.CHECKS`, evaluated by
-`decoy_isolation_check.evaluate`):
+`nft -j list table inet azazel_decoy` (the helper's second "absent" check in
+nftables' JSON form; the text form until #196 G1b) and `ip -j -d address
+show`. The checks (`azazel_nexus.decoy_isolation.CHECKS`, evaluated by
+`decoy_isolation_check.evaluate` against the `decoy_network.Ruleset` the
+helper rendered from its scope; contract `decoy-isolation/v2` since G1b):
 
 | check | holds when |
 | --- | --- |
-| `nft_table` | the listed table, without indentation and blank lines, is exactly the ruleset the helper loads (container-checked listing of nftables 1.1.3, Debian 13) |
-| `approved_v4_empty` | the set `approved_v4` is listed with no element |
+| `nft_table` | the listed table's structure, without the kernel's handles and with the anonymous sets of names and ports in one order, is exactly the expected listing rendered with the ruleset the helper loaded (container-checked `nft -j` of nftables 1.1.3, Debian 13) |
+| `approved_v4_matches` | the set `approved_v4` holds exactly the scope's prefixes (none without a scope); until G1b `approved_v4_empty`, an empty set |
+| `ingress_matches` | the set of ingress names and how many matches carry it: every `iifname`/`oifname` match naming something other than `az-decoy0` names exactly the scope's ingress set, and there are three such matches (none without a scope). Where they sit (which rule, which chain, in what order) is checked by `nft_table`'s structural comparison, not here |
 | `bridge` | exactly one `az-decoy0`, kind bridge, up, attached to nothing |
 | `bridge_address` | its only IPv4 address is `10.255.196.1/30`; IPv6 only link-local |
 | `bridge_ports` | the only link attached to it is `az-decoy-host0` |
@@ -1342,11 +1376,25 @@ changes the table afterwards is not seen until the next start.
 
 **Limits of the checks as written** (review of #274):
 
-- `nft_table` is an exact match of nftables' text listing, so it depends on
-  the nftables release: a release that prints the same rules differently
-  fails closed. Comparing the structure of `nft -j list table` instead would
-  remove that dependence; it is a later change (another fixed argument list
-  and a JSON comparison), not done here.
+- `nft_table` was an exact match of nftables' text listing, which wraps long
+  element lists. Since #196 G1b it compares the structure of `nft -j list
+  table` instead. It still depends on what nftables prints: the JSON schema
+  version must be `1`, and the shapes the container showed are pinned (a /32
+  element as a bare address, an anonymous set of one name as the name, the
+  chains before the set); another release that prints them differently
+  fails closed.
+- **Only its own table** (review of #286). The check reads `inet
+  azazel_decoy` and nothing else: what another table does to the same
+  packets (a NAT, a `mark`, a `notrack`, an accept or a drop at another
+  priority) is not seen. K2 and R3 are rules of this table, so they hold
+  only against what this table sees and do nothing against another table's
+  rewriting (a DNAT in another table before routing, for example, can change
+  where a packet goes before this table's forward chain judges it). Changes
+  to other tables, and the table's own loss, are left to the periodic
+  re-reading of G2 ([reachability](deception-exposure-reachability.md) R4)
+  and to the coexistence condition of
+  [grant §6.2](deception-exposure-grant.md#62-coexistence-and-ordering) (no
+  ruleset-managing service enabled with the tier), not to this record.
 - `host_veth` checks that the host end's peer is in **another** namespace
   (`link_netnsid`), not that it is the decoy's: mapping the id to
   `/run/netns/azazel-decoy` would need a further command. The decoy's own
@@ -1376,14 +1424,18 @@ check failed with an error; undoing`.
 ```
 {"boot_id":"<this boot>","checked_at":"YYYY-MM-DDTHH:MM:SSZ",
  "checks":{"<check>":"pass"|"fail"|"unreadable", ...},
- "contract":"azazel-nexus/decoy-isolation/v1"}
+ "contract":"azazel-nexus/decoy-isolation/v2",
+ "scope_digest":"sha256:<hex>"|"none"}
 ```
 
 One line, keys sorted, no spaces, ASCII, a newline (`render_evidence`). A
 reader (`parse_evidence`) refuses anything that does not render back to the
 same bytes, so another key, a missing one, a reordered or duplicated key, an
 escape, whitespace or a value outside the fixed set are all refused. At most
-4096 bytes. No address, interface name, command output or secret.
+4096 bytes. No address, prefix, interface name, command output or secret:
+`scope_digest` is the SHA-256 of the scope file (`none` without one). A
+version 1 record (before #196 G1b) is refused, by the decoy as by the
+producer frame.
 
 **Where and whose.** `/run/azazel-decoy-isolation/isolation.json`. The
 directory is the helper's `RuntimeDirectory=` (root, `0755`), so systemd makes

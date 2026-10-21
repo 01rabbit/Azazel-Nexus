@@ -51,9 +51,11 @@ from azazel_nexus_runtime.decoy_addresses import (
 from azazel_nexus_runtime.decoy_network import (
     CAPTURE_LIMIT,
     HELPER_ABSENT,
+    HELPER_PLAN,
     HELPER_STEPS,
     HELPER_VERIFY,
     IP,
+    NAMESPACE_PLAN,
     NAMESPACE_STEPS,
     NFT,
     NFT_RULESET,
@@ -104,7 +106,7 @@ HOST_DOWN, BRIDGE_DELETE, TABLE_DELETE = NETD_STOP = [
 ]
 #: The helper's read-back after it has built (#196 §14), in order.
 NETD_VERIFY = [
-    ["/usr/sbin/nft", "list", "table", "inet", "azazel_decoy"],
+    ["/usr/sbin/nft", "-j", "list", "table", "inet", "azazel_decoy"],
     ["/usr/bin/ip", "-j", "-d", "address", "show"],
 ]
 
@@ -179,8 +181,9 @@ class FakeRecorder:
         self.events.append("prepare")
         return self.verdicts["prepare"]
 
-    def record(self, outputs):
+    def record(self, outputs, ruleset):
         self.events.append(("record", sorted(outputs)))
+        self.ruleset = ruleset
         return self.verdicts["record"]
 
     def withdraw(self):
@@ -195,7 +198,8 @@ def recorder(monkeypatch):
     fake = FakeRecorder()
     fake.captured = []
 
-    def capture(argv):
+    def capture(argv, *, plan):
+        assert tuple(argv) in plan.read_back
         fake.captured.append(list(argv))
         return 0, b"listing"
 
@@ -292,9 +296,11 @@ def test_a_record_that_cannot_be_withdrawn_fails_the_stop_after_the_tear_down(
 def test_only_the_helper_reads_back_and_only_its_two_inspection_commands():
     assert [list(argv) for _, argv in HELPER_VERIFY] == NETD_VERIFY
     assert [name for name, _ in HELPER_VERIFY] == ["nft_table", "host_links"]
-    # The table listing is the very argument list of the helper's second check.
-    assert HELPER_VERIFY[0][1] == HELPER_ABSENT[1]
-    assert decoy_network._READ_BACK == {tuple(argv) for argv in NETD_VERIFY}
+    # The table listing is the helper's second check in nftables' JSON form
+    # (#196 G1b: its structure is compared, not its text).
+    assert HELPER_VERIFY[0][1] == (NFT, "-j", *HELPER_ABSENT[1][1:])
+    assert HELPER_PLAN.read_back == {tuple(argv) for argv in NETD_VERIFY}
+    assert NAMESPACE_PLAN.read_back == frozenset()
     tree = _tree("decoy_nsd.py")
     assert "recorder" not in {kw.arg for node in ast.walk(tree)
                               if isinstance(node, ast.Call) for kw in node.keywords}
@@ -430,7 +436,7 @@ def test_anything_but_no_argument_or_stop_is_refused(module, argv, capsys):
 
 def test_every_command_is_ip_or_nft_by_absolute_path_with_constant_arguments():
     assert (IP, NFT) == ("/usr/bin/ip", "/usr/sbin/nft")
-    for argv in decoy_network._ALLOWED:
+    for argv in NAMESPACE_PLAN.allowed | HELPER_PLAN.allowed:
         assert argv[0] in (IP, NFT)
         assert all(isinstance(arg, str) and arg for arg in argv)
     # Only the namespace unit enters the namespace; the helper never does.
@@ -486,27 +492,41 @@ def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(m
 
     monkeypatch.setattr(decoy_network.os, "posix_spawn", spawn)
     monkeypatch.setattr(decoy_network.os, "waitpid", lambda pid, flags: (pid, 0))
-    assert decoy_network.run_fixed(tuple(NSD_START[0])) == 0
+    assert decoy_network.run_fixed(tuple(NSD_START[0]), plan=NAMESPACE_PLAN) == 0
     assert seen == {"path": IP, "argv": NSD_START[0], "env": {},
                     "kwargs": {"setsigdef": (decoy_network.signal.SIGPIPE,),
                                "file_actions": ()}}
-    for argv in [("/bin/sh", "-c", "true"), ("ip", "netns", "add", NAMESPACE),
-                 (IP, "netns", "add", "other"), (IP, "netns", "delete", "other"),
-                 (NFT, "flush", "ruleset"), (NFT, "list", "ruleset"),
-                 (IP, "link", "delete", "eth0")]:
-        with pytest.raises(ValueError):
-            decoy_network.run_fixed(argv)
-    every = ({tuple(a) for a in NSD_START + NSD_STOP + NETD_START + NETD_STOP + NETD_VERIFY})
-    assert decoy_network._ALLOWED == every
+    for plan in (NAMESPACE_PLAN, HELPER_PLAN):
+        for argv in [("/bin/sh", "-c", "true"), ("ip", "netns", "add", NAMESPACE),
+                     (IP, "netns", "add", "other"), (IP, "netns", "delete", "other"),
+                     (NFT, "flush", "ruleset"), (NFT, "list", "ruleset"),
+                     (IP, "link", "delete", "eth0")]:
+            with pytest.raises(ValueError):
+                decoy_network.run_fixed(argv, plan=plan)
+    # Each unit's plan holds its own commands and nothing of the other's
+    # (#196 G1b: the plan replaced one module-wide allowance).
+    with pytest.raises(ValueError):
+        decoy_network.run_fixed(tuple(NETD_STEPS[0]), plan=NAMESPACE_PLAN)
+    with pytest.raises(ValueError):
+        decoy_network.run_fixed(tuple(NSD_START[0]), plan=HELPER_PLAN)
+    with pytest.raises(ValueError):
+        decoy_network.run_fixed(tuple(NSD_START[0]), plan=None)
+    assert NAMESPACE_PLAN.allowed == {tuple(a) for a in NSD_START + NSD_STOP}
+    assert HELPER_PLAN.allowed == {tuple(a) for a in NETD_START + NETD_STOP + NETD_VERIFY}
 
 
 def test_the_read_back_refuses_every_other_command_before_a_process(monkeypatch):
     for argv in [NETD_CHECKS[0], NETD_STEPS[1], NSD_START[0], NETD_STOP[2],
                  ("/usr/bin/ip", "-j", "address", "show"),
                  ("/usr/sbin/nft", "list", "ruleset"),
+                 ("/usr/sbin/nft", "list", "table", "inet", "azazel_decoy"),
                  ("/usr/bin/ip", "-n", "azazel-decoy", "-j", "-d", "address", "show")]:
         with pytest.raises(ValueError):
-            REAL_CAPTURE(tuple(argv))
+            REAL_CAPTURE(tuple(argv), plan=HELPER_PLAN)
+    # Nothing is read back under the namespace unit's plan.
+    for argv in NETD_VERIFY:
+        with pytest.raises(ValueError):
+            REAL_CAPTURE(tuple(argv), plan=NAMESPACE_PLAN)
 
 
 class FakeChild:
@@ -558,7 +578,7 @@ class FakeChild:
 
 def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch):
     child = FakeChild(monkeypatch, output=b"table inet azazel_decoy {\n}\n")
-    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN) == (
         0, b"table inet azazel_decoy {\n}\n")
     [(path, argv, env, kwargs)] = child.spawned
     assert (path, argv, env) == (NFT, NETD_VERIFY[0], {})
@@ -570,19 +590,19 @@ def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch):
 
 def test_a_failed_read_back_returns_no_output(monkeypatch):
     FakeChild(monkeypatch, output=b"partial", status=1)
-    assert REAL_CAPTURE(tuple(NETD_VERIFY[1])) == (1, b"")
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[1]), plan=HELPER_PLAN) == (1, b"")
 
 
 def test_a_read_back_past_the_limit_is_killed_and_returns_no_output(monkeypatch):
     child = FakeChild(monkeypatch, output=b"x" * (CAPTURE_LIMIT + 1), exits_after=10 ** 6)
-    assert REAL_CAPTURE(tuple(NETD_VERIFY[1])) == (decoy_network.OVERFLOW, b"")
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[1]), plan=HELPER_PLAN) == (decoy_network.OVERFLOW, b"")
     assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
 
 
 def test_a_read_back_past_its_deadline_is_killed(monkeypatch):
     clock = iter([0.0, 0.0, STEP_SECONDS + 1])
     child = FakeChild(monkeypatch, exits_after=10 ** 6, clock=clock)
-    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (TIMED_OUT, b"")
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN) == (TIMED_OUT, b"")
     assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
 
 
@@ -600,7 +620,7 @@ def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, erro
     monkeypatch.setattr(decoy_network.os, "waitpid",
                         lambda pid, flags: reaped.append((pid, flags)) or (pid, 9))
     with pytest.raises(type(error)):
-        REAL_CAPTURE(tuple(NETD_VERIFY[0]))
+        REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN)
     assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
     assert reaped == [(4242, 0)]
     assert child.closed == [71, 70]
@@ -613,7 +633,7 @@ def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(decoy_network.os, "posix_spawn", missing)
-    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (127, b"")
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN) == (127, b"")
     assert child.closed == [71, 70]
 
 
@@ -625,7 +645,7 @@ def test_the_runner_kills_a_command_past_its_deadline(monkeypatch):
     monkeypatch.setattr(decoy_network.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     monkeypatch.setattr(decoy_network.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(decoy_network.time, "sleep", lambda seconds: None)
-    assert decoy_network.run_fixed(tuple(NETD_CHECKS[1])) == TIMED_OUT == 124
+    assert decoy_network.run_fixed(tuple(NETD_CHECKS[1]), plan=HELPER_PLAN) == TIMED_OUT == 124
     assert killed == [(4242, decoy_network.signal.SIGKILL)]
 
 
@@ -634,7 +654,7 @@ def test_a_program_that_cannot_be_started_is_a_failure(monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(decoy_network.os, "posix_spawn", missing)
-    assert decoy_network.run_fixed(tuple(NSD_START[0])) == 127
+    assert decoy_network.run_fixed(tuple(NSD_START[0]), plan=NAMESPACE_PLAN) == 127
 
 
 def _tree(name):
@@ -658,8 +678,12 @@ def _names(tree):
 
 def test_the_network_module_runs_one_spawn_with_no_shell_and_reads_no_environment():
     tree = _tree("decoy_network.py")
-    assert _imports(tree) <= {"__future__", "os", "signal", "sys", "time", "dataclasses",
-                              "typing", ".decoy_netns", ".decoy_addresses"}
+    # `ipaddress`, `json` and `re` render the scope's table (#196 G1b); the
+    # module still imports nothing from the library, so the namespace unit
+    # never loads the scope reader.
+    assert _imports(tree) <= {"__future__", "ipaddress", "json", "os", "re", "signal",
+                              "sys", "time", "dataclasses", "typing", ".decoy_netns",
+                              ".decoy_addresses"}
     assert not _names(tree) & {"subprocess", "socket", "environ", "getenv", "environb",
                                "system", "popen", "execv", "execve", "execvp", "fork",
                                "spawnv", "Popen", "ctypes", "open", "setns", "unshare",
@@ -706,8 +730,10 @@ def test_the_unit_renderer_never_loads_the_module_that_starts_processes():
 @pytest.mark.parametrize("name", ["decoy_nsd.py", "decoy_netd.py"])
 def test_the_executables_only_choose_their_step_list(name):
     tree = _tree(name)
-    # The helper also hands its isolation recorder to the runner (#196 §14).
-    extra = {".decoy_isolation_check"} if name == "decoy_netd.py" else set()
+    # The helper also hands its isolation recorder to the runner (#196 §14)
+    # and reads its one input, the scope (#196 G1b).
+    extra = ({".decoy_isolation_check", "azazel_nexus.decoy_scope"}
+             if name == "decoy_netd.py" else set())
     assert _imports(tree) == {"__future__", "typing", ".decoy_network"} | extra
     assert not _names(tree) & {"os", "subprocess", "socket", "environ", "open"}
 

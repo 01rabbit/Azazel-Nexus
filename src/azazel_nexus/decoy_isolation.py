@@ -13,11 +13,15 @@ not render back to the same bytes:
 
     {"boot_id": "<this boot>", "checked_at": "YYYY-MM-DDTHH:MM:SSZ",
      "checks": {"<check>": "pass" | "fail" | "unreadable", ...},
-     "contract": "azazel-nexus/decoy-isolation/v1"}
+     "contract": "azazel-nexus/decoy-isolation/v2",
+     "scope_digest": "sha256:<hex>" | "none"}
 
-`checks` names exactly `CHECKS`. Nothing else is recorded: no address, no
-interface name besides the fixed ones the check names stand for, no command
-output, no secret.
+`checks` names exactly `CHECKS`. `scope_digest` is the SHA-256 of the scope
+file the helper built from (`azazel_nexus.decoy_scope`), or `none` when it
+had no scope (run outside its unit). Nothing else is recorded: no address,
+no prefix, no interface name besides the fixed ones the check names stand
+for, no command output, no secret. Version 2 (#196 G1b) changed the checks
+and added the digest; a version 1 record is refused.
 
 **Where it lives.** `/run/azazel-decoy-isolation/isolation.json`. The
 directory is the helper's `RuntimeDirectory=` (root, `0755`), so it exists
@@ -66,6 +70,7 @@ __all__ = [
     "IsolationReading",
     "IsolationState",
     "MAX_BYTES",
+    "NO_SCOPE",
     "RESULTS",
     "admission_refusal",
     "installed_isolation_reading",
@@ -76,7 +81,10 @@ __all__ = [
 ]
 
 #: The contract every record names.
-CONTRACT = "azazel-nexus/decoy-isolation/v1"
+CONTRACT = "azazel-nexus/decoy-isolation/v2"
+
+#: `scope_digest` when the helper ran without a scope.
+NO_SCOPE = "none"
 
 #: The helper's runtime directory (`RuntimeDirectory=azazel-decoy-isolation`,
 #: `hardening.DECOY_ISOLATION_DIRECTORY`; a test keeps them equal).
@@ -86,9 +94,15 @@ EVIDENCE_NAME = "isolation.json"
 #: The checks, in the order the helper runs them. Each is one fixed
 #: statement about the host side of the decoy network (§14):
 #:
-#: * `nft_table`: the `inet azazel_decoy` table, listed, is exactly the one
-#:   the helper loads (its chains, rules and set definition);
-#: * `approved_v4_empty`: the set `approved_v4` in that listing has no element;
+#: * `nft_table`: the `inet azazel_decoy` table, listed as JSON (`nft -j`),
+#:   is exactly the one the helper rendered from its scope and loaded (its
+#:   chains, rules, set and the set's elements; handles aside);
+#: * `approved_v4_matches`: the set `approved_v4` holds exactly the scope's
+#:   prefixes (none without a scope);
+#: * `ingress_matches`: the set of ingress names and the number of matches
+#:   carrying it: every interface match other than the bridge names exactly
+#:   the scope's ingress set, three times (none without a scope); where
+#:   those matches sit is `nft_table`'s structural comparison;
 #: * `bridge`: one link `az-decoy0`, a bridge, up, attached to nothing;
 #: * `bridge_address`: its only IPv4 address is the bridge address of the
 #:   decoy /30, and it has no IPv6 address but a link-local one;
@@ -104,7 +118,8 @@ EVIDENCE_NAME = "isolation.json"
 #: itself, from inside, before every bind (`decoy_netns`, §12).
 CHECKS: tuple[str, ...] = (
     "nft_table",
-    "approved_v4_empty",
+    "approved_v4_matches",
+    "ingress_matches",
     "bridge",
     "bridge_address",
     "bridge_ports",
@@ -123,7 +138,8 @@ MAX_BYTES = 4096
 #: How far in the future a record's time may be before it is refused.
 CLOCK_SKEW_SECONDS = 5
 
-_KEYS = frozenset({"boot_id", "checked_at", "checks", "contract"})
+_KEYS = frozenset({"boot_id", "checked_at", "checks", "contract", "scope_digest"})
+_SCOPE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 
 #: Private test seams. Production uses exactly these: the fixed directory,
@@ -149,6 +165,8 @@ class IsolationEvidence:
     checked_at: str
     #: `(check, result)` in `CHECKS` order.
     checks: tuple[tuple[str, str], ...]
+    #: `sha256:<hex>` of the scope file, or `NO_SCOPE`.
+    scope_digest: str = NO_SCOPE
 
     def __post_init__(self) -> None:
         if not is_boot_id(self.boot_id):
@@ -165,6 +183,9 @@ class IsolationEvidence:
                        for _, result in self.checks)):
             raise IsolationEvidenceRefused(
                 "the record does not hold exactly the fixed checks with fixed results")
+        if type(self.scope_digest) is not str or not (
+                self.scope_digest == NO_SCOPE or _SCOPE_DIGEST.match(self.scope_digest)):
+            raise IsolationEvidenceRefused("the record's scope digest is not a digest")
 
     @property
     def passed(self) -> bool:
@@ -181,14 +202,16 @@ def _instant(text: str) -> datetime:
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
-def render_evidence(boot_id: str, checked_at: str, checks: Mapping[str, str]) -> bytes:
+def render_evidence(boot_id: str, checked_at: str, checks: Mapping[str, str],
+                    scope_digest: str) -> bytes:
     """The one canonical form of a record. Refuses anything outside the shape."""
 
     if type(checks) is not dict or set(checks) != set(CHECKS):
         raise IsolationEvidenceRefused(
             "a record holds exactly the fixed checks with fixed results")
     evidence = IsolationEvidence(boot_id, checked_at,
-                                 tuple((name, checks[name]) for name in CHECKS))
+                                 tuple((name, checks[name]) for name in CHECKS),
+                                 scope_digest)
     return _render(evidence)
 
 
@@ -198,6 +221,7 @@ def _render(evidence: IsolationEvidence) -> bytes:
         "checked_at": evidence.checked_at,
         "checks": dict(evidence.checks),
         "contract": CONTRACT,
+        "scope_digest": evidence.scope_digest,
     }
     return (json.dumps(document, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=True) + "\n").encode("ascii")
@@ -226,7 +250,8 @@ def parse_evidence(data: bytes) -> IsolationEvidence:
         raise IsolationEvidenceRefused(
             "the record does not hold exactly the fixed checks with fixed results")
     evidence = IsolationEvidence(document["boot_id"], document["checked_at"],
-                                 tuple((name, checks[name]) for name in CHECKS))
+                                 tuple((name, checks[name]) for name in CHECKS),
+                                 document["scope_digest"])
     if _render(evidence) != data:
         raise IsolationEvidenceRefused("the record is not in its canonical form")
     return evidence

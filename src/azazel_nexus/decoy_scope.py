@@ -5,8 +5,9 @@ sources may reach the decoy, and on which interfaces, in a `deception_scope`
 section of the full commissioning proposal (`commissioning-proposal/v3`,
 signed with it). This module holds the one decoder of that section and the
 one closed file a later activation pass renders from it for the network
-helper. It grants nothing, decides nothing and runs nothing; nothing in the
-pass or in the helper calls it in this build.
+helper. It grants nothing, decides nothing and runs nothing. The network
+helper reads the file through `read_scope_credential` (G1b); nothing in the
+activation pass renders or writes it yet (G6).
 
 **The section** (§4.1, §4.2), exactly three keys:
 
@@ -37,6 +38,10 @@ renderer must still quote every name in the nftables text.
 without following a link, root's and writable by nobody else, a regular file
 within the bound, rendered back to the same bytes and re-validated with the
 rules above. It returns the scope and `scope_digest` (SHA-256 of the file).
+`read_scope_credential` is the helper's entry: no scope at all only when the
+credential directory itself does not exist (the helper run outside its unit;
+under its unit `LoadCredential=` fails the start when the source is missing),
+and otherwise exactly `read_scope_file`.
 
 **No content in messages.** Every refusal is a fixed phrase. No prefix,
 interface name or file content appears in an exception, a record or a log
@@ -58,7 +63,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Optional, Sequence
 
 __all__ = [
     "BRIDGE_PREFIX",
@@ -75,6 +80,7 @@ __all__ = [
     "ScopeFile",
     "decode_deception_scope",
     "parse_scope_file",
+    "read_scope_credential",
     "read_scope_file",
     "render_deception_scope",
     "render_scope_file",
@@ -100,8 +106,10 @@ MAX_PREFIXES = 16
 MAX_INGRESS = 4
 MAX_SCOPE_BYTES = 2048
 
-#: Where the helper's unit will receive the rendered file
-#: (`LoadCredential=decoy-scope:...`, G1b). The only path the reader opens.
+#: Where the helper's unit receives the rendered file
+#: (`LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json`, G1b;
+#: `hardening.DECOY_SCOPE_CREDENTIAL`, a test keeps them equal). The only path
+#: the reader opens.
 SCOPE_CREDENTIAL_PATH = "/run/credentials/azazel-decoy-netd.service/decoy-scope"
 
 _SECTION_KEYS = frozenset({"approved_v4", "bridge_prefix", "ingress_role"})
@@ -356,3 +364,25 @@ def read_scope_file() -> ScopeFile:
     finally:
         os.close(directory)
     return parse_scope_file(data)
+
+
+def read_scope_credential() -> Optional[ScopeFile]:
+    """The helper's scope, `None` only when its credential directory is absent.
+
+    The directory `/run/credentials/azazel-decoy-netd.service` exists exactly
+    when systemd loaded the unit's credentials; under the unit a missing
+    source file fails the start, so `None` means the helper is run outside
+    its unit (a container or test run), and it then has nothing to approve.
+    Anything else at that path is read by `read_scope_file` and refuses as it
+    does: a directory that is a link, or a file that is absent or departs
+    from the closed form, raises `DecoyScopeRefused`.
+    """
+
+    directory_path = _PATH.rpartition("/")[0]
+    try:
+        os.lstat(directory_path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise DecoyScopeRefused("the scope's directory could not be read") from None
+    return read_scope_file()
