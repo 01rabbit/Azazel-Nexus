@@ -113,8 +113,9 @@ class FakeManagerReader:
         return self.loaded.get(unit, loaded_as_declared(unit))
 
 
-def make_policy(units=SCOPE, operators=("operator-a",), skew=300):
-    raw = json.dumps({
+def make_policy(units=SCOPE, operators=("operator-a",), skew=300, require_sync=None):
+    extra = {} if require_sync is None else {"require_clock_synchronized": require_sync}
+    raw = json.dumps(extra | {
         "schema": ACTIVATION_POLICY_SCHEMA, "operators": sorted(operators),
         "max_lease_seconds": 72 * 3600, "units": sorted(units),
         "state_floors": {"audit_bytes": 1, "audit_inodes": 1,
@@ -426,6 +427,96 @@ def test_clock_behind_the_floor_within_the_skew_passes_and_keeps_the_floor(world
     outcome = world.run()
     assert sorted(outcome.granted) == list(SCOPE)
     assert world.raised[-1].time_floor == "2026-10-21T00:04:00Z"
+
+
+# -- clock synchronization required by the policy (#251 M-1) -----------------
+
+
+def _require_sync(world, value):
+    """Re-sign against a policy carrying `require_clock_synchronized`."""
+    world.policy = make_policy(units=world.units, require_sync=value)
+    world.sign()
+
+
+def _never_called():
+    raise AssertionError("the synchronization reader was called")
+
+
+@pytest.mark.parametrize("value", [None, False])
+def test_default_policy_never_reads_synchronization_and_grants_as_before(world, value):
+    if value is not None:
+        _require_sync(world, value)
+    outcome = world.run(clock_synchronized=_never_called)
+    assert sorted(outcome.granted) == list(SCOPE)
+    event = world.inputs_event()
+    assert event["observed_inputs"]["producers"]["trusted_clock"] == "verified"
+    assert "clock_synchronization" not in event["observed_inputs"]
+
+
+def test_default_policy_without_a_reader_grants_as_before(world):
+    outcome = world.run(clock_synchronized=None)
+    assert sorted(outcome.granted) == list(SCOPE)
+
+
+def test_required_and_synchronized_grants(world):
+    _require_sync(world, True)
+    calls = []
+    outcome = world.run(clock_synchronized=lambda: calls.append(1) or True)
+    assert sorted(outcome.granted) == list(SCOPE)
+    assert calls == [1]
+    assert world.inputs_event()["observed_inputs"]["clock_synchronization"] == "synchronized"
+
+
+def _unsynchronized():
+    raise OSError("no marker")
+
+
+@pytest.mark.parametrize("reader", [None, _unsynchronized, lambda: False, lambda: 1,
+                                    lambda: "true", lambda: None])
+def test_required_and_unproven_refuses_trusted_clock(world, reader):
+    _require_sync(world, True)
+    _assert_refused(world, world.run(clock_synchronized=reader), ["trusted_clock"])
+    event = world.inputs_event()
+    assert event["observed_inputs"]["clock_synchronization"] == "not_proven"
+    assert event["observed_inputs"]["producers"]["activation_approval_loader"] == "not_attempted"
+
+
+def test_required_with_the_real_reader_and_no_marker_refuses(world, tmp_path):
+    from azazel_nexus_runtime.activation_clock_sync import require_clock_synchronized
+    _require_sync(world, True)
+    missing = str(tmp_path / "timesync" / "synchronized")
+    _assert_refused(world, world.run(
+        clock_synchronized=lambda: require_clock_synchronized(missing)), ["trusted_clock"])
+
+
+def test_required_with_the_real_reader_and_a_marker_grants(world, tmp_path):
+    from azazel_nexus_runtime.activation_clock_sync import require_clock_synchronized
+    _require_sync(world, True)
+    # The reader follows no symlink at any component (macOS's /var is one).
+    directory = Path(os.path.realpath(tmp_path)) / "timesync"
+    directory.mkdir(mode=0o755)
+    directory.chmod(0o755)
+    (directory / "synchronized").write_bytes(b"")
+    (directory / "synchronized").chmod(0o644)
+    outcome = world.run(clock_synchronized=lambda: require_clock_synchronized(
+        str(directory / "synchronized")))
+    assert sorted(outcome.granted) == list(SCOPE)
+
+
+def test_required_with_the_clock_below_the_floor_fails_before_reading(world):
+    _require_sync(world, True)
+    world.high_water = replace(world.high_water, time_floor="2026-10-21T00:05:01Z")
+    _assert_refused(world, world.run(clock_synchronized=_never_called), ["trusted_clock"])
+    assert "clock_synchronization" not in world.inputs_event()["observed_inputs"]
+
+
+def test_approval_for_the_policy_without_the_field_does_not_verify_after_it_is_added(world):
+    """The field is part of the signed policy: adding it changes the digest."""
+    before = world.policy.policy_digest
+    world.policy = make_policy(units=world.units, require_sync=True)
+    assert world.policy.policy_digest != before
+    _assert_refused(world, world.run(clock_synchronized=lambda: True),
+                    ["activation_approval_loader"])
 
 
 def test_expired_approval_refuses(world):

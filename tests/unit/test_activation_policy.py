@@ -138,6 +138,81 @@ def test_noncanonical_duplicate_or_malformed_bytes_refused(raw):
         decode_activation_policy(raw)
 
 
+# -- require_clock_synchronized (#251 M-1) ------------------------------------
+
+#: A policy as written before the field existed, byte for byte.
+_PRE_FIELD = (
+    b'{"max_clock_skew_seconds":120,"max_lease_seconds":86400,'
+    b'"operators":["operator-a","operator-b"],"resource_floors":'
+    b'{"min_mission_available_mib":256,"min_online_logical_cpus":2,'
+    b'"min_usable_memory_mib":1024},"schema":"azazel-nexus/activation-policy/v1",'
+    b'"state_floors":{"audit_bytes":1048576,"audit_inodes":64,'
+    b'"bootstrap_bytes":1048576,"bootstrap_inodes":64},"units":['
+    + b",".join(b'"' + unit.encode() + b'"' for unit in SUPPORTING) + b"]}"
+)
+
+
+def test_a_policy_without_the_field_keeps_its_bytes_and_digest():
+    assert _raw() == _PRE_FIELD
+    policy = decode_activation_policy(_PRE_FIELD)
+    assert policy.require_clock_synchronized is None
+    assert policy.clock_synchronization_required is False
+    assert encode_activation_policy(policy) == _PRE_FIELD
+    assert policy.policy_digest == "sha256:" + sha256(_PRE_FIELD).hexdigest()
+    assert b"require_clock_synchronized" not in encode_activation_policy(policy)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_explicit_field_round_trips_canonically(value):
+    raw = _raw(_document(require_clock_synchronized=value))
+    expected = b'"require_clock_synchronized":' + (b"true" if value else b"false")
+    assert expected in raw
+    # Sorted keys: after "operators", before "resource_floors".
+    assert raw.index(b'"operators"') < raw.index(expected) < raw.index(b'"resource_floors"')
+    policy = decode_activation_policy(raw)
+    assert policy.require_clock_synchronized is value
+    assert policy.clock_synchronization_required is value
+    assert encode_activation_policy(policy) == raw
+    assert policy.policy_digest == "sha256:" + sha256(raw).hexdigest()
+
+
+def test_the_three_forms_are_three_different_policies():
+    digests = {decode_activation_policy(raw).policy_digest for raw in (
+        _raw(), _raw(_document(require_clock_synchronized=False)),
+        _raw(_document(require_clock_synchronized=True)))}
+    assert len(digests) == 3
+
+
+@pytest.mark.parametrize("value", [None, 1, 0, "true", "false", [], {}])
+def test_non_boolean_field_refused(value):
+    with pytest.raises(ApprovalRefused):
+        decode_activation_policy(_raw(_document(require_clock_synchronized=value)))
+
+
+@pytest.mark.parametrize("raw", [
+    _raw()[:-1] + b',"require_clock_synchronized":true}',  # unsorted
+    _raw(_document(require_clock_synchronized=True)).replace(
+        b'"require_clock_synchronized":true',
+        b'"require_clock_synchronized":true,"require_clock_synchronized":true'),
+    _raw(_document(require_clock_synchronized=True)).replace(
+        b'"require_clock_synchronized":true', b'"require_clock_synchronized": true'),
+    _raw(_document(require_clock_synchronized=True)).replace(
+        b'"require_clock_synchronized"', b'"require_clock_synchronised"'),
+])
+def test_noncanonical_duplicate_or_misspelled_field_refused(raw):
+    with pytest.raises(ApprovalRefused):
+        decode_activation_policy(raw)
+
+
+def test_directly_constructed_policy_refuses_a_non_boolean_field():
+    policy = decode_activation_policy(_raw(_document(require_clock_synchronized=True)))
+    with pytest.raises(ApprovalRefused):
+        ActivationPolicy(**{**policy.__dict__, "require_clock_synchronized": 1})
+    # Dropping the field changes the bytes, so the carried digest no longer matches.
+    with pytest.raises(ApprovalRefused):
+        ActivationPolicy(**{**policy.__dict__, "require_clock_synchronized": None})
+
+
 def test_directly_constructed_policy_must_carry_its_own_digest():
     policy = decode_activation_policy(_raw())
     with pytest.raises(ApprovalRefused):

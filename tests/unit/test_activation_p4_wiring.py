@@ -22,6 +22,7 @@ READERS = (
     "azazel_nexus_runtime.activation_health",
     "azazel_nexus_runtime.activation_cli",
     "azazel_nexus_runtime.activation_unit_files",
+    "azazel_nexus_runtime.activation_clock_sync",
     "azazel_nexus_runtime.activation_pass",
 )
 
@@ -64,10 +65,19 @@ def test_production_producers_are_the_fixed_protected_readers():
                    "load_bootstrap_deployment", "collect_node_health",
                    "raise_high_water", "require_high_water_for_pass",
                    "load_declared_node", "measure_scoped_unit_files",
-                   "verify_grantable_units"):
+                   "verify_grantable_units", "require_clock_synchronized"):
         assert reader in body, reader
     # No producer is taken from the environment or a command line.
     assert "environ" not in source and "argv" not in source
+
+
+def test_production_wires_the_fixed_clock_synchronization_reader():
+    """#251 M-1: the pass's reader is exactly the fixed timesyncd marker check."""
+    from azazel_nexus_runtime.activation_clock_sync import require_clock_synchronized
+    from azazel_nexus_runtime.activation_pass import production_producers
+
+    producers = production_producers(commissioning_evidence=lambda: None)
+    assert producers.clock_synchronized is require_clock_synchronized
 
 
 def test_the_pass_never_calls_a_start_verb():

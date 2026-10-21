@@ -355,6 +355,39 @@ first in `units`. Expected: `root:root 600 1`, and the loader prints the units
 and `259200`; a refusal raises `ApprovalRefused: protected activation policy
 refused` (check the newline, key order and the label).
 
+The example omits the optional `require_clock_synchronized` (#251 M-1,
+[design §10.1](../activation-observe-baseline.md#101-ordering-m-7-m-1-l-9)),
+so the pass behaves as before. To rehearse it, insert
+`"require_clock_synchronized":true,` right after the `"operators"` list
+(sorted keys) before the generation, request and signature of §6, since the
+field changes `policy_digest`. The field requires
+`systemd-time-wait-sync.service` enabled; without it the pass can run before
+timesyncd's first synchronization (about 33 s after boot on the VM, the
+controller about 10 s after boot without a LUKS wait) and refuse with
+`not_proven` (design §10.1). Check first:
+
+```sh
+systemctl is-enabled systemd-time-wait-sync.service   # expect: enabled
+sudo systemctl enable systemd-time-wait-sync.service  # only if it is not
+test -f /run/systemd/timesync/synchronized && echo synchronized
+```
+
+After the reboot, compare the controller's start with the marker's mtime;
+the marker must be the earlier one:
+
+```sh
+systemctl show -p ExecMainStartTimestamp azazel-activated.service
+stat -c '%y' /run/systemd/timesync/synchronized
+```
+
+Expected at the pass: `trusted_clock` `verified` and
+`observed_inputs.clock_synchronization: synchronized`; without the marker
+`trusted_clock` `failed`, `clock_synchronization: not_proven`, nothing
+granted. The marker's mtime moves on every synchronization, so a later mtime
+alone does not mean it was absent at the pass; read the ledger's label.
+**要確認 (with wait-sync enabled):** that the marker exists before the
+controller runs on a synchronizing VM.
+
 ## 6. Generation, request, signature, install (#206 P3b)
 
 ### 6.1 Publish the observe-baseline generation (assistant)

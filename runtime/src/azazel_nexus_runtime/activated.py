@@ -694,6 +694,11 @@ def _run_once(
             # Fixed labels and check names only; no digest or probe text.
             observed["edge_package_binding"] = inputs.edge_package_binding
             observed["edge_evidence"] = inputs.edge_evidence
+            # Only when the policy requires synchronization and the floor
+            # check passed (#251 M-1): tells an unproven synchronization from
+            # a clock below the floor. Absent otherwise, as before the field.
+            if inputs.clock_synchronization in ("synchronized", "not_proven"):
+                observed["clock_synchronization"] = inputs.clock_synchronization
             if inputs.edge_missing:
                 observed["edge_missing_for_launch"] = list(inputs.edge_missing)
         daemon.ledger.append({
