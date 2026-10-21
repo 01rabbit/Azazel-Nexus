@@ -335,10 +335,8 @@ def decoy_line() -> bytes:
     from azazel_nexus.decoy_interaction import build_interaction
 
     return build_interaction(
-        event_id="evt-" + "0" * 32, decoy_name="ssh-decoy",
-        generation_digest="sha256:" + "ab" * 32, node_id="e2e-node",
-        observed_at="2026-10-21T00:00:00Z", bytes_received=12, truncated=False,
-        responder="ssh-banner").line
+        decoy_name="ssh-decoy", bytes_received=12, truncated=False, responder="ssh-banner",
+        observed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())).line
 
 
 def replay_decoy(path: Path, deadline: float):
@@ -357,8 +355,19 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
     assert result.returncode == 0, f"azdecoy send exited {result.returncode}: {result.stderr[:200]!r}"
 
 
-def assert_decoy_interaction(harness: Harness, alerts: int):
-    """Stored in its own leaf, labelled as not Edge's; Edge's records unchanged."""
+def decoy_baseline(harness: Harness) -> tuple[int, int]:
+    """The audit chain's and the explainer's record counts before the decoy sends."""
+    base = harness.root / "var/lib/azazel"
+    return (len(ledger_events(base / "state/audit")),
+            len(json_lines(base / "incident-explain/explanations")))
+
+
+def assert_decoy_interaction(harness: Harness, alerts: int, baseline: tuple[int, int]):
+    """Stored in its own leaf, labelled as not Edge's; Edge's records unchanged.
+
+    Nor does it reach the explainer (no new explanation, so no M.I.O. handoff)
+    or the audit chain (no new entry at all).
+    """
     from azazel_nexus.decoy_interaction import RECORD_KIND
     from azazel_nexus.edge_intake import read_intake_status
 
@@ -375,6 +384,10 @@ def assert_decoy_interaction(harness: Harness, alerts: int):
     transitions = [e for e in ledger_events(base / "edge-incidents")
                    if e["event_type"] in {"edge.incident.opened", "edge.incident.updated"}]
     assert len(transitions) == alerts, "a decoy interaction reached the incident tracker"
+    assert decoy_baseline(harness) == baseline, "a decoy interaction reached audit or the explainer"
+    assert not any("environment_event" in r or r.get("incident_id", "").startswith("evt-")
+                   for r in json_lines(base / "incident-explain/explanations")), \
+        "a decoy interaction was explained"
 
 
 def replay(harness: Harness, intake: Path, deadline: float):
@@ -482,11 +495,15 @@ def integrated_loop(harness: Harness) -> str:
                 raise
         # #196 P2: one decoy interaction, sent as azdecoy on the decoy's own
         # socket, becomes Nexus evidence and nothing of Edge's changes.
+        baseline = decoy_baseline(harness)
         replay_decoy(base / "run/decoy-intake/decoy-intake.sock",
                      time.monotonic() + FORWARD_SECONDS)
         wait_until(time.monotonic() + FORWARD_SECONDS,
-                   lambda: assert_decoy_interaction(harness, alerts), daemons,
+                   lambda: assert_decoy_interaction(harness, alerts, baseline), daemons,
                    what="decoy interaction")
+        # Once more after a pause, so a late write cannot pass unseen.
+        time.sleep(1)
+        assert_decoy_interaction(harness, alerts, baseline)
         if producer:
             stop_producer()
             count = assert_edge_decisions((state / "stdout.jsonl").read_bytes())

@@ -819,10 +819,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/integration-loop.md",
         address_families=("AF_UNIX",),
         runtime_directory="",
-        # run/decoy-intake: the decoy's interaction socket (#196 P2), bound
-        # by this daemon in its own leaf; the evidence goes under edge-intake.
         read_write_paths=("/var/lib/azazel/edge-incidents", "/var/lib/azazel/edge-intake", "/var/lib/azazel/run/edge-intake",
-                          "/var/lib/azazel/run/decoy-intake", "/var/lib/azazel/run/edge-intake-status"),
+                          "/var/lib/azazel/run/edge-intake-status"),
+        # The decoy's interaction socket (#196 P2), bound by this daemon in
+        # its own leaf. Optional: without it the intake serves Edge alone and
+        # counts decoy_listener_unavailable, rather than not starting.
+        optional_read_write_paths=("/var/lib/azazel/run/decoy-intake",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-edge-intaked.service"),

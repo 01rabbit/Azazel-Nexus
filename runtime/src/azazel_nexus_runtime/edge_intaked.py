@@ -33,6 +33,7 @@ from azazel_nexus.decoy_interaction import (
     MAX_INTERACTION_LINE,
     DecoyEventRefused,
     DecoyInteractionRecord,
+    new_event_id,
     parse_interaction,
 )
 from azazel_nexus.edge_intake import (
@@ -683,15 +684,16 @@ class IntakeServer:
                              "uid": uid if type(uid) is int else None,
                              "reason": code})
 
-    def _decoy_admit(self):
-        """A place in this minute's decoy allowance, or False."""
+    def _decoy_room(self):
+        """Whether this minute's decoy allowance has a place left."""
         instant = self.monotonic()
         while self.decoy_window and instant - self.decoy_window[0] >= 60:
             self.decoy_window.popleft()
-        if len(self.decoy_window) >= self.decoy_per_minute:
-            return False
-        self.decoy_window.append(instant)
-        return True
+        return len(self.decoy_window) < self.decoy_per_minute
+
+    def _decoy_admitted(self):
+        """Take the place, once the interaction is queued."""
+        self.decoy_window.append(self.monotonic())
 
     def snapshot(self):
         with self.lock:
@@ -955,16 +957,21 @@ class IntakeServer:
                         return "DECOY_SHAPE"
                     if not data:
                         try:
-                            interaction = parse_interaction(bytes(buffer[:-1]))
+                            # The intake's clock bounds observed_at, and the
+                            # stored event_id is the intake's, not the sender's.
+                            interaction = parse_interaction(
+                                bytes(buffer[:-1]), now=self.clock(), event_id=new_event_id)
                         except DecoyEventRefused as exc:
                             return exc.code
-                        if not self._decoy_admit():
+                        if not self._decoy_room():
                             return "decoy_rate_limited"
                         try:
                             self.pending.put_nowait(
                                 DecoyInteractionRecord.receive(interaction, self.clock))
                         except queue.Full:
+                            # Not stored, so it takes no place in the minute.
                             return "decoy_overloaded"
+                        self._decoy_admitted()
                         return ""
                 elif not data:
                     return "DECOY_SHAPE"
@@ -976,6 +983,11 @@ class IntakeServer:
                 try:
                     incoming, _ = decoy_listener.accept()
                 except BlockingIOError:
+                    return
+                except OSError:
+                    # EMFILE, ECONNABORTED and the like: the decoy's, not
+                    # Edge's. Counted, and the batch ends until next select.
+                    self.refuse_decoy("decoy_accept_error")
                     return
                 try:
                     uid = self.peer_uid(incoming)

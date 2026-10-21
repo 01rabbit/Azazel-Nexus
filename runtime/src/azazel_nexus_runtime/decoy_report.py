@@ -9,34 +9,38 @@ and nothing it holds flows to the decoy or to Edge.
 The observation (`decoy_loopback.Observation`) has no payload and no peer
 field, so neither can reach the event. Its responder and byte count are held
 to this build's responder table and read ceiling before the library's closed
-shape is applied (`azazel_nexus.decoy_interaction`).
+shape is applied (`azazel_nexus.decoy_interaction`). Its generation digest is
+not sent: the intake could not check it against anything in this build, and
+an unchecked digest is 256 bits the sender chooses.
 """
 
 from __future__ import annotations
 
-import secrets
 from collections.abc import Callable
 
-from azazel_nexus.decoy_interaction import DecoyEventRefused, DecoyInteraction, build_interaction
+from azazel_nexus.decoy_interaction import (
+    LOCAL_NODE_ID,
+    DecoyEventRefused,
+    DecoyInteraction,
+    build_interaction,
+    new_event_id,
+)
 
 from .decoy_loopback import MAX_READ_BYTES, RESPONDERS, Observation
 
 __all__ = ["interaction_from_observation", "new_event_id"]
 
 
-def new_event_id() -> str:
-    """A fresh event id; random, so it says nothing about the peer."""
-
-    return "evt-" + secrets.token_hex(16)
-
-
 def interaction_from_observation(
     observation: Observation,
     *,
-    node_id: str,
+    node_id: str = LOCAL_NODE_ID,
     event_id: Callable[[], str] = new_event_id,
 ) -> DecoyInteraction:
-    """The closed `EnvironmentEvent` for one observation; refused otherwise."""
+    """The closed `EnvironmentEvent` for one observation; refused otherwise.
+
+    `observation.at` must be whole seconds in UTC (`...T12:00:00Z`).
+    """
 
     if type(observation) is not Observation:
         raise DecoyEventRefused("DECOY_TYPE")
@@ -48,7 +52,6 @@ def interaction_from_observation(
     return build_interaction(
         event_id=event_id(),
         decoy_name=observation.decoy_name,
-        generation_digest=observation.generation_digest,
         node_id=node_id,
         observed_at=observation.at,
         bytes_received=observation.bytes_received,

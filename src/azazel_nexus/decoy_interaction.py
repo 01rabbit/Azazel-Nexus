@@ -1,6 +1,6 @@
 """A reach of a Deception Lite decoy, as Nexus evidence (#196 P2).
 
-Design: `docs/deception-redirect-prerequisites.md` §6 (P2) and §7 Q8.
+Design: `docs/deception-redirect-prerequisites.md` §6 (P2), §7 Q8 and §11.
 
 Each time something reaches a decoy, the decoy reports one Fabric
 `EnvironmentEvent` (`schema_version: environment-event/v0.1`,
@@ -8,22 +8,34 @@ Each time something reaches a decoy, the decoy reports one Fabric
 observation**: it is not an Edge finding, it never opens or updates an Edge
 incident, and nothing about it flows back to Edge.
 
-## A closed shape, narrower than Fabric's
+## No field the sender may fill freely
 
-Fabric's `EnvironmentEvent.metadata` is an open mapping of scalars. Here it is
-exactly three keys:
+A decoy is the one Nexus component an attacker talks to, so its account is
+the likeliest to be taken. What it reports is therefore held to values the
+intake already knows, not merely to a format; a format check alone let an
+address through as a decimal or hex number, or a host name (review of #269).
 
-* `bytes_received` -- how many bytes the decoy read (at most
-  `MAX_BYTES_RECEIVED`, the decoy's read ceiling);
-* `truncated` -- whether the peer sent more than the decoy would read;
-* `responder` -- which in-code responder answered (`RESPONDER_NAMES`).
+* `event_id` -- checked for its form (`evt-` and 32 lower-case hex digits),
+  then **replaced by the intake** with its own random id. What the decoy sent
+  is not stored.
+* `environment_id` -- exactly one of the decoy names in `DECOY_NAMES` (fixed
+  in code until the catalogue reaches the intake).
+* `package_id` -- exactly `PACKAGE_ID`. A Lite decoy is an in-code responder,
+  not an AZ-06 package; the catalogue generation is bound in a later phase.
+* `node_id` -- exactly the intake's own node id (`LOCAL_NODE_ID` until the
+  commissioned node identity reaches the intake).
+* `observed_at` -- whole seconds, UTC, and within `MAX_SKEW_S` of the intake's
+  clock when it arrives.
+* `metadata` -- exactly `bytes_received` (0 to `MAX_BYTES_RECEIVED`, the
+  decoy's read ceiling), `truncated` (only at that ceiling) and `responder`
+  (one of `RESPONDER_NAMES`).
 
-No payload, no credential and **no peer address** (§7 Q8): an interaction is
-correlated with an Edge incident by decoy and time window only
-(`incidents_near`). Every other field is fixed or pattern-bound, and
-`evidence_refs` is always empty. An extra field, a missing one, a value of the
-wrong type, an identifier that looks like an address and a string that could
-carry what was sent are each refused as a whole, with a fixed code.
+What remains for a sender to choose is a name and a responder among four
+each, a byte count, a flag and a second within a ten-minute window: about
+thirty bits per event, at the intake's rate limit. That is a bounded side channel,
+not room for a payload, a credential or an address (§7 Q8). An address-like
+spelling is also refused as `DECOY_ADDRESS` as a second check, but the
+guarantee is the exact match, not that check.
 
 Fabric is not imported: the shape is a strict subset of the rc5 model, and a
 reference test validates it against Fabric when the pinned Fabric is present.
@@ -37,14 +49,20 @@ import ipaddress
 import json
 import math
 import re
+import secrets
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 __all__ = [
+    "DECOY_NAMES",
     "DECOY_REFUSAL_CODES",
     "EVENT_TYPE",
+    "LOCAL_NODE_ID",
     "MAX_BYTES_RECEIVED",
     "MAX_INTERACTION_LINE",
+    "MAX_SKEW_S",
+    "PACKAGE_ID",
     "RECORD_KIND",
     "RESPONDER_NAMES",
     "SCHEMA_VERSION",
@@ -53,6 +71,7 @@ __all__ = [
     "DecoyInteractionRecord",
     "build_interaction",
     "incidents_near",
+    "new_event_id",
     "parse_interaction",
 ]
 
@@ -66,6 +85,17 @@ MAX_BYTES_RECEIVED = 4096
 #: The in-code responders (`decoy_loopback.RESPONDERS`; a test keeps them
 #: equal). A name, never a banner.
 RESPONDER_NAMES = frozenset({"ssh-banner", "smtp-banner", "http-banner", "telnet-banner"})
+#: The decoy names an interaction may carry. Fixed in code: the catalogue
+#: does not reach the intake in this build, and a name the sender could
+#: choose freely would be a field for anything.
+DECOY_NAMES = frozenset({"ssh-decoy", "smtp-decoy", "http-decoy", "telnet-decoy"})
+#: `package_id` for every Lite interaction: in-code responders, no package.
+PACKAGE_ID = "azazel-nexus/deception-lite"
+#: `node_id` until the commissioned node identity reaches the intake: the
+#: record lives on, and was written by, the node that stores it.
+LOCAL_NODE_ID = "local"
+#: How far `observed_at` may be from the intake's clock on arrival.
+MAX_SKEW_S = 300
 #: One interaction line, newline excluded. The closed shape is far smaller.
 MAX_INTERACTION_LINE = 1024
 #: The label of a stored record. An Edge evidence record has no `kind`.
@@ -81,6 +111,7 @@ DECOY_REFUSAL_CODES = frozenset({
     "DECOY_TYPE",
     "DECOY_RANGE",
     "DECOY_ADDRESS",
+    "DECOY_CLOCK",
 })
 
 _TOP_KEYS = frozenset({
@@ -90,14 +121,9 @@ _TOP_KEYS = frozenset({
 _METADATA_KEYS = frozenset({"bytes_received", "truncated", "responder"})
 
 _EVENT_ID = re.compile(r"evt-[0-9a-f]{32}", re.ASCII)
-#: The decoy's catalogue name (the loopback rule): no dot, no colon.
-_DECOY_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}", re.ASCII)
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}", re.ASCII)
-_NODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", re.ASCII)
-_OBSERVED_AT = re.compile(
-    r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", re.ASCII)
+_OBSERVED_AT = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", re.ASCII)
 
-#: What an address looks like inside an identifier: dotted or dashed IPv4,
+#: What an address looks like inside a string: dotted or dashed IPv4,
 #: anything with two or more colons between hex groups, a MAC address.
 _ADDRESS_LIKE = (
     re.compile(r"(?<![0-9])[0-9]{1,3}(?:[._-][0-9]{1,3}){3}(?![0-9])", re.ASCII),
@@ -124,6 +150,12 @@ def _canonical(value) -> bytes:
                       ensure_ascii=True, allow_nan=False).encode("ascii")
 
 
+def new_event_id() -> str:
+    """A fresh event id: random, so it says nothing about the peer."""
+
+    return "evt-" + secrets.token_hex(16)
+
+
 def _looks_like_address(value: str) -> bool:
     try:
         ipaddress.ip_address(value.split("%", 1)[0])
@@ -133,28 +165,39 @@ def _looks_like_address(value: str) -> bool:
     return any(pattern.search(value) for pattern in _ADDRESS_LIKE)
 
 
-def _identifier(value, pattern, *, limit=128):
+def _string(value, *, limit=128):
     _require(type(value) is str, "DECOY_TYPE")
     _require(len(value) <= limit, "DECOY_RANGE")
-    # An address is refused as an address, before the narrower pattern would
-    # refuse it as merely malformed: Q8 is the reason the shape is closed.
+    # The second check: an address is named as one. The exact matches below
+    # are what make it impossible to carry one in any spelling.
     _require(not _looks_like_address(value), "DECOY_ADDRESS")
-    _require(pattern.fullmatch(value) is not None, "DECOY_RANGE")
 
 
-def _validate(value) -> dict:
+def _one_of(value, allowed):
+    _string(value)
+    _require(value in allowed, "DECOY_RANGE")
+
+
+def _validate(value, *, decoy_names, node_id, now) -> dict:
     _require(type(value) is dict)
     _require(set(value) == _TOP_KEYS)
     _require(value["schema_version"] == SCHEMA_VERSION, "DECOY_RANGE")
     _require(value["event_type"] == EVENT_TYPE, "DECOY_RANGE")
-    _identifier(value["event_id"], _EVENT_ID)
-    _identifier(value["environment_id"], _DECOY_NAME)
-    _identifier(value["package_id"], _DIGEST)
-    _identifier(value["node_id"], _NODE_ID)
+    _string(value["event_id"])
+    _require(_EVENT_ID.fullmatch(value["event_id"]) is not None, "DECOY_RANGE")
+    _one_of(value["environment_id"], decoy_names)
+    _one_of(value["package_id"], {PACKAGE_ID})
+    _one_of(value["node_id"], {node_id})
     observed = value["observed_at"]
     _require(type(observed) is str, "DECOY_TYPE")
-    _require(len(observed) <= 32 and _OBSERVED_AT.fullmatch(observed) is not None,
+    _require(len(observed) == 20 and _OBSERVED_AT.fullmatch(observed) is not None,
              "DECOY_RANGE")
+    try:
+        instant = datetime.strptime(observed, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        raise DecoyEventRefused("DECOY_RANGE") from None
+    if now is not None:
+        _require(abs(instant.timestamp() - now) <= MAX_SKEW_S, "DECOY_CLOCK")
     _require(type(value["evidence_refs"]) is list, "DECOY_TYPE")
     _require(value["evidence_refs"] == [], "DECOY_RANGE")
     metadata = value["metadata"]
@@ -166,11 +209,7 @@ def _validate(value) -> dict:
     _require(type(truncated) is bool, "DECOY_TYPE")
     # The decoy stops reading at its ceiling and only then calls it truncated.
     _require(not truncated or received == MAX_BYTES_RECEIVED, "DECOY_RANGE")
-    responder = metadata["responder"]
-    _require(type(responder) is str, "DECOY_TYPE")
-    _require(len(responder) <= 32, "DECOY_RANGE")
-    _require(not _looks_like_address(responder), "DECOY_ADDRESS")
-    _require(responder in RESPONDER_NAMES, "DECOY_RANGE")
+    _one_of(metadata["responder"], RESPONDER_NAMES)
     return value
 
 
@@ -195,27 +234,26 @@ class DecoyInteraction:
 
 def build_interaction(
     *,
-    event_id: str,
     decoy_name: str,
-    generation_digest: str,
-    node_id: str,
     observed_at: str,
     bytes_received: int,
     truncated: bool,
     responder: str,
+    event_id: str | None = None,
+    node_id: str = LOCAL_NODE_ID,
+    decoy_names: frozenset = DECOY_NAMES,
 ) -> DecoyInteraction:
     """The event a decoy reports for one reach; refused unless it is closed.
 
     The decoy's observation has no payload and no peer field, so neither can
-    be passed here. `generation_digest` (the verified catalogue generation)
-    is the event's `package_id`; the decoy's name is its `environment_id`.
+    be passed here. Every identifier is fixed or one of a fixed set.
     """
 
     event = {
         "schema_version": SCHEMA_VERSION,
-        "event_id": event_id,
+        "event_id": event_id if event_id is not None else new_event_id(),
         "environment_id": decoy_name,
-        "package_id": generation_digest,
+        "package_id": PACKAGE_ID,
         "node_id": node_id,
         "event_type": EVENT_TYPE,
         "observed_at": observed_at,
@@ -226,7 +264,8 @@ def build_interaction(
             "responder": responder,
         },
     }
-    return DecoyInteraction(_canonical(_validate(event)))
+    return DecoyInteraction(_canonical(
+        _validate(event, decoy_names=decoy_names, node_id=node_id, now=None)))
 
 
 def _object(pairs):
@@ -241,8 +280,19 @@ def _constant(_):
     raise DecoyEventRefused("DECOY_JSON")
 
 
-def parse_interaction(raw: bytes) -> DecoyInteraction:
-    """One line from the decoy socket, newline removed; refused as a whole."""
+def parse_interaction(
+    raw: bytes,
+    *,
+    now: float | None = None,
+    decoy_names: frozenset = DECOY_NAMES,
+    node_id: str = LOCAL_NODE_ID,
+    event_id: Callable[[], str] | None = None,
+) -> DecoyInteraction:
+    """One line from the decoy socket, newline removed; refused as a whole.
+
+    The intake passes its clock (`now`) and an id source (`event_id`): the
+    stored event carries the intake's id, never the one the sender chose.
+    """
 
     _require(type(raw) is bytes, "DECOY_TYPE")
     _require(len(raw) <= MAX_INTERACTION_LINE, "DECOY_TOO_LARGE")
@@ -253,7 +303,11 @@ def parse_interaction(raw: bytes) -> DecoyInteraction:
         if isinstance(exc, DecoyEventRefused):
             raise
         raise DecoyEventRefused("DECOY_JSON") from None
-    return DecoyInteraction(_canonical(_validate(value)))
+    value = _validate(value, decoy_names=decoy_names, node_id=node_id, now=now)
+    if event_id is not None:
+        value["event_id"] = event_id()
+        _require(_EVENT_ID.fullmatch(value["event_id"]) is not None, "DECOY_RANGE")
+    return DecoyInteraction(_canonical(value))
 
 
 @dataclass(frozen=True)

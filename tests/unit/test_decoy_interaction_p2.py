@@ -24,7 +24,11 @@ import pytest
 from test_edge_intake import edge_event
 
 from azazel_nexus.decoy_interaction import (
+    DECOY_NAMES,
     DECOY_REFUSAL_CODES,
+    LOCAL_NODE_ID,
+    MAX_SKEW_S,
+    PACKAGE_ID,
     MAX_BYTES_RECEIVED,
     MAX_INTERACTION_LINE,
     RECORD_KIND,
@@ -50,8 +54,6 @@ def fields(**overrides):
     value = dict(
         event_id=EVENT_ID,
         decoy_name="ssh-decoy",
-        generation_digest=GENERATION,
-        node_id="node-placeholder",
         observed_at="2026-10-21T00:00:00Z",
         bytes_received=12,
         truncated=False,
@@ -81,8 +83,8 @@ def test_the_event_is_a_closed_interaction_with_three_metadata_keys():
         "schema_version": "environment-event/v0.1",
         "event_id": EVENT_ID,
         "environment_id": "ssh-decoy",
-        "package_id": GENERATION,
-        "node_id": "node-placeholder",
+        "package_id": PACKAGE_ID,
+        "node_id": LOCAL_NODE_ID,
         "event_type": "interaction",
         "observed_at": "2026-10-21T00:00:00Z",
         "evidence_refs": [],
@@ -134,15 +136,65 @@ def test_a_missing_field_is_refused(missing):
     ("node_id", "2001:db8::1"),
     ("node_id", "02-00-5e-00-53-01"),
     ("event_id", "fe80::1%eth0"),
+    ("package_id", "192.0.2.10"),
 ])
 def test_an_identifier_that_looks_like_an_address_is_refused_as_one(field, value):
-    with pytest.raises(DecoyEventRefused) as caught:
-        build_interaction(**fields(**{
-            {"environment_id": "decoy_name"}.get(field, field): value}))
-    assert caught.value.code == "DECOY_ADDRESS"
     raw = event()
     raw[field] = value
     assert refused_code(raw) == "DECOY_ADDRESS"
+
+
+#: Spellings that passed the format checks of the first revision of #269
+#: (review, major). Each is an address, or a field for anything, in a form
+#: no address pattern recognises; the exact matches refuse them all.
+REVIEW_BYPASSES = (
+    "3232235777",                          # 192.168.1.1 as a decimal
+    "0xc0a80101",                          # the same, hex with a prefix
+    "c0a80101",                            # the same, bare hex
+    "20010db8000000000000000000000001",    # 2001:db8::1 without colons
+    "decoy.example.invalid",               # a host name
+    "node-placeholder",                    # well-formed, but not this node's
+)
+
+
+@pytest.mark.parametrize("field", ["environment_id", "node_id", "package_id"])
+@pytest.mark.parametrize("value", REVIEW_BYPASSES)
+def test_identifiers_are_exact_matches_not_formats(field, value):
+    raw = event()
+    raw[field] = value
+    assert refused_code(raw) == "DECOY_RANGE"
+
+
+@pytest.mark.parametrize("value", REVIEW_BYPASSES)
+def test_an_event_id_off_its_form_is_refused(value):
+    raw = event()
+    raw["event_id"] = value
+    assert refused_code(raw) == "DECOY_RANGE"
+
+
+def test_a_well_formed_event_id_is_replaced_by_the_intakes():
+    raw = event()
+    raw["event_id"] = "evt-c0a80101" + "0" * 24  # an address hidden in a valid id
+    fresh = "evt-" + "f" * 32
+    stored = parse_interaction(json.dumps(raw).encode(), event_id=lambda: fresh).as_dict()
+    assert stored["event_id"] == fresh
+    assert "c0a80101" not in json.dumps(stored)
+
+
+def test_the_decoy_names_are_fixed():
+    assert DECOY_NAMES == {"ssh-decoy", "smtp-decoy", "http-decoy", "telnet-decoy"}
+    with pytest.raises(DecoyEventRefused):
+        build_interaction(**fields(decoy_name="other-decoy"))
+
+
+def test_observed_at_is_bounded_by_the_intakes_clock():
+    raw = json.dumps(event()).encode()
+    at = 1792540800.0  # 2026-10-21T00:00:00Z
+    assert parse_interaction(raw, now=at + MAX_SKEW_S)
+    for now in (at + MAX_SKEW_S + 1, at - MAX_SKEW_S - 1):
+        with pytest.raises(DecoyEventRefused) as caught:
+            parse_interaction(raw, now=now)
+        assert caught.value.code == "DECOY_CLOCK"
 
 
 def test_an_address_as_the_responder_is_refused_as_one():
@@ -193,6 +245,8 @@ def test_truncated_only_at_the_read_ceiling():
     ("evidence_refs", "none", "DECOY_TYPE"),
     ("observed_at", "2026-10-21T00:00:00+09:00", "DECOY_RANGE"),
     ("observed_at", 1, "DECOY_TYPE"),
+    ("observed_at", "2026-10-21T00:00:00.123456Z", "DECOY_RANGE"),
+    ("observed_at", "2026-13-41T00:00:00Z", "DECOY_RANGE"),
     ("package_id", "deception-lite", "DECOY_RANGE"),
     ("event_id", "evt-" + "0" * 31, "DECOY_RANGE"),
     ("environment_id", "Decoy.One", "DECOY_RANGE"),
@@ -253,13 +307,15 @@ def observation(**overrides):
 
 def test_the_decoy_builds_its_event_from_its_observation():
     interaction = decoy_report.interaction_from_observation(
-        observation(), node_id="node-placeholder", event_id=lambda: EVENT_ID)
+        observation(), event_id=lambda: EVENT_ID)
     value = interaction.as_dict()
     assert value["environment_id"] == "ssh-decoy"
-    assert value["package_id"] == GENERATION
+    assert value["package_id"] == PACKAGE_ID
+    assert value["node_id"] == LOCAL_NODE_ID
+    assert GENERATION not in json.dumps(value)  # unchecked, so not sent
     assert value["metadata"] == {"bytes_received": 40, "truncated": False,
                                  "responder": "ssh-banner"}
-    fresh = decoy_report.interaction_from_observation(observation(), node_id="node-placeholder")
+    fresh = decoy_report.interaction_from_observation(observation())
     assert parse_interaction(fresh.encoded).as_dict()["event_id"].startswith("evt-")
 
 
@@ -275,13 +331,13 @@ def test_the_observation_has_no_field_that_could_reach_the_event():
 ])
 def test_the_decoy_cannot_report_outside_the_shape(bad):
     with pytest.raises(DecoyEventRefused):
-        decoy_report.interaction_from_observation(observation(**bad), node_id="node-placeholder")
+        decoy_report.interaction_from_observation(observation(**bad))
 
 
 def test_only_an_observation_is_reported():
     with pytest.raises(DecoyEventRefused):
         decoy_report.interaction_from_observation(
-            observation().as_event(), node_id="node-placeholder")
+            observation().as_event())
 
 
 # -- the stored record and its incident ------------------------------------
@@ -317,7 +373,7 @@ def test_an_interaction_joins_an_incident_by_decoy_port_and_time_only():
     ports = {"ssh-decoy": 2222}
     assert incidents_near(stored(), incidents, decoy_ports=ports) == ["inc-later", "inc-near"]
     assert incidents_near(stored(), incidents, decoy_ports=ports, window_s=60) == ["inc-near"]
-    assert incidents_near(stored(name="web-decoy"), incidents, decoy_ports=ports) == []
+    assert incidents_near(stored(name="http-decoy"), incidents, decoy_ports=ports) == []
 
 
 def test_an_edge_record_is_never_joined_as_an_interaction():
@@ -418,7 +474,111 @@ def send(path, data):
 
 
 def interaction_line(**overrides):
+    """A line observed now, so it is inside the intake's clock window."""
+    overrides.setdefault("observed_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     return build_interaction(**fields(**overrides)).line
+
+
+def test_the_stored_event_id_is_the_intakes(running):
+    server = running()
+    send(server.decoy_path, interaction_line())
+    wait_for(lambda: server.decoy_accepted == 1)
+    (path,) = (server.state / "decoy-evidence").glob("*.jsonl")
+    stored_id = json.loads(path.read_text())["environment_event"]["event_id"]
+    assert stored_id != EVENT_ID and stored_id.startswith("evt-")
+
+
+def test_a_stale_or_future_observation_is_refused(running):
+    server = running()
+    send(server.decoy_path, interaction_line(observed_at="2001-01-01T00:00:00Z"))
+    wait_for(lambda: server.refused["DECOY_CLOCK"] == 1)
+    assert server.decoy_accepted == 0
+
+
+class FailingAccept:
+    """The decoy listener, whose next accept fails as the kernel may."""
+
+    def __init__(self, inner, errors):
+        self.inner, self.errors = inner, errors
+
+    def accept(self):
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.inner.accept()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def test_an_accept_error_on_the_decoy_socket_is_the_decoys_alone(running, monkeypatch):
+    import errno
+
+    real = daemon.bind_socket
+
+    def bind(path, **kwargs):
+        listener = real(path, **kwargs)
+        if str(path).endswith("decoy.sock"):
+            return FailingAccept(listener, [OSError(errno.EMFILE, "placeholder"),
+                                            OSError(errno.ECONNABORTED, "placeholder")])
+        return listener
+
+    monkeypatch.setattr(daemon, "bind_socket", bind)
+    server = running()
+    send(server.decoy_path, interaction_line())
+    wait_for(lambda: server.decoy_accepted == 1)
+    assert server.refused["decoy_accept_error"] == 2
+    assert [e["reason"] for e in server.decoy_refusals.events] == ["decoy_accept_error"] * 2
+    send(server.path, json.dumps(edge_event()).encode() + b"\n")
+    wait_for(lambda: server.accepted == 1)
+    assert not server.storage_failed
+
+
+def test_a_decoy_storage_exception_does_not_latch_edges_storage_failure(running):
+    server = running()
+
+    def broken(_):
+        raise RuntimeError("placeholder")
+
+    server.decoy_store.append = broken
+    send(server.decoy_path, interaction_line())
+    wait_for(lambda: server.refused["decoy_storage_failed"] == 1)
+    assert not server.storage_failed
+    send(server.path, json.dumps(edge_event()).encode() + b"\n")
+    wait_for(lambda: server.accepted == 1)
+    assert not server.storage_failed
+
+
+def test_a_slow_decoy_sender_does_not_hold_edges_loop(running):
+    server = running(read_deadline=1.5)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as slow:
+        slow.connect(str(server.decoy_path))
+        slow.sendall(interaction_line()[:20])  # and then nothing, holding it open
+        started = time.monotonic()
+        send(server.path, json.dumps(edge_event()).encode() + b"\n")
+        wait_for(lambda: server.accepted == 1)
+        assert time.monotonic() - started < 1.0
+        wait_for(lambda: server.refused["decoy_read_deadline"] == 1)
+
+
+def test_a_full_queue_takes_no_place_in_the_decoys_minute(running):
+    import queue
+
+    server = running(decoy_per_minute=1)
+    put, full = server.pending.put_nowait, [True]
+
+    def put_once_full(item):
+        if full:
+            full.pop()
+            raise queue.Full
+        put(item)
+
+    server.pending.put_nowait = put_once_full
+    send(server.decoy_path, interaction_line())
+    wait_for(lambda: server.refused["decoy_overloaded"] == 1)
+    assert len(server.decoy_window) == 0
+    send(server.decoy_path, interaction_line())
+    wait_for(lambda: server.decoy_accepted == 1)
+    assert server.refused["decoy_rate_limited"] == 0
 
 
 def ledger_types(server):
@@ -498,7 +658,7 @@ def test_an_address_or_a_payload_is_refused_and_logged_without_the_value(running
     raw = event()
     raw["environment_id"] = "192.0.2.10"
     send(server.decoy_path, json.dumps(raw).encode() + b"\n")
-    raw = event()
+    raw = json.loads(interaction_line())
     raw["metadata"]["payload"] = "placeholder-secret"
     send(server.decoy_path, json.dumps(raw).encode() + b"\n")
     send(server.decoy_path, b"x" * (MAX_INTERACTION_LINE + 10) + b"\n")
