@@ -4,7 +4,8 @@
 #
 # Runs once.
 # The only unit that holds CAP_SYS_ADMIN, as a bounding set and never as an ambient capability: it would create the decoy network namespace at /run/netns/azazel-decoy and do nothing else.
-# It opens no socket of any family, writes only /run/netns, may create only a network namespace, and its syscall filter adds only mount, umount2 and unshare to the shared set and takes back what that act never needs.
+# It gets route netlink only, may create only a network namespace, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
+# It is the one unit without the shared file-system sandbox: a mount namespace would keep the namespace handle from the host, and with CAP_SYS_ADMIN and mount that sandbox was never a wall for it.
 # Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
 
 [Unit]
@@ -20,31 +21,16 @@ User=root
 ExecStart=/usr/libexec/azazel/az-decoy-nsd
 RemainAfterExit=yes
 TimeoutStartSec=30s
-PrivateNetwork=yes
-ProtectProc=invisible
-ProcSubset=pid
-ProtectClock=yes
-ProtectHostname=yes
-ProtectKernelLogs=yes
 RestrictRealtime=yes
-InaccessiblePaths=-/run/dbus -/run/systemd
-RestrictAddressFamilies=none
-ReadWritePaths=/run/netns
+RestrictAddressFamilies=AF_NETLINK
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictNamespaces=net
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-SystemCallFilter=@system-service mount umount2 unshare
-SystemCallFilter=~@aio @chown @ipc @keyring @memlock @network-io @setuid @timer capset setns
+SystemCallFilter=@system-service mount umount2 unshare setns
+SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset
 CapabilityBoundingSet=CAP_SYS_ADMIN
 AmbientCapabilities=
 IPAddressDeny=any

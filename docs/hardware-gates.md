@@ -133,10 +133,12 @@ and is not an HG-02 subject; it is kept from the service manager by its
 sandbox (`AF_NETLINK` only), which the decoy-sandbox gate is to observe
 ([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented)).
 Since #196 option (a) the decoy namespace unit (`azazel-decoy-nsd.service`)
-is a second root unit and likewise not an HG-02 subject: it holds no address
-family at all (`RestrictAddressFamilies=none`) and cannot reach the D-Bus or
-systemd sockets (`InaccessiblePaths=`). It adds no account, so it changes no
-HG-02 record; the decoy-sandbox gate observes it with the helper.
+is a second root unit and likewise not an HG-02 subject: like the helper it
+has netlink as its only address family (`RestrictAddressFamilies=AF_NETLINK`),
+so no socket that could reach the service manager, and it has no file-system
+sandbox at all (a mount namespace would keep its namespace handle from the
+host). It adds no account, so it changes no HG-02 record; the decoy-sandbox
+gate observes it with the helper.
 
 ## `HG-03` — an observation interface transmits nothing
 

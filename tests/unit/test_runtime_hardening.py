@@ -301,17 +301,20 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
         if "AF_NETLINK" in _settings(profile.unit)["RestrictAddressFamilies"][0]
     ]
     # Plus the decoy network helper (#196 P1), which configures links and
-    # rules over netlink with CAP_NET_ADMIN and nothing else.
+    # rules over netlink with CAP_NET_ADMIN and nothing else, and the decoy
+    # namespace unit (#196 (a)), whose `ip netns add` uses route netlink.
     assert with_netlink == ["azazel-activated.service", "azazel-commissiond.service",
-                            "azazel-decoy-netd.service"]
+                            "azazel-decoy-nsd.service", "azazel-decoy-netd.service"]
     for unit in with_netlink:
         settings = _settings(unit)
         assert settings["RestrictAddressFamilies"] == (
-            ["AF_NETLINK"] if unit == "azazel-decoy-netd.service"
+            ["AF_NETLINK"] if unit in ("azazel-decoy-netd.service",
+                                       "azazel-decoy-nsd.service")
             else ["AF_UNIX AF_NETLINK"])
         assert settings["CapabilityBoundingSet"] == {
             "azazel-activated.service": ["CAP_DAC_READ_SEARCH"],
             "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
+            "azazel-decoy-nsd.service": ["CAP_SYS_ADMIN"],
         }.get(unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         assert settings["IPAddressDeny"] == ["any"]
@@ -657,6 +660,8 @@ def test_the_installer_checks_for_every_declared_executable():
 
 
 def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
+    from azazel_nexus_runtime.hardening import DECOY_NAMESPACE_SHARED_OMISSIONS
+
     for profile in PROFILES:
         settings = _settings(profile.unit)
         for key, value in SHARED_HARDENING:
@@ -667,11 +672,14 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
                     and profile.unit == "azazel-decoy-netd.service"):
                 value = "CAP_NET_ADMIN"
             if profile.unit == "azazel-decoy-nsd.service":
-                # #196 (a): the one unit with shared overrides, pinned by
-                # test_the_namespace_unit_overrides_exactly_two_shared_settings.
+                # #196 (a): the one unit with shared overrides and omissions,
+                # pinned by test_decoy_namespace_unit.py.
                 if key == "CapabilityBoundingSet":
                     value = "CAP_SYS_ADMIN"
                 elif key in ("RestrictNamespaces", "SystemCallFilter"):
+                    continue
+                elif key in DECOY_NAMESPACE_SHARED_OMISSIONS:
+                    assert key not in settings, key
                     continue
             assert settings.get(key) == [value], (
                 f"{profile.unit} sets {key} to {settings.get(key)} and the "

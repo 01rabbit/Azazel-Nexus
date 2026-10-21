@@ -5,9 +5,10 @@ namespace unit (`CAP_SYS_ADMIN`) only creates `/run/netns/azazel-decoy`, the
 helper (`CAP_NET_ADMIN`) only configures the bridge, the veth pair and the
 rules, and the decoy joins the namespace with no capability. These tests pin:
 
-* the namespace unit's profile, exactly, and that no other unit may hold
-  `CAP_SYS_ADMIN`, run as root, write `/run/netns` or loosen the shared
-  sandbox;
+* the namespace unit's profile, exactly: the one unit without the shared
+  mount-namespace settings (n3, VM-checked), and that no other unit may hold
+  `CAP_SYS_ADMIN`, run as root, declare `/run/netns` writable, or override or
+  drop any shared setting;
 * the dependency chain (helper -> namespace unit, decoy -> helper) and the
   tier rule that closes review n1: the three units are governed, scoped and
   marked **together or not at all**, so a dependency skipped for a missing
@@ -15,7 +16,8 @@ rules, and the decoy joins the namespace with no capability. These tests pin:
 * that the unit is still never granted and its executable refuses.
 
 No test runs `ip` or `unshare`, creates a namespace or opens a socket. None
-of this is VM or hardware evidence.
+of this is VM or hardware evidence; the VM check of n2 and n3 (a mechanism
+check, not hardware evidence) is recorded in the design, §10.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from azazel_nexus_runtime.hardening import (
     ALL_PROFILES,
     DECOY_NAMESPACE_PATH,
     DECOY_NAMESPACE_SANDBOX,
+    DECOY_NAMESPACE_SHARED_OMISSIONS,
     DECOY_NAMESPACE_SHARED_OVERRIDES,
     PROFILES,
     SHARED_HARDENING,
@@ -83,6 +86,25 @@ def _profile(unit):
 
 # -- the unit -----------------------------------------------------------------
 
+#: The mount-namespace settings of `SHARED_HARDENING` (n3): the namespace
+#: unit carries none of them, and no other unit may drop any.
+MOUNT_NAMESPACE_KEYS = ("ProtectSystem", "ProtectHome", "PrivateTmp", "PrivateDevices",
+                        "ProtectKernelTunables", "ProtectKernelModules",
+                        "ProtectControlGroups")
+
+#: Unit settings that make systemd build a mount namespace (systemd.exec),
+#: none of which the namespace unit may carry.
+MOUNT_NAMESPACE_SETTINGS = MOUNT_NAMESPACE_KEYS + (
+    "ReadWritePaths", "ReadOnlyPaths", "InaccessiblePaths", "ExecPaths", "NoExecPaths",
+    "TemporaryFileSystem", "BindPaths", "BindReadOnlyPaths", "ProtectProc", "ProcSubset",
+    "ProtectKernelLogs", "ProtectHostname", "ProtectClock", "PrivateNetwork",
+    "PrivateMounts", "PrivateUsers", "PrivateIPC", "MountAPIVFS", "RootDirectory",
+    "RootImage", "RuntimeDirectory", "StateDirectory", "CacheDirectory", "LogsDirectory",
+    "ConfigurationDirectory", "NetworkNamespacePath", "IPCNamespacePath", "MountImages",
+    "ExtensionImages", "ExtensionDirectories", "DynamicUser", "LoadCredential",
+    "SetCredential", "LoadCredentialEncrypted", "ImportCredential",
+)
+
 
 def test_the_namespace_unit_runs_once_as_root_with_exactly_cap_sys_admin():
     settings = _settings(NSD)
@@ -94,61 +116,70 @@ def test_the_namespace_unit_runs_once_as_root_with_exactly_cap_sys_admin():
     assert settings["CapabilityBoundingSet"] == ["CAP_SYS_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
     assert settings["NoNewPrivileges"] == ["yes"]
-    # No socket of any family: unshare and mount are not socket calls.
-    assert settings["RestrictAddressFamilies"] == ["none"]
+    # Route netlink only, the family `ip netns add` was VM-checked with.
+    assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
     assert settings["IPAddressDeny"] == ["any"]
-    # /run/netns and nothing else.
-    assert settings["ReadWritePaths"] == ["/run/netns"]
     assert DECOY_NAMESPACE_PATH == "/run/netns/azazel-decoy"
-    assert DECOY_NAMESPACE_PATH.rsplit("/", 1)[0] == "/run/netns"
     # Of every namespace type, only a network namespace.
     assert settings["RestrictNamespaces"] == ["net"]
+    # setns allowed (ip returns to its own namespace after creating one;
+    # without it, SIGSYS, VM-checked), and not in the deny list.
     assert settings["SystemCallFilter"] == [
-        "@system-service mount umount2 unshare",
-        "~@aio @chown @ipc @keyring @memlock @network-io @setuid @timer capset setns",
+        "@system-service mount umount2 unshare setns",
+        "~@aio @chown @ipc @keyring @memlock @setuid @timer capset",
     ]
-    for key in ("ProtectSystem", "ProtectHome", "PrivateTmp", "PrivateDevices",
-                "ProtectKernelTunables", "ProtectKernelModules",
-                "ProtectControlGroups", "RestrictSUIDSGID", "LockPersonality",
-                "MemoryDenyWriteExecute"):
+    assert "setns" not in settings["SystemCallFilter"][1]
+    for key in ("RestrictSUIDSGID", "LockPersonality", "MemoryDenyWriteExecute",
+                "SystemCallArchitectures", "UMask"):
         assert settings[key] == [dict(SHARED_HARDENING)[key]], key
+    assert settings["RestrictRealtime"] == ["yes"]
 
 
-def test_the_namespace_unit_carries_the_m2_sandbox_that_applies_to_it():
-    """Review m2 of #268, the parts that apply to a unit that only creates a namespace."""
+def test_the_namespace_unit_builds_no_mount_namespace():
+    """n3, VM-checked: a mount made inside a mount namespace never reaches the host."""
 
     settings = _settings(NSD)
-    assert settings["PrivateNetwork"] == ["yes"]
-    assert settings["ProtectProc"] == ["invisible"]
-    assert settings["ProcSubset"] == ["pid"]
-    assert settings["ProtectClock"] == ["yes"]
-    assert settings["ProtectHostname"] == ["yes"]
-    assert settings["ProtectKernelLogs"] == ["yes"]
-    assert settings["RestrictRealtime"] == ["yes"]
-    assert settings["InaccessiblePaths"] == ["-/run/dbus -/run/systemd"]
-    for key in ("NetworkNamespacePath", "PrivateUsers", "IPAddressAllow",
-                "SupplementaryGroups", "RuntimeDirectory", "LoadCredential",
-                "LoadCredentialEncrypted", "SetCredential", "Environment",
-                "EnvironmentFile", "ExecStartPre", "ExecStartPost", "ExecStop",
-                "ExecStopPost", "BindPaths", "BindReadOnlyPaths",
+    for key in MOUNT_NAMESPACE_SETTINGS:
+        assert key not in settings, key
+    for key in ("IPAddressAllow", "SupplementaryGroups", "Environment", "EnvironmentFile",
+                "ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost",
                 "JoinsNamespaceOf", "DeviceAllow"):
         assert key not in settings, key
 
 
-def test_the_namespace_unit_overrides_exactly_two_shared_settings():
+def test_the_namespace_unit_overrides_and_omits_exactly_what_is_declared():
     profile = _profile(NSD)
     assert profile.shared_overrides == DECOY_NAMESPACE_SHARED_OVERRIDES
     assert {key for key, _ in DECOY_NAMESPACE_SHARED_OVERRIDES} == {
         "RestrictNamespaces", "SystemCallFilter"}
+    assert profile.shared_omissions == DECOY_NAMESPACE_SHARED_OMISSIONS
+    assert DECOY_NAMESPACE_SHARED_OMISSIONS == MOUNT_NAMESPACE_KEYS
+    assert set(DECOY_NAMESPACE_SHARED_OMISSIONS) <= {key for key, _ in SHARED_HARDENING}
+    # Kept: everything else of the shared set.
+    kept = [key for key, _ in SHARED_HARDENING if key not in MOUNT_NAMESPACE_KEYS]
+    assert kept == ["NoNewPrivileges", "RestrictNamespaces", "RestrictSUIDSGID",
+                    "LockPersonality", "MemoryDenyWriteExecute",
+                    "SystemCallArchitectures", "SystemCallFilter",
+                    "CapabilityBoundingSet", "AmbientCapabilities", "IPAddressDeny",
+                    "UMask"]
     assert profile.extra == DECOY_NAMESPACE_SANDBOX
-    others = [p.unit for p in ALL_PROFILES if p.shared_overrides]
-    assert others == [NSD]
+    assert [p.unit for p in ALL_PROFILES if p.shared_overrides] == [NSD]
+    assert [p.unit for p in ALL_PROFILES if p.shared_omissions] == [NSD]
     # The deny list follows the allow list: a deny list first would make
     # the second line remove names from it instead.
     lines = [line for line in render_unit(profile).splitlines()
              if line.startswith("SystemCallFilter=")]
     assert lines[0].startswith("SystemCallFilter=@system-service")
     assert lines[1].startswith("SystemCallFilter=~")
+
+
+def test_every_other_unit_carries_the_whole_mount_sandbox():
+    for profile in ALL_PROFILES:
+        if profile.unit == NSD:
+            continue
+        settings = _settings(profile.unit)
+        for key in MOUNT_NAMESPACE_KEYS:
+            assert settings.get(key) == [dict(SHARED_HARDENING)[key]], (profile.unit, key)
 
 
 def test_cap_sys_admin_is_held_by_the_namespace_unit_alone():
@@ -162,11 +193,11 @@ def test_cap_sys_admin_is_held_by_the_namespace_unit_alone():
                            for value in _settings(path.name).get(key, [])), path.name
 
 
-def test_only_the_namespace_unit_writes_run_netns():
+def test_no_unit_declares_run_netns_writable():
     writers = [p.unit for p in ALL_PROFILES
                if any(path.removeprefix("-").rstrip("/") == "/run/netns"
                       for path in p.read_write_paths + p.optional_read_write_paths)]
-    assert writers == [NSD]
+    assert writers == []
 
 
 @pytest.mark.parametrize("unit", [
@@ -180,23 +211,26 @@ def test_no_other_unit_can_take_cap_sys_admin(unit):
                 + ("CAP_SYS_ADMIN",))
 
 
-@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_UNIT])
-def test_no_other_unit_can_write_run_netns(unit):
-    with pytest.raises(ValueError, match="/run/netns"):
-        replace(_profile(unit), read_write_paths=_profile(unit).read_write_paths
-                + ("/run/netns",))
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_UNIT, NSD])
+@pytest.mark.parametrize("path", ["/run/netns", "/run/netns/"])
+def test_no_unit_can_declare_run_netns_writable(unit, path):
+    with pytest.raises(ValueError, match="/run/netns|no writable path"):
+        replace(_profile(unit), read_write_paths=_profile(unit).read_write_paths + (path,))
 
 
 @pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_NETWORK_HELPER_UNIT,
-                                  DECOY_UNIT])
-@pytest.mark.parametrize("overrides", [
-    (("RestrictNamespaces", "net"),),
-    DECOY_NAMESPACE_SHARED_OVERRIDES,
-    (("SystemCallFilter", "@system-service @mount"),),
-])
-def test_no_other_unit_may_loosen_the_shared_hardening(unit, overrides):
+                                  DECOY_UNIT, ACTIVATION_CONTROLLER_UNIT])
+@pytest.mark.parametrize("change", [
+    {"shared_overrides": (("RestrictNamespaces", "net"),)},
+    {"shared_overrides": DECOY_NAMESPACE_SHARED_OVERRIDES},
+    {"shared_overrides": (("SystemCallFilter", "@system-service @mount"),)},
+    {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS},
+    {"shared_omissions": ("ProtectSystem",)},
+    {"shared_omissions": ("PrivateTmp",)},
+], ids=lambda change: f"{next(iter(change))}-{len(next(iter(change.values())))}")
+def test_no_other_unit_may_loosen_the_shared_hardening(unit, change):
     with pytest.raises(ValueError, match="override the shared hardening"):
-        replace(_profile(unit), shared_overrides=overrides)
+        replace(_profile(unit), **change)
 
 
 @pytest.mark.parametrize("change", [
@@ -207,10 +241,9 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, overrides):
     {"account": "azdecoy"},
     {"supplementary_groups": ("azazel-operator",)},
     {"address_families": ("AF_UNIX",)},
-    {"address_families": ("AF_NETLINK",)},
-    {"address_families": ("none", "AF_UNIX")},
-    {"read_write_paths": ("/run/netns", "/var/lib/azazel/decoy")},
-    {"read_write_paths": ()},
+    {"address_families": ("AF_UNIX", "AF_NETLINK")},
+    {"address_families": ("AF_NETLINK", "AF_INET")},
+    {"read_write_paths": ("/var/lib/azazel/decoy",)},
     {"optional_read_write_paths": ("/var/lib/azazel/decoy",)},
     {"runtime_directory": "azazel"},
     {"unit_type": "exec"},
@@ -219,23 +252,22 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, overrides):
      + DECOY_NAMESPACE_SHARED_OVERRIDES[1:]},
     {"shared_overrides": DECOY_NAMESPACE_SHARED_OVERRIDES[:2]},
     {"shared_overrides": (DECOY_NAMESPACE_SHARED_OVERRIDES[0],
-                          ("SystemCallFilter", "@system-service @mount unshare"),
+                          ("SystemCallFilter", "@system-service @mount unshare setns"),
                           DECOY_NAMESPACE_SHARED_OVERRIDES[2])},
+    {"shared_omissions": ()},
+    {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS + ("NoNewPrivileges",)},
+    {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS + ("CapabilityBoundingSet",)},
+    {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS + ("IPAddressDeny",)},
+    {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS[1:]},
     {"extra": DECOY_NAMESPACE_SANDBOX[:-1]},
-    {"extra": tuple(item for item in DECOY_NAMESPACE_SANDBOX
-                    if item[0] != "ProtectProc")},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("NetworkNamespacePath", DECOY_NAMESPACE_PATH),)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("Environment", "AZAZEL_NETNS=other"),)},
+    {"extra": DECOY_NAMESPACE_SANDBOX + (("ProtectProc", "invisible"),)},
     {"is_decoy_listener": True},
 ], ids=lambda change: next(iter(change)))
 def test_the_namespace_unit_cannot_be_declared_wider_or_different(change):
     with pytest.raises(ValueError):
         replace(_profile(NSD), **change)
-
-
-def test_none_is_stated_alone_for_any_unit():
-    with pytest.raises(ValueError, match="stated alone"):
-        replace(_profile("azazel-mio-entryd.service"), address_families=("AF_UNIX", "none"))
 
 
 @pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_UNIT,

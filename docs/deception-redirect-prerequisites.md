@@ -237,7 +237,9 @@ exposure path.
   split into "one unit, one privilege, one act":
   1. a **namespace unit** (one-shot, `azazel-decoy-nsd.service`) only
      creates the decoy namespace at `/run/netns/azazel-decoy`. It is the
-     only unit with `CAP_SYS_ADMIN`; its exact privilege is in §10;
+     only unit with `CAP_SYS_ADMIN`, and the only one without the shared
+     file-system sandbox (a mount namespace would keep the handle from the
+     host, VM-checked); its exact privilege is in §10;
   2. the **helper** (`CAP_NET_ADMIN`) only configures `az-decoy0`, the veth
      pair into the already created namespace, and the rules;
   3. the **decoy** joins the namespace with no capability.
@@ -428,31 +430,52 @@ does, so the Deception Lite row stays `loopback-only`.
 **The namespace unit (option (a)).** Declared after P1, as profile, tier
 membership and boundary only; nothing creates a namespace yet.
 `azazel-decoy-nsd.service` (`runtime/src/azazel_nexus_runtime/hardening.py`,
-`DECOY_NAMESPACE_SANDBOX` and `DECOY_NAMESPACE_SHARED_OVERRIDES`):
+`DECOY_NAMESPACE_SANDBOX`, `DECOY_NAMESPACE_SHARED_OVERRIDES` and
+`DECOY_NAMESPACE_SHARED_OMISSIONS`). Its first revision carried the full
+file-system sandbox; the VM check of n3 (below) showed that this cannot work,
+and the profile now follows the configuration that did:
 
 | | `azazel-decoy-nsd.service` (namespace unit) |
 | --- | --- |
 | account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller, this unit and the helper |
-| capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle needs it) |
-| address families | `RestrictAddressFamilies=none`: `unshare` and `mount` are not socket calls, and a root process without a socket cannot reach the service manager |
-| namespaces | `RestrictNamespaces=net` (replacing the shared `yes`): only a network namespace may be created; its own process runs with `PrivateNetwork=yes`, so it never touches the host's links |
-| system calls | `SystemCallFilter=@system-service mount umount2 unshare`, then `SystemCallFilter=~@aio @chown @ipc @keyring @memlock @network-io @setuid @timer capset setns` (the deny list must follow the allow list); `setns` is denied because it creates and never joins |
-| writable | `ReadWritePaths=/run/netns` only; `ServiceProfile` refuses `/run/netns` on any other unit |
-| further sandbox (the parts of m2 that apply) | `ProtectProc=invisible`, `ProcSubset=pid`, `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectKernelLogs=yes`, `RestrictRealtime=yes`, `InaccessiblePaths=-/run/dbus -/run/systemd` |
+| capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN`, `AmbientCapabilities=` empty, `NoNewPrivileges=yes`; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle needs it) |
+| address families | `RestrictAddressFamilies=AF_NETLINK`, the family `ip netns add` was checked with; no `AF_UNIX`, so as root it cannot reach the service manager over D-Bus |
+| namespaces | `RestrictNamespaces=net` (replacing the shared `yes`): only a network namespace may be created |
+| system calls | `SystemCallFilter=@system-service mount umount2 unshare setns`, then `SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset` (the deny list must follow the allow list). `setns` is allowed: `ip netns add` returns to its own namespace after creating one, and without it is killed with SIGSYS (VM-checked) |
+| file-system sandbox | **none**: the seven `SHARED_HARDENING` settings that build a mount namespace (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`) are left out, and it declares no `ReadWritePaths=`, `RuntimeDirectory=`, `ProtectProc=`, `ProcSubset=`, `InaccessiblePaths=`, `PrivateNetwork=` or any other setting that builds one. `/run/netns` is created by `ip` itself; `ServiceProfile` refuses `/run/netns` as a declared writable path on every unit |
+| kept from the shared set | `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `IPAddressDeny=any`, `UMask=0027`; plus `RestrictRealtime=yes` |
 | type | `oneshot`, `RemainAfterExit=yes` |
 | executable | `az-decoy-nsd`: refuses, exits 1 |
 
+**Why it has no file-system sandbox.** systemd runs a unit with any of those
+settings in a mount namespace of its own, and cuts propagation from it to the
+host. The bind mount that makes a named network namespace is then never seen
+outside the unit (n3). Leaving them out loses nothing real: a process with
+`CAP_SYS_ADMIN` and the `mount` system call could unmount or remount any of
+them inside its own mount namespace, so for this unit they were never a wall.
+What contains it is the bounding set, the system call filter,
+`RestrictNamespaces=net`, netlink as its only family, `NoNewPrivileges=`
+and its fixed body.
+
 `ServiceProfile` pins this unit whole: its capability, account, families,
-writable path, sandbox and the two shared overrides must be exactly these,
-and no other unit may override a `SHARED_HARDENING` entry at all. It carries
-`SHARED_HARDENING` otherwise, the three marker lines (`ConditionPathExists=`
-on its marker, `Requires=` and `After=` on the controller), and passes the
-unit-content and loaded-unit checks of
+the absence of any writable path, its own settings, the two shared overrides
+and the seven shared omissions must be exactly these. No other unit may
+override or leave out any `SHARED_HARDENING` entry, and a test checks that
+every other packaged unit carries the whole mount sandbox. It carries the
+three marker lines (`ConditionPathExists=` on its marker, `Requires=` and
+`After=` on the controller), and passes the unit-content and loaded-unit
+checks of
 [activation §8.2](activation-observe-baseline.md#82-unit-content-and-the-loaded-units-251-h-1-m-3).
 It is in `CORE_UNITS` (tier `DECEPTION_EXPOSURE`), `GRANTABLE_UNITS`, the
 tripwire and the unit table (`decoy-namespace`), never in
 `ACTIVATION_UNIT_ALLOWLIST` or a v2 approval. The installer installs,
 preset-disables and masks it; it never enables or starts it.
+
+**The body, when it is written.** The VM-checked configuration ran
+`ExecStart=/usr/sbin/ip netns add <name>` and `ExecStop=/usr/sbin/ip netns
+delete <name>`. The unit keeps its refusing executable in this build: it is
+never granted, and the namespace-creating step is the body phase's, which
+may turn it into exactly those two lines for `azazel-decoy`.
 
 The chain is namespace unit → helper → decoy: the helper has `After=` and
 `Requires=` on the namespace unit, the decoy on the helper.
@@ -482,26 +505,27 @@ None of this grants anything: the tier is still withheld as
 the tripwire narrows everything if any one of them, or all three, is ever
 granted.
 
-**What this does not establish, and must be checked in the body's VM run:**
+**VM check of n2 and n3** (Debian 13, systemd 257.13, throwaway units,
+cleaned up afterwards; a mechanism check, **not hardware evidence**):
 
-- n3, **mount propagation.** systemd runs a sandboxed unit in a mount
-  namespace of its own whose propagation to the host is cut. A bind mount of
-  the namespace handle made inside it may therefore be invisible to the
-  host, to the helper and to the decoy's `NetworkNamespacePath=`. If the VM
-  run confirms this, option (a) as declared cannot work, and the design has
-  to change (for example a namespace systemd itself holds), not the sandbox
-  quietly loosened;
-- with `CAP_SYS_ADMIN` and `mount` allowed, the unit's file-system sandbox is
-  not a barrier to its own code (it could unmount what systemd mounted inside
-  its mount namespace). Its containment rests on its fixed body, no address
-  family, the syscall filter, `RestrictNamespaces=net`, the bounding set and
-  the cut propagation, not on `ProtectSystem=`;
-- `/run/netns` must exist before the unit starts: `ReadWritePaths=` on a
-  missing path fails the unit at namespace setup (226/NAMESPACE), which is
-  fail-closed. Who creates it (a tmpfiles rule, or the body phase) is
-  decided with the body;
-- that the syscall filter is wide enough for the body, and that the deny
-  list does not stop the interpreter, is checked only on a real systemd.
+- n3, **mount propagation: confirmed.** With the first revision's sandbox
+  (`ProtectSystem=strict`, `ReadWritePaths=/run/netns`, `PrivateTmp=` and the
+  like), `ip netns add` succeeded but the host's `/run/netns/<name>` stayed an
+  empty file, not a mount, and a unit joining it by `NetworkNamespacePath=`
+  failed with 225/NETWORK (Invalid argument). **Option (a) does not hold with
+  a sandbox that builds a mount namespace; it holds with the configuration
+  in the table above**: creation, the host's view (`ip netns list`, an
+  `nsfs` mount in `findmnt`) and use from another unit all succeeded. With
+  `setns` in the deny list, `ip` was killed with SIGSYS (31/SYS);
+- n2, **`PrivateUsers=yes` with `NetworkNamespacePath=`: confirmed.** A unit
+  with `DynamicUser=`, `PrivateUsers=yes`, `NetworkNamespacePath=` and
+  `ProtectSystem=strict` joined the namespace and saw only `lo`.
+
+The profile adds `SystemCallArchitectures=native`, `IPAddressDeny=any`,
+`UMask=0027`, `TimeoutStartSec=` and `RemainAfterExit=` to the checked
+configuration; none of them builds a mount namespace, but the unit as
+rendered has not itself been run. Whether the filter is wide enough for the
+body is checked when the body is written.
 
 **Deferred, with what each needs:**
 
@@ -515,8 +539,10 @@ granted.
     netlink work, `ProtectClock=`, `ProtectHostname=`, `ProtectKernelLogs=`,
     `RestrictRealtime=`, and `InaccessiblePaths=` over the D-Bus and systemd
     private sockets as a second barrier to the `AF_NETLINK`-only family.
-    The parts that apply to the namespace unit are in its profile already
-    (table above); the helper's are sized with its body;
+    Of these, only `RestrictRealtime=` and the system call filter carry
+    over to the namespace unit; the others build a mount namespace and are
+    excluded from it by n3 (table above). The helper's are sized with its
+    body (the helper configures links, not mounts, so n3 does not bind it);
   - n1, the decoy's `Requires=azazel-decoy-netd.service` is not a
     guarantee by itself: when the helper's `ConditionPathExists=` (its grant
     marker) does not hold, systemd skips the helper and counts that as
@@ -524,9 +550,8 @@ granted.
     (above); the same holds for the helper's `Requires=` on the namespace
     unit;
   - n2, the decoy combines `PrivateUsers=yes` with `NetworkNamespacePath=`.
-    Whether joining (`setns`) a network namespace owned by the initial user
-    namespace succeeds in the order systemd actually applies these settings
-    has not been checked; it is an item for that phase's VM run, with n3;
+    **VM-checked: it works** (above; a mechanism check, not hardware
+    evidence). The decoy unit as rendered has still not been run;
 - **generation measurement before any grant.** The day the tier can be
   granted, the exposure units' files must be in the generation's measured
   set (`measure_scoped_unit_files`, which takes the policy's scope) and so in
@@ -538,7 +563,7 @@ granted.
   attempt and no longer conforms; HG-02 is to be captured afresh. The two
   root units (the helper and the namespace unit) are not HG-02 subjects
   (the runbook never runs as root); that they cannot reach the service
-  manager rests on their sandboxes and belongs to the new decoy-sandbox gate
+  manager rests on their sandboxes (netlink as their only family) and belongs to the new decoy-sandbox gate
   (§7 Q10). The namespace unit adds no account, so it changes no record;
 - the per-boot isolation probe, its boot-bound evidence and the activation
   pass consuming it (only then can the tier be granted);
