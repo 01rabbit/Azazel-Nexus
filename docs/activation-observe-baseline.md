@@ -583,14 +583,22 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    times out, withdraws this pass's grants before exiting 1: every grant
    marker is removed and every governed unit masked (the emergency
    narrowing of the tripwire), because it is then unknown whether systemd
-   counted the start as successful. A start job that has not run yet is
-   skipped on its marker condition; a unit that already started is not
-   stopped (there is no `StopUnit`) and makes the remask report itself
-   unconfirmed, which also exits 1. `completed safely` is printed only after
-   READY and the barrier succeeded. A final `activation.inputs_incomplete`
-   record that cannot be appended (for example `AuditUnavailable`) also
-   removes the markers and remasks before failing, so a failed pass never
-   leaves a marker behind. READY is never sent on a failed pass, and the
+   counted the start as successful. The failure is recorded as
+   `activation.readiness_unconfirmed` when the ledger can be written; an
+   unwritable ledger records nothing and the withdrawal still runs. The
+   withdrawal is **best effort, not a guarantee**: if systemd had already
+   processed READY, the dependents' `ConditionPathExists=` can be evaluated
+   concurrently with it. A start job evaluated after its marker is gone is
+   skipped; a unit that started inside that window is not stopped (there is
+   no `StopUnit`), and its remask fails with `masked unit has no confirmed
+   inactive state`, which also exits 1. `completed safely` is printed only
+   after READY and the barrier succeeded. From the first marker to the final
+   `activation.inputs_incomplete` record, any failure -- a marker that cannot
+   be written, the record failing to assemble, or failing to append (for
+   example `AuditUnavailable`) -- removes the markers and remasks before
+   failing, so a failed pass never leaves a marker behind. A pass that fails
+   never sends READY; a pass that completed sends it, and if READY or the
+   barrier then fails, the pass is withdrawn as above and exits 1. The
    selected bootstrap path keeps its own READY protocol unchanged.
 
 **What READY releases.** Twelve units `Requires=` the controller: the ten
@@ -775,16 +783,22 @@ success.
 
 - **L-2 (notification and exit, §8 item 8).** A refused READY, or a barrier
   that fails or times out, removes every grant marker and masks every
-  governed unit, then exits 1. A final pass record that cannot be appended
-  does the same before failing. `completed safely` is printed after READY
-  and the barrier. *Why the barrier is treated like READY:* §8 used to keep
-  exit 0 after a failed barrier because the pass was recorded; but a failed
-  or timed-out barrier means systemd may not have processed READY, so
-  whether the start succeeded and whether the dependents run is unknown.
-  The safe side is the failed-pass state. The cost is availability: a unit
-  already started keeps running (no `StopUnit`) and is reported as an
-  unconfirmed remask, and the units granted by that pass are masked again,
-  so they start only after a later boot's pass grants them anew.
+  governed unit, then exits 1; it is recorded as
+  `activation.readiness_unconfirmed` when the ledger can be written (not a
+  floor event, so not in `FLOOR_EVENTS`). Any failure between the first
+  marker and the final pass record (writing a marker, assembling the record,
+  appending it) does the same before failing. `completed safely` is printed
+  after READY and the barrier. *Why the barrier is treated like READY:* §8
+  used to keep exit 0 after a failed barrier because the pass was recorded;
+  but a failed or timed-out barrier means systemd may not have processed
+  READY, so whether the start succeeded and whether the dependents run is
+  unknown. The safe side is the failed-pass state. It is best effort, not a
+  guarantee: when READY had been processed, a dependent's marker condition
+  may be evaluated concurrently with the withdrawal, and a unit that started
+  inside that window keeps running (no `StopUnit`); its remask then fails
+  with `masked unit has no confirmed inactive state` and the exit is 1. The
+  cost is availability: the units granted by that pass are masked again, so
+  they start only after a later boot's pass grants them anew.
 - **L-3 (§3.1).** `install` requires `approval_seq` above an existing floor,
   except for the byte-identical installed pair; the pass is unchanged.
 - **L-4 (§3.1).** The signer refuses units outside

@@ -492,6 +492,9 @@ Nothing it does starts or enables a unit itself.
    installed approval needs `--replace` and typing `REPLACE`. Once a floor
    exists, the approval's `--seq` must be above the floor's `approval_seq`;
    the only exception is installing the byte-identical installed pair again.
+   So neither re-signing the same `--seq` to extend the expiry nor
+   re-installing the same approval after its files were removed works any
+   more: request a higher `--seq` and sign it anew.
 
 Exit 1 means nothing changed; exit 2 means a later step was not confirmed and
 the state must be inspected before any retry. A missing high-water file on a

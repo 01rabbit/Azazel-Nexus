@@ -450,8 +450,13 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing):
         order.append(("narrow", root, message))
         raise RuntimeError(f"{message}; emergency remask failures: []")
 
+    class Ledger:
+        def append(self, event):
+            order.append(("record", event["event_type"], event["actor"]))
+
     monkeypatch.setattr(activated, "_run_once", run_once)
     monkeypatch.setattr(activated, "_emergency_narrow", narrow)
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: Ledger())
     monkeypatch.setattr(systemd_notify, "notify_ready", ready)
     monkeypatch.setattr(systemd_notify, "notify_barrier", barrier)
     captured_status = activated.main([])
@@ -465,6 +470,7 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing):
     assert captured_status == 1
     expected = ["pass", "ready"] if failing == "ready" else ["pass", "ready", "barrier"]
     assert order == expected + [
+        ("record", "activation.readiness_unconfirmed", "azazel-activated"),
         ("narrow", Path("/"), "activation readiness notification unavailable")]
     # The success line is never printed before (or without) READY.
     assert "completed safely" not in captured.out
