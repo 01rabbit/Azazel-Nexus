@@ -684,9 +684,14 @@ listing is updated in a release.
 or anything else that runs `nft flush ruleset` (Debian's default
 `/etc/nftables.conf` begins with it, and the unit's stop runs it), removes
 `inet azazel_decoy` together with every other table. The same holds for an
-Edge enforce posture that replaces the ruleset. Nothing notices: the helper
-stays active, its record still reads `pass`, and the decoy keeps listening
-with no table in front of it
+Edge enforce posture that replaces the ruleset. At boot this no longer
+happens: the helper is ordered after `nftables.service`
+(`After=` only, so a host without that unit is unaffected), and the
+firewall's load runs before the table is built. Later it still does: a
+reload, stop, restart or start of `nftables.service`, Edge's enforce, or any
+other flush removes the table, and the ordering does not stop or restart the
+helper. Nothing notices: the helper stays active, its record still reads
+`pass`, and the decoy keeps listening with no table in front of it
 ([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented),
 "Before any grant"). After any such reload, and whenever the decoy units
 are running, check that the table is there:

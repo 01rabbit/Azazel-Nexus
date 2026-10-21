@@ -300,7 +300,7 @@ def test_the_chain_is_namespace_then_helper_then_decoy():
     assert DECEPTION_EXPOSURE_UNITS == (NSD, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
     assert nsd["After"] == [ACTIVATION_CONTROLLER_UNIT]
     assert nsd["Requires"] == [ACTIVATION_CONTROLLER_UNIT]
-    assert netd["After"] == [ACTIVATION_CONTROLLER_UNIT, NSD]
+    assert netd["After"] == [ACTIVATION_CONTROLLER_UNIT, NSD, "nftables.service"]
     assert netd["Requires"] == [ACTIVATION_CONTROLLER_UNIT, NSD]
     assert decoyd["After"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT]
     assert decoyd["Requires"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT]

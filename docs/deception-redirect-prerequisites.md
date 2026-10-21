@@ -672,20 +672,48 @@ and tested:
   helper stays `active` (`RemainAfterExit=yes`), its record still reads
   `pass`, and the decoy keeps listening with no table in front of it. Today
   `approved_v4` is empty and nothing is granted, so nothing is exposed, but
-  a grant would make this an exposure. Before a grant the design must
-  state:
-  - **coexistence with the host's firewall management.** Which of
-    `nftables.service`, `firewalld`, `iptables-nft` restore or Edge's
-    enforcement may run on a decoy host, and how each leaves
-    `inet azazel_decoy` alone. For example, a commissioning check that
-    refuses a host whose `/etc/nftables.conf` flushes the whole ruleset, or
-    an agreed `destroy table` scope instead of `flush ruleset`;
-  - **ordering.** The helper has no `After=` or `Before=` on
-    `nftables.service` or on Edge's enforce unit, so a firewall load later
-    in the boot removes the table after it was checked. The helper needs
-    `After=` on every unit that loads a ruleset, and those units need to be
-    kept from reloading it after the helper while the decoy runs (or the
-    decoy has to stop when they do);
+  a grant would make this an exposure.
+
+  **Done: the boot order against `nftables.service`.** The helper carries
+  `After=nftables.service` (`hardening.HOST_FIREWALL_UNIT`), and only that:
+  no `Requires=`, `Wants=`, `BindsTo=` or `PartOf=`, so a host without the
+  unit or with it failed is not affected, and `After=` on a unit that does
+  not exist is a no-op. Debian's unit is `DefaultDependencies=no` and only
+  `WantedBy=sysinit.target`, with no `Before=` on `sysinit.target` or
+  `basic.target`, so the helper's default dependencies did not order it
+  after the firewall load; at boot the `flush ruleset` could run after the
+  table was loaded and checked. The decoy is ordered after the helper, so it
+  follows the firewall too. No `Before=` is needed: the helper has to come
+  later, and a `Before=nftables.service` would bring the race back. At
+  shutdown the order reverses, so the helper's stop removes its table before
+  the firewall's stop flushes the ruleset. `ServiceProfile` pins the
+  helper's ordering whole, and the file still passes the #253 content check
+  and the loaded-unit check (both require the controller lines, not the
+  absence of others). In a systemd 257.13 container (a mechanism check with
+  stand-in units, not hardware evidence): started in one transaction, the
+  firewall's start finished before the helper's; with no `nftables.service`
+  the helper started and the unit read `LoadState=not-found`.
+
+  **Still open, and still before any grant.** Ordering only orders jobs that
+  are queued together. In the same container, with the helper active,
+  `reload`, `stop`, `start` and `restart` of `nftables.service` each ran
+  its command and the helper stayed `active`: `After=` propagates neither a
+  stop nor a reload (that would take `PartOf=`, `PropagatesReloadTo=` or
+  similar, which would hand the firewall a say over the decoy units). So
+  the following still remove the table unnoticed, and the design must state
+  how each is handled:
+  - **a later reload, stop, restart or start of the firewall**, by the
+    operator, a package upgrade or anything else;
+  - **Edge's enforce.** The helper has no ordering on Edge's enforce unit,
+    and an Edge Core that replaces the ruleset removes the table whenever it
+    does so;
+  - **any other flush**: `firewalld`, `iptables-nft` restore, or a manual
+    `nft flush ruleset`;
+  - **coexistence with the host's firewall management.** Which of these may
+    run on a decoy host, and how each leaves `inet azazel_decoy` alone. For
+    example, a commissioning check that refuses a host whose
+    `/etc/nftables.conf` flushes the whole ruleset, or an agreed
+    `destroy table` scope instead of `flush ruleset`;
   - **a read-back on every decoy start.** §14 leaves this to the grant
     phase. A decoy restarted later in the boot must not rely on the record
     taken when the helper started;
@@ -693,7 +721,7 @@ and tested:
     by a privileged unit, with any departure stopping the three units (stop
     of the namespace unit). Or an `nft monitor` style watch whose only
     action is that stop. Either has to be fixed in code, take no input and
-    have no switch that disables it.
+    have no switch that disables it. This is designed with the grant phase.
 
   Until then, operations tells the operator to stop the three units when
   the table is gone.
