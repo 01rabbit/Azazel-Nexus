@@ -686,6 +686,18 @@ credential `decoy-scope`; if the file is missing the unit fails to start.
 No activation pass writes that file yet, so the helper is not started by
 a grant in this build.
 
+The check reads only the decoy's own table, `inet azazel_decoy`. NAT,
+`mark`, `notrack` or any other rule in another table is not seen, and the
+decoy table's drops (the ingress drop K2 and the reply rule R3) do nothing
+against another table's rewriting. Do not add rules that touch the decoy's
+traffic in other tables; changes there are left to the later periodic
+re-check and to the rule that no ruleset-managing service is enabled with
+the decoy units.
+
+An ingress interface is for the decoy alone (the `deception_bridge` role):
+the decoy table drops everything received on an ingress that does not go to
+`az-decoy0`, including forwarding from one ingress interface to another.
+
 **A firewall reload removes the decoy table.** Reloading `nftables.service`,
 or anything else that runs `nft flush ruleset` (Debian's default
 `/etc/nftables.conf` begins with it, and the unit's stop runs it), removes

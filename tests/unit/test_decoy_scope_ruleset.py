@@ -211,6 +211,56 @@ def test_the_bounds_are_the_decoders():
     assert decoy_network.MAX_INGRESS == decoy_scope.MAX_INGRESS == 4
 
 
+def test_the_renderers_copied_rules_are_the_decoders():
+    """Review of #286 F3: the renderer repeats the decoder's rules from copies."""
+
+    assert decoy_network._RESERVED_IFNAMES == decoy_scope._RESERVED_IFNAMES
+    assert decoy_network._RESERVED_IFNAME_PREFIX == decoy_scope._RESERVED_IFNAME_PREFIX
+    assert decoy_network._IFNAME.pattern == decoy_scope._IFNAME.pattern
+    assert tuple(str(block) for block in decoy_network._PRIVATE_V4) == decoy_scope.PRIVATE_V4
+    assert str(decoy_network._RESERVED_HEADROOM) == decoy_scope.RESERVED_HEADROOM
+
+
+NAMES = ["eth0", "lan0", "eth0.100", "wan_1", "x-y", "a", "a" * 15, "a" * 16, "lo", "LO",
+         "all", "All", "default", "DEFAULT", ".", "..", "...", "-x", "-", "x-", "0", "12",
+         "1a", "a1", "az-decoy0", "AZ-DECOY9", "az-decoy", "az-deco", "e th", 'e"0', "e{",
+         "ÿ", ""]
+PREFIXES = ["10.20.0.0/24", "10.0.0.0/8", "172.16.0.0/12", "172.32.0.0/16",
+            "192.168.0.0/16", "192.169.0.0/16", "8.8.8.0/24", "100.64.0.0/10",
+            "127.0.0.0/8", "169.254.0.0/16", "10.255.196.0/30", "10.255.196.4/30",
+            "10.255.196.0/24", "10.255.197.0/24", "10.255.0.0/16", "10.20.0.1/32",
+            "0.0.0.0/8", "224.0.0.0/4", "198.18.0.0/15"]
+
+
+def _decoder_accepts(check, value):
+    try:
+        check(value)
+    except DecoyScopeRefused:
+        return False
+    return True
+
+
+def _renderer_accepts(scope):
+    try:
+        render_ruleset(scope)
+    except ValueError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_renderer_accepts_exactly_the_names_the_decoder_accepts(name):
+    decoder = _decoder_accepts(decoy_scope._ingress_names, [name])
+    assert _renderer_accepts(Shaped(ONE, (name,))) is decoder
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_the_renderer_accepts_exactly_the_prefixes_the_decoder_accepts(prefix):
+    decoder = _decoder_accepts(decoy_scope._approved, [prefix])
+    network = ipaddress.IPv4Network(prefix)
+    assert _renderer_accepts(Shaped((network,), ("eth0",))) is decoder
+
+
 ONE = (ipaddress.IPv4Network("10.20.0.0/24"),)
 
 
@@ -421,21 +471,58 @@ def test_the_credential_is_read_from_its_fixed_path(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("data", [None, b"", SCOPE_BYTES.replace(b"10.20.0.0/24", b"10.20.0.1/24"),
                                   SCOPE_BYTES[:-1], SCOPE_BYTES.replace(b"eth9", b"az-decoy9")])
-def test_a_present_but_refused_scope_changes_nothing(tmp_path, monkeypatch, capsys, data):
+def test_a_present_but_refused_scope_builds_nothing_and_leaves_no_record(
+        tmp_path, monkeypatch, capsys, evidence, data):
+    """Review of #286 F1: an earlier passing record must not survive a refused scope."""
+
+    # A passing record from an earlier start of this boot.
+    monkeypatch.setattr(decoy_netd, "read_scope_credential", lambda: SCOPE)
+    assert decoy_netd.main([], run=Runner(), capture=Capture(),
+                           recorder=_recorder(evidence)) == 0
+    assert parse_evidence((evidence / "isolation.json").read_bytes()).passed
+    monkeypatch.undo()
+
     _credential(tmp_path, monkeypatch, data)
     with pytest.raises(DecoyScopeRefused):
         decoy_scope.read_scope_credential()
-
-    class Untouched:
-        def prepare(self):
-            raise AssertionError("prepared after a refused scope")
-
     run = Runner()
-    assert decoy_netd.main([], run=run, recorder=Untouched()) == 1
+    assert decoy_netd.main([], run=run, recorder=_recorder(evidence)) == 1
     assert run.calls == []
+    assert os.listdir(evidence) == []
     err = capsys.readouterr().err
-    assert "the decoy scope could not be read; nothing was changed" in err
+    assert ("the decoy scope could not be read; the previous isolation record was "
+            "removed and nothing was built") in err
     assert "eth9" not in err and "10.20" not in err
+
+
+def test_the_record_is_removed_before_the_scope_is_read(monkeypatch):
+    order = []
+
+    class Recording:
+        def prepare(self):
+            order.append("prepare")
+            return True
+
+    def refused():
+        order.append("scope")
+        raise DecoyScopeRefused("refused")
+
+    monkeypatch.setattr(decoy_netd, "read_scope_credential", refused)
+    assert decoy_netd.main([], run=Runner(), recorder=Recording()) == 1
+    assert order == ["prepare", "scope"]
+
+
+def test_a_record_that_cannot_be_removed_stops_before_the_scope_is_read(monkeypatch, capsys):
+    class Stuck:
+        def prepare(self):
+            return False
+
+    def unexpected():
+        raise AssertionError("the scope was read")
+
+    monkeypatch.setattr(decoy_netd, "read_scope_credential", unexpected)
+    assert decoy_netd.main([], run=Runner(), recorder=Stuck()) == 1
+    assert "could not be removed" in capsys.readouterr().err
 
 
 def test_a_linked_credential_directory_is_refused(tmp_path, monkeypatch):
@@ -447,12 +534,13 @@ def test_a_linked_credential_directory_is_refused(tmp_path, monkeypatch):
         decoy_scope.read_scope_credential()
 
 
-def test_a_scope_the_renderer_refuses_changes_nothing(monkeypatch):
+def test_a_scope_the_renderer_refuses_builds_nothing(monkeypatch, evidence, capsys):
     monkeypatch.setattr(decoy_netd, "read_scope_credential",
                         lambda: Shaped(ONE, ('eth0" accept',)))
     run = Runner()
-    assert decoy_netd.main([], run=run) == 1
-    assert run.calls == []
+    assert decoy_netd.main([], run=run, recorder=_recorder(evidence)) == 1
+    assert run.calls == [] and os.listdir(evidence) == []
+    assert "the decoy scope could not be read" in capsys.readouterr().err
 
 
 def test_stop_reads_no_scope(monkeypatch, evidence):

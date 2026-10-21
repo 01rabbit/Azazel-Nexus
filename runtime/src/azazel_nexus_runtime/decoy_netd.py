@@ -10,13 +10,16 @@ veth pair the namespace unit created, and brings both up. It never enters the
 decoy namespace (it cannot: `setns` needs `CAP_SYS_ADMIN`).
 
 **Its one input** (`docs/deception-exposure-grant.md` §4.3 H3, G1b). At
-start, before anything else, it reads the exposure scope from the fixed
+start, right after removing the previous isolation record and before it
+checks or builds anything, it reads the exposure scope from the fixed
 credential path its unit's `LoadCredential=decoy-scope:...` provides
 (`azazel_nexus.decoy_scope.read_scope_credential`: no link, root's, bounded,
 canonical, re-validated), and builds the run's plan from it
 (`decoy_network.helper_plan`): the constant argument lists and exactly one
-ruleset rendered from the scope. A scope that is present and refused changes
-nothing and exits 1. With no credential directory at all (the executable run
+ruleset rendered from the scope. The previous isolation record is removed
+before the scope is read, so a scope that is present and refused builds
+nothing, leaves no record behind (no earlier pass survives it) and exits 1.
+With no credential directory at all (the executable run
 outside its unit, as in a container check) it has no scope and loads the
 table of the first build, with nothing approved. Under its unit a missing
 source file fails the start before this runs.

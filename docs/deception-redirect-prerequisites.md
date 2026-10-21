@@ -1118,8 +1118,10 @@ and read only from `/run/credentials/azazel-decoy-netd.service/decoy-scope`
 writable by nobody else, a regular file of at most 2048 bytes, rendered back
 to the same bytes, re-validated with the decoder's rules). Its containment
 therefore no longer rests on "no input" but on one closed, bounded input,
-decoded by one function; the namespace unit's still does. A scope that is
-present and refused changes nothing (exit 1); `stop` reads none. With no
+decoded by one function; the namespace unit's still does. The previous
+isolation record is removed **before** the scope is read (review of #286),
+so a scope that is present and refused builds nothing and leaves no record,
+and no earlier pass survives it (exit 1); `stop` reads none. With no
 credential directory at all (the executable run outside its unit, as in the
 container runs) it has no scope and loads the table of the first build;
 under its unit a missing source file fails the start (systemd's
@@ -1349,7 +1351,7 @@ helper rendered from its scope; contract `decoy-isolation/v2` since G1b):
 | --- | --- |
 | `nft_table` | the listed table's structure, without the kernel's handles and with the anonymous sets of names and ports in one order, is exactly the expected listing rendered with the ruleset the helper loaded (container-checked `nft -j` of nftables 1.1.3, Debian 13) |
 | `approved_v4_matches` | the set `approved_v4` holds exactly the scope's prefixes (none without a scope); until G1b `approved_v4_empty`, an empty set |
-| `ingress_matches` | every interface the rules name other than `az-decoy0` is exactly the scope's ingress set, in exactly three places (the accept, the reply, the ingress drop; none without a scope) |
+| `ingress_matches` | the set of ingress names and how many matches carry it: every `iifname`/`oifname` match naming something other than `az-decoy0` names exactly the scope's ingress set, and there are three such matches (none without a scope). Where they sit (which rule, which chain, in what order) is checked by `nft_table`'s structural comparison, not here |
 | `bridge` | exactly one `az-decoy0`, kind bridge, up, attached to nothing |
 | `bridge_address` | its only IPv4 address is `10.255.196.1/30`; IPv6 only link-local |
 | `bridge_ports` | the only link attached to it is `az-decoy-host0` |
@@ -1381,6 +1383,18 @@ changes the table afterwards is not seen until the next start.
   element as a bare address, an anonymous set of one name as the name, the
   chains before the set); another release that prints them differently
   fails closed.
+- **Only its own table** (review of #286). The check reads `inet
+  azazel_decoy` and nothing else: what another table does to the same
+  packets (a NAT, a `mark`, a `notrack`, an accept or a drop at another
+  priority) is not seen. K2 and R3 are rules of this table, so they hold
+  only against what this table sees and do nothing against another table's
+  rewriting (a DNAT in another table before routing, for example, can change
+  where a packet goes before this table's forward chain judges it). Changes
+  to other tables, and the table's own loss, are left to the periodic
+  re-reading of G2 ([reachability](deception-exposure-reachability.md) R4)
+  and to the coexistence condition of
+  [grant §6.2](deception-exposure-grant.md#62-coexistence-and-ordering) (no
+  ruleset-managing service enabled with the tier), not to this record.
 - `host_veth` checks that the host end's peer is in **another** namespace
   (`link_netnsid`), not that it is the decoy's: mapping the id to
   `/run/netns/azazel-decoy` would need a further command. The decoy's own

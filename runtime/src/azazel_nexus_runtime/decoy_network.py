@@ -131,12 +131,35 @@ STEP_SECONDS = 2.0
 MAX_PREFIXES = 16
 MAX_INGRESS = 4
 
-#: The characters an interface name may have to reach the nftables text, and
-#: the decoy network's own names, which never may (`decoy_scope` refuses more;
-#: this is the renderer's own last check, not the validation).
+#: The renderer's own check repeats the decoder's rules (review of #286 F3),
+#: so that nothing the decoder would refuse reaches the nftables text even if
+#: a caller hands it something else. The values are copies of
+#: `azazel_nexus.decoy_scope`'s (this module does not import the library, so
+#: that the namespace unit never loads it); a test keeps them equal.
+#:
+#: Interface names: the characters, the decoy network's own prefix, a leading
+#: `-`, an all-digit name (an interface index to nftables), and the reserved
+#: names, all compared without case.
 _IFNAME = re.compile(r"[A-Za-z0-9_.-]{1,15}", re.ASCII)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}", re.ASCII)
 _RESERVED_IFNAME_PREFIX = "az-decoy"
+_RESERVED_IFNAMES = frozenset({"lo", "all", "default", ".", ".."})
+#: Prefixes: inside RFC 1918, and clear of the decoy network's /24.
+_PRIVATE_V4 = tuple(ipaddress.IPv4Network(block)
+                    for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+_RESERVED_HEADROOM = ipaddress.IPv4Network("10.255.196.0/24")
+
+
+def _name_allowed(name: object) -> bool:
+    return (type(name) is str and _IFNAME.fullmatch(name) is not None
+            and name.lower() not in _RESERVED_IFNAMES and not name.startswith("-")
+            and not name.isdigit() and not name.lower().startswith(_RESERVED_IFNAME_PREFIX))
+
+
+def _prefix_allowed(network: object) -> bool:
+    return (type(network) is ipaddress.IPv4Network
+            and any(network.subnet_of(block) for block in _PRIVATE_V4)
+            and not network.overlaps(_RESERVED_HEADROOM))
 
 #: The named set the approved sources live in.
 APPROVED_SET = "approved_v4"
@@ -264,14 +287,13 @@ def _checked(scope: ScopeLike) -> tuple[tuple[ipaddress.IPv4Network, ...], tuple
 
     approved, ingress, digest = scope.approved_v4, scope.ingress, scope.scope_digest
     if (type(approved) is not tuple or not 1 <= len(approved) <= MAX_PREFIXES
-            or any(type(network) is not ipaddress.IPv4Network for network in approved)):
-        raise ValueError("the scope's prefixes are not 1 to 16 IPv4 networks")
+            or not all(_prefix_allowed(network) for network in approved)):
+        raise ValueError("the scope's prefixes are not 1 to 16 allowed IPv4 networks")
     for before, after in zip(approved, approved[1:]):
         if int(before.broadcast_address) + 1 >= int(after.network_address):
             raise ValueError("the scope's prefixes are not sorted apart")
     if (type(ingress) is not tuple or not 1 <= len(ingress) <= MAX_INGRESS
-            or any(type(name) is not str or not _IFNAME.fullmatch(name)
-                   or name.lower().startswith(_RESERVED_IFNAME_PREFIX) for name in ingress)
+            or not all(_name_allowed(name) for name in ingress)
             or list(ingress) != sorted(set(ingress))):
         raise ValueError("the scope's ingress names are not 1 to 4 allowed names")
     if type(digest) is not str or not _DIGEST.fullmatch(digest):
@@ -690,8 +712,10 @@ def main_for(prog: str, plan: Plan, argv: Optional[Sequence[str]],
     """`prog` takes no argument (start) or exactly `stop` (`ExecStop=`).
 
     `plan` is what `stop` runs from. With `start_plan` (the helper only,
-    #196 G1b), a start first builds its plan from the run's scope; a scope
-    that cannot be read or rendered (`ValueError`) changes nothing, exit 1.
+    #196 G1b), a start builds its plan from the run's scope, after the
+    recorder has removed the previous record (review of #286); a scope that
+    cannot be read or rendered (`ValueError`) builds nothing and exits 1,
+    with no record left behind.
 
     With a `recorder` (the helper only, #196 §14): at start, the previous
     record is removed and this boot's id read **before** anything is checked
@@ -705,17 +729,21 @@ def main_for(prog: str, plan: Plan, argv: Optional[Sequence[str]],
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments:
-        if start_plan is not None:
-            try:
-                plan = start_plan()
-            except ValueError:
-                _say(prog, "the decoy scope could not be read; nothing was changed")
-                return 1
-        runner = _runner(plan, run)
+        # The previous record goes first, before the scope is read (review
+        # of #286): a refused scope must not leave an earlier passing record
+        # behind for the decoy to accept.
         if recorder is not None and not recorder.prepare():
             _say(prog, "the previous isolation record could not be removed or this "
                  "boot's id could not be read; nothing was changed")
             return 1
+        if start_plan is not None:
+            try:
+                plan = start_plan()
+            except ValueError:
+                _say(prog, "the decoy scope could not be read; the previous isolation "
+                     "record was removed and nothing was built")
+                return 1
+        runner = _runner(plan, run)
         status = bring_up(prog, plan.steps, runner, plan.absent)
         if status or recorder is None:
             return status

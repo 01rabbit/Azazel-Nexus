@@ -42,10 +42,10 @@ code or by a recorded run and must be checked in the phase named.
 | A policy may not name them: the pass's scope is the grantable set without them; the code allowlist omits them | `runtime/src/azazel_nexus_runtime/activation_pass.py:108`, `:293`; `src/azazel_nexus/activation_policy.py:62-69` |
 | A v2 approval can name only `SUPPORTING` and `EDGE_BASELINE` units | `src/azazel_nexus/activation_approval_v2.py:61-63`, `:80` |
 | Generation measurement is limited to the code allowlist | `runtime/src/azazel_nexus_runtime/activation_unit_files.py:329-353` (`_scope(units, ACTIVATION_UNIT_ALLOWLIST)`) |
-| The ruleset is a constant; `approved_v4` has no element; the forward accept names no input interface | `runtime/src/azazel_nexus_runtime/decoy_network.py:117-139` |
-| Every argument list the helper may run is a constant; `run_fixed` refuses others | `decoy_network.py:218-225`, `:253-254` |
-| The isolation check compares the text listing exactly and requires an empty set | `runtime/src/azazel_nexus_runtime/decoy_isolation_check.py:72-96`, `:109-117`, `:176-179` |
-| The record's checks are a fixed tuple under contract `decoy-isolation/v1` | `src/azazel_nexus/decoy_isolation.py:79`, `:105-114` |
+| The ruleset is a constant; `approved_v4` has no element; the forward accept names no input interface. *Since G1b:* rendered from the scope, the constant only without one | `runtime/src/azazel_nexus_runtime/decoy_network.py:304` (`render_ruleset`), `:363` (`NFT_RULESET`) |
+| Every argument list the helper may run is a constant; `run_fixed` refuses others. *Since G1b:* a per-run `Plan`, the constants plus one rendered ruleset | `decoy_network.py:454` (`Plan`), `:486` (`helper_plan`), `:511`, `:548` |
+| The isolation check compares the text listing exactly and requires an empty set. *Since G1b:* the `nft -j` structure against the rendered ruleset | `runtime/src/azazel_nexus_runtime/decoy_isolation_check.py:122` (`_table`), `:160`, `:194`, `:275` (`evaluate`) |
+| The record's checks are a fixed tuple under contract `decoy-isolation/v1`. *Since G1b:* `decoy-isolation/v2`, nine checks and `scope_digest`; v1 refused | `src/azazel_nexus/decoy_isolation.py:84`, `:119-129`, `:230` (`parse_evidence`) |
 | The decoy refuses to listen without this boot's passing record | `runtime/src/azazel_nexus_runtime/decoyd.py:316-327`; `decoy_isolation.py:319` |
 | The decoy's only `IPAddressAllow=` is the fixed /30, pinned by `ServiceProfile` | `runtime/src/azazel_nexus_runtime/hardening.py:364-384`, `:1410`; `runtime/src/azazel_nexus_runtime/decoy_addresses.py:34` |
 | The library's `Commissioning` has a `bridge_prefix` and no default | `src/azazel_nexus/decoy.py:167-191` |
@@ -201,15 +201,18 @@ the design decision F2 asks for.
    prefix in any case, a leading `-`, an all-digit name, which could be taken
    for an interface index). Rejected: a second `nft add element` command (two
    transactions, a window with a table that does not match the record).
-2. **The isolation check.** `EXPECTED_NFT_LISTING` is computed from the same
-   scope by the same renderer. The text listing wraps long element lists,
-   so the comparison moves to the structure of `nft -j list table` (the
-   change §14 already names). `approved_v4_empty` becomes
-   `approved_v4_matches` (exactly the scope's elements) and `ingress_matches`
-   is added. A change to `CHECKS` is a new contract,
-   `decoy-isolation/v2`, which also records `scope_digest` (SHA-256 of the
-   rendered scope file, no address); a v1 record is refused by the new
-   reader.
+2. **The isolation check.** The expected listing (`Ruleset.expected`, G1b)
+   is computed from the same scope by the same renderer as the loaded text
+   (it replaced the text listing `EXPECTED_NFT_LISTING`). The text listing
+   wraps long element lists, so the comparison moved to the structure of
+   `nft -j list table` (the change §14 named). The check
+   `approved_v4_matches` (exactly the scope's elements) replaced
+   `approved_v4_empty`, and `ingress_matches` (the set of ingress names and
+   how many matches carry it; where they sit is `nft_table`'s) was added.
+   A change to `CHECKS` is a new contract, `decoy-isolation/v2`, which also
+   records `scope_digest` (SHA-256 of the rendered scope file, no address);
+   a v1 record is refused by the new reader. It sees only this table, not
+   what other tables do (prerequisites §14).
 3. **`_ALLOWED`.** Becomes a plan built once per run from the decoded scope:
    the constant argument lists plus exactly the one ruleset argument list
    rendered from it. `run_fixed` refuses anything outside the plan, as now.
@@ -573,12 +576,12 @@ pass and the existing tests that pin it stay.
 | G0 | this proposal; owner decisions (§10) | — |
 | G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); the reply accept's `oifname { <ingress> }` and the ingress drop of [reachability](deception-exposure-reachability.md) R3; unit tests only, nothing wired into the pass | Q1–Q4 |
 | G1a *(implemented)* | the first half of G1: `commissioning-proposal/v3` (v2 plus a required `deception_scope`, `src/azazel_nexus/commissioning_approval.py`, `fabric_boundary.restore_commissioning_inputs`; M.I.O. reads its signed `mio_profile` from v2 and v3 alike), the strict decoder, the rendered scope file and its reader (`src/azazel_nexus/decoy_scope.py`, a standard-library leaf under the helper's boundary rules); tests only (`tests/unit/test_decoy_scope.py`, `tests/unit/test_commissioning_approval.py`); nothing calls it from the pass or the helper, no unit file changes. The ruleset, `nft -j`, isolation v2, masquerade and `LoadCredential=` are G1b | Q1–Q3 |
-| G1b *(implemented)* | the second half of G1: the helper's input (`LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json` on `azazel-decoy-netd.service`, pinned in `DECOY_HELPER_SANDBOX`, no `SetCredential=` fallback, no other unit may load it; `decoy_scope.read_scope_credential`; a scope present and refused changes nothing); the ruleset from the scope, one transaction (`decoy_network.render_ruleset`: `elements`, quoted `iifname { ... }` on the accept, `oifname { ... }` on the reply and the ingress drop of [reachability](deception-exposure-reachability.md) R3, the A3 masquerade in a `postrouting` `nat` chain; without a scope the table of the first build); `_ALLOWED` replaced by a per-run `Plan` (the constants plus exactly the one ruleset); the check moved to `nft -j list table` against the expected listing rendered with the ruleset; `decoy-isolation/v2` with `approved_v4_matches`, `ingress_matches` and `scope_digest`, v1 refused by the decoy; the helper's import closure gains `azazel_nexus.decoy_scope` only. Container-checked with nftables 1.1.3 (a mechanism check): an anonymous set of names is listed reordered and, with one name, as the name; a /32 element as a bare address; adjacent prefixes are kept apart, overlapping ones refuse the whole transaction, duplicates are merged; the real helper loaded and checked scopes of 1 and 2 ingress, 3 and 16 prefixes, and an approved forwarded connect reached the decoy as `10.255.196.1`. Until G6 nothing writes the scope file, so a granted helper would fail to start; the tier stays withheld | Q1–Q4 |
+| G1b *(implemented)* | the second half of G1: the helper's input (`LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json` on `azazel-decoy-netd.service`, pinned in `DECOY_HELPER_SANDBOX`, no `SetCredential=` fallback, no other unit may load it; `decoy_scope.read_scope_credential`, read after the previous isolation record is removed; a scope present and refused builds nothing and leaves no record); the ruleset from the scope, one transaction (`decoy_network.render_ruleset`: `elements`, quoted `iifname { ... }` on the accept, `oifname { ... }` on the reply and the ingress drop of [reachability](deception-exposure-reachability.md) R3, the A3 masquerade in a `postrouting` `nat` chain; without a scope the table of the first build); `_ALLOWED` replaced by a per-run `Plan` (the constants plus exactly the one ruleset); the check moved to `nft -j list table` against the expected listing rendered with the ruleset; `decoy-isolation/v2` with `approved_v4_matches`, `ingress_matches` (the ingress name set and its count; placement is `nft_table`'s) and `scope_digest`, v1 refused by the decoy; the check sees only its own table; the helper's import closure gains `azazel_nexus.decoy_scope` only. Container-checked with nftables 1.1.3 (a mechanism check): an anonymous set of names is listed reordered and, with one name, as the name; a /32 element as a bare address; adjacent prefixes are kept apart, overlapping ones refuse the whole transaction, duplicates are merged; the real helper loaded and checked scopes of 1 and 2 ingress, 3 and 16 prefixes, and an approved forwarded connect reached the decoy as `10.255.196.1`. Until G6 nothing writes the scope file, so a granted helper would fail to start; the tier stays withheld | Q1–Q4 |
 | G2 | the watch: verify unit, timer, trip unit, decoy `Requires=`, helper `After=` (§6); the verify re-reads forwarding, the ingress rules and the routes of `main` ([reachability](deception-exposure-reachability.md) R4); unit tests | Q6, Q7 |
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |
-| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted | G5, Q5, Q10, Q11 |
+| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; an isolation record whose `scope_digest` is `none` (a helper run without a scope) is refused by the pass and the grant path, and a granted decoy requires the digest of the scope the pass rendered; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted | G5, Q5, Q10, Q11 |
 
 P5 and P6 of the prerequisites document (decisions, redirect) are unchanged
 and come after G6.

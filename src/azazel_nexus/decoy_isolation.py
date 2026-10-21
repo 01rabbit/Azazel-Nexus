@@ -99,9 +99,10 @@ EVIDENCE_NAME = "isolation.json"
 #:   chains, rules, set and the set's elements; handles aside);
 #: * `approved_v4_matches`: the set `approved_v4` holds exactly the scope's
 #:   prefixes (none without a scope);
-#: * `ingress_matches`: the rules name exactly the scope's ingress
-#:   interfaces, in exactly the three places the ruleset puts them (none
-#:   without a scope);
+#: * `ingress_matches`: the set of ingress names and the number of matches
+#:   carrying it: every interface match other than the bridge names exactly
+#:   the scope's ingress set, three times (none without a scope); where
+#:   those matches sit is `nft_table`'s structural comparison;
 #: * `bridge`: one link `az-decoy0`, a bridge, up, attached to nothing;
 #: * `bridge_address`: its only IPv4 address is the bridge address of the
 #:   decoy /30, and it has no IPv6 address but a link-local one;
