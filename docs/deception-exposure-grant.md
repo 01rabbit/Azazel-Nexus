@@ -254,7 +254,12 @@ short separate design before G6 (§9), with the default "the LAN routes the
 /30 to the node; Nexus sets no sysctl, and the pass withholds the tier unless
 per-interface forwarding (`net.ipv4.conf.<ingress>.forwarding`) is already
 on for the ingress interfaces and off on the management and observation
-ones" (§10 Q11).
+ones" (§10 Q11). That design is
+[how outside peers reach the decoy](deception-exposure-reachability.md): it
+keeps the default, and adds what writing it out showed, notably that
+forwarding is a property of the receiving interface, so the ingress needs
+containment of its own, and that the replies need forwarding on `az-decoy0`
+(its §5, §7, §9 and §10).
 
 ## 5. The grant condition
 
@@ -290,7 +295,11 @@ needs (health, lease, generation, clock, high water):
 5. **coexistence holds** (§6.2): no unit that flushes the ruleset is enabled;
 6. **the static preconditions**: `net.core.fb_tunnels_only_for_init_net` is
    `2` (§13 of the prerequisites document) and the forwarding condition of
-   §4.5.
+   §4.5, specified in
+   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-not-implemented-here)
+   (only its rows in bold were decided by the owner; the others are that
+   design's narrowing defaults, required before G6, which the owner may
+   overturn).
 
 Each failure withholds the tier with its own reason code, and nothing else.
 
@@ -466,9 +475,9 @@ pass and the existing tests that pin it stay.
 | phase | content | needs |
 | --- | --- | --- |
 | G0 | this proposal; owner decisions (§10) | — |
-| G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); unit tests only, nothing wired into the pass | Q1–Q4 |
+| G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); the reply accept's `oifname { <ingress> }` and the ingress drop of [reachability](deception-exposure-reachability.md) R3; unit tests only, nothing wired into the pass | Q1–Q4 |
 | G1a *(implemented)* | the first half of G1: `commissioning-proposal/v3` (v2 plus a required `deception_scope`, `src/azazel_nexus/commissioning_approval.py`, `fabric_boundary.restore_commissioning_inputs`; M.I.O. reads its signed `mio_profile` from v2 and v3 alike), the strict decoder, the rendered scope file and its reader (`src/azazel_nexus/decoy_scope.py`, a standard-library leaf under the helper's boundary rules); tests only (`tests/unit/test_decoy_scope.py`, `tests/unit/test_commissioning_approval.py`); nothing calls it from the pass or the helper, no unit file changes. The ruleset, `nft -j`, isolation v2, masquerade and `LoadCredential=` are G1b | Q1–Q3 |
-| G2 | the watch: verify unit, timer, trip unit, decoy `Requires=`, helper `After=` (§6); unit tests | Q6, Q7 |
+| G2 | the watch: verify unit, timer, trip unit, decoy `Requires=`, helper `After=` (§6); the verify re-reads forwarding, the ingress rules and the routes of `main` ([reachability](deception-exposure-reachability.md) R4); unit tests | Q6, Q7 |
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |
@@ -512,7 +521,11 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
 11. How outside peers reach the decoy (§4.5)? **[a short separate design
     before G6; default: the LAN routes the /30 to the node, Nexus sets no
     sysctl, the pass withholds unless per-interface forwarding is on for the
-    ingress interfaces and off for management and observation]**
+    ingress interfaces and off for management and observation]** Written
+    out in [how outside peers reach the decoy](deception-exposure-reachability.md),
+    which adds five narrowing conditions (its §9, R1–R5), adopted as
+    defaults the owner may overturn, and one open question for the owner
+    (R6, its reading of commissioning §2).
 12. Firewall coexistence? **[the tier is withheld while `nftables.service`,
     `firewalld.service` or `netfilter-persistent.service` is enabled; Edge
     enforce posture and the tier mutually exclusive until Edge agrees on
