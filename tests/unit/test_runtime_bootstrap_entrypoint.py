@@ -139,6 +139,8 @@ def _install_composition(monkeypatch, *, events, selection="retained", guard=Non
                         lambda: events.append("initial-factory"))  # None: legacy path
     monkeypatch.setattr(entrypoint, "notify_ready", lambda: None)
     monkeypatch.setattr(entrypoint, "notify_watchdog", lambda: None)
+    # Host /run is never touched; the L-7 tests below observe this call.
+    monkeypatch.setattr(entrypoint, "reset_grant_markers", lambda: None)
     return guard, client
 
 
@@ -595,6 +597,131 @@ def test_real_once_barrier_precedes_supervisor_and_refuses_second_attempt(tmp_pa
         entrypoint.run_selected_bootstrap("retained", narrow=lambda: None)
     assert constructions == [True]
     assert (directory / "controller-used").is_file()
+
+
+def test_ordinary_grant_markers_are_removed_before_the_once_claim(tmp_path, monkeypatch):
+    """#251 L-7: once the claim exists, no later pass in this boot id removes them."""
+    import os
+    from azazel_nexus_runtime import activation_markers
+
+    events = []
+    _install_composition(monkeypatch, events=events, manager=SimpleNamespace())
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    (tmp_path / "run/azazel-activation").mkdir(parents=True, mode=0o755)
+    unit = "azazel-mio-entryd.service"
+    activation_markers.write_grant_markers([unit], tmp_path)
+    marker = tmp_path / "run/azazel-activation/granted" / unit
+    assert marker.is_file()
+
+    def reset():
+        events.append("markers-reset")
+        activation_markers.reset_grant_markers(tmp_path)
+
+    @contextmanager
+    def once(guard):
+        assert not marker.exists()
+        events.append("controller-claimed")
+        yield guard
+
+    class Supervisor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self):
+            return BootstrapResult()
+
+    monkeypatch.setattr(entrypoint, "reset_grant_markers", reset)
+    monkeypatch.setattr(entrypoint, "bootstrap_controller_once", once)
+    monkeypatch.setattr(entrypoint, "BootstrapSupervisor", Supervisor)
+    monkeypatch.setattr(entrypoint, "bootstrap_narrowing_manager_in_transaction",
+                        lambda guard, **_: _manager(guard))
+    result = entrypoint.run_selected_bootstrap(
+        "retained", narrow=lambda: events.append("narrow"))
+    assert result.state == "stopped"
+    assert not marker.exists()
+    assert (events.index("lock-enter") < events.index("markers-reset")
+            < events.index("controller-claimed") < events.index("narrow"))
+
+
+@contextmanager
+def _manager(guard):
+    guard()
+    yield SimpleNamespace(_bootstrap_audit_client=lambda: FakeClient())
+
+
+def test_marker_reset_failure_refuses_without_claim_and_still_narrows(monkeypatch, capsys):
+    events = []
+    _install_composition(monkeypatch, events=events, manager=SimpleNamespace())
+
+    class Refused(Exception):
+        pass
+
+    def reset():
+        events.append("markers-reset")
+        raise Refused("grant markers")
+
+    monkeypatch.setattr(entrypoint, "reset_grant_markers", reset)
+    monkeypatch.setattr(entrypoint, "BootstrapSupervisor",
+                        lambda **_: pytest.fail("supervisor after a marker refusal"))
+    with pytest.raises(Refused):
+        entrypoint.run_selected_bootstrap(
+            "retained", narrow=lambda: events.append("narrow"))
+    assert "controller-claimed" not in events
+    assert (events.index("lock-enter") < events.index("markers-reset")
+            < events.index("narrow") < events.index("lock-exit"))
+    assert capsys.readouterr().err == (
+        "az-activated could not remove grant markers before the bootstrap claim\n")
+
+
+def test_marker_refusal_through_the_real_bootstrap_narrowing(tmp_path, monkeypatch, capsys):
+    """#251 L-7 end to end: the real marker reset refuses (a directory among
+    the markers), no claim is written, the real broad narrowing still masks
+    every governed unit, and the attempt fails with the emergency note."""
+    import os
+    from azazel_nexus_runtime import activated, activation_markers
+    from azazel_nexus_runtime.systemd_bus import SystemdBusSession
+
+    events = []
+    _install_composition(monkeypatch, events=events, manager=SimpleNamespace())
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    (tmp_path / "run/azazel-activation/granted/unexpected").mkdir(parents=True)
+    (tmp_path / "run/azazel-activation").chmod(0o755)
+    (tmp_path / "run/azazel-activation/granted").chmod(0o755)
+    real_reset = activation_markers.reset_grant_markers
+    monkeypatch.setattr(entrypoint, "reset_grant_markers", lambda: real_reset(tmp_path))
+    monkeypatch.setattr(activated, "reset_grant_markers", lambda _root: real_reset(tmp_path))
+    masked = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def __call__(self, method, unit):
+            if method == "MaskUnitFiles":
+                masked.append(unit)
+                return []
+            if method == "GetUnitFileState":
+                return "masked"
+            if method == "GetInactiveState":
+                return True
+            pytest.fail("unexpected widening operation")
+
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
+    monkeypatch.setattr(entrypoint, "BootstrapSupervisor",
+                        lambda **_: pytest.fail("supervisor after a marker refusal"))
+    with pytest.raises(activation_markers.GrantMarkerRefused) as refused:
+        entrypoint.run_selected_bootstrap(
+            "retained", narrow=activated._narrow_bootstrap_core_units)
+    assert "controller-claimed" not in events
+    assert masked == [definition.name for definition in activated.CORE_UNITS]
+    assert entrypoint.EMERGENCY_UNCONFIRMED in refused.value.__notes__
+    assert (tmp_path / "run/azazel-activation/granted/unexpected").is_dir()
+    assert capsys.readouterr().err == (
+        "az-activated could not remove grant markers before the bootstrap claim\n"
+        "az-activated could not remove grant markers during bootstrap narrowing\n")
 
 
 def test_public_manager_widening_methods_still_refuse_without_bus_access():

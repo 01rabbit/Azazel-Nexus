@@ -686,10 +686,21 @@ def _activation_ledger(root: Path) -> AuditLedger:
 
 
 def _narrow_bootstrap_core_units():
-    """Fixed broad mask/inactivity pass; no ordinary admission attempt."""
+    """Fixed broad mask/inactivity pass; no ordinary admission attempt.
+
+    Like ``_emergency_narrow``, it removes every grant marker first (#251
+    L-7); a marker that cannot be removed fails the narrowing after the
+    remask still runs.
+    """
     from .systemd_bus import SystemdBusSession
 
     failures = []
+    try:
+        reset_grant_markers(Path("/"))
+    except Exception:  # noqa: BLE001 - recorded, and the remask still runs
+        failures.append("grant_markers")
+        print("az-activated could not remove grant markers during bootstrap narrowing",
+              file=sys.stderr)
     with SystemdBusSession.connect() as session:
         manager = DbusUnitManager(call=session)
         for definition in CORE_UNITS:
