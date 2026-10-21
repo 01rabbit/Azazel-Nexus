@@ -363,7 +363,9 @@ def assert_decoy_interaction(harness: Harness, alerts: int):
     from azazel_nexus.edge_intake import read_intake_status
 
     base = harness.root / "var/lib/azazel"
-    (record,) = json_lines(base / "edge-intake/decoy-evidence")
+    records = json_lines(base / "edge-intake/decoy-evidence")
+    assert len(records) == 1, "decoy interaction not stored yet"
+    (record,) = records
     assert record["kind"] == RECORD_KIND and record["edge_observation"] is False
     assert record["environment_event"]["event_type"] == "interaction"
     assert len(json_lines(base / "edge-intake/evidence")) == alerts, "decoy stored as Edge evidence"
