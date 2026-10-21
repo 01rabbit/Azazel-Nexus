@@ -4,7 +4,8 @@ Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase; the review findings are those of
 [#276](https://github.com/01rabbit/Azazel-Nexus/issues/276)).
 Status: **decided (2026-10-22): the owner adopted every recommended default
-of §10 (Q1–Q12); G1–G3 in progress; the tier stays withheld until G6.**
+of §10 (Q1–Q12); G1–G3 in progress (G3's profiles and enforce-mode check
+are in, §7 "G3 as implemented"); the tier stays withheld until G6.**
 Related: [Deception Lite prerequisites](deception-redirect-prerequisites.md)
 (§7 Q9, Q10; §9; §10 "Before any grant"; §13; §14) ·
 [observe-baseline activation](activation-observe-baseline.md) ·
@@ -430,7 +431,102 @@ LSM list includes it, the `apparmor` package provides `apparmor_parser` and
 would need the `apparmor` package (and not `apparmor-utils`, which is only
 for authoring). The profiles must be loaded before the three units start;
 `apparmor.service` runs before `sysinit.target`, well before the controller
-(*inferred*; VM-check). systemd 257 supports `AppArmorProfile=`.
+(*inferred*; VM-check). systemd 257 supports `AppArmorProfile=`. The VM
+has since shown AppArmor 4.1.0 enabled on Debian 13 (a mechanism check, not
+hardware evidence).
+
+### G3 as implemented
+
+The profiles, the units' attachment and the pass's reading exist; **nothing
+is granted by them**: `_withholding_reason` still withholds the tier as
+`isolation_evidence_absent` on every pass, and the new reasons below are not
+reached until G6. Revised after the review of #285.
+
+- **Profiles** (`packaging/apparmor/`): `azazel-decoy-nsd` (with a child
+  `azazel-decoy-nsd//ip`), `azazel-decoy-netd` and `azazel-decoyd`, named,
+  not attached by path. Every block, the child included, states each claim
+  above as an explicit `deny` (a child inherits nothing), plus
+  `/lib/systemd` (the installer's unit directory) and the runtime unit paths
+  under `/run/systemd`, with **one exception**: the decoy has no `deny` over
+  `/var/lib/azazel` (next item). Allowed: the Python body
+  (`/usr/bin/python3.13`, code under `/usr/lib/python3.13` and
+  `/opt/azazel-nexus/venv` only); `ip` (namespace unit, into the child), `ip`
+  and `nft` (helper); the helper's runtime directory as its one writable
+  place. The namespace unit's Python body holds **no capability and no
+  network**: it only spawns the fixed `ip` commands (`decoy_nsd` never calls
+  `setns`, `unshare` or `mount`); its child `ip` holds `CAP_SYS_ADMIN`,
+  `CAP_NET_ADMIN` and netlink, maps its libraries, and alone may mount: only
+  what `ip netns add`, `ip netns delete` and `ip -n` make (§13 of the
+  prerequisites document; the first bind of `/run/netns` onto itself is
+  allowed both as `rbind`, iproute2's `MS_BIND|MS_REC`, and as `bind` until
+  the VM shows which). The decoy has `deny capability,`. Rules not confirmed
+  on a kernel are marked `INFERRED` in the files. All three compile with
+  `apparmor_parser` 4.1.0 (Debian 13 container, without a kernel; not a
+  load).
+- **The decoy's report.** Its connect to the intake's socket
+  `/var/lib/azazel/run/decoy-intake/decoy-intake.sock` is mediated as a
+  write to the socket file, the same rule that keeps the D-Bus and systemd
+  sockets out of reach. A `deny` over `/var/lib/azazel` would outrank any
+  allow and drop every report, so the decoy's profile has none: its writes
+  under `/var/lib/azazel` are refused by the profile's default, and its one
+  allow there is `rw` on that socket (pinned by a test). Its AF_UNIX rule is
+  a stream client only (no `bind`, `listen` or `accept`); AppArmor 4.1's
+  `unix` rules cannot name a path address (`addr=` with a path does not
+  compile), so the file rule is what narrows it.
+- **The verify unit of §6** gets its own profile in G2: it runs the
+  helper's executable but writes nothing, so it does not share the helper's
+  profile, which may write the record.
+- **Units:** `ServiceProfile.apparmor_profile`, exactly
+  `decoy_apparmor.apparmor_profile_for(unit)`: each of the three names its
+  own, rendered `AppArmorProfile=<name>` without `-`, **and
+  `AssertSecurity=apparmor`** in `[Unit]`. With AppArmor enabled, a start
+  without the profile loaded fails; with AppArmor disabled systemd ignores
+  `AppArmorProfile=`, and the assertion fails the start instead, so none of
+  the three runs unconfined. Every other unit names no profile and asserts
+  nothing; `AppArmorProfile` is a reserved key of `extra`.
+- **The unit-content check** (`activation_unit_files`): an exposure unit's
+  `AppArmorProfile=` lines must be exactly the rendered unit's (one line,
+  the name, no `-`; removed, doubled, reset or moved is refused, and no
+  other unit may gain one); `AssertSecurity=apparmor` is a start guard and
+  compared with the others. The loaded-unit check compares the manager's
+  `Asserts`, so a unit loaded without the assertion is refused too.
+- **The pass's reading:** `decoy_apparmor.exposure_lsm_refusal`, pure, over
+  `/sys/kernel/security/lsm` and `/sys/kernel/security/apparmor/profiles`
+  (`read_exposure_lsm`, bounded, no link followed). A file that does not
+  exist is None (AppArmor absent); one that exists and cannot be read
+  (EACCES, EIO, a link) is `UNREADABLE`. Reasons, first that holds:
+  `lsm_apparmor_disabled`, `lsm_profiles_unreadable` (an unreadable or
+  oversized file, or a required profile's line not in the kernel's form),
+  `lsm_profiles_absent`, `lsm_profiles_not_enforced` (the four blocks, each
+  only `(enforce)`). Only the lines of the four required names are read
+  strictly; other lines do not matter. Only the unit renderer and the
+  install plan import the module; a test keeps the pass, the controller and
+  the library from doing so before G6.
+- **Installer:** `apparmor_parser` (package `apparmor`, not
+  `apparmor-utils`) is a required tool with the service manager; the three
+  profiles are compiled (`--skip-kernel-load`) before anything is written
+  and placed in `/etc/apparmor.d/` 0644; nothing is loaded. With AppArmor
+  not among the kernel's LSMs it warns (the units' assertion is the wall).
+  After staging, `tools/check_decoy_apparmor_wrappers.py` parses the three
+  decoy wrappers and refuses the install unless each interpreter resolves to
+  `/usr/bin/python3.13` and each import path under `/usr/lib/python3.13` or
+  `/opt/azazel-nexus/venv`; `/usr/local/lib/python3*` and
+  `/usr/lib/python3/dist-packages` are not allowed (the wrappers replace
+  `sys.path` and never need them). A `DESTDIR` staging run, whose
+  interpreter is not the node's, only warns. The offline bundle carries the
+  profiles and the check.
+- **Tests and containers.** No container or E2E run starts the three units
+  (E2E runs the installer with `--without-service-manager` and
+  `DESTDIR`), so nothing there needs a loaded profile; no test copy of a
+  unit drops `AppArmorProfile=`.
+- **Left to G6.** (a) The loaded unit's `AppArmorProfile` is a property of
+  the Service interface, which the pass does not read (`loaded_unit` reads
+  the Unit interface only); G6 adds that read and compares it. (b) That the
+  policy loaded in the kernel is the one placed in `/etc/apparmor.d/`: the
+  generation's exposure section digests the files (§4.4 item 5), and G6
+  compares the kernel's per-profile policy hash
+  (`/sys/kernel/security/apparmor/policy/profiles/*/sha256`, *inferred*) with
+  the hash of the compiled placed files.
 
 ## 8. The decoy-sandbox gate (Q10, F7)
 
@@ -543,8 +639,17 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
    verify; a verify that fails before the decoy start keeps it down; a
    successful one-shot verify does not stop the decoy through `Requires=`;
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
-   unloaded fails; the namespace unit's `ip netns add` and `ip -n` work under
-   its profile, and its writes to the paths of §7 are denied;
+   unloaded fails, and with AppArmor disabled (`apparmor=0`)
+   `AssertSecurity=apparmor` fails it; the namespace unit's `ip netns add`
+   and `ip -n` work under its profile, **including the `Cx` transition from
+   the namespace unit to its wider `ip` child under `NoNewPrivileges=yes`**
+   (required: if refused, the unit cannot start, and the fallback is `ix`)
+   (which of `rbind` and `bind` the first
+   bind is, the nsfs bind source, the propagation flags), and its writes to
+   the paths of §7 are denied; the decoy's connect to the intake's socket
+   succeeds and a write anywhere else under `/var/lib/azazel` is refused;
+   the pass, as root under the controller's sandbox, can read
+   `/sys/kernel/security/apparmor/profiles`;
 5. `nft list` refused without `CAP_NET_ADMIN` (confirms the verify unit's
    need);
 6. every item of the §8 table, as a rehearsal of `HG-09`.

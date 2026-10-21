@@ -16,9 +16,11 @@ from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
 from azazel_nexus.layout import LAYOUT
+from .decoy_apparmor import DECOY_APPARMOR_PROFILES
 from .hardening import ALL_PROFILES, EDGE_PROBE_PREFLIGHT_UNIT, PROFILES, SYSTEM_ACCOUNTS
 
 __all__ = [
+    "APPARMOR_DIRECTORY",
     "CURRENT_INSTALL_PLATFORM_PROFILES",
     "DirectoryDestination",
     "FileDestination",
@@ -31,6 +33,10 @@ __all__ = [
     "select_install_profile",
 ]
 
+
+#: Where the Deception Lite AppArmor profiles are installed (#196 G3), the
+#: directory `apparmor.service` (Debian package `apparmor`) loads at boot.
+APPARMOR_DIRECTORY = "/etc/apparmor.d"
 
 _KEY = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 _UNQUOTED = re.compile(r"[A-Za-z0-9._+:/-]+\Z")
@@ -206,7 +212,12 @@ CURRENT_INSTALL_PLATFORM_PROFILES: tuple[InstallPlatformProfile, ...] = (
             "install",
         ),
         account_tools=("id", "getent", "useradd", "groupadd"),
-        service_manager_tools=("systemctl", "systemd-tmpfiles"),
+        # `apparmor_parser` stands for the Debian package `apparmor` (not
+        # `apparmor-utils`, which is for authoring): it checks the
+        # Deception Lite profiles at install, and its `apparmor.service`
+        # loads them at boot (#196 G3). Needed with the service manager
+        # only: a DESTDIR staging run places the files and loads nothing.
+        service_manager_tools=("systemctl", "systemd-tmpfiles", "apparmor_parser"),
     ),
 )
 
@@ -379,6 +390,12 @@ def build_install_plan(
             source="packaging/azazel-nexus.preset",
             destination=f"{profile.preset_directory}/99-azazel-nexus.preset",
         ),
+    ) + tuple(
+        FileDestination(
+            source=f"packaging/apparmor/{name}",
+            destination=f"{APPARMOR_DIRECTORY}/{name}",
+        )
+        for _, name in DECOY_APPARMOR_PROFILES
     )
     directories = tuple(
         DirectoryDestination(spec.path, spec.mode, spec.owner, spec.group)

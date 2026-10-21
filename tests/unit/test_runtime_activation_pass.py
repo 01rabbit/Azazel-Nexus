@@ -88,7 +88,9 @@ def loaded_as_declared(unit):
         "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
         "Conditions": [("ConditionPathExists", False, False,
                         f"/run/azazel-activation/granted/{unit}", 0)],
-        "Asserts": [],
+        # The Deception Lite exposure units assert AppArmor (#196 G3).
+        "Asserts": ([("AssertSecurity", False, False, "apparmor", 0)]
+                    if unit.startswith("azazel-decoy") else []),
         "Requires": ["azazel-activated.service", "system.slice", "sysinit.target"],
         "After": ["azazel-activated.service", "basic.target", "system.slice"],
     }

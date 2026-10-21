@@ -1,0 +1,84 @@
+# vim:syntax=apparmor
+# AppArmor profile for azazel-decoy-netd.service (#196 G3,
+# docs/deception-exposure-grant.md §7). Attached by the unit's
+# `AppArmorProfile=azazel-decoy-netd` (no `-`) and `AssertSecurity=apparmor`: with
+# AppArmor enabled a start without this profile loaded fails, and with
+# AppArmor disabled the assertion fails it, so the unit never runs
+# unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
+# loaded at boot by apparmor.service. The activation pass never grants this
+# unit in this build.
+#
+# The network helper is root with CAP_NET_ADMIN in the host network
+# namespace. It writes only its runtime directory (this boot's isolation
+# record). The verify unit of §6 (G2) gets its own profile in G2; it runs
+# the same executable but writes nothing, so it does not take this one.
+#
+# INFERRED marks a rule that was not confirmed on a kernel; the exact rules
+# are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile azazel-decoy-netd {
+  include <abstractions/base>
+
+  # --- What the gate claims (§7). Explicit denies; a deny outranks every
+  # --- allow, here and in any include.
+  deny /run/azazel-activation{,/**} wlk,
+  deny /etc/systemd{,/**} wlk,
+  deny /usr/lib/systemd{,/**} wlk,
+  deny /lib/systemd{,/**} wlk,
+  deny /run/systemd/{system,system.control,transient}{,/**} wlk,
+  deny /etc/azazel{,/**} wlk,
+  deny /var/lib/azazel{,/**} wlk,
+  deny /run/dbus/system_bus_socket rw,
+  deny /run/systemd/private rw,
+  deny dbus,
+  deny ptrace,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny /sys/kernel/security{,/**} wlk,
+  deny change_profile,
+  # --- end of the gate's claims.
+
+  # Exactly the unit's bounding set, and netlink as its only family. No
+  # mount of any kind.
+  capability net_admin,
+  network netlink raw,
+
+  # Its own body: the fixed wrapper, the interpreter and the installed
+  # package. The venv at /opt/azazel-nexus/venv (operations.md) and Debian
+  # 13's python3.13; INFERRED: that nothing else is read at startup.
+  /usr/libexec/azazel/az-decoy-netd r,
+  # decoy_apparmor.PROFILE_INTERPRETER and PROFILE_PYTHON_ROOTS; the
+  # installer refuses wrappers that resolve elsewhere.
+  /usr/bin/python3.13 mrix,
+  /usr/lib/python3.13/** mr,
+  /usr/lib/@{multiarch}/** mr,
+  /opt/azazel-nexus/venv/** mr,
+  @{PROC}/@{pid}/fd/ r,
+  deny /usr/** w,
+  deny /opt/** w,
+
+  # The record is bound to this boot.
+  @{PROC}/sys/kernel/random/boot_id r,
+
+  # Its runtime directory, the one place it writes: the record under a
+  # fixed temporary name, renamed over isolation.json (§14).
+  /run/azazel-decoy-isolation/ r,
+  /run/azazel-decoy-isolation/* rw,
+
+  # The fixed ip and nft commands (decoy_network) run under this same
+  # profile and need nothing it does not have.
+  /usr/bin/ip mrix,
+  /usr/sbin/nft mrix,
+  /etc/iproute2/** r,
+  /usr/share/iproute2/** r,
+
+  # Its own children (the step deadline), and systemd's stop. INFERRED: the
+  # peer label of PID 1 on Debian 13.
+  signal (send) set=(kill) peer=azazel-decoy-netd,
+  signal (receive) peer=azazel-decoy-netd,
+  signal (receive) peer=unconfined,
+}

@@ -7,6 +7,7 @@
 # After building it reads back the table and the host's links with two fixed commands and writes this boot's isolation record, fixed results only, to its runtime directory, which the decoy requires before it listens; a check that does not pass undoes the build.
 # It reads no decoy observation and no Edge decision.
 # It is root, so netlink is its only address family (any netlink protocol, not only route and nftables) and it has no AF_UNIX socket that could reach the service manager, whose private sockets are also inaccessible to it.
+# It starts only with AppArmor enabled and its profile azazel-decoy-netd loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
 # The activation pass never grants this unit in this build.
 
 [Unit]
@@ -16,6 +17,7 @@ After=azazel-activated.service
 After=azazel-decoy-nsd.service
 After=nftables.service
 ConditionPathExists=/run/azazel-activation/granted/azazel-decoy-netd.service
+AssertSecurity=apparmor
 Requires=azazel-activated.service
 Requires=azazel-decoy-nsd.service
 
@@ -23,6 +25,7 @@ Requires=azazel-decoy-nsd.service
 Type=oneshot
 User=root
 ExecStart=/usr/libexec/azazel/az-decoy-netd
+AppArmorProfile=azazel-decoy-netd
 RuntimeDirectory=azazel-decoy-isolation
 RuntimeDirectoryMode=0755
 RemainAfterExit=yes

@@ -156,6 +156,36 @@ while IFS= read -r tool; do
 done <<EOF
 $REQUIRED_TOOLS
 EOF
+
+# The Deception Lite AppArmor profiles (#196 G3) must compile before anything
+# is written: each exposure unit names its profile without `-`, so a profile
+# apparmor.service cannot load is a unit that cannot start. Compiled only,
+# never loaded here (the package's apparmor.service loads /etc/apparmor.d at
+# boot); with the service manager only, since apparmor_parser is required
+# only then. No unit is granted by this, and the pass never grants them yet.
+if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoyd; do
+        if ! apparmor_parser --skip-kernel-load --skip-cache --quiet "$HERE/apparmor/$profile"; then
+            echo "refusing to install: AppArmor profile $profile does not compile." >&2
+            exit 1
+        fi
+    done
+    # A kernel without AppArmor ignores AppArmorProfile=; the three units'
+    # AssertSecurity=apparmor then fails their start, so they never run
+    # unconfined. Say so now rather than at the first start.
+    lsm=
+    if [ -r /sys/kernel/security/lsm ]; then
+        read -r lsm < /sys/kernel/security/lsm || true
+    fi
+    case ",$lsm," in
+        *,apparmor,*) ;;
+        *)
+            echo "WARNING: AppArmor is not enabled in this kernel. The Deception Lite" >&2
+            echo "units (azazel-decoy-nsd, azazel-decoy-netd, azazel-decoyd) cannot" >&2
+            echo "start here, and their tier is never granted. Nothing else changes." >&2
+            ;;
+    esac
+fi
 UNIT_DIR="${DESTDIR:-}$UNIT_DIR"
 PRESET_DIR="${DESTDIR:-}$PRESET_DIR"
 LIBEXEC="${DESTDIR:-}$LIBEXEC"
@@ -187,6 +217,19 @@ for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked 
         exit 1
     fi
 done
+
+# The decoy wrappers' interpreter and import paths must be what the
+# Deception Lite AppArmor profiles allow (#196 G3): /usr/bin/python3.13 and
+# code under /usr/lib/python3.13 or /opt/azazel-nexus/venv. A wrapper outside
+# them would be refused by its profile at the first start, so the install is
+# refused here: after the wrappers are staged, before any account or unit is
+# touched (a refused run leaves only the staged wrappers). A DESTDIR staging run (no service manager) uses another
+# interpreter, so there it only warns.
+if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    python_fixed -IS "$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py" "$LIBEXEC" || exit 1
+else
+    python_fixed -IS "$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py" --warn-only "$LIBEXEC"
+fi
 
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
@@ -353,6 +396,13 @@ install -m 0644 "$HERE"/systemd/azazel-decoyd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
+# The Deception Lite AppArmor profiles (#196 G3), one per exposure unit, each
+# named by its unit's AppArmorProfile=. Placed, not loaded: apparmor.service
+# loads them at the next boot, before any unit could start.
+install -d -m 0755 "${DESTDIR:-}/etc/apparmor.d"
+install -m 0644 "$HERE"/apparmor/azazel-decoy-nsd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-nsd"
+install -m 0644 "$HERE"/apparmor/azazel-decoy-netd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-netd"
+install -m 0644 "$HERE"/apparmor/azazel-decoyd "${DESTDIR:-}/etc/apparmor.d/azazel-decoyd"
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then
     echo "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."

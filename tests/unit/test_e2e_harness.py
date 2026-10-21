@@ -62,7 +62,8 @@ def _copy_installer_tree_for_layout_test(tmp_path: Path) -> Path:
     shutil.copytree(REPO_ROOT / "packaging", root / "packaging")
     (root / "tools").mkdir()
     for name in ("install_profile_fields.py", "stage_runtime_entrypoints.py",
-                 "provision_mission_read.py", "purge_mio_profile_copies.py"):
+                 "provision_mission_read.py", "purge_mio_profile_copies.py",
+                 "check_decoy_apparmor_wrappers.py"):
         shutil.copy2(REPO_ROOT / "tools" / name, root / "tools" / name)
     shutil.copytree(REPO_ROOT / "src", root / "src")
     shutil.copytree(REPO_ROOT / "runtime" / "src", root / "runtime" / "src")

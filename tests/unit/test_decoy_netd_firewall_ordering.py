@@ -122,7 +122,7 @@ def test_the_loaded_check_accepts_the_firewall_among_after():
         "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
         "Conditions": [("ConditionPathExists", False, False,
                         f"/run/azazel-activation/granted/{unit}", 0)],
-        "Asserts": [],
+        "Asserts": [("AssertSecurity", False, False, "apparmor", 0)],
         "Requires": [ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
                      "system.slice", "sysinit.target"],
         "After": [ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT, FIREWALL,

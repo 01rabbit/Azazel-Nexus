@@ -369,6 +369,11 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     )
     shutil.copy(ROOT / "tools/provision_mission_read.py", tools)
     shutil.copy(ROOT / "tools/purge_mio_profile_copies.py", tools)
+    # #196 G3: the decoy wrapper check reads runtime/pyproject.toml and
+    # imports the runtime; without the service manager it only warns.
+    shutil.copy(ROOT / "tools/check_decoy_apparmor_wrappers.py", tools)
+    shutil.copytree(ROOT / "runtime", root / "runtime",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.egg-info", "build"))
     shutil.copytree(ROOT / "src", root / "src")
     destdir = tmp_path / "image"
     env_report = destdir / "stager-environment.json"

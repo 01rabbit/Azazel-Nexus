@@ -7,6 +7,7 @@
 # IPAddressDeny=any stays, and the fixed decoy subnet is the only address allowed.
 # It opens no socket without the network helper's isolation record from this boot with every check passed.
 # It binds IPv4 only and writes no file, so it gets no AF_INET6 and no writable path, and the service manager's private sockets are inaccessible to it.
+# It starts only with AppArmor enabled and its profile azazel-decoyd loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
 # The activation pass never grants this unit in this build.
 
 [Unit]
@@ -15,6 +16,7 @@ Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-
 After=azazel-activated.service
 After=azazel-decoy-netd.service
 ConditionPathExists=/run/azazel-activation/granted/azazel-decoyd.service
+AssertSecurity=apparmor
 Requires=azazel-activated.service
 Requires=azazel-decoy-netd.service
 
@@ -22,6 +24,7 @@ Requires=azazel-decoy-netd.service
 Type=exec
 User=azdecoy
 ExecStart=/usr/libexec/azazel/az-decoyd
+AppArmorProfile=azazel-decoyd
 NetworkNamespacePath=/run/netns/azazel-decoy
 PrivateUsers=yes
 IPAddressAllow=10.255.196.0/30

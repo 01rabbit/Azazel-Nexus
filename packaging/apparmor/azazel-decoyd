@@ -1,0 +1,100 @@
+# vim:syntax=apparmor
+# AppArmor profile for azazel-decoyd.service (#196 G3,
+# docs/deception-exposure-grant.md §7). Attached by the unit's
+# `AppArmorProfile=azazel-decoyd` (no `-`) and `AssertSecurity=apparmor`: with
+# AppArmor enabled a start without this profile loaded fails, and with
+# AppArmor disabled the assertion fails it, so the unit never runs
+# unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
+# loaded at boot by apparmor.service. The activation pass never grants this
+# unit in this build.
+#
+# The decoy runs as azdecoy with no capability, inside the decoy network
+# namespace. It listens (IPv4, TCP), reads this boot's isolation record and
+# its own namespace, and connects once per interaction to the intake's decoy
+# socket. It writes no file.
+#
+# The intake's socket is /var/lib/azazel/run/decoy-intake/decoy-intake.sock.
+# A connect to a path socket is mediated by write permission on the socket
+# file (the same rule that keeps the D-Bus and systemd sockets out of reach
+# below), so this profile has no `deny` over /var/lib/azazel: a deny would
+# outrank the allow and drop every report silently. Writes elsewhere under
+# /var/lib/azazel are refused because nothing allows them (the profile's
+# default), and the decoy's only allow there is the one socket, pinned by
+# tests/unit/test_decoy_apparmor.py. VM item (G4): the connect succeeds and
+# a write elsewhere under /var/lib/azazel is refused.
+#
+# INFERRED marks a rule that was not confirmed on a kernel; the exact rules
+# are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile azazel-decoyd {
+  include <abstractions/base>
+
+  # --- What the gate claims (§7). Explicit denies; a deny outranks every
+  # --- allow, here and in any include.
+  deny /run/azazel-activation{,/**} wlk,
+  deny /etc/systemd{,/**} wlk,
+  deny /usr/lib/systemd{,/**} wlk,
+  deny /lib/systemd{,/**} wlk,
+  deny /run/systemd/{system,system.control,transient}{,/**} wlk,
+  deny /etc/azazel{,/**} wlk,
+  # Not `deny /var/lib/azazel{,/**} wlk`: see the head of this file.
+  deny /run/dbus/system_bus_socket rw,
+  deny /run/systemd/private rw,
+  deny dbus,
+  deny ptrace,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny /sys/kernel/security{,/**} wlk,
+  deny change_profile,
+  # --- end of the gate's claims.
+
+  # No capability at all, as in the unit.
+  deny capability,
+
+  # Its listener (IPv4 TCP) and its one AF_UNIX connect to the intake.
+  network inet stream,
+  # AF_UNIX stream as a client only: no bind, listen or accept. AppArmor
+  # 4.1's unix rules name only abstract addresses (`addr=` with a path does
+  # not compile), so the path is narrowed by the file rule below.
+  unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=stream,
+  # Abstract addresses are not narrowed here; the decoy's abstract socket
+  # namespace is that of its own network namespace (NetworkNamespacePath=),
+  # which holds no other service.
+  # The intake's decoy socket, and nothing else under /var/lib/azazel.
+  # INFERRED: `rw` rather than `w`, because a path connect has been logged
+  # as requested_mask="wr"; narrow to `w` if G4 shows `w` suffices.
+  /var/lib/azazel/run/decoy-intake/decoy-intake.sock rw,
+
+  # Its own body: the fixed wrapper, the interpreter and the installed
+  # package. The venv at /opt/azazel-nexus/venv (operations.md) and Debian
+  # 13's python3.13; INFERRED: that nothing else is read at startup.
+  /usr/libexec/azazel/az-decoyd r,
+  # decoy_apparmor.PROFILE_INTERPRETER and PROFILE_PYTHON_ROOTS; the
+  # installer refuses wrappers that resolve elsewhere.
+  /usr/bin/python3.13 mrix,
+  /usr/lib/python3.13/** mr,
+  /usr/lib/@{multiarch}/** mr,
+  /opt/azazel-nexus/venv/** mr,
+  @{PROC}/@{pid}/fd/ r,
+  deny /usr/** w,
+  deny /opt/** w,
+
+  # This boot's isolation record, read only (§14).
+  @{PROC}/sys/kernel/random/boot_id r,
+  /run/azazel-decoy-isolation/ r,
+  /run/azazel-decoy-isolation/isolation.json r,
+
+  # Its own namespace check (decoy_netns): its namespace and its links.
+  # PID 1's namespace stays unreadable (ptrace is denied above), which the
+  # check already treats as "not readable".
+  owner @{PROC}/@{pid}/ns/net r,
+  owner @{PROC}/@{pid}/net/dev r,
+  /run/netns/azazel-decoy r,
+
+  # systemd's stop. INFERRED: the peer label of PID 1 on Debian 13.
+  signal (receive) peer=unconfined,
+}

@@ -404,6 +404,13 @@ exist and be a gate. That means a hardware-gate record showing that, under
 the profile, the unit cannot write the activation state, the grant markers
 or the unit files, and cannot reach the service manager.
 
+The profiles now exist (#196 G3,
+[grant design §7](deception-exposure-grant.md#g3-as-implemented)): each of
+the three units names its own with `AppArmorProfile=` and no `-`, and the
+pass's enforce-mode check is defined. That is not the gate: the
+hardware-gate record does not exist, the check is not yet a grant
+condition, and the tier is still withheld on every pass.
+
 ## 10. P1 as implemented
 
 The owner adopted every §7 default on 2026-10-21 and chose to start with P1.

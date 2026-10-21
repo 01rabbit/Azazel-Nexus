@@ -37,7 +37,9 @@ def _repo(root: Path) -> Path:
         "tools/purge_mio_profile_copies.py": b"def purge(): return []\n",
         "tools/provision_mission_read.py": b"def provision(): return 0\n",
         "tools/install_llama_runtime.py": b"def install(): return 0\n",
+        "tools/check_decoy_apparmor_wrappers.py": b"def findings(): return []\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
+        "packaging/apparmor/azazel-decoyd": b"profile azazel-decoyd {}\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
         "src/azazel_nexus/azazel.egg-info/PKG-INFO": b"must not ship\n",
@@ -265,3 +267,17 @@ def test_real_bundle_contains_every_file_the_installer_runs(tmp_path: Path) -> N
     shipped = set(_members(output))
 
     assert sorted(referenced - shipped) == []
+
+
+def test_real_bundle_contains_every_apparmor_profile_the_installer_places(tmp_path: Path) -> None:
+    """#196 G3: the profiles have no extension, so the check above misses them."""
+
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "packaging/install.sh").read_text(encoding="utf-8")
+    placed = set(re.findall(r'"\$HERE"/(apparmor/[A-Za-z0-9_.-]+) ', script))
+    assert placed == {"apparmor/azazel-decoy-nsd", "apparmor/azazel-decoy-netd",
+                      "apparmor/azazel-decoyd"}
+    output = tmp_path / "source.tar.gz"
+    build_bundle(root, output)
+    shipped = set(_members(output))
+    assert {"packaging/" + name for name in placed} <= shipped

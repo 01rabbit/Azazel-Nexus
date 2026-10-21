@@ -24,7 +24,9 @@ The bytes are also checked against what the grant marker relies on
 marker, `Requires=azazel-activated.service` and
 `After=azazel-activated.service`; and its `Condition*=`, `Assert*=` and
 `ExecCondition=` assignments must be exactly the rendered unit's, so none is
-added, removed or reset by an empty assignment. A unit file that fails this
+added, removed or reset by an empty assignment; so must its
+`AppArmorProfile=` assignments (#196 G3: the Deception Lite exposure units'
+profile, without `-`; none for any other unit). A unit file that fails this
 is refused like a changed one (`UnitContentRefused`).
 
 `generation-publish`, `request` and `install` call this, and phase P4's pass
@@ -158,6 +160,11 @@ def _guards(directives) -> list[tuple[str, str, str]]:
                   if _is_guard(key))
 
 
+def _lsm(directives) -> list[tuple[str, str, str]]:
+    return sorted((section, key, value) for section, key, value, _ in directives
+                  if key == "AppArmorProfile")
+
+
 def required_unit_lines(unit: str) -> tuple[str, str, str]:
     """The three `[Unit]` lines the grant marker's safety depends on (§5)."""
     return (f"ConditionPathExists={grant_marker_path(unit)}",
@@ -185,6 +192,12 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
         raise UnitContentRefused("unit file resets a [Unit] setting")
     if _guards(directives) != _guards(expected):
         raise UnitContentRefused("unit file start guards differ from the declaration")
+    # The LSM profile (#196 G3): exactly the rendered unit's, so an exposure
+    # unit's `AppArmorProfile=<name>` can be neither removed, doubled nor
+    # softened with `-`, and no other unit gains one. Its
+    # `AssertSecurity=apparmor` is a start guard, compared above.
+    if _lsm(directives) != _lsm(expected):
+        raise UnitContentRefused("unit file LSM profile differs from the declaration")
 
 
 def _scope(units, allowed=GRANTABLE_UNITS) -> tuple[str, ...]:
