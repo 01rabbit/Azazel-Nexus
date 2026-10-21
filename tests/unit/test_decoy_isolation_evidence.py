@@ -480,6 +480,45 @@ def test_output_that_cannot_be_read_is_unreadable_never_a_pass(outputs, unreadab
     assert list(results) == list(CHECKS)
 
 
+@pytest.mark.parametrize("key", ["ifname", "flags", "addr_info"])
+@pytest.mark.parametrize("link", ["lo", "az-decoy0", "az-decoy-host0"])
+def test_a_link_missing_a_key_makes_the_listing_unreadable(key, link):
+    """Review of #274: a missing key used to raise KeyError in evaluate."""
+
+    links = _links_with(lambda by, _: by[link].pop(key))
+    results = evaluate(_outputs(links=links))
+    assert {name for name, result in results.items() if result == "unreadable"} == set(CHECKS[2:])
+    assert results["nft_table"] == "pass"
+
+
+@pytest.mark.parametrize("value", [None, "UP", {"UP": 1}])
+def test_flags_of_another_type_make_the_listing_unreadable(value):
+    links = _links_with(lambda by, _: by["az-decoy0"].update(flags=value))
+    assert evaluate(_outputs(links=links))["bridge"] == "unreadable"
+
+
+def test_odd_values_inside_a_link_fail_their_check_and_never_raise():
+    links = _links_with(lambda by, _: (
+        by["az-decoy0"].update(linkinfo="bridge"),
+        by["az-decoy-host0"]["addr_info"].append({"family": "inet"}),
+        by["eth0"].update(master=["az-decoy0"])))
+    results = evaluate(_outputs(links=links))
+    assert results["bridge"] == "fail" and results["host_veth"] == "fail"
+
+
+def test_an_evaluation_error_records_nothing_and_does_not_pass(
+        evidence_directory, monkeypatch, capsys):
+    def broken(outputs):
+        raise KeyError("flags")
+
+    monkeypatch.setattr(decoy_isolation_check, "evaluate", broken)
+    recorder = _recorder(evidence_directory)
+    assert recorder.prepare()
+    assert recorder.record(_outputs()) is False
+    assert os.listdir(evidence_directory) == []
+    assert "could not be evaluated" in capsys.readouterr().err
+
+
 def test_the_checks_name_the_fixed_values_the_network_is_built_from():
     from azazel_nexus_runtime import decoy_network
     from azazel_nexus_runtime.decoy_addresses import BRIDGE, DECOY_SUBNET, HOST_VETH, NFT_TABLE

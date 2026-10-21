@@ -419,6 +419,17 @@ class ServiceProfile:
             raise ValueError(
                 f"{self.unit}: {NETNS_DIRECTORY} is not a declared writable path; "
                 f"only {DECOY_NAMESPACE_UNIT} writes it, without a mount namespace")
+        # Nor may any unit declare `/run` itself, or the record's directory
+        # or anything under it, writable (review of #274): the helper's
+        # runtime directory is the only way to it.
+        isolation = f"/run/{DECOY_ISOLATION_DIRECTORY}"
+        for path in self.read_write_paths + self.optional_read_write_paths:
+            bare = path.removeprefix("-").rstrip("/")
+            if bare == "/run" or bare == isolation or bare.startswith(isolation + "/"):
+                raise ValueError(
+                    f"{self.unit}: {path} is not a declared writable path; the "
+                    f"isolation record is written only through "
+                    f"{DECOY_NETWORK_HELPER_UNIT}'s runtime directory")
         # The isolation record's directory is the helper's alone (#196 §14):
         # another unit naming it as its runtime directory would own or
         # remove the record the decoy trusts.

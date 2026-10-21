@@ -1183,6 +1183,37 @@ configuration, it does not test the denied paths with traffic; `HG-06` stays
 the gate for that. And it is a reading at one moment: a root process that
 changes the table afterwards is not seen until the next start.
 
+**Limits of the checks as written** (review of #274):
+
+- `nft_table` is an exact match of nftables' text listing, so it depends on
+  the nftables release: a release that prints the same rules differently
+  fails closed. Comparing the structure of `nft -j list table` instead would
+  remove that dependence; it is a later change (another fixed argument list
+  and a JSON comparison), not done here.
+- `host_veth` checks that the host end's peer is in **another** namespace
+  (`link_netnsid`), not that it is the decoy's: mapping the id to
+  `/run/netns/azazel-decoy` would need a further command. The decoy's own
+  check (§12) covers the other side: it runs only in that namespace, with only
+  `lo` and `az-decoy-ns0`.
+- `subnet_exclusive` looks at IPv4 addresses only; the decoy network has no
+  IPv6 prefix, and the bridge's IPv6 is limited to link-local by
+  `bridge_address`.
+
+**Errors are failures.** A listing missing a key `ip -j` always prints
+(`ifname`, `flags`, `addr_info`) or holding another type there makes every
+check that reads it `unreadable`; an exception while reading back or
+recording (a missing key, an I/O error, anything) makes the helper undo the
+whole build and exit 1, and an error inside the read-back kills and reaps the
+command first (review of #274; tests for each).
+
+**What the helper's journal says on failure**, one line per stage, so a
+failure can be placed: `check <i> of 2: already present; nothing was
+changed` (a bridge or table left behind), `step <n> of 6 failed (<status>);
+undoing` (a build step, for example `ip` exiting 2 on `File exists`),
+`isolation check: <check> pass|fail|unreadable, ...` followed by `the
+isolation check did not pass or was not recorded; undoing`, or `the isolation
+check failed with an error; undoing`.
+
 ### The record
 
 ```
@@ -1341,4 +1372,19 @@ with `dependency`, and no directory remained; a clean start then worked.
 **Not done here:** granting the tier (its condition, the measured unit
 files, approved prefixes, `HG-06` and the decoy-sandbox gate); a packet test
 of the denied paths; IPv6; a check of the namespace's interfaces by anyone
-but the decoy.
+but the decoy; the structural `nft -j` comparison above. Two more, from the
+review of #274:
+
+- **Reading the table back on every decoy restart.** The record is taken
+  once, when the helper starts; a decoy restarted later in the boot accepts
+  it without a fresh look, so a table changed in between is not seen. A
+  fresh read-back per decoy start needs a privileged step at each start (the
+  decoy has no capability and no host view), for example the helper re-run
+  as the decoy's dependency, and is left for the phase that grants the tier.
+- **A clock that moves backwards.** The decoy refuses a record dated more
+  than 5 s after its own clock. A node that boots with a real-time clock
+  ahead of the true time, writes the record, and is then corrected backwards
+  by time synchronisation keeps refusing the decoy until the helper is
+  restarted (or the clock passes the record's time again). That fails
+  closed, so it is an availability problem, not an exposure; a monotonic or
+  boot-relative stamp would avoid it.

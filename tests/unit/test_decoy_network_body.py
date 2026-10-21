@@ -255,6 +255,25 @@ def test_a_record_that_does_not_pass_undoes_the_whole_build(recorder, capsys):
     assert "did not pass or was not recorded; undoing" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("where", ["reader", "record"])
+@pytest.mark.parametrize("error", [KeyError("flags"), OSError(5, "EIO"), ValueError("x")])
+def test_an_error_while_reading_back_or_recording_undoes_the_build(
+        recorder, monkeypatch, capsys, where, error):
+    """Review of #274: the exception used to escape with the build in place."""
+
+    def raising(*args):
+        raise error
+
+    if where == "reader":
+        monkeypatch.setattr(decoy_network, "capture_fixed", raising)
+    else:
+        monkeypatch.setattr(recorder, "record", raising)
+    run = FakeRunner()
+    assert decoy_netd.main([], run=run) == 1
+    assert run.calls == NETD_START + NETD_STOP
+    assert "failed with an error; undoing" in capsys.readouterr().err
+
+
 def test_a_failed_build_is_not_read_back_or_recorded(recorder):
     run = FakeRunner(status=_fail(NETD_STEPS[3]))
     assert decoy_netd.main([], run=run) == 1
@@ -565,6 +584,26 @@ def test_a_read_back_past_its_deadline_is_killed(monkeypatch):
     child = FakeChild(monkeypatch, exits_after=10 ** 6, clock=clock)
     assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (TIMED_OUT, b"")
     assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("error", [OSError(5, "EIO"), KeyboardInterrupt()])
+def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, error):
+    """Review of #274: an error inside the read loop left the child behind."""
+
+    child = FakeChild(monkeypatch, exits_after=10 ** 6)
+    reaped = []
+
+    def broken_read(fd, size):
+        raise error
+
+    monkeypatch.setattr(decoy_network.os, "read", broken_read)
+    monkeypatch.setattr(decoy_network.os, "waitpid",
+                        lambda pid, flags: reaped.append((pid, flags)) or (pid, 9))
+    with pytest.raises(type(error)):
+        REAL_CAPTURE(tuple(NETD_VERIFY[0]))
+    assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
+    assert reaped == [(4242, 0)]
+    assert child.closed == [71, 70]
 
 
 def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch):

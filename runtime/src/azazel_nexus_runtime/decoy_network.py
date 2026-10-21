@@ -300,10 +300,29 @@ def capture_fixed(argv: tuple[str, ...]) -> tuple[int, bytes]:
             return NOT_STARTED, b""
         finally:
             os.close(write_end)
-        os.set_blocking(read_end, False)
-        return _collect(pid, read_end)
+        try:
+            os.set_blocking(read_end, False)
+            return _collect(pid, read_end)
+        except BaseException:
+            # Never leave the child running or unreaped (review of #274): an
+            # error here is a read-back that did not happen.
+            _reap(pid)
+            raise
     finally:
         os.close(read_end)
+
+
+def _reap(pid: int) -> None:
+    """Kill and reap `pid` if it is still ours; quiet if it is already gone."""
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
 
 
 def _collect(pid: int, read_end: int) -> tuple[int, bytes]:
@@ -440,8 +459,16 @@ def main_for(prog: str, steps: Sequence[Step], argv: Optional[Sequence[str]],
         if status or recorder is None:
             return status
         reader = capture_fixed if capture is None else capture
-        outputs = {name: reader(command) for name, command in HELPER_VERIFY}
-        if recorder.record(outputs):
+        try:
+            outputs = {name: reader(command) for name, command in HELPER_VERIFY}
+            recorded = recorder.record(outputs)
+        except Exception:  # noqa: BLE001 - any error here undoes the build
+            # Review of #274: an exception while reading back or recording
+            # must not leave the build in place without a passing record.
+            _say(prog, "the isolation check failed with an error; undoing")
+            tear_down(prog, steps, runner)
+            return 1
+        if recorded:
             return 0
         _say(prog, "the isolation check did not pass or was not recorded; undoing")
         tear_down(prog, steps, runner)

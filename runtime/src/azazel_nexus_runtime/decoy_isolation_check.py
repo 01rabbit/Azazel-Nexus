@@ -122,11 +122,15 @@ def _links(output: bytes) -> Optional[list[dict]]:
         document = json.loads(output.decode("ascii"))
     except (UnicodeDecodeError, ValueError):
         return None
+    # `ip -j address show` prints `ifname`, `flags` and `addr_info` for every
+    # link (an empty list when there is none). A link missing one, or holding
+    # something else there, is output this module does not recognise: the
+    # whole listing is unreadable, never partly read (review of #274).
     if type(document) is not list or not all(
             type(link) is dict and type(link.get("ifname")) is str
-            and type(link.get("flags", [])) is list
-            and type(link.get("addr_info", [])) is list
-            and all(type(address) is dict for address in link.get("addr_info", []))
+            and type(link.get("flags")) is list
+            and type(link.get("addr_info")) is list
+            and all(type(address) is dict for address in link.get("addr_info"))
             for link in document):
         return None
     return document
@@ -139,7 +143,7 @@ def _kind(link: dict) -> Optional[str]:
 
 def _addresses(link: dict, family: str) -> list[tuple[object, object, object]]:
     return [(address.get("local"), address.get("prefixlen"), address.get("scope"))
-            for address in link["addr_info"] if address.get("family") == family]
+            for address in link.get("addr_info", ()) if address.get("family") == family]
 
 
 def _only_link_local_v6(link: dict) -> bool:
@@ -183,7 +187,7 @@ def evaluate(outputs: dict[str, tuple[int, bytes]]) -> dict[str, str]:
     else:
         by_name: dict[str, list[dict]] = {}
         for link in links:
-            by_name.setdefault(link["ifname"], []).append(link)
+            by_name.setdefault(link.get("ifname"), []).append(link)
         bridges = by_name.get(BRIDGE, [])
         veths = by_name.get(HOST_VETH, [])
         bridge = bridges[0] if len(bridges) == 1 else None
@@ -191,23 +195,23 @@ def evaluate(outputs: dict[str, tuple[int, bytes]]) -> dict[str, str]:
 
         results["bridge"] = _verdict(
             bridge is not None and _kind(bridge) == "bridge"
-            and "UP" in bridge["flags"] and "master" not in bridge)
+            and "UP" in bridge.get("flags", ()) and "master" not in bridge)
         results["bridge_address"] = _verdict(
             bridge is not None
             and [(local, prefix) for local, prefix, _ in _addresses(bridge, "inet")]
             == [(BRIDGE_ADDRESS, int(PREFIX_LENGTH))]
             and _only_link_local_v6(bridge))
         results["bridge_ports"] = _verdict(
-            sorted(link["ifname"] for link in links if link.get("master") == BRIDGE)
+            sorted(str(link.get("ifname")) for link in links if link.get("master") == BRIDGE)
             == [HOST_VETH])
         results["host_veth"] = _verdict(
-            veth is not None and _kind(veth) == "veth" and "UP" in veth["flags"]
+            veth is not None and _kind(veth) == "veth" and "UP" in veth.get("flags", ())
             and veth.get("master") == BRIDGE
             and type(veth.get("link_netnsid")) is int
             and not _addresses(veth, "inet") and _only_link_local_v6(veth))
         results["decoy_veth_off_host"] = _verdict(DECOY_VETH not in by_name)
         results["subnet_exclusive"] = _verdict(
-            not any(_in_subnet(link) for link in links if link["ifname"] != BRIDGE))
+            not any(_in_subnet(link) for link in links if link.get("ifname") != BRIDGE))
     return {name: results[name] for name in CHECKS}
 
 
@@ -287,7 +291,11 @@ class Recorder:
     def record(self, outputs: dict[str, tuple[int, bytes]]) -> bool:
         """Evaluate, write this boot's record; True only if all passed and it was written."""
 
-        results = evaluate(outputs)
+        try:
+            results = evaluate(outputs)
+        except Exception:  # noqa: BLE001 - an output this cannot evaluate passes nothing
+            _say("isolation check: the read-back could not be evaluated")
+            return False
         _say("isolation check: " + ", ".join(f"{name} {result}"
                                              for name, result in results.items()))
         if self._boot_id is None:

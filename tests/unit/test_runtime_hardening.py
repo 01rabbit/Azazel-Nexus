@@ -1091,6 +1091,23 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
         assert settings[key] == [dict(SHARED_HARDENING)[key]], key
 
 
+@pytest.mark.parametrize("path", [
+    "/run", "/run/", "-/run", "/run/azazel-decoy-isolation", "-/run/azazel-decoy-isolation/",
+    "/run/azazel-decoy-isolation/isolation.json",
+])
+@pytest.mark.parametrize("field", ["read_write_paths", "optional_read_write_paths"])
+@pytest.mark.parametrize("unit", ["azazel-decoyd.service", "azazel-mio-entryd.service",
+                                  "azazel-activated.service"])
+def test_no_unit_may_declare_run_or_the_isolation_record_writable(unit, field, path):
+    """Review of #274: only the helper's runtime directory reaches the record."""
+
+    from dataclasses import replace
+
+    profile = next(p for p in ALL_PROFILES if p.unit == unit)
+    with pytest.raises(ValueError, match="not a declared writable path"):
+        replace(profile, **{field: getattr(profile, field) + (path,)})
+
+
 @pytest.mark.parametrize("change", [
     (),
     (("RemainAfterExit", "yes"), ("TimeoutStartSec", "30s")),
