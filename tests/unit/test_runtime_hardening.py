@@ -639,6 +639,12 @@ def test_systemd_runtime_directory_is_separate_from_persistent_socket_tree():
             assert "RuntimeDirectory" not in settings
             continue
         mode = settings["RuntimeDirectoryMode"][0]
+        if profile.unit == "azazel-decoy-netd.service":
+            # The one exception (#196 §14): the decoy reads the helper's
+            # isolation record under its own account. Root-owned, 0755,
+            # holding one root 0644 record of fixed results.
+            assert (profile.runtime_directory, mode) == ("azazel-decoy-isolation", "0755")
+            continue
         assert int(mode, 8) == 0o750
 
 
@@ -1065,11 +1071,15 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
     # Root, so no AF_UNIX: it cannot reach the service manager over D-Bus.
     assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
     assert settings["IPAddressDeny"] == ["any"]
-    # Nothing writable in this build, no runtime directory, no namespace of
+    # Its one writable place is its own runtime directory, for this boot's
+    # isolation record (#196 §14); no declared writable path, no namespace of
     # its own (it would configure the host's links), no credential.
-    for key in ("ReadWritePaths", "RuntimeDirectory", "NetworkNamespacePath",
+    assert settings["RuntimeDirectory"] == ["azazel-decoy-isolation"]
+    assert settings["RuntimeDirectoryMode"] == ["0755"]
+    for key in ("ReadWritePaths", "NetworkNamespacePath",
                 "PrivateNetwork", "SupplementaryGroups", "LoadCredential",
-                "Environment", "EnvironmentFile", "ExecStartPre", "IPAddressAllow"):
+                "Environment", "EnvironmentFile", "ExecStartPre", "IPAddressAllow",
+                "RuntimeDirectoryPreserve", "StateDirectory", "BindPaths"):
         assert key not in settings, key
     # m2 of the review of #268 (#196 body): the further sandbox.
     for key in ("ProtectClock", "ProtectHostname", "ProtectKernelLogs",
@@ -1079,6 +1089,23 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
                                              "-/run/systemd/private"]
     for key in ("ProtectSystem", "PrivateTmp", "PrivateDevices", "RestrictNamespaces"):
         assert settings[key] == [dict(SHARED_HARDENING)[key]], key
+
+
+@pytest.mark.parametrize("path", [
+    "/run", "/run/", "-/run", "/run/azazel-decoy-isolation", "-/run/azazel-decoy-isolation/",
+    "/run/azazel-decoy-isolation/isolation.json",
+])
+@pytest.mark.parametrize("field", ["read_write_paths", "optional_read_write_paths"])
+@pytest.mark.parametrize("unit", ["azazel-decoyd.service", "azazel-mio-entryd.service",
+                                  "azazel-activated.service"])
+def test_no_unit_may_declare_run_or_the_isolation_record_writable(unit, field, path):
+    """Review of #274: only the helper's runtime directory reaches the record."""
+
+    from dataclasses import replace
+
+    profile = next(p for p in ALL_PROFILES if p.unit == unit)
+    with pytest.raises(ValueError, match="not a declared writable path"):
+        replace(profile, **{field: getattr(profile, field) + (path,)})
 
 
 @pytest.mark.parametrize("change", [

@@ -665,6 +665,21 @@ namespace unit never changes this value and never deletes such devices; a
 Debian 13 host with no tunnel module loaded needs nothing (its new namespace
 holds `lo` alone).
 
+**The isolation record.** After it has built the host side, the helper lists
+the table and the host's links and writes this boot's record of fixed results
+to `/run/azazel-decoy-isolation/isolation.json` (its runtime directory, root
+`0755`; the file root `0644`); its journal shows one line `isolation check:
+<check> pass|fail|unreadable, ...`. If any check does not pass, it removes
+what it built and fails, and the decoy is not started. The decoy refuses to
+listen without a record from this boot with every check passed; the record
+holds no address. Do not write or edit it by hand: a hand-made record is
+refused unless it is byte for byte what the helper writes, and the directory
+goes away when the helper stops
+([prerequisites §14](deception-redirect-prerequisites.md#14-isolation-evidence)).
+A `nft_table` failure after an nftables upgrade means the listing format
+changed, not that the rules did; the decoy stays refused until the expected
+listing is updated in a release.
+
 The explainer's operator leaf also contains `recent.json` with up to 20 recent
 incidents; status renders five. Rows show pseudonymous ids, open/closed state,
 severity/count, technique ids, sanitized summaries and knowledge citations.

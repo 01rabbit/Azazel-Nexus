@@ -16,6 +16,11 @@
 * that the process is started with an absolute path, a constant argument
   list from the module, an empty environment, `SIGPIPE` at its default, no
   shell and no pipe, and that the longest start fits in `TimeoutStartSec=`;
+* that only the helper's two inspection commands are read back, through one
+  pipe onto the child's standard output, bounded in time and size, and that
+  the helper records them after it has built, undoing the build when the
+  record does not pass (#196 §14; the checks themselves are in
+  `test_decoy_isolation_evidence.py`);
 * that the names, addresses and ports agree with the decoy (`decoy_netns`,
   `decoyd`), the decoy library and the unit profiles, and that the unit
   renderer takes them from the leaf `decoy_addresses`, never from the module
@@ -44,8 +49,10 @@ from azazel_nexus_runtime.decoy_addresses import (
     NAMESPACE,
 )
 from azazel_nexus_runtime.decoy_network import (
+    CAPTURE_LIMIT,
     HELPER_ABSENT,
     HELPER_STEPS,
+    HELPER_VERIFY,
     IP,
     NAMESPACE_STEPS,
     NFT,
@@ -55,6 +62,9 @@ from azazel_nexus_runtime.decoy_network import (
 )
 
 RUNTIME = Path(__file__).resolve().parents[2] / "runtime" / "src" / "azazel_nexus_runtime"
+
+#: The real read-back; the autouse `recorder` fixture replaces the module's.
+REAL_CAPTURE = decoy_network.capture_fixed
 
 # -- goldens --------------------------------------------------------------------
 
@@ -91,6 +101,11 @@ HOST_DOWN, BRIDGE_DELETE, TABLE_DELETE = NETD_STOP = [
     ["/usr/bin/ip", "link", "set", "dev", "az-decoy-host0", "down"],
     ["/usr/bin/ip", "link", "delete", "az-decoy0"],
     ["/usr/sbin/nft", "delete", "table", "inet", "azazel_decoy"],
+]
+#: The helper's read-back after it has built (#196 §14), in order.
+NETD_VERIFY = [
+    ["/usr/sbin/nft", "list", "table", "inet", "azazel_decoy"],
+    ["/usr/bin/ip", "-j", "-d", "address", "show"],
 ]
 
 RULESET = """create table inet azazel_decoy
@@ -152,6 +167,43 @@ def _never_spawn(monkeypatch):
     monkeypatch.setattr(decoy_network.os, "posix_spawn", refuse)
 
 
+class FakeRecorder:
+    """Stands in for `decoy_isolation_check.Recorder`: records what it was
+    asked, and answers each method with the given verdict."""
+
+    def __init__(self, prepare=True, record=True, withdraw=True):
+        self.events: list = []
+        self.verdicts = {"prepare": prepare, "record": record, "withdraw": withdraw}
+
+    def prepare(self):
+        self.events.append("prepare")
+        return self.verdicts["prepare"]
+
+    def record(self, outputs):
+        self.events.append(("record", sorted(outputs)))
+        return self.verdicts["record"]
+
+    def withdraw(self):
+        self.events.append("withdraw")
+        return self.verdicts["withdraw"]
+
+
+@pytest.fixture(autouse=True)
+def recorder(monkeypatch):
+    """The helper's recorder and read-back, faked for every test here."""
+
+    fake = FakeRecorder()
+    fake.captured = []
+
+    def capture(argv):
+        fake.captured.append(list(argv))
+        return 0, b"listing"
+
+    monkeypatch.setattr(decoy_netd, "Recorder", lambda: fake)
+    monkeypatch.setattr(decoy_network, "capture_fixed", capture)
+    return fake
+
+
 def test_the_ruleset_is_the_golden():
     assert NFT_RULESET == RULESET
     # Never replaces or adds to an existing table: `create` fails if it exists.
@@ -160,18 +212,92 @@ def test_the_ruleset_is_the_golden():
 
 
 @pytest.mark.parametrize(("module", "start", "stop"), UNITS, ids=IDS)
-def test_start_runs_exactly_the_golden_commands_in_order(module, start, stop, capsys):
+def test_start_runs_exactly_the_golden_commands_in_order(module, start, stop, capsys, recorder):
     run = FakeRunner()
     assert module.main([], run=run) == 0
     assert run.calls == start
     assert "configured" in capsys.readouterr().err
+    if module is decoy_netd:
+        # Prepared before anything ran, read back and recorded after the build.
+        assert recorder.events == ["prepare", ("record", ["host_links", "nft_table"])]
+        assert recorder.captured == NETD_VERIFY
+    else:
+        assert recorder.events == [] and recorder.captured == []
 
 
 @pytest.mark.parametrize(("module", "start", "stop"), UNITS, ids=IDS)
-def test_stop_runs_every_undo_in_reverse(module, start, stop):
+def test_stop_runs_every_undo_in_reverse(module, start, stop, recorder):
     run = FakeRunner()
     assert module.main(["stop"], run=run) == 0
     assert run.calls == stop
+    assert recorder.events == (["withdraw"] if module is decoy_netd else [])
+
+
+# -- the isolation record (#196 §14) --------------------------------------------
+
+
+def test_the_helper_changes_nothing_when_the_previous_record_cannot_be_cleared(
+        recorder, capsys):
+    recorder.verdicts["prepare"] = False
+    run = FakeRunner()
+    assert decoy_netd.main([], run=run) == 1
+    assert run.calls == [] and recorder.captured == []
+    assert recorder.events == ["prepare"]
+    assert "nothing was changed" in capsys.readouterr().err
+
+
+def test_a_record_that_does_not_pass_undoes_the_whole_build(recorder, capsys):
+    recorder.verdicts["record"] = False
+    run = FakeRunner()
+    assert decoy_netd.main([], run=run) == 1
+    assert run.calls == NETD_START + NETD_STOP
+    assert recorder.captured == NETD_VERIFY
+    assert "did not pass or was not recorded; undoing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("where", ["reader", "record"])
+@pytest.mark.parametrize("error", [KeyError("flags"), OSError(5, "EIO"), ValueError("x")])
+def test_an_error_while_reading_back_or_recording_undoes_the_build(
+        recorder, monkeypatch, capsys, where, error):
+    """Review of #274: the exception used to escape with the build in place."""
+
+    def raising(*args):
+        raise error
+
+    if where == "reader":
+        monkeypatch.setattr(decoy_network, "capture_fixed", raising)
+    else:
+        monkeypatch.setattr(recorder, "record", raising)
+    run = FakeRunner()
+    assert decoy_netd.main([], run=run) == 1
+    assert run.calls == NETD_START + NETD_STOP
+    assert "failed with an error; undoing" in capsys.readouterr().err
+
+
+def test_a_failed_build_is_not_read_back_or_recorded(recorder):
+    run = FakeRunner(status=_fail(NETD_STEPS[3]))
+    assert decoy_netd.main([], run=run) == 1
+    assert recorder.events == ["prepare"] and recorder.captured == []
+
+
+def test_a_record_that_cannot_be_withdrawn_fails_the_stop_after_the_tear_down(
+        recorder, capsys):
+    recorder.verdicts["withdraw"] = False
+    run = FakeRunner()
+    assert decoy_netd.main(["stop"], run=run) == 1
+    assert run.calls == NETD_STOP
+    assert "could not be removed" in capsys.readouterr().err
+
+
+def test_only_the_helper_reads_back_and_only_its_two_inspection_commands():
+    assert [list(argv) for _, argv in HELPER_VERIFY] == NETD_VERIFY
+    assert [name for name, _ in HELPER_VERIFY] == ["nft_table", "host_links"]
+    # The table listing is the very argument list of the helper's second check.
+    assert HELPER_VERIFY[0][1] == HELPER_ABSENT[1]
+    assert decoy_network._READ_BACK == {tuple(argv) for argv in NETD_VERIFY}
+    tree = _tree("decoy_nsd.py")
+    assert "recorder" not in {kw.arg for node in ast.walk(tree)
+                              if isinstance(node, ast.Call) for kw in node.keywords}
 
 
 # -- the helper changes nothing that is already there --------------------------
@@ -227,7 +353,7 @@ def _expected_after_failure(steps, failed_at, timed_out=False):
                          [(decoy_nsd, NAMESPACE_STEPS, []),
                           (decoy_netd, HELPER_STEPS, NETD_CHECKS)], ids=IDS)
 def test_a_failed_step_undoes_what_was_made_and_exits_1(module, steps, checks, failed_at,
-                                                        timed_out, capsys):
+                                                        timed_out, capsys, recorder):
     code = TIMED_OUT if timed_out else 1
     run = FakeRunner(status=_fail(steps[failed_at].argv, code))
     assert module.main([], run=run) == 1
@@ -343,7 +469,10 @@ def test_the_longest_start_fits_in_the_units_start_timeout():
         timeout = dict(sandbox)["TimeoutStartSec"]
         assert timeout == "30s"
         undos = sum(step.undo is not None for step in steps)
-        commands = len(checks) + len(steps) + undos
+        # The helper reads back after the build, and undoes all of it when
+        # the record does not pass (#196 §14).
+        verify = len(HELPER_VERIFY) if steps is HELPER_STEPS else 0
+        commands = len(checks) + len(steps) + verify + undos
         # Each command is killed at STEP_SECONDS; the 0.01 s polls add little.
         assert commands * (STEP_SECONDS + 0.1) + 2 < 30, commands
 
@@ -359,15 +488,133 @@ def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(m
     monkeypatch.setattr(decoy_network.os, "waitpid", lambda pid, flags: (pid, 0))
     assert decoy_network.run_fixed(tuple(NSD_START[0])) == 0
     assert seen == {"path": IP, "argv": NSD_START[0], "env": {},
-                    "kwargs": {"setsigdef": (decoy_network.signal.SIGPIPE,)}}
+                    "kwargs": {"setsigdef": (decoy_network.signal.SIGPIPE,),
+                               "file_actions": ()}}
     for argv in [("/bin/sh", "-c", "true"), ("ip", "netns", "add", NAMESPACE),
                  (IP, "netns", "add", "other"), (IP, "netns", "delete", "other"),
                  (NFT, "flush", "ruleset"), (NFT, "list", "ruleset"),
                  (IP, "link", "delete", "eth0")]:
         with pytest.raises(ValueError):
             decoy_network.run_fixed(argv)
-    every = ({tuple(a) for a in NSD_START + NSD_STOP + NETD_START + NETD_STOP})
+    every = ({tuple(a) for a in NSD_START + NSD_STOP + NETD_START + NETD_STOP + NETD_VERIFY})
     assert decoy_network._ALLOWED == every
+
+
+def test_the_read_back_refuses_every_other_command_before_a_process(monkeypatch):
+    for argv in [NETD_CHECKS[0], NETD_STEPS[1], NSD_START[0], NETD_STOP[2],
+                 ("/usr/bin/ip", "-j", "address", "show"),
+                 ("/usr/sbin/nft", "list", "ruleset"),
+                 ("/usr/bin/ip", "-n", "azazel-decoy", "-j", "-d", "address", "show")]:
+        with pytest.raises(ValueError):
+            REAL_CAPTURE(tuple(argv))
+
+
+class FakeChild:
+    """A child process seen through the pipe: what it writes, when it exits."""
+
+    def __init__(self, monkeypatch, *, output=b"", status=0, exits_after=0, clock=None):
+        self.spawned, self.killed, self.closed = [], [], []
+        self.output, self.status, self.exits_after = output, status, exits_after
+        self.polls = 0
+        self.read_fds = []
+
+        def pipe():
+            return 70, 71
+
+        def spawn(path, argv, env, **kwargs):
+            self.spawned.append((path, argv, env, kwargs))
+            return 4242
+
+        def read(fd, size):
+            assert fd == 70
+            self.read_fds.append(fd)
+            if self.output:
+                chunk, self.output = self.output[:size], self.output[size:]
+                return chunk
+            if self.polls < self.exits_after and not self.killed:
+                raise BlockingIOError
+            return b""
+
+        def waitpid(pid, flags):
+            self.polls += 1
+            if self.killed:
+                return pid, 9
+            if flags and self.polls <= self.exits_after:
+                return 0, 0
+            return pid, self.status << 8
+
+        monkeypatch.setattr(decoy_network.os, "pipe", pipe)
+        monkeypatch.setattr(decoy_network.os, "posix_spawn", spawn)
+        monkeypatch.setattr(decoy_network.os, "read", read)
+        monkeypatch.setattr(decoy_network.os, "waitpid", waitpid)
+        monkeypatch.setattr(decoy_network.os, "set_blocking", lambda fd, flag: None)
+        monkeypatch.setattr(decoy_network.os, "close", self.closed.append)
+        monkeypatch.setattr(decoy_network.os, "kill",
+                            lambda pid, sig: self.killed.append((pid, sig)))
+        monkeypatch.setattr(decoy_network.time, "sleep", lambda seconds: None)
+        if clock is not None:
+            monkeypatch.setattr(decoy_network.time, "monotonic", lambda: next(clock))
+
+
+def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch):
+    child = FakeChild(monkeypatch, output=b"table inet azazel_decoy {\n}\n")
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (
+        0, b"table inet azazel_decoy {\n}\n")
+    [(path, argv, env, kwargs)] = child.spawned
+    assert (path, argv, env) == (NFT, NETD_VERIFY[0], {})
+    assert kwargs == {"setsigdef": (decoy_network.signal.SIGPIPE,),
+                      "file_actions": ((decoy_network.os.POSIX_SPAWN_DUP2, 71, 1),)}
+    # The write end is closed right after the spawn, the read end at the end.
+    assert child.closed == [71, 70]
+
+
+def test_a_failed_read_back_returns_no_output(monkeypatch):
+    FakeChild(monkeypatch, output=b"partial", status=1)
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[1])) == (1, b"")
+
+
+def test_a_read_back_past_the_limit_is_killed_and_returns_no_output(monkeypatch):
+    child = FakeChild(monkeypatch, output=b"x" * (CAPTURE_LIMIT + 1), exits_after=10 ** 6)
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[1])) == (decoy_network.OVERFLOW, b"")
+    assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
+
+
+def test_a_read_back_past_its_deadline_is_killed(monkeypatch):
+    clock = iter([0.0, 0.0, STEP_SECONDS + 1])
+    child = FakeChild(monkeypatch, exits_after=10 ** 6, clock=clock)
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (TIMED_OUT, b"")
+    assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("error", [OSError(5, "EIO"), KeyboardInterrupt()])
+def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, error):
+    """Review of #274: an error inside the read loop left the child behind."""
+
+    child = FakeChild(monkeypatch, exits_after=10 ** 6)
+    reaped = []
+
+    def broken_read(fd, size):
+        raise error
+
+    monkeypatch.setattr(decoy_network.os, "read", broken_read)
+    monkeypatch.setattr(decoy_network.os, "waitpid",
+                        lambda pid, flags: reaped.append((pid, flags)) or (pid, 9))
+    with pytest.raises(type(error)):
+        REAL_CAPTURE(tuple(NETD_VERIFY[0]))
+    assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
+    assert reaped == [(4242, 0)]
+    assert child.closed == [71, 70]
+
+
+def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch):
+    child = FakeChild(monkeypatch)
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(decoy_network.os, "posix_spawn", missing)
+    assert REAL_CAPTURE(tuple(NETD_VERIFY[0])) == (127, b"")
+    assert child.closed == [71, 70]
 
 
 def test_the_runner_kills_a_command_past_its_deadline(monkeypatch):
@@ -416,15 +663,28 @@ def test_the_network_module_runs_one_spawn_with_no_shell_and_reads_no_environmen
     assert not _names(tree) & {"subprocess", "socket", "environ", "getenv", "environb",
                                "system", "popen", "execv", "execve", "execvp", "fork",
                                "spawnv", "Popen", "ctypes", "open", "setns", "unshare",
-                               "pipe", "sysctl"}
+                               "sysctl", "pipe2", "dup", "dup2", "POSIX_SPAWN_OPEN",
+                               "POSIX_SPAWN_CLOSE"}
     spawns = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
               and isinstance(node.func, ast.Attribute) and node.func.attr == "posix_spawn"]
     assert len(spawns) == 1
     call = spawns[0]
-    assert [kw.arg for kw in call.keywords] == ["setsigdef"]
+    assert [kw.arg for kw in call.keywords] == ["setsigdef", "file_actions"]
     assert ast.unparse(call.keywords[0].value) == "(signal.SIGPIPE,)"
     assert ast.unparse(call.args[0]) == "argv[0]"
     assert isinstance(call.args[2], ast.Dict) and not call.args[2].keys
+    # One pipe, in the read-back only, and its one file action puts the write
+    # end on the child's standard output; the steps run with none (#196 §14).
+    pipes = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == "pipe"]
+    assert len(pipes) == 1
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+    assert pipes[0] in list(ast.walk(functions["capture_fixed"]))
+    spawned = sorted(ast.unparse(node.args[1]) for node in ast.walk(tree)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                     and node.func.id == "_spawn")
+    assert spawned == ["((os.POSIX_SPAWN_DUP2, write_end, 1),)", "()"]
 
 
 def test_the_addresses_module_is_a_leaf():
@@ -446,7 +706,9 @@ def test_the_unit_renderer_never_loads_the_module_that_starts_processes():
 @pytest.mark.parametrize("name", ["decoy_nsd.py", "decoy_netd.py"])
 def test_the_executables_only_choose_their_step_list(name):
     tree = _tree(name)
-    assert _imports(tree) == {"__future__", "typing", ".decoy_network"}
+    # The helper also hands its isolation recorder to the runner (#196 §14).
+    extra = {".decoy_isolation_check"} if name == "decoy_netd.py" else set()
+    assert _imports(tree) == {"__future__", "typing", ".decoy_network"} | extra
     assert not _names(tree) & {"os", "subprocess", "socket", "environ", "open"}
 
 

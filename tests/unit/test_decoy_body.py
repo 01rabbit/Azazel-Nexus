@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from test_decoy_interaction_p2 import running, wait_for  # noqa: F401 - fixture
+from test_decoy_isolation_evidence import install_evidence
 
 from azazel_nexus.decoy import MAX_DECOYS, DecoyRefused
 from azazel_nexus.decoy_interaction import (
@@ -647,7 +648,11 @@ def test_on_this_host_the_executable_refuses_before_any_socket(no_socket, capsys
 
 
 def test_the_executable_serves_until_sigterm_and_logs_no_address(
-        namespace_files, intake, monkeypatch, capsys):
+        namespace_files, intake, monkeypatch, capsys, tmp_path):
+    # This boot's passing isolation record (#196 §14), without which it
+    # refuses before any socket (test_decoy_isolation_evidence.py).
+    install_evidence(tmp_path, monkeypatch)
+    monkeypatch.setattr(decoyd, "_utc_second", lambda: "2026-10-22T03:00:10Z")
     monkeypatch.setattr(decoy_listener, "_BIND_ADDRESS", LOOPBACK)
     served = tuple(decoyd.ServedDecoy(d.name, d.responder, _free_port())
                    for d in decoyd.SERVED)
