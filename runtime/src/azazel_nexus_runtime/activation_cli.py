@@ -21,11 +21,18 @@ none of which grants anything:
   floor history, initializes) the high water. Replacing an installed approval
   and the §7 high-water recovery each need a separate typed confirmation.
 
-`az-activated` does not import this module; its pass still composes
-``lease=None`` until phase P4. No key is created or read for signing, no
-environment variable or path override is accepted, and nothing here starts,
-enables or unmasks a unit. Refusals print fixed labels only: no file content,
-raw inventory, evidence binding or exception text.
+`az-activated` does not import this module. Since P4 (§8) its pass
+(`activation_pass`, imported only inside the pass after the preflight remask)
+reads what ``install`` placed -- the approval, through
+`activation_store.load_observe_baseline_approval`, and the high water -- and
+re-derives the same context with the same shared readers
+(`activation_unit_files.measure_scoped_unit_files`,
+`observe_baseline.evidence_commissioning_digest`,
+`bootstrap_deployment.declared_node_binding`); only when every producer
+verifies does it form a lease and grant (§8 item 3). No key is created or
+read for signing, no environment variable or path override is accepted, and
+nothing here starts, enables or unmasks a unit. Refusals print fixed labels
+only: no file content, raw inventory, evidence binding or exception text.
 """
 
 from __future__ import annotations

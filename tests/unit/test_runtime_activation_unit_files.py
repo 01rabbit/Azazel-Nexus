@@ -279,6 +279,31 @@ def test_any_character_but_printable_ascii_and_tab_is_refused(char, where):
         require_governed_unit_content(INTAKE, text.encode("utf-8"))
 
 
+CONTROLS = ["\x01", "\x0b", "\x0c", "\x1b", "\x1f", "\x7f"]
+
+
+@pytest.mark.parametrize("char", CONTROLS, ids=[f"U+{ord(c):04X}" for c in CONTROLS])
+@pytest.mark.parametrize("where", ["comment-end", "value-middle"])
+def test_a_control_only_the_character_filter_sees_is_refused(char, where):
+    """A control where no other check looks: only `_decode` can refuse it.
+
+    At the end of a comment line the parser skips the line; in the middle of
+    `Description=` the value is neither a start guard nor a required line.
+    The same text with a printable character in its place is accepted, so the
+    refusal comes from the character filter and from nothing else.
+    """
+    text = rendered_unit(INTAKE)
+    if where == "comment-end":
+        assert text.startswith("# Generated")
+        edited = text.replace("\n", "@@\n", 1)
+    else:
+        assert text.count("Description=Azazel-Nexus ") == 1
+        edited = text.replace("Description=Azazel-Nexus ", "Description=Azazel-@@Nexus ")
+    require_governed_unit_content(INTAKE, edited.replace("@@", "X").encode())
+    with pytest.raises(UnitContentRefused, match="encoding refused"):
+        require_governed_unit_content(INTAKE, edited.replace("@@", char).encode())
+
+
 def test_space_and_tab_around_a_line_are_still_accepted():
     text = rendered_unit(INTAKE).replace("Description=", " \tDescription=", 1)
     require_governed_unit_content(INTAKE, text.encode())

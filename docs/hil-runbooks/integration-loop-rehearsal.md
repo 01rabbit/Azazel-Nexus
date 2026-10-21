@@ -664,8 +664,11 @@ activation admission, hardware behaviour or package authenticity.
 
 ## 12. Not covered on a VM
 
-- Activation admitting the loop's units: #198's grant path needs a lease
-  producer that does not exist yet ([#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)).
+- Activation admitting the loop's units: the lease is produced since #206 P4
+  and P5 (the regular path of §5), but this runbook requests, installs and
+  signs no approval, so its pass grants nothing and §6 substitutes for the
+  grant. Activation admitting the units on the VM is the
+  [activation rehearsal](activation-rehearsal.md) (#206 P6).
 - HG-07 on real hardware with the real deployment path ([HG-07](hg-07.md)).
 - Enforcement by the shipped Edge Core (Azazel-Edge#412) and I4 decoys.
 - Real M.I.O. advice: admission is closed, so every frame is a deterministic
