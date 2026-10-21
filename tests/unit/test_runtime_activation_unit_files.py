@@ -10,10 +10,14 @@ import pytest
 
 from azazel_nexus_runtime import activation_unit_files as unit_files
 from azazel_nexus_runtime.activation_unit_files import (
+    UnitContentRefused,
     UnitFilesRefused,
     UnitOverrideRefused,
     drop_in_directory_names,
     measure_scoped_unit_files,
+    rendered_unit,
+    require_governed_unit_content,
+    require_grantable_unit_files,
     require_no_unit_overrides,
 )
 
@@ -33,7 +37,7 @@ def root(tmp_path, monkeypatch):
     vendor = root / "usr/lib/systemd/system"
     vendor.mkdir(parents=True)
     for unit in SCOPE:
-        (vendor / unit).write_text(f"[Unit]\nDescription={unit}\n")
+        (vendor / unit).write_text(rendered_unit(unit))
         (vendor / unit).chmod(0o644)
     for path in [root, *root.rglob("*")]:
         if path.is_dir():
@@ -55,7 +59,7 @@ def _dir(root, relative):
 
 def test_measures_the_vendor_files_when_nothing_overrides_them(root):
     assert measure_scoped_unit_files(SCOPE) == {
-        unit: f"[Unit]\nDescription={unit}\n".encode() for unit in SCOPE}
+        unit: rendered_unit(unit).encode() for unit in SCOPE}
 
 
 def test_search_path_is_the_reviewed_systemd_profile():
@@ -161,3 +165,155 @@ def test_a_missing_vendor_file_or_directory_refuses(root):
     (root / "usr/lib/systemd/system").rmdir()
     with pytest.raises(UnitFilesRefused):
         require_no_unit_overrides(SCOPE)
+
+
+# -- the grant-marker lines and start guards (#251 H-1) ---------------------
+
+REPO = __import__("pathlib").Path(__file__).resolve().parents[2]
+MARKER = "ConditionPathExists=/run/azazel-activation/granted/azazel-edge-intaked.service"
+
+
+def test_every_packaged_scoped_unit_passes_the_content_check():
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    for unit in ACTIVATION_UNIT_ALLOWLIST:
+        data = (REPO / "packaging/systemd" / unit).read_bytes()
+        require_governed_unit_content(unit, data)
+        assert data == rendered_unit(unit).encode()
+
+
+def _without(text, line):
+    assert text.count(line + "\n") == 1
+    return text.replace(line + "\n", "")
+
+
+def _in_unit(text, line):
+    return text.replace("[Unit]\n", "[Unit]\n" + line + "\n", 1)
+
+
+@pytest.mark.parametrize("edit", [
+    lambda t: _without(t, MARKER),
+    lambda t: _without(t, "Requires=azazel-activated.service"),
+    lambda t: _without(t, "After=azazel-activated.service"),
+    lambda t: t.replace(MARKER, MARKER.replace("=", " = ", 1)),
+    lambda t: t.replace(MARKER, MARKER.replace("=/", "=!/", 1)),
+    lambda t: t.replace(MARKER, MARKER.replace("=/", "=|/", 1)),
+    lambda t: t.replace(MARKER, MARKER + "X"),
+    lambda t: _without(t, MARKER) + "[Service]\n" + MARKER + "\n",
+    lambda t: t + "[Unit]\nConditionPathExists=\n",
+    lambda t: _in_unit(t, "ConditionPathExists="),
+    lambda t: _in_unit(t, "Requires="),
+    lambda t: _in_unit(t, "After="),
+    lambda t: _in_unit(t, "ConditionPathExists=|/"),
+    lambda t: _in_unit(t, "ConditionHost=other"),
+    lambda t: _in_unit(t, "AssertPathExists=/"),
+    lambda t: t.replace("[Service]\n", "[Service]\nExecCondition=/bin/true\n", 1),
+    lambda t: _in_unit(t, "Description=a \\"),
+    lambda t: t.replace("\n", "\r\n"),
+    lambda t: t + "\0",
+    lambda t: "Description=before any section\n" + t,
+    lambda t: _in_unit(t, "not an assignment"),
+], ids=["no-marker", "no-requires", "no-after", "spaced-marker", "negated-marker",
+        "triggering-marker", "other-marker", "marker-in-service", "reset-in-second-unit",
+        "condition-reset", "requires-reset", "after-reset", "added-trigger",
+        "added-condition", "added-assert", "added-exec-condition", "continuation", "crlf",
+        "nul", "outside-section", "syntax"])
+def test_a_unit_file_without_its_grant_lines_or_with_another_guard_is_refused(edit):
+    text = rendered_unit(INTAKE)
+    with pytest.raises(UnitContentRefused):
+        require_governed_unit_content(INTAKE, edit(text).encode())
+
+
+def test_content_outside_the_scope_or_undecodable_is_refused():
+    with pytest.raises(UnitContentRefused):
+        require_governed_unit_content(
+            "azazel-watchdog.service", rendered_unit(INTAKE).encode())
+    with pytest.raises(UnitContentRefused):
+        require_governed_unit_content(INTAKE, b"\xff" + rendered_unit(INTAKE).encode())
+    with pytest.raises(UnitContentRefused):
+        require_governed_unit_content(EDGE, rendered_unit(INTAKE).encode())
+
+
+def test_comments_and_other_settings_do_not_affect_the_content_check():
+    """The hash and the operator's signature bind the rest of the file."""
+    text = rendered_unit(INTAKE) + "# a comment\n; another\n"
+    require_governed_unit_content(INTAKE, text.encode())
+
+
+def test_measuring_refuses_a_vendor_file_without_its_marker_condition(root):
+    target = root / "usr/lib/systemd/system" / INTAKE
+    target.write_text(_without(rendered_unit(INTAKE), MARKER))
+    with pytest.raises(UnitContentRefused):
+        measure_scoped_unit_files(SCOPE)
+
+
+#: Characters Python's `str.strip()` removes and systemd does not treat as
+#: whitespace, plus a BOM and other controls. Each, at the start or end of a
+#: line, is refused: Python would otherwise read `\xa0[Unit]` as a header
+#: that systemd ignores, and the required lines would land in another section.
+OTHER_SPACE = ["\xa0", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85",
+               "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u3000", "\ufeff",
+               "\x01", "\x7f"]
+
+
+@pytest.mark.parametrize("char", OTHER_SPACE, ids=[f"U+{ord(c):04X}" for c in OTHER_SPACE])
+@pytest.mark.parametrize("where", ["header-start", "header-end", "line-start", "line-end",
+                                   "file-start"])
+def test_any_character_but_printable_ascii_and_tab_is_refused(char, where):
+    text = rendered_unit(INTAKE)
+    if where == "header-start":
+        # Required lines moved behind a header systemd would ignore.
+        text = (_without(_without(_without(text, MARKER),
+                                  "Requires=azazel-activated.service"),
+                         "After=azazel-activated.service")
+                + char + "[Unit]\n" + MARKER + "\nRequires=azazel-activated.service\n"
+                "After=azazel-activated.service\n")
+    elif where == "header-end":
+        text = text.replace("[Unit]\n", "[Unit]" + char + "\n", 1)
+    elif where == "line-start":
+        text = text.replace(MARKER, char + MARKER)
+    elif where == "line-end":
+        text = text.replace(MARKER, MARKER + char)
+    else:
+        text = char + text
+    with pytest.raises(UnitContentRefused):
+        require_governed_unit_content(INTAKE, text.encode("utf-8"))
+
+
+def test_space_and_tab_around_a_line_are_still_accepted():
+    text = rendered_unit(INTAKE).replace("Description=", " \tDescription=", 1)
+    require_governed_unit_content(INTAKE, text.encode())
+
+
+def test_every_packaged_unit_is_printable_ascii():
+    for path in (REPO / "packaging/systemd").glob("*.service"):
+        text = path.read_bytes().decode("ascii")
+        assert all(" " <= c <= "~" or c in "\t\n" for c in text), path.name
+
+
+# -- every grantable unit, in the policy or not ----------------------------
+
+
+def test_grantable_files_accept_absent_units_and_check_present_ones(root):
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    require_grantable_unit_files(ACTIVATION_UNIT_ALLOWLIST)  # four absent, two rendered
+    vendor = root / "usr/lib/systemd/system"
+    other = "azazel-mio-entryd.service"
+    (vendor / other).write_text(rendered_unit(other).replace(
+        f"ConditionPathExists=/run/azazel-activation/granted/{other}\n", ""))
+    (vendor / other).chmod(0o644)
+    with pytest.raises(UnitContentRefused):
+        require_grantable_unit_files(ACTIVATION_UNIT_ALLOWLIST)
+
+
+def test_grantable_files_refuse_an_override_of_a_unit_outside_the_policy(root):
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    drop_in = _dir(root, "etc/systemd/system/azazel-mio-entryd.service.d")
+    (drop_in / "x.conf").write_text("[Unit]\nConditionPathExists=\n")
+    with pytest.raises(UnitOverrideRefused):
+        require_grantable_unit_files(ACTIVATION_UNIT_ALLOWLIST)
+
+
+def test_grantable_files_refuse_an_unprotected_present_file(root):
+    (root / "usr/lib/systemd/system" / INTAKE).chmod(0o666)
+    with pytest.raises(UnitFilesRefused):
+        require_grantable_unit_files(SCOPE)
