@@ -603,11 +603,16 @@ _LOADED = {
     "DropInPaths": ("as", []),
     "Conditions": ("a(sbbsi)", [_MARKER_CONDITION]),
     "Asserts": ("a(sbbsi)", []),
+    "Requires": ("as", ["azazel-activated.service", "system.slice"]),
+    "After": ("as", ["azazel-activated.service", "basic.target"]),
+    # Present in the reply and not kept.
+    "ActiveState": ("s", "inactive"),
 }
 
 
-def _loaded_exchange(calls, values=None, *, not_loaded=False):
-    values = dict(_LOADED, **(values or {}))
+def _loaded_exchange(calls, values=None, *, not_loaded=False, drop=()):
+    values = {name: value for name, value in dict(_LOADED, **(values or {})).items()
+              if name not in drop}
 
     def exchange(interface, member, signature, body, **kwargs):
         calls.append((interface, member, signature, list(body), kwargs))
@@ -615,8 +620,8 @@ def _loaded_exchange(calls, values=None, *, not_loaded=False):
             if not_loaded:
                 return _Reply("", [], no_such_unit=True)
             return _Reply("o", [_unit_object_path(body[0])])
-        kind, value = values[body[1]]
-        return _Reply("v", [SimpleNamespace(signature=kind, value=value)])
+        return _Reply("a{sv}", [{name: SimpleNamespace(signature=kind, value=value)
+                                 for name, (kind, value) in values.items()}])
     return exchange
 
 
@@ -627,15 +632,14 @@ def test_loaded_unit_reads_only_fixed_properties_of_a_grantable_unit():
         "Id": _INTAKE, "LoadState": "loaded",
         "FragmentPath": f"/usr/lib/systemd/system/{_INTAKE}", "DropInPaths": [],
         "Conditions": [tuple(_MARKER_CONDITION)], "Asserts": [],
+        "Requires": ["azazel-activated.service", "system.slice"],
+        "After": ["azazel-activated.service", "basic.target"],
     }
     path = _unit_object_path(_INTAKE)
-    assert calls[0] == (MANAGER_INTERFACE, "GetUnit", "s", [_INTAKE],
-                        {"allow_no_such_unit": True})
-    assert [call[3] for call in calls[1:]] == [
-        [UNIT_INTERFACE, name] for name in
-        ("Id", "LoadState", "FragmentPath", "DropInPaths", "Conditions", "Asserts")]
-    assert all(call[:3] == (PROPERTIES_INTERFACE, "Get", "ss") and call[4] == {"path": path}
-               for call in calls[1:])
+    assert calls == [
+        (MANAGER_INTERFACE, "GetUnit", "s", [_INTAKE], {"allow_no_such_unit": True}),
+        (PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE], {"path": path}),
+    ]
 
 
 def test_loaded_unit_reports_a_unit_the_manager_does_not_hold_as_none():
@@ -660,10 +664,27 @@ def test_loaded_unit_refuses_a_unit_outside_the_grantable_set_before_the_bus(uni
     {"Conditions": ("a(sbbsi)", [["ConditionPathExists", 0, False, "/x", 0]])},
     {"Conditions": ("a(sbbsi)", [["ConditionPathExists", False, False, "/x"]])},
     {"Asserts": ("as", [])},
+    {"Requires": ("s", "azazel-activated.service")},
+    {"After": ("as", [None])},
 ])
 def test_loaded_unit_refuses_malformed_properties(values):
     with pytest.raises(UnitOperationFailed):
         SystemdUnitCalls(_loaded_exchange([], values)).loaded_unit(_INTAKE)
+
+
+@pytest.mark.parametrize("name", ["Conditions", "Requires", "After", "FragmentPath"])
+def test_loaded_unit_refuses_a_reply_without_a_kept_property(name):
+    with pytest.raises(UnitOperationFailed):
+        SystemdUnitCalls(_loaded_exchange([], drop=(name,))).loaded_unit(_INTAKE)
+
+
+def test_loaded_unit_refuses_a_reply_of_another_shape():
+    def exchange(interface, member, signature, body, **kwargs):
+        if member == "GetUnit":
+            return _Reply("o", [_unit_object_path(body[0])])
+        return _Reply("a{sv}", [[("Id", SimpleNamespace(signature="s", value=_INTAKE))]])
+    with pytest.raises(UnitOperationFailed):
+        SystemdUnitCalls(exchange).loaded_unit(_INTAKE)
 
 
 def test_bus_session_allows_loaded_unit_reads_only_on_grantable_unit_objects():
@@ -674,12 +695,36 @@ def test_bus_session_allows_loaded_unit_reads_only_on_grantable_unit_objects():
         message_factory=_MessageStub,
     )
     for path, name in (
-        (_unit_object_path("azazel-auditd.service"), "FragmentPath"),
-        (_unit_object_path("azazel-watchdog.service"), "Conditions"),
+        (_unit_object_path(_INTAKE), "FragmentPath"),
+        (_unit_object_path(_INTAKE), "Conditions"),
         (_unit_object_path(_INTAKE), "ExecStart"),
-        (_unit_object_path(_INTAKE), "NeedDaemonReload"),
     ):
         with pytest.raises(UnitOperationFailed):
             session._exchange(PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name],
                               path=path)
+    for path, body, signature in (
+        (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE], "s"),
+        (_unit_object_path("azazel-watchdog.service"), [UNIT_INTERFACE], "s"),
+        (_unit_object_path("sshd.service"), [UNIT_INTERFACE], "s"),
+        ("/org/freedesktop/systemd1", [MANAGER_INTERFACE], "s"),
+        (_unit_object_path(_INTAKE), ["org.freedesktop.systemd1.Service"], "s"),
+        (_unit_object_path(_INTAKE), [UNIT_INTERFACE, "Id"], "ss"),
+    ):
+        with pytest.raises(UnitOperationFailed):
+            session._exchange(PROPERTIES_INTERFACE, "GetAll", signature, body, path=path)
     assert bus.messages == []
+
+
+def test_bus_session_sends_getall_of_the_unit_interface_for_a_grantable_unit():
+    reply = SimpleNamespace(message_type=1, signature="a{sv}", body=[{}])
+    bus = _BusStub(reply)
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    path = _unit_object_path(_INTAKE)
+    session._exchange(PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE], path=path)
+    message = bus.messages[0]
+    assert (message.path, message.interface, message.member, message.signature,
+            message.body) == (path, PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE])

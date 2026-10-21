@@ -87,10 +87,13 @@ _LOADED_UNIT_PROPERTIES = (
     ("DropInPaths", "as"),
     ("Conditions", "a(sbbsi)"),
     ("Asserts", "a(sbbsi)"),
+    ("Requires", "as"),
+    ("After", "as"),
 )
-_LOADED_UNIT_PROPERTY_NAMES = frozenset(name for name, _ in _LOADED_UNIT_PROPERTIES)
 _CONDITION_TYPES = (str, bool, bool, str, int)
-_PROPERTY_LIMIT = 64
+_PROPERTY_LIMIT = 256
+#: Bound on the `GetAll` reply of the Unit interface (the bootstrap's bound).
+_ALL_PROPERTIES_LIMIT = 2048
 _TEXT_LIMIT = 4096
 
 
@@ -206,10 +209,12 @@ class SystemdUnitCalls:
     def loaded_unit(self, unit: str) -> Optional[dict]:
         """The manager's loaded definition of one grantable unit, or None.
 
-        Read-only: `GetUnit`, which never loads a unit, then the fixed
-        `_LOADED_UNIT_PROPERTIES`. None means systemd holds no unit object,
-        so no start job can be queued for it; a later load reads the files
-        the pass measured. Every value is type-checked and copied.
+        Read-only: `GetUnit`, which never loads a unit, then one
+        `Properties.GetAll` of the `Unit` interface (one snapshot, not reads
+        spread over time), from which only `_LOADED_UNIT_PROPERTIES` are
+        kept. None means systemd holds no unit object, so no start job can
+        be queued for it; a later load reads the files the pass measured.
+        Every kept value is type-checked and copied.
         """
         if unit not in GRANTABLE_UNITS:
             raise UnitOperationFailed("the systemd client refused a unit outside the grantable set")
@@ -221,12 +226,18 @@ class SystemdUnitCalls:
         expected_path = _unit_object_path(unit)
         if self._one(unit_reply, "o", "GetUnit") != expected_path:
             raise UnitOperationFailed("systemd returned an invalid unit object")
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE], path=expected_path
+        )
+        properties = self._one(reply, "a{sv}", "Unit.GetAll")
+        if (type(properties) is not dict or len(properties) > _ALL_PROPERTIES_LIMIT
+                or any(type(name) is not str for name in properties)):
+            raise UnitOperationFailed("systemd loaded unit properties refused")
         loaded: dict = {}
         for name, signature in _LOADED_UNIT_PROPERTIES:
-            reply = self._exchange(
-                PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name], path=expected_path
-            )
-            variant = self._one(reply, "v", f"Unit.{name}")
+            if name not in properties:
+                raise UnitOperationFailed("systemd loaded unit property missing")
+            variant = properties[name]
             loaded[name] = _loaded_value(
                 getattr(variant, "signature", None), getattr(variant, "value", None), signature
             )
@@ -420,6 +431,12 @@ class SystemdBusSession:
             }
             if allowed.get(member) != signature or path != MANAGER_PATH:
                 raise UnitOperationFailed("the systemd client refused a call shape")
+        elif member == "GetAll":
+            # The pass's loaded-definition read: the Unit interface of a
+            # grantable unit's object, and nothing else.
+            if (signature != "s" or list(body) != [UNIT_INTERFACE]
+                    or path not in {_unit_object_path(unit) for unit in GRANTABLE_UNITS}):
+                raise UnitOperationFailed("the systemd client refused a property call")
         elif member != "Get" or signature != "ss":
             raise UnitOperationFailed("the systemd client refused a property call")
         elif path == MANAGER_PATH:
@@ -431,10 +448,6 @@ class SystemdBusSession:
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
             pass  # The probe's three reads, on the Edge unit's object only.
-        elif (path in {_unit_object_path(unit) for unit in GRANTABLE_UNITS}
-                and len(body) == 2 and body[0] == UNIT_INTERFACE
-                and type(body[1]) is str and body[1] in _LOADED_UNIT_PROPERTY_NAMES):
-            pass  # The pass's loaded-definition reads, on grantable units only.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")

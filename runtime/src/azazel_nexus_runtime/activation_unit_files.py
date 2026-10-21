@@ -55,6 +55,7 @@ __all__ = [
     "measure_scoped_unit_files",
     "rendered_unit",
     "require_governed_unit_content",
+    "require_grantable_unit_files",
     "require_no_unit_overrides",
     "required_unit_lines",
 ]
@@ -108,7 +109,9 @@ def _directives(text: str) -> list[tuple[str, str, str, str]]:
     section = None
     result = []
     for raw in text.split("\n"):
-        line = raw.strip()
+        # Only space and tab: `_decode` admits no other whitespace, so
+        # Python and systemd cannot disagree on where a line starts.
+        line = raw.strip(" \t")
         if line.endswith("\\"):
             raise UnitContentRefused("unit file line continuation refused")
         if not line or line[0] in "#;":
@@ -124,11 +127,18 @@ def _directives(text: str) -> list[tuple[str, str, str, str]]:
 
 
 def _decode(data: bytes) -> str:
+    """Printable ASCII, tab and newline only.
+
+    Anything else -- a BOM, NUL, CR, another ASCII control character, or any
+    non-ASCII character, Unicode whitespace included -- is refused, so that
+    no character is read one way here and another way by systemd. The
+    rendered units are plain ASCII.
+    """
     try:
-        text = data.decode("utf-8")
+        text = data.decode("ascii")
     except UnicodeDecodeError:
         raise UnitContentRefused("unit file encoding refused") from None
-    if "\0" in text or "\r" in text:
+    if any(not (" " <= char <= "~" or char in "\t\n") for char in text):
         raise UnitContentRefused("unit file encoding refused")
     return text
 
@@ -334,3 +344,32 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
         raise UnitFilesRefused("unit files unavailable") from None
     require_no_unit_overrides(scope)
     return measured
+
+
+def require_grantable_unit_files(units) -> None:
+    """The same checks over every grantable unit, policy or not (#251 H-1).
+
+    A unit outside this pass's policy is never granted, but if it is enabled
+    with a start job queued, READY would release it unless it waits for its
+    marker. So every grantable unit's vendor file must pass
+    `require_governed_unit_content` and have no override or drop-in. A
+    vendor file that does not exist is accepted for a unit outside the
+    policy scope: systemd has no definition to start (the scope itself is
+    measured by `measure_scoped_unit_files`, where a missing file refuses).
+    """
+    scope = _scope(units)
+    require_no_unit_overrides(scope)
+    try:
+        fd = _open(UNIT_DIRECTORY, required=True)
+        try:
+            for unit in scope:
+                if _entry(fd, unit) is None:
+                    continue
+                require_governed_unit_content(unit, _read(fd, unit))
+        finally:
+            os.close(fd)
+    except UnitFilesRefused:
+        raise
+    except Exception:  # noqa: BLE001 - redacted: labels only
+        raise UnitFilesRefused("unit files unavailable") from None
+    require_no_unit_overrides(scope)

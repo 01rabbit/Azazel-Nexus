@@ -761,51 +761,86 @@ together with the grant. Two checks now establish it. Both only narrow: no
 authority, approval field, flag or environment variable is added, and no
 refusal becomes a grant.
 
-**The file text** (`activation_unit_files.require_governed_unit_content`,
-inside `measure_scoped_unit_files`, so `generation-publish`, `request`,
-`install` and every pass make it). For each scoped unit, the vendor file
-must:
+**Scope.** The file check runs in two places:
 
+- on the policy's units, inside `measure_scoped_unit_files` (so
+  `generation-publish`, `request`, `install` and the pass's generation
+  producer make it); a missing vendor file refuses, as before;
+- on **every** unit in `activation_markers.GRANTABLE_UNITS`, in the pass's
+  `systemd_loaded_units` producer (`require_grantable_unit_files`), whether
+  or not the policy names it. A grantable unit outside the policy is never
+  granted, but if it was left enabled with a start job queued, READY
+  releases that job unless the unit waits for its marker. Here a vendor file
+  that does not exist is accepted (systemd has no definition to start); a
+  present one must pass the content check, and no grantable unit may have an
+  override or drop-in.
+
+The loaded-unit check below also covers every grantable unit.
+
+**The file text** (`activation_unit_files.require_governed_unit_content`).
+The vendor file must:
+
+- consist of printable ASCII, tab and newline only. A BOM, NUL, CR, any
+  other control character and any non-ASCII character (Unicode whitespace
+  such as U+00A0 or U+3000 included) refuse. Only space and tab are
+  stripped around a line. Otherwise Python and systemd could disagree on a
+  line: `str.strip()` would read `\xa0[Unit]` as a section header that
+  systemd ignores, and the required lines would land in the previous
+  section. All packaged units are plain ASCII;
 - contain, as exact lines in `[Unit]`,
   `ConditionPathExists=/run/azazel-activation/granted/<unit>`,
   `Requires=azazel-activated.service` and `After=azazel-activated.service`
-  (spacing, a `!` or `|` prefix, or the line in another section does not
-  count);
+  (spacing inside the line, a `!` or `|` prefix, or the line in another
+  section does not count);
 - have exactly the `Condition*=`, `Assert*=` and `ExecCondition=`
   assignments, in every section, of `hardening.render_unit` for that unit --
-  none added, none removed. For the six scoped units that is the marker
+  none added, none removed. For the six grantable units that is the marker
   condition alone;
 - have no empty assignment in `[Unit]` (an empty `ConditionPathExists=`,
   `Requires=` or `After=` resets the list);
-- be UTF-8 without NUL or CR, with no continued line (trailing backslash), no
-  assignment before a section and no line that is not blank, a comment, a
-  section header or an assignment. These are refused rather than parsed.
+- have no continued line (trailing backslash), no assignment before a
+  section and no line that is not blank, a comment, a section header or an
+  assignment. These are refused rather than parsed.
 
 The rest of the file (comments, `ExecStart=`, edge-core's observe-only
-`Environment=` lines) is not compared with the declaration here: the hash in
-the generation and the operator's signature bind it, as before. All six
-packaged units pass (`tests/unit/test_runtime_activation_unit_files.py`).
+`Environment=` lines) is not compared with the declaration here: for the
+policy's units the hash in the generation and the operator's signature bind
+it, as before. All six packaged units pass
+(`tests/unit/test_runtime_activation_unit_files.py`).
 
-**The loaded units** (`activation_loaded_units.verify_loaded_units`, the
-`systemd_loaded_units` producer, run after the generation producer). The
-file check says what systemd *would* load; a unit loaded earlier in the boot
-runs its loaded definition until a daemon-reload. So the pass reads, over
-the controller's own D-Bus session (the same `SystemdBusSession` that
-masks; read-only `GetUnit` and `Properties.Get`, accepted by the session only
-on the six grantable units' objects):
+**The loaded units** (`activation_loaded_units.verify_loaded_units`, run by
+the `systemd_loaded_units` producer after the generation producer). The file
+check says what systemd *would* load. A unit loaded earlier in the boot runs
+its loaded definition until a daemon-reload, and the preflight mask does not
+reload. So the pass reads the manager over the controller's own D-Bus
+session (the same `SystemdBusSession` that masks). The reads are read-only:
+`GetUnit`, then one `Properties.GetAll` of the `org.freedesktop.systemd1.Unit`
+interface. The session accepts `GetAll` only on the six grantable units'
+objects and only for that interface. The pass checks:
 
 - the manager's `Version` and `UnitPath`, through
   `observe_bootstrap_systemd_profile` -- the bootstrap path's gate, now also
   on the ordinary path (M-3). Anything but the reviewed Debian 13 systemd
   257 profile refuses, so the twelve directories the override check walks
-  are the ones this manager searches. Read before and after the units;
-- for each scoped unit: `NoSuchUnit` (no unit object, so no queued job; a
-  later load reads the measured file) and `LoadState=masked` are accepted.
-  `loaded` is accepted only with `Id` the unit, `FragmentPath` exactly
-  `/usr/lib/systemd/system/<unit>`, `DropInPaths` empty, and `Conditions`
-  and `Asserts` (type, trigger, negate, parameter; the state field ignored)
-  equal to the rendered unit's -- that is, the marker condition alone. Any
-  other state, value or unreadable reply refuses.
+  are the ones this manager searches. The profile is read before the units
+  and again after them. The second read detects a manager re-executed
+  (daemon-reexec, an upgrade) while the units were read: it must succeed and
+  be equal to the first;
+- for each grantable unit:
+  - `NoSuchUnit` (no unit object, so no queued job; a later load reads the
+    checked file) and `LoadState=masked` are accepted;
+  - `loaded` is accepted only with all of these:
+    - `Id` is the unit;
+    - `FragmentPath` is exactly `/usr/lib/systemd/system/<unit>`;
+    - `DropInPaths` is empty;
+    - `Conditions` and `Asserts` (type, trigger, negate, parameter; the
+      state field ignored) equal the rendered unit's -- that is, the marker
+      condition alone;
+    - `azazel-activated.service` is among `Requires` and among `After`.
+      These lists are not compared whole, because systemd adds implicit
+      dependencies.
+  - Any other state, a missing or mistyped property, or an unreadable reply
+    refuses.
 
 A failure marks `systemd_loaded_units` failed: the pass is incomplete, the
 decision gets no lease, everything stays masked, no marker is written, and
@@ -815,27 +850,55 @@ refuses.
 
 **Compatibility.** The generation format and its hash are unchanged; a
 published generation whose unit files pass these checks verifies as before.
-A node whose installed scoped unit files lack the lines, or whose manager is
-not the reviewed profile, now has every unit withheld until the files are
-reinstalled (and a new generation is published if the bytes change).
+The following nodes now have every unit withheld until the files are
+reinstalled (and, if the policy's bytes change, a new generation is
+published):
 
-**Not covered.** `ExecCondition=` is checked in the file, not in the loaded
-unit (it is a `Service` property and can only skip a start).
-`NeedDaemonReload` is not required false: the preflight mask itself changes
-the unit file state, and the loaded definition is what is compared. The
-checks cover the scoped units only; the watchdog, the fetch service and the
-model hosts are never granted, and their own marker condition is the
-hardening test's to keep (`tests/unit/test_runtime_hardening.py`). The
-`Conditions` and `FragmentPath` systemd reports for these units, before and
-after the preflight mask, still have to be observed on the VM.
+- a node whose installed grantable unit files lack the lines, contain
+  anything but printable ASCII, or have an override;
+- a node whose manager is not the reviewed profile.
 
-Tests: `tests/unit/test_runtime_activation_unit_files.py` (each required
-line removed, spaced, negated, made triggering or moved; each added or reset
-guard; continuation, CR, NUL and syntax), `tests/unit/test_runtime_activation_cli.py`
-(`generation-publish` refuses a unit without its marker condition),
-`tests/unit/test_runtime_activation_pass.py` (a loaded unit without the
-condition, with an extra condition or assert, a fragment in `/etc`, a
-drop-in, another load state or id, an unreviewed manager profile and an
-unreadable unit each refuse everything; not loaded and masked are accepted)
-and `tests/unit/test_runtime_systemd_bus.py` (the fixed reads, refused
-outside the grantable units).
+**Residual risk.**
+
+- The loaded definition's `ExecStart=` (and the rest of its `Service`
+  section, `ExecCondition=` included) is not compared. A unit loaded before
+  its file was replaced can therefore run an older command line than the one
+  the generation hashed. It still starts only with this boot's marker and
+  after the controller, which the checks above establish, and `ExecCondition=`
+  can only skip a start.
+- `NeedDaemonReload` is not required false: the preflight mask itself changes
+  the unit file state, and the loaded definition is what is compared.
+- The watchdog, the fetch service and the model hosts are outside
+  `GRANTABLE_UNITS`. No pass ever writes their marker, and their marker
+  condition is the hardening test's to keep
+  (`tests/unit/test_runtime_hardening.py`).
+- The `Conditions`, `Requires`, `After` and `FragmentPath` that systemd
+  reports for these units, before and after the preflight mask, still have
+  to be observed on the VM.
+
+Tests:
+
+- `tests/unit/test_runtime_activation_unit_files.py`:
+  - each required line removed, spaced, negated, made triggering or moved;
+  - each added or reset guard;
+  - continuation, CR, NUL and syntax;
+  - Unicode whitespace, a BOM and other controls at the start or end of a
+    header or line;
+  - every grantable file, absent, broken, overridden or unprotected.
+- `tests/unit/test_runtime_activation_cli.py`: `generation-publish` refuses a
+  unit without its marker condition.
+- `tests/unit/test_runtime_activation_pass.py`:
+  - each of these refuses everything:
+    - a loaded unit without the condition;
+    - a loaded unit with an extra condition or assert;
+    - a loaded unit without the controller in `Requires` or `After`;
+    - a fragment in `/etc`, or a drop-in;
+    - another load state or id;
+    - a grantable unit outside the policy loaded that way;
+    - an unreviewed manager profile, a failing or changed second profile
+      read, or an unreadable unit;
+  - not loaded and masked are accepted;
+  - a policy narrower than the grantable set still has every grantable unit
+    checked, and grants only its own.
+- `tests/unit/test_runtime_systemd_bus.py`: the single `GetAll`, refused
+  outside the grantable units or the `Unit` interface.

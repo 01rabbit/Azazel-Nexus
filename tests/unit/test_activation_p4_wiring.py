@@ -64,7 +64,7 @@ def test_production_producers_are_the_fixed_protected_readers():
                    "load_bootstrap_deployment", "collect_node_health",
                    "raise_high_water", "require_high_water_for_pass",
                    "load_declared_node", "measure_scoped_unit_files",
-                   "verify_loaded_units"):
+                   "verify_grantable_units"):
         assert reader in body, reader
     # No producer is taken from the environment or a command line.
     assert "environ" not in source and "argv" not in source

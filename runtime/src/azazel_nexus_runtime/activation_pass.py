@@ -132,10 +132,10 @@ class PassProducers:
     #: `measure_scoped_unit_files`: the scoped units' vendor file bytes,
     #: measured now and refused on any override or drop-in.
     unit_files: Callable[[list], dict]
-    #: `activation_loaded_units.verify_loaded_units` over the controller's
-    #: D-Bus session: the manager is a reviewed profile and each scoped unit
-    #: is not loaded, masked, or loaded from the vendor file with no drop-in
-    #: and its declared conditions; raises otherwise.
+    #: `activation_loaded_units.verify_grantable_units` over every grantable
+    #: unit and the controller's D-Bus session: each file waits for its
+    #: marker, the manager is a reviewed profile and each unit is not loaded,
+    #: masked, or loaded as declared; raises otherwise.
     loaded_units: Callable[[list], None]
     #: `load_observe_baseline_approval` (keyword arguments).
     approval: Callable[..., ObserveBaselineApproval]
@@ -353,15 +353,16 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         if floors is not None and generation.number < floors.generation:
             fail("epoch_high_water")
 
-    # 6b. What the running manager loaded for the same units (#251 H-1, M-3):
-    #     a reviewed manager profile, and each unit not loaded, masked, or
-    #     loaded from the vendor file with no drop-in and its marker
-    #     condition. A unit loaded earlier in the boot runs its loaded
-    #     definition, not the file measured above.
-    if active_policy is not None:
-        def loaded_units():
-            producers.loaded_units(list(active_policy.units))
-        attempt(("systemd_loaded_units",), loaded_units)
+    # 6b. Every grantable unit, in the policy or not (#251 H-1, M-3): its
+    #     file waits for its marker, the manager is a reviewed profile, and
+    #     each unit is not loaded, masked, or loaded from the vendor file
+    #     with no drop-in, its marker condition and the controller among its
+    #     Requires/After. A unit loaded earlier in the boot runs its loaded
+    #     definition, and READY releases its queued start whether or not
+    #     this policy names it.
+    def loaded_units():
+        producers.loaded_units(sorted(UNIT_SCOPE))
+    attempt(("systemd_loaded_units",), loaded_units)
 
     # 7. The v2 approval, verified against the context above and the floors.
     upstream = ("authenticated_commissioning", "node_identity", "activation_policy",
@@ -454,7 +455,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
 
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
-    from .activation_loaded_units import verify_loaded_units
+    from .activation_loaded_units import verify_grantable_units
     from .activation_unit_files import measure_scoped_unit_files
     from .node_config import load_declared_node
 
@@ -465,7 +466,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         policy=load_activation_policy,
         high_water=require_high_water_for_pass,
         unit_files=measure_scoped_unit_files,
-        loaded_units=lambda units: verify_loaded_units(systemd, units),
+        loaded_units=lambda units: verify_grantable_units(systemd, units),
         approval=load_observe_baseline_approval,
         health=lambda policy, ledger: collect_node_health(policy=policy, ledger=ledger),
         raise_high_water=raise_high_water,
