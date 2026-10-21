@@ -600,20 +600,42 @@ rest. Two limits:
 
 The label is diagnostic only: it decides nothing and names no device or path.
 
-**N7 detail.** The declaration store has no replace path
-(`bootstrap_deployment_store.py` initializes only when no `deployment.json`
-exists), so raising the declared epoch on the VM means moving the declaration
-aside and publishing a new one; the change is undone only by reverting the
-snapshot. Assistant, while the current declaration is still in place:
+**N7 detail** (design §11). The epoch is raised through the regular,
+operator-signed, raise-only path; the change is undone only by reverting the
+snapshot. Assistant, with the declared epoch `E` from §6.2's `security_epoch:`:
 
 ```sh
-sudo PYTHON -I -c 'import dataclasses, sys; from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment as l; from azazel_nexus.bootstrap_deployment import encode_bootstrap_deployment as e; d = l(); sys.stdout.write(e(dataclasses.replace(d, security_epoch=d.security_epoch + 1)).decode() + "\n")'
-sudo mv /etc/azazel/bootstrap/deployment.json /root/azn-quarantine/deployment.json.orig
-ssh -t NODE 'sudo /opt/azazel-nexus/venv/bin/azazel-nexus bootstrap-deployment-initialize'
+ssh NODE 'cd / && sudo PYTHON -I -m azazel_nexus_runtime.activation_cli epoch-request --operator LABEL --to-epoch E+1 --out /root/azn-activation/epoch.json'
 ```
 
-Paste the printed line, re-enter the printed SHA-256 and type `INITIALIZE`.
-The declaration holds digests and a label, no secret. Run N7 and N8 last.
+Replace `E+1` with the number. Expected on stderr: `schema:
+azazel-nexus/activation-epoch-raise/v1`, `security_epoch: E -> E+1`,
+`payload_sha256: <hex>`. Operator, as in §6.3:
+
+```sh
+umask 077
+ssh NODE 'sudo cat /root/azn-activation/epoch.json' > epoch.json
+sha256sum epoch.json        # must equal payload_sha256
+PYTHONPATH=src uv run --no-project --with 'pynacl>=1.5' python -m tools.operator_sign \
+  --purpose activation-epoch-raise --payload epoch.json \
+  --expect-payload-sha256 NODE_PRINTED_SHA256 --expect-public ENROLLED_PUBLIC_HEX \
+  --seed /path/outside/any/checkout/rehearsal.seed --out epoch.sig
+scp epoch.sig NODE:azn-epoch.sig
+```
+
+Assistant (interactive: re-enter the payload SHA-256, then type `RAISE`):
+
+```sh
+ssh NODE 'sudo install -m 0600 -o root -g root "$HOME"/azn-epoch.sig /root/azn-activation/epoch.sig && rm "$HOME"/azn-epoch.sig'
+ssh -t NODE 'cd / && sudo PYTHON -I -m azazel_nexus_runtime.activation_cli epoch-raise --payload /root/azn-activation/epoch.json --signature /root/azn-activation/epoch.sig'
+```
+
+Expected: `high water (raised): epoch E+1, ...`, `Security epoch raised to
+E+1. This is NOT a grant: ...`, exit 0, and the last ledger event
+`activation.epoch_raised`. Running the same command again is refused (exit 1,
+`epoch raise does not match the current declaration`). The installed approval
+names `E` and stays in place; the reboot shows the expected row. Run N7 and N8
+last.
 
 ## 9. Observations
 
@@ -683,7 +705,7 @@ new signature and leave the old one in quarantine); remove the crypttab, fstab a
 append-only or raise-only history, never edited.
 
 Always: the assistant deletes `/root/azn-activation`; the operator deletes
-every workstation copy (`approval.json`, `approval.sig`, `draft.json`,
+every workstation copy (`approval.json`, `approval.sig`, `epoch.json`, `epoch.sig`, `draft.json`,
 `proposal.json`) and destroys the rehearsal seed. With Option B, the operator
 decides whether S0 (which still holds the old key file) is deleted.
 

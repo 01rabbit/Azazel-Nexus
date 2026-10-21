@@ -1,7 +1,7 @@
 """`az-activation`: operator tooling for the observe-baseline activation (#206 P3).
 
-`docs/activation-observe-baseline.md` §3.1, §3.2, §3.5 and §7. Three commands,
-none of which grants anything:
+`docs/activation-observe-baseline.md` §3.1, §3.2, §3.5, §7 and §11. Five
+commands, none of which grants anything:
 
 * ``generation-publish`` (root, interactive) measures the installed unit files
   of the activation policy's scope, the Edge pin and -- exactly when
@@ -20,6 +20,13 @@ none of which grants anything:
   ``approval.json`` and ``approval.sig`` and raises (or, on a node without any
   floor history, initializes) the high water. Replacing an installed approval
   and the §7 high-water recovery each need a separate typed confirmation.
+* ``epoch-request`` (read-only) and ``epoch-raise`` (root, interactive) raise
+  the declared security epoch (§11, #251): the first writes the unsigned
+  ``azazel-nexus/activation-epoch-raise/v1`` payload, the second verifies the
+  operator's signature over it (its own purpose), raises the high-water epoch
+  floor, replaces the deployment declaration with the same one at the higher
+  epoch and records ``activation.epoch_raised``. It only raises; every
+  approval for a lower epoch stops verifying.
 
 `az-activated` does not import this module. Since P4 (§8) its pass
 (`activation_pass`, imported only inside the pass after the preflight remask)
@@ -54,11 +61,21 @@ from azazel_nexus.activation_approval_v2 import (
     observe_baseline_payload,
     verify_observe_baseline_approval,
 )
+from azazel_nexus.activation_epoch import (
+    EpochRaise,
+    encode_epoch_raise,
+    epoch_raise_request,
+    verify_epoch_raise,
+)
 from azazel_nexus.activation_policy import ActivationPolicy, load_activation_policy
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.bootstrap_deployment import declared_node_binding
-from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
+from azazel_nexus.bootstrap_deployment_store import (
+    DeploymentDurabilityUncertain,
+    load_bootstrap_deployment,
+    raise_bootstrap_deployment_epoch,
+)
 from azazel_nexus.edge_package import installed_package_components
 from azazel_nexus.generation import (
     GenerationCommitUncertain,
@@ -125,6 +142,7 @@ FLOOR_EVENTS = frozenset({
     "activation.high_water_recovered",
     "activation.unit_granted",
     "activation.high_water_raised",
+    "activation.epoch_raised",
 })
 
 
@@ -153,6 +171,10 @@ def _load_evidence():
 
 def _load_trust():
     return load_operator_trust()
+
+
+def _raise_declaration(current, to_epoch: int) -> None:
+    raise_bootstrap_deployment_epoch(current, to_epoch)
 
 
 def _now() -> str:
@@ -984,14 +1006,195 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
     return 0
 
 
+# -- epoch-request and epoch-raise (§11, #251) ---------------------------------
+
+
+@dataclass(frozen=True)
+class _EpochContext:
+    declaration: object
+    policy: ActivationPolicy
+    node_digest: str
+
+
+def _epoch_context() -> _EpochContext:
+    """The declaration, bound to the protected node label, and the policy."""
+    policy = _step("activation policy unavailable or refused", _load_policy)
+    declaration = _step("administrator deployment declaration unavailable or refused",
+                        _load_declaration)
+    node = _step("declared node unavailable or refused", _load_node)
+    node_digest = _step("declared node differs from the deployment declaration",
+                        declared_node_binding, declaration, node.node_id)
+    return _EpochContext(declaration, policy, node_digest)
+
+
+#: A raise by more than this is shown with a warning (a typo such as an extra
+#: digit cannot be undone). It is never refused: any raise is valid.
+LARGE_EPOCH_STEP = 1000
+
+
+def _epoch_summary(value: EpochRaise, payload: bytes) -> list[str]:
+    lines = [
+        "schema: azazel-nexus/activation-epoch-raise/v1",
+        f"operator: {value.operator}",
+        f"node_digest: {value.node_digest}",
+        f"deployment_digest: {value.deployment_digest}",
+        f"security_epoch: {value.from_epoch} -> {value.to_epoch}",
+        f"payload_sha256: {sha256(payload).hexdigest()}",
+    ]
+    if value.to_epoch - value.from_epoch > LARGE_EPOCH_STEP:
+        lines.append(f"WARNING: the epoch rises by {value.to_epoch - value.from_epoch} "
+                     f"(more than {LARGE_EPOCH_STEP}); it can never be lowered. Check "
+                     "the new epoch before signing or confirming.")
+    return lines
+
+
+def run_epoch_request(*, operator, to_epoch, out_path, stderr) -> int:
+    """Write the unsigned epoch-raise payload; sign nothing, change nothing."""
+    try:
+        context = _epoch_context()
+        if operator not in context.policy.operators:
+            raise Refused("operator is not authorized by the activation policy")
+        trust = _step("operator trust unavailable or refused", _load_trust)
+        if operator not in trust.public_keys or operator in trust.revoked:
+            raise Refused("operator has no active enrolled key")
+        if type(to_epoch) is not int or to_epoch <= context.declaration.security_epoch:
+            raise Refused("the new epoch must be above the declared epoch")
+        current = _step("high-water store unavailable or refused", read_high_water)
+        if current is not None and to_epoch < current.security_epoch:
+            raise Refused("the new epoch must not be below the high-water epoch floor")
+        value = _step("epoch raise payload refused", epoch_raise_request,
+                      context.declaration, operator=operator, to_epoch=to_epoch)
+        payload = encode_epoch_raise(value)
+        _step("output file refused (it must not exist)", _write_create_only,
+              Path(out_path), payload)
+    except Refused as error:
+        print(f"Epoch raise request refused: {error}. Nothing written.", file=stderr)
+        return 1
+    except Exception:  # noqa: BLE001 - labels only, never exception text
+        print("Epoch raise request refused. Nothing written.", file=stderr)
+        return 1
+    for line in _epoch_summary(value, payload):
+        print(line, file=stderr)
+    print("Unsigned. Sign it off-host with tools/operator_sign.py --purpose "
+          "activation-epoch-raise and the payload_sha256 above; apply it with "
+          "az-activation epoch-raise. Nothing was signed or changed.", file=stderr)
+    return 0
+
+
+def run_epoch_raise(*, payload_path, signature_path, source, out) -> int:
+    """Verify the signed raise, confirm twice, raise the floor and the declaration, record."""
+    stage = "nothing changed"
+    try:
+        if not _is_root():
+            raise Refused("epoch-raise requires root")
+        if not source.isatty():
+            raise Refused("interactive terminal confirmation required")
+        payload = _step("epoch raise payload file refused", _read_operator_file,
+                        Path(payload_path), limit=4096)
+        signature = _step("epoch raise signature file refused", _read_operator_file,
+                          Path(signature_path), limit=_SIGNATURE_BYTES)
+        if len(signature) != _SIGNATURE_BYTES:
+            raise Refused("epoch raise signature must be 64 raw bytes")
+        context = _epoch_context()
+        trust = _step("operator trust unavailable or refused", _load_trust)
+        try:
+            value = verify_epoch_raise(
+                trust=trust, payload=payload, signature=signature,
+                deployment=context.declaration,
+                authorized_operators=frozenset(context.policy.operators))
+        except ApprovalRefused as error:
+            # The verifier's messages are fixed, redacted labels.
+            raise Refused(str(error)) from None
+        if value.node_digest != context.node_digest:
+            raise Refused("epoch raise names another node")
+        current = _step("high-water store unavailable or refused", read_high_water)
+        if current is None:
+            # The floor is initialized only by install (§3.5) or recovered (§7).
+            raise Refused("no high-water floor; install an approval first, or follow "
+                          "the recovery procedure (docs §7)")
+        if value.to_epoch < current.security_epoch:
+            raise Refused("the new epoch must not be below the high-water epoch floor")
+        now = _now()
+        skew = context.policy.max_clock_skew_seconds
+        if (parse_bootstrap_time(now) + timedelta(seconds=skew)
+                < parse_bootstrap_time(current.time_floor)):
+            raise Refused("OS clock is behind the high-water time floor")
+        time_floor = max(current.time_floor, now, key=parse_bootstrap_time)
+        new_floor = HighWater(security_epoch=value.to_epoch,
+                              approval_seq=current.approval_seq,
+                              generation=current.generation, time_floor=time_floor)
+        print("Verified operator-signed security epoch raise (signature, policy, node, "
+              "declaration):", file=out)
+        for line in _epoch_summary(value, payload):
+            print(line, file=out)
+        print(f"high water (raised): epoch {new_floor.security_epoch}, seq "
+              f"{new_floor.approval_seq}, generation {new_floor.generation}, time floor "
+              f"{new_floor.time_floor}", file=out)
+        print("This only raises and cannot be undone: every approval for epoch "
+              f"{value.from_epoch} or below stops verifying, the installed one included. "
+              "A new approval needs a new request, signature and install.", file=out)
+        if _terminal_line(source, out, "Re-enter the payload SHA-256:", 64) != sha256(
+                payload).hexdigest():
+            raise Refused("payload SHA-256 confirmation differs")
+        _confirm_word(source, out, "RAISE", "raising the security epoch")
+
+        # Nothing was written yet. Re-collect and compare before touching state.
+        if (_epoch_context() != context
+                or _step("operator trust unavailable or refused", _load_trust) != trust
+                or _step("high-water store unavailable or refused", read_high_water)
+                != current):
+            raise Refused("node context changed during confirmation")
+        # The floor first: from here the pass refuses every approval below the
+        # new epoch (and the old declaration itself), whatever happens next.
+        stage = "high water may be raised; declaration not replaced"
+        raise_high_water(new_floor, now=now, skew_seconds=skew)
+        stage = "high water raised; declaration replacement unconfirmed"
+        _raise_declaration(context.declaration, value.to_epoch)
+        stage = "epoch raised; activation ledger record missing"
+        _step("activation ledger refused the epoch raise record", _append, {
+            "event_type": "activation.epoch_raised",
+            "operator": value.operator,
+            "node_digest": value.node_digest,
+            "deployment_digest": value.deployment_digest,
+            "from_epoch": value.from_epoch,
+            "to_epoch": value.to_epoch,
+            "payload_sha256": "sha256:" + sha256(payload).hexdigest(),
+            "high_water": _floor_values(new_floor),
+            "occurred_at": now,
+            "actor": _ACTOR,
+        })
+    except (HighWaterCommitUncertain, DeploymentDurabilityUncertain):
+        print(f"Epoch raise interrupted with durability UNCONFIRMED ({stage}). Inspect "
+              "the high water and /etc/azazel/bootstrap; do not retry automatically. "
+              "Nothing admitted.", file=out)
+        return 2
+    except Refused as error:
+        if stage != "nothing changed":
+            print(f"Epoch raise stopped: {error} ({stage}). Inspect before retrying. "
+                  "Nothing admitted.", file=out)
+            return 2
+        print(f"Epoch raise refused: {error}. Nothing changed.", file=out)
+        return 1
+    except Exception:  # noqa: BLE001 - e.g. a store refusal; labels only
+        if stage != "nothing changed":
+            print(f"Epoch raise stopped ({stage}). Inspect before retrying. Nothing "
+                  "admitted.", file=out)
+            return 2
+        print("Epoch raise refused. Nothing changed.", file=out)
+        return 1
+    print(f"Security epoch raised to {value.to_epoch}. This is NOT a grant: approvals for "
+          "a lower epoch no longer verify.", file=out)
+    return 0
+
+
 # -- entry point -------------------------------------------------------------
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="az-activation",
-        description="Observe-baseline activation tooling; publishes, requests or installs, "
-                    "never grants.")
+        description="Observe-baseline activation tooling; publishes, requests, installs "
+                    "or raises the epoch, never grants.")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("generation-publish",
                         help="publish the observe-baseline generation (root, interactive)")
@@ -1010,7 +1213,24 @@ def main(argv=None) -> int:
     install.add_argument("--replace", action="store_true")
     install.add_argument("--recover-high-water", metavar="RETAINED_NAME",
                          help="docs §7: name of the moved-aside high-water file")
+    epoch_request = commands.add_parser(
+        "epoch-request", help="write the unsigned security epoch raise payload")
+    epoch_request.add_argument("--operator", required=True)
+    epoch_request.add_argument("--to-epoch", required=True, type=int)
+    epoch_request.add_argument("--out", required=True,
+                               help="create-only 0600 file for the payload")
+    epoch_raise = commands.add_parser(
+        "epoch-raise", help="verify and apply a signed security epoch raise (root, "
+                            "interactive; raise only)")
+    epoch_raise.add_argument("--payload", required=True)
+    epoch_raise.add_argument("--signature", required=True)
     args = parser.parse_args(argv)
+    if args.command == "epoch-request":
+        return run_epoch_request(operator=args.operator, to_epoch=args.to_epoch,
+                                 out_path=args.out, stderr=sys.stderr)
+    if args.command == "epoch-raise":
+        return run_epoch_raise(payload_path=args.payload, signature_path=args.signature,
+                               source=sys.stdin, out=sys.stdout)
     if args.command == "generation-publish":
         return run_generation_publish(source=sys.stdin, out=sys.stdout)
     if args.command == "request":

@@ -1,11 +1,20 @@
-"""Fixed administrator declaration store; never an approval or start grant."""
+"""Fixed administrator declaration store; never an approval or start grant.
 
+A published declaration is never replaced, with one exception: the
+raise-only epoch replacement behind the operator-signed `az-activation
+epoch-raise` (#251, docs/activation-observe-baseline.md §11).
+"""
+
+import dataclasses
 import fcntl
 from hashlib import sha256
 import os
+import stat
 
 from .activation_store import _private_directory, _read_file_at
-from .bootstrap_deployment import decode_bootstrap_deployment
+from .bootstrap_deployment import (
+    BootstrapDeployment, decode_bootstrap_deployment, encode_bootstrap_deployment,
+)
 from .bootstrap_store import _bootstrap_directory
 from .operator_trust import ApprovalRefused
 
@@ -141,6 +150,68 @@ def recover_bootstrap_deployment(raw: bytes, *, confirmed_sha256: str,
         raise
     except Exception:
         raise ApprovalRefused("deployment recovery refused; inspect retained state") from None
+
+
+_NEXT = ".deployment.json.next"
+
+
+def _raise_epoch_at(fd, current_raw, new_raw, *, owner):
+    """Ordinary-file test seam: replace exactly `current_raw` by `new_raw`.
+
+    Only the epoch may differ, and only upwards. The pending marker is written
+    first, so an interruption leaves state every reader refuses until the
+    existing `recover_bootstrap_deployment` finishes whichever declaration
+    `deployment.json` then holds.
+    """
+    current, new = decode_bootstrap_deployment(current_raw), decode_bootstrap_deployment(new_raw)
+    if (new.security_epoch <= current.security_epoch
+            or dataclasses.replace(current, security_epoch=new.security_epoch) != new):
+        raise ApprovalRefused("only a raised security epoch may replace the declaration")
+    _private_directory(fd, owner=owner)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        if _exists(fd, "deployment.pending"):
+            raise ApprovalRefused("deployment publication needs operator review")
+        if _read_file_at(fd, "deployment.json", owner=owner, limit=4096) != current_raw:
+            raise ApprovalRefused("deployment declaration changed")
+        try:
+            stale = os.stat(_NEXT, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            stale = None
+        if stale is not None:
+            if not stat.S_ISREG(stale.st_mode):
+                raise ApprovalRefused("deployment temporary entry refused")
+            os.unlink(_NEXT, dir_fd=fd)
+        _write_new(fd, "deployment.pending", _PENDING_BYTES)
+        os.fsync(fd)
+        _write_new(fd, _NEXT, new_raw)
+        os.replace(_NEXT, "deployment.json", src_dir_fd=fd, dst_dir_fd=fd)
+        os.fsync(fd)
+        if _read_file_at(fd, "deployment.json", owner=owner, limit=4096) != new_raw:
+            raise ApprovalRefused("published declaration differs")
+        _finish(fd)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def raise_bootstrap_deployment_epoch(current: BootstrapDeployment, to_epoch: int) -> None:
+    """Replace the declaration by the same one with a higher `security_epoch` (#251).
+
+    Raise-only and compare-and-swap: refused unless `deployment.json` is
+    exactly `current` and `to_epoch` is above its epoch. The caller verifies
+    the operator's signed epoch raise first (`activation_epoch`); this store
+    checks no signature. Failure may leave pending state that blocks readers.
+    """
+    try:
+        current_raw = encode_bootstrap_deployment(current)
+        new_raw = encode_bootstrap_deployment(
+            dataclasses.replace(current, security_epoch=to_epoch))
+        with _bootstrap_directory() as fd:
+            _raise_epoch_at(fd, current_raw, new_raw, owner=0)
+    except DeploymentDurabilityUncertain:
+        raise
+    except Exception:
+        raise ApprovalRefused("deployment epoch raise refused; inspect retained state") from None
 
 
 def load_bootstrap_deployment():
