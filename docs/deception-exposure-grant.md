@@ -3,7 +3,8 @@
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase; the review findings are those of
 [#276](https://github.com/01rabbit/Azazel-Nexus/issues/276)).
-Status: **proposed; awaiting owner decisions; nothing implemented.**
+Status: **decided (2026-10-22): the owner adopted every recommended default
+of §10 (Q1–Q12); G1–G3 in progress; the tier stays withheld until G6.**
 Related: [Deception Lite prerequisites](deception-redirect-prerequisites.md)
 (§7 Q9, Q10; §9; §10 "Before any grant"; §13; §14) ·
 [observe-baseline activation](activation-observe-baseline.md) ·
@@ -473,7 +474,10 @@ and come after G6.
 
 ## 10. Owner decisions
 
-Recommended defaults in brackets.
+Recommended defaults in brackets. **Decided 2026-10-22:** the owner adopted
+every bracketed default below, Q1 to Q12, without change ("#280 の12件は
+すべて推奨どおりで"). The fallbacks the defaults name (A2 if the VM check of
+A3 fails) remain fallbacks, taken only on a recorded VM result.
 
 1. Where are the approved prefixes and ingress interfaces confirmed? **[S1: a
    `deception_scope` section in a v3 commissioning proposal, signed with it;

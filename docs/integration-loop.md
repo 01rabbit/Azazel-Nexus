@@ -981,7 +981,8 @@ and no decoy is started.
 
 I4 has three prerequisites, not one. The Nexus half of each is designed in
 [Redirect to Deception Lite: the Nexus-side prerequisites](deception-redirect-prerequisites.md)
-(proposed; awaiting owner decisions; nothing implemented):
+(accepted 2026-10-21; P1 and P2 implemented; nothing is granted; the grant
+phase is decided in [granting the exposure tier](deception-exposure-grant.md)):
 
 1. **Edge enforcement.** A redirect moves traffic, and the shipped Edge Core
    is observe-only: its redirect is planned, never applied. A decoy started for
