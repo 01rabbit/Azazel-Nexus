@@ -250,7 +250,12 @@ short separate design before G6 (§9), with the default "the LAN routes the
 /30 to the node; Nexus sets no sysctl, and the pass withholds the tier unless
 per-interface forwarding (`net.ipv4.conf.<ingress>.forwarding`) is already
 on for the ingress interfaces and off on the management and observation
-ones" (§10 Q11).
+ones" (§10 Q11). That design is
+[how outside peers reach the decoy](deception-exposure-reachability.md): it
+keeps the default, and adds what writing it out showed, notably that
+forwarding is a property of the receiving interface, so the ingress needs
+containment of its own, and that the replies need forwarding on `az-decoy0`
+(its §5, §7 and §9).
 
 ## 5. The grant condition
 
@@ -286,7 +291,8 @@ needs (health, lease, generation, clock, high water):
 5. **coexistence holds** (§6.2): no unit that flushes the ruleset is enabled;
 6. **the static preconditions**: `net.core.fb_tunnels_only_for_init_net` is
    `2` (§13 of the prerequisites document) and the forwarding condition of
-   §4.5.
+   §4.5, specified in
+   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-not-implemented-here).
 
 Each failure withholds the tier with its own reason code, and nothing else.
 
@@ -507,7 +513,9 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
 11. How outside peers reach the decoy (§4.5)? **[a short separate design
     before G6; default: the LAN routes the /30 to the node, Nexus sets no
     sysctl, the pass withholds unless per-interface forwarding is on for the
-    ingress interfaces and off for management and observation]**
+    ingress interfaces and off for management and observation]** Written
+    out in [how outside peers reach the decoy](deception-exposure-reachability.md),
+    which raises five further questions (its §9).
 12. Firewall coexistence? **[the tier is withheld while `nftables.service`,
     `firewalld.service` or `netfilter-persistent.service` is enabled; Edge
     enforce posture and the tier mutually exclusive until Edge agrees on
