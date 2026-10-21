@@ -813,9 +813,11 @@ class ActivationController:
         # satisfied by a dependency systemd merely skipped.
         exposure = [d for d in definitions if d.tier is UnitTier.DECEPTION_EXPOSURE
                     or d.name in DECEPTION_EXPOSURE_UNITS]
+        # No wiring either: a wiring held by one of them and not the others
+        # would be a second way for their verdicts to differ.
         if exposure and ({d.name for d in exposure} != set(DECEPTION_EXPOSURE_UNITS)
                          or any(d.tier is not UnitTier.DECEPTION_EXPOSURE
-                                for d in exposure)):
+                                or d.wiring is not None for d in exposure)):
             raise ActivationRefused(
                 "the Deception Lite exposure tier is governed as exactly "
                 f"{', '.join(DECEPTION_EXPOSURE_UNITS)}, together or not at all"

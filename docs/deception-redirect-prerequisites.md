@@ -464,7 +464,8 @@ not keep the decoy from starting without the helper, or the helper without
 the namespace unit. The rule is held in three places, each alone sufficient:
 
 - `ActivationController` refuses a governed set that holds some but not all
-  of `DECEPTION_EXPOSURE_UNITS`, or holds one of them in another tier;
+  of `DECEPTION_EXPOSURE_UNITS`, holds one of them in another tier, or gives
+  one of them a wiring requirement;
 - a lease whose unit scope names some but not all of them withholds the
   ones it names as `exposure_tier_partial` (the others are
   `outside_lease_scope`). Every other precondition is the same for the three
@@ -472,7 +473,9 @@ the namespace unit. The rule is held in three places, each alone sufficient:
   cannot otherwise differ; a test pins that they are identical;
 - `activation_markers.write_grant_markers` refuses a marker set holding some
   but not all of them (`EXPOSURE_UNITS`, compared with the library's tuple
-  by a test).
+  by a test). This is also the backstop for the one difference the library
+  cannot rule out in advance: an unmask that fails for one of the three
+  after the others were granted.
 
 None of this grants anything: the tier is still withheld as
 `isolation_evidence_absent` on every pass, no policy can name the three, and

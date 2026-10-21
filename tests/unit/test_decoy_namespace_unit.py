@@ -364,6 +364,17 @@ def test_an_exposure_unit_moved_to_another_tier_is_refused(tmp_path):
         _controller(tmp_path, definitions)
 
 
+def test_an_exposure_unit_with_a_wiring_of_its_own_is_refused(tmp_path):
+    """A wiring held by one of the three would let their verdicts differ."""
+    definitions = [
+        UnitDefinition(d.name, d.tier, d.account, d.purpose, wiring="decoy_namespace")
+        if d.name == NSD else d
+        for d in CORE_UNITS
+    ]
+    with pytest.raises(ActivationRefused, match="together or not at all"):
+        _controller(tmp_path, definitions)
+
+
 def test_a_governed_set_without_the_tier_is_accepted(tmp_path):
     definitions = [d for d in CORE_UNITS if d.tier is not UnitTier.DECEPTION_EXPOSURE]
     _controller(tmp_path, definitions)
