@@ -63,7 +63,8 @@ def test_production_producers_are_the_fixed_protected_readers():
     for reader in ("load_activation_policy", "load_observe_baseline_approval",
                    "load_bootstrap_deployment", "collect_node_health",
                    "raise_high_water", "require_high_water_for_pass",
-                   "load_declared_node", "measure_scoped_unit_files"):
+                   "load_declared_node", "measure_scoped_unit_files",
+                   "verify_loaded_units"):
         assert reader in body, reader
     # No producer is taken from the environment or a command line.
     assert "environ" not in source and "argv" not in source
@@ -77,3 +78,11 @@ def test_the_pass_never_calls_a_start_verb():
         attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
         assert not {"StartUnit", "RestartUnit", "ReloadOrRestartUnit"} & literals
         assert not {"start", "start_unit", "restart"} & attributes
+
+
+def test_the_pass_hands_its_own_bus_session_to_the_loaded_unit_check():
+    """#251 H-1, M-3: the session that masks is the one whose loaded units are read."""
+    source = ACTIVATED.read_text(encoding="utf-8")
+    body = source[source.index("def _run_once("):source.index("def _narrow_bootstrap_core_units(")]
+    assert 'systemd=getattr(manager, "call", None)' in body
+    assert "systemd_loaded_units" in source[source.index("_ALL_PRODUCERS"):]

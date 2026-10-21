@@ -248,6 +248,15 @@ entry in a drop-in directory -- `<unit>.d/`, the dashed-prefix forms
 `/etc` or `/run` drop-in changing, for example, edge-core's `Environment=` or
 `ExecStart=` therefore refuses rather than passing under an unchanged hash.
 
+The hash alone would also accept a vendor file that never waits for a grant
+(#251 H-1): the grant marker of §5 is safe only if the unit carries its
+`ConditionPathExists=`, `Requires=` and `After=` on the controller. So the
+same measurement also checks each file's text
+(`require_governed_unit_content`) before it is hashed; §8.2 lists the rules.
+A file that fails refuses `generation-publish`, `request` and `install`
+("lacks its grant-marker lines or changed a start condition") and fails the
+pass's generation producer, like a changed file.
+
 ### 3.3 node_health
 
 `healthy` is computed by the controller, after its preflight narrowing, from
@@ -525,9 +534,11 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    and the unit files **measured now**, its evidence binding equal to the
    evidence's and its `commissioning_digest` equal to the SHA-256 of the
    signed commissioning proposal (`evidence_commissioning_digest`), at or above
-   the generation floor; the v2 approval (`load_observe_baseline_approval`
-   in `activation_store.py`) against that context with the epoch and
-   sequence floors; and node health (`collect_node_health`).
+   the generation floor; what the running manager loaded for the same units
+   (`systemd_loaded_units`, §8.2); the v2 approval
+   (`load_observe_baseline_approval` in `activation_store.py`) against that
+   context with the epoch and sequence floors; and node health
+   (`collect_node_health`).
 3. **All or nothing.** Unless every producer verified, the decision gets
    `lease=None` and `healthy=False`, exactly as before.
    `activation.inputs_incomplete` (kept as the event name) now names only the
@@ -739,3 +750,92 @@ the edge tripwire. `tests/unit/test_runtime_activation_cli.py` runs
 `generation-publish` → `request` (including edge-core) → `operator_sign` →
 `install` → pass on one temporary root, then a boot with no preflight result
 and a boot with another package.
+
+### 8.2 Unit content and the loaded units (#251 H-1, M-3)
+
+The grant marker (§5) withholds a unit only if the unit carries the marker
+condition and waits for the controller. Hashing the file did not establish
+that: a unit file without the condition (an older build, a version skew)
+measured, was signed and, with a start job queued before the pass, started
+together with the grant. Two checks now establish it. Both only narrow: no
+authority, approval field, flag or environment variable is added, and no
+refusal becomes a grant.
+
+**The file text** (`activation_unit_files.require_governed_unit_content`,
+inside `measure_scoped_unit_files`, so `generation-publish`, `request`,
+`install` and every pass make it). For each scoped unit, the vendor file
+must:
+
+- contain, as exact lines in `[Unit]`,
+  `ConditionPathExists=/run/azazel-activation/granted/<unit>`,
+  `Requires=azazel-activated.service` and `After=azazel-activated.service`
+  (spacing, a `!` or `|` prefix, or the line in another section does not
+  count);
+- have exactly the `Condition*=`, `Assert*=` and `ExecCondition=`
+  assignments, in every section, of `hardening.render_unit` for that unit --
+  none added, none removed. For the six scoped units that is the marker
+  condition alone;
+- have no empty assignment in `[Unit]` (an empty `ConditionPathExists=`,
+  `Requires=` or `After=` resets the list);
+- be UTF-8 without NUL or CR, with no continued line (trailing backslash), no
+  assignment before a section and no line that is not blank, a comment, a
+  section header or an assignment. These are refused rather than parsed.
+
+The rest of the file (comments, `ExecStart=`, edge-core's observe-only
+`Environment=` lines) is not compared with the declaration here: the hash in
+the generation and the operator's signature bind it, as before. All six
+packaged units pass (`tests/unit/test_runtime_activation_unit_files.py`).
+
+**The loaded units** (`activation_loaded_units.verify_loaded_units`, the
+`systemd_loaded_units` producer, run after the generation producer). The
+file check says what systemd *would* load; a unit loaded earlier in the boot
+runs its loaded definition until a daemon-reload. So the pass reads, over
+the controller's own D-Bus session (the same `SystemdBusSession` that
+masks; read-only `GetUnit` and `Properties.Get`, accepted by the session only
+on the six grantable units' objects):
+
+- the manager's `Version` and `UnitPath`, through
+  `observe_bootstrap_systemd_profile` -- the bootstrap path's gate, now also
+  on the ordinary path (M-3). Anything but the reviewed Debian 13 systemd
+  257 profile refuses, so the twelve directories the override check walks
+  are the ones this manager searches. Read before and after the units;
+- for each scoped unit: `NoSuchUnit` (no unit object, so no queued job; a
+  later load reads the measured file) and `LoadState=masked` are accepted.
+  `loaded` is accepted only with `Id` the unit, `FragmentPath` exactly
+  `/usr/lib/systemd/system/<unit>`, `DropInPaths` empty, and `Conditions`
+  and `Asserts` (type, trigger, negate, parameter; the state field ignored)
+  equal to the rendered unit's -- that is, the marker condition alone. Any
+  other state, value or unreadable reply refuses.
+
+A failure marks `systemd_loaded_units` failed: the pass is incomplete, the
+decision gets no lease, everything stays masked, no marker is written, and
+the high water is not raised. The ledger names the producer only. Without
+the controller's session (any manager other than the D-Bus one), the check
+refuses.
+
+**Compatibility.** The generation format and its hash are unchanged; a
+published generation whose unit files pass these checks verifies as before.
+A node whose installed scoped unit files lack the lines, or whose manager is
+not the reviewed profile, now has every unit withheld until the files are
+reinstalled (and a new generation is published if the bytes change).
+
+**Not covered.** `ExecCondition=` is checked in the file, not in the loaded
+unit (it is a `Service` property and can only skip a start).
+`NeedDaemonReload` is not required false: the preflight mask itself changes
+the unit file state, and the loaded definition is what is compared. The
+checks cover the scoped units only; the watchdog, the fetch service and the
+model hosts are never granted, and their own marker condition is the
+hardening test's to keep (`tests/unit/test_runtime_hardening.py`). The
+`Conditions` and `FragmentPath` systemd reports for these units, before and
+after the preflight mask, still have to be observed on the VM.
+
+Tests: `tests/unit/test_runtime_activation_unit_files.py` (each required
+line removed, spaced, negated, made triggering or moved; each added or reset
+guard; continuation, CR, NUL and syntax), `tests/unit/test_runtime_activation_cli.py`
+(`generation-publish` refuses a unit without its marker condition),
+`tests/unit/test_runtime_activation_pass.py` (a loaded unit without the
+condition, with an extra condition or assert, a fragment in `/etc`, a
+drop-in, another load state or id, an unreviewed manager profile and an
+unreadable unit each refuse everything; not loaded and masked are accepted)
+and `tests/unit/test_runtime_systemd_bus.py` (the fixed reads, refused
+outside the grantable units).

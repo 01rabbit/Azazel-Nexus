@@ -19,6 +19,7 @@ from typing import Callable, Optional, Sequence
 
 from azazel_nexus.edge_package import EDGE_UNIT as _EDGE_UNIT
 
+from .activation_markers import GRANTABLE_UNITS
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
@@ -77,6 +78,20 @@ _LOAD_STATES = frozenset(
 )
 #: SubState values differ per unit type; this bounds their shape, not the set.
 _SUB_STATE = re.compile(r"[a-z][a-z-]{0,31}")
+#: The loaded definition of a grantable unit, read by the pass before any
+#: grant (#251 H-1): property name and D-Bus signature. Read-only.
+_LOADED_UNIT_PROPERTIES = (
+    ("Id", "s"),
+    ("LoadState", "s"),
+    ("FragmentPath", "s"),
+    ("DropInPaths", "as"),
+    ("Conditions", "a(sbbsi)"),
+    ("Asserts", "a(sbbsi)"),
+)
+_LOADED_UNIT_PROPERTY_NAMES = frozenset(name for name, _ in _LOADED_UNIT_PROPERTIES)
+_CONDITION_TYPES = (str, bool, bool, str, int)
+_PROPERTY_LIMIT = 64
+_TEXT_LIMIT = 4096
 
 
 @dataclass(frozen=True)
@@ -188,6 +203,35 @@ class SystemdUnitCalls:
             raise UnitOperationFailed(f"systemd returned an invalid {method} reply")
         return reply.body
 
+    def loaded_unit(self, unit: str) -> Optional[dict]:
+        """The manager's loaded definition of one grantable unit, or None.
+
+        Read-only: `GetUnit`, which never loads a unit, then the fixed
+        `_LOADED_UNIT_PROPERTIES`. None means systemd holds no unit object,
+        so no start job can be queued for it; a later load reads the files
+        the pass measured. Every value is type-checked and copied.
+        """
+        if unit not in GRANTABLE_UNITS:
+            raise UnitOperationFailed("the systemd client refused a unit outside the grantable set")
+        unit_reply = self._exchange(
+            MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True
+        )
+        if getattr(unit_reply, "no_such_unit", False) is True:
+            return None
+        expected_path = _unit_object_path(unit)
+        if self._one(unit_reply, "o", "GetUnit") != expected_path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        loaded: dict = {}
+        for name, signature in _LOADED_UNIT_PROPERTIES:
+            reply = self._exchange(
+                PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name], path=expected_path
+            )
+            variant = self._one(reply, "v", f"Unit.{name}")
+            loaded[name] = _loaded_value(
+                getattr(variant, "signature", None), getattr(variant, "value", None), signature
+            )
+        return loaded
+
     def bootstrap_profile(self):
         """Observe fixed Manager properties and classify the reviewed profile.
 
@@ -216,6 +260,30 @@ class SystemdUnitCalls:
         if reply.signature != signature or len(reply.body) != 1:
             raise UnitOperationFailed(f"systemd returned an invalid {operation} reply")
         return reply.body[0]
+
+
+def _loaded_value(signature, value, expected: str):
+    """One bounded, type-checked copy of a loaded-unit property value."""
+    if signature != expected:
+        raise UnitOperationFailed("systemd loaded unit property refused")
+    if expected == "s":
+        if type(value) is not str or len(value) > _TEXT_LIMIT:
+            raise UnitOperationFailed("systemd loaded unit property refused")
+        return value
+    if type(value) is not list or len(value) > _PROPERTY_LIMIT:
+        raise UnitOperationFailed("systemd loaded unit property refused")
+    if expected == "as":
+        if any(type(item) is not str or len(item) > _TEXT_LIMIT for item in value):
+            raise UnitOperationFailed("systemd loaded unit property refused")
+        return list(value)
+    copied = []
+    for item in value:
+        if (type(item) not in (list, tuple) or len(item) != len(_CONDITION_TYPES)
+                or any(type(field) is not kind for field, kind in zip(item, _CONDITION_TYPES))
+                or len(item[0]) > _TEXT_LIMIT or len(item[3]) > _TEXT_LIMIT):
+            raise UnitOperationFailed("systemd loaded unit condition refused")
+        copied.append(tuple(item))
+    return copied
 
 
 def _unit_object_path(unit: str) -> str:
@@ -363,6 +431,10 @@ class SystemdBusSession:
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
             pass  # The probe's three reads, on the Edge unit's object only.
+        elif (path in {_unit_object_path(unit) for unit in GRANTABLE_UNITS}
+                and len(body) == 2 and body[0] == UNIT_INTERFACE
+                and type(body[1]) is str and body[1] in _LOADED_UNIT_PROPERTY_NAMES):
+            pass  # The pass's loaded-definition reads, on grantable units only.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -406,6 +478,10 @@ class SystemdBusSession:
     def bootstrap_profile(self):
         """Read manager compatibility facts; performs no control operation."""
         return self.calls.bootstrap_profile()
+
+    def loaded_unit(self, unit: str):
+        """Read one grantable unit's loaded definition; performs no control operation."""
+        return self.calls.loaded_unit(unit)
 
     def close(self) -> None:
         try:

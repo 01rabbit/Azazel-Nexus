@@ -589,3 +589,97 @@ def test_bus_allowlist_still_refuses_other_properties_and_paths(path, body):
     with pytest.raises(UnitOperationFailed):
         session._exchange(PROPERTIES_INTERFACE, "Get", "ss", body, path=path)
     assert bus.messages == []
+
+
+# -- the pass's loaded-unit reads (#251 H-1) ---------------------------------
+
+_INTAKE = "azazel-edge-intaked.service"
+_MARKER_CONDITION = ["ConditionPathExists", False, False,
+                     f"/run/azazel-activation/granted/{_INTAKE}", 0]
+_LOADED = {
+    "Id": ("s", _INTAKE),
+    "LoadState": ("s", "loaded"),
+    "FragmentPath": ("s", f"/usr/lib/systemd/system/{_INTAKE}"),
+    "DropInPaths": ("as", []),
+    "Conditions": ("a(sbbsi)", [_MARKER_CONDITION]),
+    "Asserts": ("a(sbbsi)", []),
+}
+
+
+def _loaded_exchange(calls, values=None, *, not_loaded=False):
+    values = dict(_LOADED, **(values or {}))
+
+    def exchange(interface, member, signature, body, **kwargs):
+        calls.append((interface, member, signature, list(body), kwargs))
+        if member == "GetUnit":
+            if not_loaded:
+                return _Reply("", [], no_such_unit=True)
+            return _Reply("o", [_unit_object_path(body[0])])
+        kind, value = values[body[1]]
+        return _Reply("v", [SimpleNamespace(signature=kind, value=value)])
+    return exchange
+
+
+def test_loaded_unit_reads_only_fixed_properties_of_a_grantable_unit():
+    calls = []
+    loaded = SystemdUnitCalls(_loaded_exchange(calls)).loaded_unit(_INTAKE)
+    assert loaded == {
+        "Id": _INTAKE, "LoadState": "loaded",
+        "FragmentPath": f"/usr/lib/systemd/system/{_INTAKE}", "DropInPaths": [],
+        "Conditions": [tuple(_MARKER_CONDITION)], "Asserts": [],
+    }
+    path = _unit_object_path(_INTAKE)
+    assert calls[0] == (MANAGER_INTERFACE, "GetUnit", "s", [_INTAKE],
+                        {"allow_no_such_unit": True})
+    assert [call[3] for call in calls[1:]] == [
+        [UNIT_INTERFACE, name] for name in
+        ("Id", "LoadState", "FragmentPath", "DropInPaths", "Conditions", "Asserts")]
+    assert all(call[:3] == (PROPERTIES_INTERFACE, "Get", "ss") and call[4] == {"path": path}
+               for call in calls[1:])
+
+
+def test_loaded_unit_reports_a_unit_the_manager_does_not_hold_as_none():
+    calls = []
+    assert SystemdUnitCalls(_loaded_exchange(calls, not_loaded=True)).loaded_unit(_INTAKE) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("unit", ["azazel-watchdog.service", "azazel-auditd.service",
+                                  "sshd.service"])
+def test_loaded_unit_refuses_a_unit_outside_the_grantable_set_before_the_bus(unit):
+    calls = []
+    with pytest.raises(UnitOperationFailed):
+        SystemdUnitCalls(_loaded_exchange(calls)).loaded_unit(unit)
+    assert calls == []
+
+
+@pytest.mark.parametrize("values", [
+    {"Id": ("as", [_INTAKE])},
+    {"FragmentPath": ("s", 7)},
+    {"DropInPaths": ("as", [1])},
+    {"Conditions": ("a(sbbsi)", [["ConditionPathExists", 0, False, "/x", 0]])},
+    {"Conditions": ("a(sbbsi)", [["ConditionPathExists", False, False, "/x"]])},
+    {"Asserts": ("as", [])},
+])
+def test_loaded_unit_refuses_malformed_properties(values):
+    with pytest.raises(UnitOperationFailed):
+        SystemdUnitCalls(_loaded_exchange([], values)).loaded_unit(_INTAKE)
+
+
+def test_bus_session_allows_loaded_unit_reads_only_on_grantable_unit_objects():
+    bus = _BusStub(SimpleNamespace(message_type=1, signature="v", body=[]))
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    for path, name in (
+        (_unit_object_path("azazel-auditd.service"), "FragmentPath"),
+        (_unit_object_path("azazel-watchdog.service"), "Conditions"),
+        (_unit_object_path(_INTAKE), "ExecStart"),
+        (_unit_object_path(_INTAKE), "NeedDaemonReload"),
+    ):
+        with pytest.raises(UnitOperationFailed):
+            session._exchange(PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name],
+                              path=path)
+    assert bus.messages == []

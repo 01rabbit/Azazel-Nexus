@@ -18,10 +18,20 @@ reviewed Debian 13 search path would apply (the path pinned in
   search-path directory including the vendor one. An empty drop-in
   directory is accepted; anything that is not a directory is refused.
 
+The bytes are also checked against what the grant marker relies on
+(#251 H-1): every measured unit must carry, in `[Unit]` and exactly as
+`hardening.render_unit` writes them, `ConditionPathExists=` on its grant
+marker, `Requires=azazel-activated.service` and
+`After=azazel-activated.service`; and its `Condition*=`, `Assert*=` and
+`ExecCondition=` assignments must be exactly the rendered unit's, so none is
+added, removed or reset by an empty assignment. A unit file that fails this
+is refused like a changed one (`UnitContentRefused`).
+
 `generation-publish`, `request` and `install` call this, and phase P4's pass
 calls the same functions on every boot. Read-only: nothing is created,
 removed or followed, and refusals carry fixed labels only. This is a check
-of the files systemd would read, not of what a running manager has loaded.
+of the files systemd would read, not of what a running manager has loaded
+(`activation_loaded_units` checks that, in the pass).
 """
 
 from __future__ import annotations
@@ -32,18 +42,26 @@ import stat
 
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 
+from .activation_markers import grant_marker_path
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
 
 __all__ = [
+    "CONTROLLER_UNIT",
     "UNIT_DIRECTORY",
+    "UnitContentRefused",
     "UnitFilesRefused",
     "UnitOverrideRefused",
     "drop_in_directory_names",
     "measure_scoped_unit_files",
+    "rendered_unit",
+    "require_governed_unit_content",
     "require_no_unit_overrides",
+    "required_unit_lines",
 ]
 
 UNIT_DIRECTORY = "/usr/lib/systemd/system"
+#: The controller every grant-marker unit requires and is ordered after.
+CONTROLLER_UNIT = "azazel-activated.service"
 _SEARCH_PATH = _DEBIAN13_V257_UNIT_PATH
 _MASK_TARGET = "/dev/null"
 _UNIT_LIMIT = 1 << 20
@@ -63,6 +81,100 @@ class UnitFilesRefused(Exception):
 
 class UnitOverrideRefused(UnitFilesRefused):
     """Another file would change what systemd loads for a scoped unit."""
+
+
+class UnitContentRefused(UnitFilesRefused):
+    """A scoped unit file lacks the grant-marker lines or changes a start guard."""
+
+
+def _is_guard(key: str) -> bool:
+    """A directive that gates or guards a start.
+
+    Their set must equal the rendered unit's. An added one could only
+    narrow, but an empty assignment resets the whole list, so any difference
+    is refused rather than interpreted.
+    """
+    return key.startswith(("Condition", "Assert")) or key == "ExecCondition"
+
+
+def _directives(text: str) -> list[tuple[str, str, str, str]]:
+    """`(section, key, value, raw line)` for every assignment.
+
+    Deliberately narrower than systemd's parser: a continued line (trailing
+    backslash), a line that is neither blank, a comment, a section header
+    nor an assignment, and an assignment before any section are refused
+    rather than interpreted. The rendered units contain none of these.
+    """
+    section = None
+    result = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if line.endswith("\\"):
+            raise UnitContentRefused("unit file line continuation refused")
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or section is None or not key.strip():
+            raise UnitContentRefused("unit file syntax refused")
+        result.append((section, key.strip(), value.strip(), raw))
+    return result
+
+
+def _decode(data: bytes) -> str:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise UnitContentRefused("unit file encoding refused") from None
+    if "\0" in text or "\r" in text:
+        raise UnitContentRefused("unit file encoding refused")
+    return text
+
+
+def rendered_unit(unit: str) -> str:
+    """`hardening.render_unit` for one governed unit: the expected file."""
+    from .hardening import PROFILES, render_unit
+
+    for profile in PROFILES:
+        if profile.unit == unit:
+            return render_unit(profile)
+    raise UnitContentRefused("unit has no rendered declaration")
+
+
+def _guards(directives) -> list[tuple[str, str, str]]:
+    return sorted((section, key, value) for section, key, value, _ in directives
+                  if _is_guard(key))
+
+
+def required_unit_lines(unit: str) -> tuple[str, str, str]:
+    """The three `[Unit]` lines the grant marker's safety depends on (§5)."""
+    return (f"ConditionPathExists={grant_marker_path(unit)}",
+            f"Requires={CONTROLLER_UNIT}", f"After={CONTROLLER_UNIT}")
+
+
+def require_governed_unit_content(unit: str, data: bytes) -> None:
+    """Refuse a scoped unit file that would not wait for this boot's grant.
+
+    Required, each as an exact line in `[Unit]`: `ConditionPathExists=` on
+    the unit's grant marker, `Requires=` and `After=` on the controller. The
+    `Condition*=`, `Assert*=` and `ExecCondition=` assignments, in every
+    section, must be exactly those of `hardening.render_unit` for the unit,
+    and no `[Unit]` assignment may be empty (a reset). Fixed labels only.
+    """
+    if (type(unit) is not str or unit not in ACTIVATION_UNIT_ALLOWLIST
+            or type(data) is not bytes):
+        raise UnitContentRefused("unit scope refused")
+    directives = _directives(_decode(data))
+    expected = _directives(rendered_unit(unit))
+    unit_lines = {raw for section, _, _, raw in directives if section == "Unit"}
+    if not set(required_unit_lines(unit)) <= unit_lines:
+        raise UnitContentRefused("unit file lacks the grant-marker lines")
+    if any(section == "Unit" and not value for section, _, value, _ in directives):
+        raise UnitContentRefused("unit file resets a [Unit] setting")
+    if _guards(directives) != _guards(expected):
+        raise UnitContentRefused("unit file start guards differ from the declaration")
 
 
 def _scope(units) -> tuple[str, ...]:
@@ -201,8 +313,10 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
     """The vendor unit file bytes of each scoped unit, bracketed by override checks.
 
     Refuses (`UnitOverrideRefused`) when an override or drop-in exists before
-    or after the read, and (`UnitFilesRefused`) when a file is missing,
-    linked, not root-owned, group/other writable, multiply linked or changing.
+    or after the read, (`UnitContentRefused`) when a file lacks the
+    grant-marker lines or its start guards differ from the declaration, and
+    (`UnitFilesRefused`) when a file is missing, linked, not root-owned,
+    group/other writable, multiply linked or changing.
     """
     scope = _scope(units)
     require_no_unit_overrides(scope)
@@ -212,6 +326,8 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
             measured = {unit: _read(fd, unit) for unit in scope}
         finally:
             os.close(fd)
+        for unit, data in measured.items():
+            require_governed_unit_content(unit, data)
     except UnitFilesRefused:
         raise
     except Exception:  # noqa: BLE001 - redacted: labels only
