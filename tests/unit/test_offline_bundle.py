@@ -37,6 +37,7 @@ def _repo(root: Path) -> Path:
         "tools/purge_mio_profile_copies.py": b"def purge(): return []\n",
         "tools/provision_mission_read.py": b"def provision(): return 0\n",
         "tools/install_llama_runtime.py": b"def install(): return 0\n",
+        "tools/check_decoy_apparmor_wrappers.py": b"def findings(): return []\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "packaging/apparmor/azazel-decoyd": b"profile azazel-decoyd {}\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",

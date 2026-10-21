@@ -170,6 +170,21 @@ if [ "$WITH_SERVICE_MANAGER" = yes ]; then
             exit 1
         fi
     done
+    # A kernel without AppArmor ignores AppArmorProfile=; the three units'
+    # AssertSecurity=apparmor then fails their start, so they never run
+    # unconfined. Say so now rather than at the first start.
+    lsm=
+    if [ -r /sys/kernel/security/lsm ]; then
+        read -r lsm < /sys/kernel/security/lsm || true
+    fi
+    case ",$lsm," in
+        *,apparmor,*) ;;
+        *)
+            echo "WARNING: AppArmor is not enabled in this kernel. The Deception Lite" >&2
+            echo "units (azazel-decoy-nsd, azazel-decoy-netd, azazel-decoyd) cannot" >&2
+            echo "start here, and their tier is never granted. Nothing else changes." >&2
+            ;;
+    esac
 fi
 UNIT_DIR="${DESTDIR:-}$UNIT_DIR"
 PRESET_DIR="${DESTDIR:-}$PRESET_DIR"
@@ -202,6 +217,18 @@ for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked 
         exit 1
     fi
 done
+
+# The decoy wrappers' interpreter and import paths must be what the
+# Deception Lite AppArmor profiles allow (#196 G3): /usr/bin/python3.13 and
+# code under /usr/lib/python3.13 or /opt/azazel-nexus/venv. A wrapper outside
+# them would be refused by its profile at the first start, so the install is
+# refused now. A DESTDIR staging run (no service manager) uses another
+# interpreter, so there it only warns.
+if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    python_fixed -IS "$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py" "$LIBEXEC" || exit 1
+else
+    python_fixed -IS "$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py" --warn-only "$LIBEXEC"
+fi
 
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.

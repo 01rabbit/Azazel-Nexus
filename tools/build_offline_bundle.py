@@ -96,6 +96,10 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             root / "tools" / "install_llama_runtime.py",
             "tools/install_llama_runtime.py",
         ),
+        (
+            root / "tools" / "check_decoy_apparmor_wrappers.py",
+            "tools/check_decoy_apparmor_wrappers.py",
+        ),
     )
     for source, archive_name in fixed:
         _regular_file(source)

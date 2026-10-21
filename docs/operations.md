@@ -713,11 +713,17 @@ by hand. A fresh start of the three units builds and checks it again.
 
 **AppArmor profiles** (#196 G3). Each of the three units names its own
 profile with `AppArmorProfile=` (`azazel-decoy-nsd`, `azazel-decoy-netd`,
-`azazel-decoyd`), without `-`: a start without that profile loaded fails,
-and nothing runs unconfined. The installer needs the Debian package
-`apparmor` (not `apparmor-utils`), compiles the three profiles before it
-writes anything, and places them in `/etc/apparmor.d/`; it does not load
-them. The package's `apparmor.service` loads them at the next boot. Do not
+`azazel-decoyd`), without `-`, and carries `AssertSecurity=apparmor`. With
+AppArmor enabled, a start without that profile loaded fails; with AppArmor
+disabled systemd ignores `AppArmorProfile=` and the assertion fails the
+start instead, so none of them runs unconfined. The installer needs the
+Debian package `apparmor` (not `apparmor-utils`), compiles the three
+profiles before it writes anything, warns when the kernel has AppArmor
+disabled, and places them in `/etc/apparmor.d/`; it does not load them. It
+also refuses to install when the decoy wrappers' interpreter is not
+`/usr/bin/python3.13` or their code lies outside `/usr/lib/python3.13` and
+`/opt/azazel-nexus/venv` (the only places the profiles let them read):
+install the runtime into that venv. The package's `apparmor.service` loads them at the next boot. Do not
 edit them, switch them to complain mode or remove them: the activation pass
 is to withhold the tier unless AppArmor is enabled and all of them are in
 enforce mode. That check exists, but in this build it is not reached: the

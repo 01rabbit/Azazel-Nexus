@@ -43,10 +43,14 @@ from azazel_nexus_runtime.decoy_apparmor import (
     LSM_PROFILES_NOT_ENFORCED,
     LSM_PROFILES_UNREADABLE,
     LSM_REASON_CODES,
+    PROFILE_INTERPRETER,
+    PROFILE_PYTHON_ROOTS,
     REQUIRED_ENFORCED_PROFILES,
+    UNREADABLE,
     apparmor_profile_for,
     exposure_lsm_refusal,
     read_exposure_lsm,
+    wrapper_profile_refusal,
 )
 from azazel_nexus_runtime.hardening import ALL_PROFILES, PROFILES, render_unit
 from azazel_nexus_runtime.install_platform import (
@@ -180,13 +184,48 @@ def test_every_profile_block_is_the_one_the_listing_check_requires():
         assert rules[:2] == ["abi <abi/4.0>,", "include <tunables/global>"]
 
 
+#: The decoy's one exception to `GATE_DENIES` (finding 1 of the review of
+#: #285): its report to the intake is a connect to a path socket under
+#: /var/lib/azazel, which AppArmor mediates as a write to the socket file, so
+#: a deny there would drop every report. Its writes under /var/lib/azazel are
+#: refused by the profile's default instead, and its one allow there is pinned.
+VAR_LIB_DENY = "deny /var/lib/azazel{,/**} wlk,"
+INTAKE_SOCKET = "/var/lib/azazel/run/decoy-intake/decoy-intake.sock"
+
+
+def _gate_denies(block: str) -> tuple[str, ...]:
+    if block == "azazel-decoyd":
+        return tuple(rule for rule in GATE_DENIES if rule != VAR_LIB_DENY)
+    return GATE_DENIES
+
+
 @pytest.mark.parametrize("block", REQUIRED_ENFORCED_PROFILES)
 def test_every_profile_block_states_every_claim_of_the_gate_as_a_deny(block):
     rules = _all_blocks()[block]
-    missing = [rule for rule in GATE_DENIES if rule not in rules]
+    missing = [rule for rule in _gate_denies(block) if rule not in rules]
     assert missing == []
     # Each once, so a later edit cannot leave a weaker copy behind.
-    assert all(rules.count(rule) == 1 for rule in GATE_DENIES)
+    assert all(rules.count(rule) == 1 for rule in _gate_denies(block))
+
+
+def test_the_decoy_denies_nothing_under_var_lib_azazel_and_allows_only_the_intake_socket():
+    from azazel_nexus_runtime.decoy_sender import DECOY_INTAKE_SOCKET
+
+    rules = _all_blocks()["azazel-decoyd"]
+    assert not any(rule.startswith("deny") and "/var/lib/azazel" in rule for rule in rules)
+    assert [rule for rule in _allows(rules) if "/var/lib/azazel" in rule] == [
+        f"{INTAKE_SOCKET} rw,"]
+    # The socket the decoy connects to.
+    assert INTAKE_SOCKET == DECOY_INTAKE_SOCKET
+
+
+def test_the_decoy_is_an_af_unix_stream_client_only():
+    unix = [rule for rule in _allows(_all_blocks()["azazel-decoyd"])
+            if rule.startswith("unix")]
+    assert unix == [("unix (create, connect, send, receive, getattr, getopt, setopt, "
+                     "shutdown) type=stream,")]
+    for word in ("bind", "listen", "accept"):
+        assert word not in unix[0]
 
 
 @pytest.mark.parametrize("block", REQUIRED_ENFORCED_PROFILES)
@@ -194,12 +233,16 @@ def test_no_profile_block_allows_what_the_gate_denies(block):
     allows = _allows(_all_blocks()[block])
     for rule in allows:
         assert not rule.startswith(("change_profile", "ptrace", "dbus", "pivot_root",
-                                    "userns", "io_uring", "unix")), rule
+                                    "userns", "io_uring")), rule
+        if block != "azazel-decoyd":
+            assert not rule.startswith("unix"), rule
         assert "mac_admin" not in rule and "mac_override" not in rule, rule
         for denied in ("/run/azazel-activation", "/etc/systemd", "/usr/lib/systemd",
-                       "/lib/systemd", "/run/systemd", "/etc/azazel", "/var/lib/azazel",
-                       "/run/dbus", "/sys/kernel/security"):
+                       "/lib/systemd", "/run/systemd", "/etc/azazel", "/run/dbus",
+                       "/sys/kernel/security"):
             assert denied not in rule, rule
+        if "/var/lib/azazel" in rule:
+            assert (block, rule) == ("azazel-decoyd", f"{INTAKE_SOCKET} rw,")
     # No profile runs in complain mode or unconfined by flag.
     text = "\n".join(_all_blocks()[block])
     assert "flags=" not in text and "complain" not in text
@@ -211,8 +254,16 @@ def test_no_profile_file_sets_a_mode_flag():
             assert "flags=" not in rule, rule
 
 
+def _unit_of(block: str):
+    parent = block.split("//")[0]
+    unit = next(unit for unit, name in DECOY_APPARMOR_PROFILES if name == parent)
+    return next(p for p in PROFILES if p.unit == unit)
+
+
 @pytest.mark.parametrize(("block", "expected"), [
-    ("azazel-decoy-nsd", {"capability sys_admin,", "capability net_admin,"}),
+    # The namespace unit's Python body only spawns ip (decoy_nsd ->
+    # decoy_network.run_fixed): it holds neither capability; its ip does.
+    ("azazel-decoy-nsd", set()),
     ("azazel-decoy-nsd//ip", {"capability sys_admin,", "capability net_admin,"}),
     ("azazel-decoy-netd", {"capability net_admin,"}),
     ("azazel-decoyd", set()),
@@ -220,11 +271,22 @@ def test_no_profile_file_sets_a_mode_flag():
 def test_each_profile_allows_exactly_its_units_capabilities(block, expected):
     allows = _allows(_all_blocks()[block])
     assert {rule for rule in allows if rule.startswith("capability")} == expected
-    parent = block.split("//")[0]
-    unit = next(unit for unit, name in DECOY_APPARMOR_PROFILES if name == parent)
-    profile = next(p for p in PROFILES if p.unit == unit)
-    assert expected == {f"capability {cap.removeprefix('CAP_').lower()},"
-                        for cap in profile.capability_bounding_set}
+    if block != "azazel-decoy-nsd":
+        assert expected == {f"capability {cap.removeprefix('CAP_').lower()},"
+                            for cap in _unit_of(block).capability_bounding_set}
+
+
+def test_the_namespace_units_body_never_calls_setns_unshare_or_mount():
+    """Why its parent profile holds no capability (finding 6 of #285)."""
+
+    from azazel_nexus_runtime import decoy_network, decoy_nsd
+
+    for module in (decoy_nsd, decoy_network):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        called = {node.func.attr if isinstance(node.func, ast.Attribute) else
+                  getattr(node.func, "id", "") for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)}
+        assert not called & {"setns", "unshare", "mount", "umount", "socket"}, module
 
 
 def test_the_decoy_profile_denies_every_capability():
@@ -232,18 +294,20 @@ def test_the_decoy_profile_denies_every_capability():
 
 
 @pytest.mark.parametrize(("block", "expected"), [
-    ("azazel-decoy-nsd", {"network netlink raw,"}),
+    ("azazel-decoy-nsd", set()),
     ("azazel-decoy-nsd//ip", {"network netlink raw,"}),
     ("azazel-decoy-netd", {"network netlink raw,"}),
-    ("azazel-decoyd", {"network inet stream,", "network unix stream,"}),
+    ("azazel-decoyd", {"network inet stream,"}),
 ])
 def test_each_profile_allows_only_its_units_address_families(block, expected):
-    allows = _allows(_all_blocks()[block])
-    assert {rule for rule in allows if rule.startswith("network")} == expected
-    parent = block.split("//")[0]
-    unit = next(unit for unit, name in DECOY_APPARMOR_PROFILES if name == parent)
-    families = next(p for p in PROFILES if p.unit == unit).address_families
-    assert {f"AF_{rule.split()[1].upper()}" for rule in expected} == set(families)
+    rules = _allows(_all_blocks()[block])
+    found = {rule for rule in rules if rule.startswith("network")}
+    assert found == expected
+    families = {f"AF_{rule.split()[1].upper()}" for rule in found}
+    if any(rule.startswith("unix") for rule in rules):
+        families.add("AF_UNIX")
+    if block != "azazel-decoy-nsd":
+        assert families == set(_unit_of(block).address_families)
 
 
 def _file_rules(rules: list[str]) -> list[tuple[str, str]]:
@@ -267,24 +331,43 @@ def _writes(rules: list[str]) -> set[str]:
             if set(permissions) & set("wal")}
 
 
+PYTHON = f"{PROFILE_INTERPRETER} mrix,"
+
+
 @pytest.mark.parametrize(("block", "expected"), [
     # The Python body runs only ip, and only into the child profile.
-    ("azazel-decoy-nsd", {"/usr/bin/python3* mrix,", "/usr/bin/ip Cx -> ip,"}),
+    ("azazel-decoy-nsd", {PYTHON, "/usr/bin/ip Cx -> ip,"}),
     # The child runs nothing.
     ("azazel-decoy-nsd//ip", set()),
-    ("azazel-decoy-netd", {"/usr/bin/python3* mrix,", "/usr/bin/ip mrix,",
-                           "/usr/sbin/nft mrix,"}),
-    ("azazel-decoyd", {"/usr/bin/python3* mrix,"}),
+    ("azazel-decoy-netd", {PYTHON, "/usr/bin/ip mrix,", "/usr/sbin/nft mrix,"}),
+    ("azazel-decoyd", {PYTHON}),
 ])
 def test_each_profile_runs_only_its_fixed_programs(block, expected):
     assert _executes(_all_blocks()[block]) == expected
 
 
+def test_the_profiles_python_is_the_one_the_installer_checks():
+    """Findings 4 and 7 of #285: one interpreter, two code roots, in both places."""
+
+    from azazel_nexus_runtime.python_profile import BASE_INTERPRETER
+
+    assert PROFILE_INTERPRETER == "/" + BASE_INTERPRETER == "/usr/bin/python3.13"
+    assert PROFILE_PYTHON_ROOTS == ("/usr/lib/python3.13", "/opt/azazel-nexus/venv")
+    for block in ("azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoyd"):
+        reads = {rule for rule, _ in _file_rules(_all_blocks()[block])}
+        assert {f"{root}/** mr," for root in PROFILE_PYTHON_ROOTS} <= reads
+        assert not any("python3*" in rule or "python3{" in rule
+                       or "/usr/local" in rule for rule in reads), block
+
+
 #: The only mounts any profile allows: those `ip netns add`, `ip netns
 #: delete` and `ip -n` make (prerequisites §13), in the namespace unit's `ip`
-#: child. The exact rules are VM work (G4); this pins what is claimed.
+#: child. The exact rules are VM work (G4); this pins what is claimed. The
+#: first bind of /run/netns onto itself is allowed as rbind (iproute2's
+#: MS_BIND|MS_REC) and as bind until the VM shows which.
 IP_MOUNTS = {
     "mount options=(rw, rshared) -> /run/netns/,",
+    "mount options=(rw, rbind) /run/netns/ -> /run/netns/,",
     "mount options=(rw, bind) /run/netns/ -> /run/netns/,",
     "mount options=(rw, bind) @{PROC}/@{pid}/{,task/@{tid}/}ns/net -> /run/netns/azazel-decoy,",
     "umount /run/netns/azazel-decoy,",
@@ -303,14 +386,21 @@ def test_only_the_namespace_units_ip_mounts_and_only_what_ip_needs(block):
     assert not any("/etc/netns" in rule for rule in mounts)
 
 
+def test_the_namespace_units_ip_maps_its_libraries():
+    assert "/usr/lib/@{multiarch}/** mr," in _all_blocks()["azazel-decoy-nsd//ip"]
+
+
 def test_the_helper_writes_only_its_runtime_directory():
     assert _writes(_all_blocks()["azazel-decoy-netd"]) == {
         "/run/azazel-decoy-isolation/* rw,"}
 
 
-@pytest.mark.parametrize("block", ["azazel-decoy-nsd", "azazel-decoyd"])
-def test_the_namespace_unit_and_the_decoy_bodies_write_nothing(block):
-    assert _writes(_all_blocks()[block]) == set()
+def test_the_namespace_units_body_writes_nothing():
+    assert _writes(_all_blocks()["azazel-decoy-nsd"]) == set()
+
+
+def test_the_decoy_writes_only_to_connect_to_the_intake_socket():
+    assert _writes(_all_blocks()["azazel-decoyd"]) == {f"{INTAKE_SOCKET} rw,"}
 
 
 def test_the_namespace_units_ip_writes_only_the_namespace_handle():
@@ -353,6 +443,98 @@ def test_each_exposure_unit_names_its_own_profile_without_a_dash(unit):
         assert settings["AppArmorProfile"] == [NAMES[unit]]
         assert not settings["AppArmorProfile"][0].startswith("-")
         assert (PROFILE_DIR / settings["AppArmorProfile"][0]).is_file()
+        # Finding 2 of #285: with AppArmor disabled systemd ignores
+        # AppArmorProfile=; the assertion fails the start instead.
+        assert settings["AssertSecurity"] == ["apparmor"]
+        unit_section = text.split("[Service]")[0]
+        assert "\nAssertSecurity=apparmor\n" in unit_section
+
+
+def test_no_other_unit_asserts_apparmor():
+    for profile in ALL_PROFILES:
+        if profile.unit not in DECEPTION_EXPOSURE_UNITS:
+            assert "AssertSecurity" not in render_unit(profile)
+
+
+def _content(unit: str, text: str) -> None:
+    from azazel_nexus_runtime.activation_unit_files import require_governed_unit_content
+
+    require_governed_unit_content(unit, text.encode("ascii"))
+
+
+@pytest.mark.parametrize("unit", DECEPTION_EXPOSURE_UNITS)
+def test_the_unit_content_check_accepts_the_rendered_exposure_unit(unit):
+    _content(unit, (UNIT_DIR / unit).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("change", [
+    "remove-profile", "dash-profile", "other-profile", "double-profile",
+    "profile-in-unit-section", "remove-assert", "double-assert", "reset-profile",
+])
+@pytest.mark.parametrize("unit", DECEPTION_EXPOSURE_UNITS)
+def test_the_unit_content_check_refuses_a_changed_lsm_line(unit, change):
+    """Finding 3 of #285: the profile line and the assertion, exactly, once."""
+
+    from azazel_nexus_runtime.activation_unit_files import UnitContentRefused
+
+    text = (UNIT_DIR / unit).read_text(encoding="utf-8")
+    line = f"AppArmorProfile={NAMES[unit]}\n"
+    changed = {
+        "remove-profile": text.replace(line, ""),
+        "dash-profile": text.replace(line, f"AppArmorProfile=-{NAMES[unit]}\n"),
+        "other-profile": text.replace(line, "AppArmorProfile=unconfined\n"),
+        "double-profile": text.replace(line, line + line),
+        "profile-in-unit-section": text.replace(line, "").replace(
+            "\n[Service]", f"\n{line}[Service]"),
+        "remove-assert": text.replace("AssertSecurity=apparmor\n", ""),
+        "double-assert": text.replace("AssertSecurity=apparmor\n",
+                                      "AssertSecurity=apparmor\nAssertSecurity=apparmor\n"),
+        "reset-profile": text.replace(line, line + "AppArmorProfile=\n"),
+    }[change]
+    assert changed != text
+    with pytest.raises(UnitContentRefused):
+        _content(unit, changed)
+
+
+def _loaded(unit: str, asserts: list) -> dict:
+    return {
+        "Id": unit, "LoadState": "loaded",
+        "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
+        "Conditions": [("ConditionPathExists", False, False,
+                        f"/run/azazel-activation/granted/{unit}", 0)],
+        "Asserts": asserts,
+        "Requires": ["azazel-activated.service"], "After": ["azazel-activated.service"],
+    }
+
+
+@pytest.mark.parametrize("unit", DECEPTION_EXPOSURE_UNITS)
+def test_the_loaded_unit_check_requires_the_apparmor_assertion(unit):
+    """Finding 3 of #285: a manager that loaded the unit without it is refused.
+
+    The loaded `AppArmorProfile=` (a property of the Service interface, which
+    the pass does not read yet) is G6's (grant design §7).
+    """
+
+    from azazel_nexus_runtime.activation_loaded_units import (
+        LoadedUnitRefused,
+        _check_loaded,
+    )
+
+    _check_loaded(unit, _loaded(unit, [("AssertSecurity", False, False, "apparmor", 0)]))
+    for asserts in ([], [("AssertSecurity", False, True, "apparmor", 0)],
+                    [("AssertSecurity", False, False, "selinux", 0)]):
+        with pytest.raises(LoadedUnitRefused):
+            _check_loaded(unit, _loaded(unit, asserts))
+
+
+@pytest.mark.parametrize("unit", ["azazel-edge-core.service", "azazel-mio-entryd.service"])
+def test_the_unit_content_check_refuses_a_profile_on_another_unit(unit):
+    from azazel_nexus_runtime.activation_unit_files import UnitContentRefused
+
+    text = (UNIT_DIR / unit).read_text(encoding="utf-8")
+    _content(unit, text)
+    with pytest.raises(UnitContentRefused):
+        _content(unit, text.replace("[Service]\n", "[Service]\nAppArmorProfile=azazel-decoyd\n"))
 
 
 def test_no_other_unit_names_a_profile():
@@ -444,6 +626,126 @@ def test_the_install_plan_places_the_profiles_and_requires_the_package_with_syst
         assert ("apparmor_parser" in plan.required_tools) is with_service_manager
 
 
+def test_the_installer_warns_when_apparmor_is_disabled():
+    """Finding 2 of #285: a warning, not a refusal; the units' assertion is the wall."""
+
+    block = INSTALLER[INSTALLER.index("lsm=\n"):INSTALLER.index("Non-login accounts")]
+    assert "read -r lsm < /sys/kernel/security/lsm" in block
+    assert "*,apparmor,*) ;;" in block
+    assert "WARNING: AppArmor is not enabled in this kernel." in block
+    assert "exit" not in block.split("WARNING: AppArmor")[1].split("esac")[0]
+
+
+def test_the_installer_checks_the_decoy_wrappers_against_the_profiles():
+    """Finding 4 of #285: refused with the service manager, a warning without."""
+
+    tool = '"$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py"'
+    assert (f'python_fixed -IS {tool} "$LIBEXEC" || exit 1') in INSTALLER
+    assert (f'python_fixed -IS {tool} --warn-only "$LIBEXEC"') in INSTALLER
+    check = INSTALLER.index(f"python_fixed -IS {tool} \"$LIBEXEC\"")
+    assert INSTALLER.rindex('if [ "$WITH_SERVICE_MANAGER" = yes ]; then', 0, check) > \
+        INSTALLER.index("for binary in az-activated")
+    # After the wrappers are staged, before any account or directory.
+    assert INSTALLER.index("stage_runtime_entrypoints") < check < INSTALLER.index("useradd")
+
+
+# -- the staged wrappers --------------------------------------------------------
+
+STDLIB = "/usr/lib/python3.13"
+SITE = "/opt/azazel-nexus/venv/lib/python3.13/site-packages"
+
+
+@pytest.mark.parametrize("paths", [
+    (STDLIB, f"{STDLIB}/lib-dynload", SITE),
+    (SITE,),
+    ("/opt/azazel-nexus/venv",),
+])
+def test_a_wrapper_inside_the_profiles_is_accepted(paths):
+    assert wrapper_profile_refusal(PROFILE_INTERPRETER, paths) is None
+
+
+@pytest.mark.parametrize(("interpreter", "paths"), [
+    ("/usr/bin/python3", (STDLIB, SITE)),
+    ("/usr/local/bin/python3.13", (STDLIB, SITE)),
+    ("/opt/azazel-nexus/venv/bin/python3.13", (STDLIB, SITE)),
+    (PROFILE_INTERPRETER, (STDLIB, "/usr/local/lib/python3.13/dist-packages")),
+    (PROFILE_INTERPRETER, (STDLIB, "/usr/lib/python3/dist-packages")),
+    (PROFILE_INTERPRETER, (STDLIB, "/opt/venv/lib/python3.13/site-packages")),
+    (PROFILE_INTERPRETER, (STDLIB, "/opt/azazel-nexus/venv-other/lib")),
+    (PROFILE_INTERPRETER, (STDLIB, "/usr/lib/python3.130")),
+    (PROFILE_INTERPRETER, ()),
+])
+def test_a_wrapper_outside_the_profiles_is_refused(interpreter, paths):
+    assert wrapper_profile_refusal(interpreter, paths) is not None
+
+
+def _tool():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_decoy_apparmor_wrappers", ROOT / "tools" / "check_decoy_apparmor_wrappers.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _stage(libexec: Path, interpreter: str, paths: tuple[str, ...]) -> None:
+    from azazel_nexus_runtime.startup_wrapper import render_wrapper
+
+    tool = _tool()
+    libexec.mkdir(exist_ok=True)
+    for name, target in tool._targets().items():
+        (libexec / name).write_bytes(render_wrapper(interpreter, target, import_paths=paths))
+
+
+def test_the_wrapper_check_accepts_wrappers_inside_the_profiles(tmp_path, monkeypatch):
+    tool = _tool()
+    # Resolution is the kernel's; here the paths do not exist, so they are
+    # their own resolution (the real resolution is tested below).
+    monkeypatch.setattr(tool.os.path, "realpath", lambda path, **_: path)
+    _stage(tmp_path / "libexec", PROFILE_INTERPRETER, (STDLIB, SITE))
+    assert tool.findings(tmp_path / "libexec") == []
+    assert tool.main([str(tmp_path / "libexec")]) == 0
+
+
+def test_the_wrapper_check_resolves_links_before_judging(tmp_path):
+    tool = _tool()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / "venv-link"
+    os.symlink(elsewhere, link)
+    _stage(tmp_path / "libexec", PROFILE_INTERPRETER, (str(link),))
+    found = tool.findings(tmp_path / "libexec")
+    assert len(found) == 3
+    assert all("import paths resolve outside" in line for line in found)
+
+
+def test_the_wrapper_check_refuses_and_warn_only_reports(tmp_path, capsys):
+    tool = _tool()
+    _stage(tmp_path / "libexec", "/nonexistent/bin/python3.13", (STDLIB,))
+    assert tool.main([str(tmp_path / "libexec")]) == 1
+    assert capsys.readouterr().err.count("refusing to install: az-decoy") == 3
+    assert tool.main(["--warn-only", str(tmp_path / "libexec")]) == 0
+    assert capsys.readouterr().err.count("WARNING: az-decoy") == 3
+
+
+def test_the_wrapper_check_refuses_a_missing_or_foreign_wrapper(tmp_path):
+    tool = _tool()
+    libexec = tmp_path / "libexec"
+    libexec.mkdir()
+    (libexec / "az-decoyd").write_bytes(b"#!/bin/sh\nexec python3 -m x\n")
+    found = tool.findings(libexec)
+    assert len(found) == 3
+    assert all("not a readable canonical wrapper" in line for line in found)
+
+
+def test_the_wrapper_check_names_exactly_the_three_decoy_wrappers():
+    tool = _tool()
+    assert tool.WRAPPERS == ("az-decoy-nsd", "az-decoy-netd", "az-decoyd")
+    assert {f"/usr/libexec/azazel/{name}" for name in tool.WRAPPERS} == {
+        p.executable for p in PROFILES if p.unit in DECEPTION_EXPOSURE_UNITS}
+
+
 # -- the enforce-mode check -----------------------------------------------------
 
 LSM = b"lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm"
@@ -514,26 +816,56 @@ def test_a_profile_in_another_policy_namespace_does_not_count():
     (b"capability,selinux", ENFORCED),
     (b"apparmor-not,capability", ENFORCED),
     (b"\xff\xfe", ENFORCED),
-    (b"apparmor," * 1000, ENFORCED),
 ])
 def test_apparmor_disabled_withholds(lsm, profiles):
     reason = exposure_lsm_refusal(lsm, profiles)
     assert reason is not None and reason.startswith(LSM_APPARMOR_DISABLED + ":")
 
 
-@pytest.mark.parametrize("profiles", [
-    b"azazel-decoyd enforce\n",
-    b"azazel-decoyd (enforce\n",
-    b"(enforce)\n",
-    b" azazel-decoyd (enforce)\n",
-    b"azazel-decoyd ()\n",
-    b"azazel-decoyd (en force)\n",
-    b"azazel-decoyd (enforce)\r\n",
-    ENFORCED + b"\xff (enforce)\n",
-    b"x (enforce)\n" * 100_000,
+@pytest.mark.parametrize("line", [
+    b"azazel-decoyd enforce",
+    b"azazel-decoyd",
+    b"azazel-decoyd (enforce",
+    b" azazel-decoyd (enforce)",
+    b"azazel-decoyd ()",
+    b"azazel-decoyd (en force)",
+    b"azazel-decoyd (Enforce)",
+    b"azazel-decoyd (enforce)\r",
+    b"azazel-decoy-nsd//ip (enforce) ",
 ])
-def test_a_listing_not_in_the_kernels_form_withholds(profiles):
-    reason = exposure_lsm_refusal(LSM, profiles)
+def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
+    """Finding 8 of #285: the required names' lines are read strictly."""
+
+    reason = exposure_lsm_refusal(LSM, ENFORCED + line + b"\n")
+    assert reason is not None and reason.startswith(LSM_PROFILES_UNREADABLE + ":")
+
+
+@pytest.mark.parametrize("line", [
+    b"(enforce)",
+    b"\xff (enforce)",
+    b"some profile with spaces (complain)",
+    b"other-tool enforce",
+    b"azazel-decoyd-lookalike (complain)",
+    b":ns:azazel-decoyd (complain)",
+    b"garbage without a mode",
+])
+def test_other_lines_in_any_form_do_not_matter(line):
+    """Finding 8 of #285: only the required names' lines are judged."""
+
+    assert exposure_lsm_refusal(LSM, ENFORCED + line + b"\n") is None
+
+
+@pytest.mark.parametrize(("lsm", "profiles"), [
+    (UNREADABLE, ENFORCED),
+    (LSM, UNREADABLE),
+    (UNREADABLE, UNREADABLE),
+    (b"apparmor," * 1000, ENFORCED),
+    (LSM, b"x (enforce)\n" * 100_000),
+])
+def test_a_file_present_and_unreadable_or_oversized_withholds_as_unreadable(lsm, profiles):
+    """Finding 8 of #285: EACCES or EIO is not "AppArmor disabled"."""
+
+    reason = exposure_lsm_refusal(lsm, profiles)
     assert reason is not None and reason.startswith(LSM_PROFILES_UNREADABLE + ":")
 
 
@@ -558,15 +890,47 @@ def test_the_reader_reads_both_files_bounded(tmp_path, monkeypatch):
     assert exposure_lsm_refusal(*read_exposure_lsm()).startswith(LSM_PROFILES_UNREADABLE)
 
 
-def test_the_reader_gives_none_for_an_absent_or_linked_file(tmp_path, monkeypatch):
+def test_the_reader_tells_an_absent_file_from_an_unreadable_one(tmp_path, monkeypatch):
     real = tmp_path / "real"
     real.write_bytes(ENFORCED)
     link = tmp_path / "link"
     os.symlink(real, link)
+    lsm = tmp_path / "lsm"
+    lsm.write_bytes(LSM)
+    # Absent: AppArmor is not there.
     monkeypatch.setattr(decoy_apparmor, "_LSM", str(tmp_path / "absent"))
-    monkeypatch.setattr(decoy_apparmor, "_PROFILES", str(link))
+    monkeypatch.setattr(decoy_apparmor, "_PROFILES", str(tmp_path / "absent-too"))
     assert read_exposure_lsm() == (None, None)
     assert exposure_lsm_refusal(*read_exposure_lsm()).startswith(LSM_APPARMOR_DISABLED)
+    # A link is never followed: present and unreadable.
+    monkeypatch.setattr(decoy_apparmor, "_LSM", str(lsm))
+    monkeypatch.setattr(decoy_apparmor, "_PROFILES", str(link))
+    assert read_exposure_lsm() == (LSM, UNREADABLE)
+    assert exposure_lsm_refusal(*read_exposure_lsm()).startswith(LSM_PROFILES_UNREADABLE)
+
+
+@pytest.mark.parametrize("errno_value", [13, 5, 40])
+def test_a_read_error_is_unreadable_not_absent(tmp_path, monkeypatch, errno_value):
+    """EACCES, EIO and ELOOP give UNREADABLE; only ENOENT/ENOTDIR give None."""
+
+    def failing_open(*_args, **_kwargs):
+        raise OSError(errno_value, "refused")
+
+    monkeypatch.setattr(decoy_apparmor.os, "open", failing_open)
+    assert read_exposure_lsm() == (UNREADABLE, UNREADABLE)
+    assert exposure_lsm_refusal(*read_exposure_lsm()).startswith(LSM_PROFILES_UNREADABLE)
+
+
+def test_a_failing_read_after_open_is_unreadable(tmp_path, monkeypatch):
+    path = tmp_path / "profiles"
+    path.write_bytes(ENFORCED)
+    monkeypatch.setattr(decoy_apparmor, "_PROFILES", str(path))
+
+    def failing_read(*_args):
+        raise OSError(5, "EIO")
+
+    monkeypatch.setattr(decoy_apparmor.os, "read", failing_read)
+    assert read_exposure_lsm()[1] is UNREADABLE
 
 
 def test_the_production_paths_are_securityfs():

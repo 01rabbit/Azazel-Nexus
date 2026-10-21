@@ -246,8 +246,10 @@ class ServiceProfile:
     #: docs/deception-exposure-grant.md §7). Exactly
     #: `decoy_apparmor.apparmor_profile_for(unit)`: the profile of each of
     #: the three Deception Lite exposure units, and empty for every other
-    #: unit. Rendered without `-`, so a start without the profile loaded
-    #: fails rather than running unconfined.
+    #: unit. Rendered without `-` and with `AssertSecurity=apparmor` in
+    #: `[Unit]`: with AppArmor enabled a start without the profile loaded
+    #: fails; with AppArmor disabled systemd ignores `AppArmorProfile=`, and
+    #: the assertion fails the start instead. Never unconfined.
     apparmor_profile: str = ""
 
     def __post_init__(self) -> None:
@@ -1377,7 +1379,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "body that takes no input, static review and its AppArmor profile "
             "azazel-decoy-nsd, which denies writes to the activation state, "
             "the unit files and the ledgers and any reach to the service "
-            "manager; a start without that profile loaded fails. "
+            "manager; it starts only with AppArmor enabled and that profile "
+            "loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor). "
             "The activation pass never grants this unit in this build"
         ),
     ),
@@ -1430,8 +1433,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "decision. It is root, so netlink is its only address family (any "
             "netlink protocol, not only route and nftables) and it has no AF_UNIX "
             "socket that could reach the service manager, whose private "
-            "sockets are also inaccessible to it. Its AppArmor profile "
-            "azazel-decoy-netd must be loaded for it to start. The activation "
+            "sockets are also inaccessible to it. It starts only with AppArmor "
+            "enabled and its profile azazel-decoy-netd loaded (AppArmorProfile= "
+            "without a dash, AssertSecurity=apparmor). The activation "
             "pass never grants this unit in this build"
         ),
     ),
@@ -1483,8 +1487,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "helper's isolation record from this boot with every check "
             "passed. It binds IPv4 only and writes no file, so it gets no "
             "AF_INET6 and no writable path, and the service manager's "
-            "private sockets are inaccessible to it. Its AppArmor profile "
-            "azazel-decoyd must be loaded for it to start. The activation pass "
+            "private sockets are inaccessible to it. It starts only with AppArmor "
+            "enabled and its profile azazel-decoyd loaded (AppArmorProfile= "
+            "without a dash, AssertSecurity=apparmor). The activation pass "
             "never grants this unit in this build"
         ),
     ),
@@ -1572,6 +1577,10 @@ def render_unit(profile: ServiceProfile) -> str:
         lines.append(f"After={unit}")
     for key, value in profile.conditions:
         lines.append(f"{key}={value}")
+    if profile.apparmor_profile:
+        # Without it a kernel with AppArmor disabled would run the unit
+        # unconfined: systemd ignores AppArmorProfile= there (#196 G3).
+        lines.append("AssertSecurity=apparmor")
     for unit in profile.before:
         lines.append(f"Before={unit}")
     for unit in profile.conflicts:

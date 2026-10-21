@@ -1,8 +1,10 @@
 # vim:syntax=apparmor
 # AppArmor profile for azazel-decoy-netd.service (#196 G3,
 # docs/deception-exposure-grant.md §7). Attached by the unit's
-# `AppArmorProfile=azazel-decoy-netd` (no `-`): a start without this profile
-# loaded fails. Installed to /etc/apparmor.d/ by packaging/install.sh and
+# `AppArmorProfile=azazel-decoy-netd` (no `-`) and `AssertSecurity=apparmor`: with
+# AppArmor enabled a start without this profile loaded fails, and with
+# AppArmor disabled the assertion fails it, so the unit never runs
+# unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
 # loaded at boot by apparmor.service. The activation pass never grants this
 # unit in this build.
 #
@@ -46,11 +48,13 @@ profile azazel-decoy-netd {
   network netlink raw,
 
   # Its own body: the fixed wrapper, the interpreter and the installed
-  # package. INFERRED: the venv at /opt/azazel-nexus/venv (operations.md) and
-  # Debian 13's python3 under /usr.
+  # package. The venv at /opt/azazel-nexus/venv (operations.md) and Debian
+  # 13's python3.13; INFERRED: that nothing else is read at startup.
   /usr/libexec/azazel/az-decoy-netd r,
-  /usr/bin/python3* mrix,
-  /usr/lib/python3{,.[0-9]*}/** mr,
+  # decoy_apparmor.PROFILE_INTERPRETER and PROFILE_PYTHON_ROOTS; the
+  # installer refuses wrappers that resolve elsewhere.
+  /usr/bin/python3.13 mrix,
+  /usr/lib/python3.13/** mr,
   /usr/lib/@{multiarch}/** mr,
   /opt/azazel-nexus/venv/** mr,
   @{PROC}/@{pid}/fd/ r,

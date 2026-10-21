@@ -1,8 +1,10 @@
 # vim:syntax=apparmor
 # AppArmor profile for azazel-decoyd.service (#196 G3,
 # docs/deception-exposure-grant.md §7). Attached by the unit's
-# `AppArmorProfile=azazel-decoyd` (no `-`): a start without this profile
-# loaded fails. Installed to /etc/apparmor.d/ by packaging/install.sh and
+# `AppArmorProfile=azazel-decoyd` (no `-`) and `AssertSecurity=apparmor`: with
+# AppArmor enabled a start without this profile loaded fails, and with
+# AppArmor disabled the assertion fails it, so the unit never runs
+# unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
 # loaded at boot by apparmor.service. The activation pass never grants this
 # unit in this build.
 #
@@ -11,13 +13,15 @@
 # its own namespace, and connects once per interaction to the intake's decoy
 # socket. It writes no file.
 #
-# The intake's socket is /var/lib/azazel/run/decoy-intake/decoy-intake.sock,
-# under a path whose writes are denied below. INFERRED: on Debian 13's
-# kernel a connect to a path socket is mediated by `network unix stream`
-# only, not by file rules, so the deny does not touch the report; on a
-# kernel with fine-grained af_unix mediation it would refuse the report
-# (fail closed: the decoy's interactions are not reported, nothing widens).
-# VM item (G4).
+# The intake's socket is /var/lib/azazel/run/decoy-intake/decoy-intake.sock.
+# A connect to a path socket is mediated by write permission on the socket
+# file (the same rule that keeps the D-Bus and systemd sockets out of reach
+# below), so this profile has no `deny` over /var/lib/azazel: a deny would
+# outrank the allow and drop every report silently. Writes elsewhere under
+# /var/lib/azazel are refused because nothing allows them (the profile's
+# default), and the decoy's only allow there is the one socket, pinned by
+# tests/unit/test_decoy_apparmor.py. VM item (G4): the connect succeeds and
+# a write elsewhere under /var/lib/azazel is refused.
 #
 # INFERRED marks a rule that was not confirmed on a kernel; the exact rules
 # are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
@@ -37,7 +41,7 @@ profile azazel-decoyd {
   deny /lib/systemd{,/**} wlk,
   deny /run/systemd/{system,system.control,transient}{,/**} wlk,
   deny /etc/azazel{,/**} wlk,
-  deny /var/lib/azazel{,/**} wlk,
+  # Not `deny /var/lib/azazel{,/**} wlk`: see the head of this file.
   deny /run/dbus/system_bus_socket rw,
   deny /run/systemd/private rw,
   deny dbus,
@@ -53,14 +57,21 @@ profile azazel-decoyd {
 
   # Its listener (IPv4 TCP) and its one AF_UNIX connect to the intake.
   network inet stream,
-  network unix stream,
+  # AF_UNIX stream as a client only: no bind, listen or accept. AppArmor
+  # 4.1's unix rules name only abstract addresses (`addr=` with a path does
+  # not compile), so the path is narrowed by the file rule below.
+  unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=stream,
+  # The intake's decoy socket, and nothing else under /var/lib/azazel.
+  /var/lib/azazel/run/decoy-intake/decoy-intake.sock rw,
 
   # Its own body: the fixed wrapper, the interpreter and the installed
-  # package. INFERRED: the venv at /opt/azazel-nexus/venv (operations.md) and
-  # Debian 13's python3 under /usr.
+  # package. The venv at /opt/azazel-nexus/venv (operations.md) and Debian
+  # 13's python3.13; INFERRED: that nothing else is read at startup.
   /usr/libexec/azazel/az-decoyd r,
-  /usr/bin/python3* mrix,
-  /usr/lib/python3{,.[0-9]*}/** mr,
+  # decoy_apparmor.PROFILE_INTERPRETER and PROFILE_PYTHON_ROOTS; the
+  # installer refuses wrappers that resolve elsewhere.
+  /usr/bin/python3.13 mrix,
+  /usr/lib/python3.13/** mr,
   /usr/lib/@{multiarch}/** mr,
   /opt/azazel-nexus/venv/** mr,
   @{PROC}/@{pid}/fd/ r,
