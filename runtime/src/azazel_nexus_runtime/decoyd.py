@@ -12,6 +12,10 @@ What one start does:
    namespace's IPv4 wildcard, which in the host namespace would be every host
    interface, so the check comes before any socket and is repeated before
    every bind. Exit 1, nothing bound.
+   **Then refuse without this boot's isolation evidence**
+   (`azazel_nexus.decoy_isolation`, §14): the network helper's record, read
+   the protected way, from this boot, with every check passed. Exit 1,
+   nothing bound.
 2. **Listen on fixed ports** (`SERVED`, fixed in code like the responders;
    the catalogue does not reach the decoy in this build): one listener per
    decoy, through `decoy_listener.open_namespace_listener`, the only module
@@ -53,6 +57,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from azazel_nexus.decoy import DecoyRefused
+from azazel_nexus.decoy_isolation import IsolationEvidenceRefused, require_isolation_for_decoy
 
 from . import decoy_listener, decoy_netns, decoy_sender
 from .decoy_loopback import MAX_READ_BYTES, READ_TIMEOUT_SECONDS, RESPONDERS, Observation
@@ -310,6 +315,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         namespace = decoy_netns.confirm_decoy_namespace()
     except decoy_netns.NotInDecoyNamespace as exc:
+        _say(f"refusing to listen: {exc}")
+        return 1
+    # This boot's isolation record (§14), written by the network helper after
+    # it read back the host side it built. Absent, foreign, malformed, from
+    # another boot or with any check not passing: no socket is made.
+    try:
+        require_isolation_for_decoy(now=_utc_second())
+    except IsolationEvidenceRefused as exc:
         _say(f"refusing to listen: {exc}")
         return 1
     listeners = []

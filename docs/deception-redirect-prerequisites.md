@@ -2,7 +2,7 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (I4 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11); the namespace unit of option (a) declared (§10); the decoy body (§12) and the bodies of the namespace unit and the helper (§13) implemented; nothing is granted.**
+Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11); the namespace unit of option (a) declared (§10); the decoy body (§12), the bodies of the namespace unit and the helper (§13) and the per-boot isolation evidence (§14) implemented; nothing is granted.**
 Related: [integrated defensive loop](integration-loop.md) §I4 ·
 [Deception Lite](deception-lite.md) ·
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
@@ -264,7 +264,10 @@ exposure path.
   every grant, enables the unit for a later boot; the decoy unit's own
   `ExecStartPre=` reruns the probe so that a check exists before every
   exposure (`IMPLEMENTATION_SPEC.md:805`). `None` or `False` keeps the decoy
-  unit refused.
+  unit refused. *As implemented (§14):* the pass runs before the three units,
+  so it can never hold this boot's evidence; the evidence is instead a record
+  the helper writes after building and the decoy requires before it listens,
+  and the tier stays withheld.
 - **Decoy unit sandbox.** `SHARED_HARDENING` (`hardening.py:75-100`) with:
   `NetworkNamespacePath=` the decoy namespace; `RestrictAddressFamilies=AF_INET
   AF_INET6 AF_UNIX` (`AF_UNIX` for the observation socket only);
@@ -360,9 +363,9 @@ These hold in every phase. A change that needs one relaxed is out of scope.
 ## 9. What this does not establish
 
 Only P1's declarations and boundary, the namespace unit's declaration
-(§10), P2's event and intake path (§11), the decoy's body (§12) and the
-bodies of the namespace unit and the helper (§13) are implemented, and none
-of the three units is ever granted. Nothing here shows
+(§10), P2's event and intake path (§11), the decoy's body (§12), the
+bodies of the namespace unit and the helper (§13) and the per-boot isolation
+evidence (§14) are implemented, and none of the three units is ever granted. Nothing here shows
 that Edge can express or apply a redirect, that the namespace design isolates
 on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
 is a later phase with its own evidence.
@@ -587,14 +590,17 @@ rest denied) is not established and is checked in the body phase.
   manager rests on their sandboxes (netlink as their only family) and belongs to the new decoy-sandbox gate
   (§7 Q10). The namespace unit adds no account, so it changes no record;
 - the per-boot isolation probe, its boot-bound evidence and the activation
-  pass consuming it (only then can the tier be granted);
+  pass consuming it (only then can the tier be granted). **The evidence is
+  done in §14**, as a gate on the decoy's listen; the pass still consumes
+  none, and §14 says why;
 - how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
   not a drop-in, which #253 refuses on every grantable unit. §13 states the
   fixed decoy subnet statically in the profile; the commissioned prefix
   (§7 Q9) is still to come;
 - the decoy daemon (responders, and sending P2's `EnvironmentEvent`s, whose
   shape and intake path §11 implements) and the decoy's `ExecStartPre=` probe
-  rerun;
+  rerun (§12; the rerun became the decoy's own check of the helper's record
+  before it listens, §14);
 - `docs/IMPLEMENTATION_SPEC.md` §4 (near line 604) named `azazel-enforced` as
   the only daemon with `CAP_NET_ADMIN`; #268 corrected that sentence to
   name the decoy network helper as the one other holder, and option (a)
@@ -863,7 +869,8 @@ that one. The functional-readiness row stays `loopback-only`: its test now
 allows exactly one importer of the listener, `decoyd.py`, whose unit is never
 granted.
 
-**Deferred:** the decoy's `ExecStartPre=` probe rerun; the catalogue and the
+**Deferred:** the decoy's `ExecStartPre=` probe rerun (done in §14, in
+process, as the check of the helper's isolation record); the catalogue and the
 commissioned prefix reaching the decoy (and then binding the catalogued
 address, `open_listener`, instead of the namespace wildcard); IPv6; the
 `IPAddressAllow=` question of §10. A loopback run in a container is not VM
@@ -1107,7 +1114,231 @@ this revision:
 6. from a clean `/run/netns` (none at boot): the tmpfiles rule making it
    `0755`, and the decoy's namespace check passing as `azdecoy`.
 
-**Not done here:** the per-boot isolation probe and its evidence (so the tier
+**Not done here:** the per-boot isolation evidence (done in §14; the tier
 stays withheld); approved prefixes (§7 Q9) in the set and in the decoy's
 allowance; a narrower system call filter for the helper; IPv6; the `HG-06`
 and decoy-sandbox hardware gates.
+
+## 14. Isolation evidence
+
+The "isolation check" of §5 D1, deferred in §10 and §13. After the helper has
+built the host side of the decoy network it reads it back, and writes **this
+boot's record** of fixed results; the decoy refuses to listen without one
+that passed. The `DECEPTION_EXPOSURE` tier is still withheld on every pass,
+for the reason in "Why the pass still withholds" below.
+
+### The constraint, and the choice
+
+§5 D1 says the activation pass consumes "only fresh evidence from this boot".
+That cannot hold: the pass runs before the three units (they carry its grant
+markers, §10), and the evidence describes a network that only exists after
+they have run. Within one boot the pass can never see isolation evidence for
+that boot, and §5 did not say what to do about it. The candidates:
+
+| | idea | verdict |
+| --- | --- | --- |
+| A | the helper checks what it built, right after building it, and writes a boot-bound record; the decoy requires a passing record before it listens | **chosen** |
+| B | the next boot's pass grants on the previous boot's record | **not chosen**: a previous boot's network says nothing about this boot's (kernel, modules, sysctls, other tables may differ); it needs a record that outlives `/run`, so persistent root-written state; and it grants exactly when the record is stale |
+| A + B | both | B adds the weakness above to A and nothing A lacks in the boot that exposes |
+
+A is the smaller and the safer: it holds on **every** start, whatever the
+pass decided, it needs no state beyond the boot, and it does not touch the
+grant path. It is also what the tier will need once it may be granted: the
+grant and the per-start check are two different conditions (§5 already asked
+for both, the pass's and the decoy's `ExecStartPre=` rerun), and this is the
+second one.
+
+### What is checked
+
+Two fixed commands, added to `decoy_network`'s fixed set and the only ones
+whose output is read (`HELPER_VERIFY`, run by `capture_fixed`):
+`nft list table inet azazel_decoy` (the same argument list as the helper's
+second "absent" check) and `ip -j -d address show`. The checks
+(`azazel_nexus.decoy_isolation.CHECKS`, evaluated by
+`decoy_isolation_check.evaluate`):
+
+| check | holds when |
+| --- | --- |
+| `nft_table` | the listed table, without indentation and blank lines, is exactly the ruleset the helper loads (container-checked listing of nftables 1.1.3, Debian 13) |
+| `approved_v4_empty` | the set `approved_v4` is listed with no element |
+| `bridge` | exactly one `az-decoy0`, kind bridge, up, attached to nothing |
+| `bridge_address` | its only IPv4 address is `10.255.196.1/30`; IPv6 only link-local |
+| `bridge_ports` | the only link attached to it is `az-decoy-host0` |
+| `host_veth` | `az-decoy-host0` is a veth, up, attached to the bridge, its peer in another namespace (`link_netnsid`), no IPv4 address |
+| `decoy_veth_off_host` | no `az-decoy-ns0` in the host namespace |
+| `subnet_exclusive` | no other host link holds an address in `10.255.196.0/30` |
+
+Each is `pass`, `fail` or `unreadable` (the command failed, was killed, or
+printed something that cannot be read; never a pass). Another nftables
+release that prints the same rules differently reads as `fail`, which keeps
+the decoy refused: a listing the code does not recognise is not one it may
+vouch for (operations says so).
+
+**What is not in it.** The decoy namespace's own interfaces: only a process
+inside the namespace can list them, and the helper cannot enter it (`setns`
+needs `CAP_SYS_ADMIN`; the namespace unit, which can, runs before the helper
+and its filter denies pipes). The decoy checks them itself, from inside, at
+start and before every bind (§12). **No packet is sent:** this reads the
+configuration, it does not test the denied paths with traffic; `HG-06` stays
+the gate for that. And it is a reading at one moment: a root process that
+changes the table afterwards is not seen until the next start.
+
+### The record
+
+```
+{"boot_id":"<this boot>","checked_at":"YYYY-MM-DDTHH:MM:SSZ",
+ "checks":{"<check>":"pass"|"fail"|"unreadable", ...},
+ "contract":"azazel-nexus/decoy-isolation/v1"}
+```
+
+One line, keys sorted, no spaces, ASCII, a newline (`render_evidence`). A
+reader (`parse_evidence`) refuses anything that does not render back to the
+same bytes, so another key, a missing one, a reordered or duplicated key, an
+escape, whitespace or a value outside the fixed set are all refused. At most
+4096 bytes. No address, interface name, command output or secret.
+
+**Where and whose.** `/run/azazel-decoy-isolation/isolation.json`. The
+directory is the helper's `RuntimeDirectory=` (root, `0755`), so systemd makes
+it when the helper starts and removes it when the helper stops; `/run` is
+cleared at every kernel boot. `ServiceProfile` pins it as the helper's only
+writable place and refuses it as any other unit's runtime directory; `0755`
+is the one exception to the `0750` of runtime directories, because the decoy
+reads the record under its own account.
+
+**The writer** (`decoy_isolation_check.Recorder`, used by `az-decoy-netd`
+only; it starts no process and never imports `decoy_network`):
+
+1. before any check or step, removes a previous record and a leftover
+   temporary file (never through a link) and reads this boot's id the
+   protected way (`edge_package.read_current_boot_id`); failing either, it
+   changes nothing and exits 1;
+2. after the build, writes the record under a fixed temporary name
+   (`O_CREAT | O_EXCL | O_NOFOLLOW`) in the directory opened with
+   `O_NOFOLLOW` and checked to be root's and writable by nobody else, makes
+   it `0644` (the unit's `UMask=0027` would leave it unreadable to the decoy),
+   syncs it and renames it over the fixed name;
+3. unless every check passed and the record was written, the helper undoes
+   the whole build and exits 1, and the decoy's start fails as a dependency;
+4. at stop, the record goes first, then the network.
+
+Two read-back commands keep the longest start within `TimeoutStartSec=30s`
+(two absence checks, six steps, two read-backs, three undos at 2 s each; a
+test keeps the sum). Only the helper opens a pipe; the namespace unit runs
+with no file action and its filter still denies `@ipc`.
+
+**The reader** (`azazel_nexus.decoy_isolation`, in the library so that a
+later pass reads with the same code): the directory and the file are opened
+with `O_NOFOLLOW`, both must be owned by root and writable by nobody else,
+the file a regular one within the limit. The decoy
+(`require_isolation_for_decoy`, called by `az-decoyd` after its namespace
+check and before any socket) also requires the record's boot id to be this
+boot's, its time not in the future (5 s skew) and every check `pass`. There
+is no maximum age: the helper runs once per boot, the decoy `Requires=` it,
+and the record goes away with it. Its refusals are fixed phrases with fixed
+check names, never content. Nothing (argument, file, environment variable,
+flag) skips it. The decoy's runtime import closure is unchanged (the reader
+is in the library), so §12's boundary rules still apply to exactly its six
+modules.
+
+### Why the pass still withholds
+
+`ActivationController._withholding_reason` still returns
+`isolation_evidence_absent` for the tier, unconditionally, and `activate`
+still takes no evidence. The producer frame exists
+(`installed_isolation_reading`, which reads the fixed record and answers
+`absent`, `refused`, `not_this_boot`, `not_passed` or `passed`), but nothing
+calls it from the pass, for three reasons:
+
+- at the pass this boot's record cannot exist (above), so consuming it would
+  only ever withhold, and consuming a previous boot's is B, not chosen;
+- granting the tier needs things this change does not have: the approved
+  prefixes (§7 Q9; `approved_v4` is empty, so even a granted decoy is
+  unreachable), the exposure units in the measured generation (§10), the
+  `HG-06` and decoy-sandbox hardware gates (§7 Q10);
+- the grant condition for the tier is then a decision of its own: what the
+  pass requires before it may write the three markers, with this record as
+  the per-start condition behind it. That change is made deliberately in
+  `_withholding_reason`, with tests, never through a flag.
+
+A test keeps it so: with a passing record in place the three units are still
+withheld as `isolation_evidence_absent`, nothing in the controller takes a
+reading, and nothing in the runtime calls the frame. The tripwire of §10 is
+unchanged.
+
+### Tests and runs
+
+`tests/unit/test_decoy_isolation_evidence.py` (with the read-back added to
+`test_decoy_network_body.py` and the profile tests): the record as a golden
+and the refusal of 24 departures from its shape; the reader refusing a
+symlinked directory or file, another owner, a group- or world-writable
+directory or file, a directory or FIFO in place of the record, an oversized
+record, another boot, a future time, an unreadable boot id and each check not
+passing; the expected listing equal to the container's and to the loaded
+ruleset; every check passing on the container's real output, and 23
+mutations of that output each failing exactly its checks; unreadable output
+never a pass; the writer's golden under `UMask=0027`, its removal of a
+previous record and a leftover link, its refusal of a foreign or open
+directory; the decoy refusing before any socket for an absent, failing,
+foreign-boot or tampered record; the read-back's argument lists, pipe, file
+action, deadline and size limit, with fake processes; the helper undoing its
+build when the record does not pass, and changing nothing when the previous
+one cannot be removed; the profile pins; the tier withheld with a passing
+record.
+
+**Privileged container** (Debian 13, nftables 1.1.3, iproute2 6.15; each
+executable under `setpriv --bounding-set` with its unit's capabilities;
+a mechanism check, not VM or hardware evidence): without the runtime
+directory the helper built, checked (all `pass`), could not write the record,
+undid the build and exited 1; with the directory it wrote the record (root
+`0644` under `umask 0027`); as `azdecoy` inside the namespace the gate
+admitted it; an element added to `approved_v4` by hand made a fresh check
+fail `nft_table` and `approved_v4_empty`; a hand-edited record (one space),
+a `0666` record and an `azdecoy`-owned record were refused; `stop` removed the
+record and then the network. `az-decoyd` itself, as `azdecoy` in the
+namespace, listened with this boot's record and refused with none, another
+boot's and a symlink. (The container's kernel puts `sit0` in every new
+namespace and the container cannot set the init-namespace sysctl, so for this
+run only the decoy's namespace check was told to ignore `sit0`.)
+
+**systemd 257.13 as PID 1 in a privileged container** (the three rendered
+units without the controller dependency and the grant-marker condition; the
+same `sit0` allowance; a mechanism check, not VM or hardware evidence):
+`systemctl start azazel-decoyd.service` started the namespace unit, the
+helper (all eight `pass`, the read-back's pipe under the helper's filter) and
+the decoy, which listened; the directory was root `0755`, the record root
+`0644`; stopping the helper stopped the decoy and the directory was gone.
+With a dummy host link holding `10.255.196.2/32` the helper logged
+`subnet_exclusive fail`, undid its build and failed, the decoy's job failed
+with `dependency`, and no directory remained; a clean start then worked.
+
+### To check on the VM (P3; a mechanism check, not hardware evidence)
+
+1. the three units as rendered, with grant markers placed by hand: the
+   helper's journal line `isolation check: ... pass` for all eight, the
+   directory root `0755` and the record root `0644`, the decoy listening;
+2. the helper's read-back under its sandbox: the pipe and `posix_spawn` with
+   a file action under `SystemCallFilter=@system-service`, `ip -j -d address
+   show` and `nft list table` under `ProtectKernelModules=`,
+   `InaccessiblePaths=` and `AF_NETLINK` only;
+3. that the VM's nftables prints the table exactly as expected (`nft_table`
+   `pass`); if a Debian point release changes the listing, the decoy refuses
+   and the expected listing is to be updated;
+4. as `azdecoy` with `PrivateUsers=yes`, the record's owner is seen as root
+   and the boot id file is readable, so the gate admits; and it refuses after
+   `rm` of the record, and after the record is replaced by a symlink;
+5. a failing check (for example a host link given an address in the /30
+   before the start): the helper undoes and fails, the decoy does not start,
+   nothing remains;
+6. `systemctl stop azazel-decoy-nsd.service`: the record and its directory
+   are gone before the bridge, and after the stop nothing remains;
+7. `systemctl soft-reboot` with the units running: the directory does not
+   survive into the new userspace (the helper is stopped), and the decoy
+   does not start on the old record;
+8. on a host with `net.core.fb_tunnels_only_for_init_net = 2`, no `sit0`
+   allowance: the decoy listens with the record (the container could not
+   check this combination).
+
+**Not done here:** granting the tier (its condition, the measured unit
+files, approved prefixes, `HG-06` and the decoy-sandbox gate); a packet test
+of the denied paths; IPv6; a check of the namespace's interfaces by anyone
+but the decoy.

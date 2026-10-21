@@ -327,6 +327,14 @@ class ServiceProfile:
             if self.extra != DECOY_HELPER_SANDBOX:
                 raise ValueError(
                     f"{self.unit} states exactly DECOY_HELPER_SANDBOX in extra")
+            # Its one writable place is its own runtime directory, for the
+            # isolation record (#196 §14), and nothing else.
+            if (self.runtime_directory != DECOY_ISOLATION_DIRECTORY
+                    or self.runtime_directory_mode != DECOY_ISOLATION_DIRECTORY_MODE
+                    or self.read_write_paths or self.optional_read_write_paths):
+                raise ValueError(
+                    f"{self.unit} writes only its runtime directory "
+                    f"{DECOY_ISOLATION_DIRECTORY} ({DECOY_ISOLATION_DIRECTORY_MODE})")
         else:
             # `extra` renders before the shared lines, so a shared key, an
             # identity, a capability or a path setting placed there would sit
@@ -411,6 +419,15 @@ class ServiceProfile:
             raise ValueError(
                 f"{self.unit}: {NETNS_DIRECTORY} is not a declared writable path; "
                 f"only {DECOY_NAMESPACE_UNIT} writes it, without a mount namespace")
+        # The isolation record's directory is the helper's alone (#196 §14):
+        # another unit naming it as its runtime directory would own or
+        # remove the record the decoy trusts.
+        if (self.unit != DECOY_NETWORK_HELPER_UNIT and any(
+                name.split("/")[0] == DECOY_ISOLATION_DIRECTORY
+                for name in self.runtime_directory.split())):
+            raise ValueError(
+                f"{self.unit}: {DECOY_ISOLATION_DIRECTORY} is "
+                f"{DECOY_NETWORK_HELPER_UNIT}'s runtime directory alone")
         if ("/run/systemd/system.control" in self.read_write_paths
                 and self.unit != ACTIVATION_CONTROLLER_UNIT):
             raise ValueError("bootstrap overlay is writable only by the activation controller")
@@ -607,6 +624,17 @@ NETNS_DIRECTORY = "/run/netns"
 #: a decoy unit started anyway fails at namespace setup before its
 #: executable runs.
 DECOY_NAMESPACE_PATH = f"{NETNS_DIRECTORY}/azazel-decoy"
+
+#: The network helper's runtime directory, where it writes this boot's
+#: isolation record (#196 §14; `azazel_nexus.decoy_isolation.EVIDENCE_DIRECTORY`
+#: is `/run/` and this, a test keeps them equal). The helper's and no other
+#: unit's: systemd creates it root-owned when the helper starts and removes
+#: it when the helper stops, so the record lives exactly as long as the
+#: network it describes. `0755`, not the usual `0750`: the decoy reads the
+#: record under its own account; the record is root's `0644` and holds fixed
+#: results only.
+DECOY_ISOLATION_DIRECTORY = "azazel-decoy-isolation"
+DECOY_ISOLATION_DIRECTORY_MODE = "0755"
 
 #: The `SHARED_HARDENING` entries the decoy namespace unit does not carry
 #: (#196 (a), n3), and only it: every shared setting that makes systemd
@@ -1267,8 +1295,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # controller can unmask). Its journal output uses the stream systemd
         # hands it, which needs no socket() call.
         address_families=("AF_NETLINK",),
-        # Nothing writable in this build: where the namespace handle and the
-        # rendered rules live is decided with the helper's body.
+        # No declared writable path: its one writable place is its own
+        # runtime directory, for this boot's isolation record (#196 §14).
         read_write_paths=(),
         # After and Requires the namespace unit (#196 (a)): it configures the
         # veth into a namespace that unit created. Granted together with it
@@ -1277,7 +1305,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
         conditions=_grant_condition(DECOY_NETWORK_HELPER_UNIT),
         unit_type="oneshot",
-        runtime_directory="",
+        runtime_directory=DECOY_ISOLATION_DIRECTORY,
+        runtime_directory_mode=DECOY_ISOLATION_DIRECTORY_MODE,
         # Root only so that the bounding set reaches it without an ambient
         # grant; the bounding set is CAP_NET_ADMIN and nothing else.
         capability_bounding_set=("CAP_NET_ADMIN",),
@@ -1288,7 +1317,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "with fixed nft and ip commands it loads the fixed decoy table "
             "first, then sets up az-decoy0 and attaches the host end of the "
             "veth pair the namespace unit made; ExecStop cuts the path and then "
-            "removes the table. It reads no decoy observation and no Edge "
+            "removes the table. After building it reads back the table and "
+            "the host's links with two fixed commands and writes this boot's "
+            "isolation record, fixed results only, to its runtime directory, "
+            "which the decoy requires before it listens; a check that does "
+            "not pass undoes the build. It reads no decoy observation and no Edge "
             "decision. It is root, so it gets netlink only and no AF_UNIX "
             "socket that could reach the service manager, whose private "
             "sockets are also inaccessible to it. The activation pass never "
@@ -1332,7 +1365,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "never initiates: no outbound connect is in its code, and the "
             "runtime boundary test allows its listener module bind and listen "
             "only. IPAddressDeny=any stays, and the fixed decoy subnet is the "
-            "only address allowed. The activation pass never grants this unit "
+            "only address allowed. It opens no socket without the network "
+            "helper's isolation record from this boot with every check "
+            "passed. The activation pass never grants this unit "
             "in this build"
         ),
     ),

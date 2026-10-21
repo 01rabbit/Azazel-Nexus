@@ -124,9 +124,12 @@ class UnitTier(str, Enum):
     the host (#196, `docs/deception-redirect-prerequisites.md` §5 D1). It is
     neither of the others: exposure is not enforcement, and the one feature
     reachable from outside is not a supporting service. It needs this boot's
-    passing isolation evidence on top of everything `SUPPORTING` needs. This
-    build has no producer of that evidence, so the tier is always withheld
-    (`isolation_evidence_absent`); nothing a caller passes changes that.
+    passing isolation evidence on top of everything `SUPPORTING` needs. That
+    evidence is produced only after the three units have started (the
+    network helper's record, `decoy_isolation`, #196 §14), so the pass, which
+    runs before them, never holds it: the tier is always withheld
+    (`isolation_evidence_absent`), and nothing a caller passes changes that.
+    The record gates the decoy's listen within the boot instead.
     """
 
     SUPPORTING = "supporting"
@@ -1076,13 +1079,18 @@ class ActivationController:
                 )
             # Fail closed by construction: `activate` takes no isolation
             # evidence, so there is nothing a caller could pass to satisfy
-            # this tier. The producer (a per-boot probe of the denied paths)
-            # is a later phase of #196, and adding it is a deliberate change
-            # here, never a flag.
+            # this tier. The evidence now has a producer (the network
+            # helper's record, `decoy_isolation`, #196 §14), and it still
+            # cannot satisfy this: the pass runs before the three units
+            # start, so this boot's record cannot exist yet, and a previous
+            # boot's says nothing about this one. The record gates the
+            # decoy's own listen instead. Making the tier grantable is a
+            # deliberate change here with its own condition, never a flag.
             return (
-                "isolation_evidence_absent: this build has no producer of this "
-                "boot's isolation evidence, so nothing reachable from outside "
-                "is admitted"
+                "isolation_evidence_absent: this boot's isolation evidence "
+                "exists only after the exposure units have started, and this "
+                "pass consumes none, so nothing reachable from outside is "
+                "admitted"
             )
 
         if definition.tier is UnitTier.EDGE_BASELINE:
