@@ -361,7 +361,7 @@ pass keeps `lease=None`.
 | P3 | operator tooling, still no grant path: `operator_sign.py` `activation` purpose; `az-activation request`, `install`, `generation-publish` |
 | P4 | wire SUPPORTING in `_run_once` (fake manager tests: only scoped units granted; each absent producer refuses; epoch, clock, expiry and tree tampering refuse; tripwire on out-of-scope grant) |
 | P5 | EDGE_BASELINE: probe preflight (E1), probe v2 boot binding (§3.4), edge-core in scope (§8.1); all implemented |
-| P6 | VM rehearsal with a VM-only rehearsal key: publish → request → sign on the workstation → install → reboot → granted → reboot → started; negative runs (approval removed, epoch raised, operator revoked, clock moved back, tree altered, probe stale) each leave units masked **and not started**. Recorded as rehearsal, never evidence |
+| P6 | VM rehearsal with a VM-only rehearsal key: publish → request → sign on the workstation → install → reboot → granted → reboot → started; negative runs (approval removed, epoch raised, operator revoked, clock moved back, tree altered, probe stale) each leave units masked **and not started**. Recorded as rehearsal, never evidence; procedure: [activation rehearsal](hil-runbooks/activation-rehearsal.md) |
 
 ## 5. Risks
 

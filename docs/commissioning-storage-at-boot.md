@@ -75,7 +75,7 @@ the fallback.
 | phase | content |
 | --- | --- |
 | P0 | `hardening.py` `After=` lines + generated unit + tests (no `Requires=`/`Wants=`/`BindsTo=`/`RequiresMountsFor=` on storage); optional diagnostic label; docs (this file, commissioning rehearsal §3, debian-live-install layout) |
-| P1 | VM rehearsal (never evidence): locked boot times out → refusal recorded, nothing starts; unlocked boot → grant → reboot → unlock → units start (unblocks #206 P6) |
+| P1 | VM rehearsal (never evidence): locked boot times out → refusal recorded, nothing starts; unlocked boot → grant → reboot → unlock → units start (unblocks #206 P6); procedure: [activation rehearsal](hil-runbooks/activation-rehearsal.md) |
 | P2 | hardware, owner-gated (HG-08): TPM2 enrolment with passphrase fallback; positive boot auto-unlocks; Secure Boot toggled, other boot media and a PCR change each leave it locked and the pass refusing |
 
 ## 5. Owner decisions
