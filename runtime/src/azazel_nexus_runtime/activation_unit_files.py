@@ -192,7 +192,7 @@ def _scope(units, allowed=GRANTABLE_UNITS) -> tuple[str, ...]:
 
     Measurement takes the policy's scope (`ACTIVATION_UNIT_ALLOWLIST`); the
     content and override checks take every grantable unit, which since #196
-    P1 also holds the two Deception Lite exposure units that no policy may
+    also holds the three Deception Lite exposure units that no policy may
     name but whose files must still wait for their marker.
     """
     names = tuple(units)

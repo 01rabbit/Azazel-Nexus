@@ -37,6 +37,7 @@ import stat
 from typing import Iterable
 
 __all__ = [
+    "EXPOSURE_UNITS",
     "GRANTABLE_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
@@ -48,18 +49,19 @@ __all__ = [
 #: The only units a pass may grant and mark: the five SUPPORTING loop units
 #: (§6.2, phase P4), `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
 #: which the library still grants only on launchable, boot-bound Edge
-#: evidence, and the two Deception Lite exposure units (DECEPTION_EXPOSURE,
-#: #196 P1). The single source for the pass's scope check, its tripwire,
-#: this writer and the unit-content and loaded-unit checks (#253).
+#: evidence, and the three Deception Lite exposure units (DECEPTION_EXPOSURE,
+#: #196). The single source for the pass's scope check, its tripwire, this
+#: writer and the unit-content and loaded-unit checks (#253).
 #:
-#: The two exposure units are here so that #253 checks their files and loaded
-#: definitions on every pass (a queued start must wait for its marker), not
-#: so that a pass can grant them: no activation policy may name them
-#: (`activation_policy.ACTIVATION_UNIT_ALLOWLIST`), the library withholds
+#: The three exposure units are here so that #253 checks their files and
+#: loaded definitions on every pass (a queued start must wait for its
+#: marker), not so that a pass can grant them: no activation policy may name
+#: them (`activation_policy.ACTIVATION_UNIT_ALLOWLIST`), the library withholds
 #: their tier in this build (`isolation_evidence_absent`), and the pass's
-#: tripwire narrows everything if either is ever granted.
+#: tripwire narrows everything if any of them is ever granted.
 GRANTABLE_UNITS = frozenset({
     "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -67,6 +69,19 @@ GRANTABLE_UNITS = frozenset({
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
+})
+
+#: The Deception Lite exposure units (#196 §10, review n1), marked together
+#: or not at all. The same names as `activation.DECEPTION_EXPOSURE_UNITS` (a
+#: test compares them); restated because this module imports nothing from
+#: the library. systemd counts a unit skipped for a missing marker as a
+#: success for the unit that `Requires=` it, so a marker set holding the
+#: decoy without the helper, or the helper without the namespace unit, would
+#: let a dependent start on a dependency that never ran.
+EXPOSURE_UNITS = frozenset({
+    "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
+    "azazel-decoyd.service",
 })
 
 #: The fixed marker directory; `hardening.py` renders the same path into
@@ -170,6 +185,9 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
         return ()
     if not set(names) <= GRANTABLE_UNITS:
         raise GrantMarkerRefused("grant marker for a unit no pass grants")
+    if set(names) & EXPOSURE_UNITS and not EXPOSURE_UNITS <= set(names):
+        raise GrantMarkerRefused(
+            "grant markers for part of the Deception Lite exposure tier")
     parent = _open_parent(root)
     if parent is None:
         raise GrantMarkerRefused("grant marker directory unavailable")

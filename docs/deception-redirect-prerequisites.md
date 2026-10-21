@@ -2,7 +2,7 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (I4 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11).**
+Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11); the namespace unit of option (a) declared (§10).**
 Related: [integrated defensive loop](integration-loop.md) §I4 ·
 [Deception Lite](deception-lite.md) ·
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
@@ -235,17 +235,20 @@ exposure path.
   (`RestrictNamespaces=yes`, `ProtectSystem=strict` with `/run/netns` read
   only, `@system-service` without `mount`) would refuse it anyway. So D1 is
   split into "one unit, one privilege, one act":
-  1. a **namespace unit** (one-shot) only creates the decoy namespace at
-     `/run/netns/azazel-decoy`. It is expected to be the only unit with
-     `CAP_SYS_ADMIN`; its exact privilege is reviewed when it is written;
+  1. a **namespace unit** (one-shot, `azazel-decoy-nsd.service`) only
+     creates the decoy namespace at `/run/netns/azazel-decoy`. It is the
+     only unit with `CAP_SYS_ADMIN`, and the only one without the shared
+     file-system sandbox (a mount namespace would keep the handle from the
+     host, VM-checked); its exact privilege is in §10;
   2. the **helper** (`CAP_NET_ADMIN`) only configures `az-decoy0`, the veth
      pair into the already created namespace, and the rules;
   3. the **decoy** joins the namespace with no capability.
 
-  The namespace unit is written in the same later phase as the helper's
-  body; P1 does not define it. Option (a) is the implementer's choice within
-  the accepted design (review of #268, 2026-10-21), not an owner decision;
-  the owner may overrule it.
+  The namespace unit's profile, tier membership and boundary were added
+  after P1 (§10, "The namespace unit"); its body comes in the same later
+  phase as the helper's. Option (a) is the implementer's choice within the
+  accepted design (review of #268, 2026-10-21), not an owner decision; the
+  owner may overrule it.
 - **Bridge and rules.** `az-decoy0` and its address come only from the
   commissioned bridge prefix (no default). The helper installs forwarding-deny
   rules toward the protected, management, control-plane and Internet zones
@@ -274,12 +277,13 @@ exposure path.
   would be its first ingress entry, and the test should be split so that the
   exemption allows `bind`/`listen` only and still forbids `connect` and
   `create_connection`.
-- **Activation.** Add the helper and the decoy unit to `GRANTABLE_UNITS`
+- **Activation.** Add the namespace unit, the helper and the decoy unit to `GRANTABLE_UNITS`
   (`activation_markers.py:53`) and to the governed definitions, in a **new tier**
   (proposed name `DECEPTION_EXPOSURE`). It needs: a complete commissioning
   record with the decoy section (bridge prefix, catalogue generation digest);
   this boot's passing isolation evidence; and the masked/preset-disabled
-  default every governed unit has. Not `SUPPORTING` (too weak for the one
+  default every governed unit has. The three are granted together or not
+  at all (§10). Not `SUPPORTING` (too weak for the one
   feature reachable from outside) and not `ENFORCEMENT` (exposure is not
   enforcement; the `UnitTier` docstring, `activation.py:95-117`, warns against
   letting one readiness condition speak for another).
@@ -294,7 +298,7 @@ only prerequisite 3.
 | phase | content | needs |
 | --- | --- | --- |
 | P0 | this proposal; owner decisions in §7 | — |
-| P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) is written later, with the helper's body | §7 Q4–Q7 |
+| P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) was declared after P1 (profile, tier, boundary; §10); its body comes with the helper's | §7 Q4–Q7 |
 | P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge. **Implemented (#269, §11)** | P1, §7 Q8 |
 | P3 | VM rehearsal of P1–P2 (never evidence) | P2 |
 | P4 | hardware: `HG-06` and a new gate for the decoy unit's sandbox on the real host | P3, owner |
@@ -355,8 +359,8 @@ These hold in every phase. A change that needs one relaxed is out of scope.
 
 ## 9. What this does not establish
 
-Only P1's declarations and boundary (§10) and P2's event and intake path
-(§11) are implemented. Nothing here shows
+Only P1's declarations and boundary, the namespace unit's declaration
+(§10) and P2's event and intake path (§11) are implemented. Nothing here shows
 that Edge can express or apply a redirect, that the namespace design isolates
 on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
 is a later phase with its own evidence.
@@ -423,29 +427,151 @@ is refused in every module. `decoy_listener.open_listener` binds only a catalogu
 it, and `tests/unit/test_functional_readiness.py` fails the day something
 does, so the Deception Lite row stays `loopback-only`.
 
+**The namespace unit (option (a)).** Declared after P1, as profile, tier
+membership and boundary only; nothing creates a namespace yet.
+`azazel-decoy-nsd.service` (`runtime/src/azazel_nexus_runtime/hardening.py`,
+`DECOY_NAMESPACE_SANDBOX`, `DECOY_NAMESPACE_SHARED_OVERRIDES` and
+`DECOY_NAMESPACE_SHARED_OMISSIONS`). Its first revision carried the full
+file-system sandbox; the VM check of n3 (below) showed that this cannot work,
+and the profile now follows the configuration that did:
+
+| | `azazel-decoy-nsd.service` (namespace unit) |
+| --- | --- |
+| account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller, this unit and the helper |
+| capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN`, `AmbientCapabilities=` empty, `NoNewPrivileges=yes`; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle needs it) |
+| address families | `RestrictAddressFamilies=AF_NETLINK`, the family `ip netns add` was checked with; no `AF_UNIX`, so as root it cannot reach the service manager over D-Bus |
+| namespaces | `RestrictNamespaces=net` (replacing the shared `yes`): only a network namespace may be created |
+| system calls | `SystemCallFilter=@system-service mount umount2 unshare setns`, then `SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset` (the deny list must follow the allow list). `setns` is allowed: `ip netns add` returns to its own namespace after creating one, and without it is killed with SIGSYS (VM-checked) |
+| file-system sandbox | **none**: the seven `SHARED_HARDENING` settings that build a mount namespace (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`) are left out, and it declares no `ReadWritePaths=`, `RuntimeDirectory=`, `ProtectProc=`, `ProcSubset=`, `InaccessiblePaths=`, `PrivateNetwork=` or any other setting that builds one. `/run/netns` is created by `ip` itself; `ServiceProfile` refuses `/run/netns` as a declared writable path on every unit |
+| kept from the shared set | `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `IPAddressDeny=any`, `UMask=0027`; plus `RestrictRealtime=yes` |
+| type | `oneshot`, `RemainAfterExit=yes` |
+| executable | `az-decoy-nsd`: refuses, exits 1 |
+
+**Why it has no file-system sandbox.** systemd runs a unit with any of those
+settings in a mount namespace of its own, and cuts propagation from it to the
+host. The bind mount that makes a named network namespace is then never seen
+outside the unit (n3). Leaving them out loses nothing real: a process with
+`CAP_SYS_ADMIN` and the `mount` system call could unmount or remount any of
+them inside its own mount namespace, so for this unit they were never a wall.
+
+**A compromised body is host root.** Root with `CAP_SYS_ADMIN` and `mount`
+can mount a fresh `/proc` or `/sys` and rewrite `kernel.core_pattern` and
+the like, or remount the cgroup file system read-write; no unit setting
+stops that. The bounding set, the system call filter,
+`RestrictNamespaces=net`, netlink as its only family and `NoNewPrivileges=`
+narrow what it is handed, and nothing more. Its containment rests on the
+body itself: fixed in code, taking no input (no argument, file, environment
+or socket), statically reviewed, and later confined by a mandatory access
+control (LSM) profile. To be weighed in the body phase: **removing the
+privilege instead**, by letting systemd hold the namespace. For example,
+the helper and the decoy share one network namespace through
+`PrivateNetwork=yes` and `JoinsNamespaceOf=`, and the helper moves one veth
+end to the host; then no unit needs `CAP_SYS_ADMIN` and the namespace unit
+goes away. Whether that ordering and lifetime work is itself a VM item.
+
+`ServiceProfile` pins this unit whole: its capability, account, families,
+the absence of any writable path, its own settings, the two shared overrides,
+the seven shared omissions, its executable, its ordering (`After=` and
+`Requires=` the controller only, nothing else) and its single grant-marker
+condition must be exactly these. No other unit may override or leave out any
+`SHARED_HARDENING` entry, nor restate in its free-form `extra` a shared key,
+`User=`, `CapabilityBoundingSet=`, `AmbientCapabilities=`,
+`SystemCallFilter=`, `RestrictAddressFamilies=`, `ReadWritePaths=`,
+`BindPaths=` or `InaccessiblePaths=` (each comes only from a declared field
+or the shared set); a test checks that every other packaged unit carries the
+whole mount sandbox. It carries the
+three marker lines (`ConditionPathExists=` on its marker, `Requires=` and
+`After=` on the controller), and passes the unit-content and loaded-unit
+checks of
+[activation §8.2](activation-observe-baseline.md#82-unit-content-and-the-loaded-units-251-h-1-m-3).
+It is in `CORE_UNITS` (tier `DECEPTION_EXPOSURE`), `GRANTABLE_UNITS`, the
+tripwire and the unit table (`decoy-namespace`), never in
+`ACTIVATION_UNIT_ALLOWLIST` or a v2 approval. The installer installs,
+preset-disables and masks it; it never enables or starts it.
+
+**The body, when it is written.** The VM-checked configuration ran
+`ExecStart=/usr/sbin/ip netns add <name>` and `ExecStop=/usr/sbin/ip netns
+delete <name>`. The unit keeps its refusing executable in this build: it is
+never granted, and the namespace-creating step is the body phase's, which
+may turn it into exactly those two lines for `azazel-decoy`.
+
+The chain is namespace unit → helper → decoy: the helper has `After=` and
+`Requires=` on the namespace unit, the decoy on the helper.
+
+**The tier is granted together or not at all** (closes n1 below). systemd
+counts a unit skipped for an unmet `ConditionPathExists=` (no grant marker)
+as a success for the units that `Requires=` it, so a dependency alone does
+not keep the decoy from starting without the helper, or the helper without
+the namespace unit. The rule is held in three places, each alone sufficient:
+
+- `ActivationController` refuses a governed set that holds some but not all
+  of `DECEPTION_EXPOSURE_UNITS`, holds one of them in another tier, or gives
+  one of them a wiring requirement;
+- a lease whose unit scope names some but not all of them withholds the
+  ones it names as `exposure_tier_partial` (the others are
+  `outside_lease_scope`). Every other precondition is the same for the three
+  (none has a wiring, the evidence check is per tier), so their verdicts
+  cannot otherwise differ; a test pins that they are identical;
+- `activation_markers.write_grant_markers` refuses a marker set holding some
+  but not all of them (`EXPOSURE_UNITS`, compared with the library's tuple
+  by a test). This is also the backstop for the one difference the library
+  cannot rule out in advance: an unmask that fails for one of the three
+  after the others were granted.
+
+None of this grants anything: the tier is still withheld as
+`isolation_evidence_absent` on every pass, no policy can name the three, and
+the tripwire narrows everything if any one of them, or all three, is ever
+granted.
+
+**VM check of n2 and n3** (Debian 13, systemd 257.13, throwaway units,
+cleaned up afterwards; a mechanism check, **not hardware evidence**):
+
+- n3, **mount propagation: confirmed.** With the first revision's sandbox
+  (`ProtectSystem=strict`, `ReadWritePaths=/run/netns`, `PrivateTmp=` and the
+  like), `ip netns add` succeeded but the host's `/run/netns/<name>` stayed an
+  empty file, not a mount, and a unit joining it by `NetworkNamespacePath=`
+  failed with 225/NETWORK (Invalid argument). **Option (a) does not hold with
+  a sandbox that builds a mount namespace; it holds with the configuration
+  in the table above**: creation, the host's view (`ip netns list`, an
+  `nsfs` mount in `findmnt`) and use from another unit all succeeded. With
+  `setns` in the deny list, `ip` was killed with SIGSYS (31/SYS);
+- n2, **`PrivateUsers=yes` with `NetworkNamespacePath=`: confirmed.** A unit
+  with `DynamicUser=`, `PrivateUsers=yes`, `NetworkNamespacePath=` and
+  `ProtectSystem=strict` joined the namespace and saw only `lo`.
+
+The unit as rendered (d790db5, which adds `SystemCallArchitectures=native`,
+`IPAddressDeny=any`, `UMask=0027`, `TimeoutStartSec=` and `RemainAfterExit=`
+to the configuration above) was then run with its `ExecStart=` replaced by
+`ip netns add`, and succeeded; denying `@ipc` and `@timer` did not stop `ip`
+(recorded on #271; also a mechanism check, not hardware evidence). Whether
+a **Python** body starts under the same filter (`@ipc`, `@timer` and the
+rest denied) is not established and is checked in the body phase.
+
 **Deferred, with what each needs:**
 
-- the namespace unit of option (a) (§5) and the helper's body (`az-decoy0`,
-  veth, forwarding-deny rules, their removal on stop), in one phase. The
-  namespace unit's privilege (expected: the only `CAP_SYS_ADMIN`) is reviewed
-  then; P1's tests pin the helper to exactly `CAP_NET_ADMIN` and `AF_NETLINK`.
-  To be handled in that phase as well, from the independent review of #268:
-  - m2, the helper's further sandbox: a `SystemCallFilter=` sized to netlink
-    work, `ProtectClock=`, `ProtectHostname=`, `ProtectKernelLogs=`,
+- the bodies of the namespace unit and the helper (`/run/netns/azazel-decoy`,
+  `az-decoy0`, veth, forwarding-deny rules, their removal on stop, in
+  reverse order), in one phase. P1's tests pin the helper to exactly
+  `CAP_NET_ADMIN` and `AF_NETLINK`; the tests of option (a) pin the
+  namespace unit as above. To be handled in that phase as well, from the
+  independent review of #268:
+  - m2, the **helper's** further sandbox: a `SystemCallFilter=` sized to
+    netlink work, `ProtectClock=`, `ProtectHostname=`, `ProtectKernelLogs=`,
     `RestrictRealtime=`, and `InaccessiblePaths=` over the D-Bus and systemd
-    private sockets as a second barrier to the `AF_NETLINK`-only family;
+    private sockets as a second barrier to the `AF_NETLINK`-only family.
+    Of these, only `RestrictRealtime=` and the system call filter carry
+    over to the namespace unit; the others build a mount namespace and are
+    excluded from it by n3 (table above). The helper's are sized with its
+    body (the helper configures links, not mounts, so n3 does not bind it);
   - n1, the decoy's `Requires=azazel-decoy-netd.service` is not a
-    guarantee: when the helper's `ConditionPathExists=` (its grant marker)
-    does not hold, systemd skips the helper and counts that as success, so a
-    future grant of the decoy alone would let it try to start without the
-    helper having run. It would fail for want of the namespace, but that is
-    not something the dependency guarantees. To be closed in that phase, for
-    example by granting the helper and the decoy together, or by making the
-    decoy conditional on the namespace existing;
+    guarantee by itself: when the helper's `ConditionPathExists=` (its grant
+    marker) does not hold, systemd skips the helper and counts that as
+    success. **Closed** by granting the three units together or not at all
+    (above); the same holds for the helper's `Requires=` on the namespace
+    unit;
   - n2, the decoy combines `PrivateUsers=yes` with `NetworkNamespacePath=`.
-    Whether joining (`setns`) a network namespace owned by the initial user
-    namespace succeeds in the order systemd actually applies these settings
-    has not been checked; it is an item for that phase's VM run;
+    **VM-checked: it works** (above; a mechanism check, not hardware
+    evidence). The decoy unit as rendered has still not been run;
 - **generation measurement before any grant.** The day the tier can be
   granted, the exposure units' files must be in the generation's measured
   set (`measure_scoped_unit_files`, which takes the policy's scope) and so in
@@ -454,10 +580,11 @@ does, so the Deception Lite row stays `loopback-only`.
   granted and not enough once they may be;
 - **HG-02 records.** The HG-02 record validator expects every non-root
   governed daemon exactly once. A record captured before P1 has no `azdecoy`
-  attempt and no longer conforms; HG-02 is to be captured afresh. The root
-  helper is not an HG-02 subject (the runbook never runs as root); that it
-  cannot reach the service manager rests on its sandbox and belongs to the
-  new decoy-sandbox gate (§7 Q10);
+  attempt and no longer conforms; HG-02 is to be captured afresh. The two
+  root units (the helper and the namespace unit) are not HG-02 subjects
+  (the runbook never runs as root); that they cannot reach the service
+  manager rests on their sandboxes (netlink as their only family) and belongs to the new decoy-sandbox gate
+  (§7 Q10). The namespace unit adds no account, so it changes no record;
 - the per-boot isolation probe, its boot-bound evidence and the activation
   pass consuming it (only then can the tier be granted);
 - how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
@@ -466,11 +593,16 @@ does, so the Deception Lite row stays `loopback-only`.
   shape and intake path §11 implements) and the decoy's `ExecStartPre=` probe
   rerun;
 - `docs/IMPLEMENTATION_SPEC.md` §4 (near line 604) named `azazel-enforced` as
-  the only daemon with `CAP_NET_ADMIN`; this PR corrects that sentence to
-  name the decoy network helper as the one other holder.
+  the only daemon with `CAP_NET_ADMIN`; #268 corrected that sentence to
+  name the decoy network helper as the one other holder, and option (a)
+  adds the sentence that the namespace unit is the only holder of
+  `CAP_SYS_ADMIN`.
 
-Unit tests only. No `nft` or `ip` is run, no namespace is created and no real
-socket is opened by any test; none of this is VM or hardware evidence.
+Unit tests only (`tests/unit/test_decoy_exposure_p1.py`,
+`tests/unit/test_decoy_namespace_unit.py` and the shared hardening, activation
+and pass tests). No `nft`, `ip` or `unshare` is run, no namespace is created
+and no real socket is opened by any test; none of this is VM or hardware
+evidence.
 
 ## 11. P2 as implemented
 
