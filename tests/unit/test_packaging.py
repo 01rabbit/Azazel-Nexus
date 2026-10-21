@@ -34,6 +34,7 @@ EXPECTED_BOOTSTRAP_TMPFILES = (
     b"d /run/azazel-mio-identity 0750 root azmio - -\n"
     b"d /etc/azazel/mio-profile 0700 root root - -\n"
     b"d /run/azazel-activation 0755 root root - -\n"
+    b"d /run/netns 0755 root root - -\n"
 )
 
 GOVERNED = tuple(d.name for d in CORE_UNITS)

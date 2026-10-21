@@ -629,6 +629,42 @@ log (`/var/lib/azazel/edge-intake/decoy-refusals.jsonl`) keeps the uid and code
 of each, nothing more. No address or payload is ever shown. Until the decoy daemon
 ships (a later phase of #196), nothing sends an interaction, so the count stays 0.
 
+### Deception Lite decoy network (#196)
+
+The decoy's network is built by two one-shot units, never granted in this
+build: `azazel-decoy-nsd.service` creates the namespace
+`/run/netns/azazel-decoy` and the veth pair, `azazel-decoy-netd.service` the
+bridge `az-decoy0` and the `inet azazel_decoy` nftables table, which drops
+everything to and from the decoy until approved prefixes exist
+([prerequisites §13](deception-redirect-prerequisites.md#13-the-namespace-units-and-the-helpers-bodies-as-implemented)).
+
+**Existing objects are never overwritten.** The helper refuses to start, and
+changes nothing, while a bridge `az-decoy0` or a table `inet azazel_decoy`
+already exists, and its ruleset is loaded with `create table`, which never
+replaces an existing table of that name. Remove a stale one by hand after a
+crash. On stop it removes the table only after the bridge and the host end
+are gone; if that fails, the table stays and the stop is reported as failed.
+Each normal start logs one expected `ip`/`nft` "does not exist" error per
+check, after a line saying so.
+
+**`/run/netns`** is created `0755 root root` by the package's tmpfiles rule,
+so that the decoy's account can reach its namespace handle; do not tighten it.
+
+**Fallback tunnel devices.** If the host loads tunnel modules (`sit`, `ipip`,
+`ip_gre`, `ip6_tunnel`, ...), the kernel creates their fallback devices
+(`sit0`, `tunl0`, ...) in every new network namespace, and the decoy refuses
+to start in a namespace that holds them. Such a host sets, persistently,
+
+```
+# /etc/sysctl.d/60-azazel-decoy.conf
+net.core.fb_tunnels_only_for_init_net = 2
+```
+
+so that fallback devices are created only in the host's namespace. The
+namespace unit never changes this value and never deletes such devices; a
+Debian 13 host with no tunnel module loaded needs nothing (its new namespace
+holds `lo` alone).
+
 The explainer's operator leaf also contains `recent.json` with up to 20 recent
 incidents; status renders five. Rows show pseudonymous ids, open/closed state,
 severity/count, technique ids, sanitized summaries and knowledge citations.

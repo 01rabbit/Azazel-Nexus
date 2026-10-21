@@ -68,6 +68,9 @@ def test_bootstrap_tmpfiles_rule_is_exact_and_does_not_clean_other_paths():
         b"d /run/azazel-mio-identity 0750 root azmio - -",
         b"d /etc/azazel/mio-profile 0700 root root - -",
         b"d /run/azazel-activation 0755 root root - -",
+        # #196 §13: the decoy must be able to traverse it (not 0750 by the
+        # namespace unit's UMask=0027).
+        b"d /run/netns 0755 root root - -",
     ]
 
 

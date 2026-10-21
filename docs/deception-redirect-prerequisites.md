@@ -2,7 +2,7 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (I4 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11); the namespace unit of option (a) declared (§10).**
+Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11); the namespace unit of option (a) declared (§10); the decoy body (§12) and the bodies of the namespace unit and the helper (§13) implemented; nothing is granted.**
 Related: [integrated defensive loop](integration-loop.md) §I4 ·
 [Deception Lite](deception-lite.md) ·
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
@@ -360,7 +360,9 @@ These hold in every phase. A change that needs one relaxed is out of scope.
 ## 9. What this does not establish
 
 Only P1's declarations and boundary, the namespace unit's declaration
-(§10) and P2's event and intake path (§11) are implemented. Nothing here shows
+(§10), P2's event and intake path (§11), the decoy's body (§12) and the
+bodies of the namespace unit and the helper (§13) are implemented, and none
+of the three units is ever granted. Nothing here shows
 that Edge can express or apply a redirect, that the namespace design isolates
 on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
 is a later phase with its own evidence.
@@ -438,9 +440,9 @@ and the profile now follows the configuration that did:
 | | `azazel-decoy-nsd.service` (namespace unit) |
 | --- | --- |
 | account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller, this unit and the helper |
-| capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN`, `AmbientCapabilities=` empty, `NoNewPrivileges=yes`; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle needs it) |
+| capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN` (since §13; `CAP_SYS_ADMIN` alone before), `AmbientCapabilities=` empty, `NoNewPrivileges=yes`; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle and `setns` need it); `CAP_NET_ADMIN` is held by this unit and the helper only |
 | address families | `RestrictAddressFamilies=AF_NETLINK`, the family `ip netns add` was checked with; no `AF_UNIX`, so as root it cannot reach the service manager over D-Bus |
-| namespaces | `RestrictNamespaces=net` (replacing the shared `yes`): only a network namespace may be created |
+| namespaces | `RestrictNamespaces=net mnt` (replacing the shared `yes`; `net` alone before §13): a network namespace, and the private mount namespace `ip -n` makes for itself |
 | system calls | `SystemCallFilter=@system-service mount umount2 unshare setns`, then `SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset` (the deny list must follow the allow list). `setns` is allowed: `ip netns add` returns to its own namespace after creating one, and without it is killed with SIGSYS (VM-checked) |
 | file-system sandbox | **none**: the seven `SHARED_HARDENING` settings that build a mount namespace (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`) are left out, and it declares no `ReadWritePaths=`, `RuntimeDirectory=`, `ProtectProc=`, `ProcSubset=`, `InaccessiblePaths=`, `PrivateNetwork=` or any other setting that builds one. `/run/netns` is created by `ip` itself; `ServiceProfile` refuses `/run/netns` as a declared writable path on every unit |
 | kept from the shared set | `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `IPAddressDeny=any`, `UMask=0027`; plus `RestrictRealtime=yes` |
@@ -489,11 +491,10 @@ tripwire and the unit table (`decoy-namespace`), never in
 `ACTIVATION_UNIT_ALLOWLIST` or a v2 approval. The installer installs,
 preset-disables and masks it; it never enables or starts it.
 
-**The body, when it is written.** The VM-checked configuration ran
+**The body** is in §13. The VM-checked configuration ran
 `ExecStart=/usr/sbin/ip netns add <name>` and `ExecStop=/usr/sbin/ip netns
-delete <name>`. The unit keeps its refusing executable in this build: it is
-never granted, and the namespace-creating step is the body phase's, which
-may turn it into exactly those two lines for `azazel-decoy`.
+delete <name>`; the body runs the same two acts first and last, through its
+fixed executable, and configures the inside in between.
 
 The chain is namespace unit → helper → decoy: the helper has `After=` and
 `Requires=` on the namespace unit, the decoy on the helper.
@@ -551,7 +552,7 @@ rest denied) is not established and is checked in the body phase.
 
 - the bodies of the namespace unit and the helper (`/run/netns/azazel-decoy`,
   `az-decoy0`, veth, forwarding-deny rules, their removal on stop, in
-  reverse order), in one phase. P1's tests pin the helper to exactly
+  reverse order), in one phase. **Done in §13**, with m2 below. P1's tests pin the helper to exactly
   `CAP_NET_ADMIN` and `AF_NETLINK`; the tests of option (a) pin the
   namespace unit as above. To be handled in that phase as well, from the
   independent review of #268:
@@ -588,7 +589,9 @@ rest denied) is not established and is checked in the body phase.
 - the per-boot isolation probe, its boot-bound evidence and the activation
   pass consuming it (only then can the tier be granted);
 - how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
-  not a drop-in, which #253 refuses on every grantable unit;
+  not a drop-in, which #253 refuses on every grantable unit. §13 states the
+  fixed decoy subnet statically in the profile; the commissioned prefix
+  (§7 Q9) is still to come;
 - the decoy daemon (responders, and sending P2's `EnvironmentEvent`s, whose
   shape and intake path §11 implements) and the decoy's `ExecStartPre=` probe
   rerun;
@@ -865,3 +868,246 @@ commissioned prefix reaching the decoy (and then binding the catalogued
 address, `open_listener`, instead of the namespace wildcard); IPv6; the
 `IPAddressAllow=` question of §10. A loopback run in a container is not VM
 or hardware evidence; `HG-06` and the decoy-sandbox gate stay open.
+
+## 13. The namespace unit's and the helper's bodies as implemented
+
+The bodies deferred in §10. `az-decoy-nsd` and `az-decoy-netd` now build the
+decoy network and take it down. Like the decoy (§12) they still **admit
+nothing**: the `DECEPTION_EXPOSURE` tier is withheld as
+`isolation_evidence_absent` on every pass, no policy can name the three
+units, and the installer installs, preset-disables and masks them. The
+isolation evidence producer is the next phase.
+
+**Who does what, and why the namespace unit needs `CAP_NET_ADMIN`.** Every
+act inside the decoy namespace (`lo` up, an address, a route) needs
+`CAP_NET_ADMIN` in that namespace, and reaching the inside (`ip -n`) needs
+`setns`, so `CAP_SYS_ADMIN`. The helper has no `setns`; the namespace unit
+had no `CAP_NET_ADMIN`. So with the privileges of §10 nobody could configure
+the inside. Checked in a privileged container (`setpriv --bounding-set`;
+a mechanism check, not VM or hardware evidence): with `CAP_SYS_ADMIN` alone,
+`ip netns add` succeeds, and `ip -n <ns> link set lo up` and creating the veth
+pair are refused (`RTNETLINK answers: Operation not permitted`); with
+`CAP_SYS_ADMIN` and `CAP_NET_ADMIN` both succeed. The namespace unit
+therefore holds exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`. That adds nothing real:
+a compromised body of that unit is host root already (§10). `ip -n` also
+makes a private mount namespace for itself after `setns` (strace:
+`setns(CLONE_NEWNET)`, `unshare(CLONE_NEWNS)`, a slave remount of `/`, a fresh
+`/sys`), so its `RestrictNamespaces=` is `net mnt`. Both are pinned exactly in
+`ServiceProfile`; `CAP_SYS_ADMIN` is still this unit's alone, and
+`CAP_NET_ADMIN` is held by this unit and the helper and by no other.
+
+| | `azazel-decoy-nsd.service` (`NAMESPACE_STEPS`) | `azazel-decoy-netd.service` (`HELPER_STEPS`) |
+| --- | --- | --- |
+| where | host namespace, and the decoy namespace through `ip -n` | host namespace only; never enters the decoy's |
+| checks first | none: `ip netns add` and the veth pair each refuse to replace an existing one | `ip link show dev az-decoy0` and `nft list table inet azazel_decoy` must both **fail** (find nothing); if either finds something, it exits 1 having changed nothing |
+| start | 1. `ip netns add azazel-decoy`; 2. `ip link add name az-decoy-host0 type veth peer name az-decoy-ns0 netns azazel-decoy` (the decoy's end is created inside; `netns NAME` opens the handle, no `setns`); 3. `ip -n azazel-decoy link set dev lo up`; 4. `… address add 10.255.196.2/30 dev az-decoy-ns0`; 5. `… link set dev az-decoy-ns0 up`; 6. `… route add default via 10.255.196.1 dev az-decoy-ns0` | 1. `nft <NFT_RULESET>` (the rules first, one transaction, which `create table` makes fail if the table exists); 2. `ip link add name az-decoy0 type bridge`; 3. `ip address add 10.255.196.1/30 dev az-decoy0`; 4. `ip link set dev az-decoy-host0 master az-decoy0`; 5. `ip link set dev az-decoy0 up`; 6. `ip link set dev az-decoy-host0 up` |
+| `ExecStop=… stop` | `ip link delete az-decoy-host0` (the pair goes with it), then `ip netns delete azazel-decoy` | `ip link set dev az-decoy-host0 down`, `ip link delete az-decoy0`, then `nft delete table inet azazel_decoy`: the path is cut before the rules go, and if cutting it fails the table stays (exit 1) |
+
+The full paths are `/usr/bin/ip` (the file iproute2 installs on Debian 13;
+`/usr/sbin/ip` links to it) and `/usr/sbin/nft`. The decoy's end is
+`decoy_netns.DECOY_VETH` (`az-decoy-ns0`), imported from the decoy's own
+check (§12), so the two cannot differ; the host's end is `az-decoy-host0`;
+both fit `IFNAMSIZ`. The /30 has two hosts, the bridge (`.1`) and the decoy
+(`.2`). `azazel_nexus.decoy` still has no default bridge prefix; the
+commissioned prefix replaces this fixed one when §7 Q9 reaches the units.
+
+**Order, and nobody waits.** Namespace unit, then helper, then decoy, as
+declared in §10. The helper needs the host end of the pair, and the namespace
+unit made it before it exited, so nothing polls for a link. Letting the
+helper create the pair and the namespace unit configure the inside afterwards
+would need the namespace unit to run after the helper (the declared chain
+reversed) or to wait for it (the unit with `CAP_SYS_ADMIN` kept running, and
+a one-shot that waits for a unit ordered after it never finishes). The
+decoy's start-time check cannot wait usefully either: it has no capability to
+configure what it finds. The namespace unit runs six short commands and exits.
+
+**Not chosen: systemd holding the namespace** (`PrivateNetwork=yes` with
+`JoinsNamespaceOf=`, §10). It removes `CAP_SYS_ADMIN`, but the host side
+(bridge, the host end, host rules) still needs a `CAP_NET_ADMIN` process in
+the host namespace and the inside needs one in the decoy's, so it would be two
+`CAP_NET_ADMIN` units in place of one unit holding both; there would be no
+`/run/netns/azazel-decoy`, which the decoy's own namespace check (§12) compares
+against; and its ordering and lifetime are not VM-checked. Not clearly
+simpler, so option (a) stays.
+
+**How a command is run** (`runtime/src/azazel_nexus_runtime/decoy_network.py`).
+`os.posix_spawn` of an argument tuple that is one of the module's constants
+(`run_fixed` refuses any other, before a process is made; the set is exactly
+the goldens of the tests), with an empty environment and `SIGPIPE` reset to
+its default in the child (`setsigdef`); no shell, nothing read back, the
+program's output goes to the unit's journal stream. `posix_spawn` needs no
+pipe, which matters: the namespace unit's filter denies `@ipc`, which holds
+`pipe` and `pipe2`, and `subprocess` opens one for every child. Each command
+has 2 s (`STEP_SECONDS`), then `SIGKILL`; the longest start (checks, every
+step, every undo) is thus well inside `TimeoutStartSec=30s` (a test checks
+it), so systemd never kills a start half-undone. Neither executable reads an
+argument (other than the single word `stop`, from its own `ExecStop=`), a
+file, the environment or a socket. `decoy_network` is the only module of the
+distribution that names `posix_spawn`, and only the two executables import it
+(`tests/unit/test_runtime_boundary.py`; no module on the model acquisition
+path may import it either). The names and addresses live in the leaf
+`decoy_addresses.py`, which imports nothing; the unit renderer
+(`hardening.py`) takes the decoy subnet from there and never loads the module
+that starts processes (a test checks it).
+
+**Fail closed.** The helper changes nothing that is already there: if the
+bridge or the table exists (a crash, a second start), it exits 1 before its
+first step. The two checks print the expected `ip`/`nft` "does not exist"
+errors to the journal on every normal start; the line before them says so.
+The table is also never replaced: its ruleset begins with `create table`,
+which fails if one exists, and the whole transaction is then refused (so
+nothing races the check). A step that fails or cannot be started stops the
+start: the undo commands of the steps already done run in reverse, and the
+executable exits 1 with the number of failed undos (systemd runs no
+`ExecStop=` after a failed one-shot start, so the body cleans up after
+itself). A step that **timed out** may have half-made its object, so its own
+undo runs as well; a step that failed outright made nothing, and may have
+failed because the object already existed, which is not its to remove.
+`stop` runs every undo in reverse and exits 1 if any failed. **The table is
+a guard:** its undo runs only if every undo after it succeeded, at start and
+at stop, so while the bridge or the host end may still be there the rules
+stay (review of #273; before, a failed bridge deletion was followed by the
+table's). The namespace unit has no guard: deleting the namespace takes the
+pair with it. Leftovers of a crash make the next start of the namespace unit
+fail at its first step, which then removes only what it made itself.
+
+**The rules** (`NFT_RULESET`, a golden in the tests). One `inet` table,
+`azazel_decoy`, made with `create table`, so an existing table of that name
+is never replaced or added to. Chains on the `forward`, `input` and
+`output` hooks with `policy accept`: this table only ever drops (an accept
+here never overrides another table's drop), so it adds isolation and opens
+nothing.
+
+- forward, toward the decoy: TCP from a source in the set `approved_v4` to
+  `10.255.196.2`, ports 2222, 2323 and 8080 (`decoyd.SERVED`; a test keeps
+  them equal), accepted; everything else out of `az-decoy0` dropped;
+- forward, from the decoy: only established replies from those ports to an
+  approved peer; everything else in from `az-decoy0` dropped. The decoy's
+  report to the intake goes over a Unix socket, so no outbound network path
+  is needed;
+- input: everything from `az-decoy0` to the host dropped (management,
+  control plane, every host service);
+- output: everything from the host to `az-decoy0` dropped.
+
+**`approved_v4` is empty, and nothing in this build adds to it.** Until the
+commissioned scope arrives (§7 Q9), every packet to and from the decoy is
+dropped, so even a granted tier would not be reachable from outside. The set
+is the frame Q9 fills.
+
+**The decoy's `IPAddressAllow=`.** A VM run of the real decoy unit (Debian 13,
+systemd 257.13, `main` 454955e, with only the marker and controller
+dependencies removed; a mechanism check, not hardware evidence) showed that
+`IPAddressDeny=any` alone also drops what the decoy receives: a connect from
+inside the namespace timed out, and with an allowance the banner came back.
+The decoy profile therefore states `IPAddressAllow=10.255.196.0/30`
+(`decoy_addresses.DECOY_SUBNET`), statically because #253 refuses drop-ins, and
+keeps `IPAddressDeny=any`. Not `localhost`, which helped only the test.
+`ServiceProfile` requires exactly that one allowance on the decoy. The filter
+matches the peer's address, so a peer outside the /30 is denied by the unit as
+well as by the table; prefixes Q9 approves will have to be added here too.
+
+**Fallback tunnel devices.** A kernel with tunnel modules loaded (`sit`,
+`ipip`, `ip_gre`, ...) creates their fallback devices (`sit0`, `tunl0`, ...)
+in every new namespace unless `net.core.fb_tunnels_only_for_init_net` says
+otherwise, and the decoy then refuses to start (§12). The namespace unit does
+**not** change that sysctl and does not delete such devices: deleting them
+would mean reading which exist (nothing is read back here) or a list of names
+that varies by kernel. A refusal of the decoy is the fail-closed outcome. On
+Debian 13 by default the new namespace holds `lo` alone (VM-checked); in the
+container run below, once a `sit` device had loaded the module, `sit0` did
+appear in the namespace, which is exactly the case the decoy refuses. The
+operator's setting is in
+[operations](operations.md#deception-lite-decoy-network-196) (value `2`).
+
+**m2, the helper's further sandbox** (review of #268): `ProtectClock=yes`,
+`ProtectHostname=yes`, `ProtectKernelLogs=yes`, `RestrictRealtime=yes`, and
+`InaccessiblePaths=-/run/dbus/system_bus_socket` and `-/run/systemd/private`
+(a second barrier behind `AF_NETLINK`), with `ExecStop=`, pinned whole as
+`DECOY_HELPER_SANDBOX`. A narrower `SystemCallFilter=` for the helper is not
+in this change; the shared `@system-service` stays, and narrowing it is a VM
+item. `ExecStop=`, `ExecStopPost=`, `ExecStartPost=` and `ExecReload=` are
+now reserved keys: only the two pinned extras name one.
+
+**Tests** (`tests/unit/test_decoy_network_body.py`, with the profile tests
+updated). A fake executor records every command: the exact command lists of
+both units as goldens, in order; the exact ruleset as a golden; a failure at
+each of the six steps of each unit, with exactly the undo that follows;
+`stop` in reverse, and past a failed undo; every other argument refused with
+nothing run; `posix_spawn` with the absolute path, a constant argument list,
+an empty environment and `setsigdef=(SIGPIPE,)` only, once in the module;
+`run_fixed` refusing every argument list that is not a golden; the helper
+changing nothing when the bridge or the table exists; the guard at start and
+at stop; the undo after a timeout; the longest start inside
+`TimeoutStartSec=`; `hardening.py` not importing `decoy_network`; no `subprocess`,
+environment, `open`, `setns` or `unshare` in either module; the veth name,
+namespace, bridge, ports and subnet agreeing with `decoy_netns`, `decoyd`,
+`azazel_nexus.decoy` and the profiles. An autouse fixture makes any real
+spawn fail the test. The profile tests pin the new capability set, `net mnt`,
+both `ExecStop=` lines, the helper's sandbox and the decoy's single allowance,
+and refuse the nearby variations.
+
+**Container run** (a privileged Debian 13 container on a 6.8 kernel with
+iproute2 and nftables, each executable under `setpriv --bounding-set` with
+its unit's capabilities, without systemd's sandbox; a mechanism check, not VM
+or hardware evidence): the namespace unit with `CAP_SYS_ADMIN` alone failed
+at step 2 and removed the namespace it had made; with both it built the
+namespace (`lo`, `az-decoy-ns0` with `10.255.196.2/30`, the default route);
+the helper with `CAP_NET_ADMIN` alone loaded the table and attached the host
+end to `az-decoy0`. A listener on 2222 inside the namespace was not reachable
+from the host (timeout), and the host's `.1` was not reachable from inside
+(timeout); with the table removed by hand the same connect got the banner, so
+the drop was the table's. `stop` removed the bridge, the pair and the
+namespace. The helper started with no pair present failed at step 4 and
+removed its bridge and table. After the review of #273 (same container, the
+shell's umask at `0027` as in the units): a second start of the running helper
+stopped at its first check and changed nothing; with only a stale table left,
+it stopped at the second check and the table (with a marker chain) was
+untouched; the ruleset loaded over an existing table failed (`File exists`)
+and left it as it was; a stop after the bridge had gone by hand failed the
+bridge deletion, kept the table and exited 1; a clean stop and a new start of
+both units succeeded. With `/run/netns` made by `ip netns add` under
+`umask 0027` it was `0750` and an unprivileged user's `stat` of the handle was
+refused; made `0755` first, as the tmpfiles rule now does, the same `stat`
+succeeded (the handle itself needs only the directory's search bit).
+
+**`/run/netns`.** The namespace unit runs with `UMask=0027`, so if
+`ip netns add` creates `/run/netns` it is `0750` and the decoy (`azdecoy`) can
+no longer reach `/run/netns/azazel-decoy` for its namespace check (§12). The
+package's tmpfiles rule (`packaging/tmpfiles.d/azazel-nexus-bootstrap.conf`)
+therefore creates `d /run/netns 0755 root root - -` at boot, before the
+activation controller, and `ip netns add` then finds it in place. A test pins
+the line. The rule declares no writable path for any unit; `ServiceProfile`
+still refuses `/run/netns` as one.
+
+**To check on the VM (P3; a mechanism check, not hardware evidence).** The
+coordinator ran 1 to 5 on the first revision of this change (Debian 13,
+systemd 257.13; recorded on #273): the three units started in order, the
+table blocked both directions, the banner came back with the table removed
+by hand, a stop left nothing and a restart worked. That VM already had a
+`0755` `/run/netns`, so 6 is still open, and 1 to 5 are to be repeated on
+this revision:
+
+1. the three units as rendered, started in order with grant markers placed by
+   hand: `ip -n` under the namespace unit's filter (`@ipc`, `@timer` denied)
+   and `RestrictNamespaces=net mnt`, and a **Python** body under that filter
+   (§10 left this open);
+2. the helper under its sandbox: `ProtectKernelModules=yes` with the
+   `bridge`, `veth` and `nf_tables` modules not yet loaded, `ProtectClock=`,
+   `ProtectHostname=`, `InaccessiblePaths=`;
+3. the decoy started after both (`listening ... on ports 2222, 2323, 8080`)
+   with `IPAddressAllow=10.255.196.0/30`: reachable from `10.255.196.1` with
+   the table removed by hand, not reachable with it in place, and not
+   reachable from another host;
+4. `systemctl stop azazel-decoy-nsd.service` stopping the decoy, then the
+   helper, then the namespace unit, leaving no `az-decoy*` link, no
+   `azazel_decoy` table and no `/run/netns/azazel-decoy`;
+5. a start of either unit that fails half-way leaving nothing behind, and a
+   start after a clean stop succeeding; a second start of the helper while it
+   runs, and a stop after the bridge was removed by hand, leaving the table;
+6. from a clean `/run/netns` (none at boot): the tmpfiles rule making it
+   `0755`, and the decoy's namespace check passing as `azdecoy`.
+
+**Not done here:** the per-boot isolation probe and its evidence (so the tier
+stays withheld); approved prefixes (§7 Q9) in the set and in the decoy's
+allowance; a narrower system call filter for the helper; IPv6; the `HG-06`
+and decoy-sandbox hardware gates.

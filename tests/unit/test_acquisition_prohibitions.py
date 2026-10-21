@@ -388,3 +388,18 @@ def test_the_scans_would_notice() -> None:
         for alias in node.names
     }
     assert "threading" in roots, "the background scan would not have noticed a thread"
+
+
+@pytest.mark.parametrize("module", ACQUISITION_PATH, ids=ids(ACQUISITION_PATH))
+def test_no_acquisition_module_reaches_the_decoy_network_runner(module) -> None:
+    """`decoy_network` is the one module that spawns (#196 §13); nothing on
+    the acquisition path may import it or its executables."""
+
+    names = set()
+    for node in ast.walk(tree_of(module)):
+        if isinstance(node, ast.ImportFrom):
+            names.add((node.module or "").split(".")[-1])
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[-1] for alias in node.names)
+    assert not names & {"decoy_network", "decoy_nsd", "decoy_netd"}

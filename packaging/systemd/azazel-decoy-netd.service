@@ -3,9 +3,10 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # Runs once.
-# The only unit that holds CAP_NET_ADMIN, as a bounding set and never as an ambient capability: inside a namespace another one-shot unit creates, it would set up az-decoy0, the veth pair and the forwarding-deny rules from the commissioning render, and reads no decoy observation and no Edge decision.
-# It is root, so it gets netlink only and no AF_UNIX socket that could reach the service manager.
-# Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
+# It holds CAP_NET_ADMIN alone, as a bounding set and never as an ambient capability, in the host network namespace: with fixed nft and ip commands it loads the fixed decoy table first, then sets up az-decoy0 and attaches the host end of the veth pair the namespace unit made; ExecStop cuts the path and then removes the table.
+# It reads no decoy observation and no Edge decision.
+# It is root, so it gets netlink only and no AF_UNIX socket that could reach the service manager, whose private sockets are also inaccessible to it.
+# The activation pass never grants this unit in this build.
 
 [Unit]
 Description=Azazel-Nexus Deception Lite network helper
@@ -22,6 +23,13 @@ User=root
 ExecStart=/usr/libexec/azazel/az-decoy-netd
 RemainAfterExit=yes
 TimeoutStartSec=30s
+ExecStop=/usr/libexec/azazel/az-decoy-netd stop
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictRealtime=yes
+InaccessiblePaths=-/run/dbus/system_bus_socket
+InaccessiblePaths=-/run/systemd/private
 RestrictAddressFamilies=AF_NETLINK
 NoNewPrivileges=yes
 ProtectSystem=strict

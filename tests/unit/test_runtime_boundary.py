@@ -959,3 +959,47 @@ def test_identity_helper_is_the_only_privileged_prestart():
 
     prestarts = [(p.unit, value) for p in PROFILES for key, value in p.extra if key == "ExecStartPre"]
     assert prestarts == [("azazel-mio-locald.service", "+/usr/libexec/azazel/az-mio-identity")]
+
+
+#: The one module that starts a process with `posix_spawn` (#196 §13): the
+#: decoy network's fixed `ip` and `nft` commands, refused for any argument
+#: list that is not one of its constants. Matched by full path, like the
+#: socket exemptions.
+SPAWN_EXEMPT = {"decoy_network.py"}
+
+
+def _names_in(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    names |= {alias.name for node in ast.walk(tree)
+              if isinstance(node, ast.ImportFrom) for alias in node.names}
+    return names
+
+
+def test_only_the_decoy_network_module_names_posix_spawn():
+    spawning = {"posix_spawn", "posix_spawnp"}
+    offenders = sorted(
+        str(path.relative_to(REPO_ROOT))
+        for root in (RUNTIME, LIBRARY)
+        for path in root.rglob("*.py")
+        if _names_in(path) & spawning and not _exempt(path, SPAWN_EXEMPT)
+    )
+    assert offenders == []
+    assert _names_in(RUNTIME / "decoy_network.py") & spawning == {"posix_spawn"}
+
+
+def test_the_decoy_network_module_is_scanned_like_every_other_runtime_module():
+    """No socket exemption: it names no internet family, opens no socket."""
+
+    path = RUNTIME / "decoy_network.py"
+    assert not _exempt(path, EGRESS_EXEMPT) and not _exempt(path, LISTENER_EXEMPT)
+    assert not _names_in(path) & (INTERNET_FORBIDDEN | {"socket", "subprocess"})
+    # Only the two one-shot decoy executables import it.
+    importers = sorted(
+        source.name for source in RUNTIME.rglob("*.py")
+        if any(isinstance(node, ast.ImportFrom) and node.module
+               and node.module.split(".")[-1] == "decoy_network"
+               for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))))
+    )
+    assert importers == ["decoy_netd.py", "decoy_nsd.py"]

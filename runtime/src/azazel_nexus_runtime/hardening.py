@@ -58,12 +58,16 @@ from azazel_nexus.activation import (
     DECOY_NETWORK_HELPER_UNIT,
     DECOY_UNIT,
 )
+
+from .decoy_addresses import DECOY_SUBNET
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 from azazel_nexus_runtime.activation_markers import grant_marker_path
 
 __all__ = [
     "ALL_PROFILES",
+    "DECOY_HELPER_SANDBOX",
+    "DECOY_NAMESPACE_CAPABILITIES",
     "DECOY_NAMESPACE_PATH",
     "DECOY_NAMESPACE_SANDBOX",
     "DECOY_NAMESPACE_SHARED_OMISSIONS",
@@ -120,6 +124,9 @@ _RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
     "CapabilityBoundingSet", "AmbientCapabilities", "SystemCallFilter",
     "RestrictAddressFamilies", "ReadWritePaths",
     "InaccessiblePaths", "BindPaths", "BindReadOnlyPaths",
+    # A second program in a unit is a declaration too (#196 body): only the
+    # two one-shot decoy units name an `ExecStop=`, each in its pinned extra.
+    "ExecStop", "ExecStopPost", "ExecStartPost", "ExecReload",
 }
 
 
@@ -196,10 +203,10 @@ class ServiceProfile:
     #: listen inside the decoy network namespace, and it must declare that
     #: namespace (`NetworkNamespacePath=` exactly `DECOY_NAMESPACE_PATH`) and
     #: `PrivateUsers=yes`, hold no capability and not run as root. Like the
-    #: other two it keeps `IPAddressDeny=any` and, in this build, declares no
-    #: `IPAddressAllow=`: the commissioned prefix arrives in a later phase
-    #: (a drop-in cannot carry it, because #253 refuses drop-ins on every
-    #: grantable unit). The runtime half of the same boundary is the
+    #: other two it keeps `IPAddressDeny=any`; its only `IPAddressAllow=` is
+    #: the fixed decoy subnet (`decoy_addresses.DECOY_SUBNET`, #196 body),
+    #: stated statically because #253 refuses drop-ins on every grantable
+    #: unit; the commissioned prefix arrives in a later phase. The runtime half of the same boundary is the
     #: listener exemption in `tests/unit/test_runtime_boundary.py`: bind and
     #: listen, never connect.
     is_decoy_listener: bool = False
@@ -290,13 +297,15 @@ class ServiceProfile:
                 f"{self.unit}: CAP_SYS_ADMIN is held by "
                 f"{DECOY_NAMESPACE_UNIT} and by no other unit"
             )
-        # CAP_NET_ADMIN likewise belongs to exactly one unit, the one-shot decoy
-        # network helper, and that unit holds nothing else (#196 P1).
+        # CAP_NET_ADMIN belongs to exactly the two one-shot decoy units: the
+        # network helper (the host side) and the namespace unit (the inside,
+        # which only a process in the namespace can configure; #196 body).
         if (("CAP_NET_ADMIN" in self.capability_bounding_set)
-                != (self.unit == DECOY_NETWORK_HELPER_UNIT)):
+                != (self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_NAMESPACE_UNIT))):
             raise ValueError(
                 f"{self.unit}: CAP_NET_ADMIN is held by "
-                f"{DECOY_NETWORK_HELPER_UNIT} and by no other unit"
+                f"{DECOY_NETWORK_HELPER_UNIT} and {DECOY_NAMESPACE_UNIT} "
+                "and by no other unit"
             )
         if (self.unit == DECOY_NETWORK_HELPER_UNIT
                 and self.capability_bounding_set != ("CAP_NET_ADMIN",)):
@@ -311,6 +320,13 @@ class ServiceProfile:
                 f"{self.unit} would override the shared hardening; only "
                 f"{DECOY_NAMESPACE_UNIT} does, and only as declared"
             )
+        elif self.unit == DECOY_NETWORK_HELPER_UNIT:
+            # The helper's extra is pinned whole (#196 body, m2): it carries
+            # the reserved `InaccessiblePaths=` and `ExecStop=`, and nothing
+            # else may be added to or taken from it.
+            if self.extra != DECOY_HELPER_SANDBOX:
+                raise ValueError(
+                    f"{self.unit} states exactly DECOY_HELPER_SANDBOX in extra")
         else:
             # `extra` renders before the shared lines, so a shared key, an
             # identity, a capability or a path setting placed there would sit
@@ -331,14 +347,15 @@ class ServiceProfile:
                     f"{self.unit}: the decoy listener is {DECOY_UNIT}, runs "
                     "under its own account and holds no capability or group"
                 )
+            allowed = [value for key, value in self.extra if key == "IPAddressAllow"]
             if (settings.get("NetworkNamespacePath") != DECOY_NAMESPACE_PATH
                     or settings.get("PrivateUsers") != "yes"
                     or "PrivateNetwork" in settings
-                    or "IPAddressAllow" in settings):
+                    or allowed != [DECOY_SUBNET]):
                 raise ValueError(
                     f"{self.unit} listens only inside {DECOY_NAMESPACE_PATH}, "
-                    "with PrivateUsers=yes and no address allowance in this "
-                    "build"
+                    f"with PrivateUsers=yes and IPAddressAllow={DECOY_SUBNET} "
+                    "as its only address allowance"
                 )
         if self.is_model_host:
             settings = dict(self.extra)
@@ -422,18 +439,20 @@ class ServiceProfile:
         """The decoy namespace unit, pinned whole (#196 (a)).
 
         One unit, one privilege, one act: root so that its bounding set
-        reaches it, exactly `CAP_SYS_ADMIN`, route netlink only, no declared
+        reaches it, exactly `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`, route netlink
+        only, no declared
         writable path, and the sandbox, the shared overrides and the shared
         omissions exactly as declared. Anything different is a reviewed
         change to this declaration, not a profile that drifted.
         """
 
         if (self.account != "root"
-                or self.capability_bounding_set != ("CAP_SYS_ADMIN",)
+                or self.capability_bounding_set != DECOY_NAMESPACE_CAPABILITIES
                 or self.supplementary_groups):
             raise ValueError(
-                f"{self.unit} is root and holds exactly CAP_SYS_ADMIN and no "
-                "group; anything wider is a reviewed change to this declaration"
+                f"{self.unit} is root and holds exactly CAP_SYS_ADMIN and "
+                "CAP_NET_ADMIN and no group; anything wider is a reviewed "
+                "change to this declaration"
             )
         if self.address_families != ("AF_NETLINK",):
             raise ValueError(
@@ -582,9 +601,10 @@ NETNS_DIRECTORY = "/run/netns"
 #: never a parameter. Creating it needs a mount and CAP_SYS_ADMIN, which the
 #: CAP_NET_ADMIN helper does not hold and cannot under its sandbox, so per
 #: the design (option (a), docs/deception-redirect-prerequisites.md §5, §10)
-#: a third one-shot unit, `azazel-decoy-nsd.service`, only creates it. In
-#: this build that unit's executable refuses and exits, so nothing creates
-#: it, and a decoy unit started anyway fails at namespace setup before its
+#: a third one-shot unit, `azazel-decoy-nsd.service`, creates it and
+#: configures its inside (`decoy_network.NAMESPACE_STEPS`, #196 body). The
+#: unit is never granted in this build, so on a node nothing creates it, and
+#: a decoy unit started anyway fails at namespace setup before its
 #: executable runs.
 DECOY_NAMESPACE_PATH = f"{NETNS_DIRECTORY}/azazel-decoy"
 
@@ -627,8 +647,12 @@ DECOY_NAMESPACE_SHARED_OMISSIONS: tuple[str, ...] = (
 #: what it replaces them with (#196 (a)). Pinned: `ServiceProfile` refuses
 #: any other override, on that unit or any other.
 #:
-#: * `RestrictNamespaces=net`: of every namespace type, only a network
-#:   namespace may be created (`unshare(CLONE_NEWNET)`).
+#: * `RestrictNamespaces=net mnt`: of every namespace type, only a network
+#:   namespace (`ip netns add`) and a mount namespace. The second is what
+#:   `ip -n` makes for itself after `setns` into the decoy namespace, to
+#:   mount that namespace's `/sys` without it reaching the host (strace-checked
+#:   in a container, #196 body). It adds nothing a unit with CAP_SYS_ADMIN,
+#:   `mount` and no file-system sandbox could not already do on the host.
 #: * `SystemCallFilter=`, two lines in this order: the shared
 #:   `@system-service` set plus `mount`, `umount2`, `unshare` and `setns`
 #:   (the bind mount of the namespace handle, its removal, the namespace
@@ -638,7 +662,7 @@ DECOY_NAMESPACE_SHARED_OMISSIONS: tuple[str, ...] = (
 #:   never needs: asynchronous I/O, ownership changes, IPC, keyrings, memory
 #:   locking, identity changes, timers and `capset`.
 DECOY_NAMESPACE_SHARED_OVERRIDES: tuple[tuple[str, str], ...] = (
-    ("RestrictNamespaces", "net"),
+    ("RestrictNamespaces", "net mnt"),
     ("SystemCallFilter", "@system-service mount umount2 unshare setns"),
     ("SystemCallFilter",
      "~@aio @chown @ipc @keyring @memlock @setuid @timer capset"),
@@ -656,7 +680,41 @@ DECOY_NAMESPACE_SANDBOX: tuple[tuple[str, str], ...] = (
     # helper and the decoy first) is the hook for removing it last.
     ("RemainAfterExit", "yes"),
     ("TimeoutStartSec", "30s"),
+    # Removes the veth pair and the namespace, after the helper and the decoy
+    # have stopped (#196 body). The same fixed executable, one fixed word.
+    ("ExecStop", "/usr/libexec/azazel/az-decoy-nsd stop"),
     ("RestrictRealtime", "yes"),
+)
+
+#: The decoy namespace unit's bounding set (#196 body). CAP_SYS_ADMIN to
+#: create the namespace and to enter it (`setns`); CAP_NET_ADMIN because
+#: every act inside it (`lo` up, an address, a route, the veth pair) needs
+#: CAP_NET_ADMIN in that namespace, and only a process inside it can do them
+#: (container-checked: with CAP_SYS_ADMIN alone `ip -n ... link set lo up`
+#: is refused, EPERM). The helper cannot do them: it has no `setns`. Adding
+#: CAP_NET_ADMIN here adds nothing real to a unit that is already host root
+#: when compromised (see `DECOY_NAMESPACE_SHARED_OMISSIONS`).
+DECOY_NAMESPACE_CAPABILITIES: tuple[str, ...] = ("CAP_SYS_ADMIN", "CAP_NET_ADMIN")
+
+#: The decoy network helper's own settings, pinned whole (#196 body, m2 of
+#: the review of #268). On top of the shared sandbox: the clock, the host
+#: name and the kernel log are out of reach, no realtime scheduling, and
+#: the D-Bus and systemd private sockets are inaccessible, a second barrier
+#: behind `AF_NETLINK` as its only family. `-` keeps a host without one of
+#: them from failing the unit at namespace setup.
+DECOY_HELPER_SANDBOX: tuple[tuple[str, str], ...] = (
+    # Stays active after it ran, so that stopping it (and, through
+    # Requires=, the decoy first) removes the host side only after the decoy
+    # has stopped.
+    ("RemainAfterExit", "yes"),
+    ("TimeoutStartSec", "30s"),
+    ("ExecStop", "/usr/libexec/azazel/az-decoy-netd stop"),
+    ("ProtectClock", "yes"),
+    ("ProtectHostname", "yes"),
+    ("ProtectKernelLogs", "yes"),
+    ("RestrictRealtime", "yes"),
+    ("InaccessiblePaths", "-/run/dbus/system_bus_socket"),
+    ("InaccessiblePaths", "-/run/systemd/private"),
 )
 
 
@@ -1172,26 +1230,28 @@ PROFILES: tuple[ServiceProfile, ...] = (
         unit_type="oneshot",
         runtime_directory="",
         # Root only so that the bounding set reaches it without an ambient
-        # grant; the bounding set is CAP_SYS_ADMIN and nothing else.
-        capability_bounding_set=("CAP_SYS_ADMIN",),
+        # grant; the bounding set is CAP_SYS_ADMIN and CAP_NET_ADMIN.
+        capability_bounding_set=DECOY_NAMESPACE_CAPABILITIES,
         extra=DECOY_NAMESPACE_SANDBOX,
         shared_overrides=DECOY_NAMESPACE_SHARED_OVERRIDES,
         shared_omissions=DECOY_NAMESPACE_SHARED_OMISSIONS,
         rationale=(
-            "Runs once. The only unit that holds CAP_SYS_ADMIN, as a bounding "
-            "set and never as an ambient capability: it would create the "
-            "decoy network namespace at /run/netns/azazel-decoy and do "
-            "nothing else. It gets route netlink only, may create only a "
-            "network namespace, and its syscall filter adds only mount, "
-            "umount2, unshare and setns to the shared set and takes back what "
-            "that act never needs. It is the one unit without the shared "
-            "file-system sandbox: a mount namespace would keep the namespace "
-            "handle from the host, and with CAP_SYS_ADMIN and mount that "
-            "sandbox was never a wall for it. A compromised body would be "
-            "host root; its containment is a fixed body that takes no input, "
-            "static review and a later LSM profile. Its body is a later phase of "
-            "#196; in this build the executable refuses and exits, and the "
-            "activation pass never grants this unit"
+            "Runs once. The only unit that holds CAP_SYS_ADMIN, with "
+            "CAP_NET_ADMIN, as a bounding set and never as an ambient "
+            "capability: it creates the decoy network namespace at "
+            "/run/netns/azazel-decoy, the veth pair with the decoy's end inside "
+            "it, and the inside's fixed address and route, with fixed ip "
+            "commands and nothing else; ExecStop removes the pair and the "
+            "namespace. It gets route netlink only, may create only a network "
+            "namespace and the mount namespace ip -n makes for itself, and its "
+            "syscall filter adds only mount, umount2, unshare and setns to the "
+            "shared set and takes back what that act never needs. It is the "
+            "one unit without the shared file-system sandbox: a mount namespace "
+            "would keep the namespace handle from the host, and with "
+            "CAP_SYS_ADMIN and mount that sandbox was never a wall for it. A "
+            "compromised body would be host root; its containment is a fixed "
+            "body that takes no input, static review and a later LSM profile. "
+            "The activation pass never grants this unit in this build"
         ),
     ),
     ServiceProfile(
@@ -1221,23 +1281,18 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # Root only so that the bounding set reaches it without an ambient
         # grant; the bounding set is CAP_NET_ADMIN and nothing else.
         capability_bounding_set=("CAP_NET_ADMIN",),
-        extra=(
-            # Stays active after it ran, so that stopping it (and, through
-            # Requires=, the decoy first) is the hook a later phase uses to
-            # remove the rules only after the decoy has stopped.
-            ("RemainAfterExit", "yes"),
-            ("TimeoutStartSec", "30s"),
-        ),
+        extra=DECOY_HELPER_SANDBOX,
         rationale=(
-            "Runs once. The only unit that holds CAP_NET_ADMIN, as a bounding "
-            "set and never as an ambient capability: inside a namespace another "
-            "one-shot unit creates, it would set up az-decoy0, the veth pair "
-            "and the forwarding-deny rules from the commissioning render, and "
-            "reads no decoy observation and no Edge decision. It is root, so it "
-            "gets netlink only and no AF_UNIX socket that could reach the "
-            "service manager. Its body is a later phase of #196; in this "
-            "build the executable refuses and exits, and the activation pass "
-            "never grants this unit"
+            "Runs once. It holds CAP_NET_ADMIN alone, as a bounding set and "
+            "never as an ambient capability, in the host network namespace: "
+            "with fixed nft and ip commands it loads the fixed decoy table "
+            "first, then sets up az-decoy0 and attaches the host end of the "
+            "veth pair the namespace unit made; ExecStop cuts the path and then "
+            "removes the table. It reads no decoy observation and no Edge "
+            "decision. It is root, so it gets netlink only and no AF_UNIX "
+            "socket that could reach the service manager, whose private "
+            "sockets are also inaccessible to it. The activation pass never "
+            "grants this unit in this build"
         ),
     ),
     ServiceProfile(
@@ -1259,6 +1314,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         extra=(
             ("NetworkNamespacePath", DECOY_NAMESPACE_PATH),
             ("PrivateUsers", "yes"),
+            # Its peers are only in the fixed decoy subnet, on top of
+            # IPAddressDeny=any. Without it the cgroup filter also drops what
+            # the decoy itself receives (VM-checked on loopback, #196 body).
+            ("IPAddressAllow", DECOY_SUBNET),
             ("TimeoutStartSec", "30s"),
             ("MemoryMax", "128M"),
             ("TasksMax", "16"),
@@ -1272,10 +1331,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "decoy network namespace, with PrivateUsers=yes. It accepts and "
             "never initiates: no outbound connect is in its code, and the "
             "runtime boundary test allows its listener module bind and listen "
-            "only. IPAddressDeny=any stays and no address is allowed in this "
-            "build. Its body is a later phase of #196; in this build the "
-            "executable refuses and exits, and the activation pass never "
-            "grants this unit"
+            "only. IPAddressDeny=any stays, and the fixed decoy subnet is the "
+            "only address allowed. The activation pass never grants this unit "
+            "in this build"
         ),
     ),
 )
