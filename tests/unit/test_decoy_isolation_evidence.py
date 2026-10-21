@@ -1,20 +1,25 @@
-"""#196 §14: the decoy network's isolation evidence, written and read.
+"""#196 §14 and G1b: the decoy network's isolation evidence, written and read.
 
-`docs/deception-redirect-prerequisites.md` §14. The network helper reads
-back the host side it built (`nft list table inet azazel_decoy`, `ip -j -d
-address show`), turns it into one fixed result per check, and writes this
-boot's record to its runtime directory; the decoy refuses to listen unless
-that record is from this boot, from root, in the exact shape, and every check
-passed. These tests pin, with fake command output (nothing here runs `ip` or
-`nft` or opens a socket):
+`docs/deception-redirect-prerequisites.md` §14 and
+`docs/deception-exposure-grant.md` §4.4 item 2. The network helper reads
+back the host side it built (`nft -j list table inet azazel_decoy`, `ip -j
+-d address show`), compares the table's structure with the ruleset it
+rendered from its scope, turns that into one fixed result per check, and
+writes this boot's record to its runtime directory; the decoy refuses to
+listen unless that record is from this boot, from root, in the exact shape
+(contract v2), and every check passed. These tests pin, with fake command
+output (nothing here runs `ip` or `nft` or opens a socket):
 
-* the record's closed, canonical shape, as a golden, and the refusal of
-  every departure from it (keys, values, whitespace, order, size);
+* the record's closed, canonical shape, as a golden, with the scope's
+  digest and no address, and the refusal of every departure from it
+  (keys, values, whitespace, order, size, a version 1 record);
 * the reader's protection: no symlink for the directory or the file, root's
   only, nobody else may write, a regular file within the limit;
 * this boot only, not in the future, every check passed;
-* each check against the output of a real container run (the golden), and
-  each mutation of that output failing exactly its check;
+* each check against the output of a real container run (the goldens, with
+  and without a scope), and each mutation of that output failing exactly its
+  checks: an element added by hand, an `iifname` match missing, the
+  masquerade missing, and more;
 * the writer: the previous record removed first, the record root's `0644`
   under the unit's umask, written by rename, never through a link;
 * the decoy refusing before any socket without a passing record;
@@ -23,7 +28,7 @@ passed. These tests pin, with fake command output (nothing here runs `ip` or
 * the unit declarations and the boundary: the helper's runtime directory
   alone, only the helper loads the recorder.
 
-The container run in §14 is a mechanism check, not VM or hardware evidence.
+The container runs are mechanism checks, not VM or hardware evidence.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ from azazel_nexus.decoy_isolation import (
     CONTRACT,
     EVIDENCE_DIRECTORY,
     EVIDENCE_NAME,
+    NO_SCOPE,
     IsolationEvidenceRefused,
     IsolationState,
     admission_refusal,
@@ -52,8 +58,10 @@ from azazel_nexus.decoy_isolation import (
     render_evidence,
     require_isolation_for_decoy,
 )
+from azazel_nexus.decoy_scope import parse_scope_file
 from azazel_nexus_runtime import decoy_isolation_check, decoy_netns, decoyd
-from azazel_nexus_runtime.decoy_isolation_check import EXPECTED_NFT_LISTING, Recorder, evaluate
+from azazel_nexus_runtime.decoy_isolation_check import Recorder, evaluate
+from azazel_nexus_runtime.decoy_network import render_ruleset
 
 REPO = Path(__file__).resolve().parents[2]
 RUNTIME = REPO / "runtime" / "src" / "azazel_nexus_runtime"
@@ -64,8 +72,30 @@ NOW = "2026-10-22T03:00:10Z"
 WHEN = "2026-10-22T03:00:00Z"
 ALL_PASS = {name: "pass" for name in CHECKS}
 
-#: The record for `BOOT`, `WHEN`, every check passing: byte for byte.
+#: The scope of the container run below: three prefixes (one a /32), two
+#: ingress interfaces. Test data only; no real site's network.
+SCOPE_BYTES = (b'{"approved_v4":["10.20.0.0/24","10.30.0.1/32","192.168.10.0/24"],'
+               b'"contract":"azazel-nexus/decoy-scope/v1","ingress":["eth9","lan0"]}\n')
+SCOPE = parse_scope_file(SCOPE_BYTES)
+SCOPE_DIGEST = "sha256:1abe4737f1fe4e7ef1186d54a4b37f8f5f92ff1497d8b7888f91d3d6faee05ef"
+#: The helper's table for that scope, and for no scope.
+RULESET = render_ruleset(SCOPE)
+EMPTY_RULESET = render_ruleset(None)
+
+#: The record for `BOOT`, `WHEN`, every check passing, `SCOPE`: byte for byte.
 GOLDEN = (
+    b'{"boot_id":"0f4a6d2e-7c1b-4e5a-9d3c-2b8f1a6e4c70",'
+    b'"checked_at":"2026-10-22T03:00:00Z",'
+    b'"checks":{"approved_v4_matches":"pass","bridge":"pass","bridge_address":"pass",'
+    b'"bridge_ports":"pass","decoy_veth_off_host":"pass","host_veth":"pass",'
+    b'"ingress_matches":"pass","nft_table":"pass","subnet_exclusive":"pass"},'
+    b'"contract":"azazel-nexus/decoy-isolation/v2",'
+    b'"scope_digest":"sha256:1abe4737f1fe4e7ef1186d54a4b37f8f5f92ff1497d8b7888f91d3d6faee05ef"}\n'
+)
+
+#: A version 1 record (#196 §14, before G1b), as the helper of that build
+#: wrote it. The new reader refuses it.
+GOLDEN_V1 = (
     b'{"boot_id":"0f4a6d2e-7c1b-4e5a-9d3c-2b8f1a6e4c70",'
     b'"checked_at":"2026-10-22T03:00:00Z",'
     b'"checks":{"approved_v4_empty":"pass","bridge":"pass","bridge_address":"pass",'
@@ -74,38 +104,97 @@ GOLDEN = (
     b'"contract":"azazel-nexus/decoy-isolation/v1"}\n'
 )
 
-#: `nft list table inet azazel_decoy` after the helper loaded its table, as
-#: printed by nftables 1.1.3 in a privileged Debian 13 container (§14).
-NFT_LISTING = (
-    "table inet azazel_decoy {\n"
-    "\tset approved_v4 {\n"
-    "\t\ttype ipv4_addr\n"
-    "\t\tflags interval\n"
-    "\t}\n"
-    "\n"
-    "\tchain forward {\n"
-    "\t\ttype filter hook forward priority filter; policy accept;\n"
-    '\t\toifname "az-decoy0" ip saddr @approved_v4 ip daddr 10.255.196.2 tcp dport '
-    "{ 2222, 2323, 8080 } accept\n"
-    '\t\toifname "az-decoy0" drop\n'
-    '\t\tiifname "az-decoy0" ip saddr 10.255.196.2 ip daddr @approved_v4 tcp sport '
-    "{ 2222, 2323, 8080 } ct state established accept\n"
-    '\t\tiifname "az-decoy0" drop\n'
-    "\t}\n"
-    "\n"
-    "\tchain input {\n"
-    "\t\ttype filter hook input priority filter; policy accept;\n"
-    '\t\tiifname "az-decoy0" drop\n'
-    "\t}\n"
-    "\n"
-    "\tchain output {\n"
-    "\t\ttype filter hook output priority filter; policy accept;\n"
-    '\t\toifname "az-decoy0" drop\n'
-    "\t}\n"
-    "}\n"
+#: `nft -j list table inet azazel_decoy` after `nft` loaded the helper's
+#: table for `SCOPE`, as printed by nftables 1.1.3 (Debian 13) in a
+#: privileged container (#196 G1b; a mechanism check, not VM or hardware
+#: evidence). Note what nftables does: the anonymous sets of names come back
+#: in another order than written (`"lan0", "eth9"`), the /32 is a bare
+#: address, the chains come before the set, and every object has a handle.
+NFT_JSON = (
+    '{"nftables": [{"metainfo": {"version": "1.1.3", "release_name": "Commodore Bullmoose #4", '
+    '"json_schema_version": 1}}, {"table": {"family": "inet", "name": "azazel_decoy", '
+    '"handle": 3}}, {"chain": {"family": "inet", "table": "azazel_decoy", "name": "forward", '
+    '"handle": 1, "type": "filter", "hook": "forward", "prio": 0, "policy": "accept"}}, '
+    '{"chain": {"family": "inet", "table": "azazel_decoy", "name": "input", "handle": 2, '
+    '"type": "filter", "hook": "input", "prio": 0, "policy": "accept"}}, {"chain": {"family": '
+    '"inet", "table": "azazel_decoy", "name": "output", "handle": 3, "type": "filter", "hook": '
+    '"output", "prio": 0, "policy": "accept"}}, {"chain": {"family": "inet", "table": '
+    '"azazel_decoy", "name": "postrouting", "handle": 4, "type": "nat", "hook": "postrouting", '
+    '"prio": 100, "policy": "accept"}}, {"set": {"family": "inet", "name": "approved_v4", '
+    '"table": "azazel_decoy", "type": "ipv4_addr", "handle": 5, "flags": ["interval"], '
+    '"elem": [{"prefix": {"addr": "10.20.0.0", "len": 24}}, "10.30.0.1", {"prefix": {"addr": '
+    '"192.168.10.0", "len": 24}}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", '
+    '"chain": "forward", "handle": 8, "expr": [{"match": {"op": "==", "left": {"meta": {"key": '
+    '"iifname"}}, "right": {"set": ["lan0", "eth9"]}}}, {"match": {"op": "==", "left": {"meta": '
+    '{"key": "oifname"}}, "right": "az-decoy0"}}, {"match": {"op": "==", "left": {"payload": '
+    '{"protocol": "ip", "field": "saddr"}}, "right": "@approved_v4"}}, {"match": {"op": "==", '
+    '"left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "10.255.196.2"}}, '
+    '{"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, '
+    '"right": {"set": [2222, 2323, 8080]}}}, {"accept": null}]}}, {"rule": {"family": "inet", '
+    '"table": "azazel_decoy", "chain": "forward", "handle": 9, "expr": [{"match": {"op": "==", '
+    '"left": {"meta": {"key": "oifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}, '
+    '{"rule": {"family": "inet", "table": "azazel_decoy", "chain": "forward", "handle": 12, '
+    '"expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": '
+    '"az-decoy0"}}, {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": '
+    '{"set": ["lan0", "eth9"]}}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", '
+    '"field": "saddr"}}, "right": "10.255.196.2"}}, {"match": {"op": "==", "left": {"payload": '
+    '{"protocol": "ip", "field": "daddr"}}, "right": "@approved_v4"}}, {"match": {"op": "==", '
+    '"left": {"payload": {"protocol": "tcp", "field": "sport"}}, "right": {"set": [2222, 2323, '
+    '8080]}}}, {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": '
+    '"established"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", '
+    '"chain": "forward", "handle": 13, "expr": [{"match": {"op": "==", "left": {"meta": {"key": '
+    '"iifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", '
+    '"table": "azazel_decoy", "chain": "forward", "handle": 15, "expr": [{"match": {"op": "==", '
+    '"left": {"meta": {"key": "iifname"}}, "right": {"set": ["lan0", "eth9"]}}}, {"match": '
+    '{"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "az-decoy0"}}, {"drop": '
+    'null}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", "chain": "input", "handle": '
+    '16, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": '
+    '"az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", '
+    '"chain": "output", "handle": 17, "expr": [{"match": {"op": "==", "left": {"meta": {"key": '
+    '"oifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", '
+    '"table": "azazel_decoy", "chain": "postrouting", "handle": 18, "expr": [{"match": {"op": '
+    '"==", "left": {"meta": {"key": "oifname"}}, "right": "az-decoy0"}}, {"match": {"op": "==", '
+    '"left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "@approved_v4"}}, '
+    '{"masquerade": null}]}}]}\n'
 )
 
-#: `ip -j -d address show` from the same run, reduced to the fields the checks
+#: The same for the table without a scope (`NFT_RULESET`), from the same run.
+NFT_JSON_EMPTY = (
+    '{"nftables": [{"metainfo": {"version": "1.1.3", "release_name": "Commodore Bullmoose #4", '
+    '"json_schema_version": 1}}, {"table": {"family": "inet", "name": "azazel_decoy", '
+    '"handle": 9}}, {"chain": {"family": "inet", "table": "azazel_decoy", "name": "forward", '
+    '"handle": 1, "type": "filter", "hook": "forward", "prio": 0, "policy": "accept"}}, '
+    '{"chain": {"family": "inet", "table": "azazel_decoy", "name": "input", "handle": 2, '
+    '"type": "filter", "hook": "input", "prio": 0, "policy": "accept"}}, {"chain": {"family": '
+    '"inet", "table": "azazel_decoy", "name": "output", "handle": 3, "type": "filter", "hook": '
+    '"output", "prio": 0, "policy": "accept"}}, {"set": {"family": "inet", "name": '
+    '"approved_v4", "table": "azazel_decoy", "type": "ipv4_addr", "handle": 4, "flags": '
+    '["interval"]}}, {"rule": {"family": "inet", "table": "azazel_decoy", "chain": "forward", '
+    '"handle": 6, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, '
+    '"right": "az-decoy0"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", '
+    '"field": "saddr"}}, "right": "@approved_v4"}}, {"match": {"op": "==", "left": {"payload": '
+    '{"protocol": "ip", "field": "daddr"}}, "right": "10.255.196.2"}}, {"match": {"op": "==", '
+    '"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": {"set": [2222, 2323, '
+    '8080]}}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", '
+    '"chain": "forward", "handle": 7, "expr": [{"match": {"op": "==", "left": {"meta": {"key": '
+    '"oifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", '
+    '"table": "azazel_decoy", "chain": "forward", "handle": 9, "expr": [{"match": {"op": "==", '
+    '"left": {"meta": {"key": "iifname"}}, "right": "az-decoy0"}}, {"match": {"op": "==", '
+    '"left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "10.255.196.2"}}, '
+    '{"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, '
+    '"right": "@approved_v4"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", '
+    '"field": "sport"}}, "right": {"set": [2222, 2323, 8080]}}}, {"match": {"op": "in", '
+    '"left": {"ct": {"key": "state"}}, "right": "established"}}, {"accept": null}]}}, '
+    '{"rule": {"family": "inet", "table": "azazel_decoy", "chain": "forward", "handle": 10, '
+    '"expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": '
+    '"az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", "table": "azazel_decoy", '
+    '"chain": "input", "handle": 11, "expr": [{"match": {"op": "==", "left": {"meta": {"key": '
+    '"iifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}, {"rule": {"family": "inet", '
+    '"table": "azazel_decoy", "chain": "output", "handle": 12, "expr": [{"match": {"op": "==", '
+    '"left": {"meta": {"key": "oifname"}}, "right": "az-decoy0"}}, {"drop": null}]}}]}\n'
+)
+
+#: `ip -j -d address show` from the §14 container run, reduced to the fields the checks
 #: read plus a few they ignore; the container's own interface is given a
 #: documentation address.
 HOST_LINKS = [
@@ -133,8 +222,10 @@ HOST_LINKS = [
 ]
 
 
-def _outputs(nft=NFT_LISTING, links=None, nft_status=0, links_status=0):
+def _outputs(nft=NFT_JSON, links=None, nft_status=0, links_status=0):
     links = HOST_LINKS if links is None else links
+    if isinstance(nft, (list, dict)):
+        nft = json.dumps(nft)
     return {"nft_table": (nft_status, nft.encode() if isinstance(nft, str) else nft),
             "host_links": (links_status,
                            links if isinstance(links, bytes) else json.dumps(links).encode())}
@@ -156,7 +247,7 @@ def install_evidence(tmp_path: Path, monkeypatch, *, data: bytes | None = None,
     os.chmod(boot_file, 0o444)
     record = directory / EVIDENCE_NAME
     if data is None:
-        data = render_evidence(BOOT, WHEN, dict(ALL_PASS))
+        data = render_evidence(BOOT, WHEN, dict(ALL_PASS), SCOPE_DIGEST)
     record.write_bytes(data)
     os.chmod(record, 0o644)
     monkeypatch.setattr(decoy_isolation, "_DIRECTORY", str(directory))
@@ -169,24 +260,51 @@ def install_evidence(tmp_path: Path, monkeypatch, *, data: bytes | None = None,
 
 
 def test_the_record_is_the_golden():
-    assert render_evidence(BOOT, WHEN, dict(ALL_PASS)) == GOLDEN
+    assert SCOPE.scope_digest == SCOPE_DIGEST
+    assert render_evidence(BOOT, WHEN, dict(ALL_PASS), SCOPE_DIGEST) == GOLDEN
     evidence = parse_evidence(GOLDEN)
     assert (evidence.boot_id, evidence.checked_at) == (BOOT, WHEN)
     assert evidence.checks == tuple((name, "pass") for name in CHECKS)
+    assert evidence.scope_digest == SCOPE_DIGEST
     assert evidence.passed and evidence.not_passed == ()
-    assert CONTRACT == "azazel-nexus/decoy-isolation/v1"
+    assert CONTRACT == "azazel-nexus/decoy-isolation/v2"
+    assert CHECKS == ("nft_table", "approved_v4_matches", "ingress_matches", "bridge",
+                      "bridge_address", "bridge_ports", "host_veth", "decoy_veth_off_host",
+                      "subnet_exclusive")
     assert EVIDENCE_DIRECTORY == "/run/azazel-decoy-isolation"
     assert EVIDENCE_NAME == "isolation.json"
     assert decoy_isolation.RESULTS == ("pass", "fail", "unreadable")
+    # Without a scope the digest is the fixed word.
+    plain = render_evidence(BOOT, WHEN, dict(ALL_PASS), NO_SCOPE)
+    assert plain == GOLDEN.replace(SCOPE_DIGEST.encode(), b"none")
+    assert parse_evidence(plain).scope_digest == NO_SCOPE == "none"
 
 
 def test_the_record_holds_no_address_and_nothing_but_fixed_words():
     document = json.loads(GOLDEN)
-    assert set(document) == {"boot_id", "checked_at", "checks", "contract"}
+    assert set(document) == {"boot_id", "checked_at", "checks", "contract", "scope_digest"}
     text = GOLDEN.decode()
-    for forbidden in ("10.255.196", "192.0.2", "fe80", "az-decoy", "eth0", "elements"):
+    for forbidden in ("10.255.196", "192.0.2", "fe80", "az-decoy", "eth0", "elements",
+                      "10.20.", "10.30.", "192.168.", "eth9", "lan0"):
         assert forbidden not in text
     assert len(GOLDEN) < decoy_isolation.MAX_BYTES
+
+
+@pytest.mark.parametrize("data", [
+    GOLDEN_V1,
+    # A v1 record with a digest added, and a v2 record naming v1.
+    GOLDEN_V1.replace(b'"}\n', b'","scope_digest":"none"}\n'),
+    GOLDEN.replace(b"decoy-isolation/v2", b"decoy-isolation/v1"),
+], ids=["v1", "v1-with-digest", "v2-naming-v1"])
+def test_a_version_1_record_is_refused(data, tmp_path, monkeypatch):
+    """#196 G1b: the checks changed, so the contract did; the reader refuses v1."""
+
+    with pytest.raises(IsolationEvidenceRefused):
+        parse_evidence(data)
+    install_evidence(tmp_path, monkeypatch, data=data)
+    with pytest.raises(IsolationEvidenceRefused):
+        require_isolation_for_decoy(now=NOW)
+    assert installed_isolation_reading(now=NOW).state is IsolationState.REFUSED
 
 
 def _mutated(change):
@@ -205,8 +323,17 @@ def _mutated(change):
     GOLDEN.replace(b'"boot_id"', b'"boot_id":"x","boot_id"', 1),  # duplicate key
     GOLDEN.replace(b"pass", b"\\u0070ass", 1),        # an escape
     b" " * (decoy_isolation.MAX_BYTES + 1),
-    GOLDEN.replace(b"v1", b"v2"),
+    GOLDEN.replace(b"v2", b"v3"),
     _mutated(lambda d: d.update(extra=1)),
+    _mutated(lambda d: d.pop("scope_digest")),
+    _mutated(lambda d: d.update(scope_digest="")),
+    _mutated(lambda d: d.update(scope_digest=None)),
+    _mutated(lambda d: d.update(scope_digest="None")),
+    _mutated(lambda d: d.update(scope_digest="sha256:" + "A" * 64)),
+    _mutated(lambda d: d.update(scope_digest="sha256:" + "a" * 63)),
+    _mutated(lambda d: d.update(scope_digest="sha1:" + "a" * 40)),
+    _mutated(lambda d: d.update(scope_digest="10.20.0.0/24")),
+    _mutated(lambda d: d["checks"].update(approved_v4_empty="pass")),
     _mutated(lambda d: d.pop("checked_at")),
     _mutated(lambda d: d.update(boot_id=BOOT.upper())),
     _mutated(lambda d: d.update(boot_id="")),
@@ -229,11 +356,14 @@ def test_anything_but_the_exact_shape_is_refused(data):
 def test_the_writer_refuses_to_render_anything_but_the_shape():
     for checks in ({}, {**ALL_PASS, "peer": "pass"}, {**ALL_PASS, "bridge": "ok"}):
         with pytest.raises(IsolationEvidenceRefused):
-            render_evidence(BOOT, WHEN, checks)
+            render_evidence(BOOT, WHEN, checks, SCOPE_DIGEST)
     with pytest.raises(IsolationEvidenceRefused):
-        render_evidence("not-a-boot", WHEN, dict(ALL_PASS))
+        render_evidence("not-a-boot", WHEN, dict(ALL_PASS), SCOPE_DIGEST)
     with pytest.raises(IsolationEvidenceRefused):
-        render_evidence(BOOT, "yesterday", dict(ALL_PASS))
+        render_evidence(BOOT, "yesterday", dict(ALL_PASS), SCOPE_DIGEST)
+    for digest in (None, "", "eth9", "10.20.0.0/24", SCOPE_DIGEST + "0"):
+        with pytest.raises(IsolationEvidenceRefused, match="digest"):
+            render_evidence(BOOT, WHEN, dict(ALL_PASS), digest)
 
 
 # -- admission ---------------------------------------------------------------
@@ -253,7 +383,8 @@ def test_only_this_boots_passing_record_admits():
 @pytest.mark.parametrize("name", CHECKS)
 @pytest.mark.parametrize("result", ["fail", "unreadable"])
 def test_any_check_not_passing_refuses_and_is_named(name, result):
-    evidence = parse_evidence(render_evidence(BOOT, WHEN, {**ALL_PASS, name: result}))
+    evidence = parse_evidence(
+        render_evidence(BOOT, WHEN, {**ALL_PASS, name: result}, SCOPE_DIGEST))
     assert not evidence.passed
     assert admission_refusal(evidence, boot_id=BOOT, now=NOW) == (
         "isolation checks did not pass: " + name)
@@ -293,8 +424,9 @@ def test_an_unreadable_boot_id_refuses_the_decoy(tmp_path, monkeypatch):
 
 def test_a_failing_record_refuses_the_decoy(tmp_path, monkeypatch):
     install_evidence(tmp_path, monkeypatch,
-                     data=render_evidence(BOOT, WHEN, {**ALL_PASS, "approved_v4_empty": "fail"}))
-    with pytest.raises(IsolationEvidenceRefused, match="approved_v4_empty"):
+                     data=render_evidence(BOOT, WHEN, {**ALL_PASS, "approved_v4_matches": "fail"},
+                                          SCOPE_DIGEST))
+    with pytest.raises(IsolationEvidenceRefused, match="approved_v4_matches"):
         require_isolation_for_decoy(now=NOW)
 
 
@@ -379,13 +511,23 @@ def test_a_tampered_record_never_admits(tmp_path, monkeypatch, data):
 # -- the checks ----------------------------------------------------------------
 
 
-def test_the_expected_listing_is_the_container_golden():
-    lines = [line.strip() for line in NFT_LISTING.splitlines() if line.strip()]
-    assert tuple(lines) == EXPECTED_NFT_LISTING
-
-
 def test_the_real_output_passes_every_check():
-    assert evaluate(_outputs()) == ALL_PASS
+    assert evaluate(_outputs(), RULESET) == ALL_PASS
+    # And without a scope, the table of the first build.
+    assert evaluate(_outputs(nft=NFT_JSON_EMPTY), EMPTY_RULESET) == ALL_PASS
+
+
+def test_each_ruleset_passes_only_against_its_own_listing():
+    """A scope's table is not a pass for no scope, and the reverse (G1b)."""
+
+    table_checks = {"nft_table", "approved_v4_matches", "ingress_matches"}
+    for outputs, ruleset in ((_outputs(nft=NFT_JSON_EMPTY), RULESET),
+                             (_outputs(), EMPTY_RULESET)):
+        results = evaluate(outputs, ruleset)
+        assert {name for name, result in results.items() if result != "pass"} == table_checks
+    other = render_ruleset(parse_scope_file(SCOPE_BYTES.replace(b"10.20.0.0", b"10.21.0.0")))
+    assert {name for name, result in evaluate(_outputs(), other).items()
+            if result != "pass"} == {"nft_table", "approved_v4_matches"}
 
 
 def _links_with(change):
@@ -394,24 +536,86 @@ def _links_with(change):
     return links
 
 
-def _with_element(text):
-    return text.replace("\t\tflags interval\n",
-                        "\t\tflags interval\n\t\telements = { 192.0.2.0/24 }\n")
+def _table_with(change, source=NFT_JSON):
+    """The container's `nft -j` output, parsed, changed, and printed again."""
+
+    document = json.loads(source)
+    objects = document["nftables"]
+
+    def rule(chain, index):
+        return [o["rule"] for o in objects if "rule" in o and o["rule"]["chain"] == chain][index]
+
+    the_set = next(o["set"] for o in objects if "set" in o)
+    change(objects, rule, the_set)
+    return json.dumps(document)
+
+
+def _drop_rule(objects, chain, index):
+    rules = [o for o in objects if "rule" in o and o["rule"]["chain"] == chain]
+    objects.remove(rules[index])
+
+
+def _drop_chain(objects, chain):
+    objects[:] = [o for o in objects
+                  if not ("chain" in o and o["chain"]["name"] == chain)
+                  and not ("rule" in o and o["rule"]["chain"] == chain)]
 
 
 @pytest.mark.parametrize(("outputs", "failing"), [
-    # The table.
-    (_outputs(nft=NFT_LISTING.replace(' "az-decoy0" drop\n\t}\n\n\tchain input',
-                                      ' "az-decoy0" accept\n\t}\n\n\tchain input')),
+    # An element added by hand (`nft add element`, container-checked form).
+    (_outputs(nft=_table_with(lambda o, r, s: s["elem"].append(
+        {"prefix": {"addr": "10.99.0.0", "len": 16}}))),
+     {"nft_table", "approved_v4_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: s["elem"].insert(0, "10.1.1.1"))),
+     {"nft_table", "approved_v4_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: s["elem"].pop())),
+     {"nft_table", "approved_v4_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: s.pop("elem"))),
+     {"nft_table", "approved_v4_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: s["elem"].__setitem__(
+        1, {"range": ["10.30.0.1", "10.30.0.9"]}))),
+     {"nft_table", "approved_v4_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: s.update(name="approved"))),
+     {"nft_table", "approved_v4_matches"}),
+    # An `iifname` match missing: on the accept toward the decoy, on the reply
+    # (`oifname`, R3) and the ingress drop (K2) gone.
+    (_outputs(nft=_table_with(lambda o, r, s: r("forward", 0)["expr"].pop(0))),
+     {"nft_table", "ingress_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: r("forward", 2)["expr"].pop(1))),
+     {"nft_table", "ingress_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: _drop_rule(o, "forward", 4))),
+     {"nft_table", "ingress_matches"}),
+    # Another interface named, or one of the two missing from a set.
+    (_outputs(nft=_table_with(lambda o, r, s: r("forward", 0)["expr"][0]["match"].update(
+        right={"set": ["lan0", "eth9", "mgmt0"]}))),
+     {"nft_table", "ingress_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: r("forward", 4)["expr"][0]["match"].update(
+        right="eth9"))),
+     {"nft_table", "ingress_matches"}),
+    (_outputs(nft=_table_with(lambda o, r, s: r("input", 0)["expr"][0]["match"].update(
+        right="eth0"))),
+     {"nft_table", "ingress_matches"}),
+    # The masquerade (A3) missing, replaced, or its chain gone.
+    (_outputs(nft=_table_with(lambda o, r, s: r("postrouting", 0)["expr"].pop())),
      {"nft_table"}),
-    (_outputs(nft=NFT_LISTING.replace("\tchain output {\n\t\ttype filter hook output priority "
-                                      "filter; policy accept;\n\t\toifname \"az-decoy0\" drop\n"
-                                      "\t}\n", "")), {"nft_table"}),
-    (_outputs(nft=NFT_LISTING.replace("policy accept;", "policy drop;", 1)), {"nft_table"}),
-    (_outputs(nft=NFT_LISTING + "table inet azazel_decoy {\n}\n"), {"nft_table"}),
-    (_outputs(nft=_with_element(NFT_LISTING)), {"nft_table", "approved_v4_empty"}),
-    (_outputs(nft=NFT_LISTING.replace("set approved_v4", "set approved")),
-     {"nft_table", "approved_v4_empty"}),
+    (_outputs(nft=_table_with(lambda o, r, s: r("postrouting", 0)["expr"].__setitem__(
+        2, {"accept": None}))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: _drop_rule(o, "postrouting", 0))),
+     {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: _drop_chain(o, "postrouting"))),
+     {"nft_table"}),
+    # The rest of the table.
+    (_outputs(nft=_table_with(lambda o, r, s: r("forward", 1)["expr"].__setitem__(
+        1, {"accept": None}))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: _drop_rule(o, "output", 0))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: next(
+        x["chain"] for x in o if "chain" in x).update(policy="drop"))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: o.append(
+        {"map": {"family": "inet", "name": "m", "table": "azazel_decoy"}}))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: o.append(
+        {"rule": {"family": "inet", "table": "azazel_decoy", "chain": "forward",
+                  "expr": [{"accept": None}]}}))), {"nft_table"}),
+    (_outputs(nft=_table_with(lambda o, r, s: o.insert(7, o.pop(8)))), {"nft_table"}),
     # The bridge.
     (_outputs(links=_links_with(lambda by, _: by["az-decoy0"]["flags"].remove("UP"))),
      {"bridge"}),
@@ -459,25 +663,71 @@ def _with_element(text):
      {"subnet_exclusive"}),
 ])
 def test_each_mutation_of_the_real_output_fails_exactly_its_checks(outputs, failing):
-    results = evaluate(outputs)
+    results = evaluate(outputs, RULESET)
     assert {name for name, result in results.items() if result != "pass"} == failing
     assert all(results[name] == "fail" for name in failing)
 
 
+@pytest.mark.parametrize("change", [
+    # The kernel's handles and the order of an anonymous set say nothing.
+    lambda o, r, s: [next(iter(x.values())).update(handle=999) for x in o[1:]],
+    lambda o, r, s: r("forward", 0)["expr"][0]["match"].update(right={"set": ["eth9", "lan0"]}),
+    lambda o, r, s: r("forward", 0)["expr"][4]["match"].update(
+        right={"set": [8080, 2222, 2323]}),
+    lambda o, r, s: o[0]["metainfo"].update(version="1.1.4", release_name="another"),
+], ids=["handles", "name-order", "port-order", "release"])
+def test_what_nftables_varies_on_its_own_is_not_a_departure(change):
+    assert evaluate(_outputs(nft=_table_with(change)), RULESET) == ALL_PASS
+
+
+TABLE_CHECKS = {"nft_table", "approved_v4_matches", "ingress_matches"}
+
+
 @pytest.mark.parametrize(("outputs", "unreadable"), [
-    (_outputs(nft_status=1), {"nft_table", "approved_v4_empty"}),
-    (_outputs(nft=b"\xff\xfe"), {"nft_table", "approved_v4_empty"}),
-    (_outputs(links_status=124), set(CHECKS[2:])),
-    (_outputs(links=b"not json"), set(CHECKS[2:])),
-    (_outputs(links=b'{"ifname": "az-decoy0"}'), set(CHECKS[2:])),
-    (_outputs(links=b'[{"ifname": 3}]'), set(CHECKS[2:])),
-    (_outputs(links=b'[{"ifname": "x", "addr_info": [1]}]'), set(CHECKS[2:])),
+    (_outputs(nft_status=1), TABLE_CHECKS),
+    (_outputs(nft=b"\xff\xfe"), TABLE_CHECKS),
+    # The text listing of the first build is not the JSON one.
+    (_outputs(nft=EMPTY_RULESET.text.split("\n", 1)[1]), TABLE_CHECKS),
+    (_outputs(nft=b"[]"), TABLE_CHECKS),
+    (_outputs(nft=b'{"nftables": []}'), TABLE_CHECKS),
+    (_outputs(nft=b'{"nftables": {}}'), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o.pop(0))), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o[0]["metainfo"].update(
+        json_schema_version=2))), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o[0]["metainfo"].update(
+        json_schema_version=True))), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o[1].update(chain={}))), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o.append({"table": []}))), TABLE_CHECKS),
+    (_outputs(nft=_table_with(lambda o, r, s: o.append("rule"))), TABLE_CHECKS),
+    (_outputs(nft=b"[" * 100000), TABLE_CHECKS),
+    (_outputs(links_status=124), set(CHECKS[3:])),
+    (_outputs(links=b"not json"), set(CHECKS[3:])),
+    (_outputs(links=b'{"ifname": "az-decoy0"}'), set(CHECKS[3:])),
+    (_outputs(links=b'[{"ifname": 3}]'), set(CHECKS[3:])),
+    (_outputs(links=b'[{"ifname": "x", "addr_info": [1]}]'), set(CHECKS[3:])),
     ({}, set(CHECKS)),
 ])
 def test_output_that_cannot_be_read_is_unreadable_never_a_pass(outputs, unreadable):
-    results = evaluate(outputs)
+    results = evaluate(outputs, RULESET)
     assert {name for name, result in results.items() if result == "unreadable"} == unreadable
     assert list(results) == list(CHECKS)
+
+
+@pytest.mark.parametrize("change", [
+    lambda o, r, s: r("forward", 0).update(expr="x"),
+    lambda o, r, s: r("forward", 0)["expr"].append(7),
+    lambda o, r, s: r("forward", 0)["expr"][0]["match"].update(right={"set": [1, "a"]}),
+    lambda o, r, s: r("forward", 0)["expr"][0]["match"].update(right=None),
+    lambda o, r, s: r("forward", 0)["expr"][0]["match"].update(left="x"),
+    lambda o, r, s: s.update(elem="10.20.0.0/24"),
+    lambda o, r, s: s["elem"].append({"prefix": {"addr": "10.1.0.1", "len": 24}}),
+    lambda o, r, s: s["elem"].append({"prefix": {"addr": "10.1.0.0", "len": "24"}}),
+    lambda o, r, s: s["elem"].append("not-an-address"),
+])
+def test_odd_values_in_the_table_fail_and_never_raise(change):
+    results = evaluate(_outputs(nft=_table_with(change)), RULESET)
+    assert results["nft_table"] == "fail"
+    assert set(results.values()) <= {"pass", "fail"}
 
 
 @pytest.mark.parametrize("key", ["ifname", "flags", "addr_info"])
@@ -486,15 +736,15 @@ def test_a_link_missing_a_key_makes_the_listing_unreadable(key, link):
     """Review of #274: a missing key used to raise KeyError in evaluate."""
 
     links = _links_with(lambda by, _: by[link].pop(key))
-    results = evaluate(_outputs(links=links))
-    assert {name for name, result in results.items() if result == "unreadable"} == set(CHECKS[2:])
+    results = evaluate(_outputs(links=links), RULESET)
+    assert {name for name, result in results.items() if result == "unreadable"} == set(CHECKS[3:])
     assert results["nft_table"] == "pass"
 
 
 @pytest.mark.parametrize("value", [None, "UP", {"UP": 1}])
 def test_flags_of_another_type_make_the_listing_unreadable(value):
     links = _links_with(lambda by, _: by["az-decoy0"].update(flags=value))
-    assert evaluate(_outputs(links=links))["bridge"] == "unreadable"
+    assert evaluate(_outputs(links=links), RULESET)["bridge"] == "unreadable"
 
 
 def test_odd_values_inside_a_link_fail_their_check_and_never_raise():
@@ -502,32 +752,33 @@ def test_odd_values_inside_a_link_fail_their_check_and_never_raise():
         by["az-decoy0"].update(linkinfo="bridge"),
         by["az-decoy-host0"]["addr_info"].append({"family": "inet"}),
         by["eth0"].update(master=["az-decoy0"])))
-    results = evaluate(_outputs(links=links))
+    results = evaluate(_outputs(links=links), RULESET)
     assert results["bridge"] == "fail" and results["host_veth"] == "fail"
 
 
 def test_an_evaluation_error_records_nothing_and_does_not_pass(
         evidence_directory, monkeypatch, capsys):
-    def broken(outputs):
+    def broken(outputs, ruleset):
         raise KeyError("flags")
 
     monkeypatch.setattr(decoy_isolation_check, "evaluate", broken)
     recorder = _recorder(evidence_directory)
     assert recorder.prepare()
-    assert recorder.record(_outputs()) is False
+    assert recorder.record(_outputs(), RULESET) is False
     assert os.listdir(evidence_directory) == []
     assert "could not be evaluated" in capsys.readouterr().err
 
 
 def test_the_checks_name_the_fixed_values_the_network_is_built_from():
     from azazel_nexus_runtime import decoy_network
-    from azazel_nexus_runtime.decoy_addresses import BRIDGE, DECOY_SUBNET, HOST_VETH, NFT_TABLE
+    from azazel_nexus_runtime.decoy_addresses import BRIDGE, DECOY_SUBNET, HOST_VETH
 
     assert decoy_isolation_check.DECOY_VETH is decoy_netns.DECOY_VETH
-    assert EXPECTED_NFT_LISTING[0] == f"table inet {NFT_TABLE} {{"
-    # The expected listing is the loaded ruleset, minus `create table`, as nft prints it.
-    loaded = [line.strip() for line in decoy_network.NFT_RULESET.splitlines()[1:] if line.strip()]
-    assert tuple(loaded) == EXPECTED_NFT_LISTING
+    assert decoy_isolation_check._APPROVED_SET == decoy_network.APPROVED_SET
+    # One JSON form on both sides.
+    for document in (json.loads(RULESET.expected), {"b": [1, None], "a": "x"}):
+        assert decoy_isolation_check._canonical(document) == decoy_network.canonical_json(
+            document)
     assert (BRIDGE, HOST_VETH, DECOY_SUBNET) == ("az-decoy0", "az-decoy-host0", "10.255.196.0/30")
 
 
@@ -559,7 +810,7 @@ def test_the_recorder_writes_the_golden_as_root_would_under_the_units_umask(
     previous = os.umask(0o027)
     try:
         assert recorder.prepare()
-        assert recorder.record(_outputs())
+        assert recorder.record(_outputs(), RULESET)
     finally:
         os.umask(previous)
     record = evidence_directory / EVIDENCE_NAME
@@ -568,16 +819,29 @@ def test_the_recorder_writes_the_golden_as_root_would_under_the_units_umask(
     assert sorted(os.listdir(evidence_directory)) == [EVIDENCE_NAME]
     err = capsys.readouterr().err
     assert "isolation check: nft_table pass" in err
-    assert "10.255.196" not in err and "192.0.2" not in err
+    # No address, prefix, interface name or digest in the journal line.
+    for forbidden in ("10.255.196", "192.0.2", "10.20.", "192.168.", "eth9", "lan0",
+                      "sha256"):
+        assert forbidden not in err
+
+
+def test_without_a_scope_the_record_says_none(evidence_directory):
+    recorder = _recorder(evidence_directory)
+    assert recorder.prepare()
+    assert recorder.record(_outputs(nft=NFT_JSON_EMPTY), EMPTY_RULESET)
+    evidence = parse_evidence((evidence_directory / EVIDENCE_NAME).read_bytes())
+    assert evidence.passed and evidence.scope_digest == NO_SCOPE
 
 
 def test_a_record_with_a_failing_check_is_written_and_reported_as_not_passing(
         evidence_directory):
     recorder = _recorder(evidence_directory)
     assert recorder.prepare()
-    assert not recorder.record(_outputs(nft=_with_element(NFT_LISTING)))
+    added = _table_with(lambda o, r, s: s["elem"].append(
+        {"prefix": {"addr": "10.99.0.0", "len": 16}}))
+    assert not recorder.record(_outputs(nft=added), RULESET)
     evidence = parse_evidence((evidence_directory / EVIDENCE_NAME).read_bytes())
-    assert evidence.not_passed == ("nft_table", "approved_v4_empty")
+    assert evidence.not_passed == ("nft_table", "approved_v4_matches")
 
 
 def test_prepare_removes_the_previous_record_and_a_leftover_temporary(evidence_directory):
@@ -590,7 +854,7 @@ def test_prepare_removes_the_previous_record_and_a_leftover_temporary(evidence_d
 def test_without_a_boot_id_nothing_is_recorded(evidence_directory):
     recorder = _recorder(evidence_directory, boot=None)
     assert not recorder.prepare()
-    assert not recorder.record(_outputs())
+    assert not recorder.record(_outputs(), RULESET)
     assert os.listdir(evidence_directory) == []
 
 
@@ -602,7 +866,7 @@ def test_the_recorder_never_writes_through_a_link(evidence_directory, tmp_path):
     # The leftover link is removed (unlink does not follow it), then the record
     # is written fresh; the link's target is untouched.
     assert recorder.prepare()
-    assert recorder.record(_outputs())
+    assert recorder.record(_outputs(), RULESET)
     assert target.read_bytes() == b"untouched"
     assert not (evidence_directory / EVIDENCE_NAME).is_symlink()
 
@@ -623,13 +887,13 @@ def test_the_recorder_refuses_a_foreign_or_open_directory(evidence_directory, tm
 def test_without_its_directory_the_recorder_records_nothing(tmp_path):
     recorder = _recorder(tmp_path / "absent")
     assert recorder.prepare()  # nothing to remove
-    assert not recorder.record(_outputs())
+    assert not recorder.record(_outputs(), RULESET)
 
 
 def test_withdraw_removes_the_record(evidence_directory):
     recorder = _recorder(evidence_directory)
     recorder.prepare()
-    recorder.record(_outputs())
+    recorder.record(_outputs(), RULESET)
     assert recorder.withdraw()
     assert os.listdir(evidence_directory) == []
 
@@ -637,7 +901,7 @@ def test_withdraw_removes_the_record(evidence_directory):
 def test_what_the_recorder_writes_the_decoy_admits(evidence_directory, tmp_path, monkeypatch):
     recorder = _recorder(evidence_directory)
     recorder.prepare()
-    assert recorder.record(_outputs())
+    assert recorder.record(_outputs(), RULESET)
     install_evidence(tmp_path, monkeypatch,
                      data=(evidence_directory / EVIDENCE_NAME).read_bytes())
     assert require_isolation_for_decoy(now=NOW).passed
@@ -672,13 +936,15 @@ def no_socket(monkeypatch):
     return made
 
 
-@pytest.mark.parametrize("record", ["absent", "failing", "other-boot", "tampered"])
+@pytest.mark.parametrize("record", ["absent", "failing", "other-boot", "tampered", "v1"])
 def test_the_decoy_refuses_before_any_socket_without_a_passing_record(
         tmp_path, monkeypatch, in_namespace, no_socket, capsys, record):
     data = {
-        "failing": render_evidence(BOOT, WHEN, {**ALL_PASS, "bridge_ports": "fail"}),
-        "other-boot": render_evidence(OTHER_BOOT, WHEN, dict(ALL_PASS)),
+        "failing": render_evidence(BOOT, WHEN, {**ALL_PASS, "bridge_ports": "fail"}, SCOPE_DIGEST),
+        "other-boot": render_evidence(OTHER_BOOT, WHEN, dict(ALL_PASS), SCOPE_DIGEST),
         "tampered": GOLDEN.replace(b",", b", ", 1),
+        # The decoy requires v2 (#196 G1b): this boot's passing v1 record refuses.
+        "v1": GOLDEN_V1,
     }.get(record)
     path = install_evidence(tmp_path, monkeypatch, data=data)
     if record == "absent":
@@ -696,10 +962,11 @@ def test_the_producer_frames_each_reading(tmp_path, monkeypatch):
     record = install_evidence(tmp_path, monkeypatch)
     reading = installed_isolation_reading(now=NOW)
     assert (reading.state, reading.checked_at) == (IsolationState.PASSED, WHEN)
-    record.write_bytes(render_evidence(BOOT, WHEN, {**ALL_PASS, "bridge": "unreadable"}))
+    record.write_bytes(
+        render_evidence(BOOT, WHEN, {**ALL_PASS, "bridge": "unreadable"}, SCOPE_DIGEST))
     reading = installed_isolation_reading(now=NOW)
     assert (reading.state, reading.not_passed) == (IsolationState.NOT_PASSED, ("bridge",))
-    record.write_bytes(render_evidence(OTHER_BOOT, WHEN, dict(ALL_PASS)))
+    record.write_bytes(render_evidence(OTHER_BOOT, WHEN, dict(ALL_PASS), SCOPE_DIGEST))
     assert installed_isolation_reading(now=NOW).state is IsolationState.NOT_THIS_BOOT
     record.write_bytes(GOLDEN[:-1])
     assert installed_isolation_reading(now=NOW).state is IsolationState.REFUSED

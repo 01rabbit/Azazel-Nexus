@@ -1,6 +1,7 @@
-"""The network helper's isolation check and its record (#196 §14).
+"""The network helper's isolation check and its record (#196 §14, G1b).
 
-`docs/deception-redirect-prerequisites.md` §14. After `az-decoy-netd` has
+`docs/deception-redirect-prerequisites.md` §14 and
+`docs/deception-exposure-grant.md` §4.4 item 2. After `az-decoy-netd` has
 built the host side of the decoy network, it reads back what it built with
 the two fixed commands of `decoy_network.HELPER_VERIFY` and this module
 turns their output into one fixed result per check
@@ -8,12 +9,20 @@ turns their output into one fixed result per check
 `/run/azazel-decoy-isolation/isolation.json`, where the decoy reads it before
 it opens any socket.
 
+**Compared with what was rendered.** The table is read as nftables' JSON
+(`nft -j list table`) and compared, structure for structure and without the
+kernel's handles, with `decoy_network.Ruleset.expected`, which the helper's
+one renderer produced from the same scope as the table it loaded. The set's
+elements and the interfaces the rules name are also checked on their own
+(`approved_v4_matches`, `ingress_matches`), so that a record says which
+part departed.
+
 **Fixed, and read only.** The checks compare the output with values that are
-constants here or in `decoy_addresses` / `decoy_network`: nothing is taken
-from an argument, a file, the environment or a socket, and nothing here
-starts a process (the commands are run by `decoy_network.capture_fixed`;
-this module never imports it). The record holds results only, never the
-output, an address or a name from the output.
+constants here or in `decoy_addresses`, or that the helper rendered: nothing
+is taken from an argument, a file, the environment or a socket, and nothing
+here starts a process (the commands are run by `decoy_network.capture_fixed`;
+this module never imports it). The record holds results and the scope's
+digest only, never the output, an address, a prefix or a name.
 
 **Written the protected way.** The directory (the helper's
 `RuntimeDirectory=`, root, `0755`) is opened without following a symlink and
@@ -33,13 +42,14 @@ import os
 import stat
 import sys
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 from azazel_nexus.boot_id import BootIdRefused, read_current_boot_id
 from azazel_nexus.decoy_isolation import (
     CHECKS,
     EVIDENCE_DIRECTORY,
     EVIDENCE_NAME,
+    NO_SCOPE,
     IsolationEvidenceRefused,
     render_evidence,
 )
@@ -47,74 +57,176 @@ from azazel_nexus.decoy_isolation import (
 from .decoy_addresses import (
     BRIDGE,
     BRIDGE_ADDRESS,
-    DECOY_ADDRESS,
-    DECOY_PORTS,
     DECOY_SUBNET,
     HOST_VETH,
-    NFT_TABLE,
     PREFIX_LENGTH,
 )
 from .decoy_netns import DECOY_VETH
 
 __all__ = [
-    "EXPECTED_NFT_LISTING",
+    "Expected",
     "Recorder",
     "evaluate",
 ]
 
-_PORTS = ", ".join(str(port) for port in DECOY_PORTS)
 
-#: `nft list table inet azazel_decoy` for the table the helper loads, line by
-#: line with the indentation and blank lines removed (container-checked with
-#: nftables 1.1.3, Debian 13; §14). Another rendering of the same rules by
-#: another nftables release reads as `fail`, which refuses the decoy: a
-#: listing this module does not recognise is not one it may vouch for.
-EXPECTED_NFT_LISTING: tuple[str, ...] = (
-    f"table inet {NFT_TABLE} {{",
-    "set approved_v4 {",
-    "type ipv4_addr",
-    "flags interval",
-    "}",
-    "chain forward {",
-    "type filter hook forward priority filter; policy accept;",
-    f'oifname "{BRIDGE}" ip saddr @approved_v4 ip daddr {DECOY_ADDRESS} '
-    f"tcp dport {{ {_PORTS} }} accept",
-    f'oifname "{BRIDGE}" drop',
-    f'iifname "{BRIDGE}" ip saddr {DECOY_ADDRESS} ip daddr @approved_v4 '
-    f"tcp sport {{ {_PORTS} }} ct state established accept",
-    f'iifname "{BRIDGE}" drop',
-    "}",
-    "chain input {",
-    "type filter hook input priority filter; policy accept;",
-    f'iifname "{BRIDGE}" drop',
-    "}",
-    "chain output {",
-    "type filter hook output priority filter; policy accept;",
-    f'oifname "{BRIDGE}" drop',
-    "}",
-    "}",
-)
+class Expected(Protocol):
+    """What the check reads of `decoy_network.Ruleset` (never imported here)."""
+
+    expected: str
+    approved_v4: tuple[str, ...]
+    ingress: tuple[str, ...]
+    scope_digest: Optional[str]
+
+
+#: The named set of approved sources (`decoy_network.APPROVED_SET`).
+_APPROVED_SET = "approved_v4"
+
+#: The checks that read the table listing.
+_TABLE_CHECKS = ("nft_table", "approved_v4_matches", "ingress_matches")
+
+#: What `nft -j` prints first is the listing's own description; only its
+#: JSON schema version is compared (`1` in nftables 1.1.3, Debian 13). A
+#: release that changes it reads as `unreadable`, which refuses the decoy.
+_JSON_SCHEMA_VERSION = 1
+
+#: The match keys that name an interface.
+_INTERFACE_KEYS = ("iifname", "oifname")
 
 _SUBNET = ipaddress.ip_network(DECOY_SUBNET)
 
 
-def _listing(output: bytes) -> Optional[list[str]]:
+def _scalar_set(value: object) -> bool:
+    return (type(value) is list and value != []
+            and (all(type(item) is str for item in value)
+                 or all(type(item) is int for item in value)))
+
+
+def _normalised(value: object) -> object:
+    """Anonymous sets of names or ports in a rule, in one order.
+
+    nftables lists an anonymous set's elements in an order of its own (the
+    ingress names come back reordered; container-checked, nftables 1.1.3),
+    so their order says nothing. The named set's `elem` is not touched.
+    """
+
+    if type(value) is dict:
+        if set(value) == {"set"} and _scalar_set(value["set"]):
+            return {"set": sorted(value["set"])}
+        return {key: _normalised(item) for key, item in value.items()}
+    if type(value) is list:
+        return [_normalised(item) for item in value]
+    return value
+
+
+def _table(output: bytes) -> Optional[list[tuple[str, dict]]]:
+    """`nft -j list table` as `(kind, body)` objects without handles, or `None`.
+
+    `None` is output this module does not recognise: not ASCII JSON, not one
+    `nftables` list, no leading `metainfo` of the known JSON schema, or an
+    object that is not exactly one kind holding a dict. Never partly read.
+    Any kind is kept (a map or a counter added by hand fails `nft_table`).
+    """
+
     try:
-        text = output.decode("ascii")
-    except UnicodeDecodeError:
+        document = json.loads(output.decode("ascii"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    if type(document) is not dict or set(document) != {"nftables"}:
+        return None
+    objects = document["nftables"]
+    if type(objects) is not list or not objects:
+        return None
+    meta = objects[0]
+    if (type(meta) is not dict or set(meta) != {"metainfo"}
+            or type(meta["metainfo"]) is not dict
+            or meta["metainfo"].get("json_schema_version") != _JSON_SCHEMA_VERSION
+            or type(meta["metainfo"].get("json_schema_version")) is not int):
+        return None
+    table: list[tuple[str, dict]] = []
+    for item in objects[1:]:
+        if type(item) is not dict or len(item) != 1:
+            return None
+        [(kind, body)] = item.items()
+        if type(body) is not dict:
+            return None
+        body = {key: value for key, value in body.items() if key != "handle"}
+        if kind == "rule":
+            body = _normalised(body)
+        table.append((kind, body))
+    return table
 
 
-def _set_is_empty(lines: list[str]) -> bool:
-    """Whether the set `approved_v4` is listed, and with no element."""
+def _elements(table: list[tuple[str, dict]]) -> Optional[tuple[str, ...]]:
+    """The set `approved_v4`'s elements as `str(IPv4Network)`, or `None`.
 
-    try:
-        start = lines.index("set approved_v4 {")
-        end = lines.index("}", start)
-    except ValueError:
-        return False
-    return not any(line.startswith("elements") for line in lines[start + 1:end])
+    `None` unless the table holds that set exactly once and every element is
+    a prefix or a bare address (a /32): the only forms nftables lists an
+    interval set of prefixes in (container-checked, nftables 1.1.3).
+    """
+
+    sets = [body for kind, body in table
+            if kind == "set" and body.get("name") == _APPROVED_SET]
+    if len(sets) != 1:
+        return None
+    elements = sets[0].get("elem", [])
+    if type(elements) is not list:
+        return None
+    found = []
+    for element in elements:
+        if type(element) is str:
+            text = f"{element}/32"
+        elif (type(element) is dict and set(element) == {"prefix"}
+                and type(element["prefix"]) is dict
+                and set(element["prefix"]) == {"addr", "len"}
+                and type(element["prefix"]["addr"]) is str
+                and type(element["prefix"]["len"]) is int):
+            text = f"{element['prefix']['addr']}/{element['prefix']['len']}"
+        else:
+            return None
+        try:
+            found.append(str(ipaddress.IPv4Network(text, strict=True)))
+        except ValueError:
+            return None
+    return tuple(found)
+
+
+def _ingress_holds(table: list[tuple[str, dict]], ingress: tuple[str, ...]) -> bool:
+    """Every interface the rules name, other than the bridge, is the ingress.
+
+    Each `iifname`/`oifname` match that names something other than the
+    bridge alone must name exactly the scope's ingress interfaces, and there
+    are exactly three such matches with a scope (the accept toward the
+    decoy, the reply accept, the ingress drop) and none without one.
+    """
+
+    expected = tuple(sorted(ingress))
+    places = 0
+    for kind, body in table:
+        if kind != "rule":
+            continue
+        expressions = body.get("expr")
+        if type(expressions) is not list:
+            return False
+        for expression in expressions:
+            match = expression.get("match") if type(expression) is dict else None
+            left = match.get("left") if type(match) is dict else None
+            meta = left.get("meta") if type(left) is dict else None
+            if type(meta) is not dict or meta.get("key") not in _INTERFACE_KEYS:
+                continue
+            right = match.get("right")
+            if type(right) is str:
+                names: tuple = (right,)
+            elif type(right) is dict and set(right) == {"set"} and _scalar_set(right["set"]):
+                names = tuple(sorted(right["set"]))
+            else:
+                return False
+            if names == (BRIDGE,):
+                continue
+            if names != expected:
+                return False
+            places += 1
+    return places == (3 if ingress else 0)
 
 
 def _links(output: bytes) -> Optional[list[dict]]:
@@ -160,23 +272,27 @@ def _in_subnet(link: dict) -> bool:
     return False
 
 
-def evaluate(outputs: dict[str, tuple[int, bytes]]) -> dict[str, str]:
+def evaluate(outputs: dict[str, tuple[int, bytes]], ruleset: Expected) -> dict[str, str]:
     """One fixed result per check, from the two read-back outputs.
 
     `outputs` maps `decoy_network.HELPER_VERIFY`'s names to `(status,
-    output)`. A command that failed, or printed something that cannot be
-    read, makes every check that depends on it `unreadable`.
+    output)`; `ruleset` is the helper's `decoy_network.Ruleset`, rendered
+    from the same scope as the table it loaded. A command that failed, or
+    printed something that cannot be read, makes every check that depends on
+    it `unreadable`.
     """
 
     results: dict[str, str] = {}
 
     status, output = outputs.get("nft_table", (1, b""))
-    lines = _listing(output) if status == 0 else None
-    if lines is None:
-        results["nft_table"] = results["approved_v4_empty"] = "unreadable"
+    table = _table(output) if status == 0 else None
+    if table is None:
+        results.update({name: "unreadable" for name in _TABLE_CHECKS})
     else:
-        results["nft_table"] = "pass" if tuple(lines) == EXPECTED_NFT_LISTING else "fail"
-        results["approved_v4_empty"] = "pass" if _set_is_empty(lines) else "fail"
+        listed = [{kind: body} for kind, body in table]
+        results["nft_table"] = _verdict(_canonical(listed) == ruleset.expected)
+        results["approved_v4_matches"] = _verdict(_elements(table) == ruleset.approved_v4)
+        results["ingress_matches"] = _verdict(_ingress_holds(table, ruleset.ingress))
 
     status, output = outputs.get("host_links", (1, b""))
     links = _links(output) if status == 0 else None
@@ -217,6 +333,12 @@ def evaluate(outputs: dict[str, tuple[int, bytes]]) -> dict[str, str]:
 
 def _verdict(holds: bool) -> str:
     return "pass" if holds else "fail"
+
+
+def _canonical(document: object) -> str:
+    """`decoy_network.canonical_json`'s form (a test keeps the two the same)."""
+
+    return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def _utc_second() -> str:
@@ -288,11 +410,17 @@ class Recorder:
             return False
         return True
 
-    def record(self, outputs: dict[str, tuple[int, bytes]]) -> bool:
-        """Evaluate, write this boot's record; True only if all passed and it was written."""
+    def record(self, outputs: dict[str, tuple[int, bytes]], ruleset: Expected) -> bool:
+        """Evaluate against `ruleset`, write this boot's record.
+
+        True only if every check passed and the record was written. The
+        record carries the scope's digest (`NO_SCOPE` without one), never an
+        address or a name; the journal line names fixed checks only.
+        """
 
         try:
-            results = evaluate(outputs)
+            results = evaluate(outputs, ruleset)
+            digest = NO_SCOPE if ruleset.scope_digest is None else ruleset.scope_digest
         except Exception:  # noqa: BLE001 - an output this cannot evaluate passes nothing
             _say("isolation check: the read-back could not be evaluated")
             return False
@@ -301,7 +429,7 @@ class Recorder:
         if self._boot_id is None:
             return False
         try:
-            payload = render_evidence(self._boot_id, self._clock(), results)
+            payload = render_evidence(self._boot_id, self._clock(), results, digest)
         except IsolationEvidenceRefused:
             return False
         if not self._write(payload):

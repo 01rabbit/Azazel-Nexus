@@ -1074,11 +1074,16 @@ def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
     assert settings["IPAddressDeny"] == ["any"]
     # Its one writable place is its own runtime directory, for this boot's
     # isolation record (#196 §14); no declared writable path, no namespace of
-    # its own (it would configure the host's links), no credential.
+    # its own (it would configure the host's links).
     assert settings["RuntimeDirectory"] == ["azazel-decoy-isolation"]
     assert settings["RuntimeDirectoryMode"] == ["0755"]
+    # Its one input (#196 G1b, grant §4.3 H3): the scope file, as exactly one
+    # credential, with no fallback, so that a missing file fails the start.
+    assert settings["LoadCredential"] == [
+        "decoy-scope:/run/azazel-activation/decoy-scope.json"]
     for key in ("ReadWritePaths", "NetworkNamespacePath",
-                "PrivateNetwork", "SupplementaryGroups", "LoadCredential",
+                "PrivateNetwork", "SupplementaryGroups", "SetCredential",
+                "LoadCredentialEncrypted", "ImportCredential", "SetCredentialEncrypted",
                 "Environment", "EnvironmentFile", "ExecStartPre", "IPAddressAllow",
                 "RuntimeDirectoryPreserve", "StateDirectory", "BindPaths"):
         assert key not in settings, key
@@ -1115,21 +1120,66 @@ def test_no_unit_may_declare_run_or_the_isolation_record_writable(unit, field, p
     "drop-last",
     "add-environment",
     "other-stop",
+    "no-scope",
+    "other-scope-source",
+    "scope-fallback",
+    "second-credential",
 ])
 def test_the_helper_extra_is_pinned_whole(change):
     from dataclasses import replace
 
     from azazel_nexus_runtime.hardening import DECOY_HELPER_SANDBOX
 
+    def swap(changed, new_value):
+        return tuple((key, new_value) if key == changed else (key, value)
+                     for key, value in DECOY_HELPER_SANDBOX)
+
     extra = {
         "drop-last": DECOY_HELPER_SANDBOX[:-1],
         "add-environment": DECOY_HELPER_SANDBOX + (("Environment", "X=1"),),
-        "other-stop": tuple(("ExecStop", "/usr/sbin/nft flush ruleset")
-                            if key == "ExecStop" else (key, value)
-                            for key, value in DECOY_HELPER_SANDBOX),
+        "other-stop": swap("ExecStop", "/usr/sbin/nft flush ruleset"),
+        "no-scope": tuple(item for item in DECOY_HELPER_SANDBOX
+                          if item[0] != "LoadCredential"),
+        "other-scope-source": swap("LoadCredential",
+                                   "decoy-scope:/etc/azazel/decoy-scope.json"),
+        # A fallback would turn a missing scope into a start (#196 G1b).
+        "scope-fallback": DECOY_HELPER_SANDBOX + (("SetCredential", "decoy-scope:{}"),),
+        "second-credential": DECOY_HELPER_SANDBOX + (
+            ("LoadCredential", "node:/etc/azazel/node.yaml"),),
     }.get(change, change)
     with pytest.raises(ValueError, match="in extra"):
         replace(_profile(HELPER), extra=extra)
+
+
+def test_the_scope_credential_is_the_one_the_helper_reads():
+    """The unit's credential name and source, and the reader's fixed path (G1b)."""
+
+    from azazel_nexus.decoy_scope import SCOPE_CREDENTIAL_PATH
+    from azazel_nexus_runtime.hardening import DECOY_HELPER_SANDBOX, DECOY_SCOPE_CREDENTIAL
+
+    name, _, source = DECOY_SCOPE_CREDENTIAL.partition(":")
+    assert (name, source) == ("decoy-scope", "/run/azazel-activation/decoy-scope.json")
+    assert SCOPE_CREDENTIAL_PATH == f"/run/credentials/{HELPER}/{name}"
+    assert [value for key, value in DECOY_HELPER_SANDBOX
+            if key == "LoadCredential"] == [DECOY_SCOPE_CREDENTIAL]
+    assert not [key for key, _ in DECOY_HELPER_SANDBOX
+                if key != "LoadCredential" and "Credential" in key]
+
+
+@pytest.mark.parametrize("unit", ["azazel-decoyd.service", "azazel-mio-entryd.service",
+                                  "azazel-knowledge-lited.service"])
+@pytest.mark.parametrize("credential", [
+    ("LoadCredential", "decoy-scope:/run/azazel-activation/decoy-scope.json"),
+    ("LoadCredential", "x:/run/azazel-activation/decoy-scope.json"),
+    ("LoadCredential", "grants:/run/azazel-activation/granted"),
+    ("ImportCredential", "decoy-scope"),
+])
+def test_no_other_unit_may_load_the_scope(unit, credential):
+    from dataclasses import replace
+
+    profile = next(p for p in ALL_PROFILES if p.unit == unit)
+    with pytest.raises(ValueError, match="credential alone"):
+        replace(profile, extra=profile.extra + (credential,))
 
 
 def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():

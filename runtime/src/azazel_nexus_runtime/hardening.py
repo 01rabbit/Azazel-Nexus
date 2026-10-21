@@ -74,6 +74,7 @@ __all__ = [
     "DECOY_NAMESPACE_SANDBOX",
     "DECOY_NAMESPACE_SHARED_OMISSIONS",
     "DECOY_NAMESPACE_SHARED_OVERRIDES",
+    "DECOY_SCOPE_CREDENTIAL",
     "EDGE_PROBE_PREFLIGHT_UNIT",
     "GRANT_MARKER_UNITS",
     "HOST_FIREWALL_UNIT",
@@ -335,6 +336,16 @@ class ServiceProfile:
                 f"{self.unit} holds exactly CAP_NET_ADMIN; anything wider is "
                 "a reviewed change to this declaration"
             )
+        # The exposure scope is the helper's input alone (#196 G1b): another
+        # unit loading it, or the grant directory it lives in, as a
+        # credential would read what only the helper may act on.
+        if self.unit != DECOY_NETWORK_HELPER_UNIT and any(
+                key.startswith(("LoadCredential", "SetCredential", "ImportCredential"))
+                and ("decoy-scope" in value or "/run/azazel-activation" in value)
+                for key, value in self.extra):
+            raise ValueError(
+                f"{self.unit}: the decoy scope is {DECOY_NETWORK_HELPER_UNIT}'s "
+                "credential alone")
         if self.unit == DECOY_NAMESPACE_UNIT:
             self._check_namespace_unit()
         elif self.shared_overrides or self.shared_omissions:
@@ -820,6 +831,17 @@ DECOY_MANAGER_SOCKETS_INACCESSIBLE: tuple[tuple[str, str], ...] = (
     ("InaccessiblePaths", "-/run/systemd/private"),
 )
 
+#: The decoy network helper's one input (#196 G1b,
+#: docs/deception-exposure-grant.md §4.3 H3): the closed scope file the
+#: activation pass will render (G6) beside its grant markers, handed to the
+#: helper as the credential `decoy-scope`, which it reads from
+#: `/run/credentials/azazel-decoy-netd.service/decoy-scope`
+#: (`azazel_nexus.decoy_scope.SCOPE_CREDENTIAL_PATH`; a test keeps them
+#: equal). An immutable snapshot for the whole run. No `SetCredential=`
+#: fallback, on purpose: a missing source file fails the start (fail
+#: closed). The helper's and no other unit's.
+DECOY_SCOPE_CREDENTIAL = "decoy-scope:/run/azazel-activation/decoy-scope.json"
+
 #: The decoy network helper's own settings, pinned whole (#196 body, m2 of
 #: the review of #268). On top of the shared sandbox: the clock, the host
 #: name and the kernel log are out of reach, no realtime scheduling, and
@@ -833,6 +855,8 @@ DECOY_HELPER_SANDBOX: tuple[tuple[str, str], ...] = (
     ("RemainAfterExit", "yes"),
     ("TimeoutStartSec", "30s"),
     ("ExecStop", "/usr/libexec/azazel/az-decoy-netd stop"),
+    # Its one input (#196 G1b, docs/deception-exposure-grant.md §4.3 H3).
+    ("LoadCredential", DECOY_SCOPE_CREDENTIAL),
     ("ProtectClock", "yes"),
     ("ProtectHostname", "yes"),
     ("ProtectKernelLogs", "yes"),
@@ -1422,13 +1446,17 @@ PROFILES: tuple[ServiceProfile, ...] = (
         rationale=(
             "Runs once. It holds CAP_NET_ADMIN alone, as a bounding set and "
             "never as an ambient capability, in the host network namespace: "
-            "with fixed nft and ip commands it loads the fixed decoy table "
-            "first, then sets up az-decoy0 and attaches the host end of the "
+            "with fixed nft and ip commands it loads the decoy table first, "
+            "then sets up az-decoy0 and attaches the host end of the "
             "veth pair the namespace unit made; ExecStop cuts the path and then "
-            "removes the table. After building it reads back the table and "
+            "removes the table. Its one input is the closed exposure scope, "
+            "the credential decoy-scope, decoded strictly; the table is "
+            "rendered from it as one transaction, and a missing scope file "
+            "fails the start. After building it reads back the table and "
             "the host's links with two fixed commands and writes this boot's "
-            "isolation record, fixed results only, to its runtime directory, "
-            "which the decoy requires before it listens; a check that does "
+            "isolation record, fixed results and the scope's digest only, to "
+            "its runtime directory, which the decoy requires before it "
+            "listens; a check that does "
             "not pass undoes the build. It reads no decoy observation and no Edge "
             "decision. It is root, so netlink is its only address family (any "
             "netlink protocol, not only route and nftables) and it has no AF_UNIX "

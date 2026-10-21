@@ -3,8 +3,9 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # Runs once.
-# It holds CAP_NET_ADMIN alone, as a bounding set and never as an ambient capability, in the host network namespace: with fixed nft and ip commands it loads the fixed decoy table first, then sets up az-decoy0 and attaches the host end of the veth pair the namespace unit made; ExecStop cuts the path and then removes the table.
-# After building it reads back the table and the host's links with two fixed commands and writes this boot's isolation record, fixed results only, to its runtime directory, which the decoy requires before it listens; a check that does not pass undoes the build.
+# It holds CAP_NET_ADMIN alone, as a bounding set and never as an ambient capability, in the host network namespace: with fixed nft and ip commands it loads the decoy table first, then sets up az-decoy0 and attaches the host end of the veth pair the namespace unit made; ExecStop cuts the path and then removes the table.
+# Its one input is the closed exposure scope, the credential decoy-scope, decoded strictly; the table is rendered from it as one transaction, and a missing scope file fails the start.
+# After building it reads back the table and the host's links with two fixed commands and writes this boot's isolation record, fixed results and the scope's digest only, to its runtime directory, which the decoy requires before it listens; a check that does not pass undoes the build.
 # It reads no decoy observation and no Edge decision.
 # It is root, so netlink is its only address family (any netlink protocol, not only route and nftables) and it has no AF_UNIX socket that could reach the service manager, whose private sockets are also inaccessible to it.
 # It starts only with AppArmor enabled and its profile azazel-decoy-netd loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
@@ -31,6 +32,7 @@ RuntimeDirectoryMode=0755
 RemainAfterExit=yes
 TimeoutStartSec=30s
 ExecStop=/usr/libexec/azazel/az-decoy-netd stop
+LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json
 ProtectClock=yes
 ProtectHostname=yes
 ProtectKernelLogs=yes

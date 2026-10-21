@@ -64,6 +64,14 @@ profile azazel-decoy-netd {
   # The record is bound to this boot.
   @{PROC}/sys/kernel/random/boot_id r,
 
+  # Its one input (#196 G1b, grant §4.3 H3): the scope file systemd hands
+  # it as the credential `decoy-scope` (`LoadCredential=`), read only, from
+  # the fixed path `decoy_scope.SCOPE_CREDENTIAL_PATH`; the directory is
+  # opened first (no link). Not the source under /run/azazel-activation,
+  # which PID 1 reads and this profile still denies writing.
+  /run/credentials/azazel-decoy-netd.service/ r,
+  /run/credentials/azazel-decoy-netd.service/decoy-scope r,
+
   # Its runtime directory, the one place it writes: the record under a
   # fixed temporary name, renamed over isolation.json (§14).
   /run/azazel-decoy-isolation/ r,

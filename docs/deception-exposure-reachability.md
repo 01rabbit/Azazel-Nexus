@@ -478,7 +478,7 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
    §5, checked as `ingress_containment_absent` and `decoy_prefix_routed`.
    *Required before G6.* Without it a granted tier implies a node that routes
    whatever its ingress receives.
-3. **R3.** The G1 ruleset: the reply accept gains `oifname { <ingress> }`;
+3. **R3** (implemented in G1b). The G1 ruleset: the reply accept gains `oifname { <ingress> }`;
    the forward chain gains K2's drop; both rendered from the scope and
    compared by the isolation check like the rest.
 4. **R4.** The verify unit of grant §6 repeats every read of §6 (it needs no
