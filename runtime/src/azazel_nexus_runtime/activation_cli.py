@@ -1027,8 +1027,13 @@ def _epoch_context() -> _EpochContext:
     return _EpochContext(declaration, policy, node_digest)
 
 
+#: A raise by more than this is shown with a warning (a typo such as an extra
+#: digit cannot be undone). It is never refused: any raise is valid.
+LARGE_EPOCH_STEP = 1000
+
+
 def _epoch_summary(value: EpochRaise, payload: bytes) -> list[str]:
-    return [
+    lines = [
         "schema: azazel-nexus/activation-epoch-raise/v1",
         f"operator: {value.operator}",
         f"node_digest: {value.node_digest}",
@@ -1036,6 +1041,11 @@ def _epoch_summary(value: EpochRaise, payload: bytes) -> list[str]:
         f"security_epoch: {value.from_epoch} -> {value.to_epoch}",
         f"payload_sha256: {sha256(payload).hexdigest()}",
     ]
+    if value.to_epoch - value.from_epoch > LARGE_EPOCH_STEP:
+        lines.append(f"WARNING: the epoch rises by {value.to_epoch - value.from_epoch} "
+                     f"(more than {LARGE_EPOCH_STEP}); it can never be lowered. Check "
+                     "the new epoch before signing or confirming.")
+    return lines
 
 
 def run_epoch_request(*, operator, to_epoch, out_path, stderr) -> int:

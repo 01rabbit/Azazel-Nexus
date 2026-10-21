@@ -1366,9 +1366,8 @@ units, and neither file is one of them.
   than the signed one; the most it can cause is a refusal (fail-closed, a
   denial of service by someone who can already write there as root).
 
-The other open points of #251 (a regular path to raise the declared epoch,
-the optional `commissioning_storage` diagnostic label) are not addressed
-here.
+The regular path to raise the declared epoch is §11; the optional
+`commissioning_storage` diagnostic label was added in #262.
 
 ## 11. Raising the declared security epoch (#251)
 
@@ -1455,8 +1454,45 @@ every reader refuses until `azazel-nexus bootstrap-deployment-recover`
 finishes whichever declaration `deployment.json` holds; then run
 `epoch-raise` again if it still names the old epoch.
 
+**A missing ledger record is an audit gap.** If step 3 fails (exit 2,
+"activation ledger record missing") or the declaration's durability is
+unconfirmed (`DeploymentDurabilityUncertain`, exit 2), the floor and the
+declaration may already be raised while `activation.epoch_raised` is absent.
+Running `epoch-raise` again cannot add it: the payload no longer matches the
+declaration, and there is deliberately no path that writes the record on its
+own. Treat it as a gap in the audit trail: record outside the node who raised
+the epoch, when and why, and the payload SHA-256. The floor itself is not
+affected: the pass still refuses every approval below it.
+
+**Signed but not applied.** A signed payload has no expiry; it stays
+applicable while the declaration still names its `from_epoch`. An operator
+who signs one and then decides not to apply it deletes the payload and its
+signature together (on the workstation and on the node), like any other
+unused approval.
+
+**A large step is warned, not refused.** `epoch-request` and `epoch-raise`
+print a `WARNING` line in the summary when `to_epoch − from_epoch` exceeds
+1000 (`LARGE_EPOCH_STEP`), since a mistyped epoch can never be lowered.
+
+**Bootstrap selection and bootstrap approvals.** The bootstrap path binds the
+declaration too:
+
+- a bootstrap selection (`/etc/azazel/bootstrap/selection.json`) carries the
+  `deployment_digest` of the declaration it was published against
+  (`bootstrap_selection.py`). After a raise the digest differs, so a selection
+  still present is refused ("deployment binding differs") and every pass fails
+  closed before the ordinary pass. The selection store never replaces a
+  selection: an administrator (root) moves `selection.json` (and
+  `selection.pending`, if present) aside into a root-only directory, kept for
+  the record, with the controller not running. A later bootstrap needs a new
+  bootstrap approval (it binds the declared epoch) and a new selection;
+- do **not** raise the epoch while a bootstrap lease is valid. The
+  bootstrap approval behind it binds the declared epoch, so after a raise
+  its revalidation and any renewal are refused; nothing new starts, but the
+  bootstrap stays refused until the lease expires (fail-closed, an
+  availability cost). Raise after it has expired or been closed.
+
 **Not covered.** The epoch can never be lowered by this path; a mistaken
 raise is permanent (approvals are simply signed at the new epoch). Root can
-still replace both files by hand (local trust, §3.5). Bootstrap v1 approvals
-that bind the declared epoch are invalidated by the raise as well; this path
-does not issue new ones.
+still replace both files by hand (local trust, §3.5). This path issues no
+new bootstrap approval or selection (above).

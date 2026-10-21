@@ -542,9 +542,27 @@ Nothing it does starts or enables a unit itself.
    `RAISE`, raises the high-water epoch floor, replaces
    `/etc/azazel/bootstrap/deployment.json` with the same declaration at the
    new epoch and records `activation.epoch_raised` in the activation ledger.
-   It needs a high-water file (an approval installed before). Afterwards
-   request, sign and `install --replace` a new approval at the new epoch,
-   with a `--seq` above the floor. Details:
+   `epoch-request` works without a high-water file (it only refuses a new
+   epoch below an existing floor); `epoch-raise` refuses without one, so an
+   approval must have been installed before. Afterwards request, sign and
+   `install --replace` a new approval at the new epoch, with a `--seq` above
+   the floor. Also:
+   - a summary line `WARNING: the epoch rises by …` appears when the step is
+     above 1000; check the number, it can never be lowered;
+   - a signed payload that is not applied is deleted together with its
+     signature (it has no expiry);
+   - the bootstrap path binds the declaration as well. Do not raise while a
+     bootstrap lease is valid (its revalidation is then refused until it
+     expires). A bootstrap selection carries the declaration digest and is
+     refused after a raise; it is never replaced, so root moves
+     `/etc/azazel/bootstrap/selection.json` (and `selection.pending`) aside
+     into a root-only directory, keeping it, while the controller is not
+     running. A later bootstrap needs a new bootstrap approval and selection;
+   - exit 2 with the ledger record missing (or the declaration's durability
+     unconfirmed) cannot be repaired by running it again: record the raise
+     outside the node as an audit gap.
+
+   Details:
    [observe-baseline activation §11](activation-observe-baseline.md#11-raising-the-declared-security-epoch-251).
 
 Exit 1 means nothing changed; exit 2 means a later step was not confirmed and

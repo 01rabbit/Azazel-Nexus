@@ -401,3 +401,110 @@ def test_main_offers_both_commands(installed, monkeypatch, capsys):
     assert decode_epoch_raise(target.read_bytes()).to_epoch == 3
     with pytest.raises(SystemExit):
         cli.main(["epoch-raise", "--payload", str(target)])
+
+
+# -- review follow-ups (PR #264) -----------------------------------------------
+
+
+@pytest.mark.parametrize("to_epoch,warned", [(2 + cli.LARGE_EPOCH_STEP, False),
+                                             (3 + cli.LARGE_EPOCH_STEP, True)])
+def test_a_large_step_is_warned_not_refused(installed, to_epoch, warned):
+    code, payload, err = _request(installed, to_epoch)
+    assert code == 0
+    assert ("WARNING: the epoch rises by" in err) is warned
+    code, out = _raise(installed, payload, _epoch_sign(installed, payload))
+    assert code == 0, out
+    assert ("WARNING: the epoch rises by" in out) is warned
+    assert installed.declaration.security_epoch == to_epoch
+
+
+def test_the_floor_is_raised_before_the_declaration_and_the_record_last(
+        installed, monkeypatch):
+    order = []
+    for name, label in (("raise_high_water", "floor"), ("_raise_declaration", "declaration"),
+                        ("_append", "ledger")):
+        original = getattr(cli, name)
+
+        def recording(*args, _original=original, _label=label, **kwargs):
+            order.append(_label)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(cli, name, recording)
+    code, payload, _ = _request(installed, 3)
+    code, out = _raise(installed, payload, _epoch_sign(installed, payload))
+    assert code == 0, out
+    assert order == ["floor", "declaration", "ledger"]
+
+
+def test_declaration_durability_uncertain_exits_2(installed, monkeypatch):
+    from azazel_nexus.bootstrap_deployment_store import DeploymentDurabilityUncertain
+
+    def uncertain(current, to_epoch):
+        raise DeploymentDurabilityUncertain("injected")
+
+    monkeypatch.setattr(cli, "_raise_declaration", uncertain)
+    code, payload, _ = _request(installed, 3)
+    events = len(installed.events())
+    code, out = _raise(installed, payload, _epoch_sign(installed, payload))
+    assert code == 2 and "durability UNCONFIRMED" in out
+    assert _high_water(installed)["security_epoch"] == 3
+    assert len(installed.events()) == events  # no record: an audit gap (§11)
+
+
+def test_a_missing_ledger_record_exits_2_after_both_writes(installed, monkeypatch):
+    def refuse(event):
+        raise OSError("injected ledger failure")
+
+    code, payload, _ = _request(installed, 3)
+    events = len(installed.events())
+    monkeypatch.setattr(cli, "_append", refuse)
+    code, out = _raise(installed, payload, _epoch_sign(installed, payload))
+    assert code == 2 and "activation ledger record missing" in out
+    assert installed.declaration.security_epoch == 3
+    assert _high_water(installed)["security_epoch"] == 3
+    assert len(installed.events()) == events
+
+
+def test_cli_through_the_real_declaration_store(installed, tmp_path, monkeypatch):
+    """No declaration seam: epoch-raise replaces a real (temporary) deployment.json."""
+    from contextlib import contextmanager
+
+    from azazel_nexus import bootstrap_deployment_store as store
+    from azazel_nexus.bootstrap_deployment import encode_bootstrap_deployment
+
+    bootstrap = tmp_path / "bootstrap"
+    bootstrap.mkdir(mode=0o700)
+    bootstrap.chmod(0o700)
+    (bootstrap / "deployment.json").write_bytes(
+        encode_bootstrap_deployment(installed.declaration))
+    (bootstrap / "deployment.json").chmod(0o600)
+
+    @contextmanager
+    def directory():
+        fd = os.open(bootstrap, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(store, "_bootstrap_directory", directory)
+    for name in ("_raise_epoch_at", "_read_at"):
+        original = getattr(store, name)
+
+        def local_owner(*args, _operation=original, **kwargs):
+            return _operation(*args, **(kwargs | {"owner": os.getuid()}))
+
+        monkeypatch.setattr(store, name, local_owner)
+    monkeypatch.setattr(cli, "_load_declaration", store.load_bootstrap_deployment)
+    monkeypatch.setattr(cli, "_raise_declaration", cli.raise_bootstrap_deployment_epoch)
+
+    code, payload, err = _request(installed, 3)
+    assert code == 0, err
+    signature = _epoch_sign(installed, payload)
+    code, out = _raise(installed, payload, signature)
+    assert code == 0, out
+    assert store.load_bootstrap_deployment().security_epoch == 3
+    assert sorted(p.name for p in bootstrap.iterdir()) == ["deployment.json"]
+    assert installed.events()[-1]["event_type"] == "activation.epoch_raised"
+    code, out = _raise(installed, payload, signature)
+    assert code == 1 and "does not match the current declaration" in out
