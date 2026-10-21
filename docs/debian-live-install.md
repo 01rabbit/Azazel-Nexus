@@ -454,6 +454,12 @@ azn-commissioning  <device>  none  nofail,timeout=300
 /dev/mapper/azn-commissioning  /etc/azazel/commissioning  ext4  nodev,nosuid,noexec,nofail,x-systemd.device-timeout=300s  0  0
 ```
 
+On Debian 13 the `crypttab` generator ships in the separate `systemd-cryptsetup`
+package (`apt-get install systemd-cryptsetup`); with `cryptsetup-bin` alone
+`/etc/crypttab` is ignored and the mount only waits for a device that never
+appears (VM-confirmed, mechanics only;
+[activation rehearsal](hil-runbooks/activation-rehearsal.md)).
+
 `x-systemd.device-timeout=300s` matches the crypttab `timeout=300`: without it
 the mount job waits for the mapped device only for the default start timeout
 (90 s), and could fail before the prompt ends and not be retried after a later

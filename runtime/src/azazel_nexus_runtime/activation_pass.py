@@ -102,6 +102,7 @@ PRODUCERS = (
     "epoch_high_water",
     "trusted_clock",
     "operational_generation_publisher",
+    "systemd_loaded_units",
     "activation_approval_loader",
     "node_health",
 )
@@ -131,6 +132,11 @@ class PassProducers:
     #: `measure_scoped_unit_files`: the scoped units' vendor file bytes,
     #: measured now and refused on any override or drop-in.
     unit_files: Callable[[list], dict]
+    #: `activation_loaded_units.verify_grantable_units` over every grantable
+    #: unit and the controller's D-Bus session: each file waits for its
+    #: marker, the manager is a reviewed profile and each unit is not loaded,
+    #: masked, or loaded as declared; raises otherwise.
+    loaded_units: Callable[[list], None]
     #: `load_observe_baseline_approval` (keyword arguments).
     approval: Callable[..., ObserveBaselineApproval]
     #: `(policy, ledger) -> (healthy, findings)`.
@@ -347,6 +353,17 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         if floors is not None and generation.number < floors.generation:
             fail("epoch_high_water")
 
+    # 6b. Every grantable unit, in the policy or not (#251 H-1, M-3): its
+    #     file waits for its marker, the manager is a reviewed profile, and
+    #     each unit is not loaded, masked, or loaded from the vendor file
+    #     with no drop-in, its marker condition and the controller among its
+    #     Requires/After. A unit loaded earlier in the boot runs its loaded
+    #     definition, and READY releases its queued start whether or not
+    #     this policy names it.
+    def loaded_units():
+        producers.loaded_units(sorted(UNIT_SCOPE))
+    attempt(("systemd_loaded_units",), loaded_units)
+
     # 7. The v2 approval, verified against the context above and the floors.
     upstream = ("authenticated_commissioning", "node_identity", "activation_policy",
                 "epoch_high_water", "trusted_clock", "operational_generation_publisher")
@@ -420,8 +437,13 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
     return result
 
 
-def production_producers(*, commissioning_evidence: Callable[[], CommissioningEvidence]) -> PassProducers:
-    """The fixed host readers. Imported lazily by the controller after narrowing."""
+def production_producers(*, commissioning_evidence: Callable[[], CommissioningEvidence],
+                         systemd=None) -> PassProducers:
+    """The fixed host readers. Imported lazily by the controller after narrowing.
+
+    `systemd` is the controller's own `SystemdBusSession` (the manager's
+    `call`); without one the loaded-unit check refuses, so nothing is granted.
+    """
     from azazel_nexus.activation_policy import load_activation_policy
     from azazel_nexus.activation_store import load_observe_baseline_approval
     from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
@@ -433,6 +455,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
 
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
+    from .activation_loaded_units import verify_grantable_units
     from .activation_unit_files import measure_scoped_unit_files
     from .node_config import load_declared_node
 
@@ -443,6 +466,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         policy=load_activation_policy,
         high_water=require_high_water_for_pass,
         unit_files=measure_scoped_unit_files,
+        loaded_units=lambda units: verify_grantable_units(systemd, units),
         approval=load_observe_baseline_approval,
         health=lambda policy, ledger: collect_node_health(policy=policy, ledger=ledger),
         raise_high_water=raise_high_water,

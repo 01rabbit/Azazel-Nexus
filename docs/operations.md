@@ -325,7 +325,8 @@ launchable.
   masked and unstarted.
 - The inputs come from `az-activation generation-publish`, `request` and
   `install` (below) and the off-host signer. The reboot sequence is not yet
-  confirmed on a VM (P6). Until then the
+  confirmed on a VM (P6; procedure in the
+  [activation rehearsal](hil-runbooks/activation-rehearsal.md)). Until then the
   [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)
   still uses its rehearsal-only start.
 

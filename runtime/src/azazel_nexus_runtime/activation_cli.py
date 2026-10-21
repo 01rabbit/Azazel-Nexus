@@ -78,6 +78,7 @@ from .activation_high_water import (
     read_high_water,
 )
 from .activation_unit_files import (
+    UnitContentRefused,
     UnitFilesRefused,
     UnitOverrideRefused,
     measure_scoped_unit_files,
@@ -241,6 +242,9 @@ def _measure_unit_files(units) -> dict[str, bytes]:
     except UnitOverrideRefused:
         raise Refused("a scoped unit has an override, a non-mask unit file elsewhere "
                       "or a drop-in") from None
+    except UnitContentRefused:
+        raise Refused("a scoped unit file lacks its grant-marker lines or changed a "
+                      "start condition") from None
     except UnitFilesRefused:
         raise Refused("installed unit files unavailable or not protected") from None
 

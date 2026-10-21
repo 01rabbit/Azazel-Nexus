@@ -460,7 +460,8 @@ _ALL_PRODUCERS = (
     "authoritative_commissioning_admission", "renderer_measurement", "edge_evidence",
     "authenticated_commissioning", "inventory_binding", "node_identity",
     "activation_policy", "epoch_high_water", "trusted_clock",
-    "operational_generation_publisher", "activation_approval_loader", "node_health",
+    "operational_generation_publisher", "systemd_loaded_units",
+    "activation_approval_loader", "node_health",
 )
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
@@ -539,7 +540,9 @@ def _run_once(
             collect_pass_inputs, production_producers, staged_inputs,
         )
         if producers is None and root == Path("/"):
-            producers = production_producers(commissioning_evidence=load_commissioning_evidence)
+            # The manager's own D-Bus session, for the loaded-unit check.
+            producers = production_producers(commissioning_evidence=load_commissioning_evidence,
+                                             systemd=getattr(manager, "call", None))
         if producers is None:
             inputs = staged_inputs()
         else:

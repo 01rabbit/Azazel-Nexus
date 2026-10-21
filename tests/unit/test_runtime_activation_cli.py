@@ -214,7 +214,7 @@ def node(tmp_path, monkeypatch):
         path.chmod(0o700 if path.name == "activation" else 0o755)
     for unit in (*LOOP, EDGE):
         unit_file = root / "usr/lib/systemd/system" / unit
-        unit_file.write_text(f"[Unit]\nDescription={unit}\n")
+        unit_file.write_text(scoped_unit_files.rendered_unit(unit))
         unit_file.chmod(0o644)
 
     @contextmanager
@@ -397,7 +397,8 @@ def test_publish_refuses_when_inputs_change_during_confirmation(node, monkeypatc
     def measure():
         calls.append(1)
         if len(calls) == 2:
-            (node.units_dir / LOOP[0]).write_text("[Unit]\nDescription=changed\n")
+            (node.units_dir / LOOP[0]).write_text(
+                    scoped_unit_files.rendered_unit(LOOP[0]) + "# changed\n")
         return original()
 
     monkeypatch.setattr(cli, "_measure_baseline", measure)
@@ -508,7 +509,8 @@ def test_request_refuses_a_tampered_generation_tree(published):
 
 
 def test_request_refuses_after_a_unit_file_changes(published):
-    (published.units_dir / LOOP[1]).write_text("[Unit]\nDescription=edited\n")
+    (published.units_dir / LOOP[1]).write_text(
+        scoped_unit_files.rendered_unit(LOOP[1]) + "# edited\n")
     assert published.request()[0] == 1
 
 
@@ -1096,6 +1098,7 @@ def test_publish_request_sign_install_then_one_pass_grants_exactly_the_scope(nod
         policy=lambda: node.policy,
         high_water=hw.require_high_water_for_pass,
         unit_files=scoped_unit_files.measure_scoped_unit_files,
+        loaded_units=lambda units: None,
         approval=approval,
         health=lambda policy, ledger: (True, (("state_capacity", "ok"),)),
         raise_high_water=hw.raise_high_water,
@@ -1210,6 +1213,7 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
         policy=lambda: node.policy,
         high_water=hw.require_high_water_for_pass,
         unit_files=scoped_unit_files.measure_scoped_unit_files,
+        loaded_units=lambda units: None,
         approval=approval,
         health=lambda policy, ledger: (True, (("state_capacity", "ok"),)),
         raise_high_water=hw.raise_high_water,
@@ -1277,3 +1281,13 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
     assert outcome.granted == ()
     assert not granted.exists()
     assert node.events()[-1]["missing_producers"][-1] == "operational_generation_publisher"
+
+
+def test_publish_refuses_a_unit_file_without_its_grant_marker_condition(node):
+    """#251 H-1: the bytes are hashed only after the grant-marker lines are found."""
+    unit = node.units_dir / LOOP[0]
+    unit.write_text(scoped_unit_files.rendered_unit(LOOP[0]).replace(
+        f"ConditionPathExists=/run/azazel-activation/granted/{LOOP[0]}\n", ""))
+    code, out = node.publish()
+    assert code == 1 and "grant-marker lines" in out and "Nothing published" in out
+    assert node.store.numbers() == ()

@@ -45,6 +45,7 @@ from azazel_nexus.generation import GenerationStore
 from azazel_nexus.observe_baseline import build_observe_baseline, evidence_commissioning_digest
 from azazel_nexus.operator_trust import ApprovalPurpose, ApprovalRefused, OperatorTrust, approval_message
 from azazel_nexus_runtime import activated, activation_markers, activation_pass
+from azazel_nexus_runtime.activation_loaded_units import verify_loaded_units
 from azazel_nexus_runtime.activation_high_water import HighWater, HighWaterRefused
 from azazel_nexus_runtime.activation_pass import (
     ALWAYS_MISSING,
@@ -74,6 +75,42 @@ OTHER_BOOT = "11111111-2222-4333-8444-555555555555"
 EDGE_UNIT_FILE = (b"[Unit]\nDescription=azazel-edge-core.service\n[Service]\n"
                   b"Environment=AZAZEL_REDIRECT_POLICY_PATH=/opt/azazel/edge-core/config/"
                   b"redirect_policy.yaml\n")
+
+
+def loaded_as_declared(unit):
+    """What a manager reports for a unit loaded from its rendered vendor file."""
+    return {
+        "Id": unit, "LoadState": "loaded",
+        "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
+        "Conditions": [("ConditionPathExists", False, False,
+                        f"/run/azazel-activation/granted/{unit}", 0)],
+        "Asserts": [],
+        "Requires": ["azazel-activated.service", "system.slice", "sysinit.target"],
+        "After": ["azazel-activated.service", "basic.target", "system.slice"],
+    }
+
+
+class FakeManagerReader:
+    """The two reads the pass makes of the controller's D-Bus session."""
+
+    def __init__(self):
+        self.loaded = {}
+        self.profile_error = None
+        #: Profiles returned in turn (the last one repeats); errors raise.
+        self.profiles = ["reviewed"]
+        self.reads = []
+
+    def bootstrap_profile(self):
+        if self.profile_error is not None:
+            raise self.profile_error
+        value = self.profiles.pop(0) if len(self.profiles) > 1 else self.profiles[0]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def loaded_unit(self, unit):
+        self.reads.append(unit)
+        return self.loaded.get(unit, loaded_as_declared(unit))
 
 
 def make_policy(units=SCOPE, operators=("operator-a",), skew=300):
@@ -114,6 +151,7 @@ class World:
         self.unit_files = {unit: f"[Unit]\nDescription={unit}\n".encode() for unit in SCOPE}
         self.unit_files[EDGE] = EDGE_UNIT_FILE
         self.healthy = True
+        self.systemd = FakeManagerReader()
         self.raised: list[HighWater] = []
         # The installed Edge package, this boot's id and the preflight's
         # result: fresh, healthy, from this boot, not running (as at boot).
@@ -196,6 +234,7 @@ class World:
             policy=lambda: self.policy,
             high_water=lambda: self.high_water,
             unit_files=unit_files,
+            loaded_units=lambda units: verify_loaded_units(self.systemd, units),
             approval=approval,
             health=lambda policy, ledger: (
                 self.healthy, (("state_capacity", "ok" if self.healthy else "failed"),)),
@@ -328,12 +367,13 @@ def _raises(message="private reader detail"):
     ({"high_water": lambda: None}, ["epoch_high_water"]),
     ({"high_water": _raises()}, ["epoch_high_water"]),
     ({"unit_files": _raises()}, ["operational_generation_publisher"]),
+    ({"loaded_units": _raises()}, ["systemd_loaded_units"]),
     ({"approval": _raises()}, ["activation_approval_loader"]),
     ({"health": _raises()}, ["node_health"]),
     ({"health": lambda policy, ledger: (False, (("watchdog_fences", "failed"),))},
      ["node_health"]),
 ], ids=["evidence", "declared-node", "deployment", "policy", "high-water-absent",
-        "high-water-refused", "unit-file", "approval", "health-error", "unhealthy"])
+        "high-water-refused", "unit-file", "loaded-units", "approval", "health-error", "unhealthy"])
 def test_each_absent_or_failed_producer_refuses_and_is_named_alone(world, replaced, missing):
     outcome = world.run(**replaced)
     _assert_refused(world, outcome, missing)
@@ -933,3 +973,136 @@ def test_the_production_pass_reads_edge_evidence_at_the_fixed_paths(monkeypatch)
     source = Path(activation_pass.__file__).read_text()
     for forbidden in ("StartUnit", "subprocess", "HEALTH_ARGV", "azazel-edge-probe-preflight"):
         assert forbidden not in source
+
+
+# -- what the running manager loaded (#251 H-1, M-3) -------------------------
+
+
+def _loaded(unit, **changes):
+    return loaded_as_declared(unit) | changes
+
+
+ENTRYD = "azazel-mio-entryd.service"
+
+
+@pytest.mark.parametrize("loaded", [
+    _loaded(ENTRYD, Conditions=[]),
+    _loaded(ENTRYD, Conditions=[("ConditionPathExists", False, False,
+                                 "/run/azazel-activation/granted/azazel-mio-entryd.service", 0),
+                                ("ConditionPathExists", True, False, "/", 1)]),
+    _loaded(ENTRYD, Conditions=[("ConditionPathExists", False, True,
+                                 "/run/azazel-activation/granted/azazel-mio-entryd.service", 0)]),
+    _loaded(ENTRYD, Asserts=[("AssertPathExists", False, False, "/", 1)]),
+    _loaded(ENTRYD, FragmentPath=f"/etc/systemd/system/{ENTRYD}"),
+    _loaded(ENTRYD, DropInPaths=[f"/run/systemd/system/{ENTRYD}.d/override.conf"]),
+    _loaded(ENTRYD, LoadState="bad-setting"),
+    _loaded(ENTRYD, LoadState="not-found"),
+    _loaded(ENTRYD, Id="azazel-mio-locald.service"),
+    _loaded(ENTRYD, Conditions=None),
+    "not a mapping",
+], ids=["no-condition", "extra-condition", "negated-marker", "assert", "fragment-in-etc",
+        "drop-in", "bad-setting", "not-found", "other-id", "malformed-conditions", "malformed"])
+def test_a_loaded_unit_not_as_declared_refuses_everything(world, loaded):
+    """A unit loaded earlier in the boot runs its loaded definition (H-1)."""
+    world.systemd.loaded[ENTRYD] = loaded
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+def test_an_unreviewed_manager_profile_refuses_everything(world):
+    """M-3: Version and UnitPath are checked on the ordinary path too."""
+    from azazel_nexus_runtime.units import UnitOperationFailed
+    world.systemd.profile_error = UnitOperationFailed("unsupported systemd unit search path")
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+def test_an_unreadable_loaded_unit_refuses_everything(world):
+    def unreadable(unit):
+        raise RuntimeError("private bus detail")
+    world.systemd.loaded_unit = unreadable
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+    assert "private bus detail" not in world.ledger_path.read_text()
+
+
+@pytest.mark.parametrize("loaded", [None, _loaded(ENTRYD, LoadState="masked", Conditions=[])],
+                         ids=["not-loaded", "masked"])
+def test_a_unit_not_loaded_or_masked_in_the_manager_is_accepted(world, loaded):
+    world.systemd.loaded[ENTRYD] = loaded
+    assert sorted(world.run().granted) == list(SCOPE)
+
+
+def test_the_loaded_check_reads_every_grantable_unit_not_only_the_policy(world):
+    world.run()
+    assert world.systemd.reads == sorted(activation_markers.GRANTABLE_UNITS)
+
+
+def test_the_production_loaded_check_refuses_without_the_controller_session(monkeypatch):
+    from azazel_nexus_runtime import activation_loaded_units
+    checked = []
+    monkeypatch.setattr(activation_loaded_units, "require_grantable_unit_files",
+                        lambda units: checked.append(tuple(units)))
+    producers = activation_pass.production_producers(commissioning_evidence=lambda: None)
+    with pytest.raises(Exception, match="systemd manager reader required"):
+        producers.loaded_units(list(SCOPE))
+    reader = FakeManagerReader()
+    producers = activation_pass.production_producers(commissioning_evidence=lambda: None,
+                                                     systemd=reader)
+    producers.loaded_units(list(SCOPE))
+    assert reader.reads == list(SCOPE)
+    assert checked == [tuple(SCOPE), tuple(SCOPE)]
+
+
+def test_the_production_loaded_check_refuses_a_grantable_unit_file_first(monkeypatch):
+    from azazel_nexus_runtime import activation_loaded_units
+    from azazel_nexus_runtime.activation_unit_files import UnitContentRefused
+
+    def refused(units):
+        raise UnitContentRefused("unit file lacks the grant-marker lines")
+    monkeypatch.setattr(activation_loaded_units, "require_grantable_unit_files", refused)
+    reader = FakeManagerReader()
+    producers = activation_pass.production_producers(commissioning_evidence=lambda: None,
+                                                     systemd=reader)
+    with pytest.raises(activation_loaded_units.LoadedUnitRefused):
+        producers.loaded_units(list(SCOPE))
+    assert reader.reads == []
+
+
+@pytest.mark.parametrize("loaded", [
+    _loaded(EDGE, Conditions=[]),
+    _loaded(EDGE, DropInPaths=[f"/etc/systemd/system/{EDGE}.d/x.conf"]),
+    _loaded(EDGE, Requires=["system.slice"]),
+], ids=["no-condition", "drop-in", "no-requires"])
+def test_a_grantable_unit_outside_the_policy_loaded_not_as_declared_refuses(world, loaded):
+    """READY would release its queued start though this policy never names it."""
+    assert EDGE not in world.policy.units
+    world.systemd.loaded[EDGE] = loaded
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+def test_a_policy_narrower_than_the_grantable_set_grants_only_its_units(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
+    _owned_by_the_test(monkeypatch)
+    narrow = World(tmp_path, units=SCOPE[:2])
+    outcome = narrow.run()
+    assert sorted(outcome.granted) == list(SCOPE[:2])
+    assert narrow.markers() == list(SCOPE[:2])
+    assert narrow.systemd.reads == sorted(activation_markers.GRANTABLE_UNITS)
+
+
+@pytest.mark.parametrize("field", ["Requires", "After"])
+def test_a_loaded_unit_not_waiting_for_the_controller_refuses(world, field):
+    world.systemd.loaded[ENTRYD] = _loaded(ENTRYD, **{field: ["system.slice"]})
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+def test_only_the_second_profile_read_failing_refuses_everything(world):
+    """The read after the units detects a re-executed manager."""
+    from azazel_nexus_runtime.units import UnitOperationFailed
+    world.systemd.profiles = ["reviewed", UnitOperationFailed("unsupported systemd version")]
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+def test_a_profile_changed_between_the_reads_refuses_everything(world):
+    world.systemd.profiles = ["reviewed", "reviewed-but-another-version"]
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
