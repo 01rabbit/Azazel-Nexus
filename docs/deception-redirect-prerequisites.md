@@ -1541,4 +1541,4 @@ review of #274:
   closed, so it is an availability problem, not an exposure; a monotonic or
   boot-relative stamp would avoid it.
 
-The grant phase is designed in [granting the exposure tier](deception-exposure-grant.md) (proposed).
+The grant phase is designed in [granting the exposure tier](deception-exposure-grant.md) (decided 2026-10-22: all recommended defaults).
