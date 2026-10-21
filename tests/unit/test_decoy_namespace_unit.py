@@ -512,3 +512,50 @@ def test_the_unit_table_addresses_the_namespace_unit_by_fixed_key_only():
     assert UNIT_NAMES[UnitKey.DECOY_NAMESPACE] == NSD
     with pytest.raises(UnitOperationFailed):
         resolve(NSD)
+
+
+# -- review of #271: extra cannot restate a reserved key; nsd's wiring is pinned
+
+
+RESERVED = sorted({key for key, _ in SHARED_HARDENING} | {
+    "ReadWritePaths", "BindPaths", "InaccessiblePaths", "SystemCallFilter", "User",
+    "CapabilityBoundingSet", "AmbientCapabilities"})
+
+
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", DECOY_NETWORK_HELPER_UNIT,
+                                  DECOY_UNIT, ACTIVATION_CONTROLLER_UNIT])
+@pytest.mark.parametrize("key", RESERVED)
+def test_no_other_unit_can_restate_a_reserved_key_in_extra(unit, key):
+    profile = _profile(unit)
+    with pytest.raises(ValueError, match="in extra"):
+        replace(profile, extra=profile.extra + ((key, "anything"),))
+
+
+def test_no_packaged_unit_states_a_reserved_key_in_extra():
+    for profile in ALL_PROFILES:
+        if profile.unit == NSD:
+            continue
+        assert not {key for key, _ in profile.extra} & set(RESERVED), profile.unit
+
+
+@pytest.mark.parametrize("change", [
+    {"executable": "/usr/sbin/ip"},
+    {"executable": "/usr/libexec/azazel/az-decoy-netd"},
+    {"after": ()},
+    {"after": (ACTIVATION_CONTROLLER_UNIT, DECOY_UNIT)},
+    {"requires": ()},
+    {"requires": (ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT)},
+    {"binds_to": (ACTIVATION_CONTROLLER_UNIT,)},
+    {"before": (DECOY_NETWORK_HELPER_UNIT,)},
+    {"conflicts": ("shutdown.target",)},
+    {"default_dependencies": False},
+    {"conditions": ()},
+    {"conditions": (("ConditionPathExists",
+                     "/run/azazel-activation/granted/azazel-decoyd.service"),)},
+    {"conditions": (("ConditionPathExists",
+                     "/run/azazel-activation/granted/azazel-decoy-nsd.service"),
+                    ("ConditionPathExists", "/"))},
+], ids=lambda change: next(iter(change)))
+def test_the_namespace_unit_wiring_is_pinned(change):
+    with pytest.raises(ValueError, match="az-decoy-nsd|grant marker"):
+        replace(_profile(NSD), **change)

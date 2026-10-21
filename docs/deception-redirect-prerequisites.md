@@ -453,15 +453,33 @@ host. The bind mount that makes a named network namespace is then never seen
 outside the unit (n3). Leaving them out loses nothing real: a process with
 `CAP_SYS_ADMIN` and the `mount` system call could unmount or remount any of
 them inside its own mount namespace, so for this unit they were never a wall.
-What contains it is the bounding set, the system call filter,
-`RestrictNamespaces=net`, netlink as its only family, `NoNewPrivileges=`
-and its fixed body.
+
+**A compromised body is host root.** Root with `CAP_SYS_ADMIN` and `mount`
+can mount a fresh `/proc` or `/sys` and rewrite `kernel.core_pattern` and
+the like, or remount the cgroup file system read-write; no unit setting
+stops that. The bounding set, the system call filter,
+`RestrictNamespaces=net`, netlink as its only family and `NoNewPrivileges=`
+narrow what it is handed, and nothing more. Its containment rests on the
+body itself: fixed in code, taking no input (no argument, file, environment
+or socket), statically reviewed, and later confined by a mandatory access
+control (LSM) profile. To be weighed in the body phase: **removing the
+privilege instead**, by letting systemd hold the namespace. For example,
+the helper and the decoy share one network namespace through
+`PrivateNetwork=yes` and `JoinsNamespaceOf=`, and the helper moves one veth
+end to the host; then no unit needs `CAP_SYS_ADMIN` and the namespace unit
+goes away. Whether that ordering and lifetime work is itself a VM item.
 
 `ServiceProfile` pins this unit whole: its capability, account, families,
-the absence of any writable path, its own settings, the two shared overrides
-and the seven shared omissions must be exactly these. No other unit may
-override or leave out any `SHARED_HARDENING` entry, and a test checks that
-every other packaged unit carries the whole mount sandbox. It carries the
+the absence of any writable path, its own settings, the two shared overrides,
+the seven shared omissions, its executable, its ordering (`After=` and
+`Requires=` the controller only, nothing else) and its single grant-marker
+condition must be exactly these. No other unit may override or leave out any
+`SHARED_HARDENING` entry, nor restate in its free-form `extra` a shared key,
+`User=`, `CapabilityBoundingSet=`, `AmbientCapabilities=`,
+`SystemCallFilter=`, `RestrictAddressFamilies=`, `ReadWritePaths=`,
+`BindPaths=` or `InaccessiblePaths=` (each comes only from a declared field
+or the shared set); a test checks that every other packaged unit carries the
+whole mount sandbox. It carries the
 three marker lines (`ConditionPathExists=` on its marker, `Requires=` and
 `After=` on the controller), and passes the unit-content and loaded-unit
 checks of
@@ -521,11 +539,13 @@ cleaned up afterwards; a mechanism check, **not hardware evidence**):
   with `DynamicUser=`, `PrivateUsers=yes`, `NetworkNamespacePath=` and
   `ProtectSystem=strict` joined the namespace and saw only `lo`.
 
-The profile adds `SystemCallArchitectures=native`, `IPAddressDeny=any`,
-`UMask=0027`, `TimeoutStartSec=` and `RemainAfterExit=` to the checked
-configuration; none of them builds a mount namespace, but the unit as
-rendered has not itself been run. Whether the filter is wide enough for the
-body is checked when the body is written.
+The unit as rendered (d790db5, which adds `SystemCallArchitectures=native`,
+`IPAddressDeny=any`, `UMask=0027`, `TimeoutStartSec=` and `RemainAfterExit=`
+to the configuration above) was then run with its `ExecStart=` replaced by
+`ip netns add`, and succeeded; denying `@ipc` and `@timer` did not stop `ip`
+(recorded on #271; also a mechanism check, not hardware evidence). Whether
+a **Python** body starts under the same filter (`@ipc`, `@timer` and the
+rest denied) is not established and is checked in the body phase.
 
 **Deferred, with what each needs:**
 

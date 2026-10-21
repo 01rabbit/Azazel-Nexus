@@ -6,6 +6,7 @@
 # The only unit that holds CAP_SYS_ADMIN, as a bounding set and never as an ambient capability: it would create the decoy network namespace at /run/netns/azazel-decoy and do nothing else.
 # It gets route netlink only, may create only a network namespace, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
 # It is the one unit without the shared file-system sandbox: a mount namespace would keep the namespace handle from the host, and with CAP_SYS_ADMIN and mount that sandbox was never a wall for it.
+# A compromised body would be host root; its containment is a fixed body that takes no input, static review and a later LSM profile.
 # Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
 
 [Unit]

@@ -109,6 +109,19 @@ SHARED_HARDENING: tuple[tuple[str, str], ...] = (
     ("UMask", "0027"),
 )
 
+#: Keys no profile but the decoy namespace unit's (whose `extra` is pinned
+#: whole) may put in `ServiceProfile.extra`: every shared key, and the
+#: identity, capability, address-family, system-call and path settings the
+#: declaration renders from its own fields (#196 (a) review). Not
+#: `ReadOnlyPaths=`: it narrows, and `azazel-mio-locald.service` states it
+#: in `extra` on purpose.
+_RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
+    "User", "Group", "SupplementaryGroups", "DynamicUser", "ExecStart",
+    "CapabilityBoundingSet", "AmbientCapabilities", "SystemCallFilter",
+    "RestrictAddressFamilies", "ReadWritePaths",
+    "InaccessiblePaths", "BindPaths", "BindReadOnlyPaths",
+}
+
 
 @dataclass(frozen=True)
 class ServiceProfile:
@@ -298,6 +311,18 @@ class ServiceProfile:
                 f"{self.unit} would override the shared hardening; only "
                 f"{DECOY_NAMESPACE_UNIT} does, and only as declared"
             )
+        else:
+            # `extra` renders before the shared lines, so a shared key, an
+            # identity, a capability or a path setting placed there would sit
+            # beside the declared one and loosen or contradict it (systemd
+            # merges or resets list settings). Each has its own field or is
+            # shared; the namespace unit's `extra` is pinned whole instead.
+            restated = sorted({key for key, _ in self.extra} & _RESERVED_EXTRA_KEYS)
+            if restated:
+                raise ValueError(
+                    f"{self.unit} states {restated} in extra; those come only "
+                    "from the declaration's own fields and the shared hardening"
+                )
         if self.is_decoy_listener:
             settings = dict(self.extra)
             if (self.unit != DECOY_UNIT or self.account == "root"
@@ -432,6 +457,20 @@ class ServiceProfile:
         if (self.is_artifact_fetcher or self.is_model_host
                 or self.is_inference_transport or self.is_decoy_listener):
             raise ValueError(f"{self.unit} holds no network role")
+        # Where it runs from and what it is ordered against, fixed as well:
+        # the fixed executable, only the controller to wait for, and only
+        # this boot's grant marker as a condition.
+        if (self.executable != "/usr/libexec/azazel/az-decoy-nsd"
+                or self.after != (ACTIVATION_CONTROLLER_UNIT,)
+                or self.requires != (ACTIVATION_CONTROLLER_UNIT,)
+                or self.binds_to or self.before or self.conflicts
+                or not self.default_dependencies
+                or self.conditions != (
+                    ("ConditionPathExists", grant_marker_path(self.unit)),)):
+            raise ValueError(
+                f"{self.unit} runs az-decoy-nsd, after and requiring only "
+                f"{ACTIVATION_CONTROLLER_UNIT}, on its grant marker alone"
+            )
 
 
 #: The governed units that start only with this boot's grant marker (#206
@@ -560,9 +599,20 @@ DECOY_NAMESPACE_PATH = f"{NETNS_DIRECTORY}/azazel-decoy"
 #: 225/NETWORK. Nothing is lost by leaving them out: a unit holding
 #: CAP_SYS_ADMIN and the `mount` system call could undo any of them inside
 #: its own mount namespace anyway, so for this unit they were never a wall.
-#: What contains it is the bounding set, the system call filter,
-#: `RestrictNamespaces=net`, netlink as its only address family,
-#: `NoNewPrivileges=` and its fixed body.
+#:
+#: **A compromised body is host root.** Root with CAP_SYS_ADMIN and `mount`
+#: can mount a fresh /proc or /sys and rewrite `kernel.core_pattern` and the
+#: like, or remount the cgroup file system read-write; no unit setting here
+#: stops that. The bounding set, the system call filter,
+#: `RestrictNamespaces=net`, netlink as its only family and
+#: `NoNewPrivileges=` narrow what it is handed, but its containment rests on
+#: the body: fixed in code, taking no input (no argument, no file, no
+#: environment, no socket), statically reviewed, and later a mandatory
+#: access control (LSM) profile. The body phase is to weigh removing the
+#: privilege instead: let systemd hold the namespace (the helper and the
+#: decoy sharing one with `PrivateNetwork=yes` and `JoinsNamespaceOf=`, the
+#: helper moving one veth end to the host), so that no unit needs
+#: CAP_SYS_ADMIN at all (docs/deception-redirect-prerequisites.md §10).
 DECOY_NAMESPACE_SHARED_OMISSIONS: tuple[str, ...] = (
     "ProtectSystem",
     "ProtectHome",
@@ -1137,7 +1187,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "that act never needs. It is the one unit without the shared "
             "file-system sandbox: a mount namespace would keep the namespace "
             "handle from the host, and with CAP_SYS_ADMIN and mount that "
-            "sandbox was never a wall for it. Its body is a later phase of "
+            "sandbox was never a wall for it. A compromised body would be "
+            "host root; its containment is a fixed body that takes no input, "
+            "static review and a later LSM profile. Its body is a later phase of "
             "#196; in this build the executable refuses and exits, and the "
             "activation pass never grants this unit"
         ),
