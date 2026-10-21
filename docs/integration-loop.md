@@ -971,7 +971,9 @@ nothing calls it in production, and key distribution to Nexus does not exist.
 Until then a redirect decision is shown as "Edge would redirect to a decoy"
 and no decoy is started.
 
-I4 has three prerequisites, not one:
+I4 has three prerequisites, not one. The Nexus half of each is designed in
+[Redirect to Deception Lite: the Nexus-side prerequisites](deception-redirect-prerequisites.md)
+(proposed; awaiting owner decisions; nothing implemented):
 
 1. **Edge enforcement.** A redirect moves traffic, and the shipped Edge Core
    is observe-only: its redirect is planned, never applied. A decoy started for
