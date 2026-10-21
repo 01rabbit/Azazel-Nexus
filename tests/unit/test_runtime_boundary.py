@@ -1054,7 +1054,7 @@ def test_the_boot_id_reader_is_a_leaf_that_edge_package_shares():
                 if isinstance(node, ast.Import) for alias in node.names}
     imported |= {("." * node.level) + (node.module or "") for node in ast.walk(tree)
                  if isinstance(node, ast.ImportFrom)}
-    assert imported == {"__future__", "os", "stat", "pathlib", "typing"}
+    assert imported == {"__future__", "os", "stat", "pathlib"}
     assert edge_package.is_boot_id is boot_id.is_boot_id
     assert edge_package.BOOT_ID_PATH is boot_id.BOOT_ID_PATH
     source = (LIBRARY / "edge_package.py").read_text(encoding="utf-8")
