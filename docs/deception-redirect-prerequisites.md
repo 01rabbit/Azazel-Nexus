@@ -607,3 +607,80 @@ since the follow-up above.)
 and checks that it is stored apart and that Edge's evidence, counts and
 incidents are unchanged; that is a container run, not VM or hardware
 evidence.
+
+## 12. The decoy body as implemented
+
+The decoy daemon deferred in §10 and §11. `az-decoyd`
+(`runtime/src/azazel_nexus_runtime/decoyd.py`) now listens, answers and
+reports. It still **admits nothing**: the unit is never granted in this
+build (the `DECEPTION_EXPOSURE` tier is withheld as
+`isolation_evidence_absent`, §10), so on a node nothing starts it. The unit
+profile (`hardening.py`) is unchanged; its rationale still says the
+executable refuses and exits, and is corrected with the namespace unit's
+phase, which owns that file.
+
+**Where it may listen** (`decoy_netns.py`). It binds the IPv4 wildcard of
+the network namespace it runs in, which in the host namespace would be every
+host interface, so it refuses (exit 1, no socket made) unless its own
+namespace (`/proc/self/ns/net`) is the same nsfs inode as
+`/run/netns/azazel-decoy` and, when PID 1's namespace is readable, not PID
+1's. Under `PrivateUsers=yes` and its own account PID 1's usually is not
+readable, and the positive match stands alone; only root can create that
+path. The check runs at start and again before every bind. The paths are
+constants; there is no argument, environment variable or flag that skips it.
+
+**What it serves** (`SERVED`, fixed in code like the responders, because the
+catalogue does not reach the decoy yet): `ssh-decoy` on 2222, `telnet-decoy`
+on 2323 and `http-decoy` on 8080, three being the ceiling in every envelope
+(`MAX_DECOYS`). The SMTP responder stays in the table without a port. Each
+connection gets its responder's constant banner from `decoy_loopback.py`,
+then the decoy counts what arrives into one scratch buffer, zeroed after each
+read, up to 4096 bytes or 5 s, and closes. Nothing received is stored,
+logged or forwarded. Only IPv4 is bound.
+
+**Bounds.** One thread and one selector (the unit has `TasksMax=16`). At most
+8 open connections; at most 30 served connections per rolling minute (the
+intake's own decoy rate, a test keeps them equal); 5 s per connection.
+A connection over a bound is accepted and closed at once, unanswered and
+unreported, and only counted (`dropped_busy`, `dropped_rate`).
+
+**What it reports.** Each served connection becomes P2's closed event
+(`decoy_report.interaction_from_observation`), sent as one line to
+`/var/lib/azazel/run/decoy-intake/decoy-intake.sock` by `decoy_sender.py`
+with a 0.5 s deadline. Nothing is read back. If the intake is absent, full
+or slow, the interaction is dropped and counted (`send_failed`); the decoy
+keeps serving. The peer address `accept` returns is discarded at the call;
+the event has no field for it (§7 Q8); the log carries only ports and
+counts.
+
+**The runtime boundary, and the one connect.** The listener rule of §7 Q7
+(`decoy_listener.py` may bind and listen, never connect) is unchanged. The
+report needs one `AF_UNIX` connect, which the listener rule forbids. Rather
+than loosen that rule, `tests/unit/test_runtime_boundary.py` now applies it
+to **every** module the decoy process loads (`DECOY_PROCESS`, the import
+closure of `decoyd.py`, checked to be exactly six files), with one
+exception, `DECOY_SENDER = "decoy_sender.py"`, matched by full path. The
+sender may name `connect` and nothing else the listener may not; it may not
+name an internet or datagram family, `bind`, `listen` or `accept`; its only
+family is `AF_UNIX` stream; it has exactly one `connect(_PATH)`; `_PATH` is
+assigned once, from `DECOY_INTAKE_SOCKET`, and that is a literal equal to
+the layout's decoy-intake socket. No module of the decoy process may name
+`environ`, `getenv` or a process call. Twenty-one mutations of the real
+files (an internet or datagram family, another path, a second connect,
+`sendto`, an environment read, a new import of an egress module, a connect
+in the listener or the daemon) are each caught, and so is a same-named
+sender in a subpackage. The sender has no `AF_INET` exemption: it gains nothing from
+`EGRESS_EXEMPT` or `LISTENER_EXEMPT`.
+
+`decoy_listener.open_namespace_listener` sets one socket option,
+`SO_REUSEADDR`, so that a restart is not refused while a closed connection is
+in `TIME_WAIT`; the P1 test that read the listener's calls now allows exactly
+that one. The functional-readiness row stays `loopback-only`: its test now
+allows exactly one importer of the listener, `decoyd.py`, whose unit is never
+granted.
+
+**Deferred:** the decoy's `ExecStartPre=` probe rerun; the catalogue and the
+commissioned prefix reaching the decoy (and then binding the catalogued
+address, `open_listener`, instead of the namespace wildcard); IPv6; the
+`IPAddressAllow=` question of §10. A loopback run in a container is not VM
+or hardware evidence; `HG-06` and the decoy-sandbox gate stay open.

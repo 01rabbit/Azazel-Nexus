@@ -197,8 +197,8 @@ READINESS: Mapping[str, Readiness] = {
             "decoys start and listen, and only on private Unix sockets in the "
             "runtime's own directory. Nothing outside this host can reach one: "
             "the one module that can bind an address (decoy_listener, #196 P1) "
-            "is called by nothing, and its unit is never granted, so no "
-            "hostile party can be observed by it yet"
+            "is called only by the decoy daemon az-decoyd, whose unit is never "
+            "granted in this build, so no hostile party can be observed by it yet"
         ),
         issue="Nexus#69",
     ),
