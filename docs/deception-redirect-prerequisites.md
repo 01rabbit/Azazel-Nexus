@@ -621,13 +621,32 @@ phase, which owns that file.
 
 **Where it may listen** (`decoy_netns.py`). It binds the IPv4 wildcard of
 the network namespace it runs in, which in the host namespace would be every
-host interface, so it refuses (exit 1, no socket made) unless its own
-namespace (`/proc/self/ns/net`) is the same nsfs inode as
-`/run/netns/azazel-decoy` and, when PID 1's namespace is readable, not PID
-1's. Under `PrivateUsers=yes` and its own account PID 1's usually is not
-readable, and the positive match stands alone; only root can create that
-path. The check runs at start and again before every bind. The paths are
-constants; there is no argument, environment variable or flag that skips it.
+host interface, so it refuses (exit 1, no socket made) unless all three
+hold:
+
+1. its own namespace (`/proc/self/ns/net`) is the same nsfs inode as
+   `/run/netns/azazel-decoy`;
+2. when PID 1's namespace is readable, it is not PID 1's (under
+   `PrivateUsers=yes` and its own account it usually is not readable);
+3. the interfaces of **its own** namespace, read from `/proc/self/net/dev`
+   (which the kernel answers for the reader's namespace), are `lo` and at
+   most the decoy's end of the veth pair, `DECOY_VETH = "az-decoy-ns0"`,
+   and nothing else.
+
+The third check is independent of the first two. Without it, a path at
+`/run/netns/azazel-decoy` that named the host's namespace, with PID 1's
+unreadable, would have passed on the inode match alone (review of #272); a
+host namespace has a physical or bridge interface and is refused. A fresh
+decoy namespace has `lo` alone (as a VM run of the namespace unit showed),
+and the veth end is allowed for when the helper's body moves it in; the
+helper must use that name, which is fixed here. `/sys/class/net` is not
+used: it shows the namespace sysfs was mounted in. A kernel that creates
+its fallback tunnel devices (`sit0`, `tunl0`, ...) in every new namespace is
+refused as well; such a host sets `net.core.fb_tunnels_only_for_init_net`.
+That is a refusal to start, never a listener in the wrong place. The
+refusal counts the extra interfaces and never names them. The check runs at
+start and again before every bind. The paths are constants; there is no
+argument, environment variable or flag that skips it.
 
 **What it serves** (`SERVED`, fixed in code like the responders, because the
 catalogue does not reach the decoy yet): `ssh-decoy` on 2222, `telnet-decoy`
@@ -642,14 +661,21 @@ logged or forwarded. Only IPv4 is bound.
 8 open connections; at most 30 served connections per rolling minute (the
 intake's own decoy rate, a test keeps them equal); 5 s per connection.
 A connection over a bound is accepted and closed at once, unanswered and
-unreported, and only counted (`dropped_busy`, `dropped_rate`).
+unreported, and only counted (`dropped_busy`, `dropped_rate`). An accept
+error (`EMFILE`, ...) is counted and rests the listeners for 0.1 s, so a
+repeated one is not a busy loop.
 
 **What it reports.** Each served connection becomes P2's closed event
 (`decoy_report.interaction_from_observation`), sent as one line to
-`/var/lib/azazel/run/decoy-intake/decoy-intake.sock` by `decoy_sender.py`
-with a 0.5 s deadline. Nothing is read back. If the intake is absent, full
-or slow, the interaction is dropped and counted (`send_failed`); the decoy
-keeps serving. The peer address `accept` returns is discarded at the call;
+`/var/lib/azazel/run/decoy-intake/decoy-intake.sock` by `decoy_sender.py`.
+The send **never waits**: the socket is non-blocking, so an intake whose
+backlog is full refuses the connect at once, and a line that does not fit at
+once is not sent. (The first revision waited up to 0.5 s, during which the
+accept loop stood still; review of #272. A test measures accept-to-banner
+latency while every report goes to a stuck intake.) Nothing is read back. If
+the intake is absent, full or slow, or the report fails in any other way,
+the interaction is dropped and counted (`send_failed`); the decoy keeps
+serving. The peer address `accept` returns is discarded at the call;
 the event has no field for it (§7 Q8); the log carries only ports and
 counts.
 
@@ -662,15 +688,37 @@ closure of `decoyd.py`, checked to be exactly six files), with one
 exception, `DECOY_SENDER = "decoy_sender.py"`, matched by full path. The
 sender may name `connect` and nothing else the listener may not; it may not
 name an internet or datagram family, `bind`, `listen` or `accept`; its only
-family is `AF_UNIX` stream; it has exactly one `connect(_PATH)`; `_PATH` is
-assigned once, from `DECOY_INTAKE_SOCKET`, and that is a literal equal to
-the layout's decoy-intake socket. No module of the decoy process may name
-`environ`, `getenv` or a process call. Twenty-one mutations of the real
-files (an internet or datagram family, another path, a second connect,
-`sendto`, an environment read, a new import of an egress module, a connect
-in the listener or the daemon) are each caught, and so is a same-named
-sender in a subpackage. The sender has no `AF_INET` exemption: it gains nothing from
-`EGRESS_EXEMPT` or `LISTENER_EXEMPT`.
+family is `AF_UNIX` stream, however the constructor is spelled
+(`socket.socket`, `SocketType`, or a name bound by `from socket import
+socket as S`), with no keyword; it has exactly one `connect(_PATH)`. `_PATH`
+and `DECOY_INTAKE_SOCKET` are each bound **exactly once** in the whole file,
+by a module-level `name = value` (`_PATH` from `DECOY_INTAKE_SOCKET`, that
+from a literal equal to the layout's decoy-intake socket); every other way
+to bind a name counts as a second binding: a tuple target, `for`, `with ...
+as`, walrus, `del`, a function argument or its default, `import ... as`,
+`except ... as`, `global`/`nonlocal`, a definition, a `match` capture. No
+other module of the decoy process may name either. No module of the decoy
+process may name `environ`, `getenv`, a process call, `globals`, `locals`,
+`vars`, `setattr`, `delattr`, `getattr`, `__import__`, `eval`, `exec`,
+`compile`, `importlib`, a function's or module's internals (`__globals__`,
+`__dict__`, `__defaults__`, ...), a name resolver (`getaddrinfo`,
+`gethostbyname`, `gethostbyname_ex`, `gethostbyaddr`) or `create_server`,
+as an attribute, an imported name or a bare name.
+
+These are AST rules, and what they establish is that **each listed mutation
+is caught**, not that no other spelling exists: forty-one mutations of the
+real files, twenty-one from the first revision (an internet or datagram
+family, another path, a second connect, `sendto`, an environment read, a new
+import of an egress module, a connect in the listener or the daemon) and
+twenty for the review of #272 (the path bound by a default argument, a tuple,
+a walrus, `for`, `with`, `except`, `import as`, an annotation, `del`,
+`globals()[...]`, `vars()[...]`, `setattr`; the constructor by name with
+integer or single arguments or a keyword; `getaddrinfo`, `gethostbyname`,
+`create_server`; the daemon setting the sender's path; `getattr` in the
+namespace check), and a same-named sender in a subpackage. The systemd
+sandbox (`RestrictAddressFamilies=`, `IPAddressDeny=any`) is the barrier
+that does not depend on spelling. The sender has no `AF_INET` exemption: it
+gains nothing from `EGRESS_EXEMPT` or `LISTENER_EXEMPT`.
 
 `decoy_listener.open_namespace_listener` sets one socket option,
 `SO_REUSEADDR`, so that a restart is not refused while a closed connection is

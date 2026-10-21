@@ -82,7 +82,86 @@ def namespace_files(tmp_path, monkeypatch):
     monkeypatch.setattr(decoy_netns, "_OWN", str(decoy))
     monkeypatch.setattr(decoy_netns, "_EXPECTED", str(decoy))
     monkeypatch.setattr(decoy_netns, "_INIT", str(host))
+    monkeypatch.setattr(decoy_netns, "_NET_DEV", str(_net_dev(tmp_path, "lo")))
     return decoy, host
+
+
+_NET_DEV_HEADER = (
+    "Inter-|   Receive                                                |  Transmit\n"
+    " face |bytes    packets errs drop fifo frame compressed multicast|bytes    "
+    "packets errs drop fifo colls carrier compressed\n")
+
+
+def _net_dev(directory: Path, *names: str, name="net-dev") -> Path:
+    """A `/proc/self/net/dev` listing exactly `names`."""
+
+    path = directory / name
+    path.write_text(_NET_DEV_HEADER + "".join(
+        f"{n:>6}:       0       0    0    0    0     0          0         0        "
+        "0       0    0    0    0     0       0          0\n" for n in names))
+    return path
+
+
+def test_the_decoy_veth_name_is_a_valid_interface_name():
+    assert 0 < len(decoy_netns.DECOY_VETH.encode()) <= 15
+    assert decoy_netns._ALLOWED_INTERFACES == {"lo", decoy_netns.DECOY_VETH}
+    assert decoy_netns._NET_DEV == "/proc/self/net/dev"
+
+
+def test_lo_and_the_decoy_veth_are_what_a_decoy_namespace_may_hold(
+        namespace_files, monkeypatch, tmp_path):
+    monkeypatch.setattr(decoy_netns, "_NET_DEV",
+                        str(_net_dev(tmp_path, "lo", decoy_netns.DECOY_VETH, name="two")))
+    assert decoy_netns.confirm_decoy_namespace().still_current()
+
+
+def test_a_namespace_path_naming_the_host_is_refused_by_its_interfaces(
+        namespace_files, monkeypatch, tmp_path):
+    """Review of #272: the path names the host's namespace, PID 1's cannot be
+    read, so the inode checks pass; the host's interfaces still refuse."""
+
+    monkeypatch.setattr(decoy_netns, "_INIT", str(tmp_path / "unreadable"))
+    monkeypatch.setattr(decoy_netns, "_NET_DEV", str(
+        _net_dev(tmp_path, "lo", "eth0", "az-decoy0", name="host")))
+    with pytest.raises(decoy_netns.NotInDecoyNamespace,
+                       match="2 interface") as refused:
+        decoy_netns.confirm_decoy_namespace()
+    assert "eth0" not in str(refused.value) and "az-decoy0" not in str(refused.value)
+
+
+@pytest.mark.parametrize("listing", ["no-lo", "fallback-tunnel", "unreadable", "garbage",
+                                     "too-large"])
+def test_any_other_interface_listing_is_refused(namespace_files, monkeypatch, tmp_path,
+                                                listing):
+    if listing == "no-lo":
+        path = _net_dev(tmp_path, decoy_netns.DECOY_VETH, name="x")
+    elif listing == "fallback-tunnel":
+        path = _net_dev(tmp_path, "lo", "sit0", name="x")
+    elif listing == "unreadable":
+        path = tmp_path / "absent"
+    elif listing == "garbage":
+        path = tmp_path / "x"
+        path.write_text(_NET_DEV_HEADER + "no separator here\n")
+    else:
+        path = tmp_path / "x"
+        path.write_bytes(b"x" * (decoy_netns._NET_DEV_LIMIT + 1))
+    monkeypatch.setattr(decoy_netns, "_NET_DEV", str(path))
+    with pytest.raises(decoy_netns.NotInDecoyNamespace):
+        decoy_netns.confirm_decoy_namespace()
+
+
+@pytest.mark.skipif(not Path("/proc/self/net/dev").exists(), reason="Linux /proc only")
+def test_on_linux_a_namespace_with_a_real_interface_is_refused(monkeypatch, tmp_path):
+    """The real `/proc/self/net/dev` of this (container or host) namespace,
+    with the inode checks made to pass and PID 1's made unreadable."""
+
+    names = decoy_netns._interfaces()
+    if names <= {"lo", decoy_netns.DECOY_VETH}:
+        pytest.skip("this namespace holds only lo")
+    monkeypatch.setattr(decoy_netns, "_EXPECTED", "/proc/self/ns/net")
+    monkeypatch.setattr(decoy_netns, "_INIT", str(tmp_path / "unreadable"))
+    with pytest.raises(decoy_netns.NotInDecoyNamespace, match="besides lo"):
+        decoy_netns.confirm_decoy_namespace()
 
 
 def test_inside_the_decoy_namespace_the_check_passes(namespace_files):
@@ -401,21 +480,122 @@ def test_without_an_intake_the_decoy_keeps_serving_and_only_counts(
     assert server.counts["sent"] == 0 and server.counts["served"] == 3
 
 
-def test_an_intake_that_does_not_read_does_not_stop_the_decoy(decoy, short_dir, monkeypatch):
-    """A full intake: connect blocks or fails within the send deadline."""
+@pytest.fixture
+def stuck_intake(short_dir, monkeypatch):
+    """An intake that never accepts, its backlog filled: connects would wait."""
 
     path = short_dir / "stuck.sock"
     stuck = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stuck.bind(str(path))
-    stuck.listen(0)  # never accepts
+    stuck.listen(0)
+    fillers, full = [], False
+    for _ in range(256):
+        filler = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        filler.setblocking(False)
+        fillers.append(filler)
+        try:
+            filler.connect(str(path))
+        except OSError:
+            full = True
+            break
     monkeypatch.setattr(decoy_sender, "_PATH", str(path))
-    try:
-        server, ports = decoy()
-        for _ in range(4):
-            assert _visit(ports["http-decoy"], b"x")[0] == RESPONDERS["http-banner"]
-        wait_for(lambda: server.counts["served"] == 4, timeout=6)
-    finally:
-        stuck.close()
+    yield full
+    for filler in fillers:
+        filler.close()
+    stuck.close()
+
+
+def _interaction():
+    return build_interaction(decoy_name="ssh-decoy", observed_at="2026-10-21T00:00:00Z",
+                             bytes_received=1, truncated=False, responder="ssh-banner")
+
+
+def test_a_send_to_a_stuck_intake_returns_at_once(stuck_intake):
+    """Review of #272: the send never waits; it used to block for 0.5 s."""
+
+    started = time.monotonic()
+    delivered = decoy_sender.send_interaction(_interaction())
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.05, elapsed
+    if stuck_intake:
+        assert delivered is False
+
+
+def test_a_stuck_intake_does_not_stall_the_accept_loop(decoy, stuck_intake):
+    """Accept to banner stays immediate while every report is refused."""
+
+    server, ports = decoy()
+    latencies = []
+    for _ in range(6):
+        started = time.monotonic()
+        client = socket.create_connection((LOOPBACK, ports["http-decoy"]), timeout=3)
+        banner = b""
+        while banner != RESPONDERS["http-banner"]:
+            chunk = client.recv(256)
+            assert chunk
+            banner += chunk
+        latencies.append(time.monotonic() - started)
+        client.sendall(b"x")
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(16) == b""
+        client.close()
+        # No wait here: the next connection arrives while this one's report
+        # is being sent, which is when a blocking send would hold the loop.
+    wait_for(lambda: server.counts["sent"] + server.counts["send_failed"] == 6)
+    assert max(latencies) < 0.2, latencies
+    if stuck_intake:
+        assert server.counts["send_failed"] == 6
+
+
+class FailingListener:
+    """A listener that is readable and whose accept always fails (`EMFILE`)."""
+
+    def __init__(self, inner):
+        self.inner, self.accepts = inner, 0
+
+    def fileno(self):
+        return self.inner.fileno()
+
+    def setblocking(self, flag):
+        self.inner.setblocking(flag)
+
+    def accept(self):
+        self.accepts += 1
+        raise OSError(24, "Too many open files")
+
+    def close(self):
+        self.inner.close()
+
+
+def test_repeated_accept_errors_rest_the_listeners_instead_of_spinning(namespace_files):
+    inner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    inner.bind((LOOPBACK, 0))
+    inner.listen(1)
+    pending = socket.create_connection(inner.getsockname(), timeout=3)  # stays readable
+    listener = FailingListener(inner)
+    server = decoyd.DecoyServer([(decoyd.SERVED[0], listener)], send=lambda _: True)
+    stop = threading.Event()
+    thread = threading.Thread(target=server.serve, args=(stop.is_set,))
+    thread.start()
+    time.sleep(0.5)
+    stop.set()
+    thread.join(3)
+    pending.close()
+    assert not thread.is_alive()
+    # About one attempt per pause; a busy loop makes many thousands.
+    assert 1 <= listener.accepts <= 0.5 / decoyd.ACCEPT_ERROR_PAUSE + 3
+    assert server.counts["accept_errors"] == listener.accepts
+
+
+def test_a_report_that_raises_is_counted_and_the_decoy_keeps_serving(decoy, intake):
+    def explode(_):
+        raise RuntimeError("anything at all")
+
+    server, ports = decoy(send=explode)
+    for _ in range(2):
+        assert _visit(ports["ssh-decoy"], b"x")[0] == RESPONDERS["ssh-banner"]
+    wait_for(lambda: server.counts["send_failed"] == 2)
+    assert server.counts["served"] == 2
 
 
 def test_with_the_real_intake_the_interaction_is_stored_as_the_decoys(

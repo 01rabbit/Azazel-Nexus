@@ -308,14 +308,93 @@ SENDER_FORBIDDEN = (LISTENER_FORBIDDEN - {"connect"}) | {
     "AF_INET", "AF_INET6", "SOCK_DGRAM", "bind", "listen", "accept",
 }
 
-#: No module of the decoy process reads the environment, runs a process or
-#: loads foreign code: nothing outside the unit file may steer it.
+#: No module of the decoy process reads the environment, runs a process,
+#: resolves a name, opens a server, reaches a module's namespace or a
+#: function's internals, or looks a name up dynamically: nothing outside the
+#: unit file may steer it, and no binding below can be made in a way the AST
+#: rules do not see (review of #272). Matched as attributes, imported names
+#: and bare names.
 DECOY_PROCESS_FORBIDDEN = {
     "environ", "getenv", "putenv", "subprocess", "system", "popen", "ctypes",
     "execv", "execve", "fork",
+    "globals", "locals", "setattr", "delattr", "vars", "getattr", "__import__",
+    "eval", "exec", "compile", "importlib",
+    "getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr",
+    "create_server",
+    "__globals__", "__dict__", "__defaults__", "__kwdefaults__", "__code__",
+    "__builtins__", "__class__", "__subclasses__",
 }
 
+#: Forbidden as a bare (builtin) name only: `re.compile` is not `compile`.
+_BARE_ONLY = {"compile"}
+
+#: The sender's path, which no other module of the decoy process may name.
+_SENDER_PATH_NAMES = {"_PATH", "DECOY_INTAKE_SOCKET"}
+
 _SENDER_IMPORTS = {"__future__", "socket", "azazel_nexus.decoy_interaction"}
+
+
+def _names(path: Path, names: set[str]) -> list[str]:
+    """`_attributes`, plus bare names (`globals()`, `setattr(...)`) and modules."""
+
+    found = set(_attributes(path, names - _BARE_ONLY))
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Name) and node.id in names:
+            found.add(node.id)
+        elif isinstance(node, ast.alias) and node.asname in names:
+            found.add(node.asname)
+        elif isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names
+                         if alias.name.split(".")[0] in names)
+        elif isinstance(node, ast.ImportFrom) and node.module and (
+                node.module.split(".")[0] in names):
+            found.add(node.module.split(".")[0])
+    return sorted(found)
+
+
+def _bindings(tree: ast.AST, name: str) -> list[ast.AST]:
+    """Every construct that binds `name`, in any scope.
+
+    Assignment targets (also in tuples, `for`, `with ... as`, walrus,
+    `del`), function arguments, imports (`as` or bare), `except ... as`,
+    `global`/`nonlocal`, definitions and `match` captures.
+    """
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == name and isinstance(
+                node.ctx, (ast.Store, ast.Del)):
+            found.append(node)
+        elif isinstance(node, ast.arg) and node.arg == name:
+            found.append(node)
+        elif isinstance(node, ast.alias) and (
+                node.asname or node.name.split(".")[0]) == name:
+            found.append(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            found.append(node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            found.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
+                node.name == name):
+            found.append(node)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            found.append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            found.append(node)
+    return found
+
+
+def _bound_once_at_module_level(tree: ast.Module, name: str, value) -> bool:
+    """`name` is bound exactly once, by `name = <value>` at module level."""
+
+    bindings = _bindings(tree, name)
+    if len(bindings) != 1:
+        return False
+    for statement in tree.body:
+        if (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and statement.targets[0] is bindings[0]):
+            return value(statement.value)
+    return False
 
 
 def _local_imports(path: Path, root: Path) -> set[str]:
@@ -373,7 +452,7 @@ def _sender_violations(path: Path, expected: str = DECOY_INTAKE_SOCKET) -> list[
 
     tree = ast.parse(path.read_text(encoding="utf-8"))
     problems = [f"names {name}" for name in _attributes(path, SENDER_FORBIDDEN)]
-    problems += [f"names {name}" for name in _attributes(path, DECOY_PROCESS_FORBIDDEN)]
+    problems += [f"names {name}" for name in _names(path, DECOY_PROCESS_FORBIDDEN)]
     if _attributes(path, {"AF_UNIX"}) != ["AF_UNIX"]:
         problems.append("no AF_UNIX")
     imports = set()
@@ -384,46 +463,37 @@ def _sender_violations(path: Path, expected: str = DECOY_INTAKE_SOCKET) -> list[
             imports.add(("." * node.level) + (node.module or ""))
     if not imports <= _SENDER_IMPORTS:
         problems.append(f"imports {sorted(imports - _SENDER_IMPORTS)}")
-    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    if names & {"__import__", "getattr", "eval", "exec", "compile"}:
-        problems.append("dynamic lookup")
-    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute)]
-    connects = [call for call in calls if call.func.attr == "connect"]
+    # Every name the socket constructor is reachable by: `socket.socket`,
+    # `socket.SocketType`, and whatever `from socket import socket as S` binds.
+    constructors = {"socket", "SocketType"}
+    by_name = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"socket", "_socket"}:
+            by_name.update(alias.asname or alias.name for alias in node.names
+                           if alias.name in constructors)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    connects = [call for call in calls if isinstance(call.func, ast.Attribute)
+                and call.func.attr == "connect"]
     if len(connects) != 1 or connects[0].keywords or [
             ast.dump(arg) for arg in connects[0].args] != [ast.dump(ast.Name("_PATH", ast.Load()))]:
         problems.append("connect is not exactly one connect(_PATH)")
     for call in calls:
-        if call.func.attr == "socket":
-            families = [arg.attr if isinstance(arg, ast.Attribute) else ast.dump(arg)
+        if ((isinstance(call.func, ast.Attribute) and call.func.attr in constructors)
+                or (isinstance(call.func, ast.Name) and call.func.id in by_name)):
+            families = [arg.attr if isinstance(arg, ast.Attribute)
+                        else arg.id if isinstance(arg, ast.Name) else ast.dump(arg)
                         for arg in call.args]
             if families != ["AF_UNIX", "SOCK_STREAM"] or call.keywords:
                 problems.append(f"socket{tuple(families)}")
-    assigned: dict[str, list] = {}
-    for node in ast.walk(tree):
-        targets = []
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            targets = [node.target]
-        elif isinstance(node, (ast.Global, ast.Nonlocal)) and (
-                {"_PATH", "DECOY_INTAKE_SOCKET"} & set(node.names)):
-            problems.append("rebinds the path")
-        for target in targets:
-            if isinstance(target, ast.Name) and target.id in {"_PATH", "DECOY_INTAKE_SOCKET"}:
-                assigned.setdefault(target.id, []).append(node)
-    path_ok = (len(assigned.get("_PATH", [])) == 1
-               and isinstance(assigned["_PATH"][0], ast.Assign)
-               and ast.dump(assigned["_PATH"][0].value)
-               == ast.dump(ast.Name("DECOY_INTAKE_SOCKET", ast.Load())))
-    literal = assigned.get("DECOY_INTAKE_SOCKET", [])
-    literal_ok = (len(literal) == 1 and isinstance(literal[0], ast.Assign)
-                  and isinstance(literal[0].value, ast.Constant)
-                  and literal[0].value.value == expected)
-    if not path_ok:
-        problems.append("_PATH is not exactly DECOY_INTAKE_SOCKET")
-    if not literal_ok:
-        problems.append("DECOY_INTAKE_SOCKET is not the layout's decoy-intake socket")
+    if not _bound_once_at_module_level(
+            tree, "_PATH",
+            lambda value: isinstance(value, ast.Name) and value.id == "DECOY_INTAKE_SOCKET"):
+        problems.append("_PATH is not bound exactly once, to DECOY_INTAKE_SOCKET")
+    if not _bound_once_at_module_level(
+            tree, "DECOY_INTAKE_SOCKET",
+            lambda value: isinstance(value, ast.Constant) and value.value == expected):
+        problems.append("DECOY_INTAKE_SOCKET is not bound exactly once, to the "
+                        "layout's decoy-intake socket")
     return problems
 
 
@@ -441,7 +511,8 @@ def _decoy_offenders(root: Path) -> dict[str, list[str]]:
         if _exempt(path, {DECOY_SENDER}, root):
             found = _sender_violations(path)
         else:
-            found = _attributes(path, LISTENER_FORBIDDEN | DECOY_PROCESS_FORBIDDEN)
+            found = sorted(set(_attributes(path, LISTENER_FORBIDDEN))
+                           | set(_names(path, DECOY_PROCESS_FORBIDDEN | _SENDER_PATH_NAMES)))
         if found:
             offenders[name] = found
     return offenders
@@ -545,6 +616,79 @@ def test_each_mutation_of_the_decoy_process_is_caught(tmp_path, module, old, new
     assert _decoy_offenders(root), f"{module} mutated and nothing caught it"
 
 
+_SENDER_CALL = "socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection"
+_SENDER_ENTRY = "    if type(interaction) is not DecoyInteraction:\n"
+_SENDER_PATH = "_PATH = DECOY_INTAKE_SOCKET\n"
+_OTHER = "'/run/other.sock'"
+
+#: The mutations the independent review of #272 found the first rules
+#: missed, and their neighbours: (name, module, [(old, new), ...]).
+REVIEW_MUTATIONS = [
+    ("default-argument", "decoy_sender.py", [(
+        "def send_interaction(interaction: DecoyInteraction) -> bool:",
+        f"def send_interaction(interaction: DecoyInteraction, _PATH={_OTHER}) -> bool:")]),
+    ("tuple-assignment", "decoy_sender.py", [(
+        _SENDER_PATH, f"{_SENDER_PATH}_PATH, _SPARE = {_OTHER}, 0\n")]),
+    ("walrus", "decoy_sender.py", [(
+        _SENDER_ENTRY, f"    if (_PATH := {_OTHER}):\n        pass\n{_SENDER_ENTRY}")]),
+    ("for-target", "decoy_sender.py", [(
+        _SENDER_ENTRY, f"    for _PATH in ({_OTHER},):\n        pass\n{_SENDER_ENTRY}")]),
+    ("with-as", "decoy_sender.py", [(
+        _SENDER_ENTRY, f"    with open({_OTHER}) as _PATH:\n        pass\n{_SENDER_ENTRY}")]),
+    ("except-as", "decoy_sender.py", [(
+        _SENDER_ENTRY,
+        f"    try:\n        pass\n    except ValueError as _PATH:\n        pass\n{_SENDER_ENTRY}")]),
+    ("import-as", "decoy_sender.py", [(
+        "import socket\n", "import socket\nimport socket as _PATH\n")]),
+    ("annotated", "decoy_sender.py", [(
+        _SENDER_PATH, f"{_SENDER_PATH}_PATH: str = {_OTHER}\n")]),
+    ("delete", "decoy_sender.py", [(_SENDER_PATH, f"{_SENDER_PATH}del _PATH\n")]),
+    ("globals-subscript", "decoy_sender.py", [(
+        _SENDER_PATH, f"{_SENDER_PATH}globals()['_PATH'] = {_OTHER}\n")]),
+    ("vars-subscript", "decoy_sender.py", [(
+        _SENDER_PATH, f"{_SENDER_PATH}vars()['_PATH'] = {_OTHER}\n")]),
+    ("setattr", "decoy_sender.py", [(
+        _SENDER_PATH, f"{_SENDER_PATH}setattr(send_interaction, '_PATH', {_OTHER})\n")]),
+    ("constructor-by-name", "decoy_sender.py", [
+        ("import socket\n", "import socket\nfrom socket import socket as S\n"),
+        (_SENDER_CALL, "S(2, 1) as connection")]),
+    ("constructor-by-name-one-family", "decoy_sender.py", [
+        ("import socket\n", "import socket\nfrom socket import socket as S\n"),
+        (_SENDER_CALL, "S(socket.AF_UNIX) as connection")]),
+    ("constructor-keyword", "decoy_sender.py", [(
+        _SENDER_CALL,
+        "socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, proto=0) as connection")]),
+    ("getaddrinfo", "decoy_sender.py", [(
+        "connection.sendall(line)",
+        "connection.sendall(line)\n            socket.getaddrinfo('example.invalid', 80)")]),
+    ("gethostbyname", "decoy_report.py", [(
+        "from .decoy_loopback import", "from socket import gethostbyname\nfrom .decoy_loopback import")]),
+    ("create-server", "decoyd.py", [(
+        "import selectors\n", "import selectors\nfrom socket import create_server\n")]),
+    ("decoyd-sets-the-path", "decoyd.py", [(
+        "    server = DecoyServer(listeners)\n",
+        f"    decoy_sender._PATH = {_OTHER}\n    server = DecoyServer(listeners)\n")]),
+    ("netns-getattr", "decoy_netns.py", [(
+        "    status = os.stat(path)\n", "    status = getattr(os, 'stat')(path)\n")]),
+]
+
+
+@pytest.mark.parametrize("module,edits", [(m, e) for _, m, e in REVIEW_MUTATIONS],
+                         ids=[name for name, _, _ in REVIEW_MUTATIONS])
+def test_each_mutation_the_review_found_is_caught(tmp_path, module, edits):
+    """Every binding of the path, every constructor spelling, every resolver."""
+
+    root = _decoy_runtime(tmp_path)
+    path = root / module
+    source = path.read_text(encoding="utf-8")
+    for old, new in edits:
+        assert old in source, f"stale mutation for {module}: {old!r}"
+        source = source.replace(old, new, 1)
+    path.write_text(source, encoding="utf-8")
+    ast.parse(source)
+    assert _decoy_offenders(root), f"{module} mutated and nothing caught it"
+
+
 def test_a_same_named_sender_elsewhere_gets_no_exception(tmp_path):
     """The sender is matched by full path, as the other exemptions are."""
 
@@ -558,7 +702,7 @@ def test_a_same_named_sender_elsewhere_gets_no_exception(tmp_path):
         encoding="utf-8")
     assert not _exempt(sub, {DECOY_SENDER}, root)
     offenders = _decoy_offenders(root)
-    assert offenders["sub/decoy_sender.py"] == ["connect"]
+    assert "connect" in offenders["sub/decoy_sender.py"]
 
 
 def test_the_exemption_names_a_module_that_exists_and_uses_it():

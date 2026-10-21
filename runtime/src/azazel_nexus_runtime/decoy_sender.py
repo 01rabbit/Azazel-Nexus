@@ -18,7 +18,7 @@ path: the decoy runs only under systemd, which sets none.) The tests move
 
 A line that does not parse as the closed interaction shape is not sent:
 the channel carries P2's event and nothing else. A failure to connect or
-send (the intake is not running, its socket is full, the deadline passed) is
+send at once (the intake is not running, its backlog or buffer is full) is
 returned as `False` for the daemon to count; the interaction is dropped, not
 queued or retried.
 """
@@ -33,22 +33,26 @@ from azazel_nexus.decoy_interaction import (
     parse_interaction,
 )
 
-__all__ = ["DECOY_INTAKE_SOCKET", "SEND_TIMEOUT_SECONDS", "send_interaction"]
+__all__ = ["DECOY_INTAKE_SOCKET", "send_interaction"]
 
 #: `runtime_paths.socket_path("decoy-intake")` under `/` (a test keeps them
 #: equal). A literal, so that what the decoy can reach is read from source.
 DECOY_INTAKE_SOCKET = "/var/lib/azazel/run/decoy-intake/decoy-intake.sock"
-
-#: Connect and send, together. The intake reads one short line; a decoy that
-#: waited longer would hold its own accept loop.
-SEND_TIMEOUT_SECONDS = 0.5
 
 #: Private test seam. Production is exactly `DECOY_INTAKE_SOCKET`.
 _PATH = DECOY_INTAKE_SOCKET
 
 
 def send_interaction(interaction: DecoyInteraction) -> bool:
-    """Send one closed interaction as one line; `True` if it was written."""
+    """Send one closed interaction as one line; `True` if it was written.
+
+    **Never waits** (review of #272): the socket is non-blocking, so an
+    intake whose backlog is full refuses the connect at once (`EAGAIN`), and
+    a line that does not fit the socket buffer at once is not sent. The
+    decoy's accept loop calls this, and an intake that is slow or stuck must
+    not hold it. A connect the intake has not accepted yet still succeeds
+    (it waits in the backlog with the line), as it does for Edge's lines.
+    """
 
     if type(interaction) is not DecoyInteraction:
         return False
@@ -58,7 +62,7 @@ def send_interaction(interaction: DecoyInteraction) -> bool:
         return False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(SEND_TIMEOUT_SECONDS)
+            connection.setblocking(False)
             connection.connect(_PATH)
             connection.sendall(line)
     except OSError:

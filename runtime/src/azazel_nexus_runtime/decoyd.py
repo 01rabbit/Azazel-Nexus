@@ -22,13 +22,15 @@ What one start does:
    zeroed after each read and never stored, logged or forwarded.
 4. **Report each served connection** as P2's closed `EnvironmentEvent`
    (`decoy_report.interaction_from_observation`), one line to the intake's
-   decoy socket (`decoy_sender`, the decoy's only outgoing path). If the
-   intake does not take it, the interaction is dropped and only counted.
+   decoy socket (`decoy_sender`, the decoy's only outgoing path). The send
+   never waits; if the intake does not take it at once, or the report fails
+   in any way, the interaction is dropped and only counted.
 
 Bounds: `MAX_CONCURRENT` connections at once, `ACCEPTS_PER_MINUTE` served
 connections per rolling minute (the intake's own decoy rate), and the
 per-connection deadline. A connection over a bound is accepted and closed at
-once, unanswered and unreported, and counted. One thread and one selector:
+once, unanswered and unreported, and counted. An accept error rests the
+listeners for `ACCEPT_ERROR_PAUSE` rather than spinning. One thread and one selector:
 the unit's `TasksMax=16` is never approached.
 
 **No address leaves the kernel.** The peer address `accept` returns is
@@ -51,7 +53,6 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from azazel_nexus.decoy import DecoyRefused
-from azazel_nexus.decoy_interaction import DecoyEventRefused
 
 from . import decoy_listener, decoy_netns, decoy_sender
 from .decoy_loopback import MAX_READ_BYTES, READ_TIMEOUT_SECONDS, RESPONDERS, Observation
@@ -59,6 +60,7 @@ from .decoy_report import interaction_from_observation
 
 __all__ = [
     "ACCEPTS_PER_MINUTE",
+    "ACCEPT_ERROR_PAUSE",
     "CONNECTION_SECONDS",
     "MAX_CONCURRENT",
     "SERVED",
@@ -75,6 +77,9 @@ MAX_CONCURRENT = 8
 ACCEPTS_PER_MINUTE = 30
 #: How long one connection may hold the decoy, from accept to close.
 CONNECTION_SECONDS = READ_TIMEOUT_SECONDS
+#: How long the listeners rest after an accept error (`EMFILE`, `ENOBUFS`,
+#: ...), so that an error the kernel repeats is not a busy loop.
+ACCEPT_ERROR_PAUSE = 0.1
 #: One recv at most; the scratch buffer is this size.
 _CHUNK = 1024
 #: Not an observation: what the event would carry is never sent (§11).
@@ -136,6 +141,7 @@ class DecoyServer:
         self._connections: dict[object, _Connection] = {}
         self._window: deque = deque()
         self._scratch = bytearray(_CHUNK)
+        self._paused_until: Optional[float] = None
         self.counts = {
             "served": 0, "sent": 0, "send_failed": 0, "dropped_busy": 0,
             "dropped_rate": 0, "accept_errors": 0, "connection_errors": 0,
@@ -144,17 +150,20 @@ class DecoyServer:
     # -- the loop -----------------------------------------------------------
 
     def serve(self, stop: Callable[[], bool], ready: Optional[Callable[[], None]] = None) -> None:
-        for decoy, listener in self.listeners:
+        for _, listener in self.listeners:
             listener.setblocking(False)
-            self._selector.register(listener, selectors.EVENT_READ, decoy)
+        self._listen()
         if ready is not None:
             ready()
         try:
             while not stop():
+                if (self._paused_until is not None
+                        and self._monotonic() >= self._paused_until):
+                    self._listen()
                 for key, events in self._selector.select(self._timeout()):
                     if key.fileobj in self._connections:
                         self._step(self._connections[key.fileobj], events)
-                    else:
+                    elif self._paused_until is None:
                         self._accept(key.fileobj, key.data)
                 self._expire()
         finally:
@@ -168,11 +177,27 @@ class DecoyServer:
                 listener.close()
             self._selector.close()
 
+    def _listen(self) -> None:
+        self._paused_until = None
+        for decoy, listener in self.listeners:
+            self._selector.register(listener, selectors.EVENT_READ, decoy)
+
+    def _pause(self) -> None:
+        """Stop selecting the listeners for `ACCEPT_ERROR_PAUSE`."""
+        self._paused_until = self._monotonic() + ACCEPT_ERROR_PAUSE
+        for _, listener in self.listeners:
+            try:
+                self._selector.unregister(listener)
+            except (KeyError, ValueError):
+                pass
+
     def _timeout(self) -> float:
-        if not self._connections:
+        wakes = [c.deadline for c in self._connections.values()]
+        if self._paused_until is not None:
+            wakes.append(self._paused_until)
+        if not wakes:
             return 0.5
-        nearest = min(c.deadline for c in self._connections.values())
-        return max(0.0, min(0.5, nearest - self._monotonic()))
+        return max(0.0, min(0.5, min(wakes) - self._monotonic()))
 
     def _expire(self) -> None:
         now = self._monotonic()
@@ -195,6 +220,7 @@ class DecoyServer:
             return
         except OSError:
             self.counts["accept_errors"] += 1
+            self._pause()
             return
         if len(self._connections) >= self.max_concurrent:
             self.counts["dropped_busy"] += 1
@@ -262,7 +288,7 @@ class DecoyServer:
         )
         try:
             delivered = self._send(interaction_from_observation(observation))
-        except (DecoyEventRefused, OSError):
+        except Exception:  # noqa: BLE001 - a failed report is counted, never fatal
             delivered = False
         self.counts["sent" if delivered else "send_failed"] += 1
 
