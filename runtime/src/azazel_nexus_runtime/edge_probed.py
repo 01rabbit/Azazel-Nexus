@@ -111,6 +111,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -512,6 +514,12 @@ def _run(argv: Sequence[str], cwd: Optional[Path]):
     )
 
 
+# The names `tempfile.mkstemp(prefix=_TEMPORARY_PREFIX)` in `write_result`
+# gives: the prefix and eight characters of `tempfile`'s random alphabet.
+_TEMPORARY_PREFIX = ".edge-probe."
+_TEMPORARY_NAME = re.compile(r"\.edge-probe\.[a-z0-9_]{8}")
+
+
 def write_result(outcome: ProbeOutcome, path: Path = PROBE_STATE_PATH) -> Path:
     """Write the state file atomically, with no window on a partial one.
 
@@ -528,7 +536,7 @@ def write_result(outcome: ProbeOutcome, path: Path = PROBE_STATE_PATH) -> Path:
     payload = (json.dumps(outcome.as_document(), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
-    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".edge-probe.")
+    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=_TEMPORARY_PREFIX)
     try:
         with os.fdopen(handle, "wb") as stream:
             stream.write(payload)
@@ -549,10 +557,14 @@ def clear_previous_result(path: Path = PROBE_STATE_PATH) -> None:
     """Remove the previous result before this run probes anything.
 
     Only the fixed file name is unlinked, relative to its directory opened with
-    `O_NOFOLLOW` (`unlink` itself never follows the last component). An absent
-    directory or file is already the state this wants. Any other failure
-    raises `OSError`, and `main` then probes and writes nothing: a run that
-    could not clear the previous answer must not proceed as if it had.
+    `O_NOFOLLOW` (`unlink` itself never follows the last component). So are
+    the temporary files an interrupted `write_result` can leave behind: only
+    names of exactly its `mkstemp` form (`_TEMPORARY_NAME`), and only when
+    `lstat` shows a regular file -- a symlink, directory or anything else of
+    that name is left alone. An absent directory or file is already the state
+    this wants. Any other failure raises `OSError`, and `main` then probes and
+    writes nothing: a run that could not clear the previous answer must not
+    proceed as if it had.
     """
 
     try:
@@ -563,9 +575,19 @@ def clear_previous_result(path: Path = PROBE_STATE_PATH) -> None:
     except FileNotFoundError:
         return
     try:
-        os.unlink(path.name, dir_fd=directory)
-    except FileNotFoundError:
-        pass
+        for name in os.listdir(directory):
+            if _TEMPORARY_NAME.fullmatch(name) is None:
+                continue
+            try:
+                found = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if stat.S_ISREG(found.st_mode):
+                    os.unlink(name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        try:
+            os.unlink(path.name, dir_fd=directory)
+        except FileNotFoundError:
+            pass
     finally:
         os.close(directory)
 
