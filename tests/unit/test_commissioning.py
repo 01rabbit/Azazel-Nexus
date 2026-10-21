@@ -32,6 +32,10 @@ RETIRED_ROLE_WORDS = ("protected", "egress", "decoy", "observe", "capture", "int
 #: Edge's decision (docs/integration-loop.md §1), so its vocabulary is spelled
 #: as Edge spells it.
 EDGE_DECISION_VOCABULARY = {"edge_intake.py": {"observe"}}
+#: Not roles: the intake status key of the Deception Lite decoy socket (#196
+#: P2, #269/#270) and the reader that renders it. The key names the decoy's own
+#: counters; it never carries an interface's role across a product boundary.
+STATUS_KEY_NOT_A_ROLE = {"edge_intake.py": {"decoy"}, "edge_loop_status.py": {"decoy"}}
 
 
 def a_readout(**overrides) -> InterfaceReadout:
@@ -220,6 +224,7 @@ def test_no_retired_role_word_survives_as_a_value(retired):
         for path in sorted(package.rglob("*.py"))
         if retired in _string_values(path)
         and retired not in EDGE_DECISION_VOCABULARY.get(path.name, ())
+        and retired not in STATUS_KEY_NOT_A_ROLE.get(path.name, ())
     ]
     assert offenders == [], (
         f"{offenders} use the retired role {retired!r} as a value; Nexus uses "
