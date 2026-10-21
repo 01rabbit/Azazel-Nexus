@@ -273,7 +273,12 @@ can become stale.
 
 Intake includes last processed age, processed and accepted counts, top refusal
 counters (always including `evidence_segment_full` when nonzero) and
-`storage_failed`. An incident whose evidence was not all stored is marked
+`storage_failed`. A last intake line shows the Deception Lite decoy apart from
+Edge, as `decoy (Deception Lite; Nexus's own observation, not Edge's; not
+hardware evidence): accepted N; last accepted Ns ago; refused M (CODE=n, …)`
+or `decoy (Deception Lite): not listening (decoy socket not open); refused M`;
+the decoy's refusal codes appear there and not among Edge's.
+An incident whose evidence was not all stored is marked
 `(evidence not stored)`. Explainer includes explained count, chain integrity, the
 fixed recovery hint, last-attempt M.I.O./Knowledge availability and audit drops.
 The operator sees up to five recent pseudonymous incidents, severity/count,

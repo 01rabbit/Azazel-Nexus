@@ -279,3 +279,101 @@ def test_edge_forward_counts_are_shown_as_edge_reported(tmp_path, monkeypatch):
     intake["edge_forward"]["since"] = 2**37 + 1
     runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
     assert "intake: unavailable (snapshot absent or refused)" in render(now=100)
+
+
+DECOY_LABEL = ("        decoy (Deception Lite; Nexus's own observation, not Edge's; "
+               "not hardware evidence): ")
+
+
+def test_decoy_interactions_are_shown_as_nexus_own_not_edge(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    intake["decoy"] = {"accepted": 3, "last_accepted_at": 88.0}
+    intake["refused"] = {"queue_full": 2, "DECOY_SHAPE": 4, "decoy_rate_limited": 1,
+                         "DECOY_ADDRESS": 0}
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    text = render(now=100)
+    assert (DECOY_LABEL + "accepted 3; last accepted 12s ago; "
+            "refused 5 (DECOY_SHAPE=4, decoy_rate_limited=1)\n") in text
+    # The decoy's refusals are not Edge's: Edge's line keeps only its own.
+    assert "        refusals: queue_full=2\n" in text
+    assert text.count("DECOY_SHAPE") == 1 and "DECOY_ADDRESS" not in text
+    # Edge's counts are untouched by the decoy's.
+    assert "processed: 12; accepted: 12;" in text
+    # The decoy line closes the intake's section, before the explainer.
+    assert text.index("Edge forward:") < text.index("decoy (") < text.index("explainer:")
+    intake["decoy"] = {"accepted": 0, "last_accepted_at": None}
+    intake["refused"] = {}
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert DECOY_LABEL + "accepted 0; last accepted never; refused 0\n" in render(now=100)
+
+
+def test_decoy_not_listening_is_a_fixed_line(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    text = render()
+    assert ("        decoy (Deception Lite): not listening (decoy socket not open); "
+            "refused 0\n") in text
+    # Why it is not listening stays visible, and only as the decoy's.
+    intake["refused"] = {"decoy_listener_unavailable": 1}
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    text = render()
+    assert ("not listening (decoy socket not open); "
+            "refused 1 (decoy_listener_unavailable=1)\n") in text
+    assert "        refusals: none\n" in text
+
+
+def test_decoy_line_never_carries_an_address_or_payload(tmp_path, monkeypatch):
+    intake, _, _ = fixtures(tmp_path, monkeypatch)
+    # A snapshot with anything but the two fields is refused as a whole, so
+    # nothing a sender chose can reach the line.
+    for decoy in ({"accepted": 1, "last_accepted_at": 1.0, "peer": "192.0.2.1"},
+                  {"accepted": 1, "last_accepted_at": 1.0, "payload": "SSH-2.0-x"},
+                  {"accepted": "192.0.2.1", "last_accepted_at": 1.0},
+                  {"accepted": 1, "last_accepted_at": "192.0.2.1"},
+                  {"accepted": 1}, ["192.0.2.1"]):
+        intake["decoy"] = decoy
+        runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+        text = render(now=100)
+        assert "intake: unavailable (snapshot absent or refused)" in text
+        assert "192.0.2.1" not in text and "SSH-2.0" not in text and "decoy (" not in text
+    intake["decoy"] = {"accepted": 1, "last_accepted_at": 1.0}
+    intake["refused"] = {"192.0.2.1": 1}
+    runtime_paths.edge_intake_status_path().write_text(json.dumps(intake))
+    assert "192.0.2.1" not in render(now=100)
+
+
+def test_every_reader_in_the_package_accepts_the_decoy_key(tmp_path, monkeypatch):
+    """#196 P2 §11: a reader with the old closed key list took it as None.
+
+    The writer here is the intake itself; every reader shipped with it (the
+    snapshot reader, the edge loop section and the status command) reads its
+    snapshot with and without `decoy`, with every decoy refusal code counted.
+    """
+    from azazel_nexus.edge_intake import DECOY_REFUSAL_CODES, REFUSAL_CODES, read_intake_status
+    from azazel_nexus_runtime import edge_intaked as daemon
+    fixtures(tmp_path, monkeypatch)
+    assert DECOY_REFUSAL_CODES < REFUSAL_CODES
+    assert {"DECOY_SHAPE", "decoy_peer_refused", "decoy_listener_unavailable"} <= DECOY_REFUSAL_CODES
+    assert not any(c.lower().startswith("decoy") for c in REFUSAL_CODES - DECOY_REFUSAL_CODES)
+    state = tmp_path / "intake-state"
+    state.mkdir()
+    server = daemon.IntakeServer(path=state / "unused.sock", state=state,
+                                 status_path=state / "status.json", edge_uid=123)
+    for listening in (False, True):
+        server.decoy_listening = listening
+        server.decoy_accepted = 2 if listening else 0
+        server.decoy_last_accepted_at = server.clock() if listening else None
+        for code in sorted(DECOY_REFUSAL_CODES):
+            server.refuse(code)
+        raw = daemon.canonical(server.snapshot())
+        value = read_intake_status(raw)
+        assert value is not None and ("decoy" in value) is listening
+        assert DECOY_REFUSAL_CODES <= set(value["refused"])
+        runtime_paths.edge_intake_status_path().write_bytes(raw)
+        text = render(now=value["written_at"])
+        assert "intake: running" in text and "explainer:" in text
+        assert "        refusals: none\n" in text.split("explainer:")[0]
+        if listening:
+            assert DECOY_LABEL + "accepted 2; last accepted 0s ago; refused " in text
+        else:
+            assert "decoy (Deception Lite): not listening (decoy socket not open); refused " in text
+    assert "decoy (Deception Lite; Nexus's own observation" in _status(tmp_path)

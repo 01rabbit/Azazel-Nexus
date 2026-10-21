@@ -577,7 +577,21 @@ reader slots, incidents and status counts are untouched.
 reader from before this change has a closed key and code list and would take
 such a snapshot as unreadable (`None`) as a whole; the reader and the writer
 ship in the same distribution, so this matters only for a reader copied out
-of it.
+of it. The follow-up checked this from the readers' side: the only readers of
+the snapshot in the distribution are `read_intake_status`, the `edge loop:`
+section of `azazel-nexus status` built on it, and `tools/e2e_loop.py`; a unit
+test (`test_every_reader_in_the_package_accepts_the_decoy_key`) feeds each the
+intake's own snapshot with and without `decoy` and with every decoy refusal
+code counted.
+
+**Shown in status** (follow-up to #269). `azazel-nexus status` ends the
+intake's part of `edge loop:` with one line:
+`decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware evidence): accepted N; last accepted Ns ago; refused M (CODE=n, …)`,
+or `decoy (Deception Lite): not listening (decoy socket not open); refused M`.
+Only the counts, the last time and refusal counts per fixed code; no address,
+payload or stored interaction. The decoy's refusal codes
+(`DECOY_REFUSAL_CODES`) moved from the intake's `refusals:` to this line, so
+they are not read as Edge's. Status stays read-only and gained no permission.
 
 **Joining an incident.** `decoy_interaction.incidents_near` names the Edge
 incidents an interaction may belong to by decoy and time only (§7 Q8): the
@@ -587,7 +601,8 @@ sighting, both on the intake's clock. It reads; it changes no incident and
 feeds nothing to Edge. No reader calls it yet.
 
 **Not done in P2:** the decoy daemon and its sender; showing decoy
-interactions in `azazel-nexus status` or an explanation; a VM run (P3).
+interactions in an explanation; a VM run (P3). (Status shows their counts
+since the follow-up above.)
 `tools/e2e_loop.py` sends one interaction as `azdecoy` in the integrated loop
 and checks that it is stored apart and that Edge's evidence, counts and
 incidents are unchanged; that is a container run, not VM or hardware
