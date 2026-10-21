@@ -641,7 +641,10 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
    unloaded fails, and with AppArmor disabled (`apparmor=0`)
    `AssertSecurity=apparmor` fails it; the namespace unit's `ip netns add`
-   and `ip -n` work under its profile (which of `rbind` and `bind` the first
+   and `ip -n` work under its profile, **including the `Cx` transition from
+   the namespace unit to its wider `ip` child under `NoNewPrivileges=yes`**
+   (required: if refused, the unit cannot start, and the fallback is `ix`)
+   (which of `rbind` and `bind` the first
    bind is, the nsfs bind source, the propagation flags), and its writes to
    the paths of §7 are denied; the decoy's connect to the intake's socket
    succeeds and a write anywhere else under `/var/lib/azazel` is refused;

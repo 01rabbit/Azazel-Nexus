@@ -66,6 +66,11 @@ profile azazel-decoy-nsd {
   deny /opt/** w,
 
   # Every ip command runs in the child profile below, and nothing else runs.
+  # INFERRED, a required G4 check: under NoNewPrivileges=yes AppArmor allows
+  # a transition only to a profile it treats as no wider than the current
+  # one, and this child is wider than its parent. If the exec is refused the
+  # unit fails to start (fail closed); the fallback is `ix`, which gives the
+  # parent the child's rules and is recorded as a regression of #285 item 6.
   /usr/bin/ip Cx -> ip,
   # Its 2 s step deadline (decoy_network.STEP_SECONDS) kills a stuck ip.
   signal (send) set=(kill) peer=azazel-decoy-nsd//ip,

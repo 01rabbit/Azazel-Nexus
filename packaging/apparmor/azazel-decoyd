@@ -61,7 +61,12 @@ profile azazel-decoyd {
   # 4.1's unix rules name only abstract addresses (`addr=` with a path does
   # not compile), so the path is narrowed by the file rule below.
   unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=stream,
+  # Abstract addresses are not narrowed here; the decoy's abstract socket
+  # namespace is that of its own network namespace (NetworkNamespacePath=),
+  # which holds no other service.
   # The intake's decoy socket, and nothing else under /var/lib/azazel.
+  # INFERRED: `rw` rather than `w`, because a path connect has been logged
+  # as requested_mask="wr"; narrow to `w` if G4 shows `w` suffices.
   /var/lib/azazel/run/decoy-intake/decoy-intake.sock rw,
 
   # Its own body: the fixed wrapper, the interpreter and the installed

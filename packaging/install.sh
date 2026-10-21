@@ -222,7 +222,8 @@ done
 # Deception Lite AppArmor profiles allow (#196 G3): /usr/bin/python3.13 and
 # code under /usr/lib/python3.13 or /opt/azazel-nexus/venv. A wrapper outside
 # them would be refused by its profile at the first start, so the install is
-# refused now. A DESTDIR staging run (no service manager) uses another
+# refused here: after the wrappers are staged, before any account or unit is
+# touched (a refused run leaves only the staged wrappers). A DESTDIR staging run (no service manager) uses another
 # interpreter, so there it only warns.
 if [ "$WITH_SERVICE_MANAGER" = yes ]; then
     python_fixed -IS "$REPO_ROOT/tools/check_decoy_apparmor_wrappers.py" "$LIBEXEC" || exit 1
