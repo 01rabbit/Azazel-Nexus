@@ -366,8 +366,8 @@ commissioning has closed with a v3 scope.
    ```
    # /etc/systemd/network/40-azazel-decoy-ingress.network
    [Match]
-   Path=pci-0000:03:00.0
-   PermanentMACAddress=00:00:5e:00:53:01
+   Path=<the ingress's bus path>
+   PermanentMACAddress=<the ingress's permanent MAC>
 
    [Network]
    IPv4Forwarding=yes
