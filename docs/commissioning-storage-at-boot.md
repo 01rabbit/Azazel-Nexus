@@ -2,7 +2,7 @@
 
 Owner: [#242](https://github.com/01rabbit/Azazel-Nexus/issues/242) (blocks P6 of
 [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)).
-Status: **proposed; awaiting owner decisions (§5); nothing implemented**.
+Status: **accepted** — the owner merged this proposal with the §5 defaults ([#245](https://github.com/01rabbit/Azazel-Nexus/pull/245), 2026-10-21). P0 is in [#246](https://github.com/01rabbit/Azazel-Nexus/pull/246); P1 and P2 are pending.
 
 ## 1. Problem
 
