@@ -159,11 +159,11 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    mounted before the controller. The controller has no `After=` on `/data`;
    only `local-fs.target` (reached before `basic.target`, which the controller
    follows) orders it. So the assistant adds the existing unencrypted image
-   (`DATA_IMG`, from the commissioning rehearsal) **without** `nofail`:
+   (`<data-image>`, from the commissioning rehearsal) **without** `nofail`:
 
    ```text
    # /etc/fstab -- rehearsal substitute for the mission volume
-   DATA_IMG  /data  ext4  loop,nodev,nosuid,noexec  0  2
+   <data-image>  /data  ext4  loop,nodev,nosuid,noexec  0  2
    ```
 
    With `nofail` the mount would leave `local-fs.target` and could race the
@@ -291,7 +291,7 @@ stat -c '%U:%G %a' /etc/azazel/commissioning
 ```
 
 Expected: `/dev/mapper/azn-commissioning ext4` with `nosuid,nodev,noexec`;
-type `LUKS2` on a `/dev/loopN` backed by the image (set up by systemd, not by
+type LUKS2 on a `/dev/loopN` backed by the image (set up by systemd, not by
 hand); `/data` mounted; `root:azcommission 750`. If no loop device appears,
 check §3.1 first.
 
@@ -543,7 +543,7 @@ verified. For example N1 reads `authenticated_commissioning` and
 | --- | --- | --- | --- |
 | **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
 | **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept, byte-identical files (no `--replace`); `high water (raised)`. If the window ended, a new request and signature with `--seq 2` (a different approval must use a sequence above the floor) |
-| **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/N/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
+| **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/<N>/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
 | **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused) | remove the directory, `daemon-reload` |
 | **N4 clock moved back** | `sudo timedatectl set-ntp false`; `sudo timedatectl set-time '<last pass time − 1 h>'`; reboot (assistant) | `trusted_clock` `failed` (clock below `time_floor − 300 s`); approval `not_attempted`. **要確認:** that the VM's RTC keeps the earlier time across a guest reboot and that nothing advances the clock before the pass (`journalctl -b \| grep -i 'time'`); if it is advanced, record N4 as *not exercisable on this VM* and do not touch systemd's own clock floor | `sudo timedatectl set-ntp true`, wait for `NTPSynchronized=yes` (`timedatectl show`), reboot. A VM that cannot sync by NTP: set the real time back with `sudo timedatectl set-time` from an independent source, or revert to S2 |
 | **N5 probe stale** (Variant B only) | `sudo systemctl mask azazel-edge-probe-preflight.service` (assistant); this boot has no probe result, the last one names another boot | **differs from the common one:** the five SUPPORTING units are granted (and start, if enabled); edge-core withheld `edge_not_ready: digest_matches,health_endpoint_healthy`, no marker for it, `masked` and not started; `observed_inputs.edge_evidence: not_launchable` | `sudo systemctl unmask azazel-edge-probe-preflight.service` |
