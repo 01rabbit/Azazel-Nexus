@@ -231,3 +231,31 @@ def test_hg02_expects_every_non_root_governed_daemon_and_not_the_root_helper():
     for root_unit in ("azazel-decoy-nsd.service", "azazel-decoy-netd.service"):
         extra = [_attempt(d.name, d.account) for d in non_root] + [_attempt(root_unit, "root")]
         assert _hg02(extra) != [], root_unit
+
+
+def test_hg02_excludes_units_by_name_and_never_for_being_root(monkeypatch):
+    """#276 F7: the exclusion is the controller, nsd and netd, by name.
+
+    A new root unit in `CORE_UNITS` is not silently out of scope: the gate
+    expects it (as root, which the runbook never uses), so it cannot pass
+    until a reviewer names the unit in `HG02_EXCLUDED_UNITS`."""
+    from azazel_nexus import hil_records
+    from azazel_nexus.activation import CORE_UNITS, UnitDefinition, UnitTier
+    from azazel_nexus_runtime.hardening import ROOT_UNITS
+
+    assert hil_records.HG02_EXCLUDED_UNITS == frozenset({
+        "azazel-activated.service", "azazel-decoy-nsd.service",
+        "azazel-decoy-netd.service"})
+    # The same three units are the only root ones the hardening allows.
+    assert hil_records.HG02_EXCLUDED_UNITS == frozenset(ROOT_UNITS)
+    subjects = [d for d in CORE_UNITS if d.name not in hil_records.HG02_EXCLUDED_UNITS]
+    assert _hg02([_attempt(d.name, d.account) for d in subjects]) == []
+
+    new_root = UnitDefinition("azazel-new-root.service", UnitTier.SUPPORTING, "root", "test")
+    monkeypatch.setattr(hil_records, "CORE_UNITS", CORE_UNITS + (new_root,))
+    assert _hg02([_attempt(d.name, d.account) for d in subjects]) != []
+    # A non-root unit renamed to look excluded is still matched by name only.
+    renamed = UnitDefinition("azazel-decoy-nsd.service.extra.service", UnitTier.SUPPORTING,
+                             "azother", "test")
+    monkeypatch.setattr(hil_records, "CORE_UNITS", CORE_UNITS + (renamed,))
+    assert _hg02([_attempt(d.name, d.account) for d in subjects]) != []

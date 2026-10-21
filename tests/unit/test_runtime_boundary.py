@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -161,7 +163,7 @@ def _internet_offenders(root: Path) -> dict[str, list[str]]:
     for path in sorted(root.rglob("*.py")):
         if _exempt(path, EGRESS_EXEMPT, root) or _exempt(path, LISTENER_EXEMPT, root):
             continue
-        found = _attributes(path, INTERNET_FORBIDDEN)
+        found = _attributes(path, INTERNET_FORBIDDEN) + _family_violations(path)
         if found:
             offenders[path.relative_to(root).as_posix()] = found
     return offenders
@@ -316,7 +318,17 @@ SENDER_FORBIDDEN = (LISTENER_FORBIDDEN - {"connect"}) | {
 #: and bare names.
 DECOY_PROCESS_FORBIDDEN = {
     "environ", "getenv", "putenv", "subprocess", "system", "popen", "ctypes",
-    "execv", "execve", "fork",
+    # Every `os.exec*`, `os.spawn*`, `fork`/`forkpty`, `posix_spawn*`, the
+    # `pty` module and asyncio's process calls (#276 F4: `execvp`, `spawnv`
+    # and `forkpty` passed the first list).
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
+    "spawnvpe", "fork", "forkpty", "posix_spawn", "posix_spawnp", "pty",
+    "create_subprocess_exec", "create_subprocess_shell",
+    # A method or attribute looked up by a computed name is `getattr` again
+    # (#276 F4: `methodcaller('con' + 'nect', ...)` passed). `AddressFamily`
+    # makes a family from a number.
+    "methodcaller", "attrgetter", "AddressFamily",
     "globals", "locals", "setattr", "delattr", "vars", "getattr", "__import__",
     "eval", "exec", "compile", "importlib",
     "getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr",
@@ -435,8 +447,79 @@ def _local_imports(path: Path, root: Path) -> set[str]:
     return found
 
 
-def _decoy_closure(root: Path = RUNTIME) -> set[str]:
-    seen, todo = set(), ["decoyd.py"]
+#: The socket constructor's names: `socket.socket`, `socket.SocketType`.
+_CONSTRUCTORS = {"socket", "SocketType"}
+
+#: `socket.AF_UNIX`. The one family a constructor may be given as a number.
+_AF_UNIX_VALUE = 1
+
+
+def _integer(node: ast.AST):
+    """The integer a literal (`2`, `-2`) evaluates to, else None."""
+
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+    return value if type(value) is int else None
+
+
+def _family_violations(path: Path) -> list[str]:
+    """Socket constructors whose family is not a named constant or `AF_UNIX` (#276 F4).
+
+    The name scans see `AF_INET`, not `socket.socket(2, 1)`. A constructor is
+    `<anything>.socket(...)`/`.SocketType(...)`, a name bound by `from socket
+    import socket as S`, or a name assigned one of those (`_S = socket.socket`).
+    Its family (first argument or `family=`) is refused when it is a literal
+    number other than `AF_UNIX`'s (1), a name assigned such a number anywhere in
+    the module, an expression that is neither a name nor a literal, or absent
+    (the default is `AF_INET`).
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    by_name: set[str] = set()
+    numbers: dict[str, set[int]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"socket", "_socket"}:
+            by_name.update(alias.asname or alias.name for alias in node.names
+                           if alias.name in _CONSTRUCTORS)
+        pairs = []
+        if isinstance(node, ast.Assign):
+            pairs = [(target, node.value) for target in node.targets]
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            pairs = [(node.target, node.value)]
+        for target, value in pairs:
+            if not isinstance(target, ast.Name):
+                continue
+            if isinstance(value, ast.Attribute) and value.attr in _CONSTRUCTORS:
+                by_name.add(target.id)
+            elif _integer(value) is not None:
+                numbers.setdefault(target.id, set()).add(_integer(value))
+    problems = []
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if not ((isinstance(call.func, ast.Attribute) and call.func.attr in _CONSTRUCTORS)
+                or (isinstance(call.func, ast.Name) and call.func.id in by_name)):
+            continue
+        family = call.args[0] if call.args else next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "family"), None)
+        if family is None:
+            problems.append("socket family defaulted (AF_INET)")
+        elif _integer(family) is not None:
+            if _integer(family) != _AF_UNIX_VALUE:
+                problems.append(f"socket family {_integer(family)}")
+        elif isinstance(family, ast.Name):
+            if numbers.get(family.id, set()) - {_AF_UNIX_VALUE}:
+                problems.append(f"socket family {family.id} = "
+                                f"{sorted(numbers[family.id])}")
+        elif not isinstance(family, ast.Attribute):
+            problems.append(f"socket family {ast.unparse(family)}")
+    return problems
+
+
+def _closure(start: str, root: Path = RUNTIME) -> set[str]:
+    """The runtime modules `start` imports, transitively, by path relative to `root`."""
+
+    seen, todo = set(), [start]
     while todo:
         name = todo.pop()
         if name in seen:
@@ -445,6 +528,10 @@ def _decoy_closure(root: Path = RUNTIME) -> set[str]:
         if (root / name).is_file():
             todo.extend(sorted(_local_imports(root / name, root) - seen))
     return seen
+
+
+def _decoy_closure(root: Path = RUNTIME) -> set[str]:
+    return _closure("decoyd.py", root)
 
 
 def _sender_violations(path: Path, expected: str = DECOY_INTAKE_SOCKET) -> list[str]:
@@ -497,6 +584,14 @@ def _sender_violations(path: Path, expected: str = DECOY_INTAKE_SOCKET) -> list[
     return problems
 
 
+def _decoy_rule_offences(path: Path) -> list[str]:
+    """The rule for every module of the decoy process but the sender."""
+
+    return sorted(set(_attributes(path, LISTENER_FORBIDDEN))
+                  | set(_names(path, DECOY_PROCESS_FORBIDDEN | _SENDER_PATH_NAMES))
+                  | set(_family_violations(path)))
+
+
 def _decoy_offenders(root: Path) -> dict[str, list[str]]:
     """The decoy process's modules, each under the rule that applies to it."""
 
@@ -509,10 +604,9 @@ def _decoy_offenders(root: Path) -> dict[str, list[str]]:
         if not path.is_file():
             continue
         if _exempt(path, {DECOY_SENDER}, root):
-            found = _sender_violations(path)
+            found = _sender_violations(path) + _family_violations(path)
         else:
-            found = sorted(set(_attributes(path, LISTENER_FORBIDDEN))
-                           | set(_names(path, DECOY_PROCESS_FORBIDDEN | _SENDER_PATH_NAMES)))
+            found = _decoy_rule_offences(path)
         if found:
             offenders[name] = found
     return offenders
@@ -703,6 +797,268 @@ def test_a_same_named_sender_elsewhere_gets_no_exception(tmp_path):
     assert not _exempt(sub, {DECOY_SENDER}, root)
     offenders = _decoy_offenders(root)
     assert "connect" in offenders["sub/decoy_sender.py"]
+
+
+#: The process names #276 F4 added, each written as `os.<name>(...)`.
+_F4_PROCESS_NAMES = (
+    "execl", "execle", "execlp", "execlpe", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
+    "spawnvpe", "forkpty", "posix_spawn", "posix_spawnp",
+)
+_NETNS_STAT = "    status = os.stat(path)\n"
+_LOOPBACK_SOCKET = "server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)"
+_ACCEPT = "sock, _ = listener.accept()"
+
+#: The mutations the cross-PR review of #268-#274 (#276 F4) found passing,
+#: and their neighbours: (name, module, [(old, new), ...], what must be found).
+F4_MUTATIONS = [
+    (f"os-{name}", "decoy_netns.py",
+     [(_NETNS_STAT, f"    os.{name}('/bin/sh')\n{_NETNS_STAT}")], name)
+    for name in _F4_PROCESS_NAMES
+] + [
+    ("execvp-imported", "decoyd.py",
+     [("import selectors\n", "import selectors\nfrom os import execvp\n")], "execvp"),
+    ("pty", "decoy_netns.py",
+     [("import os\n", "import os\nimport pty\n")], "pty"),
+    ("asyncio-process", "decoyd.py",
+     [("import selectors\n", "import selectors\nfrom asyncio import create_subprocess_exec\n")],
+     "create_subprocess_exec"),
+    ("socket-2-1", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket(2, 1)")], "socket family 2"),
+    ("socket-default-family", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket()")], "socket family defaulted (AF_INET)"),
+    ("socket-family-keyword", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket(family=10)")], "socket family 10"),
+    ("socket-family-arithmetic", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket(1 + 1, 1)")], "socket family 1 + 1"),
+    ("socket-family-variable", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "_f = 2\n        server = socket.socket(_f, socket.SOCK_STREAM)")],
+     "socket family _f = [2]"),
+    ("socket-family-call", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket(int('2'), 1)")], "socket family int('2')"),
+    ("socket-address-family", "decoy_loopback.py",
+     [(_LOOPBACK_SOCKET, "server = socket.socket(socket.AddressFamily(2), 1)")],
+     "AddressFamily"),
+    ("listener-numeric-family", "decoy_listener.py",
+     [("_SOCKET(socket.AF_INET, socket.SOCK_STREAM)", "_SOCKET(10, socket.SOCK_STREAM)")],
+     "socket family 10"),
+    ("sender-numeric-family", "decoy_sender.py",
+     [(_SENDER_CALL, "socket.socket(2, 1) as connection")], "socket family 2"),
+    ("methodcaller-connect", "decoyd.py",
+     [("import selectors\n", "import operator\nimport selectors\n"),
+      (_ACCEPT, (f"{_ACCEPT}\n            operator.methodcaller('con' + 'nect', "
+                 "('192.0.2.1', 80))(sock)"))], "methodcaller"),
+    ("methodcaller-imported", "decoy_report.py",
+     [("from .decoy_loopback import",
+       "from operator import methodcaller\nfrom .decoy_loopback import")], "methodcaller"),
+    ("attrgetter-connect", "decoyd.py",
+     [("import selectors\n", "import operator\nimport selectors\n"),
+      (_ACCEPT, (f"{_ACCEPT}\n            operator.attrgetter('con' + 'nect')(sock)"
+                 "(('192.0.2.1', 80))"))], "attrgetter"),
+]
+
+
+@pytest.mark.parametrize("module,edits,expected", [(m, e, x) for _, m, e, x in F4_MUTATIONS],
+                         ids=[name for name, _, _, _ in F4_MUTATIONS])
+def test_each_mutation_the_cross_review_found_is_caught(tmp_path, module, edits, expected):
+    """`execvp`, `spawnv`, `forkpty`, `socket.socket(2, 1)` and `methodcaller` (#276 F4)."""
+
+    root = _decoy_runtime(tmp_path)
+    path = root / module
+    source = path.read_text(encoding="utf-8")
+    for old, new in edits:
+        assert source.count(old) == 1, f"stale mutation for {module}: {old!r}"
+        source = source.replace(old, new, 1)
+    path.write_text(source, encoding="utf-8")
+    ast.parse(source)
+    assert expected in _decoy_offenders(root).get(module, []), (
+        f"{module} mutated ({expected}) and nothing caught it")
+
+
+def test_the_family_scan_allows_only_named_constants_and_af_unix(tmp_path):
+    module = tmp_path / "probe_family.py"
+    module.write_text(
+        "import socket\nfrom socket import socket as S\n_C = socket.socket\nf = 1\n"
+        "socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\nS(1, 1)\n_C(f)\n"
+        "socket.socket(family=socket.AF_UNIX)\n", encoding="utf-8")
+    assert _family_violations(module) == []
+    module.write_text(
+        "import socket\nfrom socket import socket as S\n_C = socket.socket\n"
+        "S(2)\n_C(10, 1)\n", encoding="utf-8")
+    assert sorted(_family_violations(module)) == ["socket family 10", "socket family 2"]
+
+
+#: Everything `az-decoy-nsd` and `az-decoy-netd` load from the runtime
+#: (#276 F4), by full path. Both are root; a new import is a diff a reviewer
+#: sees, never a module that arrived through another one.
+NSD_PROCESS = {"decoy_nsd.py", "decoy_network.py", "decoy_addresses.py", "decoy_netns.py"}
+NETD_PROCESS = {"decoy_netd.py", "decoy_isolation_check.py", "decoy_network.py",
+                "decoy_addresses.py", "decoy_netns.py"}
+
+#: What no module of either helper may name: everything the decoy process
+#: may not, but `posix_spawn` (pinned to `decoy_network.py` alone, below),
+#: and no socket at all, internet or otherwise (they reach the kernel only
+#: through the fixed `ip` and `nft` commands).
+HELPER_FORBIDDEN = ((DECOY_PROCESS_FORBIDDEN - {"posix_spawn"})
+                    | LISTENER_FORBIDDEN | INTERNET_FORBIDDEN | {"socket", "_socket"})
+
+
+def _helper_offences(path: Path) -> list[str]:
+    return sorted(set(_names(path, HELPER_FORBIDDEN)) | set(_family_violations(path)))
+
+
+def _helper_offenders(root: Path) -> dict[str, list[str]]:
+    offenders: dict[str, list[str]] = {}
+    for start, pinned in (("decoy_nsd.py", NSD_PROCESS), ("decoy_netd.py", NETD_PROCESS)):
+        closure = _closure(start, root)
+        if closure != pinned:
+            offenders[f"{start} closure"] = sorted(closure ^ pinned)
+        for name in sorted(closure):
+            if (root / name).is_file() and _helper_offences(root / name):
+                offenders[name] = _helper_offences(root / name)
+    return offenders
+
+
+def _helper_runtime(tmp_path: Path) -> Path:
+    root = tmp_path / "azazel_nexus_runtime"
+    root.mkdir(parents=True)
+    for name in NSD_PROCESS | NETD_PROCESS:
+        (root / name).write_text((RUNTIME / name).read_text(encoding="utf-8"),
+                                 encoding="utf-8")
+    return root
+
+
+def test_the_decoy_helpers_import_exactly_their_pinned_runtime_modules():
+    assert _closure("decoy_nsd.py") == NSD_PROCESS
+    assert _closure("decoy_netd.py") == NETD_PROCESS
+    assert _helper_offenders(RUNTIME) == {}
+
+
+HELPER_MUTATIONS = [
+    ("nsd-new-import", "decoy_nsd.py",
+     ("from .decoy_network import", "from . import transport\nfrom .decoy_network import"),
+     "decoy_nsd.py closure"),
+    ("netd-new-import", "decoy_netd.py",
+     ("from .decoy_network import", "from .systemd_bus import connect\nfrom .decoy_network import"),
+     "decoy_netd.py closure"),
+    ("network-socket", "decoy_network.py",
+     ("import os\n", "import os\nimport socket\n"), "decoy_network.py"),
+    ("network-execvp", "decoy_network.py",
+     ("import os\n", "import os\nfrom os import execvp\n"), "decoy_network.py"),
+    ("check-environ", "decoy_isolation_check.py",
+     ("import os\n", "import os\nfrom os import environ\n"), "decoy_isolation_check.py"),
+    ("netns-methodcaller", "decoy_netns.py",
+     ("import os\n", "import os\nfrom operator import methodcaller\n"), "decoy_netns.py"),
+]
+
+
+@pytest.mark.parametrize("module,edit,key", [(m, e, k) for _, m, e, k in HELPER_MUTATIONS],
+                         ids=[name for name, _, _, _ in HELPER_MUTATIONS])
+def test_each_mutation_of_a_decoy_helper_is_caught(tmp_path, module, edit, key):
+    root = _helper_runtime(tmp_path)
+    assert _helper_offenders(root) == {}
+    path = root / module
+    source = path.read_text(encoding="utf-8")
+    old, new = edit
+    assert source.count(old) == 1, f"stale mutation for {module}: {old!r}"
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+    assert key in _helper_offenders(root), f"{module} mutated and nothing caught it"
+
+
+#: What each decoy executable loads from either distribution (#276 F3), as
+#: `sys.modules` names after importing its module in a fresh `python -I`.
+#: Before #276 the decoy and the helper loaded about forty library modules,
+#: through `edge_package`'s boot id reader; the reader is now the leaf
+#: `boot_id`. A library module added to a closure is a diff here.
+DECOY_IMPORT_CLOSURES = {
+    "decoyd": {
+        "azazel_nexus", "azazel_nexus.boot_id", "azazel_nexus.content_store",
+        "azazel_nexus.decoy", "azazel_nexus.decoy_interaction",
+        "azazel_nexus.decoy_isolation",
+        "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_listener",
+        "azazel_nexus_runtime.decoy_loopback", "azazel_nexus_runtime.decoy_netns",
+        "azazel_nexus_runtime.decoy_report", "azazel_nexus_runtime.decoy_sender",
+        "azazel_nexus_runtime.decoyd",
+    },
+    "decoy_netd": {
+        "azazel_nexus", "azazel_nexus.boot_id", "azazel_nexus.decoy_isolation",
+        "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
+        "azazel_nexus_runtime.decoy_isolation_check", "azazel_nexus_runtime.decoy_netd",
+        "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
+    },
+    "decoy_nsd": {
+        "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
+        "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
+        "azazel_nexus_runtime.decoy_nsd",
+    },
+}
+
+
+def _loaded(module: str) -> set[str]:
+    """`azazel*` modules loaded by importing `azazel_nexus_runtime.<module>`, in isolation."""
+
+    paths = [str(REPO_ROOT / "src"), str(REPO_ROOT / "runtime" / "src")]
+    code = (f"import sys; sys.path[:0] = {paths!r}; import azazel_nexus_runtime.{module}; "
+            "print(sorted(m for m in sys.modules if m.startswith('azazel')))")
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", code],
+                            capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stderr
+    return set(ast.literal_eval(result.stdout.strip()))
+
+
+def _module_file(name: str) -> Path:
+    package, _, leaf = name.partition(".")
+    assert "." not in leaf, name
+    base = {"azazel_nexus": LIBRARY, "azazel_nexus_runtime": RUNTIME}[package]
+    return base / (f"{leaf}.py" if leaf else "__init__.py")
+
+
+@pytest.mark.parametrize("module", sorted(DECOY_IMPORT_CLOSURES))
+def test_each_decoy_executable_loads_exactly_its_pinned_modules(module):
+    assert _loaded(module) == DECOY_IMPORT_CLOSURES[module]
+
+
+def test_the_pinned_closures_agree_with_the_runtime_scans():
+    """The runtime half of each closure is the set the AST rules cover."""
+
+    for module, pinned in (("decoyd", DECOY_PROCESS), ("decoy_netd", NETD_PROCESS),
+                           ("decoy_nsd", NSD_PROCESS)):
+        runtime = {name.split(".", 1)[1] + ".py"
+                   for name in DECOY_IMPORT_CLOSURES[module]
+                   if name.startswith("azazel_nexus_runtime.")}
+        assert runtime == pinned, module
+    for names in DECOY_IMPORT_CLOSURES.values():
+        assert all(_module_file(name).is_file() for name in names)
+        assert "azazel_nexus.edge_package" not in names
+
+
+def test_the_library_modules_the_decoy_and_its_helpers_load_obey_their_rules():
+    """The decoy's rules reach the library modules it loads, not only its own (§12)."""
+
+    for module, rule in (("decoyd", _decoy_rule_offences), ("decoy_netd", _helper_offences),
+                         ("decoy_nsd", _helper_offences)):
+        for name in sorted(DECOY_IMPORT_CLOSURES[module]):
+            # The runtime's own modules are scanned with their copies above;
+            # its package `__init__` and the library's modules are checked here.
+            if name == "azazel_nexus_runtime" or not name.startswith("azazel_nexus_runtime."):
+                assert rule(_module_file(name)) == [], (module, name)
+
+
+def test_the_boot_id_reader_is_a_leaf_that_edge_package_shares():
+    """One reader and one validator (#276 F3), importing nothing from either package."""
+
+    from azazel_nexus import boot_id, edge_package
+
+    tree = ast.parse((LIBRARY / "boot_id.py").read_text(encoding="utf-8"))
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree)
+                if isinstance(node, ast.Import) for alias in node.names}
+    imported |= {("." * node.level) + (node.module or "") for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom)}
+    assert imported == {"__future__", "os", "stat", "pathlib", "typing"}
+    assert edge_package.is_boot_id is boot_id.is_boot_id
+    assert edge_package.BOOT_ID_PATH is boot_id.BOOT_ID_PATH
+    source = (LIBRARY / "edge_package.py").read_text(encoding="utf-8")
+    assert "_BOOT_ID_MAX_BYTES" not in source and "def is_boot_id" not in source
 
 
 def test_the_exemption_names_a_module_that_exists_and_uses_it():

@@ -825,8 +825,12 @@ counts.
 (`decoy_listener.py` may bind and listen, never connect) is unchanged. The
 report needs one `AF_UNIX` connect, which the listener rule forbids. Rather
 than loosen that rule, `tests/unit/test_runtime_boundary.py` now applies it
-to **every** module the decoy process loads (`DECOY_PROCESS`, the import
-closure of `decoyd.py`, checked to be exactly six files), with one
+to **every** module the decoy process loads: the six runtime files of
+`DECOY_PROCESS` (the import closure of `decoyd.py`) and the library modules
+they import (`azazel_nexus`, `boot_id`, `content_store`, `decoy`,
+`decoy_interaction`, `decoy_isolation`). A test imports the decoy's module in
+a fresh `python -I` and requires exactly these thirteen names, the runtime
+package included (`DECOY_IMPORT_CLOSURES`, #276), with one
 exception, `DECOY_SENDER = "decoy_sender.py"`, matched by full path. The
 sender may name `connect` and nothing else the listener may not; it may not
 name an internet or datagram family, `bind`, `listen` or `accept`; its only
@@ -1267,9 +1271,11 @@ boot's, its time not in the future (5 s skew) and every check `pass`. There
 is no maximum age: the helper runs once per boot, the decoy `Requires=` it,
 and the record goes away with it. Its refusals are fixed phrases with fixed
 check names, never content. Nothing (argument, file, environment variable,
-flag) skips it. The decoy's runtime import closure is unchanged (the reader
-is in the library), so §12's boundary rules still apply to exactly its six
-modules.
+flag) skips it. The reader is in the library and reads the boot id through
+the leaf `boot_id`, as `edge_package` does (#276; through `edge_package`
+before, which brought about forty library modules into the decoy and the
+helper). The decoy's import closure is the thirteen modules of §12, and
+§12's boundary rules apply to each of them.
 
 ### Why the pass still withholds
 

@@ -545,8 +545,8 @@ def evidence_directory(tmp_path):
 def _recorder(directory, boot=BOOT):
     def boot_id():
         if boot is None:
-            from azazel_nexus.edge_package import EdgePackageRefused
-            raise EdgePackageRefused("no boot id")
+            from azazel_nexus.boot_id import BootIdRefused
+            raise BootIdRefused("no boot id")
         return boot
 
     return Recorder(directory=str(directory), owner=os.getuid(), boot_id=boot_id,

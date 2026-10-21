@@ -6,6 +6,7 @@
 # It accepts and never initiates: no outbound connect is in its code, and the runtime boundary test allows its listener module bind and listen only.
 # IPAddressDeny=any stays, and the fixed decoy subnet is the only address allowed.
 # It opens no socket without the network helper's isolation record from this boot with every check passed.
+# It binds IPv4 only and writes no file, so it gets no AF_INET6 and no writable path, and the service manager's private sockets are inaccessible to it.
 # The activation pass never grants this unit in this build.
 
 [Unit]
@@ -31,8 +32,9 @@ LimitNOFILE=256
 LimitFSIZE=16M
 LogRateLimitIntervalSec=30
 LogRateLimitBurst=50
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/azazel/decoy
+InaccessiblePaths=-/run/dbus/system_bus_socket
+InaccessiblePaths=-/run/systemd/private
+RestrictAddressFamilies=AF_UNIX AF_INET
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

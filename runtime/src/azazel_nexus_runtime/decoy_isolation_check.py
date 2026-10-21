@@ -35,6 +35,7 @@ import sys
 import time
 from typing import Callable, Optional
 
+from azazel_nexus.boot_id import BootIdRefused, read_current_boot_id
 from azazel_nexus.decoy_isolation import (
     CHECKS,
     EVIDENCE_DIRECTORY,
@@ -42,7 +43,6 @@ from azazel_nexus.decoy_isolation import (
     IsolationEvidenceRefused,
     render_evidence,
 )
-from azazel_nexus.edge_package import EdgePackageRefused, read_current_boot_id
 
 from .decoy_addresses import (
     BRIDGE,
@@ -283,7 +283,7 @@ class Recorder:
             return False
         try:
             self._boot_id = self._read_boot_id()
-        except EdgePackageRefused:
+        except BootIdRefused:
             self._boot_id = None
             return False
         return True
