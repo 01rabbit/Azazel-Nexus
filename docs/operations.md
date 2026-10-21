@@ -711,6 +711,25 @@ The helper's stop then fails at `nft delete table` (the table is already
 gone) and reports a failure; that is expected. Do not load the table again
 by hand. A fresh start of the three units builds and checks it again.
 
+**AppArmor profiles** (#196 G3). Each of the three units names its own
+profile with `AppArmorProfile=` (`azazel-decoy-nsd`, `azazel-decoy-netd`,
+`azazel-decoyd`), without `-`: a start without that profile loaded fails,
+and nothing runs unconfined. The installer needs the Debian package
+`apparmor` (not `apparmor-utils`), compiles the three profiles before it
+writes anything, and places them in `/etc/apparmor.d/`; it does not load
+them. The package's `apparmor.service` loads them at the next boot. Do not
+edit them, switch them to complain mode or remove them: the activation pass
+is to withhold the tier unless AppArmor is enabled and all of them are in
+enforce mode. That check exists, but in this build it is not reached: the
+tier is withheld as `isolation_evidence_absent` on every pass whatever the
+profiles' state, so nothing is granted by them
+([grant design §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)).
+To see their state, as root:
+
+```
+sudo grep '^azazel-decoy' /sys/kernel/security/apparmor/profiles
+```
+
 **Removing what a failed start left behind.** Each executable undoes its own
 steps when a start fails. If it was killed before it could (for example
 `SIGKILL` at `TimeoutStartSec=`), systemd runs no `ExecStop=` after a failed

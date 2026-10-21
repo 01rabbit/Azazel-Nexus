@@ -1062,6 +1062,32 @@ def test_the_exposure_tier_is_withheld_with_every_other_gate_satisfied(tmp_path)
                             for e in withheld)
 
 
+def test_the_lsm_withholding_reasons_are_not_reached_yet(tmp_path):
+    """#196 G3: the AppArmor enforce-mode reasons exist and are never given.
+
+    `decoy_apparmor.exposure_lsm_refusal` defines them for G6; until then the
+    tier is withheld as `isolation_evidence_absent` whatever the host's LSM.
+    """
+
+    from azazel_nexus_runtime.decoy_apparmor import LSM_REASON_CODES
+
+    controller, _, ledger, _ = _controller(tmp_path)
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(),
+        edge=EdgeBaselineState(True, True, True, True, True), healthy=True,
+        record=_record(roles=(_confirmed_role(),)),
+        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
+    )
+    reasons = [v.reason for v in outcome.verdicts if v.reason] + [
+        entry.event.get("reason", "") for entry in ledger]
+    assert reasons
+    assert not any(reason.startswith(code) for reason in reasons
+                   for code in LSM_REASON_CODES)
+    for definition in _exposure_definitions():
+        verdict = next(v for v in outcome.verdicts if v.unit == definition.name)
+        assert verdict.reason.startswith("isolation_evidence_absent")
+
+
 def test_activate_accepts_no_isolation_evidence_argument(tmp_path):
     """No flag, boolean or keyword can supply the tier's evidence."""
     import inspect

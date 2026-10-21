@@ -4,7 +4,8 @@ Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase; the review findings are those of
 [#276](https://github.com/01rabbit/Azazel-Nexus/issues/276)).
 Status: **decided (2026-10-22): the owner adopted every recommended default
-of §10 (Q1–Q12); G1–G3 in progress; the tier stays withheld until G6.**
+of §10 (Q1–Q12); G1–G3 in progress (G3's profiles and enforce-mode check
+are in, §7 "G3 as implemented"); the tier stays withheld until G6.**
 Related: [Deception Lite prerequisites](deception-redirect-prerequisites.md)
 (§7 Q9, Q10; §9; §10 "Before any grant"; §13; §14) ·
 [observe-baseline activation](activation-observe-baseline.md) ·
@@ -417,7 +418,62 @@ LSM list includes it, the `apparmor` package provides `apparmor_parser` and
 would need the `apparmor` package (and not `apparmor-utils`, which is only
 for authoring). The profiles must be loaded before the three units start;
 `apparmor.service` runs before `sysinit.target`, well before the controller
-(*inferred*; VM-check). systemd 257 supports `AppArmorProfile=`.
+(*inferred*; VM-check). systemd 257 supports `AppArmorProfile=`. The VM
+has since shown AppArmor 4.1.0 enabled on Debian 13 (a mechanism check, not
+hardware evidence).
+
+### G3 as implemented
+
+The profiles, the units' attachment and the pass's reading exist; **nothing
+is granted by them**: `_withholding_reason` still withholds the tier as
+`isolation_evidence_absent` on every pass, and the new reasons below are not
+reached until G6.
+
+- **Profiles** (`packaging/apparmor/`): `azazel-decoy-nsd` (with a child
+  `azazel-decoy-nsd//ip`, the only block that may mount), `azazel-decoy-netd`
+  and `azazel-decoyd`, named, not attached by path. Every block, the child
+  included, states each claim above as an explicit `deny` (a child inherits
+  nothing), plus `/lib/systemd` (the installer's unit directory) and the
+  runtime unit paths under `/run/systemd`. Allowed: exactly the unit's
+  capabilities and address family; the Python body; `ip` (namespace unit,
+  into the child), `ip` and `nft` (helper); the helper's runtime directory
+  as its one writable place; for the child only the mounts `ip netns add`,
+  `ip netns delete` and `ip -n` make (§13 of the prerequisites document).
+  The decoy has `deny capability,`. Rules not confirmed on a kernel are
+  marked `INFERRED` in the files: the nsfs bind source, the propagation
+  flags, the venv path, the peer label of systemd's stop signal. All three
+  compile with `apparmor_parser` 4.1.0 (Debian 13 container, without a
+  kernel; not a load).
+- **The verify unit of §6** gets its own profile in G2: it runs the
+  helper's executable but writes nothing, so it does not share the helper's
+  profile, which may write the record.
+- **The decoy's report.** Its connect to the intake's socket
+  (`/var/lib/azazel/run/decoy-intake/`) is under the denied
+  `/var/lib/azazel`. *Inferred:* on Debian 13's kernel a connect to a path
+  socket is mediated by `network unix` only, so the deny does not touch it;
+  on a kernel with fine-grained `af_unix` mediation it would refuse the
+  report, which fails closed (nothing widens). VM item.
+- **Units:** `ServiceProfile.apparmor_profile`, exactly
+  `decoy_apparmor.apparmor_profile_for(unit)`: each of the three names its
+  own, rendered `AppArmorProfile=<name>` without `-`; every other unit names
+  none, and `AppArmorProfile` is a reserved key of `extra`.
+- **The pass's reading:** `decoy_apparmor.exposure_lsm_refusal`, pure, over
+  `/sys/kernel/security/lsm` and `/sys/kernel/security/apparmor/profiles`
+  (`read_exposure_lsm`, bounded, no link followed). Reasons, first that
+  holds: `lsm_apparmor_disabled`, `lsm_profiles_unreadable`,
+  `lsm_profiles_absent`, `lsm_profiles_not_enforced` (the four blocks, each
+  only `(enforce)`). Only the unit renderer and the install plan import the
+  module; a test keeps the pass, the controller and the library from doing
+  so before G6.
+- **Installer:** `apparmor_parser` (package `apparmor`, not
+  `apparmor-utils`) is a required tool with the service manager; the three
+  profiles are compiled (`--skip-kernel-load`) before anything is written
+  and placed in `/etc/apparmor.d/` 0644; nothing is loaded. The offline
+  bundle carries them.
+- **Tests and containers.** No container or E2E run starts the three units
+  (E2E runs the installer with `--without-service-manager` and
+  `DESTDIR`), so nothing there needs a loaded profile; no test copy of a
+  unit drops `AppArmorProfile=`.
 
 ## 8. The decoy-sandbox gate (Q10, F7)
 

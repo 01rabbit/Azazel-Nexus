@@ -156,6 +156,21 @@ while IFS= read -r tool; do
 done <<EOF
 $REQUIRED_TOOLS
 EOF
+
+# The Deception Lite AppArmor profiles (#196 G3) must compile before anything
+# is written: each exposure unit names its profile without `-`, so a profile
+# apparmor.service cannot load is a unit that cannot start. Compiled only,
+# never loaded here (the package's apparmor.service loads /etc/apparmor.d at
+# boot); with the service manager only, since apparmor_parser is required
+# only then. No unit is granted by this, and the pass never grants them yet.
+if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoyd; do
+        if ! apparmor_parser --skip-kernel-load --skip-cache --quiet "$HERE/apparmor/$profile"; then
+            echo "refusing to install: AppArmor profile $profile does not compile." >&2
+            exit 1
+        fi
+    done
+fi
 UNIT_DIR="${DESTDIR:-}$UNIT_DIR"
 PRESET_DIR="${DESTDIR:-}$PRESET_DIR"
 LIBEXEC="${DESTDIR:-}$LIBEXEC"
@@ -353,6 +368,13 @@ install -m 0644 "$HERE"/systemd/azazel-decoyd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
+# The Deception Lite AppArmor profiles (#196 G3), one per exposure unit, each
+# named by its unit's AppArmorProfile=. Placed, not loaded: apparmor.service
+# loads them at the next boot, before any unit could start.
+install -d -m 0755 "${DESTDIR:-}/etc/apparmor.d"
+install -m 0644 "$HERE"/apparmor/azazel-decoy-nsd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-nsd"
+install -m 0644 "$HERE"/apparmor/azazel-decoy-netd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-netd"
+install -m 0644 "$HERE"/apparmor/azazel-decoyd "${DESTDIR:-}/etc/apparmor.d/azazel-decoyd"
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then
     echo "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."

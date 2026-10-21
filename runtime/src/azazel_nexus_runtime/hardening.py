@@ -60,6 +60,7 @@ from azazel_nexus.activation import (
 )
 
 from .decoy_addresses import DECOY_SUBNET
+from .decoy_apparmor import apparmor_profile_for
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 from azazel_nexus_runtime.activation_markers import grant_marker_path
@@ -129,6 +130,9 @@ _RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
     # A second program in a unit is a declaration too (#196 body): only the
     # two one-shot decoy units name an `ExecStop=`, each in its pinned extra.
     "ExecStop", "ExecStopPost", "ExecStartPost", "ExecReload",
+    # The LSM profile comes only from `apparmor_profile` (#196 G3), so no
+    # unit can name one, or one with `-`, through `extra`.
+    "AppArmorProfile",
 }
 
 
@@ -238,8 +242,21 @@ class ServiceProfile:
     #: systemd build a mount namespace for the unit, because a mount made
     #: inside one never reaches the host (n3, VM-checked).
     shared_omissions: tuple[str, ...] = ()
+    #: The AppArmor profile the unit names in `AppArmorProfile=` (#196 G3,
+    #: docs/deception-exposure-grant.md §7). Exactly
+    #: `decoy_apparmor.apparmor_profile_for(unit)`: the profile of each of
+    #: the three Deception Lite exposure units, and empty for every other
+    #: unit. Rendered without `-`, so a start without the profile loaded
+    #: fails rather than running unconfined.
+    apparmor_profile: str = ""
 
     def __post_init__(self) -> None:
+        if self.apparmor_profile != apparmor_profile_for(self.unit):
+            raise ValueError(
+                f"{self.unit}: AppArmorProfile is exactly "
+                f"{apparmor_profile_for(self.unit) or 'absent'}; only the "
+                "Deception Lite exposure units name a profile, each its own"
+            )
         if not self.address_families:
             raise ValueError(
                 f"{self.unit} declares no address family. `AF_UNIX` at least "
@@ -1340,6 +1357,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         extra=DECOY_NAMESPACE_SANDBOX,
         shared_overrides=DECOY_NAMESPACE_SHARED_OVERRIDES,
         shared_omissions=DECOY_NAMESPACE_SHARED_OMISSIONS,
+        apparmor_profile=apparmor_profile_for(DECOY_NAMESPACE_UNIT),
         rationale=(
             "Runs once. The only unit that holds CAP_SYS_ADMIN, with "
             "CAP_NET_ADMIN, as a bounding set and never as an ambient "
@@ -1356,7 +1374,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "would keep the namespace handle from the host, and with "
             "CAP_SYS_ADMIN and mount that sandbox was never a wall for it. A "
             "compromised body would be host root; its containment is a fixed "
-            "body that takes no input, static review and a later LSM profile. "
+            "body that takes no input, static review and its AppArmor profile "
+            "azazel-decoy-nsd, which denies writes to the activation state, "
+            "the unit files and the ledgers and any reach to the service "
+            "manager; a start without that profile loaded fails. "
             "The activation pass never grants this unit in this build"
         ),
     ),
@@ -1394,6 +1415,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # grant; the bounding set is CAP_NET_ADMIN and nothing else.
         capability_bounding_set=("CAP_NET_ADMIN",),
         extra=DECOY_HELPER_SANDBOX,
+        apparmor_profile=apparmor_profile_for(DECOY_NETWORK_HELPER_UNIT),
         rationale=(
             "Runs once. It holds CAP_NET_ADMIN alone, as a bounding set and "
             "never as an ambient capability, in the host network namespace: "
@@ -1408,8 +1430,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "decision. It is root, so netlink is its only address family (any "
             "netlink protocol, not only route and nftables) and it has no AF_UNIX "
             "socket that could reach the service manager, whose private "
-            "sockets are also inaccessible to it. The activation pass never "
-            "grants this unit in this build"
+            "sockets are also inaccessible to it. Its AppArmor profile "
+            "azazel-decoy-netd must be loaded for it to start. The activation "
+            "pass never grants this unit in this build"
         ),
     ),
     ServiceProfile(
@@ -1448,6 +1471,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
             ("LogRateLimitIntervalSec", "30"),
             ("LogRateLimitBurst", "50"),
         ) + DECOY_MANAGER_SOCKETS_INACCESSIBLE,
+        apparmor_profile=apparmor_profile_for(DECOY_UNIT),
         rationale=(
             "Holds no capability and runs under its own account, inside the "
             "decoy network namespace, with PrivateUsers=yes. It accepts and "
@@ -1459,7 +1483,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "helper's isolation record from this boot with every check "
             "passed. It binds IPv4 only and writes no file, so it gets no "
             "AF_INET6 and no writable path, and the service manager's "
-            "private sockets are inaccessible to it. The activation pass "
+            "private sockets are inaccessible to it. Its AppArmor profile "
+            "azazel-decoyd must be loaded for it to start. The activation pass "
             "never grants this unit in this build"
         ),
     ),
@@ -1568,6 +1593,8 @@ def render_unit(profile: ServiceProfile) -> str:
     lines += [
         f"ExecStart={profile.executable}",
     ]
+    if profile.apparmor_profile:
+        lines.append(f"AppArmorProfile={profile.apparmor_profile}")
     if profile.runtime_directory:
         lines += [
             f"RuntimeDirectory={profile.runtime_directory}",

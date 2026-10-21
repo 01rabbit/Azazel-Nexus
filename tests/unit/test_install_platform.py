@@ -188,8 +188,9 @@ def test_plan_refuses_libexec_profile_that_disagrees_with_rendered_units():
     ("with_accounts", "with_service_manager", "forbidden"),
     [
         (False, True, {"id", "getent", "useradd", "groupadd"}),
-        (True, False, {"systemctl", "systemd-tmpfiles"}),
-        (False, False, {"id", "getent", "useradd", "groupadd", "systemctl", "systemd-tmpfiles"}),
+        (True, False, {"systemctl", "systemd-tmpfiles", "apparmor_parser"}),
+        (False, False, {"id", "getent", "useradd", "groupadd", "systemctl", "systemd-tmpfiles",
+                        "apparmor_parser"}),
     ],
 )
 def test_plan_only_requires_tools_for_enabled_install_modes(

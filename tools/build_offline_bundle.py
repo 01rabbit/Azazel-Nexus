@@ -105,6 +105,8 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
         (root / "src" / "azazel_nexus", True),
         (root / "runtime" / "src" / "azazel_nexus_runtime", True),
         (root / "packaging" / "systemd", False),
+        # The Deception Lite AppArmor profiles install.sh places (#196 G3).
+        (root / "packaging" / "apparmor", False),
     ):
         if not source_dir.is_dir() or source_dir.is_symlink():
             raise ValueError(f"required input directory is missing or unsafe: {source_dir}")
