@@ -740,8 +740,13 @@ def test_the_wrapper_check_refuses_a_missing_or_foreign_wrapper(tmp_path):
 
 
 def test_the_wrapper_check_names_exactly_the_three_decoy_wrappers():
+    import tomllib
+
     tool = _tool()
     assert tool.WRAPPERS == ("az-decoy-nsd", "az-decoy-netd", "az-decoyd")
+    with (ROOT / "runtime" / "pyproject.toml").open("rb") as stream:
+        scripts = tomllib.load(stream)["project"]["scripts"]
+    assert tool.TARGETS == {name: scripts[name] for name in tool.WRAPPERS}
     assert {f"/usr/libexec/azazel/{name}" for name in tool.WRAPPERS} == {
         p.executable for p in PROFILES if p.unit in DECEPTION_EXPOSURE_UNITS}
 

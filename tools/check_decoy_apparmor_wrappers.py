@@ -8,8 +8,9 @@ paths are chosen at install (`tools/stage_runtime_entrypoints.py`), so this
 reads the three staged wrappers (`az-decoy-nsd`, `az-decoy-netd`,
 `az-decoyd`) with the canonical wrapper parser, resolves the interpreter and
 every import path as the kernel would, and refuses (exit 1) when any falls
-outside the profiles. Fixed wrapper names, fixed targets from
-`runtime/pyproject.toml`; nothing is executed, written or loaded.
+outside the profiles. Fixed wrapper names and targets (equal to
+`runtime/pyproject.toml`'s, a test checks); nothing is executed, written or
+loaded.
 
 `--warn-only` reports the same finding and exits 0: for a `DESTDIR` staging
 run, whose interpreter is not the node's. The installer uses it only
@@ -21,7 +22,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,22 +31,26 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 from azazel_nexus_runtime.decoy_apparmor import wrapper_profile_refusal  # noqa: E402
 from azazel_nexus_runtime.startup_wrapper import parse_wrapper  # noqa: E402
 
-#: The wrappers the three exposure units execute.
-WRAPPERS = ("az-decoy-nsd", "az-decoy-netd", "az-decoyd")
+#: The wrappers the three exposure units execute, and the targets they must
+#: call (`runtime/pyproject.toml`'s scripts; a test keeps them equal).
+TARGETS = {
+    "az-decoy-nsd": "azazel_nexus_runtime.decoy_nsd:main",
+    "az-decoy-netd": "azazel_nexus_runtime.decoy_netd:main",
+    "az-decoyd": "azazel_nexus_runtime.decoyd:main",
+}
+WRAPPERS = tuple(TARGETS)
 _LIMIT = 65536
 
 
-def _targets(root: Path = ROOT) -> dict[str, str]:
-    with (root / "runtime" / "pyproject.toml").open("rb") as stream:
-        scripts = tomllib.load(stream)["project"]["scripts"]
-    return {name: scripts[name] for name in WRAPPERS}
+def _targets() -> dict[str, str]:
+    return dict(TARGETS)
 
 
-def findings(libexec: Path, *, root: Path = ROOT) -> list[str]:
+def findings(libexec: Path) -> list[str]:
     """One line per wrapper that is unreadable or outside the profiles."""
 
     found = []
-    for name, target in _targets(root).items():
+    for name, target in _targets().items():
         try:
             fd = os.open(libexec / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
