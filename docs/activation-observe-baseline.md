@@ -195,7 +195,7 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   `outside_lease_scope`. A lease can only remove units; this is what keeps the
   rest of SUPPORTING (commissiond, watchdog, fetchd, model hosts) out.
 - **Revocation.** Operator keys: the existing revoked set, re-read each pass.
-  Approvals: raise `security_epoch` or the `approval_seq` floor. Expiry:
+  Approvals: raise `security_epoch` (§11) or the `approval_seq` floor. Expiry:
   `expires_at` against the time floor (§3.5).
 - **Failure.** Any error → `ApprovalRefused` (already redacted) → `lease=None`.
 - **Library (P1).** `src/azazel_nexus/activation_approval_v2.py`:
@@ -1280,3 +1280,94 @@ units, and neither file is one of them.
 The other open points of #251 (a regular path to raise the declared epoch,
 the optional `commissioning_storage` diagnostic label) are not addressed
 here.
+
+## 11. Raising the declared security epoch (#251)
+
+Owner decision (2026-10-21): build a regular path, operator-signed and
+raise-only. Before it, the only way to raise the epoch was to move
+`/etc/azazel/bootstrap/deployment.json` aside and publish a new declaration
+with `bootstrap-deployment-initialize`, which also accepts any other field.
+
+**Where the epoch lives today.**
+
+- *Declared:* `deployment.json` (`azazel-nexus/bootstrap-deployment/v1`,
+  `bootstrap_deployment.py`) holds `security_epoch` with the node digest and
+  policy digests. Its store (`bootstrap_deployment_store.py`) publishes once
+  and never replaces (create-only with a pending marker; recovery finishes
+  only the exact retained bytes), so that a declaration cannot be swapped
+  through the store.
+- *Node identity* (`/etc/azazel/node.yaml`) holds only the label; the
+  declaration's `node_digest` binds it (`declared_node_binding`). It holds no
+  epoch.
+- *Approval v2 context:* `az-activation request`, `install` and the pass take
+  `security_epoch` from the declaration; the approval must name exactly that
+  epoch (canonical re-encoding against the context), and the context must
+  not be below the high-water epoch floor.
+- *High water* (§3.5): `security_epoch` is raised by `install` and by the
+  pass to the approved epoch. The pass also refuses a declared epoch below
+  the floor (`epoch_high_water`).
+
+**Design.** Two `az-activation` commands; no new approval boolean, flag,
+environment variable or unit operation, and no refusal becomes a success.
+
+- `az-activation epoch-request --operator LABEL --to-epoch N --out FILE`
+  (read-only) writes the unsigned canonical payload
+  `azazel-nexus/activation-epoch-raise/v1` (`src/azazel_nexus/activation_epoch.py`):
+  `operator`, `node_digest` (the declaration's, checked against `node.yaml`),
+  `deployment_digest` (SHA-256 of the whole current declaration),
+  `from_epoch` (the declared epoch) and `to_epoch`, which must be above
+  `from_epoch` and not below the high-water epoch floor. The operator must
+  be named by the activation policy and hold an active enrolled key.
+- The operator signs it off-host with `tools/operator_sign.py --purpose
+  activation-epoch-raise`, a new `ApprovalPurpose.ACTIVATION_EPOCH_RAISE`.
+  The transcript differs from every other purpose, so an activation
+  approval signature cannot raise the epoch and an epoch-raise signature
+  cannot approve anything. The signer refuses anything but a canonical
+  raise (`to_epoch` above `from_epoch`).
+- `sudo az-activation epoch-raise --payload FILE --signature FILE` (root,
+  interactive terminal) verifies the signature against the operator trust
+  store, the policy's operator set and the exact current declaration
+  (`verify_epoch_raise`); refuses without a high-water file (it is
+  initialized only by `install`, §3.5, or recovered, §7), with a new epoch
+  below the floor, or with the OS clock behind the time floor less the skew.
+  It prints what will change, requires the payload SHA-256 to be re-entered
+  and `RAISE` to be typed, re-collects and compares everything, then:
+  1. raises the high water's `security_epoch` to `to_epoch` (sequence and
+     generation floors unchanged, `time_floor = max(stored, now)`);
+  2. replaces the declaration with the same one at `to_epoch`
+     (`raise_bootstrap_deployment_epoch`: compare-and-swap on the exact
+     current bytes, only `security_epoch` may differ and only upwards, under
+     the store's exclusive lock and its pending marker, temporary file,
+     rename, directory fsync and read-back);
+  3. appends `activation.epoch_raised` (operator, node digest, declaration
+     digest, both epochs, payload SHA-256, the new floor under `high_water`)
+     to `/var/lib/azazel/state/activation.jsonl`. It is a floor event
+     (`FLOOR_EVENTS`), so a §7 recovery never goes below the raised epoch.
+
+  Exit 1 means nothing changed, exit 2 that a step after the first write did
+  not complete.
+
+**Why old approvals stop verifying.** After step 1 the pass refuses the old
+declared epoch (below the floor) and the verifier refuses any approval whose
+epoch is below the floor; after step 2 the context names the new epoch, so an
+approval for the old one no longer matches. The installed approval is left in
+place and fails as `activation_approval_loader`; a new one needs a new
+request at the new epoch, a signature and `install --replace`, with a
+sequence above the (unchanged) sequence floor. Putting the old declaration
+back (root) does not revive it: the floor stays raised.
+
+**Single use and resumption.** The payload is bound to `from_epoch` and the
+whole declaration, so once applied the same payload is refused (the
+declaration now names `to_epoch`). If step 2 fails after step 1, the node
+refuses every approval (fail-closed); running the same signed payload again
+resumes (the floor is already at `to_epoch`, which a raise-only write
+accepts). An interruption inside step 2 leaves the pending marker, which
+every reader refuses until `azazel-nexus bootstrap-deployment-recover`
+finishes whichever declaration `deployment.json` holds; then run
+`epoch-raise` again if it still names the old epoch.
+
+**Not covered.** The epoch can never be lowered by this path; a mistaken
+raise is permanent (approvals are simply signed at the new epoch). Root can
+still replace both files by hand (local trust, §3.5). Bootstrap v1 approvals
+that bind the declared epoch are invalidated by the raise as well; this path
+does not issue new ones.

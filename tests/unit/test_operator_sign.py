@@ -110,6 +110,7 @@ def test_other_purposes_are_not_offered(tmp_path, key, purpose):
     assert not (tmp_path / "out.sig").exists()
     assert operator_sign.PURPOSES == {
         "activation": ApprovalPurpose.ACTIVATION,
+        "activation-epoch-raise": ApprovalPurpose.ACTIVATION_EPOCH_RAISE,
         "commissioning": ApprovalPurpose.COMMISSIONING,
         "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
     }
@@ -281,4 +282,55 @@ def test_seed_symlink_is_refused(tmp_path, key):
     link = tmp_path / "seed-link"
     link.symlink_to(seed)
     assert run(tmp_path, (signing, link, payload)) == 1
+    assert not (tmp_path / "out.sig").exists()
+
+
+# -- activation-epoch-raise (#251, design §11) ---------------------------------
+
+
+def _epoch_payload(to_epoch=3):
+    from azazel_nexus.activation_epoch import EpochRaise, encode_epoch_raise
+    return encode_epoch_raise(EpochRaise("operator-a", DIGEST, "sha256:" + "b" * 64, 2,
+                                         to_epoch))
+
+
+def run_epoch(tmp_path, key, payload_bytes):
+    key[2].write_bytes(payload_bytes)
+    return run(tmp_path, key, **{
+        "--purpose": "activation-epoch-raise",
+        "--expect-payload-sha256": hashlib.sha256(payload_bytes).hexdigest(),
+    })
+
+
+def test_epoch_raise_signature_verifies_only_under_its_own_purpose(tmp_path, key, capsys):
+    from azazel_nexus.activation_epoch import decode_epoch_raise
+    payload = _epoch_payload()
+    assert run_epoch(tmp_path, key, payload) == 0
+    signature = (tmp_path / "out.sig").read_bytes()
+    key[0].verify_key.verify(approval_message(ApprovalPurpose.ACTIVATION_EPOCH_RAISE,
+                                              payload), signature)
+    with pytest.raises(BadSignatureError):
+        key[0].verify_key.verify(approval_message(ApprovalPurpose.ACTIVATION, payload),
+                                 signature)
+    lines = capsys.readouterr().out.splitlines()
+    for line in ("purpose: activation-epoch-raise", "operator: operator-a",
+                 "security_epoch: 2 -> 3", f"node_digest: {DIGEST}"):
+        assert line in lines
+    assert decode_epoch_raise(payload).to_epoch == 3
+
+
+@pytest.mark.parametrize("payload_bytes", [
+    pytest.param(V2, id="activation-approval"),
+    pytest.param(PAYLOAD, id="arbitrary-json"),
+    pytest.param(_epoch_payload() + b"\n", id="trailing-newline"),
+    pytest.param(_epoch_payload().replace(b'"to_epoch":3', b'"to_epoch":2'), id="no-raise"),
+    pytest.param(_epoch_payload().replace(b'"to_epoch":3', b'"to_epoch":1'), id="lower"),
+])
+def test_epoch_raise_refuses_anything_but_a_canonical_raise(tmp_path, key, payload_bytes):
+    assert run_epoch(tmp_path, key, payload_bytes) == 1
+    assert not (tmp_path / "out.sig").exists()
+
+
+def test_activation_purpose_refuses_an_epoch_raise_payload(tmp_path, key):
+    assert run_activation(tmp_path, key, _epoch_payload()) == 1
     assert not (tmp_path / "out.sig").exists()

@@ -13,10 +13,11 @@ Before signing, the payload SHA-256 must equal the value printed on the node,
 and the derived public key must equal the enrolled one, so a wrong file or a
 wrong key stops here instead of producing a signature.
 
-Three purposes are offered: the commissioning draft, the full commissioning
-proposal and the boot-free v2 activation approval
+Four purposes are offered: the commissioning draft, the full commissioning
+proposal, the boot-free v2 activation approval
 (``azazel-nexus/activation-approval/v2``, docs/activation-observe-baseline.md
-§3.1). For ``activation`` the payload must also be a well-formed canonical v2
+§3.1) and the security epoch raise (``azazel-nexus/activation-epoch-raise/v1``,
+§11; it must be canonical and raise the epoch, and its summary is printed). For ``activation`` the payload must also be a well-formed canonical v2
 document (it must re-encode to exactly the same bytes, with a validity window
 inside the 72-hour ceiling) before anything is signed, so neither v1 bytes nor
 arbitrary bytes can become an activation signature; a human summary of what is
@@ -47,11 +48,13 @@ from azazel_nexus.activation_approval_v2 import (
     _parse,
     observe_baseline_payload,
 )
+from azazel_nexus.activation_epoch import decode_epoch_raise
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 from azazel_nexus.operator_trust import MAX_APPROVAL_BYTES, ApprovalPurpose, approval_message
 
 PURPOSES = {
     "activation": ApprovalPurpose.ACTIVATION,
+    "activation-epoch-raise": ApprovalPurpose.ACTIVATION_EPOCH_RAISE,
     "commissioning": ApprovalPurpose.COMMISSIONING,
     "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
 }
@@ -145,6 +148,28 @@ def activation_summary(payload: bytes) -> dict:
     }
 
 
+def epoch_raise_summary(payload: bytes) -> dict:
+    """What an epoch-raise payload raises, or `SignRefused`.
+
+    Shape only (canonical, `to_epoch` above `from_epoch`): the node still
+    checks it against its own declaration, policy and floor.
+    """
+    try:
+        value = decode_epoch_raise(payload)
+    except Exception:  # never echo payload content in a refusal
+        raise SignRefused("payload is not a canonical epoch raise; not signed") from None
+    return {
+        "schema": "azazel-nexus/activation-epoch-raise/v1",
+        "operator": value.operator,
+        "node_digest": value.node_digest,
+        "deployment_digest": value.deployment_digest,
+        "security_epoch": f"{value.from_epoch} -> {value.to_epoch}",
+    }
+
+
+_SUMMARIES = {"activation": activation_summary, "activation-epoch-raise": epoch_raise_summary}
+
+
 def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: bytes,
          expect_public: str) -> tuple[bytes, dict]:
     if purpose not in PURPOSES:
@@ -154,7 +179,7 @@ def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: byte
     digest = hashlib.sha256(payload).hexdigest()
     if digest != expect_payload_sha256.strip().lower():
         raise SignRefused("payload SHA-256 does not match the value shown on the node; not signed")
-    summary = activation_summary(payload) if purpose == "activation" else {}
+    summary = _SUMMARIES[purpose](payload) if purpose in _SUMMARIES else {}
     key = SigningKey(seed)
     public = bytes(key.verify_key).hex()
     if public != expect_public.strip().lower():

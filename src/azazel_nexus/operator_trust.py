@@ -30,6 +30,7 @@ class ApprovalPurpose(str, Enum):
     COMMISSIONING_PROPOSAL = "commissioning-proposal"
     LOCAL_MODEL_ADMISSION = "local-model-admission"
     SUPPORTING_BOOTSTRAP = "supporting-bootstrap"
+    ACTIVATION_EPOCH_RAISE = "activation-epoch-raise"
 
 
 def approval_message(purpose: ApprovalPurpose, payload: bytes) -> bytes:

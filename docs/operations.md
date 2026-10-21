@@ -501,6 +501,21 @@ Nothing it does starts or enables a unit itself.
    So neither re-signing the same `--seq` to extend the expiry nor
    re-installing the same approval after its files were removed works any
    more: request a higher `--seq` and sign it anew.
+5. **Raising the declared security epoch** (#251) ends every approval for
+   the current epoch at once, the installed one included. It only raises
+   and cannot be undone. `az-activation epoch-request --operator LABEL
+   --to-epoch N --out FILE` writes the unsigned payload (node digest, digest
+   of the current deployment declaration, current and new epoch); sign it on
+   the workstation with `tools/operator_sign.py --purpose
+   activation-epoch-raise`; `sudo az-activation epoch-raise --payload FILE
+   --signature FILE` verifies it, asks for the payload SHA-256 again and
+   `RAISE`, raises the high-water epoch floor, replaces
+   `/etc/azazel/bootstrap/deployment.json` with the same declaration at the
+   new epoch and records `activation.epoch_raised` in the activation ledger.
+   It needs a high-water file (an approval installed before). Afterwards
+   request, sign and `install --replace` a new approval at the new epoch,
+   with a `--seq` above the floor. Details:
+   [observe-baseline activation §11](activation-observe-baseline.md#11-raising-the-declared-security-epoch-251).
 
 Exit 1 means nothing changed; exit 2 means a later step was not confirmed and
 the state must be inspected before any retry. A missing high-water file on a

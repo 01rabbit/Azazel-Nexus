@@ -268,7 +268,8 @@ The library `initialize_bootstrap_deployment` now supports first publication
 only, to the already protected fixed bootstrap directory. It requires the
 exact preview SHA-256 and a separate exact-boolean initialization confirmation;
 there is no path override, automatic directory creation, or overwrite/update
-mode. Cooperative exclusive locking and a durable pending marker keep readers
+mode. The one replacement is the operator-signed, raise-only security epoch
+change of `az-activation epoch-raise` (docs/activation-observe-baseline.md §11). Cooperative exclusive locking and a durable pending marker keep readers
 from accepting an interrupted publication. Failure leaves state for review,
 not automatic deletion/retry. If the final directory fsync fails after removing
 the marker, durability is unknown even though the file may be readable; the
