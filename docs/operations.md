@@ -680,6 +680,82 @@ A `nft_table` failure after an nftables upgrade means the listing format
 changed, not that the rules did; the decoy stays refused until the expected
 listing is updated in a release.
 
+**A firewall reload removes the decoy table.** Reloading `nftables.service`,
+or anything else that runs `nft flush ruleset` (Debian's default
+`/etc/nftables.conf` begins with it, and the unit's stop runs it), removes
+`inet azazel_decoy` together with every other table. The same holds for an
+Edge enforce posture that replaces the ruleset. Nothing notices: the helper
+stays active, its record still reads `pass`, and the decoy keeps listening
+with no table in front of it
+([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented),
+"Before any grant"). After any such reload, and whenever the decoy units
+are running, check that the table is there:
+
+```
+sudo nft list table inet azazel_decoy
+```
+
+If it reports that the table does not exist, stop the three units. Stopping
+the namespace unit stops the decoy and the helper first:
+
+```
+sudo systemctl stop azazel-decoy-nsd.service
+```
+
+The helper's stop then fails at `nft delete table` (the table is already
+gone) and reports a failure; that is expected. Do not load the table again
+by hand. A fresh start of the three units builds and checks it again.
+
+**Removing what a failed start left behind.** Each executable undoes its own
+steps when a start fails. If it was killed before it could (for example
+`SIGKILL` at `TimeoutStartSec=`), systemd runs no `ExecStop=` after a failed
+one-shot start, and the namespace unit's objects stay: the handle
+`/run/netns/azazel-decoy` and the host end `az-decoy-host0` of the veth
+pair. The next start of the namespace unit then fails at its first step.
+Remove them by hand, as root, with the same fixed commands the unit uses, in
+this order:
+
+```
+sudo systemctl stop azazel-decoyd.service azazel-decoy-netd.service azazel-decoy-nsd.service
+sudo /usr/bin/ip link delete az-decoy-host0
+sudo /usr/bin/ip netns delete azazel-decoy
+sudo systemctl reset-failed azazel-decoyd.service azazel-decoy-netd.service azazel-decoy-nsd.service
+```
+
+Deleting the host end takes the decoy's end (`az-decoy-ns0`) with it. A
+command that reports the object does not exist means that object was not
+left behind; go on with the next one. If the helper's objects are also left
+(see "Existing objects are never overwritten" above), remove them first, path
+before rules: `sudo /usr/bin/ip link delete az-decoy0`, then
+`sudo /usr/sbin/nft delete table inet azazel_decoy`. Afterwards
+`ip netns list` shows no `azazel-decoy`, `ip link show` shows no `az-decoy*`
+link, and `nft list tables` shows no `inet azazel_decoy`. A reboot also
+clears all of them, because `/run` and the kernel's links do not survive it.
+
+**The three units can block the whole activation pass.** None of the three
+units is ever granted, but every pass checks their unit files and loaded
+definitions like those of every grantable unit. If any of the three departs
+from what the package installed (a drop-in, an edited vendor file, or a
+definition loaded with either), the pass is refused as a whole and **no
+unit is granted that boot**, Edge Core and the supporting units included.
+The typical cause is a VM check that unmasked the units by hand and removed
+the grant-marker condition or the controller dependency with a drop-in.
+After such a check, remove every drop-in and grant marker you added, then
+mask the three units again and reload:
+
+```
+sudo systemctl stop azazel-decoy-nsd.service
+sudo systemctl mask azazel-decoy-nsd.service azazel-decoy-netd.service azazel-decoyd.service
+sudo systemctl daemon-reload
+```
+
+Remove the drop-ins (`/etc/systemd/system/<unit>.d/`, `/run/systemd/system/<unit>.d/`)
+before reloading. The library's systemd client (`SystemdUnitCalls`) can
+unmask and enable these three units, because they are in the fixed unit
+table. Only the controller's decision keeps them masked, so do not script
+an unmask of them outside the activation pass
+([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented)).
+
 The explainer's operator leaf also contains `recent.json` with up to 20 recent
 incidents; status renders five. Rows show pseudonymous ids, open/closed state,
 severity/count, technique ids, sanitized summaries and knowledge citations.
