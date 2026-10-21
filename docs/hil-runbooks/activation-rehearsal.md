@@ -62,7 +62,7 @@ hardware evidence**, and it does not replace the full sequence below.
    binding differs from the current boot` and never reaches the ordinary
    activation pass. With the selection moved aside under `/root`, the
    controller ended with `az-activated completed safely: granted=0,
-   withheld=12, reasons=no_generation`. §2 precondition 6 covers this.
+   withheld=12, reasons=no_generation`. §2 precondition 7 covers this.
 
 ## 1. Roles and secrets
 
@@ -96,8 +96,9 @@ Rules that hold throughout:
   activation payload contains the commissioning digest and evidence binding.
   None of them is pasted into an issue, a log or a chat.
 
-Notation: node commands run as root on the node from `/`; `PYTHON` is
-`/opt/azazel-nexus/venv/bin/python`, `NODE` the SSH destination, `LABEL` the
+Notation: node commands run as root on the node from `/`. `PYTHON` is a
+**placeholder**, not a command: replace it with
+`/opt/azazel-nexus/venv/bin/python` in every `sudo PYTHON ...` line; `NODE` the SSH destination, `LABEL` the
 rehearsal operator's enrolled label. `az-activation` is
 `sudo PYTHON -I -m azazel_nexus_runtime.activation_cli` (the console script of
 the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
@@ -108,7 +109,8 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
 1. **Snapshot S0** of the VM before anything else (assistant, with the
    operator's agreement). Ledger appends, the high-water floor, an operator
    revocation (§8 N8) and a raised deployment epoch (§8 N7) cannot be undone
-   otherwise.
+   otherwise. Then create the root-only directory every later step moves
+   files aside into: `sudo install -d -m 0700 /root/azn-quarantine`.
 2. **Installed code** at main `c1a1117` or later (includes #246's `After=`
    lines and #247), installed with `packaging/install.sh`. Assistant:
    `systemctl cat azazel-activated.service | grep -E 'After=(etc-azazel-commissioning|var-lib-azazel-secrets)\.mount'`
@@ -129,9 +131,14 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    non-mask unit file makes `generation-publish` refuse). No unit may still be
    running from a hand start of another rehearsal
    ([integrated loop rehearsal §6](integration-loop-rehearsal.md#6-rehearsal-only-start-alternative-to-activation)).
-5. **The controller.** On the lab VM it is masked. Record
+5. **No watchdog fence.** `node_health` fails on any fence or an unreadable
+   store. Assistant: `sudo ls -l /var/lib/azazel/state/watchdog/` (owner
+   `azwatch`) and, if `fences.json` exists,
+   `sudo cat /var/lib/azazel/state/watchdog/fences.json` must hold no fence.
+   A fence is the watchdog's decision: stop and report it, never clear it.
+6. **The controller.** On the lab VM it is masked. Record
    `systemctl is-enabled azazel-activated.service`; it is unmasked only in §7.1.
-6. **No stale bootstrap selection** (§0 item 4). Assistant:
+7. **No stale bootstrap selection** (§0 item 4). Assistant:
    `sudo ls -la /etc/azazel/bootstrap/`. If `selection.json` or
    `selection.pending` exists, it is bound to another boot and every pass
    fails closed before the ordinary pass. With the operator's agreement move
@@ -139,7 +146,6 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    done, see [§17 of the admission runbook](mio-admission.md#17-vm-rehearsal-never-evidence)):
 
    ```sh
-   sudo install -d -m 0700 /root/azn-quarantine
    sudo mv /etc/azazel/bootstrap/selection.json /root/azn-quarantine/
    ```
 
@@ -147,7 +153,7 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    `node_identity` producer needs the administrator deployment declaration.
    **要確認:** whether any other file in that directory belongs to a stale
    bootstrap run; move only what §0 item 4 showed blocking.
-7. **Mission storage at boot.** `node_health` checks `resources`, which reads
+8. **Mission storage at boot.** `node_health` checks `resources`, which reads
    `mission_available_mib` from a separate, writable `/data` filesystem. The
    commissioning rehearsal mounted it by hand; for a boot pass it must be
    mounted before the controller. The controller has no `After=` on `/data`;
@@ -164,15 +170,15 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    pass. Without it, a missing image drops the boot to emergency mode; keep the
    console at hand. A real node's mission volume is encrypted; how it is opened
    at boot is outside #242 (**要確認**, §11).
-8. **Edge variant.** Choose one and record it:
+9. **Edge variant.** Choose one and record it:
    - **Variant A (default):** policy scope = the five SUPPORTING loop units.
    - **Variant B:** also `azazel-edge-core.service`. Only if the VM already
      holds a verified Edge package at `/opt/azazel/edge-core` with Suricata
      access ([integrated loop rehearsal §2–§4](integration-loop-rehearsal.md#2-build-the-edge-package-separate-x86_64-host)),
      and `azazel-edge-probe-preflight.service` ended with `Result=success` on
      the last boot. Needed for §8 N5.
-9. **Approval window.** The whole run (two positive boots, the negative boots
-   and their restore boots) must fit in one approval's validity; §6.3 uses
+10. **Approval window.** The whole run (two positive boots, the negative boots
+   and their restore boots) must fit in one approval's validity; §6.2 uses
    24 hours. An expired approval needs a new `request` and signature.
 
 ## 3. Commissioning storage opened at boot (#242 P1)
@@ -235,6 +241,11 @@ already holds a draft and a proposal (both create-only), so §5 becomes
 reviews only, and its signer is whoever signed them; record which.
 
 ### 3.4 crypttab and fstab (assistant)
+
+First make sure no earlier line names the same mapping, mount point or
+image: `grep -nE 'azn-commissioning|/etc/azazel/commissioning|/data' /etc/crypttab /etc/fstab`
+must print nothing (or only the `/data` line of §2 item 8). An older line
+is removed, not left beside the new one.
 
 ```text
 # /etc/crypttab -- third field "none": no key file, the passphrase is typed
@@ -301,14 +312,14 @@ on this volume, with these assignments:
    `sudo sha256sum /etc/azazel/commissioning/commissioning-draft.json`.
    **Operator signs on the workstation** (`--purpose commissioning`) and
    copies back only `draft.sig`. Assistant installs it as
-   `commissioning-draft.sig` (root `0600`) and runs
+   `/etc/azazel/commissioning/commissioning-draft.sig` (root `0600`) and runs
    `az-nexus-commission commission-review --operator LABEL`.
    Expected: `Signed draft review: assigned bindings verified.`
 4. **Full proposal.** Operator: `ssh -t NODE 'cd / && sudo PYTHON -I -m azazel_nexus_runtime.commission_cli proposal-export --operator LABEL'`,
    chooses the ceiling, types `EXPORT`. Assistant prints the SHA-256 of
    `commissioning-proposal.json`. **Operator signs** (`--purpose
-   commissioning-proposal`). Assistant installs `commissioning-proposal.sig`
-   (root `0600`) and runs
+   commissioning-proposal`). Assistant installs
+   `/etc/azazel/commissioning/commissioning-proposal.sig` (root `0600`) and runs
    `az-nexus-commission proposal-review --operator LABEL --check-current-hardware`.
    Expected: `Full proposal signature verified; current hardware fields match
    retained evidence. ...`, and `/etc/azazel/mio-profile/` holds only the new
@@ -341,8 +352,8 @@ sudo PYTHON -I -c 'from azazel_nexus.activation_policy import load_activation_po
 
 Replace `LABEL` before running. Variant B puts `"azazel-edge-core.service"`
 first in `units`. Expected: `root:root 600 1`, and the loader prints the units
-and `259200`; a refusal prints `activation policy refused` (check the
-newline, key order and the label).
+and `259200`; a refusal raises `ApprovalRefused: protected activation policy
+refused` (check the newline, key order and the label).
 
 ## 6. Generation, request, signature, install (#206 P3b)
 
@@ -358,7 +369,10 @@ commissioning evidence). It prints `Units:`, `Next generation number:`,
 assistant shows the digest to the operator, re-enters it, and types `PUBLISH`
 only after the operator agrees. Expected:
 `Generation N published (sha256:...); NOT admitted and no unit enabled.`, exit
-0. Exit 2 means published but not verified or not recorded: stop and inspect.
+0. If the current generation already is exactly this baseline, it prints
+`Generation N already is this observe baseline (sha256:...); nothing
+published.` and exits 0 without asking anything; use that generation.
+Exit 2 means published but not verified or not recorded: stop and inspect.
 A refusal names a fixed label, for example `a scoped unit has an override, a
 non-mask unit file elsewhere or a drop-in` (go back to §2 item 4) or
 `verified commissioning evidence unavailable` (volume locked or §4 incomplete).
@@ -427,7 +441,9 @@ systemctl is-enabled azazel-activated.service
 
 Expected `enabled` (`install.sh` enables it; the lab mask hid it). If it reads
 `disabled`, `sudo systemctl enable azazel-activated.service`. Take
-**snapshot S1**.
+**snapshot S1**: every input installed, nothing granted yet. It is the point
+to return to if the approval window runs out mid-run or a positive boot has
+to be repeated from scratch.
 
 ### 7.2 Boot A — grant (units not yet started)
 
@@ -501,24 +517,39 @@ journalctl -b -o cat | grep -c 'unmet condition'
 sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
 ```
 
-Common expectation, unless the case says otherwise: `granted=0`, `reasons`
+Common expectation, unless the case says otherwise: `granted=0`; `reasons`
 `health_not_established` (no lease and no health; or the generation reason
-named in the case); no `granted/` directory; every unit `masked` and
-`inactive`; `activation.inputs_incomplete` naming the failed producer, with
-later producers `not_attempted`; `observed_inputs.high_water`
-`not_attempted` (the floors are not raised).
+named in the case), possibly with `wiring_absent` as well, which the library
+checks first for `azazel-model-fetchd`, `azazel-mio-locald` and
+`azazel-mio-remoted` (`_withholding_reason` in `src/azazel_nexus/activation.py`);
+no `granted/` directory; every unit `masked` and `inactive`;
+`observed_inputs.high_water` `not_attempted` (the floors are not raised).
+
+In `activation.inputs_incomplete`, a producer is `not_attempted` **only when
+it depends on the one that failed** (`collect_pass_inputs` in
+`runtime/src/azazel_nexus_runtime/activation_pass.py`): `node_identity`,
+`activation_policy`, `epoch_high_water`, `trusted_clock` and `node_health`
+are evaluated independently and read `verified` unless they fail themselves;
+`operational_generation_publisher` is evaluated only with commissioning
+evidence and a policy; `activation_approval_loader` only when the six before
+it (`authenticated_commissioning`, `node_identity`, `activation_policy`,
+`epoch_high_water`, `trusted_clock`, `operational_generation_publisher`) all
+verified. For example N1 reads `authenticated_commissioning` and
+`inventory_binding` `failed`, `operational_generation_publisher` and
+`activation_approval_loader` `not_attempted`, and every other producer
+`verified`.
 
 | case | operation (who) | expected beyond the common one | restore |
 | --- | --- | --- | --- |
 | **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
-| **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept files (no `--replace`); `high water (raised)`; a new request and signature if the window ended |
+| **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept, byte-identical files (no `--replace`); `high water (raised)`. If the window ended, a new request and signature with `--seq 2` (a different approval must use a sequence above the floor) |
 | **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/N/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
 | **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused) | remove the directory, `daemon-reload` |
-| **N4 clock moved back** | `sudo timedatectl set-ntp false`; `sudo timedatectl set-time '<last pass time − 1 h>'`; reboot (assistant) | `trusted_clock` `failed` (clock below `time_floor − 300 s`); approval `not_attempted`. **要確認:** that the VM's RTC keeps the earlier time across a guest reboot and that nothing advances the clock before the pass (`journalctl -b \| grep -i 'time'`); if it is advanced, record N4 as *not exercisable on this VM* and do not touch systemd's own clock floor | `sudo timedatectl set-ntp true`, wait for `NTPSynchronized=yes` (`timedatectl show`), reboot |
+| **N4 clock moved back** | `sudo timedatectl set-ntp false`; `sudo timedatectl set-time '<last pass time − 1 h>'`; reboot (assistant) | `trusted_clock` `failed` (clock below `time_floor − 300 s`); approval `not_attempted`. **要確認:** that the VM's RTC keeps the earlier time across a guest reboot and that nothing advances the clock before the pass (`journalctl -b \| grep -i 'time'`); if it is advanced, record N4 as *not exercisable on this VM* and do not touch systemd's own clock floor | `sudo timedatectl set-ntp true`, wait for `NTPSynchronized=yes` (`timedatectl show`), reboot. A VM that cannot sync by NTP: set the real time back with `sudo timedatectl set-time` from an independent source, or revert to S2 |
 | **N5 probe stale** (Variant B only) | `sudo systemctl mask azazel-edge-probe-preflight.service` (assistant); this boot has no probe result, the last one names another boot | **differs from the common one:** the five SUPPORTING units are granted (and start, if enabled); edge-core withheld `edge_not_ready: digest_matches,health_endpoint_healthy`, no marker for it, `masked` and not started; `observed_inputs.edge_evidence: not_launchable` | `sudo systemctl unmask azazel-edge-probe-preflight.service` |
 | **N6 locked after a grant** | as N1, run on the boot after a granting boot if N1 was not | queued starts skipped (`unmet condition`) | reboot and unlock |
 | **N7 epoch raised** | see below (assistant, operator agrees) | `node_identity` and `epoch_high_water` `verified`, `activation_approval_loader` `failed` (the approval names the old epoch) | revert to S2 |
-| **N8 operator revoked** | `sudo PYTHON -I -m azazel_nexus.operator_enrollment revoke LABEL` (interactive: public key, fingerprint, `REVOKE LABEL`; assistant with the operator's go-ahead) | with one rehearsal operator who also signed the proposal, `authenticated_commissioning` fails first (the evidence's signer is revoked); `node_health` `operator_trust` fails if no other active key; record the producer statuses as observed | revert to S0 (a revocation is permanent; the label cannot be re-enrolled) |
+| **N8 operator revoked** | `sudo PYTHON -I -m azazel_nexus.operator_enrollment revoke LABEL` (interactive: public key, fingerprint, `REVOKE LABEL`; assistant with the operator's go-ahead) | with one rehearsal operator who also signed the proposal, `authenticated_commissioning` fails first (the evidence's signer is revoked); `node_health` `operator_trust` fails if no other active key; record the producer statuses as observed | revert to S2 (or S0 at the end). Only without a revert is the revocation permanent: the label cannot be re-enrolled |
 
 **N7 detail.** The declaration store has no replace path
 (`bootstrap_deployment_store.py` initializes only when no `deployment.json`
@@ -594,8 +625,11 @@ Without reverting (only possible when N7 and N8 were not run): stop and
 re-mask the loop units (`sudo systemctl stop …`, `sudo systemctl reset-failed`,
 `sudo systemctl mask …` for the five or six units); remove
 `approval.json`/`approval.sig`; `sudo systemctl mask azazel-activated.service`;
-move `selection.json` and `commissioning-proposal.sig` back from
-`/root/azn-quarantine`; remove the crypttab, fstab and `/data` lines and
+move `selection.json` back from `/root/azn-quarantine`; the quarantined
+`commissioning-proposal.sig` belongs to the **old** volume, and moving it back
+would overwrite the new one in `/etc/azazel/mio-profile/`, so do that only
+together with switching `crypttab` back to the old volume (otherwise keep the
+new signature and leave the old one in quarantine); remove the crypttab, fstab and `/data` lines and
 `daemon-reload`. The ledger, the generation and the high water stay: they are
 append-only or raise-only history, never edited.
 
