@@ -152,8 +152,8 @@ def audit_health(value, now) -> tuple:
     advisory = None
     if value["warning"]:
         advisory = ("capacity warning (" + ", ".join(value["warning_reasons"]) + "): "
-                    "nothing is deleted; how long to keep the chain is the owner's "
-                    "decision; see docs/integration-loop.md (Audit chain limits)")
+                    "nothing is deleted (retention policy: never delete, warn only); "
+                    "see docs/operations.md (Audit chain retention)")
     if not value["chain_verified"]:
         return False, ("chain did not verify at auditd start; appends are refused; "
                        "inspect with audit.verify; " + tail), advisory

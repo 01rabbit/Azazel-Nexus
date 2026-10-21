@@ -40,8 +40,9 @@ cheaper. It anchors nothing.
 
 ## Rate and daily limits (#211 S3)
 
-Nothing here deletes a segment: what the chain keeps, and for how long, is
-the owner's decision. What this daemon does bound is how fast any one writer
+Nothing here deletes a segment: the retention policy (#211) is never to
+delete and only to warn on capacity (docs/operations.md, Audit chain
+retention). What this daemon does bound is how fast any one writer
 can make it grow. Every append from a non-root principal spends a token from
 a bucket keyed on the kernel-derived uid and the event type; incident records
 additionally spend from a per-uid daily count. A request over either limit is

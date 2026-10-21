@@ -270,8 +270,8 @@ make room. This was the default since #224 and is now the policy. Why:
 
 **Reading the warning.** `audit: ok -- WARNING: capacity warning (<reasons>):
 nothing is deleted; ...` is not a failure; the chain verified at auditd's
-start. The status text still says the retention is "the owner's decision";
-that decision is this policy. The reasons:
+start; the advisory names this policy ("retention policy: never delete,
+warn only"). The reasons:
 
 | Reason | Means | What to do |
 | --- | --- | --- |
