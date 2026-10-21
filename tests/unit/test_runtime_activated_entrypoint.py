@@ -93,12 +93,53 @@ def test_bootstrap_broad_narrowing_attempts_all_core_units_without_start(monkeyp
                 return not active
             pytest.fail("unexpected widening operation")
 
+    monkeypatch.setattr(activated, "reset_grant_markers", lambda _root: None)
     monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
     if active:
         with pytest.raises(activated.UnitOperationFailed):
             activated._narrow_bootstrap_core_units()
     else:
         activated._narrow_bootstrap_core_units()
+    assert [unit for method, unit in calls if method == "MaskUnitFiles"] == [
+        definition.name for definition in activated.CORE_UNITS
+    ]
+
+
+@pytest.mark.parametrize("reset_fails", [False, True])
+def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, reset_fails):
+    """#251 L-7: like _emergency_narrow, markers first; a refusal still remasks."""
+    calls = []
+
+    def reset(root):
+        calls.append(("reset", root))
+        if reset_fails:
+            raise RuntimeError("grant markers")
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def __call__(self, method, unit):
+            calls.append((method, unit))
+            if method == "MaskUnitFiles":
+                return []
+            if method == "GetUnitFileState":
+                return "masked"
+            if method == "GetInactiveState":
+                return True
+            pytest.fail("unexpected widening operation")
+
+    monkeypatch.setattr(activated, "reset_grant_markers", reset)
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
+    if reset_fails:
+        with pytest.raises(activated.UnitOperationFailed):
+            activated._narrow_bootstrap_core_units()
+    else:
+        activated._narrow_bootstrap_core_units()
+    assert calls[0] == ("reset", Path("/"))
     assert [unit for method, unit in calls if method == "MaskUnitFiles"] == [
         definition.name for definition in activated.CORE_UNITS
     ]

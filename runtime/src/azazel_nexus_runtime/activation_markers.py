@@ -21,7 +21,9 @@ A marker is an empty root-owned ``0644`` file in a root-owned ``0755``
 ``granted/`` directory that each pass removes first (before any decision)
 and recreates only when it grants something. It grants nothing by itself:
 the unit must still be unmasked and enabled by the pass, ``/run`` is cleared
-at every boot, and the controller still never starts a unit.
+at every kernel boot (a soft-reboot keeps it, so the selected bootstrap path
+removes the markers too: #251 L-7), and the controller still never starts a
+unit.
 
 This module uses the standard library only, so importing it cannot keep
 the controller from its mandatory narrowing.

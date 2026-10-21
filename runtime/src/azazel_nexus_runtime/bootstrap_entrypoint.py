@@ -12,6 +12,7 @@ from azazel_nexus.bootstrap_controller_once import bootstrap_controller_once
 from azazel_nexus.bootstrap_selection_store import load_bootstrap_selection
 from azazel_nexus.operator_trust import ApprovalRefused
 
+from .activation_markers import reset_grant_markers
 from .bootstrap import BootstrapSupervisor, BootstrapResult
 from .bootstrap_inputs import (
     protected_bootstrap_inputs, protected_bootstrap_generation_admission,
@@ -68,6 +69,12 @@ def run_selected_bootstrap(selection, *, narrow):
     # A lock-acquisition failure must not narrow another cooperating session.
     with bootstrap_transaction() as guard:
         try:
+            # #251 L-7: an ordinary pass earlier in this boot may have left
+            # grant markers. Once the claim below exists the controller is
+            # condition-skipped for the rest of this boot id (a soft-reboot
+            # keeps both /run and the boot id), so no later pass would remove
+            # them. Remove them before the claim; a failure refuses below.
+            reset_grant_markers()
             with bootstrap_controller_once(guard) as retained_guard:
                 return _run_selected_locked(selection, narrow=narrow, guard=retained_guard)
         except BaseException as primary:

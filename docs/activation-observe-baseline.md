@@ -403,8 +403,8 @@ pass keeps `lease=None`.
   (`unmet condition check`) rather than started; with it, it starts normally
   (both VM-confirmed with the same harmless test units). The marker grants
   nothing by itself: absence only withholds, it is cleared at every kernel
-  boot (soft-reboot: §10.2, L-7), the controller still never starts a unit,
-  and masking remains for the next boot.
+  boot (not at a soft-reboot: §10.2, L-7), the controller still never
+  starts a unit, and masking remains for the next boot.
   This replaces default 9's fallback (reusing the bootstrap reload), which the
   VM showed would not work. The test units were removed afterwards; this is
   VM rehearsal, not hardware evidence.
@@ -1158,24 +1158,63 @@ units, and neither file is one of them.
   fences, and the health check then stops withholding; it cannot satisfy any
   other producer or the lease. Like M-6, a compromised service account can
   undo a narrowing it owns, not create a grant.
-- **L-7 (推測, 要 VM 確認): soft-reboot keeps `/run`.** `systemctl
-  soft-reboot` restarts userspace without a kernel boot, and `/run` survives
-  it. The packaged tmpfiles rules create `/run/azazel-activation` and
+- **L-7: soft-reboot keeps `/run` and the boot id.** `systemctl
+  soft-reboot` restarts userspace without a kernel boot. The packaged
+  tmpfiles rules create `/run/azazel-activation` and
   `/run/azazel-nexus-bootstrap` with `d` lines (no removal), so the grant
-  markers and the once-claim survive too; §5's "cleared at every boot" holds
-  for a kernel boot only. When the next boot's controller runs the ordinary
-  pass, nothing changes: it removes the markers before any decision, and
-  every marker unit waits for its READY (`After=`). Not covered: a boot in
-  which the ordinary pass does not run before the dependents are evaluated,
-  for example a surviving once-claim that makes the controller's condition
-  fail (systemd treats a condition-skipped unit as not failed, so its
-  `Requires=` dependents still run their jobs), or the selected bootstrap
-  path, which does not reset markers. There a marker written by an earlier
-  boot's pass could admit a queued start of a unit that pass left enabled.
-  Whether this happens on systemd 257, and whether to clear the markers at
-  every userspace start (a tmpfiles removal rule, or a reset on the
-  bootstrap path), is for the VM and the owner. The probe result is not
-  affected: it is bound to the boot id, which a soft-reboot also changes.
+  markers and the once-claim survive it; §5's "cleared at every boot" holds
+  for a kernel boot only.
+
+  *VM check (2026-10-21, main 09a6f18, Debian 13, systemd 257.13; a check of
+  the mechanism, not hardware evidence).* No marker was created; a harmless
+  probe file was placed directly under `/run/azazel-activation/` (outside
+  `granted/`) and `systemctl soft-reboot` was run. The boot id was the same
+  before and after; the probe file survived (`/run` is kept); the controller
+  ran again (a new InvocationID) and ended `completed safely: granted=0,
+  withheld=12, reasons=no_generation`. The probe file was removed
+  afterwards.
+
+  *When the controller runs,* nothing changes: the ordinary pass removes
+  the markers before any decision (`_run_once`), and every marker unit
+  waits for its READY (`After=`).
+
+  *When it does not run.* The controller carries
+  `ConditionPathExists=!/run/azazel-nexus-bootstrap/controller-used`
+  (`hardening.py`), and systemd treats a condition-skipped unit as not
+  failed, so its `Requires=`/`After=` dependents still run their jobs. The
+  once-claim is written only by the selected bootstrap path
+  (`bootstrap_controller_once`, from `run_selected_bootstrap`), and a
+  bootstrap selection is bound to the current boot id, so it is published
+  after the boot's controller has already run. The sequence "ordinary pass
+  writes markers → the administrator publishes a selection for this boot
+  and starts the controller again → the bootstrap path writes the
+  once-claim" is therefore the designed one, and before this change the
+  bootstrap path did not remove the ordinary pass's markers. After a
+  soft-reboot (same boot id, `/run` kept), or a manual restart of the
+  controller in the same boot, the controller is skipped and those markers
+  stay in front of the dependents' `ConditionPathExists=`. The bootstrap
+  path's broad narrowing masks every governed unit, which normally still
+  withholds a start, but it does not hold when that narrowing failed or a
+  unit was unmasked later.
+
+  *Closed (#251 L-7):* the selected bootstrap path removes every grant
+  marker inside its transaction lock and **before** it writes the
+  once-claim (`run_selected_bootstrap`); a refusal to remove them refuses
+  the attempt without writing the claim and still runs the emergency
+  narrowing. The bootstrap broad narrowing (`_narrow_bootstrap_core_units`,
+  also used for an invalid selection and for the emergency narrowing)
+  removes them first as well, like `_emergency_narrow`, and fails if it
+  cannot, after the remask still runs. Only the ordinary pass writes
+  markers and it cannot run while the claim exists, so from the claim to
+  the next kernel boot no marker exists. Not changed: a node whose
+  controller is masked, and a running granted unit, which no marker
+  removal stops (M-2).
+
+  *Open:* anything bound to the boot id treats a soft-reboot as the same
+  boot. The Edge probe result is rewritten by the preflight, which runs
+  again; whether the other bindings (the bootstrap selection, the
+  bootstrap transaction and deadline records) are right under that premise
+  has not been reviewed.
 - **L-8: the generation store is read without owner or link checks.**
   `GenerationStore.read` and `read_tree` follow links and do not check
   owners or modes under `/var/lib/azazel/generations`. Every byte read is
