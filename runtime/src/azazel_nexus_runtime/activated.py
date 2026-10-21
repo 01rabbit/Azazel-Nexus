@@ -652,15 +652,20 @@ def _run_once(
         observed["edge_evidence"] = inputs.edge_evidence
         if inputs.edge_missing:
             observed["edge_missing_for_launch"] = list(inputs.edge_missing)
-    daemon.ledger.append({
-        "event_type": "activation.inputs_incomplete",
-        "observed_inputs": observed,
-        "missing_producers": missing,
-        "grant_markers": list(markers),
-        "generation": outcome.generation,
-        "occurred_at": now,
-        "actor": actor,
-    })
+    try:
+        daemon.ledger.append({
+            "event_type": "activation.inputs_incomplete",
+            "observed_inputs": observed,
+            "missing_producers": missing,
+            "grant_markers": list(markers),
+            "generation": outcome.generation,
+            "occurred_at": now,
+            "actor": actor,
+        })
+    except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
+        # The record is what makes this a completed pass (#251 L-2): the
+        # markers it wrote and the units it enabled are withdrawn first.
+        _emergency_narrow(manager, root, "activation pass record could not be appended")
     return outcome
 
 
@@ -1021,6 +1026,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 now=now,
                 actor="azazel-activated",
             )
+            # Type=notify: without READY the controller's start fails and
+            # every unit with Requires=/After= on it fails as a dependency.
+            # READY is sent only after the pass, its markers and its record
+            # are complete. The process exits right after READY, so it waits
+            # (bounded) for systemd to process it first (BARRIER=1).
+            _notify_ready_or_withdraw(manager, Path("/"))
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
         if EMERGENCY_UNCONFIRMED in getattr(exc, "__notes__", ()):
@@ -1031,25 +1042,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 1
 
+    # Only after READY and its barrier: "completed" names a start systemd saw.
     reasons = sorted({verdict.reason.split(":", 1)[0] for verdict in outcome.verdicts})
     print(
         f"az-activated completed safely: granted={len(outcome.granted)}, "
         f"withheld={len(outcome.withheld)}, reasons={','.join(reasons)}"
     )
-    # Type=notify: without READY the controller's start fails and every unit
-    # with Requires=/After= on it fails as a dependency. READY is sent only
-    # after the pass, its markers and its record are complete; a refused
-    # notification leaves those units unstarted, which is the safe direction.
-    # The process exits right after READY, so wait (bounded) for systemd to
-    # process it first (BARRIER=1); otherwise the exit may be seen first.
+    return 0
+
+
+def _notify_ready_or_withdraw(manager: UnitManager, root: Path) -> None:
+    """Send READY and wait for its barrier; on any failure withdraw, then raise.
+
+    A refused READY, or a barrier that fails or times out, leaves it unknown
+    whether systemd counted this start as successful (#251 L-2). The safe side
+    is the state of a failed pass: every grant marker removed and every
+    governed unit masked (``_emergency_narrow``), then a non-zero exit. A start
+    job that has not run yet is then skipped on its marker condition; a unit
+    already started is not stopped (there is no StopUnit authority) and makes
+    the remask report it as unconfirmed, which still exits non-zero.
+    """
     try:
         from . import systemd_notify
 
         systemd_notify.notify_ready()
         systemd_notify.notify_barrier()
-    except Exception:  # noqa: BLE001 - startup stays unsuccessful, nothing widens
-        print("az-activated readiness notification unavailable", file=sys.stderr)
-    return 0
+    except Exception:  # noqa: BLE001 - withdrawn below; nothing widens
+        print("az-activated readiness notification unavailable; withdrawing grants",
+              file=sys.stderr)
+        _emergency_narrow(manager, root, "activation readiness notification unavailable")
 
 
 if __name__ == "__main__":  # pragma: no cover - the entry point

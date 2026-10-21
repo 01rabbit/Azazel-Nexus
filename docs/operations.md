@@ -478,16 +478,20 @@ Nothing it does starts or enables a unit itself.
    `PUBLISH` typed. Publishing is not admission.
 2. `az-activation request --operator LABEL --approval-id ID --seq N
    --valid-for SECONDS [--units …] --out FILE` writes the unsigned v2
-   payload (create-only `0600`; prefer it to stdout, since the payload carries
-   the evidence binding) and prints its `payload_sha256`. It writes nothing
-   else.
+   payload to `FILE` (create-only `0600`, in a directory not writable by group
+   or others) and prints a summary with its `payload_sha256`. `--out` is
+   required for the payload: the payload carries the commissioning evidence
+   binding, so without `--out` only the summary is printed, nothing is
+   written and it exits 1. It writes nothing else.
 3. Sign it on the operator's workstation with `tools/operator_sign.py
    --purpose activation`.
 4. `sudo az-activation install --payload FILE --signature FILE
    --confirm-sha256 HEX` verifies it against freshly collected context, the
    activation policy and the high-water floors, raises the floor and places
    `/etc/azazel/activation/approval.json` and `approval.sig`. Replacing an
-   installed approval needs `--replace` and typing `REPLACE`.
+   installed approval needs `--replace` and typing `REPLACE`. Once a floor
+   exists, the approval's `--seq` must be above the floor's `approval_seq`;
+   the only exception is installing the byte-identical installed pair again.
 
 Exit 1 means nothing changed; exit 2 means a later step was not confirmed and
 the state must be inspected before any retry. A missing high-water file on a

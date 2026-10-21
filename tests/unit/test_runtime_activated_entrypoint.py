@@ -206,6 +206,9 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
         )
 
     monkeypatch.setattr(activated, "_run_once", run_once)
+    from azazel_nexus_runtime import systemd_notify
+    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: None)
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
 
     assert activated.main([]) == 0
     assert isinstance(observed["manager"], DbusUnitManager)
@@ -418,9 +421,11 @@ def _ordinary_context(monkeypatch):
     monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: Session()))
 
 
-@pytest.mark.parametrize("notify_fails", [False, True])
-def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, notify_fails):
+@pytest.mark.parametrize("failing", [None, "ready", "barrier", "barrier_timeout"])
+def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing):
+    """#251 L-2: READY or its barrier failing withdraws every grant and exits 1."""
     from azazel_nexus_runtime import systemd_notify
+    from azazel_nexus_runtime.units import UnitOperationFailed
 
     _ordinary_context(monkeypatch)
     order = []
@@ -431,17 +436,56 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, notify_fa
 
     def ready():
         order.append("ready")
-        if notify_fails:
-            raise RuntimeError("no notify socket")
+        if failing == "ready":
+            raise UnitOperationFailed("systemd notification refused")
+
+    def barrier():
+        order.append("barrier")
+        if failing == "barrier":
+            raise UnitOperationFailed("systemd notification barrier refused")
+        if failing == "barrier_timeout":
+            raise UnitOperationFailed("systemd notification barrier timed out")
+
+    def narrow(manager, root, message):
+        order.append(("narrow", root, message))
+        raise RuntimeError(f"{message}; emergency remask failures: []")
 
     monkeypatch.setattr(activated, "_run_once", run_once)
+    monkeypatch.setattr(activated, "_emergency_narrow", narrow)
     monkeypatch.setattr(systemd_notify, "notify_ready", ready)
-    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: order.append("barrier"))
-    assert activated.main([]) == 0
-    assert order == (["pass", "ready"] if notify_fails else ["pass", "ready", "barrier"])
+    monkeypatch.setattr(systemd_notify, "notify_barrier", barrier)
+    captured_status = activated.main([])
     captured = capsys.readouterr()
-    assert "granted=1" in captured.out
-    assert ("readiness notification unavailable" in captured.err) is notify_fails
+    if failing is None:
+        assert captured_status == 0
+        assert order == ["pass", "ready", "barrier"]
+        assert "completed safely: granted=1" in captured.out
+        assert "readiness notification unavailable" not in captured.err
+        return
+    assert captured_status == 1
+    expected = ["pass", "ready"] if failing == "ready" else ["pass", "ready", "barrier"]
+    assert order == expected + [
+        ("narrow", Path("/"), "activation readiness notification unavailable")]
+    # The success line is never printed before (or without) READY.
+    assert "completed safely" not in captured.out
+    assert "readiness notification unavailable; withdrawing grants" in captured.err
+    assert "failed before completing a safe pass" in captured.err
+
+
+def test_completed_line_follows_ready(monkeypatch, capsys):
+    from azazel_nexus_runtime import systemd_notify
+
+    _ordinary_context(monkeypatch)
+    monkeypatch.setattr(activated, "_run_once",
+                        lambda **_kwargs: SimpleNamespace(granted=(), withheld=(), verdicts=()))
+
+    def ready():
+        assert "completed safely" not in capsys.readouterr().out
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", ready)
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
+    assert activated.main([]) == 0
+    assert "completed safely: granted=0" in capsys.readouterr().out
 
 
 def test_no_ready_on_a_failed_pass(monkeypatch, capsys):

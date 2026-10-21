@@ -224,9 +224,19 @@ class DbusUnitManager(UnitManager):
         text = str(answer or "").strip().lower()
         if text in {"masked", "masked-runtime"}:
             return UnitState.MASKED
-        if text in {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias"}:
+        # Only a persistent `enabled` is the state a grant produces (#251 L-6).
+        # `enabled-runtime` vanishes at reboot, and `linked`/`alias` mean the
+        # unit file is not the vendor file the generation measured. None of
+        # them is ENABLED; read as DISABLED, the activation path's postcondition
+        # (`unmask_and_enable`) refuses them and rolls back. The only other
+        # caller (bootstrap, `is UnitState.MASKED`) reads them as before.
+        if text == "enabled":
             return UnitState.ENABLED
         if text in {
+            "enabled-runtime",
+            "linked",
+            "linked-runtime",
+            "alias",
             "disabled",
             "static",
             "indirect",

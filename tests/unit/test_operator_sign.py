@@ -195,6 +195,30 @@ def test_activation_refuses_anything_but_canonical_v2(tmp_path, key, payload_byt
     assert "operator-a" not in captured.err and DIGEST not in captured.err
 
 
+@pytest.mark.parametrize("unit", ["azazel-watchdog.service", "azazel-auditd.service",
+                                  "azazel-commissiond.service", "azazel-model-fetchd.service"])
+def test_activation_refuses_a_unit_outside_the_node_allowlist(tmp_path, key, unit, capsys):
+    """#251 L-4: a canonical v2 payload naming a unit no node can grant is not signed."""
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    assert unit not in ACTIVATION_UNIT_ALLOWLIST
+    payload_bytes = observe_baseline_payload(
+        context=CONTEXT, approval_id="approval-1", operator="operator-a", approval_seq=5,
+        units=sorted((*UNITS, unit)), granted_at=START, expires_at=END)
+    assert run_activation(tmp_path, key, payload_bytes) == 1
+    assert not (tmp_path / "out.sig").exists()
+    captured = capsys.readouterr()
+    assert "outside the activation allowlist" in captured.err
+    assert captured.out == ""
+
+
+def test_activation_signs_every_allowlisted_unit(tmp_path, key):
+    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+    payload_bytes = observe_baseline_payload(
+        context=CONTEXT, approval_id="approval-1", operator="operator-a", approval_seq=5,
+        units=sorted(ACTIVATION_UNIT_ALLOWLIST), granted_at=START, expires_at=END)
+    assert run_activation(tmp_path, key, payload_bytes) == 0
+
+
 def test_activation_ceiling_is_inclusive(tmp_path, key):
     payload_bytes = _variant(expires_at="2026-10-23T00:00:00Z")
     assert run_activation(tmp_path, key, payload_bytes) == 0
