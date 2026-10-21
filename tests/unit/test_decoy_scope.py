@@ -204,6 +204,33 @@ def test_a_value_of_another_json_type_never_renders_equal():
         decode_deception_scope(_section(ingress_role=True), assignments=ROLES)
     with pytest.raises(DecoyScopeRefused):
         decode_deception_scope(_section(approved_v4=[True]), assignments=ROLES)
+    for value in (False, float("nan"), float("inf"), 10.0, ["10.20.0.0/24"]):
+        with pytest.raises(DecoyScopeRefused):
+            decode_deception_scope(_section(approved_v4=[value]), assignments=ROLES)
+        with pytest.raises(DecoyScopeRefused):
+            decode_deception_scope(_section(approved_v4=["10.20.0.0/24", value]),
+                                   assignments=ROLES)
+    for key in ("bridge_prefix", "ingress_role"):
+        for value in (True, float("nan")):
+            with pytest.raises(DecoyScopeRefused):
+                decode_deception_scope(_section(**{key: value}), assignments=ROLES)
+    with pytest.raises(DecoyScopeRefused):
+        decode_deception_scope(_section(), assignments=((True, "deception_bridge"),))
+
+
+@pytest.mark.parametrize("data", [
+    GOLDEN.replace(b'["enp3s0"]', b"[NaN]"),
+    GOLDEN.replace(b'["enp3s0"]', b"[true]"),
+    GOLDEN.replace(b'"10.20.0.0/24"', b"NaN"),
+    GOLDEN.replace(b'"10.20.0.0/24"', b"false"),
+    GOLDEN.replace(b'"10.20.0.0/24"', b"Infinity"),
+    GOLDEN.replace(b'"azazel-nexus/decoy-scope/v1"', b"NaN"),
+    GOLDEN.replace(b'"azazel-nexus/decoy-scope/v1"', b"true"),
+], ids=["ingress-nan", "ingress-true", "prefix-nan", "prefix-false", "prefix-inf",
+        "contract-nan", "contract-true"])
+def test_a_bool_or_nan_in_the_file_is_refused(data):
+    with pytest.raises(DecoyScopeRefused):
+        parse_scope_file(data)
 
 
 def test_render_takes_only_a_decoded_scope():
@@ -231,6 +258,14 @@ def test_the_scope_file_is_the_golden():
     [], ["a", "b", "c", "d", "e"], ["az-decoy0"], ["az-decoy-host0"], ["az-decoyX"],
     ["a" * 16], [""], ["eth 0"], ["eth0;"], ["eth/0"], ["eth:0"], ["ëth0"], ["eth0\n"],
     ["."], [".."], ["eth1", "eth0"], ["eth0", "eth0"], [1], [None], "eth0",
+    # Reserved names, in any case (loopback; `/proc/sys/net/ipv4/conf/{all,default}`).
+    ["lo"], ["LO"], ["Lo"], ["all"], ["ALL"], ["default"], ["Default"],
+    # The decoy's own prefix in any case.
+    ["AZ-DECOY0"], ["Az-Decoy-x"], ["az-DECOY"],
+    # A leading dash (an option to `nft`/`ip`), and all digits (an interface index).
+    ["-eth0"], ["-"], ["--"], ["0"], ["7"], ["123456789012345"],
+    # Other JSON types.
+    [True], [False], [float("nan")], [1.0], [["eth0"]], [{"eth0": 1}],
 ], ids=repr)
 def test_an_ingress_name_outside_the_allowed_form_is_refused(names):
     roles = tuple((f"if-{i}", "deception_bridge") for i in range(max(1, min(len(names), 4))))
@@ -246,6 +281,8 @@ def test_allowed_names_and_the_count_must_match_the_confirmed_interfaces():
     roles = tuple((f"if-{i}", "deception_bridge") for i in range(4))
     scope = decode_deception_scope(_section(), assignments=roles)
     names = ["a" * 15, "az-decoz", "br-lan.10", "enp3s0_1"]
+    assert parse_scope_file(render_scope_file(scope, ["0eth", "all0", "eth-", "lo0"])).ingress
+    assert parse_scope_file(render_scope_file(scope, ["1.2", "10_0", "a.", "lan."])).ingress
     assert parse_scope_file(render_scope_file(scope, names)).ingress == tuple(names)
     with pytest.raises(DecoyScopeRefused, match="do not match"):
         render_scope_file(scope, ["enp3s0"])
@@ -379,6 +416,30 @@ def test_the_file_and_directory_may_be_written_by_nobody_else(tmp_path, monkeypa
     else:
         with pytest.raises(DecoyScopeRefused, match=why):
             read_scope_file()
+
+
+def test_a_hard_linked_file_refuses(tmp_path, monkeypatch):
+    directory, path = _install(tmp_path, monkeypatch, directory_mode=0o700)
+    os.link(path, tmp_path / "second-name")
+    with pytest.raises(DecoyScopeRefused, match="another link"):
+        read_scope_file()
+
+
+def test_an_unreadable_directory_status_is_a_refusal(tmp_path, monkeypatch):
+    _install(tmp_path, monkeypatch)
+    real = os.fstat
+    calls = []
+
+    def failing(fd):
+        calls.append(fd)
+        if len(calls) == 1:
+            raise OSError(5, "I/O error")
+        return real(fd)
+
+    monkeypatch.setattr(decoy_scope.os, "fstat", failing)
+    with pytest.raises(DecoyScopeRefused, match="directory could not be read") as caught:
+        read_scope_file()
+    assert caught.value.__cause__ is None and calls
 
 
 def test_another_owner_refuses(tmp_path, monkeypatch):

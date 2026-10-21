@@ -29,7 +29,10 @@ a newline, at most `MAX_SCOPE_BYTES`:
     {"approved_v4":[...],"contract":"azazel-nexus/decoy-scope/v1","ingress":[...]}
 
 `ingress` holds this boot's kernel names of the `deception_bridge`
-interfaces, each `[A-Za-z0-9_.-]{1,15}` and not beginning with `az-decoy`.
+interfaces, each `[A-Za-z0-9_.-]{1,15}`, not beginning with `az-decoy` (in
+any case) or `-`, not all digits (nftables could read it as an interface
+index), and not `lo`, `all`, `default`, `.` or `..` (in any case). The G1b
+renderer must still quote every name in the nftables text.
 `read_scope_file` reads it from the helper's fixed credential path only,
 without following a link, root's and writable by nobody else, a regular file
 within the bound, rendered back to the same bytes and re-validated with the
@@ -104,7 +107,12 @@ SCOPE_CREDENTIAL_PATH = "/run/credentials/azazel-decoy-netd.service/decoy-scope"
 _SECTION_KEYS = frozenset({"approved_v4", "bridge_prefix", "ingress_role"})
 _FILE_KEYS = frozenset({"approved_v4", "contract", "ingress"})
 _IFNAME = re.compile(r"[A-Za-z0-9_.-]{1,15}", re.ASCII)
+#: Compared without case. `az-decoy*` are the decoy network's own links.
 _RESERVED_IFNAME_PREFIX = "az-decoy"
+#: Never an ingress, compared without case: the loopback, and the names
+#: `/proc/sys/net/ipv4/conf/` uses for every and for new interfaces (#283),
+#: with `.` and `..`, which would walk that path.
+_RESERVED_IFNAMES = frozenset({"lo", "all", "default", ".", ".."})
 
 _PRIVATE = tuple(ipaddress.IPv4Network(block) for block in PRIVATE_V4)
 _BRIDGE = ipaddress.IPv4Network(BRIDGE_PREFIX)
@@ -233,8 +241,9 @@ def _ingress_names(value: object) -> tuple[str, ...]:
     if type(value) is not list or not 1 <= len(value) <= MAX_INGRESS:
         raise DecoyScopeRefused("the ingress interfaces are not a list of 1 to 4")
     for name in value:
-        if (type(name) is not str or not _IFNAME.fullmatch(name) or name in (".", "..")
-                or name.startswith(_RESERVED_IFNAME_PREFIX)):
+        if (type(name) is not str or not _IFNAME.fullmatch(name)
+                or name.lower() in _RESERVED_IFNAMES or name.startswith("-")
+                or name.isdigit() or name.lower().startswith(_RESERVED_IFNAME_PREFIX)):
             raise DecoyScopeRefused("an ingress interface name is not allowed")
     for before, after in zip(value, value[1:]):
         if not before < after:
@@ -316,7 +325,11 @@ def read_scope_file() -> ScopeFile:
     except OSError:
         raise DecoyScopeRefused("the scope's directory could not be opened") from None
     try:
-        if not _protected(os.fstat(directory)):
+        try:
+            directory_info = os.fstat(directory)
+        except OSError:
+            raise DecoyScopeRefused("the scope's directory could not be read") from None
+        if not _protected(directory_info):
             raise DecoyScopeRefused("the scope's directory has unsafe ownership or mode")
         try:
             fd = os.open(name, _FILE_FLAGS, dir_fd=directory)
@@ -326,6 +339,8 @@ def read_scope_file() -> ScopeFile:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or not _protected(info):
                 raise DecoyScopeRefused("the scope file has unsafe ownership or mode")
+            if info.st_nlink != 1:
+                raise DecoyScopeRefused("the scope file has another link")
             if info.st_size > MAX_SCOPE_BYTES:
                 raise DecoyScopeRefused("the scope file is larger than its bound")
             data = b""
