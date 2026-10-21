@@ -899,8 +899,9 @@ makes a private mount namespace for itself after `setns` (strace:
 | | `azazel-decoy-nsd.service` (`NAMESPACE_STEPS`) | `azazel-decoy-netd.service` (`HELPER_STEPS`) |
 | --- | --- | --- |
 | where | host namespace, and the decoy namespace through `ip -n` | host namespace only; never enters the decoy's |
-| start | 1. `ip netns add azazel-decoy`; 2. `ip link add name az-decoy-host0 type veth peer name az-decoy-ns0 netns azazel-decoy` (the decoy's end is created inside; `netns NAME` opens the handle, no `setns`); 3. `ip -n azazel-decoy link set dev lo up`; 4. `… address add 10.255.196.2/30 dev az-decoy-ns0`; 5. `… link set dev az-decoy-ns0 up`; 6. `… route add default via 10.255.196.1 dev az-decoy-ns0` | 1. `nft <NFT_RULESET>` (the rules first, one transaction); 2. `ip link add name az-decoy0 type bridge`; 3. `ip address add 10.255.196.1/30 dev az-decoy0`; 4. `ip link set dev az-decoy-host0 master az-decoy0`; 5. `ip link set dev az-decoy0 up`; 6. `ip link set dev az-decoy-host0 up` |
-| `ExecStop=… stop` | `ip link delete az-decoy-host0` (the pair goes with it), then `ip netns delete azazel-decoy` | `ip link set dev az-decoy-host0 down`, `ip link delete az-decoy0`, then `nft delete table inet azazel_decoy`: the path is cut before the rules go |
+| checks first | none: `ip netns add` and the veth pair each refuse to replace an existing one | `ip link show dev az-decoy0` and `nft list table inet azazel_decoy` must both **fail** (find nothing); if either finds something, it exits 1 having changed nothing |
+| start | 1. `ip netns add azazel-decoy`; 2. `ip link add name az-decoy-host0 type veth peer name az-decoy-ns0 netns azazel-decoy` (the decoy's end is created inside; `netns NAME` opens the handle, no `setns`); 3. `ip -n azazel-decoy link set dev lo up`; 4. `… address add 10.255.196.2/30 dev az-decoy-ns0`; 5. `… link set dev az-decoy-ns0 up`; 6. `… route add default via 10.255.196.1 dev az-decoy-ns0` | 1. `nft <NFT_RULESET>` (the rules first, one transaction, which `create table` makes fail if the table exists); 2. `ip link add name az-decoy0 type bridge`; 3. `ip address add 10.255.196.1/30 dev az-decoy0`; 4. `ip link set dev az-decoy-host0 master az-decoy0`; 5. `ip link set dev az-decoy0 up`; 6. `ip link set dev az-decoy-host0 up` |
+| `ExecStop=… stop` | `ip link delete az-decoy-host0` (the pair goes with it), then `ip netns delete azazel-decoy` | `ip link set dev az-decoy-host0 down`, `ip link delete az-decoy0`, then `nft delete table inet azazel_decoy`: the path is cut before the rules go, and if cutting it fails the table stays (exit 1) |
 
 The full paths are `/usr/bin/ip` (the file iproute2 installs on Debian 13;
 `/usr/sbin/ip` links to it) and `/usr/sbin/nft`. The decoy's end is
@@ -930,27 +931,49 @@ against; and its ordering and lifetime are not VM-checked. Not clearly
 simpler, so option (a) stays.
 
 **How a command is run** (`runtime/src/azazel_nexus_runtime/decoy_network.py`).
-`os.posix_spawn` of `IP` or `NFT` (anything else is refused before a process
-is made), with an argument tuple that is a constant of the module and an
-empty environment; no shell, nothing read back, the program's output goes to
-the unit's journal stream. `posix_spawn` needs no pipe, which matters: the
-namespace unit's filter denies `@ipc`, which holds `pipe` and `pipe2`, and
-`subprocess` opens one for every child. Each command has 5 s
-(`STEP_SECONDS`), then `SIGKILL`. Neither executable reads an argument (other
-than the single word `stop`, from its own `ExecStop=`), a file, the
-environment or a socket.
+`os.posix_spawn` of an argument tuple that is one of the module's constants
+(`run_fixed` refuses any other, before a process is made; the set is exactly
+the goldens of the tests), with an empty environment and `SIGPIPE` reset to
+its default in the child (`setsigdef`); no shell, nothing read back, the
+program's output goes to the unit's journal stream. `posix_spawn` needs no
+pipe, which matters: the namespace unit's filter denies `@ipc`, which holds
+`pipe` and `pipe2`, and `subprocess` opens one for every child. Each command
+has 2 s (`STEP_SECONDS`), then `SIGKILL`; the longest start (checks, every
+step, every undo) is thus well inside `TimeoutStartSec=30s` (a test checks
+it), so systemd never kills a start half-undone. Neither executable reads an
+argument (other than the single word `stop`, from its own `ExecStop=`), a
+file, the environment or a socket. `decoy_network` is the only module of the
+distribution that names `posix_spawn`, and only the two executables import it
+(`tests/unit/test_runtime_boundary.py`; no module on the model acquisition
+path may import it either). The names and addresses live in the leaf
+`decoy_addresses.py`, which imports nothing; the unit renderer
+(`hardening.py`) takes the decoy subnet from there and never loads the module
+that starts processes (a test checks it).
 
-**Fail closed.** A step that fails, times out or cannot be started stops the
-start: the undo commands of the steps already done run in reverse and the
-executable exits 1 (systemd runs no `ExecStop=` after a failed one-shot
-start, so the body cleans up after itself). `stop` runs every undo in
-reverse, keeps going past a failure, and exits 1 if any failed. Leftovers of
-a crash (an existing namespace, bridge or link) make the next start fail at
-its first step, which then removes only what it made itself.
+**Fail closed.** The helper changes nothing that is already there: if the
+bridge or the table exists (a crash, a second start), it exits 1 before its
+first step. The two checks print the expected `ip`/`nft` "does not exist"
+errors to the journal on every normal start; the line before them says so.
+The table is also never replaced: its ruleset begins with `create table`,
+which fails if one exists, and the whole transaction is then refused (so
+nothing races the check). A step that fails or cannot be started stops the
+start: the undo commands of the steps already done run in reverse, and the
+executable exits 1 with the number of failed undos (systemd runs no
+`ExecStop=` after a failed one-shot start, so the body cleans up after
+itself). A step that **timed out** may have half-made its object, so its own
+undo runs as well; a step that failed outright made nothing, and may have
+failed because the object already existed, which is not its to remove.
+`stop` runs every undo in reverse and exits 1 if any failed. **The table is
+a guard:** its undo runs only if every undo after it succeeded, at start and
+at stop, so while the bridge or the host end may still be there the rules
+stay (review of #273; before, a failed bridge deletion was followed by the
+table's). The namespace unit has no guard: deleting the namespace takes the
+pair with it. Leftovers of a crash make the next start of the namespace unit
+fail at its first step, which then removes only what it made itself.
 
 **The rules** (`NFT_RULESET`, a golden in the tests). One `inet` table,
-`azazel_decoy`, replaced whole on each start (the first two lines make a
-re-load replace rather than add). Chains on the `forward`, `input` and
+`azazel_decoy`, made with `create table`, so an existing table of that name
+is never replaced or added to. Chains on the `forward`, `input` and
 `output` hooks with `policy accept`: this table only ever drops (an accept
 here never overrides another table's drop), so it adds isolation and opens
 nothing.
@@ -977,7 +1000,7 @@ dependencies removed; a mechanism check, not hardware evidence) showed that
 `IPAddressDeny=any` alone also drops what the decoy receives: a connect from
 inside the namespace timed out, and with an allowance the banner came back.
 The decoy profile therefore states `IPAddressAllow=10.255.196.0/30`
-(`decoy_network.DECOY_SUBNET`), statically because #253 refuses drop-ins, and
+(`decoy_addresses.DECOY_SUBNET`), statically because #253 refuses drop-ins, and
 keeps `IPAddressDeny=any`. Not `localhost`, which helped only the test.
 `ServiceProfile` requires exactly that one allowance on the decoy. The filter
 matches the peer's address, so a peer outside the /30 is denied by the unit as
@@ -1011,7 +1034,11 @@ both units as goldens, in order; the exact ruleset as a golden; a failure at
 each of the six steps of each unit, with exactly the undo that follows;
 `stop` in reverse, and past a failed undo; every other argument refused with
 nothing run; `posix_spawn` with the absolute path, a constant argument list,
-an empty environment and no keyword, once in the module; no `subprocess`,
+an empty environment and `setsigdef=(SIGPIPE,)` only, once in the module;
+`run_fixed` refusing every argument list that is not a golden; the helper
+changing nothing when the bridge or the table exists; the guard at start and
+at stop; the undo after a timeout; the longest start inside
+`TimeoutStartSec=`; `hardening.py` not importing `decoy_network`; no `subprocess`,
 environment, `open`, `setns` or `unshare` in either module; the veth name,
 namespace, bridge, ports and subnet agreeing with `decoy_netns`, `decoyd`,
 `azazel_nexus.decoy` and the profiles. An autouse fixture makes any real
@@ -1031,9 +1058,34 @@ from the host (timeout), and the host's `.1` was not reachable from inside
 (timeout); with the table removed by hand the same connect got the banner, so
 the drop was the table's. `stop` removed the bridge, the pair and the
 namespace. The helper started with no pair present failed at step 4 and
-removed its bridge and table.
+removed its bridge and table. After the review of #273 (same container, the
+shell's umask at `0027` as in the units): a second start of the running helper
+stopped at its first check and changed nothing; with only a stale table left,
+it stopped at the second check and the table (with a marker chain) was
+untouched; the ruleset loaded over an existing table failed (`File exists`)
+and left it as it was; a stop after the bridge had gone by hand failed the
+bridge deletion, kept the table and exited 1; a clean stop and a new start of
+both units succeeded. With `/run/netns` made by `ip netns add` under
+`umask 0027` it was `0750` and an unprivileged user's `stat` of the handle was
+refused; made `0755` first, as the tmpfiles rule now does, the same `stat`
+succeeded (the handle itself needs only the directory's search bit).
 
-**To check on the VM (P3; a mechanism check, not hardware evidence):**
+**`/run/netns`.** The namespace unit runs with `UMask=0027`, so if
+`ip netns add` creates `/run/netns` it is `0750` and the decoy (`azdecoy`) can
+no longer reach `/run/netns/azazel-decoy` for its namespace check (§12). The
+package's tmpfiles rule (`packaging/tmpfiles.d/azazel-nexus-bootstrap.conf`)
+therefore creates `d /run/netns 0755 root root - -` at boot, before the
+activation controller, and `ip netns add` then finds it in place. A test pins
+the line. The rule declares no writable path for any unit; `ServiceProfile`
+still refuses `/run/netns` as one.
+
+**To check on the VM (P3; a mechanism check, not hardware evidence).** The
+coordinator ran 1 to 5 on the first revision of this change (Debian 13,
+systemd 257.13; recorded on #273): the three units started in order, the
+table blocked both directions, the banner came back with the table removed
+by hand, a stop left nothing and a restart worked. That VM already had a
+`0755` `/run/netns`, so 6 is still open, and 1 to 5 are to be repeated on
+this revision:
 
 1. the three units as rendered, started in order with grant markers placed by
    hand: `ip -n` under the namespace unit's filter (`@ipc`, `@timer` denied)
@@ -1050,7 +1102,10 @@ removed its bridge and table.
    helper, then the namespace unit, leaving no `az-decoy*` link, no
    `azazel_decoy` table and no `/run/netns/azazel-decoy`;
 5. a start of either unit that fails half-way leaving nothing behind, and a
-   start after a clean stop succeeding.
+   start after a clean stop succeeding; a second start of the helper while it
+   runs, and a stop after the bridge was removed by hand, leaving the table;
+6. from a clean `/run/netns` (none at boot): the tmpfiles rule making it
+   `0755`, and the decoy's namespace check passing as `azdecoy`.
 
 **Not done here:** the per-boot isolation probe and its evidence (so the tier
 stays withheld); approved prefixes (§7 Q9) in the set and in the decoy's

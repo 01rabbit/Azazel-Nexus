@@ -59,7 +59,7 @@ from azazel_nexus.activation import (
     DECOY_UNIT,
 )
 
-from .decoy_network import DECOY_SUBNET
+from .decoy_addresses import DECOY_SUBNET
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 from azazel_nexus_runtime.activation_markers import grant_marker_path
@@ -204,7 +204,7 @@ class ServiceProfile:
     #: namespace (`NetworkNamespacePath=` exactly `DECOY_NAMESPACE_PATH`) and
     #: `PrivateUsers=yes`, hold no capability and not run as root. Like the
     #: other two it keeps `IPAddressDeny=any`; its only `IPAddressAllow=` is
-    #: the fixed decoy subnet (`decoy_network.DECOY_SUBNET`, #196 body),
+    #: the fixed decoy subnet (`decoy_addresses.DECOY_SUBNET`, #196 body),
     #: stated statically because #253 refuses drop-ins on every grantable
     #: unit; the commissioned prefix arrives in a later phase. The runtime half of the same boundary is the
     #: listener exemption in `tests/unit/test_runtime_boundary.py`: bind and

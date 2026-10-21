@@ -638,6 +638,18 @@ bridge `az-decoy0` and the `inet azazel_decoy` nftables table, which drops
 everything to and from the decoy until approved prefixes exist
 ([prerequisites §13](deception-redirect-prerequisites.md#13-the-namespace-units-and-the-helpers-bodies-as-implemented)).
 
+**Existing objects are never overwritten.** The helper refuses to start, and
+changes nothing, while a bridge `az-decoy0` or a table `inet azazel_decoy`
+already exists, and its ruleset is loaded with `create table`, which never
+replaces an existing table of that name. Remove a stale one by hand after a
+crash. On stop it removes the table only after the bridge and the host end
+are gone; if that fails, the table stays and the stop is reported as failed.
+Each normal start logs one expected `ip`/`nft` "does not exist" error per
+check, after a line saying so.
+
+**`/run/netns`** is created `0755 root root` by the package's tmpfiles rule,
+so that the decoy's account can reach its namespace handle; do not tighten it.
+
 **Fallback tunnel devices.** If the host loads tunnel modules (`sit`, `ipip`,
 `ip_gre`, `ip6_tunnel`, ...), the kernel creates their fallback devices
 (`sit0`, `tunl0`, ...) in every new network namespace, and the decoy refuses

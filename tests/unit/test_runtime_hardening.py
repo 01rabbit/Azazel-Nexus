@@ -1120,7 +1120,7 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     # The fixed decoy subnet and nothing else (#196 body, §13): without it
     # the cgroup filter drops what the decoy receives as well.
     assert settings["IPAddressAllow"] == ["10.255.196.0/30"]
-    from azazel_nexus_runtime.decoy_network import DECOY_SUBNET
+    from azazel_nexus_runtime.decoy_addresses import DECOY_SUBNET
     assert settings["IPAddressAllow"] == [DECOY_SUBNET]
     assert "PrivateNetwork" not in settings
     assert settings["ReadWritePaths"] == ["/var/lib/azazel/decoy"]
