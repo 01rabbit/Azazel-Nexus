@@ -27,5 +27,7 @@ disable azazel-mio-locald.service
 disable azazel-mio-remoted.service
 disable azazel-mio-entryd.service
 disable azazel-knowledge-lited.service
+disable azazel-decoy-netd.service
+disable azazel-decoyd.service
 enable azazel-activated.service
 enable azazel-edge-probe-preflight.service

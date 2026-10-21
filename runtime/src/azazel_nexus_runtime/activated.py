@@ -52,6 +52,7 @@ from typing import Optional, Sequence
 from azazel_nexus.activation import (
     ARTIFACT_TRANSPORT,
     CORE_UNITS,
+    DECEPTION_EXPOSURE_UNITS,
     REMOTE_INFERENCE_TRANSPORT,
     ActivationController,
     ActivationLease,
@@ -625,6 +626,15 @@ def _run_once(
             manager, root,
             "production activation granted edge-core without launchable Edge "
             "evidence bound to the signed package",
+        )
+    if granted & set(DECEPTION_EXPOSURE_UNITS):
+        # #196 P1: this build has no isolation evidence, so a Deception Lite
+        # exposure unit is never granted; one that was means a change
+        # supplied authority the design does not have.
+        _emergency_narrow(
+            manager, root,
+            "production activation granted a Deception Lite exposure unit "
+            "without isolation evidence",
         )
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"

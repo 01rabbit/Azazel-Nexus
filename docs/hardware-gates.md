@@ -125,6 +125,14 @@ Since #42 the accounts are separate and declared — `azcommission`, `azaudit`,
 `azwatch`, and `root` for the activation controller alone — so the experiment
 is now well defined. It has not been run.
 
+**Since #196 P1** the governed set has two more units. The record validator
+expects every non-root governed daemon exactly once, so a record captured
+before P1 (no `azdecoy` attempt) no longer conforms: HG-02 is to be captured
+afresh. The decoy network helper (`azazel-decoy-netd.service`) runs as root
+and is not an HG-02 subject; it is kept from the service manager by its
+sandbox (`AF_NETLINK` only), which the decoy-sandbox gate is to observe
+([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented)).
+
 ## `HG-03` — an observation interface transmits nothing
 
 **Owner issue:** #17 / SO-10, linked by #4. **Procedure:** [SO-10 field exercise](service-objectives.md#so-10-field-exercise--hardware-only), with driver reload added for HG-03.

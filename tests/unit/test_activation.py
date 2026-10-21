@@ -476,7 +476,8 @@ def test_a_grant_is_recorded_before_the_unit_is_widened(tmp_path):
 
     expected = []
     for definition in CORE_UNITS:
-        if definition.wiring is not None or definition.tier is UnitTier.EDGE_BASELINE:
+        if definition.wiring is not None or definition.tier in (
+                UnitTier.EDGE_BASELINE, UnitTier.DECEPTION_EXPOSURE):
             # Withheld for having nothing to serve, and a withholding is
             # recorded too -- but it is recorded *instead of* a widening, so
             # it contributes one entry rather than a pair.
@@ -990,3 +991,86 @@ def test_edge_grant_records_bounded_admission_evidence(tmp_path):
         "package_version": "v" * 256, "package_digest": edge.package_digest,
     }
     assert "edge-baseline-ready" not in str(grants)
+
+
+
+# -- DECEPTION_EXPOSURE (#196 P1) ---------------------------------------------
+
+
+def _exposure_definitions():
+    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
+
+    definitions = [d for d in CORE_UNITS if d.tier is UnitTier.DECEPTION_EXPOSURE]
+    assert tuple(d.name for d in definitions) == DECEPTION_EXPOSURE_UNITS
+    return definitions
+
+
+def test_the_exposure_tier_holds_exactly_the_helper_and_the_decoy():
+    from azazel_nexus.activation import DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT
+
+    by_name = {d.name: d for d in _exposure_definitions()}
+    assert set(by_name) == {DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT}
+    assert by_name[DECOY_NETWORK_HELPER_UNIT].account == "root"
+    assert by_name[DECOY_UNIT].account == "azdecoy"
+    assert all(d.wiring is None for d in by_name.values())
+    assert UnitTier.DECEPTION_EXPOSURE.value == "deception_exposure"
+    assert UnitTier.DECEPTION_EXPOSURE not in (
+        UnitTier.SUPPORTING, UnitTier.EDGE_BASELINE, UnitTier.ENFORCEMENT)
+
+
+def test_the_exposure_tier_is_withheld_with_every_other_gate_satisfied(tmp_path):
+    """Health, a valid lease naming it, Edge ready and a complete record: still withheld.
+
+    `activate` takes no isolation evidence, so nothing a caller passes can
+    satisfy the tier in this build (fail closed, #196 P1).
+    """
+
+    definitions = _exposure_definitions()
+    controller, units, ledger, store = _controller(tmp_path)
+    lease = _lease()
+    scoped = ActivationLease(
+        granted_by=lease.granted_by, granted_at=lease.granted_at,
+        expires_at=lease.expires_at, generation_digest=lease.generation_digest,
+        units=frozenset(d.name for d in CORE_UNITS),
+    )
+    ready = EdgeBaselineState(True, True, True, True, True)
+    for candidate in (lease, scoped):
+        outcome = controller.activate(
+            now=NOW, actor=ACTOR, lease=candidate, edge=ready, healthy=True,
+            record=_record(roles=(_confirmed_role(),)),
+            wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
+        )
+        for definition in definitions:
+            verdict = next(v for v in outcome.verdicts if v.unit == definition.name)
+            assert not verdict.granted
+            assert verdict.reason.startswith("isolation_evidence_absent")
+            assert units.state(definition.name) is UnitState.MASKED
+        # The rest of the pass is unaffected: the exposure tier withholds only itself.
+        assert "azazel-edge-core.service" in outcome.granted
+    assert ("unmask_and_enable", definitions[0].name) not in units.calls
+    assert ("unmask_and_enable", definitions[1].name) not in units.calls
+    withheld = [entry.event for entry in ledger
+                if entry.event["event_type"] == "activation.unit_withheld"
+                and entry.event.get("unit") in {d.name for d in definitions}]
+    assert withheld and all(e["reason"].startswith("isolation_evidence_absent")
+                            for e in withheld)
+
+
+def test_activate_accepts_no_isolation_evidence_argument(tmp_path):
+    """No flag, boolean or keyword can supply the tier's evidence."""
+    import inspect
+
+    parameters = inspect.signature(ActivationController.activate).parameters
+    assert not any("isolation" in name or "decoy" in name or "exposure" in name
+                   for name in parameters)
+    controller, _, _, _ = _controller(tmp_path)
+    with pytest.raises(TypeError):
+        controller.activate(now=NOW, actor=ACTOR, lease=_lease(), isolation=True)
+
+
+def test_enforcement_readiness_is_not_claimed_by_an_exposure_unit(tmp_path):
+    controller, _, _, _ = _controller(tmp_path)
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=_lease(), record=_record(roles=(_confirmed_role(),)))
+    assert not outcome.enforcement_ready
+    assert not set(outcome._enforcement_units) & {d.name for d in _exposure_definitions()}

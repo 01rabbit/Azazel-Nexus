@@ -244,7 +244,11 @@ def test_it_is_the_only_profile_that_pulls_bytes_in() -> None:
         for profile in PROFILES
         if set(profile.address_families) & {"AF_INET", "AF_INET6"}
     )
-    assert with_internet == ["azazel-mio-remoted.service", UNIT]
+    # The third is the Deception Lite decoy (#196 P1), which only listens,
+    # inside its own network namespace; it is declared as the decoy listener,
+    # never as a fetcher.
+    assert with_internet == ["azazel-decoyd.service", "azazel-mio-remoted.service", UNIT]
+    assert [p.unit for p in PROFILES if p.is_decoy_listener] == ["azazel-decoyd.service"]
 
     fetchers = [p.unit for p in PROFILES if p.is_artifact_fetcher]
     assert fetchers == [UNIT], "this is the only unit that pulls artifacts"

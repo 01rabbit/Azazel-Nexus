@@ -90,7 +90,9 @@ def test_the_table_covers_every_unit_the_controller_governs():
 
 
 def test_each_daemon_has_its_own_account():
-    accounts = [profile.account for profile in PROFILES]
+    # root is the controller's and the decoy network helper's (#196 P1); every
+    # other daemon has an account of its own.
+    accounts = [profile.account for profile in PROFILES if profile.account != "root"]
     assert len(set(accounts)) == len(accounts), (
         "two daemons share an account, so a fault in one runs with the "
         "other's access"
@@ -106,7 +108,10 @@ def test_only_the_activation_controller_is_root():
     """
 
     roots = [p.unit for p in PROFILES if p.account == "root"]
-    assert roots == [ACTIVATION_CONTROLLER_UNIT]
+    # The one named exception (#196 P1): the one-shot decoy network helper,
+    # root only so that its CAP_NET_ADMIN bounding set reaches it without an
+    # ambient grant. It writes nothing (test_the_decoy_network_helper_*).
+    assert roots == [ACTIVATION_CONTROLLER_UNIT, "azazel-decoy-netd.service"]
 
 
 def test_the_unit_account_is_the_one_the_library_declares():
@@ -197,7 +202,8 @@ def test_no_unit_but_the_artifact_fetcher_is_allowed_an_internet_family():
         assert len(families) == 1
         allowed = set(families[0].split())
         assert "AF_PACKET" not in allowed
-        if not (profile.is_artifact_fetcher or profile.is_inference_transport):
+        if not (profile.is_artifact_fetcher or profile.is_inference_transport
+                or profile.is_decoy_listener):
             assert allowed & {"AF_INET", "AF_INET6"} == set(), profile.unit
 
 
@@ -211,11 +217,13 @@ def test_exactly_one_profile_holds_each_network_role():
     fetchers = [p.unit for p in PROFILES if p.is_artifact_fetcher]
     transports = [p.unit for p in PROFILES if p.is_inference_transport]
     hosts = [p.unit for p in PROFILES if p.is_model_host]
+    listeners = [p.unit for p in PROFILES if p.is_decoy_listener]
     assert fetchers == ["azazel-model-fetchd.service"]
     assert transports == ["azazel-mio-remoted.service"]
     assert hosts == ["azazel-mio-locald.service"]
-    assert len(set(fetchers + transports + hosts)) == 3, (
-        "one unit holds two roles; the three acts are kept in three units"
+    assert listeners == ["azazel-decoyd.service"]
+    assert len(set(fetchers + transports + hosts + listeners)) == 4, (
+        "one unit holds two roles; the four acts are kept in four units"
     )
 
 
@@ -291,14 +299,19 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
         for profile in PROFILES
         if "AF_NETLINK" in _settings(profile.unit)["RestrictAddressFamilies"][0]
     ]
-    assert with_netlink == ["azazel-activated.service", "azazel-commissiond.service"]
+    # Plus the decoy network helper (#196 P1), which configures links and
+    # rules over netlink with CAP_NET_ADMIN and nothing else.
+    assert with_netlink == ["azazel-activated.service", "azazel-commissiond.service",
+                            "azazel-decoy-netd.service"]
     for unit in with_netlink:
         settings = _settings(unit)
-        assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK"]
-        assert settings["CapabilityBoundingSet"] == (
-            ["CAP_DAC_READ_SEARCH"]
-            if unit == "azazel-activated.service" else [""]
-        )
+        assert settings["RestrictAddressFamilies"] == (
+            ["AF_NETLINK"] if unit == "azazel-decoy-netd.service"
+            else ["AF_UNIX AF_NETLINK"])
+        assert settings["CapabilityBoundingSet"] == {
+            "azazel-activated.service": ["CAP_DAC_READ_SEARCH"],
+            "azazel-decoy-netd.service": ["CAP_NET_ADMIN"],
+        }.get(unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         assert settings["IPAddressDeny"] == ["any"]
 
@@ -336,7 +349,8 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         if profile.unit == "azazel-activated.service":
             continue
         settings = _settings(profile.unit)
-        assert settings["CapabilityBoundingSet"] == [""]
+        assert settings["CapabilityBoundingSet"] == (
+            ["CAP_NET_ADMIN"] if profile.unit == "azazel-decoy-netd.service" else [""])
         assert settings["AmbientCapabilities"] == [""]
         if profile.unit == "azazel-commissiond.service":
             assert settings["SupplementaryGroups"] == ["azknowledge"]
@@ -365,7 +379,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     assert widened == {
         "azazel-activated.service", "azazel-commissiond.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
-        "azazel-incident-explaind.service",
+        "azazel-incident-explaind.service", "azazel-decoy-netd.service",
     }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
@@ -456,6 +470,8 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
 #: docs/activation-observe-baseline.md) and the four other controller
 #: dependents (watchdog, fetch, local and remote model hosts).
 GRANT_LOOP_UNITS = frozenset({
+    "azazel-decoy-netd.service",
+    "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
@@ -641,6 +657,9 @@ def test_the_shared_hardening_is_applied_to_every_unit_without_exception():
             if (key == "CapabilityBoundingSet"
                     and profile.unit == "azazel-activated.service"):
                 value = "CAP_DAC_READ_SEARCH"
+            if (key == "CapabilityBoundingSet"
+                    and profile.unit == "azazel-decoy-netd.service"):
+                value = "CAP_NET_ADMIN"
             assert settings.get(key) == [value], (
                 f"{profile.unit} sets {key} to {settings.get(key)} and the "
                 f"shared declaration says {value!r}"
@@ -986,3 +1005,163 @@ def test_the_probe_preflight_runs_before_the_controller_and_needs_nothing_of_it(
     # Ordered before the controller, so its result is from this boot when the
     # pass reads it; nothing it does is a precondition of the pass.
     assert "azazel-edge-probe-preflight" not in _unit(ACTIVATION_CONTROLLER_UNIT)
+
+
+# -- Deception Lite exposure units (#196 P1, design D1) ---------------------
+
+
+HELPER = "azazel-decoy-netd.service"
+DECOY = "azazel-decoyd.service"
+
+
+def _profile(unit):
+    return next(p for p in PROFILES if p.unit == unit)
+
+
+def test_cap_net_admin_is_held_by_the_decoy_network_helper_alone():
+    holders = [p.unit for p in ALL_PROFILES if "CAP_NET_ADMIN" in p.capability_bounding_set]
+    assert holders == [HELPER]
+    for path in UNIT_DIR.glob("*.service"):
+        if path.name != HELPER:
+            settings = _settings(path.name)
+            for key in ("CapabilityBoundingSet", "AmbientCapabilities"):
+                assert not any("CAP_NET_ADMIN" in value
+                               for value in settings.get(key, [])), path.name
+
+
+def test_the_decoy_network_helper_runs_once_with_exactly_cap_net_admin():
+    settings = _settings(HELPER)
+    assert settings["Type"] == ["oneshot"]
+    assert settings["RemainAfterExit"] == ["yes"]
+    assert settings["User"] == ["root"]
+    assert settings["ExecStart"] == ["/usr/libexec/azazel/az-decoy-netd"]
+    assert settings["CapabilityBoundingSet"] == ["CAP_NET_ADMIN"]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["NoNewPrivileges"] == ["yes"]
+    # Root, so no AF_UNIX: it cannot reach the service manager over D-Bus.
+    assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
+    assert settings["IPAddressDeny"] == ["any"]
+    # Nothing writable in this build, no runtime directory, no namespace of
+    # its own (it would configure the host's links), no credential.
+    for key in ("ReadWritePaths", "RuntimeDirectory", "NetworkNamespacePath",
+                "PrivateNetwork", "SupplementaryGroups", "LoadCredential",
+                "Environment", "EnvironmentFile", "ExecStartPre", "IPAddressAllow"):
+        assert key not in settings, key
+
+
+def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
+    from azazel_nexus_runtime.hardening import DECOY_NAMESPACE_PATH
+
+    settings = _settings(DECOY)
+    assert settings["User"] == ["azdecoy"]
+    assert settings["ExecStart"] == ["/usr/libexec/azazel/az-decoyd"]
+    assert settings["CapabilityBoundingSet"] == [""]
+    assert settings["AmbientCapabilities"] == [""]
+    assert settings["NetworkNamespacePath"] == [DECOY_NAMESPACE_PATH]
+    assert DECOY_NAMESPACE_PATH == "/run/netns/azazel-decoy"
+    assert settings["PrivateUsers"] == ["yes"]
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6"]
+    assert settings["IPAddressDeny"] == ["any"]
+    assert "IPAddressAllow" not in settings
+    assert "PrivateNetwork" not in settings
+    assert settings["ReadWritePaths"] == ["/var/lib/azazel/decoy"]
+    for key in ("SupplementaryGroups", "RuntimeDirectory", "LoadCredential",
+                "Environment", "EnvironmentFile", "ExecStartPre"):
+        assert key not in settings, key
+    # After and Requires the helper as well as the controller: stopping the
+    # helper stops the decoy first.
+    assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT, HELPER]
+    assert settings["After"] == [ACTIVATION_CONTROLLER_UNIT, HELPER]
+    from azazel_nexus.layout import spec_for
+    spec = spec_for("/var/lib/azazel/decoy")
+    assert (spec.owner, spec.group, spec.mode) == ("azdecoy", "root", 0o700)
+
+
+def test_both_exposure_units_carry_the_three_marker_lines_and_pass_the_content_check():
+    """#253: the file check and the marker condition apply to them as to any grantable unit."""
+
+    from azazel_nexus_runtime.activation_unit_files import (
+        require_governed_unit_content,
+        required_unit_lines,
+    )
+
+    for unit in (HELPER, DECOY):
+        text = _unit(unit)
+        unit_section = text.split("[Unit]", 1)[1].split("[Service]", 1)[0].splitlines()
+        assert set(required_unit_lines(unit)) <= set(unit_section)
+        require_governed_unit_content(unit, text.encode("ascii"))
+
+
+@pytest.mark.parametrize("change", [
+    {"capability_bounding_set": ("CAP_NET_ADMIN", "CAP_SYS_ADMIN")},
+    {"capability_bounding_set": ("CAP_SYS_ADMIN",)},
+    {"capability_bounding_set": ()},
+])
+def test_the_helper_cannot_be_declared_wider_or_different(change):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError):
+        replace(_profile(HELPER), **change)
+
+
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", "azazel-decoyd.service"])
+def test_no_other_unit_can_take_cap_net_admin(unit):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="CAP_NET_ADMIN"):
+        replace(_profile(unit), capability_bounding_set=("CAP_NET_ADMIN",))
+
+
+@pytest.mark.parametrize("change", [
+    {"capability_bounding_set": ("CAP_NET_BIND_SERVICE",)},
+    {"account": "root"},
+    {"supplementary_groups": ("azazel-operator",)},
+    {"extra": (("PrivateUsers", "yes"),)},
+    {"extra": (("NetworkNamespacePath", "/run/netns/other"), ("PrivateUsers", "yes"))},
+    {"extra": (("NetworkNamespacePath", "/run/netns/azazel-decoy"),)},
+    {"extra": (("NetworkNamespacePath", "/run/netns/azazel-decoy"), ("PrivateUsers", "yes"),
+               ("IPAddressAllow", "192.0.2.0/24"))},
+    {"extra": (("NetworkNamespacePath", "/run/netns/azazel-decoy"), ("PrivateUsers", "yes"),
+               ("PrivateNetwork", "yes"))},
+    {"unit": "azazel-other.service"},
+])
+def test_the_decoy_listener_role_refuses_anything_wider(change):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError):
+        replace(_profile(DECOY), **change)
+
+
+def test_a_decoy_listener_without_an_internet_family_cannot_be_built():
+    from dataclasses import replace
+
+    with pytest.raises(ValueError):
+        replace(_profile(DECOY), address_families=("AF_UNIX",))
+
+
+def test_the_installer_masks_and_never_enables_the_exposure_units():
+    for unit in (HELPER, DECOY):
+        assert f'install -m 0644 "$HERE"/systemd/{unit} "$UNIT_DIR"' in INSTALLER
+        assert f"systemctl mask {unit}" in INSTALLER
+        assert f"systemctl enable {unit}" not in INSTALLER
+        assert f"systemctl start {unit}" not in INSTALLER
+    assert "make_owned_dir 0700 azdecoy root /var/lib/azazel/decoy" in INSTALLER
+
+
+@pytest.mark.parametrize("families", [("AF_UNIX", "AF_NETLINK"), ("AF_UNIX",),
+                                      ("AF_NETLINK", "AF_UNIX")])
+def test_the_root_helper_cannot_be_given_a_unix_socket(families):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="netlink only"):
+        replace(_profile(HELPER), address_families=families)
+
+
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service", "azazel-decoyd.service",
+                                  "azazel-edge-core.service"])
+def test_only_the_controller_and_the_helper_may_run_as_root(unit):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="would run as root"):
+        replace(_profile(unit), account="root", is_decoy_listener=False,
+                address_families=("AF_UNIX",))

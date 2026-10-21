@@ -119,6 +119,12 @@ LAYOUT = (
         owner="azedge",
     ),
     PathSpec(
+        "/var/lib/azazel/decoy",
+        0o700,
+        "Deception Lite decoy private state (#196 P1); never a payload",
+        owner="azdecoy",
+    ),
+    PathSpec(
         "/var/lib/azazel/run",
         0o711,
         "socket traversal only; daemon-specific leaves enforce socket access",

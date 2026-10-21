@@ -146,11 +146,20 @@ Decoys now really start and really listen. Every one of them listens on an
 ### Why that is stronger than `127.0.0.1`
 
 Not because binding loopback is refused — because **nothing in the runtime
-distribution can bind an address or a port at all**.
+distribution that runs can bind an address or a port**.
 `tests/unit/test_runtime_boundary.py` scans the whole distribution for
 `AF_INET`, `AF_INET6`, `AF_PACKET` and `create_connection` and refuses to find
-any. External exposure is not a path that is checked and rejected; it is a
-path that is absent from the code that would take it.
+any outside its named exemptions. External exposure is not a path that is
+checked and rejected; it is a path that is absent from the code that runs.
+
+Since #196 P1 ([prerequisites](deception-redirect-prerequisites.md) §10) one
+module, `decoy_listener.py`, is exempt by file name for **ingress only**: it may
+bind and listen, and the same scan refuses `connect`, `connect_ex`,
+`create_connection`, `sendto`, `sendmsg` and `AF_PACKET` in it. Nothing imports
+it yet, and the unit it would run in (`azazel-decoyd.service`, tier
+`DECEPTION_EXPOSURE`) is never granted in this build;
+`tests/unit/test_functional_readiness.py` fails the day something imports it, so
+the row cannot stay `loopback-only` by accident.
 
 A Unix socket under a private directory has no IP stack in front of it, no
 port to scan, nothing an interface can carry, and needs filesystem permission

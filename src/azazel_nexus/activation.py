@@ -61,6 +61,9 @@ __all__ = [
     "ActivationLease",
     "EdgeBaselineState",
     "CORE_UNITS",
+    "DECEPTION_EXPOSURE_UNITS",
+    "DECOY_NETWORK_HELPER_UNIT",
+    "DECOY_UNIT",
     "ActivationAuthorization",
     "ActivationController",
     "ActivationOutcome",
@@ -115,11 +118,20 @@ class UnitTier(str, Enum):
 
     `ENFORCEMENT` acts on the network an operator confirmed, and needs a
     complete commissioning record on top of the rest.
+
+    `DECEPTION_EXPOSURE` makes a Deception Lite decoy reachable from outside
+    the host (#196, `docs/deception-redirect-prerequisites.md` §5 D1). It is
+    neither of the others: exposure is not enforcement, and the one feature
+    reachable from outside is not a supporting service. It needs this boot's
+    passing isolation evidence on top of everything `SUPPORTING` needs. This
+    build has no producer of that evidence, so the tier is always withheld
+    (`isolation_evidence_absent`); nothing a caller passes changes that.
     """
 
     SUPPORTING = "supporting"
     EDGE_BASELINE = "edge_baseline"
     ENFORCEMENT = "enforcement"
+    DECEPTION_EXPOSURE = "deception_exposure"
 
 
 @dataclass(frozen=True)
@@ -199,6 +211,20 @@ LOCAL_MODEL_PROVIDER = "local_model_provider"
 REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 
 
+#: The Deception Lite network helper (#196 P1, design D1). Run once; the only
+#: governed unit with `CAP_NET_ADMIN`, which it would use to build the decoy
+#: namespace, `az-decoy0`, the veth pair and the forwarding-deny rules. Its
+#: body is a later phase: the executable in this build refuses and exits.
+DECOY_NETWORK_HELPER_UNIT = "azazel-decoy-netd.service"
+
+#: The Deception Lite decoy (#196 P1, design D1): no capability, its own
+#: account, inside the decoy network namespace. Accepts, never initiates.
+DECOY_UNIT = "azazel-decoyd.service"
+
+#: The units of the `DECEPTION_EXPOSURE` tier.
+DECEPTION_EXPOSURE_UNITS = (DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
+
+
 #: The governed set for the CORE slice.
 #:
 #: Each carries its own non-login account (#42). None of the three is root:
@@ -206,7 +232,8 @@ REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 #: leaves these unprivileged.
 #:
 #: M.I.O. entry and Knowledge Lite status are SUPPORTING services; provider
-#: units remain separately wiring-gated. Enforcement, Deception Lite and
+#: units remain separately wiring-gated. The two Deception Lite exposure units
+#: are declared (#196 P1) and always withheld in this build. Enforcement and
 #: module-manager units belong to slices that are not built yet. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
 #:
@@ -326,6 +353,23 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azknowledge",
         "read-only Knowledge Lite service; import and repin use existing paths",
+    ),
+    UnitDefinition(
+        DECOY_NETWORK_HELPER_UNIT,
+        # Root because a bounding-set capability reaches only uid 0 without
+        # an ambient grant, and the design forbids ambient capabilities. The
+        # bounding set is exactly CAP_NET_ADMIN (`hardening.py`).
+        UnitTier.DECEPTION_EXPOSURE,
+        "root",
+        "one-shot decoy network helper; the only unit with CAP_NET_ADMIN; "
+        "reads only the commissioning render",
+    ),
+    UnitDefinition(
+        DECOY_UNIT,
+        UnitTier.DECEPTION_EXPOSURE,
+        "azdecoy",
+        "Deception Lite decoy in its own network namespace; no capability; "
+        "accepts and never initiates",
     ),
 )
 
@@ -969,6 +1013,18 @@ class ActivationController:
 
         if definition.tier is UnitTier.SUPPORTING:
             return None
+
+        if definition.tier is UnitTier.DECEPTION_EXPOSURE:
+            # Fail closed by construction: `activate` takes no isolation
+            # evidence, so there is nothing a caller could pass to satisfy
+            # this tier. The producer (a per-boot probe of the denied paths)
+            # is a later phase of #196, and adding it is a deliberate change
+            # here, never a flag.
+            return (
+                "isolation_evidence_absent: this build has no producer of this "
+                "boot's isolation evidence, so nothing reachable from outside "
+                "is admitted"
+            )
 
         if definition.tier is UnitTier.EDGE_BASELINE:
             if self._edge is None:

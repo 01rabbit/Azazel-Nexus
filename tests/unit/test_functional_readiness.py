@@ -38,7 +38,7 @@ from azazel_nexus.resource_profile import ResourceProfile
 # One source of truth for which module may reach the network. Imported
 # rather than restated: two copies of an exemption list is one copy that
 # stops matching, and the one that stops matching is the one nobody reads.
-from tests.unit.test_runtime_boundary import EGRESS_EXEMPT
+from tests.unit.test_runtime_boundary import EGRESS_EXEMPT, LISTENER_EXEMPT, _exempt
 
 
 def test_the_three_embedded_features_are_tracked() -> None:
@@ -266,7 +266,8 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
     for path in sorted(runtime_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         scanned += 1
-        if path.name in EGRESS_EXEMPT:
+        if (_exempt(path, EGRESS_EXEMPT, runtime_root)
+                or _exempt(path, LISTENER_EXEMPT, runtime_root)):
             continue
         found = sorted(
             {
@@ -280,6 +281,38 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
             reaching[path.name] = found
     assert scanned > 1, "a vacuous scan: the runtime distribution was not found"
     assert reaching == {}, f"{reaching} can reach past this host"
+
+
+def test_the_decoy_listener_is_called_by_nothing_so_the_row_stays_loopback_only() -> None:
+    """#196 P1 adds one module that can bind an address: `decoy_listener.py`.
+
+    The row may stay `loopback-only` only while nothing runs it. The day a
+    runtime module imports it, this fails, and whoever made it fail has to
+    come to `functional_readiness.py` -- which, per
+    `docs/deception-redirect-prerequisites.md` §5, moves to a new word only
+    after `HG-06` passes on hardware.
+    """
+
+    runtime_root = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "runtime" / "src" / "azazel_nexus_runtime"
+    )
+    assert LISTENER_EXEMPT == {"decoy_listener.py"}
+    importers = []
+    for path in sorted(runtime_root.rglob("*.py")):
+        if _exempt(path, LISTENER_EXEMPT, runtime_root):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""] + [alias.name for alias in node.names]
+            if any("decoy_listener" in name for name in names):
+                importers.append(path.name)
+    assert importers == []
+    assert READINESS["deception_lite"].loopback_only is True
 
 
 def test_the_one_module_that_reaches_the_network_cannot_be_reached_through() -> None:

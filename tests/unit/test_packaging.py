@@ -127,7 +127,11 @@ def test_no_governed_unit_runs_as_root():
     whole host is that the parser has no bug.
     """
 
-    assert [d.account for d in CORE_UNITS].count("root") == 0
+    # One named exception (#196 P1): the one-shot decoy network helper runs
+    # as root so that its CAP_NET_ADMIN bounding set reaches it without an
+    # ambient grant. It writes nothing and the pass never grants it.
+    assert [d.name for d in CORE_UNITS if d.account == "root"] == [
+        "azazel-decoy-netd.service"]
     assert len({d.account for d in CORE_UNITS}) == len(CORE_UNITS), (
         "two governed daemons share an account, so a fault in one runs with "
         "the other's access"

@@ -46,11 +46,21 @@ __all__ = [
 ]
 
 #: The only units a pass may grant and mark: the five SUPPORTING loop units
-#: (§6.2, phase P4) and `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
+#: (§6.2, phase P4), `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
 #: which the library still grants only on launchable, boot-bound Edge
-#: evidence. The single source for the pass's scope check, its tripwire and
-#: this writer.
+#: evidence, and the two Deception Lite exposure units (DECEPTION_EXPOSURE,
+#: #196 P1). The single source for the pass's scope check, its tripwire,
+#: this writer and the unit-content and loaded-unit checks (#253).
+#:
+#: The two exposure units are here so that #253 checks their files and loaded
+#: definitions on every pass (a queued start must wait for its marker), not
+#: so that a pass can grant them: no activation policy may name them
+#: (`activation_policy.ACTIVATION_UNIT_ALLOWLIST`), the library withholds
+#: their tier in this build (`isolation_evidence_absent`), and the pass's
+#: tripwire narrows everything if either is ever granted.
 GRANTABLE_UNITS = frozenset({
+    "azazel-decoy-netd.service",
+    "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
