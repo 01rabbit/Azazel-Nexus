@@ -51,13 +51,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
-from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
+from azazel_nexus.activation import (
+    ACTIVATION_CONTROLLER_UNIT,
+    CORE_UNITS,
+    DECOY_NETWORK_HELPER_UNIT,
+    DECOY_UNIT,
+)
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 from azazel_nexus_runtime.activation_markers import grant_marker_path
 
 __all__ = [
     "ALL_PROFILES",
+    "DECOY_NAMESPACE_PATH",
     "EDGE_PROBE_PREFLIGHT_UNIT",
     "GRANT_MARKER_UNITS",
     "PROFILES",
@@ -166,6 +172,20 @@ class ServiceProfile:
     #: reach arrive as a commissioning drop-in built from the signed Provider
     #: Registry, so shipping this unit ships a service that can reach nothing.
     is_inference_transport: bool = False
+    #: Whether this unit is the Deception Lite decoy (#196 P1, design D1).
+    #:
+    #: The fourth exemption kind, and the only one that **accepts** rather
+    #: than initiates: it may take an internet address family so that it can
+    #: listen inside the decoy network namespace, and it must declare that
+    #: namespace (`NetworkNamespacePath=` exactly `DECOY_NAMESPACE_PATH`) and
+    #: `PrivateUsers=yes`, hold no capability and not run as root. Like the
+    #: other two it keeps `IPAddressDeny=any` and, in this build, declares no
+    #: `IPAddressAllow=`: the commissioned prefix arrives in a later phase
+    #: (a drop-in cannot carry it, because #253 refuses drop-ins on every
+    #: grantable unit). The runtime half of the same boundary is the
+    #: listener exemption in `tests/unit/test_runtime_boundary.py`: bind and
+    #: listen, never connect.
+    is_decoy_listener: bool = False
     #: Extra systemd unit conditions, rendered in declaration order.
     conditions: tuple[tuple[str, str], ...] = ()
     default_dependencies: bool = True
@@ -185,7 +205,8 @@ class ServiceProfile:
                 "is required to be reachable at all, and a unit whose families "
                 "are unstated inherits whatever systemd's default is"
             )
-        reaches_network = self.is_artifact_fetcher or self.is_inference_transport
+        reaches_network = (self.is_artifact_fetcher or self.is_inference_transport
+                           or self.is_decoy_listener)
         forbidden = {"AF_PACKET"} | (
             set() if reaches_network else {"AF_INET", "AF_INET6"}
         )
@@ -211,6 +232,7 @@ class ServiceProfile:
                 ("artifact fetcher", self.is_artifact_fetcher),
                 ("model host", self.is_model_host),
                 ("inference transport", self.is_inference_transport),
+                ("decoy listener", self.is_decoy_listener),
             )
             if held
         ]
@@ -221,6 +243,37 @@ class ServiceProfile:
                 "out are three acts with three blast radii; a unit holding two "
                 "of them is a node where one compromise is two"
             )
+        # CAP_NET_ADMIN belongs to exactly one unit, the one-shot decoy
+        # network helper, and that unit holds nothing else (#196 P1).
+        if (("CAP_NET_ADMIN" in self.capability_bounding_set)
+                != (self.unit == DECOY_NETWORK_HELPER_UNIT)):
+            raise ValueError(
+                f"{self.unit}: CAP_NET_ADMIN is held by "
+                f"{DECOY_NETWORK_HELPER_UNIT} and by no other unit"
+            )
+        if (self.unit == DECOY_NETWORK_HELPER_UNIT
+                and self.capability_bounding_set != ("CAP_NET_ADMIN",)):
+            raise ValueError(
+                f"{self.unit} holds exactly CAP_NET_ADMIN; anything wider is "
+                "a reviewed change to this declaration"
+            )
+        if self.is_decoy_listener:
+            settings = dict(self.extra)
+            if (self.unit != DECOY_UNIT or self.account == "root"
+                    or self.capability_bounding_set or self.supplementary_groups):
+                raise ValueError(
+                    f"{self.unit}: the decoy listener is {DECOY_UNIT}, runs "
+                    "under its own account and holds no capability or group"
+                )
+            if (settings.get("NetworkNamespacePath") != DECOY_NAMESPACE_PATH
+                    or settings.get("PrivateUsers") != "yes"
+                    or "PrivateNetwork" in settings
+                    or "IPAddressAllow" in settings):
+                raise ValueError(
+                    f"{self.unit} listens only inside {DECOY_NAMESPACE_PATH}, "
+                    "with PrivateUsers=yes and no address allowance in this "
+                    "build"
+                )
         if self.is_model_host:
             settings = dict(self.extra)
             # What a unit file can state without a measurement: a share of
@@ -291,6 +344,8 @@ class ServiceProfile:
 #: bootstrap starts those and writes no marker; they stay masked on the
 #: ordinary path and are bound to the controller (`BindsTo=`).
 GRANT_MARKER_UNITS = (
+    "azazel-decoy-netd.service",
+    "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
@@ -370,7 +425,19 @@ SYSTEM_ACCOUNTS = (
     "azmioentry",
     "azremote",
     "azknowledge",
+    "azdecoy",
 )
+
+
+#: The decoy's network namespace (#196 P1, design D1). A fixed handle path,
+#: never a parameter. In this build nothing creates it: the helper's body is a
+#: later phase, so a decoy unit started anyway fails at namespace setup
+#: before its executable runs. Creating a named namespace (`ip netns add`)
+#: also needs CAP_SYS_ADMIN for its bind mount, which the helper does not
+#: hold; the helper phase must use a CAP_NET_ADMIN-only mechanism or bring a
+#: reviewed widening of its profile (docs/deception-redirect-prerequisites.md
+#: §10).
+DECOY_NAMESPACE_PATH = "/run/netns/azazel-decoy"
 
 
 PROFILES: tuple[ServiceProfile, ...] = (
@@ -859,6 +926,81 @@ PROFILES: tuple[ServiceProfile, ...] = (
         rationale=(
             "Serves read-only Lite verbs with read-only public trust. "
             "Imports and trust promotion remain on their existing paths."
+        ),
+    ),
+    ServiceProfile(
+        unit=DECOY_NETWORK_HELPER_UNIT,
+        executable="/usr/libexec/azazel/az-decoy-netd",
+        account="root",
+        description="Azazel-Nexus Deception Lite network helper",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
+        # Route and nftables netlink only. No internet family: it configures
+        # links and rules, it never sends or receives traffic.
+        address_families=("AF_UNIX", "AF_NETLINK"),
+        # Nothing writable in this build: where the namespace handle and the
+        # rendered rules live is decided with the helper's body.
+        read_write_paths=(),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition(DECOY_NETWORK_HELPER_UNIT),
+        unit_type="oneshot",
+        runtime_directory="",
+        # Root only so that the bounding set reaches it without an ambient
+        # grant; the bounding set is CAP_NET_ADMIN and nothing else.
+        capability_bounding_set=("CAP_NET_ADMIN",),
+        extra=(
+            # Stays active after it ran, so that stopping it (and, through
+            # Requires=, the decoy first) is the hook a later phase uses to
+            # remove the rules only after the decoy has stopped.
+            ("RemainAfterExit", "yes"),
+            ("TimeoutStartSec", "30s"),
+        ),
+        rationale=(
+            "Runs once. The only unit that holds CAP_NET_ADMIN, as a bounding "
+            "set and never as an ambient capability: it would build the decoy "
+            "namespace, az-decoy0, the veth pair and the forwarding-deny rules "
+            "from the commissioning render, and reads no decoy observation and "
+            "no Edge decision. Its body is a later phase of #196; in this "
+            "build the executable refuses and exits, and the activation pass "
+            "never grants this unit"
+        ),
+    ),
+    ServiceProfile(
+        unit=DECOY_UNIT,
+        executable="/usr/libexec/azazel/az-decoyd",
+        account="azdecoy",
+        description="Azazel-Nexus Deception Lite decoy",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
+        # AF_UNIX for the observation socket; the internet families only to
+        # listen inside the decoy namespace.
+        address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
+        read_write_paths=("/var/lib/azazel/decoy",),
+        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
+        requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
+        conditions=_grant_condition(DECOY_UNIT),
+        is_decoy_listener=True,
+        unit_type="exec",
+        runtime_directory="",
+        extra=(
+            ("NetworkNamespacePath", DECOY_NAMESPACE_PATH),
+            ("PrivateUsers", "yes"),
+            ("TimeoutStartSec", "30s"),
+            ("MemoryMax", "128M"),
+            ("TasksMax", "16"),
+            ("LimitNOFILE", "256"),
+            ("LimitFSIZE", "16M"),
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+        ),
+        rationale=(
+            "Holds no capability and runs under its own account, inside the "
+            "decoy network namespace, with PrivateUsers=yes. It accepts and "
+            "never initiates: no outbound connect is in its code, and the "
+            "runtime boundary test allows its listener module bind and listen "
+            "only. IPAddressDeny=any stays and no address is allowed in this "
+            "build. Its body is a later phase of #196; in this build the "
+            "executable refuses and exits, and the activation pass never "
+            "grants this unit"
         ),
     ),
 )

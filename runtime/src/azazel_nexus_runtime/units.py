@@ -73,6 +73,8 @@ class UnitKey(str, Enum):
     MIO_REMOTE = "mio-remote"
     MIO_ENTRY = "mio-entry"
     KNOWLEDGE_LITE = "knowledge-lite"
+    DECOY_NETWORK = "decoy-network"
+    DECOY_LISTENER = "decoy-listener"
 
 
 #: The whole mapping, and it is not configurable.
@@ -93,6 +95,8 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.MIO_REMOTE: "azazel-mio-remoted.service",
     UnitKey.MIO_ENTRY: "azazel-mio-entryd.service",
     UnitKey.KNOWLEDGE_LITE: "azazel-knowledge-lited.service",
+    UnitKey.DECOY_NETWORK: "azazel-decoy-netd.service",
+    UnitKey.DECOY_LISTENER: "azazel-decoyd.service",
 }
 
 

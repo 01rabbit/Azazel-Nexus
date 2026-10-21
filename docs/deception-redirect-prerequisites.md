@@ -2,7 +2,7 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (I4 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **proposed; awaiting owner decisions; nothing implemented.**
+Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 in progress.**
 Related: [integrated defensive loop](integration-loop.md) §I4 ·
 [Deception Lite](deception-lite.md) ·
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
@@ -338,7 +338,83 @@ These hold in every phase. A change that needs one relaxed is out of scope.
 
 ## 9. What this does not establish
 
-Nothing is implemented. Nothing here shows that Edge can express or apply a
-redirect, that the namespace design isolates on a real kernel, or that the
-Fabric or Edge owners accept the K2 change. Each is a later phase with its own
-evidence.
+Only P1's declarations and boundary are implemented (§10). Nothing here shows
+that Edge can express or apply a redirect, that the namespace design isolates
+on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
+is a later phase with its own evidence.
+
+## 10. P1 as implemented
+
+The owner adopted every §7 default on 2026-10-21 and chose to start with P1.
+P1 defines the units, the tier and the boundary, and **admits nothing**: the
+grant condition (this boot's isolation evidence) has no producer yet, so the
+tier is withheld on every pass. The evidence producer is deferred to a later
+phase rather than built here, because it needs the helper's body (it probes
+the denied paths the helper installs), and the helper's body needs the
+namespace mechanism decided below.
+
+**Units** (`runtime/src/azazel_nexus_runtime/hardening.py`, rendered by
+`tools/render_units.py` into `packaging/systemd/`):
+
+| | `azazel-decoy-netd.service` (helper) | `azazel-decoyd.service` (decoy) |
+| --- | --- | --- |
+| account | `root`, so that the bounding set reaches it without an ambient grant | `azdecoy` (new) |
+| capabilities | `CapabilityBoundingSet=CAP_NET_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_NET_ADMIN` | none |
+| address families | `AF_UNIX AF_NETLINK` | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
+| network | host namespace (it would configure host links) | `NetworkNamespacePath=/run/netns/azazel-decoy`, `PrivateUsers=yes` |
+| addresses | `IPAddressDeny=any` | `IPAddressDeny=any`, no `IPAddressAllow=` |
+| writable | nothing | `/var/lib/azazel/decoy` (`azdecoy`, `0700`) |
+| type | `oneshot`, `RemainAfterExit=yes` (stopping it stops the decoy first) | `exec`; `Requires=`/`After=` the helper |
+| executable | `az-decoy-netd`: refuses, exits 1 | `az-decoyd`: refuses, exits 1 |
+
+Both carry `SHARED_HARDENING`, the three `[Unit]` lines the grant marker
+needs (`ConditionPathExists=` on the marker, `Requires=` and `After=` on the
+controller), and pass the unit-content and loaded-unit checks of
+[activation §8.2](activation-observe-baseline.md#82-unit-content-and-the-loaded-units-251-h-1-m-3).
+The installer installs, preset-disables and masks both, like every governed
+unit; it never enables or starts them.
+
+**Tier and grant path.** `UnitTier.DECEPTION_EXPOSURE` is new
+(`src/azazel_nexus/activation.py`). Both units are in `CORE_UNITS` and in
+`activation_markers.GRANTABLE_UNITS`, so every pass checks their files and
+loaded definitions. Three things keep them from being granted, each alone
+sufficient:
+
+- `ActivationController.activate` takes no isolation evidence, and the tier
+  is withheld as `isolation_evidence_absent` whatever else holds;
+- `ACTIVATION_UNIT_ALLOWLIST` does not name them, so a policy naming either
+  is refused as a whole and no lease holds them; a v2 approval cannot name
+  them either (it is limited to `SUPPORTING` and `EDGE_BASELINE`);
+- the pass's tripwire narrows everything if either is ever granted.
+
+**Runtime boundary.** `tests/unit/test_runtime_boundary.py` now has two
+lists: `EGRESS_EXEMPT` (unchanged) and `LISTENER_EXEMPT = {"decoy_listener.py"}`.
+A listener module may name `AF_INET`/`AF_INET6` and must bind and listen; it
+may not name `connect`, `connect_ex`, `create_connection`, `sendto`, `sendmsg`
+or `AF_PACKET`. `decoy_listener.open_listener` binds only a catalogued
+`DecoyEntry` address inside the commissioned bridge prefix. Nothing imports
+it, and `tests/unit/test_functional_readiness.py` fails the day something
+does, so the Deception Lite row stays `loopback-only`.
+
+**Deferred, with what each needs:**
+
+- the helper's body (namespace, `az-decoy0`, veth, forwarding-deny rules,
+  their removal on stop). **Open question:** creating a persistent named
+  namespace (`ip netns add`) also needs `CAP_SYS_ADMIN` for its bind mount,
+  which the helper does not hold. That phase must either use a
+  `CAP_NET_ADMIN`-only mechanism or bring a reviewed widening of the
+  helper's profile; P1's tests pin the bounding set to exactly
+  `CAP_NET_ADMIN`;
+- the per-boot isolation probe, its boot-bound evidence and the activation
+  pass consuming it (only then can the tier be granted);
+- how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
+  not a drop-in, which #253 refuses on every grantable unit;
+- the decoy daemon (responders, observation socket), P2's
+  `EnvironmentEvent`s, and the decoy's `ExecStartPre=` probe rerun;
+- `IMPLEMENTATION_SPEC.md:604` still names `azazel-enforced` as the only
+  daemon with `CAP_NET_ADMIN`; that daemon does not exist, and the helper is
+  this design's addition. The specification sentence is to be updated with
+  the helper's body.
+
+Unit tests only. No `nft` or `ip` is run, no namespace is created and no real
+socket is opened by any test; none of this is VM or hardware evidence.

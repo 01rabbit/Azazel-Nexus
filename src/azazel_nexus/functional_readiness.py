@@ -195,8 +195,9 @@ READINESS: Mapping[str, Readiness] = {
         loopback_only=True,
         missing=(
             "decoys start and listen, and only on private Unix sockets in the "
-            "runtime's own directory. Nothing outside this host can reach one, "
-            "and no path here can bind an address or a port at all, so no "
+            "runtime's own directory. Nothing outside this host can reach one: "
+            "the one module that can bind an address (decoy_listener, #196 P1) "
+            "is called by nothing, and its unit is never granted, so no "
             "hostile party can be observed by it yet"
         ),
         issue="Nexus#69",

@@ -67,6 +67,9 @@ SCOPE = (
 )
 EDGE = "azazel-edge-core.service"
 EDGE_SCOPE = tuple(sorted(SCOPE + (EDGE,)))
+#: The Deception Lite exposure units (#196 P1): grantable for the #253
+#: checks, never nameable by a policy, always withheld by the library.
+DECOY_UNITS = ("azazel-decoy-netd.service", "azazel-decoyd.service")
 NODE = "private-node-a"
 EVIDENCE_PAYLOAD = b'{"private-commissioning-proposal":true}'
 BOOT = "0f0e0d0c-0b0a-4908-8706-050403020100"
@@ -395,9 +398,12 @@ def test_a_declared_node_differing_from_the_deployment_refuses(world):
 
 
 def test_a_policy_naming_a_unit_outside_the_grantable_set_is_refused(world):
-    """The policy's allowlist is exactly the grantable set; nothing wider decodes."""
+    """The policy's allowlist is the grantable set minus the Deception Lite
+    exposure units (#196 P1), which no policy may name; nothing wider decodes."""
+    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
     from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
-    assert frozenset(ACTIVATION_UNIT_ALLOWLIST) == activation_pass.UNIT_SCOPE
+    assert frozenset(ACTIVATION_UNIT_ALLOWLIST) == (
+        activation_pass.UNIT_SCOPE - frozenset(DECEPTION_EXPOSURE_UNITS))
     with pytest.raises(ApprovalRefused):
         make_policy(units=SCOPE + ("azazel-watchdog.service",))
     world.policy = SimpleNamespace(units=SCOPE + ("azazel-watchdog.service",))
@@ -759,7 +765,7 @@ def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
 def test_the_pass_scope_and_tripwire_share_one_unit_set():
     from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
-    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE)
+    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS)
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()
@@ -1254,3 +1260,62 @@ def test_the_storage_label_never_changes_the_decision(tmp_path, monkeypatch, rep
     for _, _, text in results.values():
         for leak in ("/etc/azazel", "/dev", "mapper", "254:3", "private"):
             assert leak not in text, leak
+
+
+
+# -- Deception Lite exposure units (#196 P1) ---------------------------------
+
+
+@pytest.mark.parametrize("unit", DECOY_UNITS)
+def test_a_policy_naming_an_exposure_unit_is_refused_as_a_whole(world, unit):
+    """Not in `ACTIVATION_UNIT_ALLOWLIST`: no lease can ever hold one."""
+    with pytest.raises(ApprovalRefused):
+        make_policy(units=tuple(sorted(SCOPE + (unit,))))
+    world.policy = SimpleNamespace(units=tuple(sorted(SCOPE + (unit,))))
+    _assert_refused(world, world.run(), ["activation_policy"])
+
+
+def test_the_exposure_units_are_withheld_and_never_marked(world):
+    outcome = world.run()
+    assert sorted(outcome.granted) == list(SCOPE)
+    for unit in DECOY_UNITS:
+        assert unit in outcome.withheld
+        assert world.manager.state(unit) is UnitState.MASKED
+    assert not set(DECOY_UNITS) & set(world.markers())
+
+
+@pytest.mark.parametrize("unit", DECOY_UNITS)
+def test_the_exposure_units_are_checked_as_loaded_like_every_grantable_unit(world, unit):
+    """#253: a queued start must wait for its marker though no policy names it."""
+    world.systemd.loaded[unit] = _loaded(unit, Conditions=[])
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+    assert unit in world.systemd.reads
+
+
+@pytest.mark.parametrize("unit", DECOY_UNITS)
+def test_the_exposure_units_loaded_as_declared_are_accepted_and_still_withheld(world, unit):
+    world.systemd.loaded[unit] = _loaded(unit)
+    outcome = world.run()
+    assert sorted(outcome.granted) == list(SCOPE)
+    assert unit in outcome.withheld
+
+
+def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch):
+    """Even a forged lease naming it and a library that granted it are narrowed."""
+    from azazel_nexus.activation import ActivationOutcome, UnitVerdict
+
+    original = activated.ActivationDaemon.activate
+
+    def forged(self, **kwargs):
+        outcome = original(self, **kwargs)
+        lease = kwargs["lease"]
+        if lease is not None:
+            object.__setattr__(lease, "units", lease.units | {DECOY_UNITS[1]})
+        return ActivationOutcome(outcome.generation, outcome.verdicts + (
+            UnitVerdict(DECOY_UNITS[1], True, "granted"),), edge=outcome.edge)
+
+    monkeypatch.setattr(activated.ActivationDaemon, "activate", forged)
+    with pytest.raises(RuntimeError, match="Deception Lite exposure unit"):
+        world.run()
+    assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert world.markers() is None

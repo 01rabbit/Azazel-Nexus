@@ -60,6 +60,13 @@ def test_canonical_policy_decodes_with_digest_over_exact_bytes():
 
 def test_allowlist_is_code_fixed_to_the_loop_units():
     assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(SUPPORTING + ["azazel-edge-core.service"]))
+    # #196 P1: the Deception Lite exposure units are grantable for the #253
+    # checks but no policy may name them, so no lease ever holds one.
+    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
+    assert not set(DECEPTION_EXPOSURE_UNITS) & set(ACTIVATION_UNIT_ALLOWLIST)
+    for unit in DECEPTION_EXPOSURE_UNITS:
+        with pytest.raises(ApprovalRefused):
+            decode_activation_policy(_raw(_document(units=sorted(SUPPORTING + [unit]))))
     full = decode_activation_policy(_raw(_document(units=list(ACTIVATION_UNIT_ALLOWLIST))))
     assert full.units == ACTIVATION_UNIT_ALLOWLIST
 

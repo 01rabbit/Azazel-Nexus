@@ -1,0 +1,54 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Holds no capability and runs under its own account, inside the decoy network namespace, with PrivateUsers=yes.
+# It accepts and never initiates: no outbound connect is in its code, and the runtime boundary test allows its listener module bind and listen only.
+# IPAddressDeny=any stays and no address is allowed in this build.
+# Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite decoy
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md
+After=azazel-activated.service
+After=azazel-decoy-netd.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-decoyd.service
+Requires=azazel-activated.service
+Requires=azazel-decoy-netd.service
+
+[Service]
+Type=exec
+User=azdecoy
+ExecStart=/usr/libexec/azazel/az-decoyd
+NetworkNamespacePath=/run/netns/azazel-decoy
+PrivateUsers=yes
+TimeoutStartSec=30s
+MemoryMax=128M
+TasksMax=16
+LimitNOFILE=256
+LimitFSIZE=16M
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=50
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/azazel/decoy
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

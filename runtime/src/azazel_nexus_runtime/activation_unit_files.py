@@ -42,7 +42,7 @@ import stat
 
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 
-from .activation_markers import grant_marker_path
+from .activation_markers import GRANTABLE_UNITS, grant_marker_path
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
 
 __all__ = [
@@ -173,7 +173,7 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
     section, must be exactly those of `hardening.render_unit` for the unit,
     and no `[Unit]` assignment may be empty (a reset). Fixed labels only.
     """
-    if (type(unit) is not str or unit not in ACTIVATION_UNIT_ALLOWLIST
+    if (type(unit) is not str or unit not in GRANTABLE_UNITS
             or type(data) is not bytes):
         raise UnitContentRefused("unit scope refused")
     directives = _directives(_decode(data))
@@ -187,11 +187,18 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
         raise UnitContentRefused("unit file start guards differ from the declaration")
 
 
-def _scope(units) -> tuple[str, ...]:
+def _scope(units, allowed=GRANTABLE_UNITS) -> tuple[str, ...]:
+    """The named units, each within `allowed`.
+
+    Measurement takes the policy's scope (`ACTIVATION_UNIT_ALLOWLIST`); the
+    content and override checks take every grantable unit, which since #196
+    P1 also holds the two Deception Lite exposure units that no policy may
+    name but whose files must still wait for their marker.
+    """
     names = tuple(units)
     if (not names or any(type(name) is not str for name in names)
             or len(set(names)) != len(names)
-            or not set(names) <= set(ACTIVATION_UNIT_ALLOWLIST)):
+            or not set(names) <= set(allowed)):
         raise UnitFilesRefused("unit scope refused")
     return names
 
@@ -328,7 +335,7 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
     (`UnitFilesRefused`) when a file is missing, linked, not root-owned,
     group/other writable, multiply linked or changing.
     """
-    scope = _scope(units)
+    scope = _scope(units, ACTIVATION_UNIT_ALLOWLIST)
     require_no_unit_overrides(scope)
     try:
         fd = _open(UNIT_DIRECTORY, required=True)

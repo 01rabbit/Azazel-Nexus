@@ -100,8 +100,41 @@ def test_the_runtime_exists_as_its_own_distribution():
 EGRESS_EXEMPT = {"artifact_egress.py", "inference_egress.py", "knowledge_egress.py"}
 
 
+#: The runtime modules permitted to **listen** on an internet address family,
+#: and nothing else (#196 P1, `docs/deception-redirect-prerequisites.md` §5 D1,
+#: owner decision §7 Q7).
+#:
+#: The first ingress entry, kept apart from `EGRESS_EXEMPT` so that the two
+#: permissions never share a list: a listener may name `AF_INET`/`AF_INET6`
+#: to bind and listen, and is still refused every way to initiate traffic
+#: (`LISTENER_FORBIDDEN`). Exempt by file name, like the egress list.
+LISTENER_EXEMPT = {"decoy_listener.py"}
+
+#: What the default scan refuses everywhere outside the exemptions.
+INTERNET_FORBIDDEN = {"AF_INET", "AF_INET6", "AF_PACKET", "create_connection"}
+
+#: What a listener module may still not name: every way to initiate traffic,
+#: and the raw packet family. `bind`, `listen` and `accept` are what it is for.
+LISTENER_FORBIDDEN = {
+    "AF_PACKET", "create_connection", "connect", "connect_ex", "sendto", "sendmsg",
+}
+
+
+def _attributes(path: Path, names: set[str]) -> list[str]:
+    """Each of `names` the module reaches as an attribute or imports by name."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in names:
+            found.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            found.update(alias.name for alias in node.names if alias.name in names)
+    return sorted(found)
+
+
 def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
-    """`AF_UNIX` only, outside the three named transport modules. Checked against the source.
+    """`AF_UNIX` only, outside the named transport and listener modules.
 
     A daemon that could construct an `AF_INET` socket is a daemon whose
     `IPAddressDeny=any` is the only thing standing between it and the network
@@ -109,23 +142,58 @@ def test_the_runtime_opens_no_internet_socket_outside_the_named_service():
 
     The exemption is by **file name**, not by a marker a file can grant
     itself. A module that wanted egress by writing a comment would be a
-    module that granted itself egress.
+    module that granted itself egress. A listener module is scanned too, by
+    the stricter test below, never skipped.
     """
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(RUNTIME.rglob("*.py")):
-        if path.name in EGRESS_EXEMPT:
+        if path.name in EGRESS_EXEMPT or path.name in LISTENER_EXEMPT:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        found = [
-            node.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Attribute)
-            and node.attr in {"AF_INET", "AF_INET6", "AF_PACKET", "create_connection"}
-        ]
+        found = _attributes(path, INTERNET_FORBIDDEN)
         if found:
-            offenders[path.name] = sorted(set(found))
+            offenders[path.name] = found
     assert offenders == {}, f"{offenders} reach an internet address family"
+
+
+def test_a_listener_module_binds_and_listens_and_never_initiates():
+    """The ingress exemption allows `bind`/`listen` only (§7 Q7).
+
+    `connect`, `connect_ex`, `create_connection`, `sendto` and `sendmsg` stay
+    forbidden in the listener module: a decoy accepts and never initiates.
+    Replies on an accepted connection (`send`/`sendall`) go back to whoever
+    connected and are not an initiation.
+    """
+
+    for name in sorted(LISTENER_EXEMPT):
+        path = RUNTIME / name
+        assert path.exists(), f"{name} is exempt and does not exist"
+        assert _attributes(path, LISTENER_FORBIDDEN) == [], (
+            f"{name} may listen and may not initiate"
+        )
+        source = path.read_text(encoding="utf-8")
+        # An exemption nothing uses is a hole held open for nothing.
+        assert _attributes(path, {"bind"}) == ["bind"]
+        assert _attributes(path, {"listen"}) == ["listen"]
+        assert _attributes(path, {"AF_INET", "AF_INET6"}) == ["AF_INET", "AF_INET6"]
+        assert "import ssl" not in source and "subprocess" not in source
+
+
+def test_the_listener_scan_catches_what_it_forbids(tmp_path):
+    """The stricter scan is not vacuous: each forbidden name is found."""
+
+    for forbidden in sorted(LISTENER_FORBIDDEN):
+        module = tmp_path / f"probe_{forbidden}.py"
+        module.write_text(f"import socket\nsocket.{forbidden}\n", encoding="utf-8")
+        assert _attributes(module, LISTENER_FORBIDDEN) == [forbidden]
+        imported = tmp_path / f"import_{forbidden}.py"
+        imported.write_text(f"from socket import {forbidden}\n", encoding="utf-8")
+        assert _attributes(imported, LISTENER_FORBIDDEN) == [forbidden]
+
+
+def test_the_ingress_and_egress_exemptions_never_share_a_module():
+    assert not LISTENER_EXEMPT & EGRESS_EXEMPT
+    assert LISTENER_EXEMPT == {"decoy_listener.py"}
 
 
 def test_the_exemption_names_a_module_that_exists_and_uses_it():
@@ -194,6 +262,10 @@ EXPECTED_SCRIPTS = (
     "az-mio-remoted",
     "az-model-fetchd",
     "az-watchdog",
+    # The Deception Lite exposure pair (#196 P1); both refuse and exit in
+    # this build.
+    "az-decoy-netd",
+    "az-decoyd",
 )
 
 #: Console scripts an **operator** runs on a host, which correspond to no

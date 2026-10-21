@@ -685,6 +685,11 @@ granted → reboot → started, and every negative run masked and not started.
 and `azazel-edge-core.service`; it is still the one set behind the pass's
 policy check (`activation_pass.UNIT_SCOPE` is the same object), the tripwire
 and the marker writer, and it equals the policy's `ACTIVATION_UNIT_ALLOWLIST`.
+(Since #196 P1 it also holds the two Deception Lite exposure units, tier
+`DECEPTION_EXPOSURE`, so that §8.2's file and loaded-unit checks cover them;
+the allowlist does not name them, so it is now the grantable set minus those
+two, and the library withholds their tier on every pass:
+[prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented).)
 No new authority, approval field, flag or environment variable is added: the
 policy names edge-core, the generation pins its package, the operator's
 approval names it, and the library decides it like any other

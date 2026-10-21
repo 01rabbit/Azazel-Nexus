@@ -1,0 +1,43 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once.
+# The only unit that holds CAP_NET_ADMIN, as a bounding set and never as an ambient capability: it would build the decoy namespace, az-decoy0, the veth pair and the forwarding-deny rules from the commissioning render, and reads no decoy observation and no Edge decision.
+# Its body is a later phase of #196; in this build the executable refuses and exits, and the activation pass never grants this unit.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite network helper
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md
+After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-decoy-netd.service
+Requires=azazel-activated.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/libexec/azazel/az-decoy-netd
+RemainAfterExit=yes
+TimeoutStartSec=30s
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

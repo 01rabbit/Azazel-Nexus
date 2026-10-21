@@ -18,6 +18,7 @@ _ENTRYPOINTS = (
     "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
     "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
     "az-mio-entryd", "az-knowledge-lited", "az-mio-identity",
+    "az-decoy-netd", "az-decoyd",
 )
 
 
