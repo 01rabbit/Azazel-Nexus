@@ -421,10 +421,10 @@ namespace mechanism decided below.
 | --- | --- | --- |
 | account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller and this unit | `azdecoy` (new) |
 | capabilities | `CapabilityBoundingSet=CAP_NET_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_NET_ADMIN` (in P1; since §13 the namespace unit holds it as well, and no third unit may) | none |
-| address families | `AF_NETLINK` only: it is root, and `AF_UNIX` would reach the service manager over D-Bus. `RestrictAddressFamilies=` cannot narrow the netlink protocol, so this admits every netlink protocol (route, nftables and the rest), not route netlink alone | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
+| address families | `AF_NETLINK` only: it is root, and `AF_UNIX` would reach the service manager over D-Bus. `RestrictAddressFamilies=` cannot narrow the netlink protocol, so this admits every netlink protocol (route, nftables and the rest), not route netlink alone | `AF_UNIX AF_INET` (the new `is_decoy_listener` role; `AF_INET6` was removed in #278 because the decoy binds IPv4 only) |
 | network | host namespace (it would configure host links and the veth into the decoy namespace) | `NetworkNamespacePath=/run/netns/azazel-decoy`, `PrivateUsers=yes` |
 | addresses | `IPAddressDeny=any` | `IPAddressDeny=any`; no `IPAddressAllow=` in P1, and since §13 exactly `IPAddressAllow=10.255.196.0/30` |
-| writable | nothing (since §14, its runtime directory `/run/azazel-decoy-isolation`) | `/var/lib/azazel/decoy` (`azdecoy`, `0700`) |
+| writable | nothing (since §14, its runtime directory `/run/azazel-decoy-isolation`) | nothing: the decoy writes no file, so #278 removed `ReadWritePaths=/var/lib/azazel/decoy` (the directory itself is still created by the installer) |
 | type | `oneshot`, `RemainAfterExit=yes` (stopping it stops the decoy first) | `exec`; `Requires=`/`After=` the helper |
 | executable | `az-decoy-netd`: in P1 it refused and exited 1; the body is in §13 and §14 | `az-decoyd`: in P1 it refused and exited 1; the body is in §12 |
 
