@@ -47,6 +47,7 @@ from azazel_nexus.activation_approval_v2 import (
     _parse,
     observe_baseline_payload,
 )
+from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 from azazel_nexus.operator_trust import MAX_APPROVAL_BYTES, ApprovalPurpose, approval_message
 
 PURPOSES = {
@@ -124,6 +125,10 @@ def activation_summary(payload: bytes) -> dict:
         raise SignRefused("payload is not canonical v2 activation approval bytes; not signed")
     if seconds > MAX_LEASE_CEILING_SECONDS:
         raise SignRefused("approval validity exceeds the 72-hour ceiling; not signed")
+    # #251 L-4: only units the node could ever grant (its code-fixed
+    # allowlist); the node's policy may narrow this further and still decides.
+    if not set(document["units"]) <= set(ACTIVATION_UNIT_ALLOWLIST):
+        raise SignRefused("approval names a unit outside the activation allowlist; not signed")
     return {
         "schema": document["schema"],
         "approval_id": document["approval_id"],

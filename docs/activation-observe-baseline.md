@@ -103,7 +103,10 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   `0600` signature, nothing else written or logged). Before signing it also
   requires the payload to be a well-formed v2 document that re-encodes to
   exactly the same bytes, with a validity window of at most 72 hours, so v1
-  or arbitrary bytes are refused and not signed. It prints the operator,
+  or arbitrary bytes are refused and not signed. Since #251 L-4 it also
+  refuses, without signing, a payload whose `units` leave the node's
+  code-fixed `ACTIVATION_UNIT_ALLOWLIST` (`activation_policy.py`), the same
+  set every node policy must be a subset of. It prints the operator,
   approval id, units, generation and its digest, node digest, epoch,
   sequence and validity window; the commissioning evidence binding is
   checked but not printed. This is a shape check only: the node verifier
@@ -123,7 +126,7 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   ```sh
   # read-only; root in practice, since the protected inputs are root-only
   az-activation request --operator LABEL --approval-id ID --seq N \
-    --valid-for SECONDS [--units UNIT,UNIT] [--out request.json]
+    --valid-for SECONDS [--units UNIT,UNIT] --out request.json
   # off-host: tools/operator_sign.py --purpose activation (above)
   sudo az-activation install --payload request.json --signature approval.sig \
     --confirm-sha256 PAYLOAD_SHA256 [--replace] [--recover-high-water NAME]
@@ -139,14 +142,16 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   seconds) and `expires_at` is `now + --valid-for`, which must be within the
   policy's `max_lease_seconds`. The operator must be named by the policy and
   hold an active enrolled key. It writes the canonical payload, without a
-  trailing newline, to stdout or to a create-only `0600` `--out` file, and a
-  summary with `payload_sha256` to stderr. The summary omits the evidence
-  binding and the commissioning digest, but the payload itself contains both
-  (the operator signs them), so prefer `--out`: the file is created through
-  a parent reached without following any link and not writable by group or
-  others (a shared directory such as `/tmp` is refused), instead of leaving
-  the bytes in a terminal or a redirect with the caller's umask. It never
-  signs and never writes an approval file.
+  trailing newline, to a create-only `0600` `--out` file, and a summary with
+  `payload_sha256` to stderr. The summary omits the evidence binding and the
+  commissioning digest, but the payload itself contains both (the operator
+  signs them), so since #251 L-4 the payload goes only to `--out`: the file
+  is created through a parent reached without following any link and not
+  writable by group or others (a shared directory such as `/tmp` is
+  refused). Without `--out` it prints the summary only, writes nothing to
+  stdout or anywhere else and exits 1, so the bytes never reach a terminal
+  or a redirect with the caller's umask. It never signs and never writes an
+  approval file.
 
   `install` (root) reads the payload and the 64-byte signature (regular,
   single-link files, never followed links), requires `--confirm-sha256` to
@@ -154,7 +159,16 @@ cannot express ENFORCEMENT scope, so ENFORCEMENT units stay withheld.
   with `verify_observe_baseline_approval` against the activation policy, the
   current high-water floors and the OS clock (refusing a clock behind
   `time_floor - skew`); an approved generation below the floor also
-  refuses. It shows what was verified, then re-collects and compares
+  refuses. Once a floor exists (a high-water file, or the floors a §7
+  recovery takes), `install` also requires `approval_seq` **above** the
+  floor's (#251 L-3): a sequence at the floor is spent, so a different
+  approval with the same sequence is refused. The one exception is the
+  byte-identical installed pair (payload and signature) installed again
+  with `--replace`, which is idempotent; that equality is checked again
+  under the directory's exclusive lock before anything is renamed. The
+  pass's own check (`approval_seq` below the floor refuses) is unchanged,
+  so an installed approval whose sequence the floor now equals still
+  verifies at the next boot. It shows what was verified, then re-collects and compares
   everything before writing. Order: the high water is raised to the approved
   epoch, sequence and generation with `time_floor = now` (never lowered,
   bounded by `now + skew`), or initialized as below; `approval.json` and
@@ -496,7 +510,9 @@ flag or an environment variable:
    floor no lower in `security_epoch`, `approval_seq` and `generation` than
    the retained file, with `time_floor` from the confirmed clock, and appends
    its own audit event. Approvals signed against the old floor remain valid
-   only if their sequence still meets it.
+   only if their sequence still meets it; `install` itself accepts only a
+   sequence above the recovered floor, or the byte-identical installed pair
+   again (§3.1).
 
    Concretely: keep the moved-aside file inside
    `/var/lib/azazel/state/activation/` (root `0600`, single link, for example
@@ -574,10 +590,27 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    `BARRIER=1` protocol of `sd_notify_barrier(3)` so that systemd has
    processed READY before the process exits. Without READY the controller's
    start fails and every unit with `Requires=`/`After=` on it fails as a
-   dependency; a refused notification or barrier is logged and leaves exit 0
-   (the pass was recorded), and the dependent units then simply do not start.
-   READY is never sent on a failed pass, and the selected bootstrap path
-   keeps its own READY protocol unchanged.
+   dependency. Since #251 L-2 a refused READY, or a barrier that fails or
+   times out, withdraws this pass's grants before exiting 1: every grant
+   marker is removed and every governed unit masked (the emergency
+   narrowing of the tripwire), because it is then unknown whether systemd
+   counted the start as successful. The failure is recorded as
+   `activation.readiness_unconfirmed` when the ledger can be written; an
+   unwritable ledger records nothing and the withdrawal still runs. The
+   withdrawal is **best effort, not a guarantee**: if systemd had already
+   processed READY, the dependents' `ConditionPathExists=` can be evaluated
+   concurrently with it. A start job evaluated after its marker is gone is
+   skipped; a unit that started inside that window is not stopped (there is
+   no `StopUnit`), and its remask fails with `masked unit has no confirmed
+   inactive state`, which also exits 1. `completed safely` is printed only
+   after READY and the barrier succeeded. From the first marker to the final
+   `activation.inputs_incomplete` record, any failure -- a marker that cannot
+   be written, the record failing to assemble, or failing to append (for
+   example `AuditUnavailable`) -- removes the markers and remasks before
+   failing, so a failed pass never leaves a marker behind. A pass that fails
+   never sends READY; a pass that completed sends it, and if READY or the
+   barrier then fails, the pass is withdrawn as above and exits 1. The
+   selected bootstrap path keeps its own READY protocol unchanged.
 
 **What READY releases.** Twelve units `Requires=` the controller: the ten
 that carry the marker condition and auditd and commissiond. READY would
@@ -902,3 +935,54 @@ Tests:
     checked, and grants only its own.
 - `tests/unit/test_runtime_systemd_bus.py`: the single `GetAll`, refused
   outside the grantable units or the `Unit` interface.
+
+## 9. Review #251: low findings L-1–L-4, L-6
+
+The cross-cutting review of the activation path
+([#251](https://github.com/01rabbit/Azazel-Nexus/issues/251)) listed low
+findings; these changes only tighten. No authority, approval field, flag,
+environment variable or unit operation is added, and no refusal becomes a
+success.
+
+- **L-2 (notification and exit, §8 item 8).** A refused READY, or a barrier
+  that fails or times out, removes every grant marker and masks every
+  governed unit, then exits 1; it is recorded as
+  `activation.readiness_unconfirmed` when the ledger can be written (not a
+  floor event, so not in `FLOOR_EVENTS`). Any failure between the first
+  marker and the final pass record (writing a marker, assembling the record,
+  appending it) does the same before failing. `completed safely` is printed
+  after READY and the barrier. *Why the barrier is treated like READY:* §8
+  used to keep exit 0 after a failed barrier because the pass was recorded;
+  but a failed or timed-out barrier means systemd may not have processed
+  READY, so whether the start succeeded and whether the dependents run is
+  unknown. The safe side is the failed-pass state. It is best effort, not a
+  guarantee: when READY had been processed, a dependent's marker condition
+  may be evaluated concurrently with the withdrawal, and a unit that started
+  inside that window keeps running (no `StopUnit`); its remask then fails
+  with `masked unit has no confirmed inactive state` and the exit is 1. The
+  cost is availability: the units granted by that pass are masked again, so
+  they start only after a later boot's pass grants them anew.
+- **L-3 (§3.1).** `install` requires `approval_seq` above an existing floor,
+  except for the byte-identical installed pair; the pass is unchanged.
+- **L-4 (§3.1).** The signer refuses units outside
+  `ACTIVATION_UNIT_ALLOWLIST`; `az-activation request` writes the payload
+  only to `--out` and otherwise prints the summary alone and exits 1.
+- **L-6.** `DbusUnitManager.state` reads only `enabled` as ENABLED;
+  `enabled-runtime`, `linked`, `linked-runtime` and `alias` read as DISABLED,
+  so the activation path's postcondition after `EnableUnitFiles` refuses
+  them and rolls back. The only other production caller, the bootstrap
+  manager, compares the result with `MASKED` only and is unaffected, so the
+  change is not split by path.
+- **L-1 (kept).** The controller keeps `ReadWritePaths=/etc/systemd/system`
+  and `/run/systemd/system.control`. The ordinary path writes neither
+  directly (it masks, unmasks and enables through PID1 over D-Bus, and its
+  own files are the markers under `/run/azazel-activation`), but the same
+  unit runs the selected bootstrap path: it creates and removes the helper
+  overlay pair in `/run/systemd/system.control`
+  (`bootstrap_overlay_files.py`, `bootstrap_withdraw_files.py`), so that
+  path is required. For `/etc/systemd/system` no direct write was found on
+  either path (the bootstrap code only inspects the masks there), but the
+  bootstrap path's sandbox was qualified on the VM with it and the unit file
+  belongs to the installed systemd unit closure the bootstrap context pins
+  (`unit_closure_digest`), so it is not removed without a VM run of both
+  paths with it read-only. `packaging/systemd` is therefore not re-rendered.

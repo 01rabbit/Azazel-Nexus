@@ -510,10 +510,9 @@ def _run_once(
     passes it, and a relocated root reads no host producer.
     """
 
-    state = root / "var/lib/azazel/state"
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
-        ledger=AuditLedger(state / "activation.jsonl"),
+        ledger=_activation_ledger(root),
         manager=manager,
         definitions=CORE_UNITS,
     )
@@ -623,48 +622,67 @@ def _run_once(
                 pass
             _emergency_narrow(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
-    if granted and not rolled_back:
-        try:
-            markers = write_grant_markers(sorted(granted), root)
-        except Exception:  # noqa: BLE001 - a unit without a marker never starts
-            # The record must never stand between this failure and the remask.
+    # From the first marker to the final record, any failure (writing a
+    # marker, assembling the diagnostic record, appending it) withdraws:
+    # markers removed, every governed unit remasked, then it raises (#251 L-2).
+    try:
+        if granted and not rolled_back:
             try:
-                daemon._record({
-                    "event_type": "activation.grant_markers_unwritten",
-                    "occurred_at": now, "actor": actor,
-                })
-            except Exception:  # noqa: BLE001 - narrowing below is unconditional
-                pass
-            _emergency_narrow(manager, root, "activation grant markers could not be written")
-    # Do not gather optional diagnostic inputs before mandatory narrowing.
-    # Merely loading an enrolled key or observing a boot is not admission.
-    observed = _collect_input_status(root)
-    evidence = inputs.evidence if inputs is not None else None
-    observed["full_commissioning"] = "verified_current_binding" if evidence is not None else "unavailable"
-    if inputs is None:
-        missing = list(_ALL_PRODUCERS)
-        observed["producers"] = "collection_failed"
-    else:
-        missing = inputs.missing()
-        observed["producers"] = dict(inputs.status)
-        observed["node_health_findings"] = dict(inputs.health_findings)
-    observed["high_water"] = high_water
-    if inputs is not None:
-        # Fixed labels and check names only; no digest or probe text.
-        observed["edge_package_binding"] = inputs.edge_package_binding
-        observed["edge_evidence"] = inputs.edge_evidence
-        if inputs.edge_missing:
-            observed["edge_missing_for_launch"] = list(inputs.edge_missing)
-    daemon.ledger.append({
-        "event_type": "activation.inputs_incomplete",
-        "observed_inputs": observed,
-        "missing_producers": missing,
-        "grant_markers": list(markers),
-        "generation": outcome.generation,
-        "occurred_at": now,
-        "actor": actor,
-    })
+                markers = write_grant_markers(sorted(granted), root)
+            except Exception:  # noqa: BLE001 - a unit without a marker never starts
+                # The record must never stand between this failure and the remask.
+                try:
+                    daemon._record({
+                        "event_type": "activation.grant_markers_unwritten",
+                        "occurred_at": now, "actor": actor,
+                    })
+                except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                    pass
+                raise _MarkersUnwritten() from None
+        # Do not gather optional diagnostic inputs before mandatory narrowing.
+        # Merely loading an enrolled key or observing a boot is not admission.
+        observed = _collect_input_status(root)
+        evidence = inputs.evidence if inputs is not None else None
+        observed["full_commissioning"] = (
+            "verified_current_binding" if evidence is not None else "unavailable")
+        if inputs is None:
+            missing = list(_ALL_PRODUCERS)
+            observed["producers"] = "collection_failed"
+        else:
+            missing = inputs.missing()
+            observed["producers"] = dict(inputs.status)
+            observed["node_health_findings"] = dict(inputs.health_findings)
+        observed["high_water"] = high_water
+        if inputs is not None:
+            # Fixed labels and check names only; no digest or probe text.
+            observed["edge_package_binding"] = inputs.edge_package_binding
+            observed["edge_evidence"] = inputs.edge_evidence
+            if inputs.edge_missing:
+                observed["edge_missing_for_launch"] = list(inputs.edge_missing)
+        daemon.ledger.append({
+            "event_type": "activation.inputs_incomplete",
+            "observed_inputs": observed,
+            "missing_producers": missing,
+            "grant_markers": list(markers),
+            "generation": outcome.generation,
+            "occurred_at": now,
+            "actor": actor,
+        })
+    except _MarkersUnwritten:
+        _emergency_narrow(manager, root, "activation grant markers could not be written")
+    except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
+        # The record is what makes this a completed pass: the markers it
+        # wrote and the units it enabled are withdrawn first.
+        _emergency_narrow(manager, root, "activation pass record could not be appended")
     return outcome
+
+
+class _MarkersUnwritten(Exception):
+    """Private: a grant marker could not be written (already recorded)."""
+
+
+def _activation_ledger(root: Path) -> AuditLedger:
+    return AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
 
 
 def _narrow_bootstrap_core_units():
@@ -1024,6 +1042,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 now=now,
                 actor="azazel-activated",
             )
+            # Type=notify: without READY the controller's start fails and
+            # every unit with Requires=/After= on it fails as a dependency.
+            # READY is sent only after the pass, its markers and its record
+            # are complete. The process exits right after READY, so it waits
+            # (bounded) for systemd to process it first (BARRIER=1).
+            _notify_ready_or_withdraw(manager, Path("/"), now=now, actor="azazel-activated")
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
         if EMERGENCY_UNCONFIRMED in getattr(exc, "__notes__", ()):
@@ -1034,25 +1058,51 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 1
 
+    # Only after READY and its barrier: "completed" names a start systemd saw.
     reasons = sorted({verdict.reason.split(":", 1)[0] for verdict in outcome.verdicts})
     print(
         f"az-activated completed safely: granted={len(outcome.granted)}, "
         f"withheld={len(outcome.withheld)}, reasons={','.join(reasons)}"
     )
-    # Type=notify: without READY the controller's start fails and every unit
-    # with Requires=/After= on it fails as a dependency. READY is sent only
-    # after the pass, its markers and its record are complete; a refused
-    # notification leaves those units unstarted, which is the safe direction.
-    # The process exits right after READY, so wait (bounded) for systemd to
-    # process it first (BARRIER=1); otherwise the exit may be seen first.
+    return 0
+
+
+def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
+                              actor: str) -> None:
+    """Send READY and wait for its barrier; on any failure withdraw, then raise.
+
+    A refused READY, or a barrier that fails or times out, leaves it unknown
+    whether systemd counted this start as successful (#251 L-2). The safe side
+    is the state of a failed pass: every grant marker removed and every
+    governed unit masked (``_emergency_narrow``), then a non-zero exit.
+
+    Best effort, not a guarantee: if systemd had already processed READY, the
+    dependents' ``ConditionPathExists=`` may be evaluated concurrently with
+    this withdrawal. A start job evaluated after the marker is gone is
+    skipped; a unit that started inside that window is not stopped (there is
+    no StopUnit authority), and its remask fails with "masked unit has no
+    confirmed inactive state", which still exits non-zero.
+
+    The failure is recorded as ``activation.readiness_unconfirmed`` when the
+    ledger can be written; a record that fails never stands between this
+    failure and the withdrawal (as for ``activation.grant_markers_unwritten``).
+    """
     try:
         from . import systemd_notify
 
         systemd_notify.notify_ready()
         systemd_notify.notify_barrier()
-    except Exception:  # noqa: BLE001 - startup stays unsuccessful, nothing widens
-        print("az-activated readiness notification unavailable", file=sys.stderr)
-    return 0
+    except Exception:  # noqa: BLE001 - withdrawn below; nothing widens
+        print("az-activated readiness notification unavailable; withdrawing grants",
+              file=sys.stderr)
+        try:
+            _activation_ledger(root).append({
+                "event_type": "activation.readiness_unconfirmed",
+                "occurred_at": now, "actor": actor,
+            })
+        except Exception:  # noqa: BLE001 - narrowing below is unconditional
+            pass
+        _emergency_narrow(manager, root, "activation readiness notification unavailable")
 
 
 if __name__ == "__main__":  # pragma: no cover - the entry point

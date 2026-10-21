@@ -605,6 +605,37 @@ def test_the_dbus_adapter_passes_a_method_and_a_unit_and_nothing_else():
     assert all(method in DbusUnitManager.METHODS for method, _ in calls)
 
 
+@pytest.mark.parametrize("answer,expected", [
+    ("enabled", UnitState.ENABLED),
+    ("enabled-runtime", UnitState.DISABLED),
+    ("linked", UnitState.DISABLED),
+    ("linked-runtime", UnitState.DISABLED),
+    ("alias", UnitState.DISABLED),
+    ("masked", UnitState.MASKED),
+    ("masked-runtime", UnitState.MASKED),
+])
+def test_only_a_persistent_enabled_reads_as_enabled(answer, expected):
+    """#251 L-6: runtime enablement, a linked or an alias unit file is not a grant."""
+    manager = DbusUnitManager(call=lambda method, unit: answer)
+    assert manager.state("azazel-auditd.service") is expected
+
+
+@pytest.mark.parametrize("after_enable", ["enabled-runtime", "linked", "linked-runtime", "alias"])
+def test_an_enable_that_leaves_a_non_persistent_state_is_a_manager_failure(after_enable):
+    states = {"azazel-auditd.service": "masked"}
+
+    def call(method, unit):
+        if method == "UnmaskUnitFiles":
+            states[unit] = "disabled"
+        elif method == "EnableUnitFiles":
+            states[unit] = after_enable
+        if method == "GetUnitFileState":
+            return states[unit]
+
+    with pytest.raises(UnitOperationFailed, match="did not report.*enabled"):
+        DbusUnitManager(call=call).unmask_and_enable("azazel-auditd.service")
+
+
 def test_the_adapter_cannot_start_a_unit():
     """Activation decides what runs at the next boot.
 

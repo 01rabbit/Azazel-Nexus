@@ -12,7 +12,8 @@ none of which grants anything:
   after the digest is re-entered and ``PUBLISH`` typed, publishes it as an
   ordinary generation. Publishing is not admission.
 * ``request`` (read-only) collects the independent context the node verifier
-  will use and writes the canonical unsigned v2 payload. It never signs and
+  will use and writes the canonical unsigned v2 payload to a create-only
+  ``--out`` file (without it, only a summary is printed). It never signs and
   never writes an approval file.
 * ``install`` (root) re-collects that context, verifies a signed approval
   against the activation policy and the current high-water floors, places
@@ -582,7 +583,7 @@ def _summary(payload: bytes, *, operator, approval_id, seq, units, context, gran
     ]
 
 
-def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stdout, stderr) -> int:
+def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stderr) -> int:
     """Write the canonical unsigned v2 payload; sign nothing, place nothing."""
     try:
         if type(seq) is not int or seq < 0:
@@ -606,10 +607,6 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stdou
         if out_path is not None:
             _step("output file refused (it must not exist)", _write_create_only,
                   Path(out_path), payload)
-        else:
-            stream = getattr(stdout, "buffer", stdout)
-            stream.write(payload)
-            stream.flush()
     except Refused as error:
         print(f"Activation request refused: {error}. Nothing written.", file=stderr)
         return 1
@@ -620,6 +617,14 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stdou
                          units=scope, context=collected.context, granted=granted,
                          expires=expires):
         print(line, file=stderr)
+    if out_path is None:
+        # #251 L-4: the payload carries the commissioning evidence binding,
+        # so it never goes to a terminal or a redirect; only to --out.
+        print("Summary only; the payload was NOT written. Rerun with --out FILE (a "
+              "create-only 0600 file) to write it; its payload_sha256 will differ, since "
+              "granted_at is taken again. Nothing was signed, placed or admitted.",
+              file=stderr)
+        return 1
     print("Unsigned. Sign it off-host with tools/operator_sign.py --purpose activation and "
           "the payload_sha256 above; install it with az-activation install. Nothing was "
           "signed, placed or admitted.", file=stderr)
@@ -720,7 +725,27 @@ class _PlacementUncertain(Exception):
     pass
 
 
-def _place_approval(payload: bytes, signature: bytes, *, expect_present: bool) -> None:
+def _pair_at(directory_fd: int, payload: bytes, signature: bytes) -> bool:
+    """Whether the installed pair is byte-for-byte this payload and signature."""
+    try:
+        return (_read_protected_at(directory_fd, "approval.json", limit=MAX_APPROVAL_BYTES,
+                                   private=True) == payload
+                and _read_protected_at(directory_fd, "approval.sig", limit=_SIGNATURE_BYTES,
+                                       private=True) == signature)
+    except FileNotFoundError:
+        return False
+
+
+def _installed_pair_is(payload: bytes, signature: bytes) -> bool:
+    fd = _open_directory(_APPROVAL_DIRECTORY, private=True)
+    try:
+        return _pair_at(fd, payload, signature)
+    finally:
+        os.close(fd)
+
+
+def _place_approval(payload: bytes, signature: bytes, *, expect_present: bool,
+                    expect_same: bool = False) -> None:
     """Private temporary files, fsync, rename, directory fsync, protected read-back.
 
     The pair is renamed one after the other; a crash between the renames
@@ -735,6 +760,9 @@ def _place_approval(payload: bytes, signature: bytes, *, expect_present: bool) -
         # Under the exclusive lock: what is installed now must be what the
         # operator confirmed (REPLACE only covers a pair that was shown).
         if _existing_approval(fd) != expect_present:
+            raise Refused("installed approval changed after confirmation")
+        # A sequence at the floor was accepted only as this exact pair again.
+        if expect_same and not _pair_at(fd, payload, signature):
             raise Refused("installed approval changed after confirmation")
         for name, data in zip(_APPROVAL_FILES, (payload, signature)):
             partial = f".{name}.partial"
@@ -831,6 +859,18 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
             raise Refused(str(error)) from None
         if collected.context.generation < floors[2]:
             raise Refused("approved generation below the high-water floor")
+        # #251 L-3: once a floor exists, a sequence at the floor is already
+        # spent. Only the exact installed pair may be placed again (idempotent);
+        # any other approval needs a sequence above the floor. The pass's own
+        # check (`seq < floor` refuses) is unchanged, so the installed
+        # approval, whose sequence the floor now equals, still verifies.
+        reinstall = False
+        if (current is not None or retained is not None) and approved.approval_seq <= floors[1]:
+            reinstall = _step("activation approval directory unavailable or not private",
+                              _installed_pair_is, payload, signature)
+            if not reinstall:
+                raise Refused("approval sequence not above the high-water floor; only the "
+                              "installed approval may be installed again")
         time_floor = now
         if current is not None and parse_bootstrap_time(current.time_floor) > parse_bootstrap_time(now):
             time_floor = current.time_floor
@@ -894,7 +934,7 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
         else:
             raise_high_water(new_floor, now=now, skew_seconds=skew)
         stage = "high water written; approval placement unconfirmed"
-        _place_approval(payload, signature, expect_present=present)
+        _place_approval(payload, signature, expect_present=present, expect_same=reinstall)
         stage = "approval placed; activation ledger record missing"
         _step("activation ledger refused the install record", _append, {
             "event_type": "activation.approval_installed",
@@ -948,13 +988,14 @@ def main(argv=None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("generation-publish",
                         help="publish the observe-baseline generation (root, interactive)")
-    request = commands.add_parser("request", help="print the unsigned v2 approval payload")
+    request = commands.add_parser("request", help="write the unsigned v2 approval payload")
     request.add_argument("--operator", required=True)
     request.add_argument("--approval-id", required=True)
     request.add_argument("--seq", required=True, type=int)
     request.add_argument("--valid-for", required=True, type=int, metavar="SECONDS")
     request.add_argument("--units", help="comma-separated subset of the policy scope")
-    request.add_argument("--out", help="create-only 0600 file instead of stdout")
+    request.add_argument("--out", help="create-only 0600 file for the payload; without it "
+                         "only a summary is printed and nothing is written")
     install = commands.add_parser("install", help="verify and place a signed approval (root)")
     install.add_argument("--payload", required=True)
     install.add_argument("--signature", required=True)
@@ -968,7 +1009,7 @@ def main(argv=None) -> int:
     if args.command == "request":
         return run_request(operator=args.operator, approval_id=args.approval_id,
                            seq=args.seq, valid_for=args.valid_for, units=args.units,
-                           out_path=args.out, stdout=sys.stdout, stderr=sys.stderr)
+                           out_path=args.out, stderr=sys.stderr)
     return run_install(payload_path=args.payload, signature_path=args.signature,
                        confirm_sha256=args.confirm_sha256, replace=args.replace,
                        recover=args.recover_high_water, source=sys.stdin, out=sys.stdout)

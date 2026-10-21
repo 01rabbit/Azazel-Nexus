@@ -157,12 +157,26 @@ class Node:
         return cli.run_generation_publish(source=Tty(*lines, tty=tty), out=out), out.getvalue()
 
     def request(self, *, operator="operator-a", approval_id="approval-1", seq=5,
-                valid_for=3600, units=None, out=None):
-        stdout, stderr = io.BytesIO(), io.StringIO()
+                valid_for=3600, units=None, out=None, summary_only=False):
+        """Runs `request`; returns (code, the bytes written to --out, stderr).
+
+        Without an explicit ``out`` a fresh private file is used, since the
+        payload is only ever written to ``--out`` (#251 L-4).
+        """
+        stderr = io.StringIO()
+        target = out
+        if out is None and not summary_only:
+            directory = self.root.parent / "requests"
+            directory.mkdir(mode=0o755, exist_ok=True)
+            self._requests = getattr(self, "_requests", 0) + 1
+            target = str(directory / f"request-{self._requests}.json")
         code = cli.run_request(operator=operator, approval_id=approval_id, seq=seq,
-                               valid_for=valid_for, units=units, out_path=out,
-                               stdout=stdout, stderr=stderr)
-        return code, stdout.getvalue(), stderr.getvalue()
+                               valid_for=valid_for, units=units, out_path=target,
+                               stderr=stderr)
+        written = b""
+        if target is not None and out is None and Path(target).exists():
+            written = Path(target).read_bytes()
+        return code, written, stderr.getvalue()
 
     def sign(self, payload, key=None):
         return (key or self.key).sign(approval_message(ApprovalPurpose.ACTIVATION, payload)).signature
@@ -417,10 +431,29 @@ def test_request_prints_canonical_v2_bytes_the_signer_accepts(published):
     assert not (published.approvals / "approval.json").exists()
 
 
+def test_request_without_out_prints_only_a_summary(published, capsys):
+    """#251 L-4: no --out, no payload: the evidence binding never reaches a terminal."""
+    code, written, err = published.request(summary_only=True)
+    assert code == 1 and written == b""
+    assert "payload was NOT written" in err and "--out" in err
+    assert "payload_sha256: " in err and "approval_seq: 5" in err
+    assert BINDING not in err and '"schema"' not in err
+    assert capsys.readouterr().out == ""
+    assert not (published.approvals / "approval.json").exists()
+
+
+def test_request_main_without_out_writes_no_payload_to_stdout(published, capsys):
+    code = cli.main(["request", "--operator", "operator-a", "--approval-id", "approval-1",
+                     "--seq", "5", "--valid-for", "3600"])
+    captured = capsys.readouterr()
+    assert code == 1 and captured.out == ""
+    assert BINDING not in captured.err and "payload was NOT written" in captured.err
+
+
 def test_request_writes_a_create_only_private_file(published, tmp_path):
     out = tmp_path / "request.json"
-    code, stdout, _ = published.request(out=str(out))
-    assert code == 0 and stdout == b""
+    code, _, _ = published.request(out=str(out))
+    assert code == 0
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
     _parse(out.read_bytes())
     code, _, err = published.request(out=str(out))
@@ -554,6 +587,60 @@ def test_install_refuses_a_sequence_below_the_floor(published):
     code, out = published.install(older, older_sig, "REPLACE", replace=True)
     assert code == 1 and "sequence below the local floor" in out
     assert (published.approvals / "approval.json").read_bytes() == payload
+
+
+def test_install_refuses_another_approval_at_the_floor_sequence(published):
+    """#251 L-3: a sequence equal to the floor is spent once a floor exists."""
+    payload, signature = published.approved(seq=5)
+    assert published.install(payload, signature)[0] == 0
+    other, other_sig = published.approved(seq=5, approval_id="approval-other")
+    assert other != payload
+    code, out = published.install(other, other_sig, "REPLACE", replace=True)
+    assert code == 1 and "not above the high-water floor" in out
+    assert (published.approvals / "approval.json").read_bytes() == payload
+    assert (published.approvals / "approval.sig").read_bytes() == signature
+
+
+def test_install_of_the_identical_installed_pair_is_idempotent(published):
+    payload, signature = published.approved(seq=5)
+    assert published.install(payload, signature)[0] == 0
+    code, out = published.install(payload, signature, "REPLACE", replace=True)
+    assert code == 0, out
+    assert (published.approvals / "approval.json").read_bytes() == payload
+    assert _high_water(published)["approval_seq"] == 5
+    # The same bytes with another signature file are another pair.
+    code, out = published.install(payload, bytes(64), "REPLACE", replace=True)
+    assert code == 1
+
+
+def test_an_identical_reinstall_refuses_if_the_pair_changes_before_placement(published,
+                                                                           monkeypatch):
+    payload, signature = published.approved(seq=5)
+    assert published.install(payload, signature)[0] == 0
+    original = cli._place_approval
+
+    def swapped(*args, **kwargs):
+        (published.approvals / "approval.sig").write_bytes(bytes(64))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_place_approval", swapped)
+    code, out = published.install(payload, signature, "REPLACE", replace=True)
+    assert code == 2 and "installed approval changed after confirmation" in out
+
+
+def test_a_floor_at_the_installed_sequence_still_admits_it_and_its_reinstall(published):
+    """The pass raises the floor to the installed sequence; that pair stays valid."""
+    payload, signature = published.approved(seq=5)
+    assert published.install(payload, signature)[0] == 0
+    assert _high_water(published)["approval_seq"] == 5
+    from azazel_nexus.activation_approval_v2 import verify_observe_baseline_approval
+    collected = cli._collect_context()
+    approved = verify_observe_baseline_approval(
+        trust=published.trust, expected=collected.context, policy=collected.approval_policy,
+        payload=payload, signature=signature, now=published.now,
+        security_epoch_floor=2, approval_seq_floor=5)
+    assert approved.approval_seq == 5
+    assert published.install(payload, signature, "REPLACE", replace=True)[0] == 0
 
 
 def test_install_refuses_an_expired_approval(published):
@@ -698,7 +785,7 @@ def test_recovery_reinitializes_never_below_the_retained_floor(published):
     code, out = published.install(stale, stale_sig, "REPLACE", "RECOVER", replace=True,
                                   recover="high-water.json.retained")
     assert code == 1 and "sequence below the local floor" in out
-    fresh, fresh_sig = published.approved(seq=8, approval_id="approval-8")
+    fresh, fresh_sig = published.approved(seq=9, approval_id="approval-9")
     code, out = published.install(fresh, fresh_sig, "REPLACE", "recover", replace=True,
                                   recover="high-water.json.retained")
     assert code == 1 and "not confirmed" in out
@@ -707,7 +794,7 @@ def test_recovery_reinitializes_never_below_the_retained_floor(published):
                                   recover="high-water.json.retained")
     assert code == 0, out
     assert _high_water(published) | {"schema": None} == {
-        "schema": None, "security_epoch": 2, "approval_seq": 8, "generation": 1,
+        "schema": None, "security_epoch": 2, "approval_seq": 9, "generation": 1,
         "time_floor": "2027-01-10T00:05:00Z"}
     recovered, installed = published.events()[-2:]
     assert recovered["event_type"] == "activation.high_water_recovered"
