@@ -75,6 +75,7 @@ __all__ = [
     "DECOY_NAMESPACE_SHARED_OVERRIDES",
     "EDGE_PROBE_PREFLIGHT_UNIT",
     "GRANT_MARKER_UNITS",
+    "HOST_FIREWALL_UNIT",
     "PROFILES",
     "UNGOVERNED_PROFILES",
     "SHARED_HARDENING",
@@ -337,6 +338,19 @@ class ServiceProfile:
                 raise ValueError(
                     f"{self.unit} writes only its runtime directory "
                     f"{DECOY_ISOLATION_DIRECTORY} ({DECOY_ISOLATION_DIRECTORY_MODE})")
+            # What it is ordered against, fixed (#276 F1): after the
+            # controller, the namespace unit and the host firewall; requiring
+            # only the first two; nothing else.
+            if (self.after != (ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
+                               HOST_FIREWALL_UNIT)
+                    or self.requires != (ACTIVATION_CONTROLLER_UNIT,
+                                         DECOY_NAMESPACE_UNIT)
+                    or self.binds_to or self.before or self.conflicts
+                    or not self.default_dependencies):
+                raise ValueError(
+                    f"{self.unit} is after {ACTIVATION_CONTROLLER_UNIT}, "
+                    f"{DECOY_NAMESPACE_UNIT} and {HOST_FIREWALL_UNIT}, and "
+                    "requires only the first two")
         else:
             # `extra` renders before the shared lines, so a shared key, an
             # identity, a capability or a path setting placed there would sit
@@ -673,6 +687,21 @@ DECOY_NAMESPACE_PATH = f"{NETNS_DIRECTORY}/azazel-decoy"
 #: results only.
 DECOY_ISOLATION_DIRECTORY = "azazel-decoy-isolation"
 DECOY_ISOLATION_DIRECTORY_MODE = "0755"
+
+#: The host firewall unit the network helper is ordered after (#276 F1,
+#: docs/deception-redirect-prerequisites.md §10). Debian's `nftables.service`
+#: loads `/etc/nftables.conf`, which begins with `flush ruleset`, and is only
+#: `WantedBy=sysinit.target` with no `Before=` on it, so without this the
+#: helper could load the decoy table at boot and the firewall load could then
+#: remove it. Ordering only -- never `Requires=`, `Wants=`, `BindsTo=` or
+#: `PartOf=`: a host without the unit, or with it failed, must not stop or
+#: pull in anything, and `After=` on a unit that does not exist is a no-op.
+#: No `Before=` either: the helper has to come later, and at shutdown the
+#: reverse order stops the helper (removing its table) before the firewall's
+#: stop flushes the ruleset. It covers the boot only: a later reload, stop,
+#: restart or start of the firewall still removes the table, and nothing
+#: notices (§10, "Before any grant").
+HOST_FIREWALL_UNIT = "nftables.service"
 
 #: The `SHARED_HARDENING` entries the decoy namespace unit does not carry
 #: (#196 (a), n3), and only it: every shared setting that makes systemd
@@ -1352,7 +1381,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # After and Requires the namespace unit (#196 (a)): it configures the
         # veth into a namespace that unit created. Granted together with it
         # or not at all, so a skipped namespace unit cannot count as success.
-        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
+        # After, and only After, the host firewall (#276 F1): its boot-time
+        # `flush ruleset` must not run after the table was loaded and checked.
+        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
+               HOST_FIREWALL_UNIT),
         requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
         conditions=_grant_condition(DECOY_NETWORK_HELPER_UNIT),
         unit_type="oneshot",
