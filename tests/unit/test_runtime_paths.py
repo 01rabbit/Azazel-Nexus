@@ -16,6 +16,7 @@ import azazel_nexus_runtime.runtime_paths as runtime_paths
         ("knowledge", "knowledge"),
         ("knowledge-read", "knowledge-read"),
         ("edge-intake", "edge-intake"),
+        ("decoy-intake", "decoy-intake"),
     ],
 )
 def test_socket_path_uses_the_installer_owned_service_leaf(tmp_path, monkeypatch, name, leaf):

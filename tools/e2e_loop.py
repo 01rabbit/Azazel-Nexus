@@ -330,6 +330,51 @@ def assert_edge_decisions(stdout: bytes):
     return len(lines)
 
 
+def decoy_line() -> bytes:
+    """One closed interaction, with placeholder identifiers only."""
+    from azazel_nexus.decoy_interaction import build_interaction
+
+    return build_interaction(
+        event_id="evt-" + "0" * 32, decoy_name="ssh-decoy",
+        generation_digest="sha256:" + "ab" * 32, node_id="e2e-node",
+        observed_at="2026-10-21T00:00:00Z", bytes_received=12, truncated=False,
+        responder="ssh-banner").line
+
+
+def replay_decoy(path: Path, deadline: float):
+    """As the decoy would: azdecoy, one line, one connection, nothing read back."""
+    code = """import socket, sys
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+    connection.settimeout(2)
+    connection.connect(sys.argv[1])
+    connection.sendall(sys.stdin.buffer.read())
+    connection.shutdown(socket.SHUT_WR)
+    assert connection.recv(1) == b""
+"""
+    result = subprocess.run([sys.executable, "-c", code, str(path)], input=decoy_line(),
+                            capture_output=True, timeout=max(0.1, deadline - time.monotonic()),
+                            **account_credentials("azdecoy"))
+    assert result.returncode == 0, f"azdecoy send exited {result.returncode}: {result.stderr[:200]!r}"
+
+
+def assert_decoy_interaction(harness: Harness, alerts: int):
+    """Stored in its own leaf, labelled as not Edge's; Edge's records unchanged."""
+    from azazel_nexus.decoy_interaction import RECORD_KIND
+    from azazel_nexus.edge_intake import read_intake_status
+
+    base = harness.root / "var/lib/azazel"
+    (record,) = json_lines(base / "edge-intake/decoy-evidence")
+    assert record["kind"] == RECORD_KIND and record["edge_observation"] is False
+    assert record["environment_event"]["event_type"] == "interaction"
+    assert len(json_lines(base / "edge-intake/evidence")) == alerts, "decoy stored as Edge evidence"
+    intake = read_intake_status((base / "run/edge-intake-status/status.json").read_bytes())
+    assert intake is not None and intake["decoy"]["accepted"] == 1
+    assert intake["accepted"] == alerts and not any(intake["refused"].values())
+    transitions = [e for e in ledger_events(base / "edge-incidents")
+                   if e["event_type"] in {"edge.incident.opened", "edge.incident.updated"}]
+    assert len(transitions) == alerts, "a decoy interaction reached the incident tracker"
+
+
 def replay(harness: Harness, intake: Path, deadline: float):
     # stdin avoids granting azedge access to the repository or the fixture.
     code = """import socket, sys
@@ -361,7 +406,7 @@ def integrated_loop(harness: Harness) -> str:
     assert not (base / "incident-explain/cursor.json").exists(), "use a fresh harness root"
     expected = {base / "run" / name / f"{name}.sock" for name in
                 ("audit", "audit-submit", "knowledge", "knowledge-read", "mio-entry", "mio-advise",
-                 "edge-intake")}
+                 "edge-intake", "decoy-intake")}
     # Earlier stages stop their subprocesses by SIGTERM and can leave socket
     # inodes. Remove only those known, dead endpoints, before readiness polling.
     for path in expected & sockets(harness.root):
@@ -433,6 +478,13 @@ def integrated_loop(harness: Harness) -> str:
             forward_failure = exc
             if not producer:
                 raise
+        # #196 P2: one decoy interaction, sent as azdecoy on the decoy's own
+        # socket, becomes Nexus evidence and nothing of Edge's changes.
+        replay_decoy(base / "run/decoy-intake/decoy-intake.sock",
+                     time.monotonic() + FORWARD_SECONDS)
+        wait_until(time.monotonic() + FORWARD_SECONDS,
+                   lambda: assert_decoy_interaction(harness, alerts), daemons,
+                   what="decoy interaction")
         if producer:
             stop_producer()
             count = assert_edge_decisions((state / "stdout.jsonl").read_bytes())
@@ -479,7 +531,8 @@ def integrated_loop(harness: Harness) -> str:
     return (f"{source}; {forward}azedge producer, azintake/azexplain/azaudit/azmioentry/azknowledge daemons "
             "with real uid/gid and unit supplementary groups; two alerts, escalation, evidence digests, "
             "deterministic handoff, T1110 citation, private status, verified audit and its capacity "
-            "snapshot in status; shutdown close. "
+            "snapshot in status; one azdecoy interaction stored as Nexus evidence apart from "
+            "Edge's, with no incident transition; shutdown close. "
             + ("Edge decided notify then isolate (dry run); network syscalls: intake only."
                if producer else
                "Replay sends only producer fixture lines; Edge's non-alert filtering is not exercised."))

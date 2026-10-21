@@ -59,6 +59,22 @@ REFUSAL_CODES = frozenset(
         "EDGE_RANGE_attack_type",
         "EDGE_TYPE_category",
         "EDGE_RANGE_category",
+        # The Deception Lite decoy socket (#196 P2): Nexus observations, not
+        # Edge's, refused with their own codes.
+        "DECOY_TOO_LARGE",
+        "DECOY_JSON",
+        "DECOY_SHAPE",
+        "DECOY_TYPE",
+        "DECOY_RANGE",
+        "DECOY_ADDRESS",
+        "decoy_peer_refused",
+        "decoy_rate_limited",
+        "decoy_overloaded",
+        "decoy_read_deadline",
+        "decoy_read_error",
+        "decoy_evidence_segment_full",
+        "decoy_storage_failed",
+        "decoy_listener_unavailable",
     }
 )
 
@@ -597,8 +613,9 @@ def read_intake_status(raw: bytes) -> dict | None:
                 "storage_failed",
             ),
             # Absent from a snapshot an older intake wrote, and edge_forward
-            # also until Edge has reported its forward counts.
-            ("ledger_recovered", "edge_forward"),
+            # also until Edge has reported its forward counts; decoy only
+            # while the decoy socket is open (#196 P2).
+            ("ledger_recovered", "edge_forward", "decoy"),
         )
         _require(value["schema"] == STATUS_SCHEMA)
         _require(type(value["storage_failed"]) is bool, "EDGE_TYPE")
@@ -625,6 +642,14 @@ def read_intake_status(raw: bytes) -> dict | None:
             _int(forward["since"], FORWARD_SINCE_MAX)
             _int(forward["restarts"], 2**64 - 1)
             _number(forward["reported_at"])
+        if "decoy" in value:
+            # Nexus's own decoy observations: never in accepted/processed,
+            # which count Edge's events only.
+            decoy = value["decoy"]
+            _shape(decoy, ("accepted", "last_accepted_at"))
+            _int(decoy["accepted"], 2**64 - 1)
+            if decoy["last_accepted_at"] is not None:
+                _number(decoy["last_accepted_at"])
         return value
     except (ValueError, TypeError, UnicodeError, RecursionError):
         return None

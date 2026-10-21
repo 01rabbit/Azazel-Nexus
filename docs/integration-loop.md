@@ -992,7 +992,10 @@ I4 has three prerequisites, not one. The Nexus half of each is designed in
 One part does not need enforcement: what an operator-exposed decoy observes
 (Fabric `EnvironmentEvent`) can enter this loop as evidence, the way Edge's
 alerts do, once item 3 exists. That observation path is the first piece of I4
-that can be built while Edge stays observe-only.
+that can be built while Edge stays observe-only. Its intake half is built
+([P2](deception-redirect-prerequisites.md#11-p2-as-implemented)): the intake
+stores a decoy's interaction in its own evidence leaf, labelled as not Edge's,
+and never passes it to the incident tracker; nothing in this build sends one.
 
 **Edge Core's own output.** Edge Core prints each decision to stdout, which
 the unit sends to the journal. Those lines are Edge's record and carry the
