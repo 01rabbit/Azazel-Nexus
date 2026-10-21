@@ -250,10 +250,13 @@ def test_real_bundle_profile_resolver_runs_without_checkout_or_installed_package
 def test_real_bundle_contains_every_file_the_installer_runs(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "packaging/install.sh").read_text(encoding="utf-8")
+    # Quotes and braces around the variable are optional, so a respelling of a
+    # reference cannot hide it from this check.
+    path = r'"?/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_-]+\.[A-Za-z0-9]+)'
     referenced = {
-        "tools/" + name for name in re.findall(r'\$REPO_ROOT/tools/([A-Za-z0-9_.-]+)', script)
+        name for name in re.findall(r'\$\{?REPO_ROOT\}?' + path, script)
     } | {
-        "packaging/" + name for name in re.findall(r'"\$HERE"/([A-Za-z0-9_./-]+)', script)
+        "packaging/" + name for name in re.findall(r'\$\{?HERE\}?' + path, script)
     }
     assert "tools/provision_mission_read.py" in referenced
     assert "packaging/tmpfiles.d/azazel-nexus-bootstrap.conf" in referenced
