@@ -433,7 +433,18 @@ does, so the Deception Lite row stays `loopback-only`.
     work, `ProtectClock=`, `ProtectHostname=`, `ProtectKernelLogs=`,
     `RestrictRealtime=`, and `InaccessiblePaths=` over the D-Bus and systemd
     private sockets as a second barrier to the `AF_NETLINK`-only family;
-  - n1 and n2, the review's two nits on the helper, carried as raised;
+  - n1, the decoy's `Requires=azazel-decoy-netd.service` is not a
+    guarantee: when the helper's `ConditionPathExists=` (its grant marker)
+    does not hold, systemd skips the helper and counts that as success, so a
+    future grant of the decoy alone would let it try to start without the
+    helper having run. It would fail for want of the namespace, but that is
+    not something the dependency guarantees. To be closed in that phase, for
+    example by granting the helper and the decoy together, or by making the
+    decoy conditional on the namespace existing;
+  - n2, the decoy combines `PrivateUsers=yes` with `NetworkNamespacePath=`.
+    Whether joining (`setns`) a network namespace owned by the initial user
+    namespace succeeds in the order systemd actually applies these settings
+    has not been checked; it is an item for that phase's VM run;
 - **generation measurement before any grant.** The day the tier can be
   granted, the exposure units' files must be in the generation's measured
   set (`measure_scoped_unit_files`, which takes the policy's scope) and so in
