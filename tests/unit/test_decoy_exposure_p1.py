@@ -149,20 +149,29 @@ def test_the_listener_module_never_initiates():
               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     assert {"bind", "listen"} <= called
     assert not called & {"connect", "connect_ex", "create_connection", "sendto",
-                         "sendmsg", "send", "sendall", "accept", "setsockopt"}
+                         "sendmsg", "send", "sendall", "accept"}
+    # The one socket option (#196 decoy body, §12): SO_REUSEADDR, so that a
+    # restart is not refused while a closed connection is in TIME_WAIT.
+    options = [[ast.unparse(arg) for arg in node.args] for node in ast.walk(tree)
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "setsockopt"]
+    assert options == [["socket.SOL_SOCKET", "socket.SO_REUSEADDR", "1"]]
     imported = {alias.name.split(".")[0] for node in ast.walk(tree)
                 if isinstance(node, (ast.Import, ast.ImportFrom))
                 for alias in node.names}
     imported |= {node.module.split(".")[0] for node in ast.walk(tree)
                  if isinstance(node, ast.ImportFrom) and node.module}
     assert imported <= {"__future__", "annotations", "ipaddress", "socket", "azazel_nexus",
-                        "Commissioning", "DecoyEntry", "DecoyRefused"}
+                        "Commissioning", "DecoyEntry", "DecoyRefused", "MIN_PORT",
+                        "decoy_netns", "DecoyNamespace"}
 
 
 # -- the two executables ------------------------------------------------------
 
 
-@pytest.mark.parametrize("module", [decoy_netd, decoyd])
+# The decoy's body (#196, §12) is tested in test_decoy_body.py; only the
+# helper still refuses here.
+@pytest.mark.parametrize("module", [decoy_netd])
 def test_the_executables_refuse_and_exit_nonzero(module, capsys):
     assert module.main([]) == 1
     assert module.REFUSAL in capsys.readouterr().err
@@ -175,7 +184,7 @@ def test_the_executables_take_no_argument(module, argv, capsys):
     assert "takes no argument" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("name", ["decoy_netd.py", "decoyd.py"])
+@pytest.mark.parametrize("name", ["decoy_netd.py"])
 def test_the_executables_run_nothing_and_reach_nothing(name):
     """No process, no socket, no network configuration, no environment switch."""
 

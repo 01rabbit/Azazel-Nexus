@@ -283,12 +283,15 @@ def test_deception_lite_is_loopback_only_because_nothing_can_bind_an_address() -
     assert reaching == {}, f"{reaching} can reach past this host"
 
 
-def test_the_decoy_listener_is_called_by_nothing_so_the_row_stays_loopback_only() -> None:
+def test_the_decoy_listener_is_called_only_by_the_ungranted_decoy_so_the_row_stays_loopback_only() -> None:
     """#196 P1 adds one module that can bind an address: `decoy_listener.py`.
 
-    The row may stay `loopback-only` only while nothing runs it. The day a
-    runtime module imports it, this fails, and whoever made it fail has to
-    come to `functional_readiness.py` -- which, per
+    The row may stay `loopback-only` only while nothing that runs on a node
+    runs it. Since the decoy body (§12) its one caller is `az-decoyd`, whose
+    unit the activation pass never grants in this build (the
+    `DECEPTION_EXPOSURE` tier is withheld as `isolation_evidence_absent`). Any
+    other importer fails this, and whoever made it fail has to come to
+    `functional_readiness.py` -- which, per
     `docs/deception-redirect-prerequisites.md` §5, moves to a new word only
     after `HG-06` passes on hardware.
     """
@@ -310,9 +313,12 @@ def test_the_decoy_listener_is_called_by_nothing_so_the_row_stays_loopback_only(
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module or ""] + [alias.name for alias in node.names]
             if any("decoy_listener" in name for name in names):
-                importers.append(path.name)
-    assert importers == []
+                importers.append(path.relative_to(runtime_root).as_posix())
+    assert importers == ["decoyd.py"]
     assert READINESS["deception_lite"].loopback_only is True
+    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
+
+    assert "azazel-decoyd.service" in DECEPTION_EXPOSURE_UNITS
 
 
 def test_the_one_module_that_reaches_the_network_cannot_be_reached_through() -> None:

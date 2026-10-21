@@ -1,8 +1,8 @@
 """Turn a decoy's observation into the event it reports (#196 P2).
 
-The decoy daemon (a later phase) calls `interaction_from_observation` once
+The decoy daemon (`decoyd.py`, §12) calls `interaction_from_observation` once
 per reach and sends `DecoyInteraction.line` to the intake's decoy socket
-(`runtime_paths.socket_path("decoy-intake")`), one line per connection, as
+(`decoy_sender.DECOY_INTAKE_SOCKET`), one line per connection, as
 Edge does on its own socket. Nothing is read back: the intake answers nothing,
 and nothing it holds flows to the decoy or to Edge.
 
