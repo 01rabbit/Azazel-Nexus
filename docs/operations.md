@@ -249,6 +249,155 @@ The counts are since the daemon started and are not persisted: a restart
 begins new windows, so the first refusal of each key after a restart is
 written again.
 
+### Audit chain retention (#211)
+
+**Policy (owner decision, 2026-10-21): the audit chain is never deleted; a
+low-capacity condition is a warning only.** auditd does not remove, truncate
+or rotate away any segment of `/var/lib/azazel/state/audit/`, and nothing else
+on the node does either. When space runs short it warns, in `azazel-nexus
+status` (the `audit:` line, #231) and in the journal; it does not delete to
+make room. This was the default since #224 and is now the policy. Why:
+
+- **Evidence is not lost.** The chain is the record of what the node did and
+  was asked to do. A retention window would remove the oldest evidence
+  silently, on a schedule nobody reviewed for the case at hand.
+- **A writer cannot push evidence out.** With deletion by age or by size, a
+  compromised writer that floods the chain (up to its rate and daily
+  limits) would force the oldest records out, including the ones that
+  record how it was compromised. Without deletion a flood can only fill the
+  disk, which is loud (the warning) and bounded per day by the limits in
+  [Audit chain limits](integration-loop.md#audit-chain-limits-211-s3).
+
+**Reading the warning.** `audit: ok -- WARNING: capacity warning (<reasons>):
+nothing is deleted; ...` is not a failure; the chain verified at auditd's
+start. The status text still says the retention is "the owner's decision";
+that decision is this policy. The reasons:
+
+| Reason | Means | What to do |
+| --- | --- | --- |
+| `chain_size` | the segments total at least 1 GiB | Nothing urgent. At the normal 10–16 MiB a day this appears after two to three months and then stays on. Check that the free space still covers the yearly growth below, and export a copy if one is due. |
+| `filesystem_free` | the ledger's filesystem has under 1 GiB free | Act. Plan more storage or a reinstall (below) before the disk fills. |
+
+The journal carries the same reading once a day while it lasts:
+`azazel-auditd: audit chain capacity warning: chain_bytes=... segments=...
+filesystem_free_bytes=...; nothing is deleted`. If the filesystem does fill,
+appends fail closed: auditd refuses writers rather than claim a record it
+did not write, and the intake and explainer latch `storage_failed`.
+
+**`/var/lib` capacity estimate** (details in
+[Audit chain limits](integration-loop.md#audit-chain-limits-211-s3)). The
+records that have limits and retention total about 0.9 GiB. The audit chain
+is the only record without retention: about 10–16 MiB a day in normal
+operation (roughly 4–6 GiB a year), and at most about 250 MiB a day from a
+misbehaving explainer under the daily cap. Size `/var/lib` for the years of
+service you intend, at about 6 GiB a year plus the 0.9 GiB and headroom.
+
+**Moving old records off the node: copy, never delete.** Removing a segment
+from `/var/lib/azazel/state/audit/` breaks the node, so it must not be done,
+including after a verified copy:
+
+- auditd verifies the whole chain at every start from sequence 1 and the
+  all-zero genesis hash (`SegmentedLedger.verify`,
+  `runtime/src/azazel_nexus_runtime/auditd.py`). With the oldest segment gone,
+  the first remaining record does not follow sequence 0 and the chain is
+  reported broken; with a middle segment gone, the next one does not chain on.
+  There is no anchor to start from instead: the checkpoints are unsigned and
+  "anchor nothing".
+- A broken chain leaves auditd unverified: it refuses every append and
+  `audit.bootstrap.observe`, withholds systemd readiness, and status shows
+  `audit: FAILED`. auditd is bootstrap-critical: the bootstrap waits for its
+  readiness, so the next boot does not complete.
+- The bootstrap pre-start check reads the ledger directory from genesis too,
+  against the head its signed policy pins, and refuses any file that is not a
+  `YYYY-MM-DD.jsonl` segment (`runtime/src/azazel_nexus_runtime/bootstrap_audit.py`).
+
+So the capacity remedies are **more storage** (a larger disk or partition
+mounted for `/var/lib`, with the ledger copied over intact to the same path,
+owner and modes; a symlink in the path is refused, since the bootstrap check
+opens each component with `O_NOFOLLOW`) or a **reinstall**: export
+the whole chain as below, then reinstall; a new chain starts from genesis only
+through the first-install path, which requires an empty ledger directory. The
+exported chain remains verifiable on its own.
+
+**Export procedure.** It uses only the installed venv and coreutils. Do it in
+a maintenance window, not during a bootstrap or activation pass. While auditd
+is stopped, nothing is appended: the explainer's forwarded records are dropped
+and counted in `audit_forward_dropped` (the incident ledger keeps them), and
+`azazel-commissiond.service` stops with auditd (`BindsTo=`).
+
+1. Note what is running, then stop auditd:
+
+   ```sh
+   systemctl is-active azazel-auditd.service azazel-commissiond.service
+   sudo systemctl stop azazel-auditd.service
+   ```
+
+2. Verify the chain in place and record its head (the same verifier as the
+   [integration-loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)):
+
+   ```sh
+   sudo /opt/azazel-nexus/venv/bin/python -I -c 'import sys; from pathlib import Path; from azazel_nexus_runtime.auditd import SegmentedLedger
+   ledger = SegmentedLedger(Path(sys.argv[1])); ledger.verify(); seq, head = ledger.head()
+   print(sys.argv[1], "verified;", len(ledger.segments()), "segments; head", seq, head)' /var/lib/azazel/state/audit
+   ```
+
+   It must print `verified` with a non-zero head. If it raises
+   `AuditChainBroken` instead, the chain is evidence of a fault: still copy
+   it (steps 3 and 4), but report the break before going further; auditd
+   started on it would show `audit: FAILED` and refuse every writer.
+
+3. Copy **every** segment, from the first, to the external medium (mounted
+   here at `/mnt/export`). The verifier starts at genesis, so a copy that
+   leaves out the oldest segments cannot be verified. Write nothing into the
+   ledger directory itself. (The ledger directory is `0700 azaudit`, so the
+   globs below are expanded inside `sudo sh -c`, not by your shell.)
+
+   ```sh
+   DEST=/mnt/export/azazel-audit-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)
+   sudo install -d -m 0700 "$DEST"
+   sudo sh -c 'cp --preserve=mode,timestamps /var/lib/azazel/state/audit/*.jsonl "$1"/' sh "$DEST"
+   ```
+
+4. Record the hashes and the head next to the copy, and keep a second copy of
+   both off the medium (for example in the operator's notes):
+
+   ```sh
+   sudo sh -c 'cd "$1" && sha256sum -- *.jsonl > SHA256SUMS && cat SHA256SUMS' sh "$DEST"
+   echo "<sequence> <head hash from step 2>" | sudo tee "$DEST/HEAD"
+   ```
+
+5. Verify the copy with the same command as step 2, giving `"$DEST"` instead
+   of the ledger directory. Its segment count and head must equal step 2's.
+   `SHA256SUMS` and `HEAD` are not `*.jsonl` and are not read as segments.
+
+6. Start auditd again, and commissiond if step 1 showed it active, then check
+   that status shows `audit: ok`:
+
+   ```sh
+   sudo systemctl start azazel-auditd.service
+   sudo systemctl start azazel-commissiond.service   # only if it was active
+   azazel-nexus status
+   ```
+
+**Continuity between exports.** Segments are daily and appends never go to a
+day before the latest segment, so every segment older than the newest is
+closed and never changes. A later export therefore holds the earlier export's
+closed segments byte for byte: their lines in the two `SHA256SUMS` files must
+match, and in the later copy the record at the earlier `HEAD`'s sequence
+carries the earlier `HEAD`'s hash:
+
+```sh
+sudo /opt/azazel-nexus/venv/bin/python -I -c 'import sys; from pathlib import Path; from azazel_nexus_runtime.auditd import SegmentedLedger
+seq, head = open(sys.argv[2]).read().split(); ledger = SegmentedLedger(Path(sys.argv[1])); ledger.verify()
+print("continuous" if any(e.sequence == int(seq) and e.event_hash == head for e in ledger) else "NOT continuous")' "$DEST" /mnt/export/<earlier export>/HEAD
+```
+
+A mismatch on a closed segment, or `NOT continuous`, means the node's chain
+changed after the earlier export: keep both copies and treat it as an
+incident.
+
+Keep every export; none of them replaces the copy on the node.
+
 ## 4. Field deployment kit
 
 A deployment kit is intentionally serviceable and equipment-neutral:
@@ -490,7 +639,8 @@ a day, and `audit.verify` reports `capacity` (see `docs/integration-loop.md`,
 `/var/lib/azazel/run/audit-status/status.json` (rewritten every 60 s; stale
 after 300 s). `audit: ok -- WARNING: capacity warning (...)`, also listed
 under `next:`, means the chain or its filesystem crossed a threshold. It is
-not a failure: nothing is deleted, and what to keep is the owner's decision.
+not a failure: nothing is deleted, by policy; see "Audit chain retention"
+above for what each reason asks of the operator.
 `audit: FAILED` means only that the chain did not verify at auditd's start. `audit: unknown` means no readable snapshot (auditd not
 running, or install.sh not re-run after the upgrade that added the leaf) or a
 stale one.

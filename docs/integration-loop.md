@@ -790,8 +790,9 @@ nothing in intake, detection or Edge's observe-only decisions.
 
 #### Audit chain limits (#211 S3)
 
-auditd never deletes a segment: what the chain keeps, and for how long, is an
-owner decision that has not been made. What auditd does bound is how fast one
+auditd never deletes a segment. That is the retention policy (owner
+decision, 2026-10-21; see "Retention" at the end of this section): the chain
+is kept whole, and low capacity is a warning only. What auditd does bound is how fast one
 writer can make it grow. Each `audit.append` from a non-root principal spends a
 token from a bucket keyed on the kernel-derived (`SO_PEERCRED`) uid, the event
 type and, for incident records, a tier: **severe** when `most_severe` is 2 or
@@ -914,8 +915,8 @@ most 12 MiB of Knowledge Lite's lookup events (`events.jsonl`), so at most
 72 MiB together, whatever a caller sends; M.I.O. entry's refusals are
 records in the route ledger above. The audit status snapshot adds at
 most 8 KiB. Size `/var/lib` for the normal
-yearly growth plus headroom, and treat the capacity warning as the prompt for
-the owner's retention decision.
+yearly growth plus headroom; the capacity warning is the prompt to plan
+storage or an export, not a signal that anything will be removed.
 
 | Threshold (auditd constant) | Value | Effect |
 | --- | --- | --- |
@@ -926,6 +927,40 @@ the owner's retention decision.
 
 A warning is a prompt, never a deletion: status and the journal say so, and
 nothing in auditd removes or truncates a segment.
+
+**Retention (owner decision, 2026-10-21): never delete, warn only.** The
+chain is not deleted by age or by size, by auditd or by anything else on the
+node. Two reasons. Deleting loses evidence on a schedule nobody reviewed for
+the case at hand. And a retention window would let a compromised writer push
+the oldest evidence out by flooding the chain up to its limits, including the
+records of how it was compromised; without deletion a flood can only fill
+the disk, which the warning reports and the daily caps above bound. The
+status advisory's "how long to keep the chain is the owner's decision" refers
+to this decision.
+
+Old records leave the node only as **copies** an operator makes; the node's
+copy is never removed, even after a verified export, because removing a
+segment breaks the node:
+
+- `SegmentedLedger.verify` starts every walk at sequence 0 and the all-zero
+  genesis hash, so without the oldest segment the first remaining record
+  "follows 0" and the chain is broken; without a middle segment the next
+  one does not chain on. The unsigned checkpoints anchor nothing, so there
+  is no later starting point.
+- `AuditService.start` then leaves the service unverified: every append and
+  `audit.bootstrap.observe` is refused, systemd readiness is withheld, and
+  status shows `audit: FAILED`.
+- The bootstrap pre-start reader (`bootstrap_audit.py`) also walks the
+  directory from genesis to the head pinned in its signed policy and refuses
+  any file that is not a `YYYY-MM-DD.jsonl` segment.
+
+Capacity is therefore answered with more storage, or with an export
+followed by a reinstall (a new chain starts from genesis only through the
+first-install path, on an empty ledger directory). The operator's warning
+guide, the export procedure (stop auditd, verify, copy every segment from
+the first to external media, record `SHA256SUMS` and the head, verify the
+copy) and the continuity check between exports are in `docs/operations.md`,
+"Audit chain retention".
 
 ### I4 — redirect to Deception Lite (later)
 
