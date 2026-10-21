@@ -1253,15 +1253,22 @@ units, and neither file is one of them.
     publication is refused in that boot id, and clearing it needs a kernel
     reboot. This refuses (availability only); allowing a `closed` journal
     to retire in the same boot id is a possible later change.
-  - *Open (#258 item A, needs a VM check): the overlay
-    `/run/systemd/system.control`.* A soft-reboot in the middle of a
-    bootstrap attempt (phase `published`) may leave the overlay that
-    unmasks auditd and commissiond, while the controller is skipped by its
-    `controller-used` condition; the pair could then start without the
-    deadline's supervision. This is inferred from the code
-    (`bootstrap_overlay_files.py`, the tmpfiles `d` line) and waits for a
-    VM check before a fix (a boot-time cleanup, or the marker condition on
-    the pair) is chosen.
+  - *Closed (#258 item A): the overlay `/run/systemd/system.control`.* A
+    soft-reboot in the middle of a bootstrap attempt (phase `published`)
+    may leave the overlay that unmasks auditd and commissiond, while the
+    controller is skipped by its `controller-used` condition. The pair
+    still cannot start: both carry `Requires=`, `BindsTo=` and `After=`
+    `azazel-activated.service`, and with `BindsTo=` plus `After=` a unit
+    bound to a condition-skipped unit is not started. VM check (Debian 13,
+    systemd 257.13, throwaway units, a mechanism check and not hardware
+    evidence): a service with `ConditionPathExists=!<flag>`, skipped
+    (`ConditionResult=no`), and a second service with
+    `Requires=`/`BindsTo=`/`After=` on it; starting the second failed with
+    "A dependency job ... failed" and it stayed inactive. With the flag
+    absent both became active. Without the condition skip the controller
+    runs and the bootstrap path handles the overlay as before. No change is
+    needed; the dependency lines on the pair are load-bearing for this and
+    must not be relaxed to `Wants=` or lose `After=`.
 - **L-8: the generation store is read without owner or link checks.**
   `GenerationStore.read` and `read_tree` follow links and do not check
   owners or modes under `/var/lib/azazel/generations`. Every byte read is
