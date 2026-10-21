@@ -699,6 +699,8 @@ def _narrow_bootstrap_core_units():
         reset_grant_markers(Path("/"))
     except Exception:  # noqa: BLE001 - recorded, and the remask still runs
         failures.append("grant_markers")
+        print("az-activated could not remove grant markers during bootstrap narrowing",
+              file=sys.stderr)
     with SystemdBusSession.connect() as session:
         manager = DbusUnitManager(call=session)
         for definition in CORE_UNITS:

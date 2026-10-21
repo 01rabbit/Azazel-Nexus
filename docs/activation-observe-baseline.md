@@ -1184,12 +1184,15 @@ units, and neither file is one of them.
   failed, so its `Requires=`/`After=` dependents still run their jobs. The
   once-claim is written only by the selected bootstrap path
   (`bootstrap_controller_once`, from `run_selected_bootstrap`), and a
-  bootstrap selection is bound to the current boot id, so it is published
-  after the boot's controller has already run. The sequence "ordinary pass
-  writes markers → the administrator publishes a selection for this boot
-  and starts the controller again → the bootstrap path writes the
-  once-claim" is therefore the designed one, and before this change the
-  bootstrap path did not remove the ordinary pass's markers. After a
+  bootstrap selection is bound to the current boot id. In normal operation
+  it is published after the boot's controller has already run its ordinary
+  pass, so the sequence "ordinary pass writes markers → the administrator
+  publishes a selection for this boot and starts the controller again →
+  the bootstrap path writes the once-claim" is an expected one. (A
+  selection published while the boot's controller is still waiting makes
+  its first run the bootstrap path; no ordinary pass has written a marker
+  in that boot id then.) Before this change the bootstrap path did not
+  remove the ordinary pass's markers. After a
   soft-reboot (same boot id, `/run` kept), or a manual restart of the
   controller in the same boot, the controller is skipped and those markers
   stay in front of the dependents' `ConditionPathExists=`. The bootstrap
@@ -1204,9 +1207,17 @@ units, and neither file is one of them.
   narrowing. The bootstrap broad narrowing (`_narrow_bootstrap_core_units`,
   also used for an invalid selection and for the emergency narrowing)
   removes them first as well, like `_emergency_narrow`, and fails if it
-  cannot, after the remask still runs. Only the ordinary pass writes
-  markers and it cannot run while the claim exists, so from the claim to
-  the next kernel boot no marker exists. Not changed: a node whose
+  cannot, after the remask still runs; either refusal prints a fixed line
+  on stderr, so the journal names the marker removal as the cause. (No
+  ledger record: before the claim the bootstrap path has no writer of its
+  own yet, its audit client comes later in the attempt, and opening the
+  ordinary pass's activation ledger there would add a second writer to
+  that path.) The bootstrap lock guards the gap between the reset and the
+  claim; an ordinary pass is excluded because it runs in the same unit,
+  `azazel-activated.service`, whose invocations systemd serializes. Only
+  the ordinary pass writes markers, and while the claim exists it cannot
+  run as a start of that unit (the condition skips it), so from the claim
+  to the next kernel boot no marker exists. Not changed: a node whose
   controller is masked, and a running granted unit, which no marker
   removal stops (M-2).
 

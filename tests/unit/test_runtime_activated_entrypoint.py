@@ -106,7 +106,8 @@ def test_bootstrap_broad_narrowing_attempts_all_core_units_without_start(monkeyp
 
 
 @pytest.mark.parametrize("reset_fails", [False, True])
-def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, reset_fails):
+def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, capsys,
+                                                            reset_fails):
     """#251 L-7: like _emergency_narrow, markers first; a refusal still remasks."""
     calls = []
 
@@ -140,6 +141,9 @@ def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, rese
     else:
         activated._narrow_bootstrap_core_units()
     assert calls[0] == ("reset", Path("/"))
+    assert capsys.readouterr().err == (
+        "az-activated could not remove grant markers during bootstrap narrowing\n"
+        if reset_fails else "")
     assert [unit for method, unit in calls if method == "MaskUnitFiles"] == [
         definition.name for definition in activated.CORE_UNITS
     ]
