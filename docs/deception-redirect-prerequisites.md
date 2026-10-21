@@ -239,7 +239,10 @@ exposure path.
      creates the decoy namespace at `/run/netns/azazel-decoy`. It is the
      only unit with `CAP_SYS_ADMIN`, and the only one without the shared
      file-system sandbox (a mount namespace would keep the handle from the
-     host, VM-checked); its exact privilege is in §10;
+     host, VM-checked); its exact privilege is in §10. *As implemented
+     (§13):* it does more than create the namespace. It also creates the
+     veth pair with the decoy's end inside, and configures the inside (`lo`,
+     the address, the route), so it holds `CAP_NET_ADMIN` as well;
   2. the **helper** (`CAP_NET_ADMIN`) only configures `az-decoy0`, the veth
      pair into the already created namespace, and the rules;
   3. the **decoy** joins the namespace with no capability.
@@ -256,7 +259,10 @@ exposure path.
   `CAP_NET_ADMIN` is a per-profile bounding set (`hardening.py:179`, as one
   profile already narrows to `CAP_DAC_READ_SEARCH` at `:411`), never ambient
   and never in the decoy daemon. It reads only the commissioning render, never
-  a decoy observation or an Edge decision.
+  a decoy observation or an Edge decision. *As implemented (§13):* the
+  commissioning render does not reach it yet. Its commands, names and
+  addresses are constants, and the only output it reads is its own
+  read-back of the table and links (§14).
 - **Isolation check.** A probe runs the denied paths on every boot after the
   helper and before admission, and writes boot-bound, timestamped evidence in
   the three-valued form of `IsolationCheck`. The activation pass consumes only
@@ -273,8 +279,10 @@ exposure path.
   AF_INET6 AF_UNIX` (`AF_UNIX` for the observation socket only);
   `IPAddressAllow=` the commissioned prefix and `IPAddressDeny=any`; empty
   capability bounding set; `PrivateUsers=yes`; read-only filesystem except its
-  own state directory. It accepts and never initiates: no outbound connect is
-  in its code.
+  own state directory. It accepts and never initiates a network connection:
+  no outbound network connect is in its code. *As implemented (§12):* it has
+  one `AF_UNIX` connect, `decoy_sender`'s report to the intake's decoy
+  socket.
 - **Runtime boundary test.** A listener module needs a by-file-name exemption
   in `tests/unit/test_runtime_boundary.py:100`. That list is for egress; this
   would be its first ingress entry, and the test should be split so that the
@@ -302,7 +310,7 @@ only prerequisite 3.
 | --- | --- | --- |
 | P0 | this proposal; owner decisions in §7 | — |
 | P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) was declared after P1 (profile, tier, boundary; §10); its body comes with the helper's | §7 Q4–Q7 |
-| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge. **Implemented (#269, §11)** | P1, §7 Q8 |
+| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's; the Edge incidents it may belong to can be named by decoy and time (`incidents_near` only reads: it changes no incident, and no reader calls it yet); it is never an input to Edge. **Implemented (#269, §11)** | P1, §7 Q8 |
 | P3 | VM rehearsal of P1–P2 (never evidence) | P2 |
 | P4 | hardware: `HG-06` and a new gate for the decoy unit's sandbox on the real host | P3, owner |
 | P5 | decision verifier and key lifecycle (§4); a decoy may be materialised by a verified Edge decision; still no redirect applied | Fabric/Edge on §7 Q1–Q3 |
@@ -370,6 +378,32 @@ that Edge can express or apply a redirect, that the namespace design isolates
 on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
 is a later phase with its own evidence.
 
+Two limits of what is implemented, recorded by the review of #276 (F6):
+
+- **The namespace unit is contained only by its body.** It is root with
+  `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`, the `mount` system call and no
+  file-system sandbox (§10). Its bounding set, system call filter,
+  `RestrictNamespaces=net mnt` and netlink as its only family narrow what it
+  is handed but do not stop a compromised body from acting as host root.
+  The netlink family cannot be narrowed to a protocol, so it can also change
+  nftables. In practice its containment is the body being fixed (constant
+  commands, no input) and a mandatory access control (LSM) profile that does
+  not exist yet.
+- **The single-writer premise no longer holds.** Before #196 the only root
+  process that could write the activation state (unmask, enable, grant
+  markers) was `az-activated`. The namespace unit is a second root process
+  with no file-system sandbox, so a compromised body could write that state
+  too. The helper is root as well, though its sandbox is narrower. HG-02 as
+  written does not cover either unit, because its runbook never runs as
+  root.
+
+Both are inside what the design accepted, as long as none of the three units
+is granted. **Grant condition:** before the `DECEPTION_EXPOSURE` tier may be
+granted, an LSM profile confining the namespace unit (and the helper) must
+exist and be a gate. That means a hardware-gate record showing that, under
+the profile, the unit cannot write the activation state, the grant markers
+or the unit files, and cannot reach the service manager.
+
 ## 10. P1 as implemented
 
 The owner adopted every §7 default on 2026-10-21 and chose to start with P1.
@@ -386,13 +420,13 @@ namespace mechanism decided below.
 | | `azazel-decoy-netd.service` (helper) | `azazel-decoyd.service` (decoy) |
 | --- | --- | --- |
 | account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller and this unit | `azdecoy` (new) |
-| capabilities | `CapabilityBoundingSet=CAP_NET_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_NET_ADMIN` | none |
-| address families | `AF_NETLINK` only: it is root, and `AF_UNIX` would reach the service manager over D-Bus | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
+| capabilities | `CapabilityBoundingSet=CAP_NET_ADMIN`, `AmbientCapabilities=` empty; no other unit may declare `CAP_NET_ADMIN` (in P1; since §13 the namespace unit holds it as well, and no third unit may) | none |
+| address families | `AF_NETLINK` only: it is root, and `AF_UNIX` would reach the service manager over D-Bus. `RestrictAddressFamilies=` cannot narrow the netlink protocol, so this admits every netlink protocol (route, nftables and the rest), not route netlink alone | `AF_UNIX AF_INET AF_INET6` (the new `is_decoy_listener` role) |
 | network | host namespace (it would configure host links and the veth into the decoy namespace) | `NetworkNamespacePath=/run/netns/azazel-decoy`, `PrivateUsers=yes` |
-| addresses | `IPAddressDeny=any` | `IPAddressDeny=any`, no `IPAddressAllow=` |
-| writable | nothing | `/var/lib/azazel/decoy` (`azdecoy`, `0700`) |
+| addresses | `IPAddressDeny=any` | `IPAddressDeny=any`; no `IPAddressAllow=` in P1, and since §13 exactly `IPAddressAllow=10.255.196.0/30` |
+| writable | nothing (since §14, its runtime directory `/run/azazel-decoy-isolation`) | `/var/lib/azazel/decoy` (`azdecoy`, `0700`) |
 | type | `oneshot`, `RemainAfterExit=yes` (stopping it stops the decoy first) | `exec`; `Requires=`/`After=` the helper |
-| executable | `az-decoy-netd`: refuses, exits 1 | `az-decoyd`: refuses, exits 1 |
+| executable | `az-decoy-netd`: in P1 it refused and exited 1; the body is in §13 and §14 | `az-decoyd`: in P1 it refused and exited 1; the body is in §12 |
 
 Both carry `SHARED_HARDENING`, the three `[Unit]` lines the grant marker
 needs (`ConditionPathExists=` on the marker, `Requires=` and `After=` on the
@@ -404,8 +438,22 @@ unit; it never enables or starts them.
 **Tier and grant path.** `UnitTier.DECEPTION_EXPOSURE` is new
 (`src/azazel_nexus/activation.py`). Both units are in `CORE_UNITS` and in
 `activation_markers.GRANTABLE_UNITS`, so every pass checks their files and
-loaded definitions. Three things keep them from being granted, each alone
-sufficient:
+loaded definitions. Those checks are not limited to the tier: if any of the
+three units' vendor file or loaded definition departs from the rendered one
+in any way (a drop-in, an edited file, a definition loaded from elsewhere),
+the `systemd_loaded_units` producer fails and **the whole pass is refused**.
+No unit is granted that boot, Edge Core and every supporting unit included.
+Three units that are never granted can therefore veto the product's own
+activation. That fails closed, but it needs care in operation; see
+[operations](operations.md#deception-lite-decoy-network-196). A typical
+cause is a VM check that unmasks the units by hand and removes the marker
+condition or the controller dependency with a drop-in, then leaves it in
+place. Separately, the library layer that performs unit calls,
+`systemd_bus.SystemdUnitCalls`, accepts every unit in the fixed unit table
+(`units.UNIT_NAMES`), the three included, for `UnmaskUnitFiles` and
+`EnableUnitFiles`. What keeps them masked is the controller, which never
+names them (below), not that layer. Three things keep them from being
+granted, each alone sufficient:
 
 - `ActivationController.activate` takes no isolation evidence, and the tier
   is withheld as `isolation_evidence_absent` whatever else holds;
@@ -444,13 +492,13 @@ and the profile now follows the configuration that did:
 | --- | --- |
 | account | `root`, so that the bounding set reaches it without an ambient grant; `ServiceProfile` allows root only for the controller, this unit and the helper |
 | capabilities | `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN` (since §13; `CAP_SYS_ADMIN` alone before), `AmbientCapabilities=` empty, `NoNewPrivileges=yes`; no other unit may declare `CAP_SYS_ADMIN` (a bind mount of the namespace handle and `setns` need it); `CAP_NET_ADMIN` is held by this unit and the helper only |
-| address families | `RestrictAddressFamilies=AF_NETLINK`, the family `ip netns add` was checked with; no `AF_UNIX`, so as root it cannot reach the service manager over D-Bus |
+| address families | `RestrictAddressFamilies=AF_NETLINK`, the family `ip netns add` was checked with; no `AF_UNIX`, so as root it cannot reach the service manager over D-Bus. This does not narrow the netlink protocol: it can open nftables netlink as well as route netlink, and with `CAP_NET_ADMIN` in the host namespace it can change nftables |
 | namespaces | `RestrictNamespaces=net mnt` (replacing the shared `yes`; `net` alone before §13): a network namespace, and the private mount namespace `ip -n` makes for itself |
 | system calls | `SystemCallFilter=@system-service mount umount2 unshare setns`, then `SystemCallFilter=~@aio @chown @ipc @keyring @memlock @setuid @timer capset` (the deny list must follow the allow list). `setns` is allowed: `ip netns add` returns to its own namespace after creating one, and without it is killed with SIGSYS (VM-checked) |
 | file-system sandbox | **none**: the seven `SHARED_HARDENING` settings that build a mount namespace (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`) are left out, and it declares no `ReadWritePaths=`, `RuntimeDirectory=`, `ProtectProc=`, `ProcSubset=`, `InaccessiblePaths=`, `PrivateNetwork=` or any other setting that builds one. `/run/netns` is created by `ip` itself; `ServiceProfile` refuses `/run/netns` as a declared writable path on every unit |
 | kept from the shared set | `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `IPAddressDeny=any`, `UMask=0027`; plus `RestrictRealtime=yes` |
 | type | `oneshot`, `RemainAfterExit=yes` |
-| executable | `az-decoy-nsd`: refuses, exits 1 |
+| executable | `az-decoy-nsd`: when declared, it refused and exited 1; the body is in §13 |
 
 **Why it has no file-system sandbox.** systemd runs a unit with any of those
 settings in a mount namespace of its own, and cuts propagation from it to the
@@ -463,8 +511,9 @@ them inside its own mount namespace, so for this unit they were never a wall.
 can mount a fresh `/proc` or `/sys` and rewrite `kernel.core_pattern` and
 the like, or remount the cgroup file system read-write; no unit setting
 stops that. The bounding set, the system call filter,
-`RestrictNamespaces=net`, netlink as its only family and `NoNewPrivileges=`
-narrow what it is handed, and nothing more. Its containment rests on the
+`RestrictNamespaces=net mnt`, netlink as its only family (every netlink
+protocol, nftables included) and `NoNewPrivileges=` narrow what it is
+handed, and nothing more. Its containment rests on the
 body itself: fixed in code, taking no input (no argument, file, environment
 or socket), statically reviewed, and later confined by a mandatory access
 control (LSM) profile. To be weighed in the body phase: **removing the
@@ -606,6 +655,75 @@ rest denied) is not established and is checked in the body phase.
   name the decoy network helper as the one other holder, and option (a)
   adds the sentence that the namespace unit is the only holder of
   `CAP_SYS_ADMIN`.
+
+**Before any grant: what the tier still needs** (review of #276, F1 and F2).
+In addition to the items above, the generation measurement, the approved
+prefixes, the `HG-06` and decoy-sandbox gates and the LSM gate of §9, the
+tier is not granted until each of the following is designed, implemented
+and tested:
+
+- **A table removed after start is not detected (F1).** The helper reads the
+  table back once, when it starts (§14). After that, nothing notices if the
+  `inet azazel_decoy` table is removed or replaced. On Debian,
+  `nftables.service` loads `/etc/nftables.conf` on start and reload, and the
+  default file begins with `flush ruleset`; its stop runs
+  `nft flush ruleset`. Each removes every table, this one included. An Edge Core in
+  the enforce posture that replaces the ruleset would do the same. The
+  helper stays `active` (`RemainAfterExit=yes`), its record still reads
+  `pass`, and the decoy keeps listening with no table in front of it. Today
+  `approved_v4` is empty and nothing is granted, so nothing is exposed, but
+  a grant would make this an exposure. Before a grant the design must
+  state:
+  - **coexistence with the host's firewall management.** Which of
+    `nftables.service`, `firewalld`, `iptables-nft` restore or Edge's
+    enforcement may run on a decoy host, and how each leaves
+    `inet azazel_decoy` alone. For example, a commissioning check that
+    refuses a host whose `/etc/nftables.conf` flushes the whole ruleset, or
+    an agreed `destroy table` scope instead of `flush ruleset`;
+  - **ordering.** The helper has no `After=` or `Before=` on
+    `nftables.service` or on Edge's enforce unit, so a firewall load later
+    in the boot removes the table after it was checked. The helper needs
+    `After=` on every unit that loads a ruleset, and those units need to be
+    kept from reloading it after the helper while the decoy runs (or the
+    decoy has to stop when they do);
+  - **a read-back on every decoy start.** §14 leaves this to the grant
+    phase. A decoy restarted later in the boot must not rely on the record
+    taken when the helper started;
+  - **monitoring while running.** For example, a periodic fixed read-back
+    by a privileged unit, with any departure stopping the three units (stop
+    of the namespace unit). Or an `nft monitor` style watch whose only
+    action is that stop. Either has to be fixed in code, take no input and
+    have no switch that disables it.
+
+  Until then, operations tells the operator to stop the three units when
+  the table is gone.
+- **Q9 changes five fixed places at once (F2).** Approved prefixes (§7 Q9)
+  cannot be added without changing each of the following, and each change
+  is a design decision of its own, not an implementation detail:
+  1. `decoy_network.NFT_RULESET`: today a constant whose set `approved_v4`
+     is empty. Adding elements means either a ruleset built from data, or a
+     second command that adds elements;
+  2. `decoy_isolation_check.EXPECTED_NFT_LISTING` and the check
+     `approved_v4_empty`. Both pin an empty set exactly, so they would have
+     to compare against the approved prefixes instead, and `nft_table` would
+     no longer be an exact match with a constant;
+  3. `decoy_network._ALLOWED`: every argument list the helper may run is a
+     constant today, and `run_fixed` refuses any other. A prefix in an
+     argument list ends that;
+  4. the decoy's `IPAddressAllow=`: stated statically in the profile (one
+     allowance, `10.255.196.0/30`, pinned by `ServiceProfile`) because #253
+     refuses drop-ins. Approved prefixes need either a rendered unit per
+     commissioning or a new way to deliver an allowance;
+  5. the generation the operator signs: the exposure units' files and the
+     prefixes must be in what is measured and signed
+     (`measure_scoped_unit_files`), so that the prefixes the helper loads are
+     the ones the operator approved.
+
+  Together these mean **the helper takes input** for the first time. Its
+  containment so far rests on taking none (no argument, file, environment
+  or socket, §13). Where that input comes from, how it is bound to the
+  signed commissioning record, and how it is parsed are to be decided as a
+  design decision before Q9 is implemented, not discovered in the code.
 
 Unit tests only (`tests/unit/test_decoy_exposure_p1.py`,
 `tests/unit/test_decoy_namespace_unit.py` and the shared hardening, activation
@@ -755,11 +873,11 @@ The decoy daemon deferred in §10 and §11. `az-decoyd`
 (`runtime/src/azazel_nexus_runtime/decoyd.py`) now listens, answers and
 reports. It still **admits nothing**: the unit is never granted in this
 build (the `DECEPTION_EXPOSURE` tier is withheld as
-`isolation_evidence_absent`, §10), so on a node nothing starts it. The unit
-profile (`hardening.py`) is unchanged; its rationale still says the
-executable refuses and exits, and is left to the phase that writes the
-namespace unit's and the helper's bodies, which owns that file (with the
-`IPAddressDeny=` question of §10).
+`isolation_evidence_absent`, §10), so on a node nothing starts it. This
+phase left the unit profile (`hardening.py`) as it was. The phase that wrote
+the namespace unit's and the helper's bodies (§13) then changed it: it added
+`IPAddressAllow=10.255.196.0/30` and brought the rationale up to date (it
+no longer says the executable refuses and exits).
 
 **Where it may listen** (`decoy_netns.py`). It binds the IPv4 wildcard of
 the network namespace it runs in, which in the host namespace would be every

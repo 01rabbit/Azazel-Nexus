@@ -1127,8 +1127,8 @@ EXPECTED_SCRIPTS = (
     "az-mio-remoted",
     "az-model-fetchd",
     "az-watchdog",
-    # The Deception Lite exposure units (#196 P1, #196 (a)); all three refuse
-    # and exit in this build.
+    # The Deception Lite exposure units (#196 P1, #196 (a)). Their bodies
+    # are implemented (§12, §13); the units are never granted in this build.
     "az-decoy-nsd",
     "az-decoy-netd",
     "az-decoyd",

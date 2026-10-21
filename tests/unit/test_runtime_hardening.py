@@ -302,7 +302,8 @@ def test_only_commissioning_and_activation_readers_are_allowed_netlink():
     ]
     # Plus the decoy network helper (#196 P1), which configures links and
     # rules over netlink with CAP_NET_ADMIN and nothing else, and the decoy
-    # namespace unit (#196 (a)), whose `ip netns add` uses route netlink.
+    # namespace unit (#196 (a)), whose `ip` uses route netlink. The family
+    # admits every netlink protocol to both, nftables included.
     assert with_netlink == ["azazel-activated.service", "azazel-commissiond.service",
                             "azazel-decoy-nsd.service", "azazel-decoy-netd.service"]
     for unit in with_netlink:

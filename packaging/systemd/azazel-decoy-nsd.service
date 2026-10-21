@@ -4,7 +4,7 @@
 #
 # Runs once.
 # The only unit that holds CAP_SYS_ADMIN, with CAP_NET_ADMIN, as a bounding set and never as an ambient capability: it creates the decoy network namespace at /run/netns/azazel-decoy, the veth pair with the decoy's end inside it, and the inside's fixed address and route, with fixed ip commands and nothing else; ExecStop removes the pair and the namespace.
-# It gets route netlink only, may create only a network namespace and the mount namespace ip -n makes for itself, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
+# Netlink is its only address family, though that admits every netlink protocol, nftables included; it may create only a network namespace and the mount namespace ip -n makes for itself, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
 # It is the one unit without the shared file-system sandbox: a mount namespace would keep the namespace handle from the host, and with CAP_SYS_ADMIN and mount that sandbox was never a wall for it.
 # A compromised body would be host root; its containment is a fixed body that takes no input, static review and a later LSM profile.
 # The activation pass never grants this unit in this build.

@@ -288,7 +288,8 @@ class ServiceProfile:
             raise ValueError(
                 f"{self.unit} is root: with AF_UNIX it could reach the service "
                 "manager over D-Bus and unmask what the controller withholds, "
-                "so it gets route and nftables netlink only"
+                "so it gets netlink only (any netlink protocol: systemd "
+                "cannot narrow it to route or nftables)"
             )
         # CAP_SYS_ADMIN belongs to exactly one unit, the one-shot
         # decoy namespace unit, and that unit holds nothing else (#196 (a)).
@@ -490,8 +491,10 @@ class ServiceProfile:
         """The decoy namespace unit, pinned whole (#196 (a)).
 
         One unit, one privilege, one act: root so that its bounding set
-        reaches it, exactly `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`, route netlink
-        only, no declared
+        reaches it, exactly `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`, netlink as
+        its only family (which admits every netlink protocol, nftables
+        included: `RestrictAddressFamilies=` cannot narrow the protocol), no
+        declared
         writable path, and the sandbox, the shared overrides and the shared
         omissions exactly as declared. Anything different is a reviewed
         change to this declaration, not a profile that drifted.
@@ -507,8 +510,9 @@ class ServiceProfile:
             )
         if self.address_families != ("AF_NETLINK",):
             raise ValueError(
-                f"{self.unit} gets route netlink only: no AF_UNIX that could "
-                "reach the service manager, no internet family"
+                f"{self.unit} gets netlink only (any netlink protocol): no "
+                "AF_UNIX that could reach the service manager, no internet "
+                "family"
             )
         if (self.read_write_paths or self.optional_read_write_paths
                 or self.runtime_directory):
@@ -686,7 +690,8 @@ DECOY_ISOLATION_DIRECTORY_MODE = "0755"
 #: can mount a fresh /proc or /sys and rewrite `kernel.core_pattern` and the
 #: like, or remount the cgroup file system read-write; no unit setting here
 #: stops that. The bounding set, the system call filter,
-#: `RestrictNamespaces=net`, netlink as its only family and
+#: `RestrictNamespaces=net mnt`, netlink as its only family (every netlink
+#: protocol, so nftables as well as routes) and
 #: `NoNewPrivileges=` narrow what it is handed, but its containment rests on
 #: the body: fixed in code, taking no input (no argument, no file, no
 #: environment, no socket), statically reviewed, and later a mandatory
@@ -1285,9 +1290,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="root",
         description="Azazel-Nexus Deception Lite namespace",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
-        # Route netlink only, as VM-checked with `ip netns add`. No AF_UNIX:
-        # it is root, and an AF_UNIX socket would reach the service manager
-        # over D-Bus. No internet family.
+        # Netlink only, the family VM-checked with `ip netns add`. This does
+        # not narrow the netlink protocol: route and nftables netlink (and
+        # the rest) are all open to it. No AF_UNIX: it is root, and an
+        # AF_UNIX socket would reach the service manager over D-Bus. No
+        # internet family.
         address_families=("AF_NETLINK",),
         # No writable path declared: `ReadWritePaths=` would build the mount
         # namespace that keeps the namespace handle from the host (n3). It
@@ -1311,7 +1318,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/run/netns/azazel-decoy, the veth pair with the decoy's end inside "
             "it, and the inside's fixed address and route, with fixed ip "
             "commands and nothing else; ExecStop removes the pair and the "
-            "namespace. It gets route netlink only, may create only a network "
+            "namespace. Netlink is its only address family, though that admits "
+            "every netlink protocol, nftables included; it may create only a network "
             "namespace and the mount namespace ip -n makes for itself, and its "
             "syscall filter adds only mount, umount2, unshare and setns to the "
             "shared set and takes back what that act never needs. It is the "
@@ -1329,7 +1337,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         account="root",
         description="Azazel-Nexus Deception Lite network helper",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
-        # Route and nftables netlink only. No internet family: it configures
+        # Netlink only; it uses route and nftables netlink, but the family
+        # does not narrow the protocol, so every netlink protocol is open to
+        # it. No internet family: it configures
         # links and rules, it never sends or receives traffic. No AF_UNIX
         # either: it runs as root, and an AF_UNIX socket would reach the
         # service manager over D-Bus (HG-02's claim is that only the
@@ -1363,7 +1373,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "isolation record, fixed results only, to its runtime directory, "
             "which the decoy requires before it listens; a check that does "
             "not pass undoes the build. It reads no decoy observation and no Edge "
-            "decision. It is root, so it gets netlink only and no AF_UNIX "
+            "decision. It is root, so netlink is its only address family (any "
+            "netlink protocol, not only route and nftables) and it has no AF_UNIX "
             "socket that could reach the service manager, whose private "
             "sockets are also inaccessible to it. The activation pass never "
             "grants this unit in this build"
@@ -1408,9 +1419,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         rationale=(
             "Holds no capability and runs under its own account, inside the "
             "decoy network namespace, with PrivateUsers=yes. It accepts and "
-            "never initiates: no outbound connect is in its code, and the "
-            "runtime boundary test allows its listener module bind and listen "
-            "only. IPAddressDeny=any stays, and the fixed decoy subnet is the "
+            "never initiates a network connection: its one connect is the "
+            "AF_UNIX report to the intake's decoy socket, and the runtime "
+            "boundary test allows its listener module bind and listen only. "
+            "IPAddressDeny=any stays, and the fixed decoy subnet is the "
             "only address allowed. It opens no socket without the network "
             "helper's isolation record from this boot with every check "
             "passed. It binds IPv4 only and writes no file, so it gets no "

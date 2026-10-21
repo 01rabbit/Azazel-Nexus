@@ -1,10 +1,10 @@
 """Deception Lite exposure, phase P1 (#196, docs/deception-redirect-prerequisites.md).
 
-P1 ships the unit profiles, the tier and the boundary, not the bodies. These
-tests pin that:
+P1 shipped the unit profiles, the tier and the boundary, not the bodies.
+The bodies came later (§12, §13, §14) and are tested in their own files.
+These tests pin what is left of P1:
 
-* the helper and decoy executables refuse and exit, take no argument, and
-  run no process, open no socket and touch no network configuration;
+* the helper and decoy executables take no argument;
 * the listener module binds and listens on exactly a catalogued address
   inside the commissioned prefix, and is driven here with a fake socket --
   no real socket is opened;
