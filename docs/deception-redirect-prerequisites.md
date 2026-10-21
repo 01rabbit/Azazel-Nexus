@@ -295,7 +295,7 @@ only prerequisite 3.
 | --- | --- | --- |
 | P0 | this proposal; owner decisions in §7 | — |
 | P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) is written later, with the helper's body | §7 Q4–Q7 |
-| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge. **Implemented (#PRNUM, §11)** | P1, §7 Q8 |
+| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge. **Implemented (#269, §11)** | P1, §7 Q8 |
 | P3 | VM rehearsal of P1–P2 (never evidence) | P2 |
 | P4 | hardware: `HG-06` and a new gate for the decoy unit's sandbox on the real host | P3, owner |
 | P5 | decision verifier and key lifecycle (§4); a decoy may be materialised by a verified Edge decision; still no redirect applied | Fabric/Edge on §7 Q1–Q3 |
@@ -474,7 +474,7 @@ socket is opened by any test; none of this is VM or hardware evidence.
 
 ## 11. P2 as implemented
 
-Implemented in #PRNUM. P2 builds the event, its validation and the intake's
+Implemented in #269. P2 builds the event, its validation and the intake's
 path for it, with unit tests and one end-to-end step. The decoy daemon that
 would send it is still a later phase (§10), so in a real deployment nothing
 sends one yet.
