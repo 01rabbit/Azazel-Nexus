@@ -85,14 +85,26 @@ def test_marker_that_is_a_directory_refuses(timesync):
     _refused(str(timesync / "synchronized"))
 
 
-def test_world_writable_marker_refuses(timesync):
-    _refused(_marker(timesync, mode=0o666))
+@pytest.mark.parametrize("mode", [0o666, 0o664, 0o646, 0o620])
+def test_group_or_world_writable_marker_refuses(timesync, mode):
+    _refused(_marker(timesync, mode=mode))
 
 
-def test_world_writable_directory_refuses(timesync):
+@pytest.mark.parametrize("mode", [0o777, 0o775, 0o757, 0o1777])
+def test_group_or_world_writable_directory_refuses(timesync, mode):
     path = _marker(timesync)
-    timesync.chmod(0o777)
+    timesync.chmod(mode)
     _refused(path)
+
+
+@pytest.mark.parametrize("marker, directory", [(0o644, 0o755), (0o444, 0o555), (0o600, 0o700)])
+def test_timesyncds_modes_and_narrower_ones_count(timesync, marker, directory):
+    path = _marker(timesync, mode=marker)
+    timesync.chmod(directory)
+    try:
+        assert require_clock_synchronized(path) is True
+    finally:
+        timesync.chmod(0o755)
 
 
 @pytest.mark.parametrize("path", [

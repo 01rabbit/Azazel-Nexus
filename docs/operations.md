@@ -335,10 +335,21 @@ launchable.
   systemd-timesyncd's marker `/run/systemd/timesync/synchronized` (a
   synchronization happened in this boot); without it `trusted_clock` is
   `failed`, `observed_inputs.clock_synchronization` is `not_proven`, and
-  nothing is granted. The marker is written only by systemd-timesyncd: a node
-  that keeps time with chrony or another daemon, or that has no reachable time
-  source (offline), then refuses every boot. The pass never waits for
-  synchronization. Absent or `false` keeps the default. The field is part of
+  nothing is granted. The pass reads the marker once and never waits itself.
+  **Enable `systemd-time-wait-sync.service` on such a node**
+  (`sudo systemctl enable systemd-time-wait-sync.service`): the controller is
+  `After=time-sync.target`, so the service holds it until timesyncd has
+  synchronized. Without it the pass races the first synchronization (on the
+  VM about 33 s after boot, while the controller runs about 10 s after boot
+  when no LUKS passphrase holds it back) and is likely to refuse that boot
+  with `not_proven`. With it enabled, a node that cannot synchronize
+  (offline) makes the controller wait **indefinitely**: its start timeout
+  does not count an ordering wait. Nothing is granted while it waits
+  (fail-closed), but the loop does not come up until the clock synchronizes.
+  Without it, an offline node refuses every boot. Only timesyncd writes the
+  marker, so a node that keeps time with chrony or another daemon refuses
+  every boot either way. Absent or `false` keeps the default, and needs no
+  wait-sync service. The field is part of
   the policy: changing it changes `policy_digest`, so the installed approval
   no longer verifies and a new request, signature and install are needed, as
   for any policy change. A package from before this field refuses a policy

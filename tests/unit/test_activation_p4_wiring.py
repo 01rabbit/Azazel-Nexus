@@ -71,6 +71,15 @@ def test_production_producers_are_the_fixed_protected_readers():
     assert "environ" not in source and "argv" not in source
 
 
+def test_production_wires_the_fixed_clock_synchronization_reader():
+    """#251 M-1: the pass's reader is exactly the fixed timesyncd marker check."""
+    from azazel_nexus_runtime.activation_clock_sync import require_clock_synchronized
+    from azazel_nexus_runtime.activation_pass import production_producers
+
+    producers = production_producers(commissioning_evidence=lambda: None)
+    assert producers.clock_synchronized is require_clock_synchronized
+
+
 def test_the_pass_never_calls_a_start_verb():
     for path in (ACTIVATED, PASS, REPO / "runtime/src/azazel_nexus_runtime/activation_markers.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))

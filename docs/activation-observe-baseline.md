@@ -1069,9 +1069,30 @@ addition, M-1's opt-in policy field (§10.1), can only add a refusal.
   `false` the pass behaves exactly as before: the reader is never called.
   The field is part of the policy, so turning it on or off changes
   `policy_digest`; the installed approval then no longer verifies, and the
-  usual request, signature and install follow. Nothing waits: there is no
-  retry, no wait-sync dependency, no new flag, approval field, environment
-  variable or unit operation.
+  usual request, signature and install follow. The pass itself does not
+  wait or retry; it reads the marker once. It adds no flag, approval field,
+  environment variable or unit operation, and no unit dependency.
+
+  *A node that sets the field `true` must enable
+  `systemd-time-wait-sync.service`.* Otherwise the pass races the first
+  synchronization and is likely to refuse. On the rehearsal VM (Debian 13,
+  systemd 257.13, 2026-10-21) timesyncd's first synchronization came about
+  33 s after boot, while the controller, when no LUKS passphrase holds it
+  back, runs about 10 s after boot: the pass then finds no marker, reads
+  `not_proven` and grants nothing for that boot. The controller is already
+  `After=time-sync.target` (above), so an enabled wait-sync service holds
+  it until timesyncd has synchronized, and the marker exists when the pass
+  reads it. The two cases:
+  - **wait-sync disabled** (this package's default): the controller does not
+    wait; a pass before the first synchronization refuses (`not_proven`),
+    and a node that never synchronizes (offline, no timesyncd) refuses every
+    boot;
+  - **wait-sync enabled**: the controller waits for synchronization. On a
+    node that cannot synchronize it waits **indefinitely**, for the reasons
+    given in the M-1 ordering bullet above (`TimeoutStartSec=` does not
+    count an ordering wait, and the controller sets no `JobTimeoutSec=`).
+    That is fail-closed, since every governed unit waits with it, but
+    availability is lost until the clock synchronizes.
 
   *The proof is systemd-timesyncd's marker*
   `/run/systemd/timesync/synchronized`, which timesyncd touches on each
@@ -1080,7 +1101,9 @@ addition, M-1's opt-in policy field (§10.1), can only add a refusal.
   found it as an empty regular file on 2026-10-14
   ([runtime-activation-remaining](runtime-activation-remaining.md)). It is checked read-only: each directory opened
   with `O_NOFOLLOW`, the marker `lstat`ed relative to it, and only a
-  regular file in a real directory, neither world-writable, counts. The
+  regular file in a real directory, neither group- nor world-writable,
+  counts (the VM has the marker `systemd-timesync` `0644` in a `0755`
+  directory; the owner is not checked). The
   controller reads it with what it has: `/run` stays readable under
   `ProtectSystem=strict`, and no path, capability, system call or bus
   permission is added. The alternatives were rejected for that reason:
@@ -1093,15 +1116,20 @@ addition, M-1's opt-in policy field (§10.1), can only add a refusal.
     not a read, and a new destination in the controller's allowlist.
 
   Limits, stated rather than solved: only timesyncd writes the marker, so a
-  node that keeps time with chrony or another daemon, or has no reachable
-  time source, refuses every boot while the field is `true`; the marker
+  node that keeps time with chrony or another daemon never has it and
+  refuses every boot whether or not a wait-sync service is enabled (one
+  that releases on the kernel's synchronized state still leaves no marker);
+  a node with no reachable time source behaves as in the two cases above;
+  the marker
   proves that a synchronization happened in this boot (`/run` is a tmpfs; a
   soft-reboot keeps `/run` and the running clock alike), not that the clock
   is still synchronized or that the source was authenticated; and whoever
   can write `/run/systemd/timesync` (root and timesyncd) can forge it, as
-  they can set the clock. That the marker is present before the pass on
-  a synchronizing VM, and absent on a node that cannot synchronize, is
-  **要確認** on the VM before a node relies on the field. Tests:
+  they can set the clock. That, **with `systemd-time-wait-sync.service`
+  enabled**, the marker is present before the pass on a synchronizing VM
+  (its mtime earlier than the controller's start), and that the controller
+  waits on a node that cannot synchronize, is **要確認** on the VM before a
+  node relies on the field. Tests:
   `tests/unit/test_activation_policy.py`,
   `tests/unit/test_runtime_activation_clock_sync.py`,
   `tests/unit/test_runtime_activation_pass.py`.

@@ -26,8 +26,9 @@ in this boot, not that the clock is still synchronized, nor that the time
 source was authenticated.
 
 This module opens nothing for writing, creates nothing and never follows a
-symbolic link. Anything other than a regular marker in a real, not
-world-writable directory is a refusal.
+symbolic link. Anything other than a regular marker in a real directory,
+neither of them group- or world-writable, is a refusal (timesyncd's are
+`0644` in a `0755` directory; the owner is not checked).
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ __all__ = ["TIMESYNC_SYNCHRONIZED", "ClockNotSynchronized", "require_clock_synch
 
 #: The fixed marker path; never taken from configuration or the environment.
 TIMESYNC_SYNCHRONIZED = "/run/systemd/timesync/synchronized"
+_WRITABLE = stat.S_IWGRP | stat.S_IWOTH
 
 
 class ClockNotSynchronized(Exception):
@@ -51,7 +53,7 @@ def require_clock_synchronized(path: str = TIMESYNC_SYNCHRONIZED) -> bool:
     `path` is a seam for tests; production uses the fixed path. Each
     directory component is opened with `O_NOFOLLOW`, the marker is
     `lstat`ed relative to its directory, and only a regular file whose
-    directory and itself are not world-writable counts.
+    directory and itself are neither group- nor world-writable counts.
     """
     try:
         if type(path) is not str or not path.startswith("/"):
@@ -67,12 +69,12 @@ def require_clock_synchronized(path: str = TIMESYNC_SYNCHRONIZED) -> bool:
                 os.close(fd)
                 fd = child
             directory = os.fstat(fd)
-            if not stat.S_ISDIR(directory.st_mode) or directory.st_mode & stat.S_IWOTH:
+            if not stat.S_ISDIR(directory.st_mode) or directory.st_mode & _WRITABLE:
                 raise ClockNotSynchronized()
             marker = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
         finally:
             os.close(fd)
-        if not stat.S_ISREG(marker.st_mode) or marker.st_mode & stat.S_IWOTH:
+        if not stat.S_ISREG(marker.st_mode) or marker.st_mode & _WRITABLE:
             raise ClockNotSynchronized()
         return True
     except Exception:  # noqa: BLE001 - absent or unreadable is unproven, never synchronized
