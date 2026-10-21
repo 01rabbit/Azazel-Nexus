@@ -81,8 +81,22 @@ running from here.
 library's protected reader (`edge_package.read_current_boot_id`) **before**
 probing, and `write_result` refuses an outcome that does not carry a canonical
 one. When the id cannot be read nothing is written: a result that cannot say
-which boot it is from is one a reader could not use anyway, and leaving the
-previous file in place costs nothing because that one names another boot.
+which boot it is from is one a reader could not use anyway.
+
+## A run that writes nothing leaves nothing behind (#258 item 7)
+
+The boot id is **not** a per-start value. `systemctl soft-reboot` restarts
+every unit but keeps the kernel, so the boot id -- and the result the previous
+userspace wrote -- survive it. A preflight that then failed before writing
+would leave that older result to be read as this boot's, valid until its TTL.
+
+So the first thing `main` does, before it reads the boot id or probes
+anything, is remove the previous result (`clear_previous_result`): one fixed
+name, unlinked relative to its directory opened with `O_NOFOLLOW`, never a
+path built from input. If it cannot be removed, nothing is probed or written
+and the run fails. Every later failure therefore leaves no result at all,
+which a reader takes as `not-checked` -- Edge withheld, never granted on an
+older answer.
 
 The same binary runs twice per boot: once as
 `azazel-edge-probe-preflight.service`, ungoverned, before the activation
@@ -126,6 +140,7 @@ __all__ = [
     "PROBE_TIMEOUT_SECONDS",
     "ProbeOutcome",
     "READ_ONLY_METHODS",
+    "clear_previous_result",
     "main",
     "no_unit_reader",
     "probe",
@@ -530,6 +545,31 @@ def write_result(outcome: ProbeOutcome, path: Path = PROBE_STATE_PATH) -> Path:
     return path
 
 
+def clear_previous_result(path: Path = PROBE_STATE_PATH) -> None:
+    """Remove the previous result before this run probes anything.
+
+    Only the fixed file name is unlinked, relative to its directory opened with
+    `O_NOFOLLOW` (`unlink` itself never follows the last component). An absent
+    directory or file is already the state this wants. Any other failure
+    raises `OSError`, and `main` then probes and writes nothing: a run that
+    could not clear the previous answer must not proceed as if it had.
+    """
+
+    try:
+        directory = os.open(
+            str(path.parent),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except FileNotFoundError:
+        return
+    try:
+        os.unlink(path.name, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(directory)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """One run, then exit. Takes nothing that could redirect it.
 
@@ -545,6 +585,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="also write the result to stdout",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    # The previous result goes first (#258 item 7): soft-reboot keeps the
+    # boot id, so an older result left in place would read as this boot's if
+    # this run then failed before writing. Not cleared means nothing is run.
+    try:
+        clear_previous_result()
+    except OSError as exc:
+        print(f"refused: the previous probe result could not be removed, so "
+              f"nothing was probed or written: {exc}", file=sys.stderr)
+        return 2
 
     # This boot, read before anything is probed. Unreadable means nothing is
     # run and nothing is written (contract v2): a result that cannot name its

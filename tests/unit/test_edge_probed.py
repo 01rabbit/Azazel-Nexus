@@ -211,6 +211,125 @@ def test_main_with_an_unreadable_boot_id_probes_nothing_and_writes_nothing(
     assert "boot's id could not be read" in capsys.readouterr().err
 
 
+# -- a run that writes nothing leaves nothing behind (#258 item 7) ---------
+#
+# soft-reboot keeps the boot id, so the previous userspace's result names
+# "this" boot. It is removed before anything else, and a run that cannot
+# remove it proceeds no further.
+
+
+def _result(tmp_path):
+    leaf = tmp_path / "edge-probe"
+    leaf.mkdir()
+    path = leaf / PROBE_STATE_PATH.name
+    path.write_text("{}\n", encoding="utf-8")
+    return path
+
+
+def test_the_previous_result_is_removed(tmp_path):
+    path = _result(tmp_path)
+    edge_probed.clear_previous_result(path)
+    assert not path.exists()
+    assert path.parent.is_dir()
+
+
+def test_nothing_to_remove_is_not_a_failure(tmp_path):
+    edge_probed.clear_previous_result(tmp_path / "edge-probe" / PROBE_STATE_PATH.name)
+    (tmp_path / "edge-probe").mkdir()
+    edge_probed.clear_previous_result(tmp_path / "edge-probe" / PROBE_STATE_PATH.name)
+
+
+def test_only_the_fixed_name_is_removed(tmp_path):
+    path = _result(tmp_path)
+    neighbour = path.parent / "other.json"
+    neighbour.write_text("{}", encoding="utf-8")
+    edge_probed.clear_previous_result(path)
+    assert neighbour.exists()
+
+
+def test_a_symlinked_result_is_unlinked_not_followed(tmp_path):
+    target = tmp_path / "elsewhere.json"
+    target.write_text("keep", encoding="utf-8")
+    leaf = tmp_path / "edge-probe"
+    leaf.mkdir()
+    (leaf / PROBE_STATE_PATH.name).symlink_to(target)
+    edge_probed.clear_previous_result(leaf / PROBE_STATE_PATH.name)
+    assert not (leaf / PROBE_STATE_PATH.name).is_symlink()
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_a_symlinked_directory_is_refused(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / PROBE_STATE_PATH.name).write_text("{}", encoding="utf-8")
+    (tmp_path / "edge-probe").symlink_to(real)
+    with pytest.raises(OSError):
+        edge_probed.clear_previous_result(tmp_path / "edge-probe" / PROBE_STATE_PATH.name)
+    assert (real / PROBE_STATE_PATH.name).exists()
+
+
+def test_a_result_that_cannot_be_removed_is_an_error(tmp_path):
+    leaf = tmp_path / "edge-probe"
+    (leaf / PROBE_STATE_PATH.name).mkdir(parents=True)
+    with pytest.raises(OSError):
+        edge_probed.clear_previous_result(leaf / PROBE_STATE_PATH.name)
+
+
+def test_main_clears_before_it_reads_the_boot_or_probes(monkeypatch):
+    order = []
+    monkeypatch.setattr(edge_probed, "clear_previous_result", lambda: order.append("clear"))
+
+    def unreadable():
+        order.append("boot")
+        raise EdgePackageRefused("denied")
+
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", unreadable)
+    assert edge_probed.main([]) == 2
+    assert order == ["clear", "boot"]
+
+
+def test_main_clears_the_fixed_path_only():
+    tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [
+        node for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "clear_previous_result"
+    ]
+    assert len(calls) == 1
+    assert calls[0].args == [] and calls[0].keywords == []
+
+
+def test_main_that_cannot_clear_probes_nothing_and_writes_nothing(monkeypatch, capsys):
+    def refused():
+        raise PermissionError("denied")
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("ran although the previous result was not removed")
+
+    monkeypatch.setattr(edge_probed, "clear_previous_result", refused)
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", must_not_run)
+    monkeypatch.setattr(edge_probed, "probe", must_not_run)
+    monkeypatch.setattr(edge_probed, "write_result", must_not_run)
+    assert edge_probed.main([]) == 2
+    assert "could not be removed" in capsys.readouterr().err
+
+
+def test_a_failed_run_after_soft_reboot_leaves_no_result(tmp_path, monkeypatch):
+    """Same boot id, previous result present, the run then fails: nothing is left."""
+
+    path = _result(tmp_path)
+    real_clear = edge_probed.clear_previous_result
+    monkeypatch.setattr(edge_probed, "clear_previous_result", lambda: real_clear(path))
+
+    def unreadable():
+        raise EdgePackageRefused("denied")
+
+    monkeypatch.setattr(edge_probed, "read_current_boot_id", unreadable)
+    assert edge_probed.main([]) == 2
+    assert not path.exists()
+
+
 # -- main reads running over the fixed, read-only system bus (#195) --------
 
 

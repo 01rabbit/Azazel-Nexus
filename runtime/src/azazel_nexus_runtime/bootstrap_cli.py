@@ -238,7 +238,8 @@ def run_approval_request(*, source, out):
           "bytes as approval.json and the 64-byte raw signature as approval.sig. "
           "This command signs nothing and authorizes nothing.", file=out)
     print("Built from the declared context only: package/closure/systemd drift, operator "
-          "enrollment or revocation, the trusted time window and a reboot (new boot_id) "
+          "enrollment or revocation, the trusted time window and a kernel reboot (new boot_id; "
+          "soft-reboot keeps the boot_id) "
           "can still make admission refuse a correctly signed approval.", file=out)
     return 0
 

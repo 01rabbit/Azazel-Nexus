@@ -46,7 +46,7 @@ it is today: `lease=None` or `healthy=False`, everything masked.
    next boot, whose `boot_id` nobody can sign in advance.
 3. **Edge evidence is never fresh when the boot pass runs.**
    `azazel-edge-probed.service` is ordered after and requires the controller,
-   and a probe result from before a reboot is stale
+   and a probe result from before a kernel reboot is stale
    (`src/azazel_nexus/edge_package.py`). The #198 wiring in `activated.py` is
    correct, but with this ordering the boot pass always withholds edge-core
    with `edge_not_ready`. Addressed by E1 (§3.4, P5 probe half).
@@ -1221,11 +1221,47 @@ units, and neither file is one of them.
   controller is masked, and a running granted unit, which no marker
   removal stops (M-2).
 
-  *Open:* anything bound to the boot id treats a soft-reboot as the same
-  boot. The Edge probe result is rewritten by the preflight, which runs
-  again; whether the other bindings (the bootstrap selection, the
-  bootstrap transaction and deadline records) are right under that premise
-  has not been reviewed.
+  *Reviewed in [#258](https://github.com/01rabbit/Azazel-Nexus/issues/258)
+  (read-only, main 85a6d6e; premise checked on the VM, systemd 257.13:
+  soft-reboot keeps the boot id and `/run`, and every unit starts again).*
+  Anything bound to the boot id treats a soft-reboot as the same boot. No
+  confirmed fail-open was found: most bindings refuse under that premise
+  (availability, not authority). Intended and refusing, no change: the
+  once-claim `controller-used` (a bootstrap retry needs a kernel reboot),
+  the grant transaction `grant-<boot_id>.json` (asks for manual review),
+  the bootstrap selection (an intent, not a permission), the deadline and
+  its time anchor (`CLOCK_BOOTTIME` continues across a soft-reboot), the
+  HIL and service-objective evidence (each requires distinct boots), the
+  grant markers (closed above), and approval v1 (not on the production
+  path).
+
+  - *Done (#258 item 7): the Edge probe result.* The boot id did not tell a
+    result from before a soft-reboot apart, so a preflight that failed
+    before writing left that result readable as this boot's until its TTL
+    (default 300 s). `az-edge-probed` now removes the previous result
+    first, before it reads the boot id or probes anything
+    (`clear_previous_result` in `edge_probed.py`: the fixed name only,
+    relative to its directory opened with `O_NOFOLLOW`); if it cannot, it
+    probes and writes nothing and fails. A run that fails after that leaves
+    no result, which reads as `not-checked`.
+  - *Done (#258 item 6): wording.* The approval-request output of
+    `az-nexus-bootstrap` now says a *kernel* reboot changes the boot id.
+  - *Documented, not changed (#258 item 5): the bootstrap overlay journal.*
+    A journal is retired only at a later boot's publication; one with the
+    same boot id is not (`_retire_prior_boot_journal` in
+    `bootstrap_manager.py`). After a soft-reboot that left a journal, every
+    publication is refused in that boot id, and clearing it needs a kernel
+    reboot. This refuses (availability only); allowing a `closed` journal
+    to retire in the same boot id is a possible later change.
+  - *Open (#258 item A, needs a VM check): the overlay
+    `/run/systemd/system.control`.* A soft-reboot in the middle of a
+    bootstrap attempt (phase `published`) may leave the overlay that
+    unmasks auditd and commissiond, while the controller is skipped by its
+    `controller-used` condition; the pair could then start without the
+    deadline's supervision. This is inferred from the code
+    (`bootstrap_overlay_files.py`, the tmpfiles `d` line) and waits for a
+    VM check before a fix (a boot-time cleanup, or the marker condition on
+    the pair) is chosen.
 - **L-8: the generation store is read without owner or link checks.**
   `GenerationStore.read` and `read_tree` follow links and do not check
   owners or modes under `/var/lib/azazel/generations`. Every byte read is
