@@ -935,8 +935,8 @@ the case at hand. And a retention window would let a compromised writer push
 the oldest evidence out by flooding the chain up to its limits, including the
 records of how it was compromised; without deletion a flood can only fill
 the disk, which the warning reports and the daily caps above bound. The
-status advisory's "how long to keep the chain is the owner's decision" refers
-to this decision.
+status advisory names this policy ("retention policy: never delete, warn
+only").
 
 Old records leave the node only as **copies** an operator makes; the node's
 copy is never removed, even after a verified export, because removing a
