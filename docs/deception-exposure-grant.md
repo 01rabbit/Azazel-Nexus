@@ -518,8 +518,9 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
     sysctl, the pass withholds unless per-interface forwarding is on for the
     ingress interfaces and off for management and observation]** Written
     out in [how outside peers reach the decoy](deception-exposure-reachability.md),
-    which adds six narrowing conditions (its §9, R1–R6), adopted as
-    defaults the owner may overturn.
+    which adds five narrowing conditions (its §9, R1–R5), adopted as
+    defaults the owner may overturn, and one open question for the owner
+    (R6, its reading of commissioning §2).
 12. Firewall coexistence? **[the tier is withheld while `nftables.service`,
     `firewalld.service` or `netfilter-persistent.service` is enabled; Edge
     enforce posture and the tier mutually exclusive until Edge agrees on

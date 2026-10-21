@@ -3,9 +3,10 @@
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase).
 Status: **proposal. The default of Q11 was decided by the owner on
-2026-10-22 (§4). The further conditions this design adds (§9, R1–R6) only
+2026-10-22 (§4). The further conditions this design adds (§9, R1–R5) only
 withhold or stop, and are adopted as defaults the owner may overturn; R1, R2,
-R4 and R5 are required before G6. Nothing here is implemented; the pass's
+R4 and R5 are required before G6. R6, the reading of commissioning §2, is
+**open** and returned to the owner. Nothing here is implemented; the pass's
 part lands in G6, the re-reading in G2.**
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §4.5, §5, §6, §10 Q11) ·
@@ -199,8 +200,8 @@ networkd removes rules it did not create. *Inferred:* both selectors and
 **Ordering, and commissioning §2.** Commissioning §2 forbids the node to
 forward or route until activation completes, and §3 and §8 forbid binding to
 a kernel name. Under P1 the forwarding switch of the ingress is on from boot,
-before the pass. The reading this design adopts (R6): §2 is about what the
-node **does**, and with K1 installed **before** forwarding comes on, every
+before the pass. The reading this design proposes, **not decided** (R6,
+returned to the owner): §2 is about what the node **does**, and with K1 installed **before** forwarding comes on, every
 packet the ingress receives before a grant is either local or discarded,
 because the only path K1 leaves is the connected route of `az-decoy0`, which
 exists only after the tier is granted and the helper has run. So:
@@ -216,9 +217,17 @@ exists only after the tier is granted and the helper has run. So:
   `PermanentMACAddress=`, not by `Name=`, so a different NIC that inherits
   the kernel name does not inherit forwarding. A `sysctl.d` line naming the
   interface is not used for the ingress: it would. The rules of K1 still
-  name the interface (a rule's `iif` is a name), but they only narrow: a
-  rule that follows the name to another NIC discards more, and the pass
-  checks that their name is the resolved ingress.
+  name the interface (a rule's `iif` is a name). A rule that follows the name
+  to another NIC only discards more, and the pass checks that their name is
+  the resolved ingress;
+- **the name is pinned** by a `.link` file matching the same `Path=` and
+  `PermanentMACAddress=` (§8), so that forwarding (bound to the NIC) and K1
+  (bound to the name) stay on one interface. **What remains:** if the pin
+  does not take (the name is already taken, or the `.link` file does not
+  match after a change), the ingress NIC forwards under another name that
+  K1 does not cover, from the moment networkd configures it until the pass
+  reads the rules and withholds. The pass closes the grant, not that window;
+  it is a VM item (§11) and part of R6.
 
 ## 6. The pass condition (G6; not implemented here)
 
@@ -266,14 +275,37 @@ design's defaults, R1, R2 and R5 of §9, required before G6):
 | every other interface present, except the ingress (and, in the verify, `az-decoy0`) (R1) | `forwarding` is `0` | `forwarding_other_on` |
 | IPv6 `conf.all`, `conf.default` and every interface (R5) | `forwarding` is `0` | `forwarding_ipv6_on` |
 | `conf.all` and every ingress interface (R1) | `proxy_arp` is `0` | `proxy_arp_on` |
-| the IPv4 rules (R2) | every rule with a priority below 32766 is either the local rule (priority 0, `lookup local`, no selector) or one of the K1 pair of a resolved ingress interface, matching it exactly: priority, `iif`, destination, table, action, `suppress_prefixlength`, and no other attribute (no source, `oif`, `fwmark`, `tos`, `uidrange`, `l3mdev`, protocol or port selector); each ingress has exactly its pair | `ingress_containment_absent` |
+| the IPv4 rules (R2) | every rule with a priority below 32766 is either the local rule (priority 0, `lookup local`, no selector) or one of the K1 pair of a resolved ingress interface, matching it exactly: priority, `iif`, destination, table, action, `suppress_prefixlength`, and no other selector (no source, `oif`, `fwmark`, `tos`, `uidrange`, `l3mdev`, IP protocol or port selector); each ingress has exactly its pair | `ingress_containment_absent` |
 | the routes of `main` (R2) | no route inside `10.255.196.0/24` (at the pass, before the bridge exists, none at all; in the verify, only the connected `10.255.196.0/30 dev az-decoy0`) | `decoy_prefix_routed` |
 | any read above | readable, in the closed form | `forwarding_unreadable` |
 
 The rule check is deliberately blunt: any other rule before `main` withholds,
 whatever it matches, so the check never has to reason about which rules could
 match an interface. A site that needs its own policy routing is not a decoy
-host in this phase.
+host in this phase. That includes a VPN that installs rules (Tailscale,
+`wg-quick` with its `fwmark` rules): with one, the tier is always withheld,
+and that is intended.
+
+The exact attribute set compared is **fixed from the dump observed on the
+VM** (§11), not from this table's wording: the kernel and networkd may add
+attributes this design does not foresee. The rule's `protocol` field (who
+installed it: *inferred* `static` for networkd's rules, `kernel` for the
+local rule) is **left out of the comparison**: it says who wrote the rule,
+not what it matches.
+
+**When the pass runs relative to networkd.** The pass does not wait for
+networkd to finish configuring the ingress, so early in a boot it can read
+forwarding still `0` or the rules not yet there, and withhold. Policy: **no
+new re-evaluation loop**. A withhold at the pass stands for that boot, with
+its reason code, as every other withhold does (the controller runs once per
+boot); a later boot evaluates again. To keep it from withholding by mere
+timing, G6 measures on the VM whether ordering the controller
+`After=systemd-networkd-wait-online.service` (a no-op where that unit is not
+in the boot) or `After=network-online.target` brings the reads in order, and
+what it delays for every other tier; the chosen ordering is an `After=` on
+the controller's unit file, measured in the generation like the rest, and
+adds no privilege, unit or loop. Until then the cost of a slow networkd is
+a withheld tier, never a grant on a half-configured host.
 
 Each code is a fixed word followed by a fixed phrase, in the form the
 controller already uses; none carries an interface name, a prefix or a
@@ -353,15 +385,29 @@ Consequences:
 For [operations](operations.md#deception-lite-decoy-network-196), written
 when G6 lands. Nexus installs none of these files and edits none of them,
 and none of them is in the signed generation (§3). Installed only after
-commissioning has closed with a v3 scope.
+commissioning has closed with a v3 scope. **When the node returns to
+`COMMISSIONING_REQUIRED` or is re-commissioned**, the operator removes the
+node-side files of items 2 and 3 before inventory runs (commissioning §2
+applies again), and installs them again only after commissioning closes.
 
 1. **On the LAN**: a static route `10.255.196.0/30 via <the node's address on
    the ingress>`, on the LAN router or on each host meant to reach the decoy.
    Nothing on the LAN may use `10.255.196.0/24`. A stateful LAN router that
    sees only one direction of the conversation may need the route on the
    hosts instead.
-2. **On the node, the ingress** (example, one ingress; one `.network` file,
-   so that the rules and forwarding come from one place):
+2. **On the node, the ingress** (example, one ingress; a `.link` file that
+   pins its name, and one `.network` file, so that the rules and forwarding
+   come from one place):
+
+   ```
+   # /etc/systemd/network/40-azazel-decoy-ingress.link
+   [Match]
+   Path=<the ingress's bus path>
+   PermanentMACAddress=<the ingress's permanent MAC>
+
+   [Link]
+   Name=azin0
+   ```
 
    ```
    # /etc/systemd/network/40-azazel-decoy-ingress.network
@@ -374,14 +420,14 @@ commissioning has closed with a v3 scope.
 
    [RoutingPolicyRule]
    Priority=1960
-   IncomingInterface=enp3s0
+   IncomingInterface=azin0
    To=10.255.196.0/30
    Table=main
    SuppressPrefixLength=29
 
    [RoutingPolicyRule]
    Priority=1961
-   IncomingInterface=enp3s0
+   IncomingInterface=azin0
    Type=blackhole
    ```
 
@@ -389,7 +435,11 @@ commissioning has closed with a v3 scope.
    is the operator's. Never `IPForward=` or `IPMasquerade=` in any `.network`
    file, never `net.ipv4.ip_forward = 1`, never a write to `conf.all` or
    `conf.default`, and no IPv6 forwarding anywhere (§2: each turns on more
-   than one interface, or IPv6).
+   than one interface, or IPv6). networkd applies, per link, the first
+   `.network` file in lexical order that matches; if another file sorts
+   earlier and matches the ingress, this one is ignored and forwarding stays
+   `0`, so the pass withholds (it fails closed). The pinned name is chosen
+   not to collide with a kernel-assigned one and passes the name check of §6.
 3. **On the node, the bridge's forwarding**:
 
    ```
@@ -398,8 +448,13 @@ commissioning has closed with a v3 scope.
    ```
 
 4. **On the node, nothing else**: no route into `10.255.196.0/24` on any
-   interface, no other routing rule before `main`, `proxy_arp` off.
-5. **To see it**: `sysctl net.ipv4.conf.enp3s0.forwarding
+   interface, no other routing rule before `main`, `proxy_arp` off. **After a
+   crash**, remove the leftovers first: a stale `az-decoy0` (with it goes its
+   `10.255.196.0/30 dev az-decoy0` route, which would otherwise withhold the
+   tier as `decoy_prefix_routed`) and a stale `inet azazel_decoy` table, as
+   [operations](operations.md#deception-lite-decoy-network-196) already says
+   for the helper.
+5. **To see it**: `sysctl net.ipv4.conf.azin0.forwarding
    net.ipv4.conf.az-decoy0.forwarding` (the second only while the decoy units
    run), `ip rule show`, `ip route show table main 10.255.196.0/24`, and from
    an approved LAN host a connect to `10.255.196.2:2222`. A withheld tier, or
@@ -411,7 +466,8 @@ The decided default of Q11 stands as written. Writing it out showed the
 following. Each only withholds the tier or stops the units, so each is
 **adopted as a default the owner may overturn**, as the owner directed for
 narrowing conditions; R1, R2 and R5 are required before G6 is merged, R4 in
-G2 (and wired in G6), R3 in G1.
+G2 (and wired in G6), R3 in G1. R6 is different: it is a reading of a
+commissioning rule, not a narrowing, and stays **open** for the owner.
 
 1. **R1.** IPv4 `conf.all` and `conf.default` at `0`, every interface other
    than the ingress at `0` (`asset_acquisition`, unassigned interfaces,
@@ -431,11 +487,13 @@ G2 (and wired in G6), R3 in G1.
    grant condition in G6.*
 5. **R5.** IPv6 forwarding off on `all`, `default` and every interface (the
    decoy is IPv4 only, and K1 does not cover IPv6). *Required before G6.*
-6. **R6.** The reading of commissioning §2 in §5: forwarding switched on
-   for the ingress before activation is compatible with "must not forward"
-   only because K1 discards everything the ingress receives until a grant.
-   If the owner reads §2 as forbidding the switch itself, P1 conflicts with
-   it and the question returns to the owner.
+6. **R6 (open, returned to the owner).** The reading of commissioning §2 in
+   §5: forwarding switched on for the ingress before activation is
+   compatible with "must not forward" only because K1 discards everything
+   the ingress receives until a grant, and only while the name pin holds
+   (§5, the remaining window). If the owner reads §2 as forbidding the switch
+   itself, P1 conflicts with it and Q11 must be revisited. G6 is not merged
+   before the owner answers.
 
 ## 10. `HG-06`
 
@@ -488,9 +546,20 @@ The gate's claim and record format stay as in
    `ipv6.disable=1`;
 8. systemd-networkd 257 on Debian 13: per-link `IPv4Forwarding=yes` sets
    only that link's value; `IPForward=` and `IPMasquerade=` turn on host-wide
-   forwarding; `[RoutingPolicyRule]` produces exactly the two rules of §5;
+   forwarding; `[RoutingPolicyRule]` accepts `Table=main` and produces
+   exactly the two rules of §5; **the attributes of the actual
+   `RTM_GETRULE` dump** of those rules and of the local rule (including
+   `protocol`) are recorded, and the comparison of §6 is fixed from them;
    **whether the rules are installed before the link's forwarding is turned
    on**, at boot and after `networkctl reload` and a link down/up; whether a
    reload or link flap removes the rules for a moment (the verify's window);
 9. a replacement NIC that takes the ingress's kernel name does not match the
-   `.network` file, keeps forwarding `0`, and the pass withholds.
+   `.network` file, keeps forwarding `0`, and the pass withholds;
+10. **name swaps**: with the `.link` pin, and with the pin made to fail (its
+    name already taken), which interface carries forwarding `1` and which the
+    K1 rules, from boot to the pass; how long the ingress forwards without K1
+    in the failing case;
+11. the controller's timing: with and without an `After=` on
+    `systemd-networkd-wait-online.service` or `network-online.target`,
+    whether the pass reads the ingress configured, and what each ordering
+    delays.
