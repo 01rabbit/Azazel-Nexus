@@ -80,9 +80,10 @@ boot-time probe preflight runs moments before the activation pass, so a
 result written just before a kernel reboot would otherwise still be inside its
 TTL after it. A soft-reboot keeps the kernel and so the boot id: the boot id
 does not tell its two userspaces apart, which is why `az-edge-probed` removes
-the previous result before each run (#258 item 7). A result from another boot, a v1 result (which carries no boot and
-so cannot be shown to be from this one), or any result when this boot's id
-cannot be read is `not-checked` and says it is stale -- never `failed`.
+the previous result before each run (#258 item 7). A result from another
+boot, a v1 result (which carries no boot and so cannot be shown to be from
+this one), or any result when this boot's id cannot be read is `not-checked`
+and says it is stale -- never `failed`.
 
 The injected callables remain for tests and for a deployment that supplies
 these another way. Passing both a probe result and a non-default callable is

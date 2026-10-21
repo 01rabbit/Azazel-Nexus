@@ -169,6 +169,7 @@ def test_main_probes_the_fixed_root(tmp_path, monkeypatch):
             running_reason="not read",
         )
 
+    monkeypatch.setattr(edge_probed, "clear_previous_result", lambda: None)
     monkeypatch.setattr(edge_probed, "probe", fake_probe)
     monkeypatch.setattr(edge_probed, "write_result", lambda outcome: tmp_path / "x")
     monkeypatch.setattr(edge_probed, "read_current_boot_id", lambda: BOOT)
@@ -204,6 +205,7 @@ def test_main_with_an_unreadable_boot_id_probes_nothing_and_writes_nothing(
     def must_not_run(*args, **kwargs):
         raise AssertionError("probed although the boot id was unreadable")
 
+    monkeypatch.setattr(edge_probed, "clear_previous_result", lambda: None)
     monkeypatch.setattr(edge_probed, "read_current_boot_id", unreadable)
     monkeypatch.setattr(edge_probed, "probe", must_not_run)
     monkeypatch.setattr(edge_probed, "write_result", must_not_run)
@@ -273,6 +275,102 @@ def test_a_result_that_cannot_be_removed_is_an_error(tmp_path):
     (leaf / PROBE_STATE_PATH.name).mkdir(parents=True)
     with pytest.raises(OSError):
         edge_probed.clear_previous_result(leaf / PROBE_STATE_PATH.name)
+
+
+def test_the_result_is_unlinked_relative_to_its_directory(tmp_path, monkeypatch):
+    """Every unlink goes through the directory's fd: a bare path would
+    re-resolve the parent, symlinks and all."""
+
+    path = _result(tmp_path)
+    (path.parent / ".edge-probe.abcd1234").write_text("partial", encoding="utf-8")
+    real_unlink = edge_probed.os.unlink
+    calls = []
+
+    def unlink(name, *args, **kwargs):
+        calls.append((name, args, kwargs))
+        return real_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(edge_probed.os, "unlink", unlink)
+    edge_probed.clear_previous_result(path)
+    assert sorted(name for name, _, _ in calls) == [
+        ".edge-probe.abcd1234", PROBE_STATE_PATH.name,
+    ]
+    for _, args, kwargs in calls:
+        assert args == ()
+        assert isinstance(kwargs.get("dir_fd"), int)
+
+
+def test_a_temporary_file_left_by_an_interrupted_write_is_removed(tmp_path, monkeypatch):
+    leaf = tmp_path / "edge-probe"
+    path = leaf / PROBE_STATE_PATH.name
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    # The name `write_result` really gives, left behind as an abrupt exit
+    # (one its own cleanup never sees) would leave it.
+    monkeypatch.setattr(edge_probed.os, "replace", interrupted)
+    monkeypatch.setattr(edge_probed.os, "unlink", lambda *a, **k: None)
+    with pytest.raises(KeyboardInterrupt):
+        edge_probed.write_result(
+            edge_probed.ProbeOutcome(
+                observed_at="2026-09-21T03:00:00Z",
+                package_version=PIN.version,
+                package_digest="sha256:" + "0" * 64,
+                health=Evidence.NOT_CHECKED,
+                health_reason="not run",
+                running=Evidence.NOT_CHECKED,
+                running_reason="not read",
+                boot_id=BOOT,
+            ),
+            path,
+        )
+    monkeypatch.undo()
+    left = [p.name for p in leaf.iterdir()]
+    assert len(left) == 1 and left[0].startswith(".edge-probe.")
+    edge_probed.clear_previous_result(path)
+    assert list(leaf.iterdir()) == []
+
+
+def test_only_names_of_the_temporary_form_are_removed(tmp_path):
+    path = _result(tmp_path)
+    keep = [
+        ".edge-probe.abc", ".edge-probe.abcd12345", ".edge-probe.ABCD1234",
+        ".edge-probe.abcd1234.bak", "x.edge-probe.abcd1234", ".edge-probe-abcd1234",
+    ]
+    for name in keep:
+        (path.parent / name).write_text("keep", encoding="utf-8")
+    edge_probed.clear_previous_result(path)
+    assert sorted(p.name for p in path.parent.iterdir()) == sorted(keep)
+
+
+def test_a_temporary_name_that_is_not_a_regular_file_is_left_alone(tmp_path):
+    path = _result(tmp_path)
+    target = tmp_path / "elsewhere"
+    target.write_text("keep", encoding="utf-8")
+    (path.parent / ".edge-probe.link0000").symlink_to(target)
+    (path.parent / ".edge-probe.dir00000").mkdir()
+    (path.parent / ".edge-probe.dir00000" / "inside").write_text("keep", encoding="utf-8")
+    edge_probed.clear_previous_result(path)
+    assert not path.exists()
+    assert (path.parent / ".edge-probe.link0000").is_symlink()
+    assert target.read_text(encoding="utf-8") == "keep"
+    assert (path.parent / ".edge-probe.dir00000" / "inside").exists()
+
+
+def test_a_temporary_file_that_cannot_be_removed_is_an_error(tmp_path, monkeypatch):
+    path = _result(tmp_path)
+    (path.parent / ".edge-probe.abcd1234").write_text("partial", encoding="utf-8")
+    real_unlink = edge_probed.os.unlink
+
+    def unlink(name, *args, **kwargs):
+        if name.startswith(".edge-probe."):
+            raise PermissionError("denied")
+        return real_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(edge_probed.os, "unlink", unlink)
+    with pytest.raises(OSError):
+        edge_probed.clear_previous_result(path)
 
 
 def test_main_clears_before_it_reads_the_boot_or_probes(monkeypatch):
@@ -399,6 +497,7 @@ def _main_against(tmp_path, monkeypatch, connect):
         lambda **kwargs: real_probe(root, clock=_clock(), runner=_runner(), **kwargs),
     )
     monkeypatch.setattr(SystemdBusSession, "connect", classmethod(lambda cls: connect()))
+    monkeypatch.setattr(edge_probed, "clear_previous_result", lambda: None)
     monkeypatch.setattr(edge_probed, "read_current_boot_id", lambda: BOOT)
     written = {}
     monkeypatch.setattr(
