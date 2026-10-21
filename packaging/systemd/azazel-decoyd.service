@@ -3,7 +3,7 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # Holds no capability and runs under its own account, inside the decoy network namespace, with PrivateUsers=yes.
-# It accepts and never initiates: no outbound connect is in its code, and the runtime boundary test allows its listener module bind and listen only.
+# It accepts and never initiates a network connection: its one connect is the AF_UNIX report to the intake's decoy socket, and the runtime boundary test allows its listener module bind and listen only.
 # IPAddressDeny=any stays, and the fixed decoy subnet is the only address allowed.
 # It opens no socket without the network helper's isolation record from this boot with every check passed.
 # The activation pass never grants this unit in this build.

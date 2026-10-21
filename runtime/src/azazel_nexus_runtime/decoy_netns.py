@@ -55,9 +55,9 @@ __all__ = [
 #: from there so that the decoy process does not load the unit renderer.
 DECOY_NAMESPACE_PATH = "/run/netns/azazel-decoy"
 
-#: The decoy's end of the veth pair, inside the namespace. Fixed here for the
-#: helper (`az-decoy-netd`) to use when its body is written; at most 15
-#: bytes (`IFNAMSIZ`), a test checks both.
+#: The decoy's end of the veth pair, inside the namespace. Fixed here; the
+#: namespace unit (`az-decoy-nsd`, `decoy_network`) imports it when it creates
+#: the pair; at most 15 bytes (`IFNAMSIZ`), a test checks both.
 DECOY_VETH = "az-decoy-ns0"
 
 #: The only interfaces the decoy namespace may hold.

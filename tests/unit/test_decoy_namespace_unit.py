@@ -118,7 +118,8 @@ def test_the_namespace_unit_runs_once_as_root_with_exactly_its_two_capabilities(
     assert settings["CapabilityBoundingSet"] == ["CAP_SYS_ADMIN CAP_NET_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
     assert settings["NoNewPrivileges"] == ["yes"]
-    # Route netlink only, the family `ip netns add` was VM-checked with.
+    # Netlink only, the family `ip netns add` was VM-checked with. This does
+    # not narrow the protocol: nftables netlink is open to it as well.
     assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
     assert settings["IPAddressDeny"] == ["any"]
     assert DECOY_NAMESPACE_PATH == "/run/netns/azazel-decoy"

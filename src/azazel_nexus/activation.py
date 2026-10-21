@@ -216,16 +216,19 @@ REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 
 
 #: The Deception Lite namespace unit (#196, design D1, option (a)). Run once;
-#: the only governed unit with `CAP_SYS_ADMIN`, which it would use only to
-#: create the decoy network namespace at its fixed path. Its body is a later
-#: phase: the executable in this build refuses and exits.
+#: the only governed unit with `CAP_SYS_ADMIN`, and one of the two with
+#: `CAP_NET_ADMIN`. With fixed `ip` commands it creates the decoy network
+#: namespace at its fixed path and the veth pair with the decoy's end inside
+#: it, and configures the inside (`lo`, the address, the route); its stop
+#: removes them (#196 §13).
 DECOY_NAMESPACE_UNIT = "azazel-decoy-nsd.service"
 
-#: The Deception Lite network helper (#196 P1, design D1). Run once; the only
-#: governed unit with `CAP_NET_ADMIN`, which it would use to build
-#: `az-decoy0`, the veth pair into the namespace the namespace unit created,
-#: and the forwarding-deny rules. Its body is a later phase: the executable
-#: in this build refuses and exits.
+#: The Deception Lite network helper (#196 P1, design D1). Run once; holds
+#: `CAP_NET_ADMIN` and nothing else (the namespace unit holds it too, no
+#: third unit does). With fixed `nft` and `ip` commands it loads the decoy
+#: table, builds `az-decoy0` and attaches the host end of the veth pair the
+#: namespace unit made, then reads them back and writes this boot's isolation
+#: record (#196 §13, §14).
 DECOY_NETWORK_HELPER_UNIT = "azazel-decoy-netd.service"
 
 #: The Deception Lite decoy (#196 P1, design D1): no capability, its own
@@ -382,11 +385,11 @@ CORE_UNITS = (
         DECOY_NAMESPACE_UNIT,
         # Root for the same reason as the helper: a bounding-set capability
         # reaches only uid 0 without an ambient grant. The bounding set is
-        # exactly CAP_SYS_ADMIN (`hardening.py`).
+        # exactly CAP_SYS_ADMIN and CAP_NET_ADMIN (`hardening.py`).
         UnitTier.DECEPTION_EXPOSURE,
         "root",
         "one-shot decoy namespace unit; the only unit with CAP_SYS_ADMIN; "
-        "creates the decoy network namespace and nothing else",
+        "creates the decoy namespace and the veth pair and configures the inside",
     ),
     UnitDefinition(
         DECOY_NETWORK_HELPER_UNIT,
@@ -395,8 +398,8 @@ CORE_UNITS = (
         # bounding set is exactly CAP_NET_ADMIN (`hardening.py`).
         UnitTier.DECEPTION_EXPOSURE,
         "root",
-        "one-shot decoy network helper; the only unit with CAP_NET_ADMIN; "
-        "reads only the commissioning render",
+        "one-shot decoy network helper; CAP_NET_ADMIN only; "
+        "runs fixed commands and reads no input",
     ),
     UnitDefinition(
         DECOY_UNIT,
