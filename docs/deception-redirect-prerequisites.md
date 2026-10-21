@@ -748,8 +748,9 @@ reports. It still **admits nothing**: the unit is never granted in this
 build (the `DECEPTION_EXPOSURE` tier is withheld as
 `isolation_evidence_absent`, §10), so on a node nothing starts it. The unit
 profile (`hardening.py`) is unchanged; its rationale still says the
-executable refuses and exits, and is corrected with the namespace unit's
-phase, which owns that file.
+executable refuses and exits, and is left to the phase that writes the
+namespace unit's and the helper's bodies, which owns that file (with the
+`IPAddressDeny=` question of §10).
 
 **Where it may listen** (`decoy_netns.py`). It binds the IPv4 wildcard of
 the network namespace it runs in, which in the host namespace would be every
