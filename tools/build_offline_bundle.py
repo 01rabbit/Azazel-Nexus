@@ -88,6 +88,14 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             root / "tools" / "purge_mio_profile_copies.py",
             "tools/purge_mio_profile_copies.py",
         ),
+        (
+            root / "tools" / "provision_mission_read.py",
+            "tools/provision_mission_read.py",
+        ),
+        (
+            root / "tools" / "install_llama_runtime.py",
+            "tools/install_llama_runtime.py",
+        ),
     )
     for source, archive_name in fixed:
         _regular_file(source)
