@@ -70,7 +70,7 @@ from azazel_nexus.edge_package import (
     nothing_established,
 )
 from azazel_nexus.generation import GenerationStore
-from azazel_nexus.hil_preflight import read_boot_id
+from azazel_nexus.hil_preflight import COMMISSIONING_DIR, luks_backing, read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
 
 from .commissioning_input import load_commissioning_evidence
@@ -452,7 +452,44 @@ def _collect_input_status(root: Path) -> dict[str, str]:
         ) else "unavailable_or_invalid"
     except Exception:  # noqa: BLE001 - never include raw reader exceptions/identity in audit
         result["boot"] = "unavailable_or_invalid"
+    storage = _commissioning_storage()
+    if storage is not None:
+        result["commissioning_storage"] = storage
     return result
+
+
+#: The only values `commissioning_storage` may take (#242 §4 "Diagnostic only").
+COMMISSIONING_STORAGE_LABELS = ("luks_backed", "not_luks_backed")
+
+
+def _commissioning_storage() -> Optional[str]:
+    """Whether `/etc/azazel/commissioning` sits on LUKS, as one of two fixed labels.
+
+    Diagnostic only (`docs/commissioning-storage-at-boot.md` §4): it tells a
+    boot whose volume stayed locked (the directory is then the bare mount
+    point on the root filesystem) from other commissioning failures, from the
+    ledger alone. It is read after the decision, the markers and the high
+    water, and feeds none of them; it carries no device, number or path.
+    The HIL preflight's reader in its three-valued form
+    (`hil_preflight.luks_backing`): a `stat` and `/sys/dev/block`, nothing
+    executed. When it cannot tell -- the path or the sysfs entry unreadable,
+    an anonymous device -- nothing is recorded rather than a guess or a
+    third value; so is a reader that raises.
+    """
+    try:
+        backed = luks_backing(COMMISSIONING_DIR)
+    except Exception:  # noqa: BLE001 - no label is better than an invented one
+        return None
+    if backed is True:
+        return "luks_backed"
+    if backed is False:
+        return "not_luks_backed"
+    return None
+    if backed is True:
+        return "luks_backed"
+    if backed is False:
+        return "not_luks_backed"
+    return None
 
 
 #: Every producer, for a pass whose input collection itself failed.

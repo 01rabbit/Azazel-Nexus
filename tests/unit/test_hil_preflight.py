@@ -607,6 +607,67 @@ def test_an_unreadable_sysfs_is_not_read_as_encrypted(tmp_path):
     )
 
 
+# -- the three-valued diagnostic reader (#242 §4) -------------------------------
+
+
+def _sysfs_case(tmp_path, case):
+    """A synthetic /sys/dev/block for device 254:3, and the stat to use."""
+    sysfs = tmp_path / "block"
+    entry = sysfs / "254:3"
+    if case != "anonymous":
+        entry.mkdir(parents=True)
+    if case in ("luks", "lvm", "empty_uuid", "uuid_unreadable", "uuid_missing"):
+        (entry / "dm").mkdir()
+    if case == "luks":
+        (entry / "dm" / "uuid").write_text("CRYPT-LUKS2-synthetic-azn-commissioning\n")
+    elif case == "lvm":
+        (entry / "dm" / "uuid").write_text("LVM-synthetic\n")
+    elif case == "empty_uuid":
+        (entry / "dm" / "uuid").write_text("\n")
+    elif case == "uuid_unreadable":
+        (entry / "dm" / "uuid").mkdir()  # reading it raises IsADirectoryError
+
+    def stat(_path):
+        if case == "stat_fails":
+            raise PermissionError("synthetic")
+        return os.stat_result((0o40755, 0, os.makedev(254, 3), 1, 0, 0, 0, 0, 0, 0))
+    return sysfs, stat
+
+
+#: case: (luks_backing, luks_backed -- unchanged, the refusal paths' answer)
+_BACKING_CASES = {
+    "luks": (True, True),
+    "lvm": (False, False),
+    "empty_uuid": (False, False),
+    "plain_device": (False, False),
+    "anonymous": (None, False),
+    "stat_fails": (None, False),
+    "uuid_unreadable": (None, False),
+    "uuid_missing": (None, False),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BACKING_CASES))
+def test_luks_backing_says_none_when_it_cannot_tell_and_luks_backed_is_unchanged(
+        tmp_path, case):
+    """`anonymous`: no /sys/dev/block entry, as for a btrfs subvolume or tmpfs."""
+    sysfs, stat = _sysfs_case(tmp_path, case)
+    backing, backed = _BACKING_CASES[case]
+    assert preflight.luks_backing(tmp_path, stat=stat, sysfs_dev_block=sysfs) is backing
+    assert preflight.luks_backed(tmp_path, stat=stat, sysfs_dev_block=sysfs) is backed
+
+
+def test_an_unreadable_sysfs_tree_is_undetermined_for_the_label(tmp_path):
+    """The whole /sys/dev/block missing (not mounted, hidden): no answer."""
+
+    class _Stat:
+        st_dev = os.makedev(254, 0)
+
+    assert preflight.luks_backing(
+        tmp_path, stat=lambda _p: _Stat(), sysfs_dev_block=tmp_path / "absent"
+    ) is None
+
+
 def test_a_tpm_is_presence_only(tmp_path):
     (tmp_path / "tpm0").mkdir()
     assert preflight.tpm_present(tmp_path)

@@ -95,6 +95,7 @@ __all__ = [
     "read_boot_id",
     "fingerprint",
     "luks_backed",
+    "luks_backing",
     "persist_commissioning_record",
     "read_protection_key",
     "record_as_document",
@@ -252,6 +253,49 @@ def luks_backed(
     major, minor = os.major(device), os.minor(device)
     uuid = _read_first_line(sysfs_dev_block / f"{major}:{minor}" / "dm" / "uuid")
     return bool(uuid and uuid.startswith(_LUKS_UUID_PREFIX))
+
+
+def luks_backing(
+    path: Path,
+    *,
+    stat: Callable[[Path], os.stat_result] = os.stat,
+    sysfs_dev_block: Path = Path("/sys/dev/block"),
+) -> Optional[bool]:
+    """Like `luks_backed`, but `None` when the answer could not be determined.
+
+    For diagnostics only (`docs/commissioning-storage-at-boot.md` §4). The
+    refusal paths keep `luks_backed`, whose "could not read" is "not
+    encrypted" -- the safe answer for a gate, and the wrong one for a label
+    an operator reads as "the volume stayed locked". Here:
+
+    * True: `dm/uuid` read and starts with `CRYPT-LUKS`;
+    * False: the device has a `/sys/dev/block` entry and either no `dm/`
+      (a plain block device) or a `dm/uuid` read without that prefix;
+    * None: `path` cannot be stat-ed, the device has no `/sys/dev/block`
+      entry (an anonymous device, such as a btrfs subvolume or a tmpfs), or
+      the entry or `dm/uuid` cannot be read.
+    """
+
+    try:
+        device = stat(path).st_dev
+    except OSError:
+        return None
+    entry = sysfs_dev_block / f"{os.major(device)}:{os.minor(device)}"
+    try:
+        os.stat(entry)
+    except OSError:
+        return None
+    try:
+        os.stat(entry / "dm")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        uuid = (entry / "dm" / "uuid").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    return uuid.startswith(_LUKS_UUID_PREFIX)
 
 
 def tpm_present(sysfs_tpm: Path = Path("/sys/class/tpm")) -> bool:

@@ -475,8 +475,9 @@ Expected:
 - The last ledger entry is `activation.inputs_incomplete` with every
   producer in `observed_inputs.producers` `verified`, `missing_producers`
   only `authoritative_commissioning_admission`, `renderer_measurement` and
-  (Variant A) `edge_evidence`, `grant_markers` the granted units and
-  `observed_inputs.high_water` `raised`. Earlier entries in this boot:
+  (Variant A) `edge_evidence`, `grant_markers` the granted units,
+  `observed_inputs.high_water` `raised` and
+  `observed_inputs.commissioning_storage` `luks_backed`. Earlier entries in this boot:
   `activation.unit_granted` per unit and `activation.high_water_raised`.
 
 ### 7.3 Boot B — the granted units start
@@ -541,7 +542,7 @@ verified. For example N1 reads `authenticated_commissioning` and
 
 | case | operation (who) | expected beyond the common one | restore |
 | --- | --- | --- | --- |
-| **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
+| **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `observed_inputs.commissioning_storage: not_luks_backed` (see below the table); `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
 | **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept, byte-identical files (no `--replace`); `high water (raised)`. If the window ended, a new request and signature with `--seq 2` (a different approval must use a sequence above the floor) |
 | **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/<N>/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
 | **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused) | remove the directory, `daemon-reload` |
@@ -550,6 +551,21 @@ verified. For example N1 reads `authenticated_commissioning` and
 | **N6 locked after a grant** | as N1, run on the boot after a granting boot if N1 was not | queued starts skipped (`unmet condition`) | reboot and unlock |
 | **N7 epoch raised** | see below (assistant, operator agrees) | `node_identity` and `epoch_high_water` `verified`, `activation_approval_loader` `failed` (the approval names the old epoch) | revert to S2 |
 | **N8 operator revoked** | `sudo PYTHON -I -m azazel_nexus.operator_enrollment revoke LABEL` (interactive: public key, fingerprint, `REVOKE LABEL`; assistant with the operator's go-ahead) | with one rehearsal operator who also signed the proposal, `authenticated_commissioning` fails first (the evidence's signer is revoked); `node_health` `operator_trust` fails if no other active key; record the producer statuses as observed | revert to S2 (or S0 at the end). Only without a revert is the revocation permanent: the label cannot be re-enrolled |
+
+**The storage label (N1).** `observed_inputs.commissioning_storage` says
+whether `/etc/azazel/commissioning` was on LUKS during the pass. Locked, the
+directory is the bare mount point on the root filesystem, so it reads
+`not_luks_backed`; every other commissioning failure (with the volume
+unlocked) reads `luks_backed`. That is how the ledger alone tells N1 from the
+rest. Two limits:
+
+- the key is **absent** when the reader cannot tell (the path or
+  `/sys/dev/block` unreadable, or an anonymous device such as a btrfs
+  subvolume); record that and do not read it as "locked";
+- if this VM's root filesystem is itself plain LUKS, a locked boot also reads
+  `luks_backed`; record that as a deviation.
+
+The label is diagnostic only: it decides nothing and names no device or path.
 
 **N7 detail.** The declaration store has no replace path
 (`bootstrap_deployment_store.py` initializes only when no `deployment.json`

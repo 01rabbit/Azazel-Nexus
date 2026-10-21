@@ -146,3 +146,102 @@ def test_missing_yaml_parser_cannot_skip_mandatory_narrowing(tmp_path, monkeypat
     path = tmp_path / "var/lib/azazel/state/activation.jsonl"
     assert list(AuditLedger(path))[-1].event["observed_inputs"]["declared_node"] == "unavailable_or_refused"
     assert "private" not in path.read_text()
+
+
+# -- the commissioning storage label (#242 §4 "Diagnostic only") ---------------
+
+
+def _host_readers(monkeypatch):
+    monkeypatch.setattr(activated, "load_operator_trust", lambda: OperatorTrust({}))
+    monkeypatch.setattr(activated, "read_boot_id", lambda: BOOT)
+    monkeypatch.setattr(activated, "load_declared_node", lambda: DeclaredNode("private-node"))
+
+
+@pytest.mark.parametrize("backed,label", [(True, "luks_backed"), (False, "not_luks_backed")])
+def test_storage_label_is_one_of_two_fixed_values_for_the_commissioning_dir(
+        monkeypatch, backed, label):
+    _host_readers(monkeypatch)
+    seen = []
+    monkeypatch.setattr(activated, "luks_backing", lambda path: seen.append(path) or backed)
+    observed = activated._collect_input_status(Path("/"))
+    assert seen == [Path("/etc/azazel/commissioning")]
+    assert observed["commissioning_storage"] == label
+    assert activated.COMMISSIONING_STORAGE_LABELS == ("luks_backed", "not_luks_backed")
+
+
+@pytest.mark.parametrize("result", [
+    RuntimeError("private /dev/dm-3 detail"), PermissionError("private"), None, "yes", 1,
+], ids=["raises", "permission", "none", "text", "int"])
+def test_storage_label_is_absent_rather_than_invented(monkeypatch, result):
+    _host_readers(monkeypatch)
+
+    def reader(_path):
+        if isinstance(result, Exception):
+            raise result
+        return result
+    monkeypatch.setattr(activated, "luks_backing", reader)
+    observed = activated._collect_input_status(Path("/"))
+    assert "commissioning_storage" not in observed
+    assert "private" not in repr(observed)
+
+
+def test_staged_root_never_reads_the_storage(tmp_path, monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("host storage read")
+    monkeypatch.setattr(activated, "luks_backing", forbidden)
+    assert "commissioning_storage" not in activated._collect_input_status(tmp_path)
+
+
+@pytest.mark.parametrize("case,label", [
+    ("luks", "luks_backed"),
+    # A locked boot: the bare mount point on a root fs that is a plain
+    # partition, or a dm device that is not LUKS. Both are determined.
+    ("plain_device", "not_luks_backed"),
+    ("lvm", "not_luks_backed"),
+    # Undetermined: no key rather than a "not_luks_backed" read as "locked".
+    ("anonymous", None),        # no /sys/dev/block entry (btrfs subvolume, tmpfs)
+    ("sysfs_absent", None),     # /sys/dev/block itself not readable
+    ("uuid_unreadable", None),  # dm/ present, dm/uuid unreadable
+    ("stat_fails", None),       # the path itself cannot be stat-ed
+])
+def test_storage_label_from_the_real_reader_carries_no_device(tmp_path, monkeypatch, case, label):
+    """The HIL preflight's three-valued reader over a synthetic /sys/dev/block."""
+    import os
+
+    from azazel_nexus import hil_preflight
+
+    sysfs = tmp_path / "sys/dev/block"
+    entry = sysfs / "254:3"
+    if case not in ("anonymous", "sysfs_absent"):
+        entry.mkdir(parents=True)
+    if case == "luks":
+        (entry / "dm").mkdir()
+        (entry / "dm/uuid").write_text(
+            "CRYPT-LUKS2-0123456789abcdef0123456789abcdef-azn-commissioning\n")
+    elif case == "lvm":
+        (entry / "dm").mkdir()
+        (entry / "dm/uuid").write_text("LVM-private-volume\n")
+    elif case == "uuid_unreadable":
+        (entry / "dm/uuid").mkdir(parents=True)  # reading it raises
+    elif case == "anonymous":
+        sysfs.mkdir(parents=True)
+
+    def stat(_path):
+        if case == "stat_fails":
+            raise PermissionError("private /etc/azazel/commissioning detail")
+        return os.stat_result((0o40755, 0, os.makedev(254, 3), 1, 0, 0, 0, 0, 0, 0))
+    monkeypatch.setattr(activated, "luks_backing", lambda path: hil_preflight.luks_backing(
+        path, stat=stat, sysfs_dev_block=sysfs))
+    _host_readers(monkeypatch)
+    collect = activated._collect_input_status
+    monkeypatch.setattr(activated, "_collect_input_status", lambda root: collect(Path("/")))
+    manager = RecordingUnitManager(d.name for d in CORE_UNITS)
+    outcome = activated._run_once(manager=manager, root=tmp_path, now=NOW, actor="test")
+    assert outcome.granted == ()
+    path = tmp_path / "var/lib/azazel/state/activation.jsonl"
+    event = list(AuditLedger(path))[-1].event
+    assert event["observed_inputs"].get("commissioning_storage") == label
+    assert ("commissioning_storage" in event["observed_inputs"]) is (label is not None)
+    text = path.read_text()
+    for leak in ("254:3", "CRYPT", "LUKS2", "azn-commissioning", "/etc/azazel", "/sys", "private"):
+        assert leak not in text, leak

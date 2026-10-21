@@ -1106,3 +1106,60 @@ def test_only_the_second_profile_read_failing_refuses_everything(world):
 def test_a_profile_changed_between_the_reads_refuses_everything(world):
     world.systemd.profiles = ["reviewed", "reviewed-but-another-version"]
     _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
+# -- the commissioning storage label (#242 §4 "Diagnostic only") ---------------
+
+#: The real collection; the `world` fixtures replace it with an empty one.
+_COLLECT = activated._collect_input_status
+
+
+def _storage(kind):
+    """`luks_backing` as the controller would see it: True, False, None or an error."""
+    def reader(path, **_kwargs):
+        assert path == Path("/etc/azazel/commissioning")
+        if kind == "raises":
+            raise RuntimeError("private /dev/mapper/azn-commissioning 254:3 detail")
+        return {"luks": True, "plain": False, "unknown": None}[kind]
+    return reader
+
+
+def _pass_with_storage(tmp_path, monkeypatch, kind, **replaced):
+    """One pass in a fresh world whose real input collection sees `kind`."""
+    world = World(tmp_path / kind)
+    monkeypatch.setattr(activated, "load_operator_trust", lambda: world.trust)
+    monkeypatch.setattr(activated, "read_boot_id", lambda: BOOT)
+    monkeypatch.setattr(activated, "load_declared_node", lambda: world.node)
+    monkeypatch.setattr(activated, "luks_backing", _storage(kind))
+    monkeypatch.setattr(activated, "_collect_input_status", lambda _root: _COLLECT(Path("/")))
+    outcome = world.run(**replaced)
+    states = {d.name: world.manager.state(d.name) for d in CORE_UNITS}
+    events = world.events()
+    labels = [e["observed_inputs"].pop("commissioning_storage", None) for e in events
+              if e["event_type"] == "activation.inputs_incomplete"]
+    decided = (outcome, states, list(world.manager.calls), world.markers(),
+               list(world.raised), world.high_water, events)
+    return decided, labels, world.ledger_path.read_text()
+
+
+@pytest.mark.parametrize("replaced", [{}, {"commissioning_evidence": _raises()}],
+                         ids=["granting", "commissioning-refused"])
+def test_the_storage_label_never_changes_the_decision(tmp_path, monkeypatch, replaced):
+    """Only the label differs: outcome, units, markers, floors and ledger do not."""
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    _owned_by_the_test(monkeypatch)
+    results = {kind: _pass_with_storage(tmp_path, monkeypatch, kind, **replaced)
+               for kind in ("luks", "plain", "unknown", "raises")}
+    assert results["luks"][1] == ["luks_backed"]
+    assert results["plain"][1] == ["not_luks_backed"]
+    assert results["unknown"][1] == [None]  # undetermined: no key, no guess
+    assert results["raises"][1] == [None]  # no third value and no reader text
+    assert (results["luks"][0] == results["plain"][0] == results["unknown"][0]
+            == results["raises"][0])
+    outcome, *_, events = results["luks"][0]
+    assert sorted(outcome.granted) == ([] if replaced else list(SCOPE))
+    assert any(e["event_type"] == "activation.high_water_raised" for e in events) is not bool(
+        replaced)
+    for _, _, text in results.values():
+        for leak in ("/etc/azazel", "/dev", "mapper", "254:3", "private"):
+            assert leak not in text, leak
