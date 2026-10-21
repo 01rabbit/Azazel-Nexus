@@ -475,8 +475,9 @@ Expected:
 - The last ledger entry is `activation.inputs_incomplete` with every
   producer in `observed_inputs.producers` `verified`, `missing_producers`
   only `authoritative_commissioning_admission`, `renderer_measurement` and
-  (Variant A) `edge_evidence`, `grant_markers` the granted units and
-  `observed_inputs.high_water` `raised`. Earlier entries in this boot:
+  (Variant A) `edge_evidence`, `grant_markers` the granted units,
+  `observed_inputs.high_water` `raised` and
+  `observed_inputs.commissioning_storage` `luks_backed`. Earlier entries in this boot:
   `activation.unit_granted` per unit and `activation.high_water_raised`.
 
 ### 7.3 Boot B — the granted units start
@@ -541,7 +542,7 @@ verified. For example N1 reads `authenticated_commissioning` and
 
 | case | operation (who) | expected beyond the common one | restore |
 | --- | --- | --- | --- |
-| **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
+| **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `observed_inputs.commissioning_storage: not_luks_backed` (the bare mount point on the root filesystem; if this VM's root filesystem is itself plain LUKS the label reads `luks_backed` and cannot tell, so record that as a deviation; this tells a locked boot from other commissioning failures, which read `luks_backed`; the label is diagnostic only, decides nothing and names no device or path); `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
 | **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept, byte-identical files (no `--replace`); `high water (raised)`. If the window ended, a new request and signature with `--seq 2` (a different approval must use a sequence above the floor) |
 | **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/<N>/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
 | **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused) | remove the directory, `daemon-reload` |

@@ -318,7 +318,11 @@ launchable.
   `observed_inputs.producers` shows `verified`, `failed` or `not_attempted`
   for each. `observed_inputs.edge_evidence` and `edge_package_binding` say
   why edge-core was or was not launchable, and the `activation.unit_withheld`
-  entry for it names the failed checks. It contains no identity or digest.
+  entry for it names the failed checks. `observed_inputs.commissioning_storage`
+  (`luks_backed` or `not_luks_backed`, absent when it could not be read) says
+  whether `/etc/azazel/commissioning` was on LUKS during the pass: a volume left
+  locked reads `not_luks_backed`. It is diagnostic only and decides nothing.
+  The entry contains no identity, digest, device or path.
 - To withdraw: remove `approval.json`/`approval.sig`, raise the declared
   `security_epoch`, revoke the operator, or let the approval expire. The next
   boot's pass then grants nothing, writes no marker, and the units stay
