@@ -22,6 +22,7 @@ READERS = (
     "azazel_nexus_runtime.activation_health",
     "azazel_nexus_runtime.activation_cli",
     "azazel_nexus_runtime.activation_unit_files",
+    "azazel_nexus_runtime.activation_clock_sync",
     "azazel_nexus_runtime.activation_pass",
 )
 
@@ -64,7 +65,7 @@ def test_production_producers_are_the_fixed_protected_readers():
                    "load_bootstrap_deployment", "collect_node_health",
                    "raise_high_water", "require_high_water_for_pass",
                    "load_declared_node", "measure_scoped_unit_files",
-                   "verify_grantable_units"):
+                   "verify_grantable_units", "require_clock_synchronized"):
         assert reader in body, reader
     # No producer is taken from the environment or a command line.
     assert "environ" not in source and "argv" not in source

@@ -324,6 +324,25 @@ launchable.
   whether `/etc/azazel/commissioning` was on LUKS during the pass: a volume left
   locked reads `not_luks_backed`. It is diagnostic only and decides nothing.
   The entry contains no identity, digest, device or path.
+- **Requiring a synchronized clock (optional, #251 M-1).** By default the
+  pass trusts the OS clock down to the high-water floor, so a node without an
+  RTC, or one whose clock is not synchronized yet, can accept an approval
+  that has already expired in real time
+  ([design §10.2](activation-observe-baseline.md#102-residual-risks)). To
+  refuse that instead, put `"require_clock_synchronized":true` in
+  `policy.json` (canonical form: sorted keys, so between `"operators"` and
+  `"resource_floors"`). The pass's `trusted_clock` then also requires
+  systemd-timesyncd's marker `/run/systemd/timesync/synchronized` (a
+  synchronization happened in this boot); without it `trusted_clock` is
+  `failed`, `observed_inputs.clock_synchronization` is `not_proven`, and
+  nothing is granted. The marker is written only by systemd-timesyncd: a node
+  that keeps time with chrony or another daemon, or that has no reachable time
+  source (offline), then refuses every boot. The pass never waits for
+  synchronization. Absent or `false` keeps the default. The field is part of
+  the policy: changing it changes `policy_digest`, so the installed approval
+  no longer verifies and a new request, signature and install are needed, as
+  for any policy change. A package from before this field refuses a policy
+  that carries it.
 - To withdraw: remove `approval.json`/`approval.sig`, raise the declared
   `security_epoch`, revoke the operator, or let the approval expire. The next
   boot's pass then grants nothing, writes no marker, and the units stay

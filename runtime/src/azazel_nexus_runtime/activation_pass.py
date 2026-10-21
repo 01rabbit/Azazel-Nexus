@@ -153,6 +153,10 @@ class PassProducers:
     #: extracted binary and redirect policy the unit uses, as they are now;
     #: raises when unreadable or unprotected.
     edge_components: Callable[[], dict]
+    #: `activation_clock_sync.require_clock_synchronized`: True only when this
+    #: boot's clock synchronization is proven; raises otherwise. Called only
+    #: when the policy requires it (#251 M-1); None then refuses.
+    clock_synchronized: Optional[Callable[[], bool]] = None
 
 
 @dataclass
@@ -177,6 +181,10 @@ class PassInputs:
     #: `not_launchable` (with the failed launch checks in `edge_missing`).
     edge_evidence: str = "not_attempted"
     edge_missing: tuple = ()
+    #: Fixed labels (#251 M-1): `not_attempted`, `not_required` (the policy
+    #: omits `require_clock_synchronized` or sets it false), `synchronized`
+    #: or `not_proven`.
+    clock_synchronization: str = "not_attempted"
 
     @property
     def complete(self) -> bool:
@@ -287,13 +295,23 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
     if floors is not None and identity is not None and identity[1] < floors.security_epoch:
         fail("epoch_high_water")
 
-    # 5. Clock: the OS clock may not be below the floor less the policy skew.
+    # 5. Clock: the OS clock may not be below the floor less the policy skew
+    #    and, only when the policy requires it (#251 M-1), must have been
+    #    synchronized in this boot. Unproven refuses; nothing waits or retries.
     if floors is not None and active_policy is not None:
         def clock():
             instant = parse_bootstrap_time(now)
             skew = timedelta(seconds=active_policy.max_clock_skew_seconds)
             if instant < parse_bootstrap_time(floors.time_floor) - skew:
                 raise _Refused("clock below the persisted time floor")
+            if not active_policy.clock_synchronization_required:
+                result.clock_synchronization = "not_required"
+                return
+            result.clock_synchronization = "not_proven"
+            reader = producers.clock_synchronized
+            if reader is None or reader() is not True:
+                raise _Refused("clock synchronization not proven")
+            result.clock_synchronization = "synchronized"
         attempt(("trusted_clock",), clock)
 
     # 6. The current generation, as an observe-baseline tree over the unit
@@ -453,6 +471,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         measure_extracted_components,
     )
 
+    from .activation_clock_sync import require_clock_synchronized
     from .activation_health import collect_node_health
     from .activation_high_water import raise_high_water, require_high_water_for_pass
     from .activation_loaded_units import verify_grantable_units
@@ -475,4 +494,6 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         edge_package_digest=installed_package_digest,
         edge_state=lambda *, now: installed_baseline_state(now=now),
         edge_components=measure_extracted_components,
+        # Read only when the policy requires it: the fixed timesyncd marker.
+        clock_synchronized=require_clock_synchronized,
     )

@@ -65,9 +65,9 @@ Scope: `azazel-edge-intaked`, `azazel-incident-explaind`,
 | --- | --- | --- |
 | `activation_approval_loader` | required | wire `load_activation_approval` with a boot-free v2 payload (§3.1) |
 | `node_identity` | required | the declared node digest, cross-checked against the administrator deployment declaration |
-| `activation_policy` | required | protected `/etc/azazel/activation/policy.json`: authorized operators, `max_lease_seconds`, exact unit scope, health floors, clock skew |
+| `activation_policy` | required | protected `/etc/azazel/activation/policy.json`: authorized operators, `max_lease_seconds`, exact unit scope, health floors, clock skew, and optionally `require_clock_synchronized` (§10.1) |
 | `epoch_high_water` | required | anti-replay and rollback floor (§3.5) |
-| `trusted_clock` | required | a persisted monotonic time floor (§3.5) |
+| `trusted_clock` | required | a persisted monotonic time floor (§3.5); with `require_clock_synchronized`, also this boot's synchronization (§10.1) |
 | `node_health` | required | controller-owned local prerequisites only (§3.3) |
 | `operational_generation_publisher` (new) | required | observe-baseline generation (§3.2) |
 | `edge_evidence` | edge-core only | #198, boot-bound by the preflight (§3.4); withholds edge-core only, never the pass (§8.1) |
@@ -460,6 +460,13 @@ none of them (P4 then wired them, §8; `tests/unit/test_activation_p4_wiring.py`
   `resource_floors` use the field names of the bootstrap capacity and resource
   checks. Reusing them means the capacity floors measure
   `state/bootstrap` and `state/audit`, not a dedicated activation volume.
+  Since #251 M-1 one field is optional: `require_clock_synchronized`
+  (`true` or `false`; absent and `false` change nothing, §10.1). It is kept
+  as written, so a policy without it keeps its bytes and `policy_digest`.
+  The schema stays `v1`: the shape is closed, so a reader from before the
+  field refuses a policy that carries it as a whole instead of ignoring a
+  `true`, and existing policies stay valid without a migration. A `v2`
+  would have bought nothing but a second accepted schema.
 - `src/azazel_nexus/observe_baseline.py`: builder and verifier of the
   `baseline.json` tree, against a caller-supplied scope and installed unit
   file bytes. `edge_pin` holds the pin `version`, a `contract_digest` (the
@@ -546,7 +553,9 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    declared epoch); the activation policy; the high water
    (`require_high_water_for_pass`; absent refuses, since only the operator's
    install initializes it) with the declared epoch at or above its floor; the
-   clock (`now ≥ time_floor − max_clock_skew_seconds`); the current
+   clock (`now ≥ time_floor − max_clock_skew_seconds` and, only when the
+   policy says `require_clock_synchronized`, this boot's synchronization,
+   §10.1); the current
    generation verified as an observe-baseline tree against the policy scope
    and the unit files **measured now**, its evidence binding equal to the
    evidence's and its `commissioning_digest` equal to the SHA-256 of the
@@ -994,7 +1003,8 @@ The rest of [#251](https://github.com/01rabbit/Azazel-Nexus/issues/251)
 after §8.2 and §9. Two unit files gain `After=` lines and nothing else;
 everything below that is not an ordering change is a residual risk, stated
 rather than solved. No authority, approval field, flag, environment variable
-or unit operation is added, and no refusal becomes a success.
+or unit operation is added, and no refusal becomes a success. The one later
+addition, M-1's opt-in policy field (§10.1), can only add a refusal.
 
 ### 10.1 Ordering (M-7, M-1, L-9)
 
@@ -1046,6 +1056,55 @@ or unit operation is added, and no refusal becomes a success.
   default. Enabling one is a deliberate trade of availability for clock
   assurance, and its length must be observed on the VM before anyone relies
   on it.
+
+  **The policy option (owner decision: selectable, off by default).** The
+  activation policy may say `"require_clock_synchronized":true` (§7). The
+  `trusted_clock` producer then requires, after the floor check, proof that
+  the clock was synchronized in this boot
+  (`runtime/src/azazel_nexus_runtime/activation_clock_sync.py`); unproven or
+  unreadable fails `trusted_clock`, the approval is not attempted and nothing
+  is granted. The ledger's `observed_inputs.clock_synchronization` says
+  `synchronized` or `not_proven` (only when the field is `true` and the
+  floor check passed; absent otherwise, as before). With the field absent or
+  `false` the pass behaves exactly as before: the reader is never called.
+  The field is part of the policy, so turning it on or off changes
+  `policy_digest`; the installed approval then no longer verifies, and the
+  usual request, signature and install follow. Nothing waits: there is no
+  retry, no wait-sync dependency, no new flag, approval field, environment
+  variable or unit operation.
+
+  *The proof is systemd-timesyncd's marker*
+  `/run/systemd/timesync/synchronized`, which timesyncd touches on each
+  successful synchronization and documents for exactly this purpose
+  (systemd-time-wait-sync reads it). A read-only inspection of the VM
+  found it as an empty regular file on 2026-10-14
+  ([runtime-activation-remaining](runtime-activation-remaining.md)). It is checked read-only: each directory opened
+  with `O_NOFOLLOW`, the marker `lstat`ed relative to it, and only a
+  regular file in a real directory, neither world-writable, counts. The
+  controller reads it with what it has: `/run` stays readable under
+  `ProtectSystem=strict`, and no path, capability, system call or bus
+  permission is added. The alternatives were rejected for that reason:
+  - `adjtimex(2)` without `STA_UNSYNC` is in systemd's `@clock` group,
+    which the controller's `SystemCallFilter=@system-service` excludes; the
+    call would kill the controller (and Python has no binding);
+  - timedated's `NTPSynchronized` is another bus name. The controller's
+    session sends only to the admitted owner of `org.freedesktop.systemd1`,
+    and asking timedated bus-activates `systemd-timedated.service`: a start,
+    not a read, and a new destination in the controller's allowlist.
+
+  Limits, stated rather than solved: only timesyncd writes the marker, so a
+  node that keeps time with chrony or another daemon, or has no reachable
+  time source, refuses every boot while the field is `true`; the marker
+  proves that a synchronization happened in this boot (`/run` is a tmpfs; a
+  soft-reboot keeps `/run` and the running clock alike), not that the clock
+  is still synchronized or that the source was authenticated; and whoever
+  can write `/run/systemd/timesync` (root and timesyncd) can forge it, as
+  they can set the clock. That the marker is present before the pass on
+  a synchronizing VM, and absent on a node that cannot synchronize, is
+  **要確認** on the VM before a node relies on the field. Tests:
+  `tests/unit/test_activation_policy.py`,
+  `tests/unit/test_runtime_activation_clock_sync.py`,
+  `tests/unit/test_runtime_activation_pass.py`.
 - **L-9: the watchdog is `After=azazel-activated.service`.** It already
   `Requires=` the controller and carries the marker condition, but was the
   only `Requires=` dependent without the ordering, so its condition could be
@@ -1083,12 +1142,14 @@ units, and neither file is one of them.
   while the node's clock is still before its `expires_at` and not below the
   floor less the skew. `After=time-sync.target` (§10.1) does not close this:
   with no wait-sync service it waits for nothing, and even with one it orders
-  the start, it does not prove that the clock was synchronized. Options, none
-  adopted here (owner decision):
-  - require the kernel's synchronized state (`NTPSynchronized`, or
-    `adjtimex` without `STA_UNSYNC`) as a pass producer. Every node without
-    a time source (offline, the intended field case) then refuses every
-    boot;
+  the start, it does not prove that the clock was synchronized. Options
+  (owner decision: the first is selectable in the policy, off by default):
+  - require proof of this boot's synchronization in the pass: adopted as
+    the opt-in policy field `require_clock_synchronized` (§10.1), proven by
+    timesyncd's marker. Every node without a time source (offline, the
+    intended field case) or without timesyncd then refuses every boot, which
+    is why it is not the default. With the field absent or `false` this
+    risk stays as described;
   - enable a wait-sync service (`systemd-time-wait-sync.service`, or
     `chrony-wait.service` with chrony) so that the ordering takes effect:
     the same availability cost, and still not a check inside the pass;

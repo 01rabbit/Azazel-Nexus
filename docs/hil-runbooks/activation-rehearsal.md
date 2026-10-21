@@ -355,6 +355,19 @@ first in `units`. Expected: `root:root 600 1`, and the loader prints the units
 and `259200`; a refusal raises `ApprovalRefused: protected activation policy
 refused` (check the newline, key order and the label).
 
+The example omits the optional `require_clock_synchronized` (#251 M-1,
+[design §10.1](../activation-observe-baseline.md#101-ordering-m-7-m-1-l-9)),
+so the pass behaves as before. To rehearse it, insert
+`"require_clock_synchronized":true,` right after the `"operators"` list
+(sorted keys) before the generation, request and signature of §6, since the
+field changes `policy_digest`. Check first that the VM's clock synchronizes
+through systemd-timesyncd: `test -f /run/systemd/timesync/synchronized && echo
+synchronized`. Expected at the pass: `trusted_clock` `verified` and
+`observed_inputs.clock_synchronization: synchronized`; without the marker
+`trusted_clock` `failed`, `clock_synchronization: not_proven`, nothing
+granted. **要確認:** that the marker exists before the controller runs on a
+synchronizing VM.
+
 ## 6. Generation, request, signature, install (#206 P3b)
 
 ### 6.1 Publish the observe-baseline generation (assistant)
