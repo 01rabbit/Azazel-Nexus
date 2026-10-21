@@ -343,11 +343,13 @@ MISSION_STORAGE_MOUNTS = ("data.mount",)
 
 
 #: Passive ordering on time synchronization (#251 M-1). `time-sync.target` is
-#: a passive target: `After=` on it waits only when some enabled unit pulls it
-#: in and holds it until the clock is synchronized (a wait-sync service such
-#: as `systemd-time-wait-sync.service`, not enabled by this package). Without
-#: one it orders nothing, so the controller does **not** wait for
-#: synchronization and a node without a trustworthy clock can still pass an
+#: a passive target. When something pulls it in (an enabled timesyncd does)
+#: the controller is ordered after it, but reaching it does not wait for
+#: synchronization to complete; only a wait-sync service such as
+#: `systemd-time-wait-sync.service` (disabled on Debian 13, not enabled by
+#: this package) holds it until the clock is synchronized. Without one the
+#: controller does **not** wait for synchronization, and a node without a
+#: trustworthy clock can still pass an
 #: approval that has expired in real time (docs/activation-observe-baseline.md
 #: §10.2). Ordering only: no `Wants=`/`Requires=`, so it never pulls the target
 #: in by itself.

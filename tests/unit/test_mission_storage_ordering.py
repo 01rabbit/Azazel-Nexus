@@ -4,7 +4,8 @@ docs/activation-observe-baseline.md §10. M-7: the pass's node-health
 `resources` floor measures `mission_available_mib` on `/data`
 (`resource_assessment._mission_space`), so the controller gains `After=` on
 `data.mount`. M-1: it gains `After=time-sync.target`, a passive target that
-orders nothing unless a wait-sync service pulls it in. L-9: the watchdog, a
+waits for synchronization only when a wait-sync service holds it (timesyncd
+alone pulls it in without waiting). L-9: the watchdog, a
 `Requires=` dependent of the controller, is now also ordered after it.
 
 Only `After=`, as for the commissioning storage (#242,

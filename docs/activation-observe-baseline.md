@@ -1019,19 +1019,33 @@ or unit operation is added, and no refusal becomes a success.
   decided. Tests: `tests/unit/test_mission_storage_ordering.py`
   (declarations only; the boot order itself is for the VM).
 - **M-1: the controller is `After=time-sync.target`**
-  (`hardening.TIME_SYNC_TARGET`). `time-sync.target` is a passive target:
-  the line orders the controller after it only when an enabled unit pulls it
-  in and holds it until the clock is synchronized (a wait-sync service such
-  as `systemd-time-wait-sync.service`, which this package neither ships nor
-  enables). Otherwise it orders nothing, so **the controller does not wait
-  for synchronization** and the residual risk in §10.2 stays. No `Wants=` or
-  `Requires=` is added, so the line never pulls the target in by itself, and
-  no packaged unit orders `time-sync.target` after the controller. An
-  administrator who enables a wait-sync service makes the controller (and
-  every unit ordered after it, the selected bootstrap path included) wait
-  until the clock is synchronized; on a node with no time source that may be
-  indefinitely. That wait holds every governed unit back rather than starting
-  one, and its length must be observed on the VM before anyone relies on it.
+  (`hardening.TIME_SYNC_TARGET`). `time-sync.target` is a passive target.
+  On the rehearsal VM (Debian 13, systemd 257.13) it has only
+  `After=time-set.target`, its `Before=` lists the timers and
+  `azazel-activated.service`, and `systemd-time-wait-sync.service` is
+  disabled. An enabled timesyncd pulls the target in, so the controller is
+  ordered after it, but reaching the target does not wait for
+  synchronization to complete. Only a wait-sync service (such as
+  `systemd-time-wait-sync.service`, which this package neither ships nor
+  enables) holds it until the clock is synchronized. Without one **the
+  controller does not wait for synchronization**, and the residual risk in
+  §10.2 stays. No `Wants=` or `Requires=` is added, so the line never pulls
+  the target in by itself, and no packaged unit orders `time-sync.target`
+  after the controller. An administrator who enables a wait-sync service
+  makes the controller (and every unit ordered after it, the selected
+  bootstrap path included) wait until the clock is synchronized. Nothing
+  bounds that wait: the controller's `TimeoutStartSec=30s` counts from the
+  start of its `ExecStart=`, not while its start job waits on an ordering
+  dependency, and the controller sets no `JobTimeoutSec=`. On an offline
+  node with such a service enabled, the controller may therefore wait
+  indefinitely. That is fail-closed: every governed unit waits with it, and
+  none starts. It is also why `edge_intaked.py` (`CLOCK_SETTLE_S`) avoids
+  ordering the intake after `time-sync.target`: on an offline node the wait
+  would hold back the intake that Edge writes to. For the controller, this
+  package does not enable a wait-sync service, so the line costs nothing by
+  default. Enabling one is a deliberate trade of availability for clock
+  assurance, and its length must be observed on the VM before anyone relies
+  on it.
 - **L-9: the watchdog is `After=azazel-activated.service`.** It already
   `Requires=` the controller and carries the marker condition, but was the
   only `Requires=` dependent without the ordering, so its condition could be
@@ -1041,9 +1055,15 @@ or unit operation is added, and no refusal becomes a success.
   and commissiond (`BOOTSTRAP_UNITS`), the bootstrap's loaded-unit inspection
   reads only those two units, and no pass writes the watchdog's marker
   (`write_grant_markers` refuses any unit outside `GRANTABLE_UNITS`), so it
-  still never starts on either path. The ordering changes no start; it
-  makes the watchdog like the fetch service, the model hosts and the loop
-  units. The watchdog is outside `GRANTABLE_UNITS`, so the §8.2 content and
+  still never starts on either path. The ordering does change one thing:
+  with `Requires=` and `After=` together, a failed start job of the
+  controller now fails the watchdog's job as a dependency, where before the
+  two ran in parallel and the watchdog's start did not depend on the
+  controller's outcome. Today that changes no start, but only because no
+  marker is ever written for the watchdog, so it is skipped either way. If a
+  future change makes the watchdog grantable, this is the intended
+  behaviour: it then starts only after a controller start that succeeded,
+  like the fetch service, the model hosts and the loop units. The watchdog is outside `GRANTABLE_UNITS`, so the §8.2 content and
   loaded-unit checks do not cover it; the hardening and ordering tests do.
 
 `packaging/systemd` is re-rendered (`tools/render_units.py`): the controller

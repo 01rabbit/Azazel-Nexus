@@ -51,8 +51,8 @@ def test_controller_requires_explicit_readiness_and_kills_its_control_group():
         "etc-azazel-commissioning.mount",
         "var-lib-azazel-secrets.mount",
         # The same ordering-only rule for the mission storage (#251 M-7) and
-        # the passive time-sync target (#251 M-1), which waits for nothing
-        # unless a wait-sync service pulls it in.
+        # the passive time-sync target (#251 M-1), which waits for
+        # synchronization only when a wait-sync service holds it.
         "data.mount",
         "time-sync.target",
     ]
