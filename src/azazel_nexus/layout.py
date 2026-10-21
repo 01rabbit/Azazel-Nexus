@@ -167,6 +167,9 @@ LAYOUT = (
              "private Edge evidence", owner="azintake"),
     PathSpec("/var/lib/azazel/run/edge-intake", 0o2710,
              "receive-only socket reachable by Edge", owner="azintake", group="azedge"),
+    PathSpec("/var/lib/azazel/run/decoy-intake", 0o2710,
+             "receive-only socket reachable by the Deception Lite decoy (#196 P2)",
+             owner="azintake", group="azdecoy"),
     PathSpec("/var/lib/azazel/run/edge-intake-status", 0o2750,
              "operator-readable intake liveness", owner="azintake", group="azazel-operator"),
     PathSpec(

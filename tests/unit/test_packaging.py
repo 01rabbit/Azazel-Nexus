@@ -350,6 +350,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",
         "/var/lib/azazel/run/edge-intake",
+        "/var/lib/azazel/run/decoy-intake",
         "/var/lib/azazel/run/edge-intake-status",
         "/var/lib/azazel/run/incident-explain-status",
         "/var/lib/azazel/run/fetch",
@@ -360,7 +361,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
     }
-    dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge",
+    dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge", "decoy-intake": "azdecoy",
                  "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise"}
     for spec in socket_dirs.values():
         assert stat.S_ISGID & spec.mode
@@ -396,6 +397,7 @@ def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
         "audit": "azaudit", "audit-submit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
         "fetch": "azfetch", "mio-entry": "azmioentry", "mio-advise": "azmioentry", "mio": "azmio",
         "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge", "edge-intake": "azintake",
+        "decoy-intake": "azintake",
     }
     owners = {spec.path: spec.owner for spec in LAYOUT}
     assert set(runtime_paths._SOCKET_LEAVES) == set(expected_owner)

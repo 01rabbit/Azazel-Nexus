@@ -1,4 +1,11 @@
-"""Receive Edge observations only; the explainer forwards selected audit transitions."""
+"""Receive Edge observations only; the explainer forwards selected audit transitions.
+
+A second, separate socket receives the Deception Lite decoy's interactions
+(#196 P2). They are Nexus's own observations: stored in their own evidence
+leaf with their own ceilings, labelled as not Edge's, never counted as Edge
+events, never fed to the incident tracker, and nothing is sent back on either
+socket.
+"""
 
 from __future__ import annotations
 
@@ -17,11 +24,18 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import UTC, datetime
 from pathlib import Path
 
 from azazel_nexus.audit import GENESIS_HASH, AuditChainBroken, AuditLedger
+from azazel_nexus.decoy_interaction import (
+    MAX_INTERACTION_LINE,
+    DecoyEventRefused,
+    DecoyInteractionRecord,
+    new_event_id,
+    parse_interaction,
+)
 from azazel_nexus.edge_intake import (
     MAX_LINE,
     MAX_OPEN,
@@ -37,6 +51,7 @@ from azazel_nexus.edge_intake import (
 from azazel_nexus.store_dirs import store_directory
 
 from .principal import peer_credentials
+from .refusal_log import REFUSAL_EVENT, BoundedRefusalLog
 from .transport import bind_socket
 
 MAX_CONNECTIONS = 64
@@ -83,6 +98,19 @@ SEGMENT_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl", re.ASCII)
 # <segment>.<offset of the cut>.<sha256 of the bytes>.(pending|torn)
 QUARANTINED = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl\.\d{1,12}\.[0-9a-f]{64}\.(pending|torn)", re.ASCII)
 WORKER_JOIN_S = 20
+# The decoy socket (#196 P2). One decoy daemon sends one short line per
+# reach; these bounds keep a decoy, or whatever holds its account, from
+# taking reader slots, queue places or evidence space from Edge.
+DECOY_MAX_CONNECTIONS = 4
+DECOY_ACCEPT_BATCH = 16
+DECOY_BACKLOG = 16
+# Interactions accepted per rolling minute; the rest are refused and counted.
+# A reach is evidence that a decoy was touched, not a stream to keep: a
+# scanner hitting a decoy a thousand times says no more than thirty records.
+DECOY_PER_MINUTE = 30
+# Its own leaf and ceilings, so a decoy flood cannot fill Edge's evidence day.
+DECOY_SEGMENT_BYTES = 8 * 1024 * 1024
+DECOY_RETENTION_BYTES = 64 * 1024 * 1024
 # How far a segment's day may run ahead of the clock. During a run the clock
 # is also held to monotonic elapsed time from the first write, so a forward
 # jump cannot create a future segment; one found anyway (written while the
@@ -224,8 +252,10 @@ class DailySegments:
 class EvidenceStore(DailySegments):
     """Rotate whole daily segments; never rewrite retained evidence."""
 
-    def __init__(self, root, **limits):
-        super().__init__(root, "evidence", **limits)
+    full_code = "evidence_segment_full"
+
+    def __init__(self, root, leaf="evidence", **limits):
+        super().__init__(root, leaf, **limits)
 
     def prepare(self, now):
         # Probe actual append access before READY, including an existing segment.
@@ -245,13 +275,24 @@ class EvidenceStore(DailySegments):
         fd = self.open_segment(path, 0o640)
         try:
             if os.fstat(fd).st_size + len(data) > self.segment_bytes:
-                raise SegmentFull("evidence_segment_full")
+                raise SegmentFull(self.full_code)
             if os.write(fd, data) != len(data):
                 raise OSError("evidence append incomplete")
             os.fsync(fd)
         finally:
             os.close(fd)
         self.retain()
+
+
+class DecoyEvidenceStore(EvidenceStore):
+    """Decoy interactions (#196 P2), beside Edge's evidence and never in it."""
+
+    full_code = "decoy_evidence_segment_full"
+
+    def __init__(self, root, **limits):
+        limits.setdefault("segment_bytes", DECOY_SEGMENT_BYTES)
+        limits.setdefault("max_bytes", DECOY_RETENTION_BYTES)
+        super().__init__(root, "decoy-evidence", **limits)
 
 
 class IncidentLedgerTorn(Exception):
@@ -575,8 +616,26 @@ class IntakeServer:
         max_connections=MAX_CONNECTIONS,
         queue_size=QUEUE_SIZE,
         read_deadline=READ_DEADLINE_S,
+        decoy_path: Path | None = None,
+        decoy_uid: int | None = None,
+        decoy_gid=None,
+        decoy_refusals=None,
+        decoy_per_minute=DECOY_PER_MINUTE,
+        monotonic=time.monotonic,
     ):
         self.path, self.state, self.status_path = path, state, status_path
+        # The decoy socket is opened only with both its path and the decoy
+        # account; a node without either runs the Edge intake as before.
+        self.decoy_enabled = decoy_path is not None and decoy_uid is not None
+        self.decoy_path, self.decoy_uid, self.decoy_gid = decoy_path, decoy_uid, decoy_gid
+        self.decoy_refusals = (decoy_refusals if decoy_refusals is not None
+                               else BoundedRefusalLog(state / "decoy-refusals.jsonl"))
+        self.decoy_per_minute = decoy_per_minute
+        self.decoy_window = deque()
+        self.decoy_listening = False
+        self.decoy_accepted = 0
+        self.decoy_last_accepted_at = None
+        self.monotonic = monotonic
         self.edge_uid, self.expected_gid = edge_uid, expected_gid
         self.incident_root = incident_root or state
         self.peer_uid = peer_uid or (lambda connection: peer_credentials(connection)[1])
@@ -618,6 +677,24 @@ class IntakeServer:
         with self.lock:
             self.refused[code] += 1
 
+    def refuse_decoy(self, code, uid=None):
+        """Count it in status and keep a bounded line (#211) of who and why."""
+        self.refuse(code)
+        self.decoy_refusals({"event_type": REFUSAL_EVENT,
+                             "uid": uid if type(uid) is int else None,
+                             "reason": code})
+
+    def _decoy_room(self):
+        """Whether this minute's decoy allowance has a place left."""
+        instant = self.monotonic()
+        while self.decoy_window and instant - self.decoy_window[0] >= 60:
+            self.decoy_window.popleft()
+        return len(self.decoy_window) < self.decoy_per_minute
+
+    def _decoy_admitted(self):
+        """Take the place, once the interaction is queued."""
+        self.decoy_window.append(self.monotonic())
+
     def snapshot(self):
         with self.lock:
             return {
@@ -633,7 +710,10 @@ class IntakeServer:
                 "storage_failed": self.storage_failed,
                 "ledger_recovered": self.ledger_recovered,
             } | ({} if self.edge_forward is None
-                 else {"edge_forward": dict(self.edge_forward)})
+                 else {"edge_forward": dict(self.edge_forward)}) | (
+                {"decoy": {"accepted": self.decoy_accepted,
+                           "last_accepted_at": self.decoy_last_accepted_at}}
+                if self.decoy_listening else {})
 
     def _status(self):
         fd, name = tempfile.mkstemp(dir=self.status_path.parent, prefix=".status-")
@@ -667,7 +747,30 @@ class IntakeServer:
         except SegmentFull as exc:
             self.refuse(exc.code)
         self.store, self.ledger = store, ledger
+        if self.decoy_enabled:
+            # Edge's intake never depends on the decoy's leaf: a failure here
+            # leaves the decoy socket closed and is reported, nothing more.
+            try:
+                decoy_store = DecoyEvidenceStore(self.state)
+                decoy_store.prepare(self.clock())
+                self.decoy_store = decoy_store
+            except Exception:  # noqa: BLE001 - expose only a fixed failure code
+                self.refuse("decoy_listener_unavailable")
         self._future()
+
+    def _store_decoy(self, record):
+        """Store one interaction; a failure here is the decoy's alone."""
+        try:
+            self.decoy_store.append(record)
+        except SegmentFull as exc:
+            self.refuse(exc.code)
+            return
+        except Exception:  # noqa: BLE001 - must not stop Edge's evidence
+            self.refuse("decoy_storage_failed")
+            return
+        with self.lock:
+            self.decoy_accepted += 1
+            self.decoy_last_accepted_at = record.received_at
 
     def _future(self):
         if self.store.future_segment or self.ledger.future_segment:
@@ -695,6 +798,15 @@ class IntakeServer:
             try:
                 record = self.pending.get(timeout=0.1)
             except queue.Empty:
+                record = None
+            if isinstance(record, DecoyInteractionRecord):
+                # Never an Edge event: not tracked, not counted as accepted
+                # or processed, and no incident transition follows from it.
+                if not self.storage_failed:
+                    self._store_decoy(record)
+                else:
+                    self.refuse("decoy_storage_failed")
+                self.pending.task_done()
                 record = None
             if not self.storage_failed:
                 try:
@@ -789,16 +901,116 @@ class IntakeServer:
         finally:
             os.umask(previous_umask)
         listener.setblocking(False)
+        decoy_listener = None
+        if self.decoy_enabled and hasattr(self, "decoy_store"):
+            # Its own leaf and group (azdecoy), so the decoy never reaches
+            # Edge's socket and Edge never reaches this one.
+            previous_umask = os.umask(0o117)
+            try:
+                decoy_listener = bind_socket(
+                    self.decoy_path,
+                    mode=0o660,
+                    backlog=DECOY_BACKLOG,
+                    expected_gid=self.decoy_gid,
+                )
+                decoy_listener.setblocking(False)
+            except Exception:  # noqa: BLE001 - Edge's intake runs without it
+                decoy_listener = None
+                self.refuse("decoy_listener_unavailable")
+            finally:
+                os.umask(previous_umask)
+        self.decoy_listening = decoy_listener is not None
         selector = selectors.DefaultSelector()
         clients = {}
+        # Decoy readers, apart from Edge's: they never take an Edge slot.
+        decoy_clients = {}
         worker = threading.Thread(target=self._writer, daemon=True)
 
         def close(connection, code=None):
+            if connection in decoy_clients:
+                _, _, uid = decoy_clients.pop(connection)
+                if code:
+                    self.refuse_decoy(code, uid)
+                selector.unregister(connection)
+                connection.close()
+                return
             if code:
                 self.refuse(code)
             selector.unregister(connection)
             clients.pop(connection)
             connection.close()
+
+        def receive_decoy(connection, buffer):
+            """One interaction line, as `receive` reads Edge's; never answered."""
+            for _ in range(RECV_ROUNDS):
+                try:
+                    data = connection.recv(MAX_INTERACTION_LINE + 2 - len(buffer))
+                except BlockingIOError:
+                    return None
+                except OSError:
+                    return "decoy_read_error"
+                buffer.extend(data)
+                if len(buffer) > MAX_INTERACTION_LINE + 1:
+                    return "DECOY_TOO_LARGE"
+                if b"\n" in buffer:
+                    if buffer.count(b"\n") != 1 or not buffer.endswith(b"\n"):
+                        return "DECOY_SHAPE"
+                    if not data:
+                        try:
+                            # The intake's clock bounds observed_at, and the
+                            # stored event_id is the intake's, not the sender's.
+                            interaction = parse_interaction(
+                                bytes(buffer[:-1]), now=self.clock(), event_id=new_event_id)
+                        except DecoyEventRefused as exc:
+                            return exc.code
+                        if not self._decoy_room():
+                            return "decoy_rate_limited"
+                        try:
+                            self.pending.put_nowait(
+                                DecoyInteractionRecord.receive(interaction, self.clock))
+                        except queue.Full:
+                            # Not stored, so it takes no place in the minute.
+                            return "decoy_overloaded"
+                        self._decoy_admitted()
+                        return ""
+                elif not data:
+                    return "DECOY_SHAPE"
+            return None
+
+        def accept_decoy():
+            """A finite batch from the decoy socket; the sender must be azdecoy."""
+            for _ in range(DECOY_ACCEPT_BATCH):
+                try:
+                    incoming, _ = decoy_listener.accept()
+                except BlockingIOError:
+                    return
+                except OSError:
+                    # EMFILE, ECONNABORTED and the like: the decoy's, not
+                    # Edge's. Counted, and the batch ends until next select.
+                    self.refuse_decoy("decoy_accept_error")
+                    return
+                try:
+                    uid = self.peer_uid(incoming)
+                except Exception:  # noqa: BLE001 - failures must not stop acceptance or expose input
+                    uid = None
+                if type(uid) is not int or uid != self.decoy_uid:
+                    self.refuse_decoy("decoy_peer_refused", uid)
+                    incoming.close()
+                    continue
+                incoming.setblocking(False)
+                buffer = bytearray()
+                code = receive_decoy(incoming, buffer)
+                if code is not None:
+                    if code:
+                        self.refuse_decoy(code, uid)
+                    incoming.close()
+                    continue
+                if len(decoy_clients) >= DECOY_MAX_CONNECTIONS:
+                    self.refuse_decoy("decoy_overloaded", uid)
+                    incoming.close()
+                    continue
+                decoy_clients[incoming] = (buffer, time.monotonic() + self.read_deadline, uid)
+                selector.register(incoming, selectors.EVENT_READ)
 
         def receive(connection, buffer):
             """Read what is available; None while unfinished, else a code ("" = done)."""
@@ -837,12 +1049,22 @@ class IntakeServer:
 
         try:
             selector.register(listener, selectors.EVENT_READ)
+            if decoy_listener is not None:
+                selector.register(decoy_listener, selectors.EVENT_READ)
             worker.start()
             if ready:
                 ready()
             while not stop():
                 for key, _ in selector.select(0.05):
                     connection = key.fileobj
+                    if connection is decoy_listener:
+                        accept_decoy()
+                        continue
+                    if connection in decoy_clients:
+                        code = receive_decoy(connection, decoy_clients[connection][0])
+                        if code is not None:
+                            close(connection, code)
+                        continue
                     if connection is listener:
                         # A finite batch lets deadlines run even during a flood.
                         inline = 0
@@ -895,12 +1117,23 @@ class IntakeServer:
                 for connection, (_, deadline) in list(clients.items()):
                     if time.monotonic() >= deadline:
                         close(connection, "read_deadline")
+                for connection, (_, deadline, _) in list(decoy_clients.items()):
+                    if time.monotonic() >= deadline:
+                        close(connection, "decoy_read_deadline")
+                if decoy_listener is not None:
+                    flush = getattr(self.decoy_refusals, "flush_due", None)
+                    if flush is not None:
+                        flush()
         finally:
-            for connection in list(clients):
+            for connection in list(clients) + list(decoy_clients):
                 close(connection)
             selector.close()
             listener.close()
             self.path.unlink(missing_ok=True)
+            if decoy_listener is not None:
+                decoy_listener.close()
+                self.decoy_path.unlink(missing_ok=True)
+                self.decoy_listening = False
             self.finished.set()
             if worker.ident is not None:
                 worker.join(WORKER_JOIN_S)
@@ -932,6 +1165,13 @@ def main(argv=None):
         gid = grp.getgrnam("azedge").gr_gid
     except KeyError:
         raise SystemExit("edge intake account missing") from None
+    # The decoy socket (#196 P2) is optional: without the azdecoy account
+    # (installed since #196 P1) the intake serves Edge alone, as before.
+    try:
+        decoy_uid = pwd.getpwnam("azdecoy").pw_uid
+        decoy_gid = grp.getgrnam("azdecoy").gr_gid
+    except KeyError:
+        decoy_uid = decoy_gid = None
     stopped = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stopped.set())
@@ -942,6 +1182,9 @@ def main(argv=None):
         status_path=edge_intake_status_path(),
         edge_uid=uid,
         expected_gid=gid,
+        decoy_path=socket_path("decoy-intake") if decoy_uid is not None else None,
+        decoy_uid=decoy_uid,
+        decoy_gid=decoy_gid,
     )
     return server.serve(stop=stopped.is_set, ready=runtime_ready_callback())
 

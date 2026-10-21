@@ -2,7 +2,7 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (I4 of
 [#190](https://github.com/01rabbit/Azazel-Nexus/issues/190)).
-Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 in progress.**
+Status: **accepted — the owner adopted all §7 defaults on 2026-10-21; P1 and P2 implemented (§10, §11).**
 Related: [integrated defensive loop](integration-loop.md) §I4 ·
 [Deception Lite](deception-lite.md) ·
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
@@ -295,7 +295,7 @@ only prerequisite 3.
 | --- | --- | --- |
 | P0 | this proposal; owner decisions in §7 | — |
 | P1 | D1: helper and decoy unit profiles, the new tier, `GRANTABLE_UNITS`, the split boundary test; unit tests only. The namespace unit of option (a) is written later, with the helper's body | §7 Q4–Q7 |
-| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge | P1, §7 Q8 |
+| P2 | **operator-exposed decoy as evidence:** each reach becomes a Fabric `EnvironmentEvent` (`event_type: "interaction"`) with a closed metadata shape (bytes received, truncated, responder; no payload, no credentials); intake stores it in the evidence store as a Nexus observation, labelled as not Edge's, and it can join an incident; it is never an input to Edge. **Implemented (#269, §11)** | P1, §7 Q8 |
 | P3 | VM rehearsal of P1–P2 (never evidence) | P2 |
 | P4 | hardware: `HG-06` and a new gate for the decoy unit's sandbox on the real host | P3, owner |
 | P5 | decision verifier and key lifecycle (§4); a decoy may be materialised by a verified Edge decision; still no redirect applied | Fabric/Edge on §7 Q1–Q3 |
@@ -355,7 +355,8 @@ These hold in every phase. A change that needs one relaxed is out of scope.
 
 ## 9. What this does not establish
 
-Only P1's declarations and boundary are implemented (§10). Nothing here shows
+Only P1's declarations and boundary (§10) and P2's event and intake path
+(§11) are implemented. Nothing here shows
 that Edge can express or apply a redirect, that the namespace design isolates
 on a real kernel, or that the Fabric or Edge owners accept the K2 change. Each
 is a later phase with its own evidence.
@@ -461,11 +462,133 @@ does, so the Deception Lite row stays `loopback-only`.
   pass consuming it (only then can the tier be granted);
 - how the commissioned bridge prefix reaches the decoy's `IPAddressAllow=`:
   not a drop-in, which #253 refuses on every grantable unit;
-- the decoy daemon (responders, observation socket), P2's
-  `EnvironmentEvent`s, and the decoy's `ExecStartPre=` probe rerun;
+- the decoy daemon (responders, and sending P2's `EnvironmentEvent`s, whose
+  shape and intake path §11 implements) and the decoy's `ExecStartPre=` probe
+  rerun;
 - `docs/IMPLEMENTATION_SPEC.md` §4 (near line 604) named `azazel-enforced` as
   the only daemon with `CAP_NET_ADMIN`; this PR corrects that sentence to
   name the decoy network helper as the one other holder.
 
 Unit tests only. No `nft` or `ip` is run, no namespace is created and no real
 socket is opened by any test; none of this is VM or hardware evidence.
+
+## 11. P2 as implemented
+
+Implemented in #269. P2 builds the event, its validation and the intake's
+path for it, with unit tests and one end-to-end step. The decoy daemon that
+would send it is still a later phase (§10), so in a real deployment nothing
+sends one yet.
+
+**The event** (`src/azazel_nexus/decoy_interaction.py`). A Fabric
+`EnvironmentEvent` (`environment-event/v0.1`, Azazel-Fabric `v0.9.0rc5`),
+narrower than Fabric's model. A decoy is the one Nexus component an attacker
+talks to, so the sender is given **no field it may fill freely**: every
+identifier is an exact match with a value the intake knows, or is replaced by
+the intake. (The first revision of #269 checked formats only; its review
+found a decimal or hex IPv4, a colonless IPv6 and a host name passing them.)
+
+| field | value |
+| --- | --- |
+| `event_type` | `interaction`, nothing else |
+| `event_id` | checked for its form (`evt-` and 32 lower-case hex digits), then **replaced by the intake** with its own random id; what the decoy sent is not stored. A meaningless random value |
+| `environment_id` | exactly one of `DECOY_NAMES` (`ssh-decoy`, `smtp-decoy`, `http-decoy`, `telnet-decoy`), fixed in code until the catalogue reaches the intake |
+| `package_id` | exactly `azazel-nexus/deception-lite`: a Lite decoy is an in-code responder, not an AZ-06 package |
+| `node_id` | exactly the intake's node id, `local` until the commissioned node identity reaches the intake |
+| `observed_at` | whole seconds in UTC (`…T12:00:00Z`), within 300 s of the intake's clock on arrival (`DECOY_CLOCK` otherwise) |
+| `evidence_refs` | always `[]` |
+| `metadata` | exactly `bytes_received` (0–4096, the decoy's read ceiling), `truncated` (only at that ceiling) and `responder` (one of the four in-code responders) |
+
+Anything else is refused as a whole with a fixed code (`DECOY_SHAPE`,
+`DECOY_TYPE`, `DECOY_RANGE`, `DECOY_CLOCK`, `DECOY_JSON`, `DECOY_TOO_LARGE`),
+never with the input: an extra or missing field, a value outside its set, a
+line over 1 KiB. An address-like spelling (an IP address, dotted or dashed
+IPv4, colon-separated hex, a MAC address) is also refused as `DECOY_ADDRESS`,
+as a second check; the guarantee of §7 Q8 rests on the exact matches, not on
+that pattern. The values that passed the first revision are pinned in
+`tests/unit/test_decoy_interaction_p2.py` (`REVIEW_BYPASSES`).
+
+What a sender can still choose is a name among four, a responder among four,
+a byte count, a flag and a second within a ten-minute window: about thirty
+bits per event, at 30 events a minute. That is a bounded side channel for
+whoever holds the `azdecoy` account, not room for a payload, a credential or
+an address. Two bindings are left to the phase that wires the catalogue and
+the node identity into the intake, and are recorded here rather than
+pretended: the catalogue generation digest is **not** in the event (an
+unchecked digest would be 256 bits the sender chooses), and `node_id` is a
+constant, not the commissioned identity.
+
+Fabric is not imported; a reference test validates the shape with the
+pinned Fabric when it is installed. The decoy builds its event from its own
+`Observation`, which has no payload and no peer field
+(`runtime/src/azazel_nexus_runtime/decoy_report.py`).
+
+**The intake's entry** (`runtime/src/azazel_nexus_runtime/edge_intaked.py`).
+The intake binds a second socket, `/var/lib/azazel/run/decoy-intake/decoy-intake.sock`,
+in a leaf of its own (`2710 azintake:azdecoy`, socket `0660`), so the decoy is
+never given Edge's socket and Edge never reaches this one. No new group: the
+leaf uses the decoy account's own group from P1. The intake unit gains
+`ReadWritePaths=-/var/lib/azazel/run/decoy-intake`, because it binds the
+socket there; the `-` keeps a node whose leaf does not exist yet (a runtime
+upgraded without re-running `install.sh`) from failing the whole intake at
+namespace setup (226/NAMESPACE). The decoy unit needs no change: connecting
+to a socket needs no write access to the read-only tree, as for Edge Core and
+its intake socket.
+
+- **Sender.** `SO_PEERCRED`; only the `azdecoy` uid is accepted
+  (`decoy_peer_refused` otherwise). Nothing is ever written back.
+- **Bounds.** At most 4 decoy readers, which never take one of Edge's 64; 16
+  accepts per batch; the read deadline Edge has; one line per connection; 30
+  interactions per rolling minute (`decoy_rate_limited` beyond). The rate is
+  applied before a record is queued, so a decoy cannot fill the queue Edge
+  uses; an interaction the full queue turns away (`decoy_overloaded`) takes no
+  place in the minute. An accept error on the decoy socket (`EMFILE`,
+  `ECONNABORTED`, …) is counted as `decoy_accept_error` and ends that batch;
+  it never reaches Edge's loop.
+- **Refusals** are counted in the intake's status and written to a bounded
+  refusal log (#230: per uid and reason, rotated by size) at
+  `/var/lib/azazel/edge-intake/decoy-refusals.jsonl`: uid and code only.
+- **Optional.** Without the `azdecoy` account the socket is not opened; if
+  its leaf or storage is unusable, `decoy_listener_unavailable` is counted.
+  A failure to store one interaction is `decoy_storage_failed` and never
+  latches Edge's `storage_failed`. Either way Edge's intake runs as before.
+
+**Storage.** Interactions go to `/var/lib/azazel/edge-intake/decoy-evidence/`,
+daily segments beside Edge's `evidence/`, never in it, with their own ceilings
+(8 MiB a day, 64 MiB retained), so a decoy flood cannot fill Edge's evidence
+day. Each record is labelled: `kind: nexus.deception-lite.interaction`,
+`observer: azazel-nexus`, `edge_observation: false`, then the event, its
+digest and the intake's receive time. An Edge record keeps its schema
+(`event`, `digest`, `received_at`) and has none of those fields. A decoy
+record is never counted in `accepted` or `processed` (Edge's counts), never
+reaches the incident tracker and so never opens, updates or closes an
+incident, and never reaches the explainer, M.I.O. or the audit chain.
+
+**What the ceilings do not protect.** There is no deduplication and no
+sampling. A decoy that floods (or whoever holds its account) can use the
+whole minute's allowance and, at about 600 bytes a record, the day's 8 MiB:
+later genuine interactions that day are then refused
+(`decoy_rate_limited`, `decoy_evidence_segment_full`) and only counted. The
+damage stays inside the decoy's own evidence: Edge's evidence, queue places,
+reader slots, incidents and status counts are untouched.
+
+**Status.** It gains an optional `decoy` object (`accepted`,
+`last_accepted_at`) while the decoy socket is open, and new refusal codes.
+`read_intake_status` in this build accepts snapshots with or without them. A
+reader from before this change has a closed key and code list and would take
+such a snapshot as unreadable (`None`) as a whole; the reader and the writer
+ship in the same distribution, so this matters only for a reader copied out
+of it.
+
+**Joining an incident.** `decoy_interaction.incidents_near` names the Edge
+incidents an interaction may belong to by decoy and time only (§7 Q8): the
+incident's target port is the decoy's catalogued port, and the interaction
+arrived within a window (300 s by default) of the incident's first to last
+sighting, both on the intake's clock. It reads; it changes no incident and
+feeds nothing to Edge. No reader calls it yet.
+
+**Not done in P2:** the decoy daemon and its sender; showing decoy
+interactions in `azazel-nexus status` or an explanation; a VM run (P3).
+`tools/e2e_loop.py` sends one interaction as `azdecoy` in the integrated loop
+and checks that it is stored apart and that Edge's evidence, counts and
+incidents are unchanged; that is a container run, not VM or hardware
+evidence.

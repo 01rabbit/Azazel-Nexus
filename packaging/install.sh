@@ -282,6 +282,10 @@ make_owned_dir 0700 azexplain root /var/lib/azazel/incident-explain
 make_owned_dir 2750 azexplain azazel-operator /var/lib/azazel/run/incident-explain-status
 make_owned_dir 0700 azintake root /var/lib/azazel/edge-intake
 make_owned_dir 2710 azintake azedge /var/lib/azazel/run/edge-intake
+# The decoy's interactions reach the intake here (#196 P2), on a leaf of its
+# own and with the decoy's own group: no new group, and the decoy never gets
+# Edge's socket.
+make_owned_dir 2710 azintake azdecoy /var/lib/azazel/run/decoy-intake
 make_owned_dir 2750 azintake azazel-operator /var/lib/azazel/run/edge-intake-status
 make_dir 0711 root /var/lib/azazel/state
 make_owned_dir 0700 azaudit root /var/lib/azazel/state/audit

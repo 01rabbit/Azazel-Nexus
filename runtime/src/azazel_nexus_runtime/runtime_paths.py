@@ -65,6 +65,9 @@ _SOCKET_LEAVES = {
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
     "edge-intake": "edge-intake",
+    # The Deception Lite decoy's interactions (#196 P2), received by the
+    # intake on a socket of its own: the decoy is never given Edge's.
+    "decoy-intake": "decoy-intake",
 }
 #: Leaves whose socket inherits a dedicated client group instead of the
 #: operator group. Each one is a second, verb-restricted listener of a daemon
@@ -75,6 +78,7 @@ _SOCKET_GROUPS = {
     "mio-advise": "azmio-advise",
     "knowledge-read": "azknowledge-read",
     "edge-intake": "azedge",
+    "decoy-intake": "azdecoy",
 }
 _STATE_LEAVES = {
     "mio-entry": "mio",

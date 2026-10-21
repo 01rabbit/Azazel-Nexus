@@ -26,6 +26,7 @@ ReadWritePaths=/var/lib/azazel/edge-incidents
 ReadWritePaths=/var/lib/azazel/edge-intake
 ReadWritePaths=/var/lib/azazel/run/edge-intake
 ReadWritePaths=/var/lib/azazel/run/edge-intake-status
+ReadWritePaths=-/var/lib/azazel/run/decoy-intake
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
