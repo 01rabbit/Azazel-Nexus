@@ -20,21 +20,38 @@
 # It is root with CAP_SYS_ADMIN, CAP_NET_ADMIN, `mount` and no file-system
 # sandbox (prerequisites §10). This profile is what keeps a compromised `ip`
 # from writing the activation state, the grant markers, the unit files and
-# the ledgers, and from reaching the service manager. It cannot narrow
-# netlink to a protocol: `ip` could still talk to nftables (§7 "What it
-# cannot do").
+# the ledgers. It is not what keeps it from the service manager: by design
+# the unit's RestrictAddressFamilies=AF_NETLINK does (no AF_UNIX socket can
+# be made; not run under the unit in G4, §11). It
+# cannot narrow netlink to a protocol: `ip` could still talk to nftables (§7
+# "What it cannot do").
 #
-# `attach_disconnected` (G4, §11): a path whose mount is not reachable from
-# the process's root (systemd's sandbox makes such mounts) is named from
-# its own mount's root, as if that were `/`, instead of failing the lookup.
-# It only names the object; every rule below, the denies included, still
-# applies to that name. What it could alias is a file reached through a
-# detached mount that names itself as something else; making such a mount
-# takes `mount`, and the only mounts allowed here are ip's fixed ones below.
-# That rests on an assumption: the rbind/bind of /run/netns/ onto itself
-# only carries what is under /run/netns/, and nothing here can place a
-# denied path there (no other mount rule, no write there but the directory
-# and the one handle).
+# `attach_disconnected` with `attach_disconnected.path=/.azazel-nsfs/`
+# (G4, §11): a path whose mount is not reachable from the process's root is
+# named under the prefix `/.azazel-nsfs/` instead of failing the
+# lookup. The network namespace `ip netns add` opens is such a path (nsfs).
+# With the flag alone it is named `/`, so binding it onto the handle would
+# need `mount ... / -> /run/netns/azazel-decoy`, and that rule would also
+# let the host's real, connected `/` be bound onto the handle, where every
+# denied path below would be reached again under another name
+# (/run/netns/azazel-decoy/etc/azazel/...). With the prefix only what is
+# disconnected is named `/.azazel-nsfs/`, kept apart from the real
+# `/`. Every rule below, the denies included, still applies to the name.
+# What it could alias is a file reached through a detached mount that names
+# itself as something else; making such a mount takes `mount`, and the only
+# mounts allowed here are ip's fixed ones below. That rests on an
+# assumption: the rbind/bind of /run/netns/ onto itself only carries what
+# is under /run/netns/, and nothing here can place a denied path there (no
+# other mount rule, no write there but the directory and the one handle).
+# VM-checked on Debian 13 (kernel 6.12, AppArmor 4.1.0; G4, a mechanism
+# check, not hardware evidence) with the prefix `/azazel-disconnected/`;
+# renamed to `/.azazel-nsfs/` after the review of #289, to be re-checked on
+# the VM before merge.
+# Assumption: no real `/.azazel-nsfs` exists on the host. If one did, its
+# connected path would carry the same name, and the two rules naming the
+# prefix (read of the directory itself, bind of it onto the handle) would
+# apply to it too. The installer creates nothing there; a dot name under
+# `/` is chosen to make an accidental collision unlikely.
 #
 # INFERRED marks a rule that was not confirmed on a kernel; the exact rules
 # are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
@@ -43,7 +60,7 @@ abi <abi/4.0>,
 
 include <tunables/global>
 
-profile azazel-decoy-nsd flags=(attach_disconnected) {
+profile azazel-decoy-nsd flags=(attach_disconnected, attach_disconnected.path=/.azazel-nsfs/) {
   include <abstractions/base>
 
   # --- What the gate claims (§7). Explicit denies; a deny outranks every
@@ -55,6 +72,11 @@ profile azazel-decoy-nsd flags=(attach_disconnected) {
   deny /run/systemd/{system,system.control,transient}{,/**} wlk,
   deny /etc/azazel{,/**} wlk,
   deny /var/lib/azazel{,/**} wlk,
+  # Defence in depth only: on Debian 13's kernel (6.12, AppArmor 4.1.0) a
+  # connect to a path socket was not refused by these two rules (G4, with
+  # aa-exec outside the unit). Keeping this unit from the service manager
+  # is, by design, RestrictAddressFamilies=AF_NETLINK (not run under the
+  # unit in G4); these rules count on a kernel that mediates path unix.
   deny /run/dbus/system_bus_socket rw,
   deny /run/systemd/private rw,
   deny dbus,
@@ -79,6 +101,10 @@ profile azazel-decoy-nsd flags=(attach_disconnected) {
   /etc/iproute2/** r,
   /usr/share/iproute2/** r,
   @{PROC}/@{pid}/ns/net r,
+  # The namespace `ip netns add` opens is an nsfs file, a disconnected path,
+  # named with the prefix of the flags above (G4: without it, operation="open"
+  # name="/" was refused). The prefix alone, no `**`: nothing under it.
+  /.azazel-nsfs/ r,
   @{PROC}/@{pid}/task/@{tid}/ns/net r,
 
   # `ip netns add azazel-decoy` (prerequisites §13): /run/netns made a
@@ -86,13 +112,20 @@ profile azazel-decoy-nsd flags=(attach_disconnected) {
   # handle created and the new network namespace bound onto it. INFERRED:
   # the source path AppArmor resolves for the nsfs bind, and whether the
   # first bind is MS_BIND|MS_REC (iproute2's netns.c; rbind) or a plain
-  # bind: both are allowed until the VM shows which (G4).
-  /run/netns/ rw,
+  # bind: both are allowed until the VM shows which (G4). `k` on the
+  # directory: ip netns add flocks /run/netns/ (G4: operation="file_lock"
+  # requested_mask="k" was refused).
+  /run/netns/ rwk,
   /run/netns/azazel-decoy rw,
   mount options=(rw, rshared) -> /run/netns/,
   mount options=(rw, rbind) /run/netns/ -> /run/netns/,
   mount options=(rw, bind) /run/netns/ -> /run/netns/,
   mount options=(rw, bind) @{PROC}/@{pid}/{,task/@{tid}/}ns/net -> /run/netns/azazel-decoy,
+  # G4: the nsfs bind's source is the disconnected name, not the /proc path
+  # (operation="mount" info="failed srcname match" srcname="/" flags="rw,
+  # bind" was refused). The /proc rule above was not used on the VM; it is
+  # kept because another kernel may name the source by its /proc path.
+  mount options=(rw, bind) /.azazel-nsfs/ -> /run/netns/azazel-decoy,
   # `ip netns delete azazel-decoy` (ExecStopPost).
   umount /run/netns/azazel-decoy,
 

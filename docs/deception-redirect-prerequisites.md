@@ -402,7 +402,19 @@ is granted. **Grant condition:** before the `DECEPTION_EXPOSURE` tier may be
 granted, an LSM profile confining the namespace unit (and the helper) must
 exist and be a gate. That means a hardware-gate record showing that, under
 the profile, the unit cannot write the activation state, the grant markers
-or the unit files, and cannot reach the service manager.
+or the unit files; and one showing that the unit cannot reach the service
+manager. The second is, by design, the sandbox's, not the profile's: on
+Debian 13's kernel (6.12, AppArmor 4.1.0) a path connect to
+`/run/dbus/system_bus_socket` succeeded under the profiles (G4 rehearsal on
+a VM with `aa-exec`, outside the units; a mechanism check, not hardware
+evidence; a connect under the units' sandbox was not run; [grant design
+§11](deception-exposure-grant.md#11-to-check-on-the-vm-g4-a-mechanism-check-not-hardware-evidence)).
+The namespace unit cannot make an `AF_UNIX` socket
+(`RestrictAddressFamilies=AF_NETLINK`), and the helper, the verify unit and
+the decoy have the two sockets hidden by `InaccessiblePaths=`; the
+profiles' `deny` rules for the sockets are defence in depth for a kernel
+that mediates path `unix`. The LSM gate (`HG-10`) claims the writes, the
+sandbox gate (`HG-09`) the service manager.
 
 The profiles now exist (#196 G3,
 [grant design §7](deception-exposure-grant.md#g3-as-implemented)): each of

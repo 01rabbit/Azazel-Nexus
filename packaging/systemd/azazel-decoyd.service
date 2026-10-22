@@ -31,6 +31,7 @@ AppArmorProfile=azazel-decoyd
 NetworkNamespacePath=/run/netns/azazel-decoy
 PrivateUsers=yes
 IPAddressAllow=10.255.196.0/30
+ProtectProc=invisible
 TimeoutStartSec=30s
 MemoryMax=128M
 TasksMax=16

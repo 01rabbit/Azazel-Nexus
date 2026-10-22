@@ -1369,6 +1369,32 @@ def test_the_decoy_allows_exactly_the_fixed_subnet(allowance):
         replace(profile, extra=extra)
 
 
+def test_the_decoy_sees_only_its_own_processes_in_proc():
+    """#289 F1: its AppArmor rule for /proc/<pid>/net/dev has no `owner`
+    (G4), so `ProtectProc=invisible` keeps other users' pids out of sight.
+    Not `ProcSubset=pid`: the decoy reads /proc/sys/kernel/random/boot_id."""
+
+    settings = _settings(DECOY)
+    assert settings["ProtectProc"] == ["invisible"]
+    assert "ProcSubset" not in settings
+
+
+@pytest.mark.parametrize("change", [
+    lambda extra: tuple(item for item in extra if item[0] != "ProtectProc"),
+    lambda extra: tuple(("ProtectProc", "noaccess") if item[0] == "ProtectProc" else item
+                        for item in extra),
+    lambda extra: extra + (("ProtectProc", "invisible"),),
+    lambda extra: extra + (("ProcSubset", "pid"),),
+    lambda extra: extra + (("ProcSubset", "all"),),
+])
+def test_the_decoy_states_protect_proc_invisible_and_no_proc_subset(change):
+    from dataclasses import replace
+
+    profile = _profile(DECOY)
+    with pytest.raises(ValueError, match="ProtectProc"):
+        replace(profile, extra=change(profile.extra))
+
+
 def test_a_decoy_listener_without_an_internet_family_cannot_be_built():
     from dataclasses import replace
 

@@ -497,6 +497,11 @@ class ServiceProfile:
                 raise ValueError(
                     f"{self.unit} states exactly DECOY_MANAGER_SOCKETS_INACCESSIBLE "
                     "as its InaccessiblePaths")
+            if [value for key, value in self.extra if key in ("ProtectProc", "ProcSubset")] != [
+                    "invisible"] or "ProcSubset" in settings:
+                raise ValueError(
+                    f"{self.unit} states ProtectProc=invisible exactly once and no "
+                    "ProcSubset= (it reads /proc/sys/kernel/random/boot_id)")
             if (settings.get("NetworkNamespacePath") != DECOY_NAMESPACE_PATH
                     or settings.get("PrivateUsers") != "yes"
                     or "PrivateNetwork" in settings
@@ -1734,6 +1739,13 @@ PROFILES: tuple[ServiceProfile, ...] = (
             # IPAddressDeny=any. Without it the cgroup filter also drops what
             # the decoy itself receives (VM-checked on loopback, #196 body).
             ("IPAddressAllow", DECOY_SUBNET),
+            # Other users' processes are invisible in its /proc (#289 F1):
+            # its AppArmor rule for /proc/<pid>/net/dev cannot be `owner`
+            # (that directory is root's, G4), so it matches every pid, and
+            # this keeps it to the decoy's own. Not `ProcSubset=pid`: the
+            # decoy reads /proc/sys/kernel/random/boot_id (its isolation
+            # check), which that would hide.
+            ("ProtectProc", "invisible"),
             ("TimeoutStartSec", "30s"),
             ("MemoryMax", "128M"),
             ("TasksMax", "16"),

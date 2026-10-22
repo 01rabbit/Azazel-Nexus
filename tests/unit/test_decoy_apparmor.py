@@ -9,8 +9,9 @@ later. These tests pin:
   to its unit's capabilities, address families, programs and (for the
   namespace unit, which runs only `ip`) mounts; no child profile (G4
   follow-up: under `NoNewPrivileges=yes` the kernel refused the namespace
-  unit's `Cx` transition); `attach_disconnected` on every profile and no
-  other flag;
+  unit's `Cx` transition); `attach_disconnected` on every profile, with
+  `attach_disconnected.path=/.azazel-nsfs/` on the namespace unit's
+  alone (G4), and no other flag;
 * the units: each of the three names exactly its own profile, without `-`,
   rendered from `ServiceProfile` and nowhere else; no other unit names one;
 * the installer: the profiles placed in `/etc/apparmor.d/`, compiled but
@@ -81,6 +82,16 @@ VERIFY = "azazel-decoy-verify.service"
 #: Every unit that names a profile, in the order they start.
 PROFILED_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, VERIFY, DECOY_UNIT)
 
+#: The one flag of every profile, and the namespace unit's prefix for
+#: disconnected paths (G4: its nsfs bind source; grant §7).
+DISCONNECTED = "/.azazel-nsfs/"
+FLAGS = {
+    "azazel-decoy-nsd": f"flags=(attach_disconnected, attach_disconnected.path={DISCONNECTED})",
+    "azazel-decoy-netd": "flags=(attach_disconnected)",
+    "azazel-decoy-verify": "flags=(attach_disconnected)",
+    "azazel-decoyd": "flags=(attach_disconnected)",
+}
+
 #: The gate's claims (§7 "What each profile must deny"), as rule lines. Each
 #: must appear, exactly, in every profile block: a child profile inherits
 #: nothing from its parent.
@@ -125,10 +136,10 @@ def _blocks(name: str) -> dict[str, list[str]]:
     blocks: dict[str, list[str]] = {}
     stack: list[str] = []
     for line in _rules(name):
-        opened = re.fullmatch(r"profile ([A-Za-z0-9_.-]+)(?: flags=\(attach_disconnected\))? \{",
-                              line)
+        opened = re.fullmatch(r"profile ([A-Za-z0-9_.-]+)(?: (flags=\([^)]*\)))? \{", line)
         if opened:
             child = opened.group(1)
+            assert opened.group(2) == FLAGS[child], line
             full = f"{stack[-1]}//{child}" if stack else child
             assert full not in blocks, full
             blocks[full] = []
@@ -191,9 +202,9 @@ def test_every_profile_block_is_the_one_the_listing_check_requires():
         rules = _rules(name)
         # The profile is named, never attached by path: only the unit's
         # AppArmorProfile= puts a process in it.
-        assert f"profile {name} flags=(attach_disconnected) {{" in rules
+        assert f"profile {name} {FLAGS[name]} {{" in rules
         assert [rule for rule in rules if rule.startswith("profile ")] == [
-            f"profile {name} flags=(attach_disconnected) {{"]
+            f"profile {name} {FLAGS[name]} {{"]
         assert rules[:2] == ["abi <abi/4.0>,", "include <tunables/global>"]
 
 
@@ -263,16 +274,21 @@ def test_no_profile_block_allows_what_the_gate_denies(block):
 
 def test_no_profile_file_sets_a_mode_flag():
     """`attach_disconnected` is the one flag (G4: the verify unit's `/dev/null`
-    was refused as a disconnected path under systemd's sandbox). No mode flag
-    (complain, kill, unconfined, prompt), no other path flag."""
+    was refused as a disconnected path under systemd's sandbox), and the
+    namespace unit's alone names a prefix for disconnected paths (G4: its nsfs
+    bind source was named `/`). No mode flag (complain, kill, unconfined,
+    prompt), no other path flag."""
 
     for _, name in DECOY_APPARMOR_PROFILES:
         flagged = [rule for rule in _rules(name) if "flags=" in rule]
-        assert flagged == [f"profile {name} flags=(attach_disconnected) {{"], name
+        assert flagged == [f"profile {name} {FLAGS[name]} {{"], name
         text = (PROFILE_DIR / name).read_text(encoding="utf-8")
         # (`kill` is not checked as a word: `signal set=(kill)` is a rule.)
-        for word in ("complain", "flags=(kill", "unconfined)", "prompt", "mediate_deleted",
-                     "chroot_relative", "attach_disconnected.path"):
+        words = ["complain", "flags=(kill", "unconfined)", "prompt", "mediate_deleted",
+                 "chroot_relative"]
+        if name != "azazel-decoy-nsd":
+            words.append("attach_disconnected.path")
+        for word in words:
             assert word not in "\n".join(_rules(name)), (name, word)
         # The flag is explained where it is set: it names a path, and every
         # rule, the denies included, still applies to that name.
@@ -402,6 +418,8 @@ IP_MOUNTS = {
     "mount options=(rw, rbind) /run/netns/ -> /run/netns/,",
     "mount options=(rw, bind) /run/netns/ -> /run/netns/,",
     "mount options=(rw, bind) @{PROC}/@{pid}/{,task/@{tid}/}ns/net -> /run/netns/azazel-decoy,",
+    # G4: the nsfs source as the kernel names it (the prefix of the flags).
+    f"mount options=(rw, bind) {DISCONNECTED} -> /run/netns/azazel-decoy,",
     "umount /run/netns/azazel-decoy,",
     "mount options=(rw, rslave) -> /,",
     "umount /sys/,",
@@ -488,8 +506,75 @@ def test_the_decoy_writes_only_to_connect_to_the_intake_socket():
 
 
 def test_the_namespace_units_ip_writes_only_the_namespace_handle():
+    # `k` on the directory only: ip netns add flocks /run/netns/ (G4).
     assert _writes(_all_blocks()["azazel-decoy-nsd"]) == {
-        "/run/netns/ rw,", "/run/netns/azazel-decoy rw,"}
+        "/run/netns/ rwk,", "/run/netns/azazel-decoy rw,"}
+    assert not any("k" in permissions for rule, permissions
+                   in _file_rules(_all_blocks()["azazel-decoy-nsd"])
+                   if rule != "/run/netns/ rwk,")
+
+
+def test_the_namespace_unit_names_only_the_disconnected_prefix_never_the_real_root():
+    """G4: the nsfs file is a disconnected path. Named under the prefix, it is
+    kept apart from the host's real `/`; a rule over `/` would let `/` be bound
+    onto the handle and every denied path reached again under it."""
+
+    rules = _all_blocks()["azazel-decoy-nsd"]
+    assert [rule for rule in rules if DISCONNECTED in rule] == [
+        f"{DISCONNECTED} r,",
+        f"mount options=(rw, bind) {DISCONNECTED} -> /run/netns/azazel-decoy,",
+    ]
+    # The prefix alone: nothing under it.
+    assert not any(f"{DISCONNECTED}*" in rule or f"{DISCONNECTED}{{" in rule for rule in rules)
+    for block, block_rules in _all_blocks().items():
+        for rule in block_rules:
+            assert not rule.startswith("/ "), (block, rule)
+            assert " / -> " not in rule, (block, rule)
+            # `/` as a target only in ip -n's slave remount (no source).
+            assert (not rule.endswith(" /,")
+                    or rule == "mount options=(rw, rslave) -> /,"), (block, rule)
+        if block != "azazel-decoy-nsd":
+            assert not any(DISCONNECTED in rule for rule in block_rules), block
+
+
+def test_the_decoy_reads_its_net_dev_without_owner():
+    """G4: /proc/<pid>/net is owned by root, not by the decoy's account, so an
+    `owner` rule refused it (fsuid=979 ouid=0)."""
+
+    rules = _all_blocks()["azazel-decoyd"]
+    assert "@{PROC}/@{pid}/net/dev r," in rules
+    assert "owner @{PROC}/@{pid}/net/dev r," not in rules
+    assert "owner @{PROC}/@{pid}/ns/net r," in rules
+    # Without `owner` it matches every pid, so the unit hides other users'
+    # processes (review of #289 F1); not ProcSubset=pid, which would hide the
+    # boot id the decoy reads under /proc/sys.
+    settings = _settings((UNIT_DIR / DECOY_UNIT).read_text(encoding="utf-8"))
+    assert settings["ProtectProc"] == ["invisible"]
+    assert "ProcSubset" not in settings
+    assert "@{PROC}/sys/kernel/random/boot_id r," in rules
+
+
+def test_the_service_manager_sockets_are_hidden_by_the_sandbox_not_only_the_profile():
+    """G4: on Debian 13's kernel a path connect to the D-Bus socket succeeded
+    under all three profiles that could make one (aa-exec, outside the units);
+    the profiles' denies are defence in depth. By design the address families
+    (namespace unit) or `InaccessiblePaths=` (the others) keep it from the
+    manager; a connect under the units was not run in G4."""
+
+    for unit, name in DECOY_APPARMOR_PROFILES:
+        # The two denies stay, exactly and once, for a kernel that mediates
+        # path unix.
+        rules = _all_blocks()[name]
+        for deny in ("deny /run/dbus/system_bus_socket rw,", "deny /run/systemd/private rw,"):
+            assert rules.count(deny) == 1, (name, deny)
+        assert not any("system_bus_socket" in rule or "/run/systemd/private" in rule
+                       for rule in _allows(rules)), name
+        settings = _settings((UNIT_DIR / unit).read_text(encoding="utf-8"))
+        if unit == DECOY_NAMESPACE_UNIT:
+            assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]
+        else:
+            hidden = set(settings["InaccessiblePaths"])
+            assert {"-/run/dbus/system_bus_socket", "-/run/systemd/private"} <= hidden, unit
 
 
 def test_inferred_rules_are_marked_in_every_profile():
