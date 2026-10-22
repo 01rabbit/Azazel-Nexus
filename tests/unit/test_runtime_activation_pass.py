@@ -23,6 +23,7 @@ from nacl.signing import SigningKey
 from azazel_nexus import edge_package
 from azazel_nexus.activation import CORE_UNITS, EdgeBaselineState, UnitState
 from azazel_nexus.activation_approval_v2 import (
+    ObserveBaselineApproval,
     ObserveBaselineContext,
     observe_baseline_payload,
     verify_observe_baseline_approval,
@@ -545,24 +546,58 @@ def _sign_v3(world):
         approval_message(ApprovalPurpose.ACTIVATION, world.payload)).signature
 
 
+def _assert_granted(world, outcome):
+    assert sorted(outcome.granted) == list(SCOPE)
+    assert world.markers() == list(SCOPE)
+
+
 def test_a_v3_approval_is_not_accepted_by_the_pass(world):
-    """The v3 decoder is not wired: the pass's v2 verifier refuses v3 bytes."""
+    """The v3 decoder is not wired: the pass's v2 verifier refuses v3 bytes,
+    while the same world with the same fields signed as v2 grants."""
     _sign_v3(world)
     _assert_refused(world, world.run(), ["activation_approval_loader"])
+    world.sign()
+    _assert_granted(world, world.run())
 
 
 def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
     """Wiring the v3 verifier in as the producer would still grant nothing:
-    the pass accepts only an `ObserveBaselineApproval`."""
-    from azazel_nexus.activation_approval_v3 import verify_activation_approval_v3
+    the v3 verifier accepts (asserted on the very call the pass made), and
+    the pass refuses its result because it is not an `ObserveBaselineApproval`."""
+    from azazel_nexus.activation_approval_v3 import (
+        ActivationApprovalV3,
+        verify_activation_approval_v3,
+    )
 
     _sign_v3(world)
+    calls = []
 
     def approval(**kwargs):
-        return verify_activation_approval_v3(
+        result = verify_activation_approval_v3(
             trust=world.trust, payload=world.payload, signature=world.signature, **kwargs)
+        calls.append((kwargs, result))
+        return result
 
     _assert_refused(world, world.run(approval=approval), ["activation_approval_loader"])
+    assert len(calls) == 1
+    kwargs, result = calls[0]
+    assert type(result) is ActivationApprovalV3
+    assert result.lease.units == frozenset(SCOPE)
+    # The same arguments, called again directly, give the same accepted result.
+    assert type(approval(**kwargs)) is ActivationApprovalV3
+    # Every other check the pass makes on the result holds, so the type is
+    # what refused it ("approval result refused"): the same lease handed
+    # over as an `ObserveBaselineApproval` grants.
+    assert result.lease.generation_digest == world.generation.digest
+    assert result.lease.generation_number == world.generation.number
+
+    def as_v2(**kwargs):
+        verified = approval(**kwargs)
+        return ObserveBaselineApproval(
+            lease=verified.lease, approval_id=verified.approval_id,
+            approval_seq=verified.approval_seq, security_epoch=verified.security_epoch)
+
+    _assert_granted(world, world.run(approval=as_v2))
 
 
 def test_unit_file_changed_after_publish_refuses_the_generation(world):

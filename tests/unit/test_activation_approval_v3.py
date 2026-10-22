@@ -7,13 +7,20 @@ generated in memory for each test; nothing is read from the host or kept.
 import ast
 import hashlib
 import json
+import subprocess
 from itertools import combinations
 from pathlib import Path
 
 import pytest
 from nacl.signing import SigningKey
 
-from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS, ActivationLease
+from azazel_nexus import activation_approval_v2, activation_approval_v3
+from azazel_nexus.activation import (
+    CORE_UNITS,
+    DECEPTION_EXPOSURE_UNITS,
+    ActivationLease,
+    UnitTier,
+)
 from azazel_nexus.activation_approval_v2 import (
     ActivationApprovalPolicy,
     ObserveBaselineApproval,
@@ -104,6 +111,56 @@ def test_v2_bytes_are_unchanged():
         "9430a725b9127f0547fecefa8448873e665fc058c9c5b417bc151df8dbd6a8ab")
 
 
+@pytest.mark.parametrize("units,digest", [
+    (LOOP, "1b312b4c67430db7b42668967e66a88934d7cae203e3e7ce69acf9927e159cad"),
+    (LOOP + EXPOSURE, "f96f7f240d741e60773a52cc5c8f6a85ccf6ca85079ad2e150e666e5570c15f9"),
+])
+def test_v3_bytes_are_pinned(units, digest):
+    payload = activation_approval_v3_payload(context=CONTEXT, **FIELDS | dict(units=units))
+    assert hashlib.sha256(payload).hexdigest() == digest
+
+
+#: The fields both schemas carry, written out (v3 keeps its own copy).
+DOCUMENTED_FIELDS = frozenset({
+    "schema", "approval_id", "operator", "node_digest", "generation",
+    "generation_digest", "commissioning_digest", "commissioning_evidence_binding",
+    "policy_digest", "security_epoch", "approval_seq", "units", "granted_at",
+    "expires_at",
+})
+
+
+def test_the_field_sets_are_pinned():
+    assert activation_approval_v3._FIELDS == DOCUMENTED_FIELDS
+    assert activation_approval_v2._FIELDS == DOCUMENTED_FIELDS
+    assert activation_approval_v3._FIELDS is not activation_approval_v2._FIELDS
+
+
+def test_the_v3_unit_set_is_pinned_and_excludes_enforcement():
+    supporting = {
+        "azazel-auditd.service", "azazel-commissiond.service",
+        "azazel-edge-intaked.service", "azazel-edge-probed.service",
+        "azazel-incident-explaind.service", "azazel-knowledge-lited.service",
+        "azazel-mio-entryd.service", "azazel-mio-locald.service",
+        "azazel-mio-remoted.service", "azazel-model-fetchd.service",
+        "azazel-watchdog.service",
+    }
+    v2 = supporting | {"azazel-edge-core.service"}
+    assert activation_approval_v2._V2_UNITS == v2
+    assert activation_approval_v3._V3_UNITS == v2 | set(EXPOSURE)
+    tiers = {d.name: d.tier for d in CORE_UNITS}
+    assert UnitTier.ENFORCEMENT not in {tiers[name] for name in activation_approval_v3._V3_UNITS}
+    enforcement = {d.name for d in CORE_UNITS if d.tier is UnitTier.ENFORCEMENT}
+    assert not enforcement & activation_approval_v3._V3_UNITS
+
+
+def test_v3_does_not_borrow_v2_private_names():
+    imported = set()
+    for node in ast.walk(ast.parse(Path(activation_approval_v3.__file__).read_text())):
+        if isinstance(node, ast.ImportFrom) and node.module == "activation_approval_v2":
+            imported.update(alias.name for alias in node.names)
+    assert imported == {"ActivationApprovalPolicy", "ObserveBaselineContext"}
+
+
 def test_the_whole_exposure_tier_can_be_named_and_decodes():
     units = LOOP + EXPOSURE
     payload = activation_approval_v3_payload(context=CONTEXT, **FIELDS | dict(units=units))
@@ -144,7 +201,7 @@ def test_part_of_the_exposure_tier_cannot_be_decoded(part):
 
 @pytest.mark.parametrize("units", [
     [], "azazel-decoyd.service", ["azazel-decoyd.service"] * 3,
-    ["azazel-auditd.service"] + list(EXPOSURE),  # ENFORCEMENT stays unnameable
+    sorted(["azazel-unknown.service"] + list(EXPOSURE)),
     ["azazel-unknown.service"], [1], None,
 ])
 def test_invalid_unit_lists_are_refused(units):
@@ -310,8 +367,16 @@ def test_floors_and_time_are_the_callers(approved):
             verify_activation_approval_v3(**args | dict(approval_seq_floor=floor))
 
 
-def test_typed_context_and_policy_are_required(approved):
+def test_typed_trust_context_and_policy_are_required(approved):
     _, args = approved
+
+    class Lookalike:
+        def verify(self, **kwargs):
+            return None
+
+    for trust in (Lookalike(), None):
+        with pytest.raises(ApprovalRefused, match="operator trust required"):
+            verify_activation_approval_v3(**args | dict(trust=trust))
     with pytest.raises(ApprovalRefused):
         verify_activation_approval_v3(**args | dict(expected=None))
     with pytest.raises(ApprovalRefused):
@@ -353,19 +418,64 @@ def _imports(path: Path) -> set[str]:
     return imported
 
 
+MODULE = REPO / "src/azazel_nexus/activation_approval_v3.py"
+
+
+def _tracked_outside_tests_and_docs() -> list[Path]:
+    """Every tracked file except tests/ and docs/. Without a checkout this
+    fails rather than skips: the property is not established without it."""
+    listed = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"],
+                            capture_output=True, check=True).stdout
+    names = [name for name in listed.decode("utf-8").split("\0") if name]
+    assert names, "git ls-files listed nothing"
+    files = [REPO / name for name in names if not name.startswith(("tests/", "docs/"))]
+    for root in ("src", "runtime", "tools", "bench"):
+        assert any(path.is_relative_to(REPO / root) for path in files), root
+    assert MODULE in files
+    return files
+
+
 def test_nothing_outside_the_tests_imports_or_names_v3():
-    module = REPO / "src/azazel_nexus/activation_approval_v3.py"
-    roots = [REPO / "src", REPO / "runtime", REPO / "tools", REPO / "bench",
-             REPO / "packaging", REPO / "lab", REPO / "contract"]
-    sources = [path for root in roots if root.exists() for path in root.rglob("*.py")]
-    assert module in sources
-    for path in sources:
-        if path == module:
+    for path in _tracked_outside_tests_and_docs():
+        if path == MODULE or not path.is_file():
             continue
+        raw = path.read_bytes()
+        for needle in (b"activation_approval_v3", b"activation-approval/v3", b"ApprovalV3"):
+            assert needle not in raw, (path, needle)
+        if path.suffix == ".py":
+            assert not {"activation_approval_v3", ".activation_approval_v3"} & _imports(path), path
+
+
+_DYNAMIC = {"import_module", "__import__", "find_spec", "spec_from_file_location",
+            "module_from_spec", "reload", "run_module", "run_path"}
+
+
+def _dynamic_import_strings(path: Path) -> list[str]:
+    """Every string constant inside an importlib, `__import__` or runpy call."""
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name in _DYNAMIC:
+            found.extend(sub.value for sub in ast.walk(node)
+                         if isinstance(sub, ast.Constant) and isinstance(sub.value, str))
+    return found
+
+
+def test_no_dynamic_import_reaches_an_activation_approval_module():
+    sources = [path for path in _tracked_outside_tests_and_docs()
+               if path.suffix == ".py" and path.is_file()]
+    for path in sources:
         text = path.read_text(encoding="utf-8")
-        assert "activation_approval_v3" not in text, path
-        assert "activation-approval/v3" not in text, path
-        assert not {"activation_approval_v3", ".activation_approval_v3"} & _imports(path), path
+        for value in _dynamic_import_strings(path):
+            assert "activation_approval" not in value and "approval_v" not in value, (
+                path, value)
+        # A name assembled from pieces would escape the scan above, so a file
+        # that imports dynamically may not mention the family at all.
+        if path != MODULE and any(f"{name}(" in text for name in _DYNAMIC):
+            assert "activation_approval" not in text, path
 
 
 def test_no_scope_was_widened():

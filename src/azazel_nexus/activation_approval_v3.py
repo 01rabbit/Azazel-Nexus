@@ -29,21 +29,13 @@ contacts no service manager.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .activation import DECEPTION_EXPOSURE_UNITS, ActivationLease
+from .activation import CORE_UNITS, DECEPTION_EXPOSURE_UNITS, ActivationLease, UnitTier
 from .activation_approval import _utc
-from .activation_approval_v2 import (
-    _APPROVAL_ID,
-    _FIELDS,
-    _OPERATOR,
-    _V2_UNITS,
-    ActivationApprovalPolicy,
-    ObserveBaselineContext,
-    _nonnegative,
-    _unique_object,
-)
+from .activation_approval_v2 import ActivationApprovalPolicy, ObserveBaselineContext
 from .operator_trust import (
     MAX_APPROVAL_BYTES,
     ApprovalPurpose,
@@ -62,10 +54,42 @@ __all__ = [
 
 SCHEMA_V3 = "azazel-nexus/activation-approval/v3"
 
+# v3 keeps its own copies of the rules it shares with v2 rather than v2's
+# private names, so a change to v2 cannot silently change v3 (the tests pin
+# both sets and both encodings).
+_OPERATOR = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+_APPROVAL_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_FIELDS = frozenset({
+    "schema", "approval_id", "operator", "node_digest", "generation",
+    "generation_digest", "commissioning_digest", "commissioning_evidence_binding",
+    "policy_digest", "security_epoch", "approval_seq", "units", "granted_at",
+    "expires_at",
+})
+
 _EXPOSURE = frozenset(DECEPTION_EXPOSURE_UNITS)
 
 #: v2's two tiers plus the exposure tier. ENFORCEMENT stays unnameable.
-_V3_UNITS = _V2_UNITS | _EXPOSURE
+_V3_UNITS = frozenset(
+    d.name for d in CORE_UNITS
+    if d.tier in (UnitTier.SUPPORTING, UnitTier.EDGE_BASELINE, UnitTier.DECEPTION_EXPOSURE)
+)
+if not _EXPOSURE <= _V3_UNITS:  # pragma: no cover - a definition error, not input
+    raise RuntimeError("the exposure units are not in the DECEPTION_EXPOSURE tier")
+
+
+def _nonnegative(value, message: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ApprovalRefused(message)
+    return value
+
+
+def _unique_object(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ApprovalRefused("duplicate activation approval field")
+        document[key] = value
+    return document
 
 
 def _unit_list(units) -> list[str]:
@@ -200,6 +224,8 @@ def verify_activation_approval_v3(
     scope cannot name an exposure unit, a v3 approval naming the tier is
     refused here at the scope check.
     """
+    if type(trust) is not OperatorTrust:
+        raise ApprovalRefused("operator trust required")
     if type(expected) is not ObserveBaselineContext:
         raise ApprovalRefused("activation context required")
     if type(policy) is not ActivationApprovalPolicy:
