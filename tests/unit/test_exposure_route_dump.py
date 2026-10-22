@@ -24,6 +24,7 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -52,6 +53,10 @@ RTM_NEWROUTE, RTM_GETROUTE, RTM_NEWRULE, RTM_GETRULE = 24, 26, 32, 34
 NLMSG_ERROR, NLMSG_DONE = 2, 3
 NLM_F_MULTI, NLM_F_DUMP_INTR = 0x2, 0x10
 RULE_SEQ, ROUTE_SEQ = 1, 2
+#: The port id the constructed replies are addressed to (the socket's own).
+PORT = 4242
+#: The fixtures' sequence numbers and port id (as recorded).
+RECORDED_RULE_SEQ, RECORDED_ROUTE_SEQ, RECORDED_PORT = 1, 2, 450
 
 # -- building messages --------------------------------------------------------------
 
@@ -81,8 +86,9 @@ def _name(kind, text):
     return _attr(kind, text.encode() + b"\x00")
 
 
-def _message(kind: int, payload: bytes, *, seq: int, flags: int = NLM_F_MULTI) -> bytes:
-    return _HEADER.pack(_HEADER.size + len(payload), kind, flags, seq, 4242) + payload
+def _message(kind: int, payload: bytes, *, seq: int, flags: int = NLM_F_MULTI,
+             port: int = PORT) -> bytes:
+    return _HEADER.pack(_HEADER.size + len(payload), kind, flags, seq, port) + payload
 
 
 def _done(seq: int, error: int = 0) -> bytes:
@@ -104,7 +110,7 @@ def _rule(*attrs, dst_len=0, src_len=0, tos=0, table=0, action=1, flags=0, famil
 
 
 def _rules(*messages, seq=RULE_SEQ) -> list[dict]:
-    return parse_rule_dump(b"".join(messages) + _done(seq))
+    return parse_rule_dump(b"".join(messages) + _done(seq), sequence=RULE_SEQ, port=PORT)
 
 
 def _one(*attrs, **header) -> dict:
@@ -127,7 +133,8 @@ def _route(*attrs, dst_len=0, table=254, kind=1, flags=0, src_len=0, tos=0, fami
 
 
 def _routes(*messages, links=LINKS, seq=ROUTE_SEQ) -> list[dict]:
-    return parse_route_dump(b"".join(messages) + _done(seq), links)
+    return parse_route_dump(b"".join(messages) + _done(seq), links,
+                            sequence=ROUTE_SEQ, port=PORT)
 
 
 def _hop(index: int, *attrs, weight: int = 0, flags: int = 0) -> bytes:
@@ -139,8 +146,8 @@ def _hop(index: int, *attrs, weight: int = 0, flags: int = 0) -> bytes:
 
 
 def test_the_two_requests_are_ipv4_dumps():
-    for request, kind, seq in ((rule_dump_request(), RTM_GETRULE, RULE_SEQ),
-                               (route_dump_request(), RTM_GETROUTE, ROUTE_SEQ)):
+    for request, kind, seq in ((rule_dump_request(RULE_SEQ), RTM_GETRULE, RULE_SEQ),
+                               (route_dump_request(ROUTE_SEQ), RTM_GETROUTE, ROUTE_SEQ)):
         length, message_type, flags, sequence, pid = _HEADER.unpack_from(request)
         assert (length, message_type, flags, sequence, pid) == (
             len(request), kind, 0x301, seq, 0)
@@ -190,9 +197,12 @@ def _k1_blackhole(name, table=0):
 
 
 def _defaults():
-    return (_rule(_u32(TABLE, 255), _s32(SUP_PREFIXLEN, -1), table=255),
-            _rule(_u32(PRIO, 32766), _u32(TABLE, 254), _s32(SUP_PREFIXLEN, -1), table=254),
-            _rule(_u32(PRIO, 32767), _u32(TABLE, 253), _s32(SUP_PREFIXLEN, -1), table=253))
+    """The kernel's three, marked permanent as the kernel marks them."""
+    return (_rule(_u32(TABLE, 255), _s32(SUP_PREFIXLEN, -1), table=255, flags=0x1),
+            _rule(_u32(PRIO, 32766), _u32(TABLE, 254), _s32(SUP_PREFIXLEN, -1), table=254,
+                  flags=0x1),
+            _rule(_u32(PRIO, 32767), _u32(TABLE, 253), _s32(SUP_PREFIXLEN, -1), table=253,
+                  flags=0x1))
 
 
 def test_k1_in_both_forms_reads_as_ip_prints_it_and_holds():
@@ -383,8 +393,10 @@ def test_only_main_is_kept_by_its_table_attribute_or_header():
     assert _routes(other) == []
 
 
-def test_a_cloned_entry_is_skipped_as_ip_skips_it():
-    assert _routes(_route(_ip(R_DST, "10.255.196.9"), dst_len=32, flags=0x200)) == []
+def test_a_cloned_entry_is_skipped_outside_the_slash_24_and_unreadable_inside():
+    assert _routes(_route(_ip(R_DST, "198.51.100.9"), dst_len=32, flags=0x200)) == []
+    with pytest.raises(RouteDumpUnreadable):
+        _routes(_route(_ip(R_DST, "10.255.196.9"), dst_len=32, flags=0x200))
 
 
 def test_routes_outside_the_slash_24_are_their_destination_alone():
@@ -414,7 +426,7 @@ def test_routes_inside_the_slash_24_keep_dst_dev_gateway_via_and_type():
     routes = _routes(
         _route(_ip(R_DST, "10.255.196.16"), _ip(R_GATEWAY, "192.0.2.5"), _u32(R_OIF, 2),
                _u32(R_PRIORITY, 7), _ip(R_PREFSRC, "192.0.2.1"),
-               _attr(R_METRICS | 0x8000, _u32(2, 1400)), dst_len=30),
+               _attr(R_METRICS, _u32(2, 1400)), dst_len=30),
         _route(_ip(R_DST, "10.255.196.64"), dst_len=30, kind=6),
         _route(_ip(R_DST, "10.255.196.200"), _u32(R_OIF, 3), dst_len=32),
         _route(_ip(R_DST, "10.255.196.52"), _u32(R_OIF, 2),
@@ -527,15 +539,65 @@ def _ok_rule(seq=RULE_SEQ, flags=NLM_F_MULTI):
 ])
 def test_a_dump_that_is_not_whole_is_unreadable(data):
     with pytest.raises(RouteDumpUnreadable):
-        parse_rule_dump(data)
+        parse_rule_dump(data, sequence=RULE_SEQ, port=PORT)
 
 
 def test_a_route_dump_is_framed_the_same_way():
+    def parse(data):
+        return parse_route_dump(data, LINKS, sequence=ROUTE_SEQ, port=PORT)
+
     with pytest.raises(RouteDumpUnreadable):
-        parse_route_dump(_route(_ip(R_DST, "10.0.0.0"), dst_len=8, seq=1) + _done(1), LINKS)
+        parse(_route(_ip(R_DST, "10.0.0.0"), dst_len=8, seq=1) + _done(1))
     with pytest.raises(RouteDumpUnreadable):
-        parse_route_dump(_route(_ip(R_DST, "10.0.0.0"), dst_len=8), LINKS)
-    assert parse_route_dump(_done(ROUTE_SEQ), LINKS) == []
+        parse(_route(_ip(R_DST, "10.0.0.0"), dst_len=8))
+    assert parse(_done(ROUTE_SEQ)) == []
+
+
+def test_a_reply_addressed_to_another_port_id_is_unreadable():
+    for data in (_ok_rule() + _message(NLMSG_DONE, b"\0" * 4, seq=RULE_SEQ, port=PORT + 1),
+                 _message(RTM_NEWRULE, _BODY.pack(2, 0, 0, 0, 254, 0, 0, 1, 0),
+                          seq=RULE_SEQ, port=0) + _done(RULE_SEQ)):
+        with pytest.raises(RouteDumpUnreadable):
+            parse_rule_dump(data, sequence=RULE_SEQ, port=PORT)
+    with pytest.raises(RouteDumpUnreadable):
+        parse_rule_dump(_ok_rule() + _done(RULE_SEQ), sequence=RULE_SEQ, port=PORT + 1)
+
+
+@pytest.mark.parametrize("flag", [0x8000, 0x4000, 0xC000])
+def test_an_attribute_type_with_the_nested_or_byte_order_flag_is_unreadable(flag):
+    """A K1 rule whose `FRA_IIFNAME` carries a flag bit is not read as K1."""
+
+    local, main, default = _defaults()
+    flagged = _rule(_u32(PRIO, 1961), _name(IIF | flag, "lan0"), _u32(TABLE, 0),
+                    _s32(SUP_PREFIXLEN, -1), action=6)
+    with pytest.raises(RouteDumpUnreadable):
+        _rules(local, _k1_lookup("lan0"), flagged, main, default)
+    hops = _hop(2, _ip(R_GATEWAY, "192.0.2.6"))
+    for route in (_route(_ip(R_DST, "10.255.196.32"), _attr(R_MULTIPATH | flag, hops),
+                         dst_len=28),
+                  _route(_ip(R_DST, "10.255.196.32"),
+                         _attr(R_MULTIPATH, _hop(2, _ip(R_GATEWAY | flag, "192.0.2.6"))),
+                         dst_len=28),
+                  _route(_ip(R_DST | flag, "10.0.0.0"), dst_len=8)):
+        with pytest.raises(RouteDumpUnreadable):
+            _routes(route)
+
+
+def test_permanent_is_accepted_on_the_three_defaults_only():
+    local, main, default = _defaults()
+    assert _rules(local, main, default) == [
+        {"priority": 0, "src": "all", "table": "local"},
+        {"priority": 32766, "src": "all", "table": "main"},
+        {"priority": 32767, "src": "all", "table": "default"}]
+    for rule in (_k1_lookup("lan0"), _k1_blackhole("lan0")):
+        permanent = bytearray(rule)
+        # `fib_rule_hdr.flags` is the u32 after the eight one-byte fields.
+        struct.pack_into("=I", permanent, _HEADER.size + 8, 0x1)
+        with pytest.raises(RouteDumpUnreadable):
+            _rules(local, bytes(permanent), main, default)
+    # A default's shape with anything more is not a default.
+    with pytest.raises(RouteDumpUnreadable):
+        _one(_u32(PRIO, 32766), _u32(TABLE, 254), _name(IIF, "lan0"), table=254, flags=0x1)
 
 
 def test_too_many_entries_are_unreadable(monkeypatch):
@@ -549,11 +611,22 @@ def test_too_many_entries_are_unreadable(monkeypatch):
 
 
 class FakeSocket:
-    def __init__(self, datagrams, *, fail_send=False):
+    """Replies as given; `sender` is the source address `recvmsg` reports,
+    `truncated` the indexes of datagrams reported with `MSG_TRUNC`."""
+
+    def __init__(self, datagrams, *, fail_send=False, sender=(0, 0), port=PORT,
+                 truncated=()):
         self.datagrams = list(datagrams)
         self.sent: list[bytes] = []
         self.closed = False
         self.fail_send = fail_send
+        self.sender = sender
+        self.port = port
+        self.truncated = set(truncated)
+        self.received = 0
+
+    def getsockname(self):
+        return (self.port, 0)
 
     def send(self, data):
         if self.fail_send:
@@ -561,28 +634,51 @@ class FakeSocket:
         self.sent.append(data)
         return len(data)
 
-    def recv(self, size):
+    def recvmsg(self, size):
         if not self.datagrams:
             raise TimeoutError("timed out")
-        return self.datagrams.pop(0)[:size]
+        flags = socket.MSG_TRUNC if self.received in self.truncated else 0
+        self.received += 1
+        return self.datagrams.pop(0)[:size], [], flags, self.sender
 
     def close(self):
         self.closed = True
 
 
-def test_the_readers_send_their_request_and_read_until_done():
+@pytest.fixture
+def fixed_sequence(monkeypatch):
+    """The readers' sequence fixed to the constructed replies' own."""
+
+    def fix(value):
+        monkeypatch.setattr(exposure_route_dump, "_sequence", lambda: value)
+    return fix
+
+
+def test_the_readers_send_their_request_and_read_until_done(fixed_sequence):
+    fixed_sequence(RULE_SEQ)
     local, main, default = _defaults()
     fake = FakeSocket([local + _k1_lookup("lan0"), _k1_blackhole("lan0") + main,
                        default + _done(RULE_SEQ), b"never read"])
     rules = dump_ipv4_rules(open_socket=lambda: fake)
-    assert fake.sent == [rule_dump_request()] and fake.closed
+    assert fake.sent == [rule_dump_request(RULE_SEQ)] and fake.closed
     assert decoy_reachability._rules_exact(rules, ("lan0",)) is True
     assert fake.datagrams == [b"never read"]
 
+    fixed_sequence(ROUTE_SEQ)
     fake = FakeSocket([_route(_ip(R_DST, "10.0.0.0"), _u32(R_OIF, 2), dst_len=8),
                        _done(ROUTE_SEQ)])
     assert dump_main_routes(LINKS, open_socket=lambda: fake) == [{"dst": "10.0.0.0/8"}]
-    assert fake.sent == [route_dump_request()] and fake.closed
+    assert fake.sent == [route_dump_request(ROUTE_SEQ)] and fake.closed
+
+
+def test_each_dump_draws_its_own_sequence_number():
+    seen = []
+    for _ in range(3):
+        fake = FakeSocket([])
+        assert dump_ipv4_rules(open_socket=lambda: fake) is None  # times out
+        (request,) = fake.sent
+        seen.append(_HEADER.unpack_from(request)[3])
+    assert len(set(seen)) == 3 and 0 not in seen
 
 
 def _unopenable():
@@ -598,15 +694,35 @@ def _unopenable():
     lambda: FakeSocket([_ok_rule(seq=9), _done(RULE_SEQ)]),
     lambda: FakeSocket([_message(NLMSG_ERROR, struct.pack("=i", -13), seq=RULE_SEQ)]),
     lambda: FakeSocket([], fail_send=True),
+    # A datagram from another sender than the kernel: a forged dump.
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=(31337, 0)),
+    lambda: FakeSocket([_ok_rule(), _done(RULE_SEQ)], sender=(1, 0)),
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=()),
+    # Addressed to another port id than this socket's.
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], port=PORT + 1),
+    # Cut short by the receive buffer (`MSG_TRUNC`), even if it parses.
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], truncated={0}),
+    lambda: FakeSocket([_ok_rule(), _done(RULE_SEQ)], truncated={1}),
 ])
-def test_a_dump_not_received_whole_is_none(make):
+def test_a_dump_not_received_whole_is_none(make, fixed_sequence):
+    fixed_sequence(RULE_SEQ)
     fake = make()
     assert dump_ipv4_rules(open_socket=lambda: fake) is None
     assert fake.closed
     assert dump_main_routes(LINKS, open_socket=_unopenable) is None
 
 
-def test_a_dump_past_its_bound_is_none(monkeypatch):
+def test_the_kernels_whole_reply_is_read(fixed_sequence):
+    """The control: the same fake, from the kernel, whole, to this port."""
+
+    fixed_sequence(RULE_SEQ)
+    fake = FakeSocket([_ok_rule(), _done(RULE_SEQ)])
+    assert dump_ipv4_rules(open_socket=lambda: fake) == [
+        {"priority": 0, "src": "all", "table": "main"}]
+
+
+def test_a_dump_past_its_bound_is_none(monkeypatch, fixed_sequence):
+    fixed_sequence(RULE_SEQ)
     monkeypatch.setattr(exposure_route_dump, "_BYTE_LIMIT", 100)
     fake = FakeSocket([_ok_rule()] * 10 + [_done(RULE_SEQ)])
     assert dump_ipv4_rules(open_socket=lambda: fake) is None
@@ -644,7 +760,7 @@ def _imports(path: Path) -> set[str]:
 
 def test_the_route_dump_imports_the_standard_library_only():
     assert _imports(SOURCE) == {"__future__", "annotations", "ipaddress", "socket",
-                                "struct", "collections.abc", "Mapping", "typing",
+                                "secrets", "struct", "collections.abc", "Mapping", "typing",
                                 "Callable", "Iterator", "Optional"}
     text = SOURCE.read_text(encoding="utf-8")
     for module in _COMMISSIONING:
@@ -718,8 +834,10 @@ def _recorded(name: str):
 @pytest.mark.parametrize("phase", ["k1", "full"])
 def test_the_recorded_dumps_read_as_the_recorded_ip_output(phase):
     links = {int(index): name for index, name in _recorded(f"{phase}-links.json").items()}
-    rules = parse_rule_dump((FIXTURES / f"{phase}-rules.bin").read_bytes())
-    routes = parse_route_dump((FIXTURES / f"{phase}-routes.bin").read_bytes(), links)
+    rules = parse_rule_dump((FIXTURES / f"{phase}-rules.bin").read_bytes(),
+                            sequence=RECORDED_RULE_SEQ, port=RECORDED_PORT)
+    routes = parse_route_dump((FIXTURES / f"{phase}-routes.bin").read_bytes(), links,
+                              sequence=RECORDED_ROUTE_SEQ, port=RECORDED_PORT)
     ip_rules = _recorded(f"{phase}-ip-rules.json")
     ip_routes = _recorded(f"{phase}-ip-routes.json")
     assert rules == _ip_rules(ip_rules)
@@ -762,8 +880,10 @@ except subprocess.CalledProcessError:
 
 def snapshot(phase, record):
     links = {r.index: r.name for r in netlink.read_links()}
-    raw_rules = m._receive(m.rule_dump_request(), m._RULE_SEQUENCE, None)
-    raw_routes = m._receive(m.route_dump_request(), m._ROUTE_SEQUENCE, None)
+    # Fixed sequence numbers so a recording is reproducible (the fixtures'
+    # 1 and 2); the readers below draw their own.
+    raw_rules, rule_port = m._receive(m.rule_dump_request(1), 1, None)
+    raw_routes, route_port = m._receive(m.route_dump_request(2), 2, None)
     ip_rules, ip_routes = ip_json("rule", "show"), ip_json("route", "show", "table", "main")
     if record:
         def write(name, data):
@@ -776,8 +896,9 @@ def snapshot(phase, record):
         write("ip-rules.json", dump(ip_rules))
         write("ip-routes.json", dump(ip_routes))
     return {"rules": m.dump_ipv4_rules(), "routes": m.dump_main_routes(links),
-            "parsed_rules": m.parse_rule_dump(raw_rules),
-            "parsed_routes": m.parse_route_dump(raw_routes, links),
+            "parsed_rules": m.parse_rule_dump(raw_rules, sequence=1, port=rule_port),
+            "parsed_routes": m.parse_route_dump(raw_routes, links, sequence=2,
+                                                port=route_port),
             "ip_rules": ip_rules, "ip_routes": ip_routes}
 
 record = sys.argv[2] if len(sys.argv) > 2 else None

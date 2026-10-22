@@ -42,7 +42,8 @@ it; no capability is needed to dump.
   is the same, and any of those keys fails the comparison whatever its
   value.
 * **Routes**: table 254 only (`RTA_TABLE` when present, else the
-  header's); cloned entries are skipped as `ip` skips them. A route
+  header's); a cloned entry outside the /24 is skipped as `ip` skips it,
+  one inside it is unreadable (the request never asks for one). A route
   inside `10.255.196.0/24` is reduced to `dst`, `dev`, `gateway`, `via`,
   `type` and `nexthops` (each hop `gateway`/`via`, `dev`, `weight`); a
   route outside it to `dst`, all `_routes_clear` needs of it.
@@ -53,14 +54,25 @@ A rule attribute, flag or action this module does not translate, a route
 in the /24 with a nexthop object (`RTA_NH_ID`) or another attribute it
 does not know, a link without a name, an interrupted dump
 (`NLM_F_DUMP_INTR`), a reply of another sequence, an error reply, a
-truncated or oversized message: each makes the whole dump unreadable
+truncated or oversized message, an attribute type with the nested or
+byte-order flag: each makes the whole dump unreadable
 (`RouteDumpUnreadable`; the readers return None), never a key that drops
 out of the comparison. The pass maps it to `forwarding_unreadable`.
+
+## Who answered
+
+Every datagram must come from the kernel (sender port id 0, read with
+`recvmsg`) and arrive whole (no `MSG_TRUNC`); every message must carry this
+socket's own port id (`getsockname`) and the request's sequence number,
+which is drawn at random for each dump. A local process that unicasts a
+forged dump to this socket's port is refused by the first check; the other
+two refuse a reply meant for another request.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import secrets
 import socket as _socket
 import struct
 from collections.abc import Mapping
@@ -95,9 +107,8 @@ _NLM_F_DUMP_INTR = 0x010
 _FAMILY_IPV4 = 2
 _HOST_LEN = 32
 
-#: The sequence numbers of the two requests; every reply must carry its own.
-_RULE_SEQUENCE = 1
-_ROUTE_SEQUENCE = 2
+#: The kernel's port id: the only sender a reply is accepted from.
+_KERNEL_PORT = 0
 
 _HEADER = struct.Struct("=IHHII")
 #: `struct fib_rule_hdr` and `struct rtmsg` share one layout.
@@ -133,6 +144,11 @@ _RULE_ATTRIBUTES = frozenset({
 
 _FIB_RULE_PERMANENT, _FIB_RULE_INVERT, _FIB_RULE_UNRESOLVED = 0x1, 0x2, 0x4
 _FIB_RULE_IIF_DETACHED, _FIB_RULE_OIF_DETACHED = 0x8, 0x10
+#: `FIB_RULE_PERMANENT` is set by the kernel on its three default rules (it
+#: forbids deleting them) and is not printed by `ip`. A request may set it on
+#: any rule too, so it is accepted only on a rule that reads exactly as one
+#: of the defaults (`_DEFAULT_RULES`); on any other rule it is a flag `ip`
+#: hides, and the dump is unreadable.
 _RULE_FLAGS = (_FIB_RULE_PERMANENT | _FIB_RULE_INVERT | _FIB_RULE_UNRESOLVED
                | _FIB_RULE_IIF_DETACHED | _FIB_RULE_OIF_DETACHED)
 
@@ -144,6 +160,17 @@ _RULE_ACTIONS = {6: "blackhole", 7: "unreachable", 8: "prohibit"}
 _TABLES = {253: "default", 254: "main", 255: "local"}
 _MAIN_TABLE = 254
 _ALL_ONES = 0xFFFFFFFF
+#: The kernel's default IPv4 rules as `ip -j` prints them.
+_DEFAULT_RULES = (
+    {"priority": 0, "src": "all", "table": "local"},
+    {"priority": 32766, "src": "all", "table": "main"},
+    {"priority": 32767, "src": "all", "table": "default"},
+)
+#: `NLA_F_NESTED` and `NLA_F_NET_BYTEORDER`: none of the attributes read here
+#: carries either as the kernel emits them (`RTA_MULTIPATH` and
+#: `RTA_METRICS` are nested without the flag), so a type with either bit is
+#: refused rather than masked into an accepted one.
+_ATTRIBUTE_FLAGS = 0xC000
 
 # -- routes ----------------------------------------------------------------------
 
@@ -182,13 +209,13 @@ def _request(message_type: int, sequence: int) -> bytes:
                         _NLM_F_REQUEST | _NLM_F_DUMP, sequence, 0) + body
 
 
-def rule_dump_request(sequence: int = _RULE_SEQUENCE) -> bytes:
+def rule_dump_request(sequence: int) -> bytes:
     """`RTM_GETRULE`, dump, request, IPv4."""
 
     return _request(_RTM_GETRULE, sequence)
 
 
-def route_dump_request(sequence: int = _ROUTE_SEQUENCE) -> bytes:
+def route_dump_request(sequence: int) -> bytes:
     """`RTM_GETROUTE`, dump, request, IPv4."""
 
     return _request(_RTM_GETROUTE, sequence)
@@ -197,24 +224,26 @@ def route_dump_request(sequence: int = _ROUTE_SEQUENCE) -> bytes:
 # -- walking the replies ---------------------------------------------------------
 
 
-def _messages(data: bytes) -> Iterator[tuple[int, int, int, bytes]]:
-    """`(type, flags, sequence, payload)` of each whole message in `data`."""
+def _messages(data: bytes) -> Iterator[tuple[int, int, int, int, bytes]]:
+    """`(type, flags, sequence, port id, payload)` of each whole message."""
 
     offset = 0
     while offset < len(data):
         if offset + _HEADER.size > len(data):
             raise RouteDumpUnreadable("a message header is truncated")
-        length, message_type, flags, sequence, _pid = _HEADER.unpack_from(data, offset)
+        length, message_type, flags, sequence, port = _HEADER.unpack_from(data, offset)
         if length < _HEADER.size or offset + length > len(data):
             raise RouteDumpUnreadable("a message length is outside its buffer")
-        yield message_type, flags, sequence, data[offset + _HEADER.size: offset + length]
+        yield (message_type, flags, sequence, port,
+               data[offset + _HEADER.size: offset + length])
         offset += (length + 3) & ~3
 
 
-def _payloads(data: bytes, expected: int, sequence: int) -> list[bytes]:
+def _payloads(data: bytes, expected: int, sequence: int, port: int) -> list[bytes]:
     """The payloads of a dump that ends in `NLMSG_DONE` and has nothing else.
 
-    Refused: a message of another sequence, an interrupted dump, an error
+    Refused: a message of another sequence or addressed to another port
+    id, an interrupted dump, an error
     reply (or a `DONE` carrying an error), a message of a type that is
     neither `expected` nor `DONE`, anything after `DONE`, no `DONE`, too
     many messages.
@@ -222,11 +251,13 @@ def _payloads(data: bytes, expected: int, sequence: int) -> list[bytes]:
 
     payloads: list[bytes] = []
     done = False
-    for message_type, flags, message_sequence, payload in _messages(data):
+    for message_type, flags, message_sequence, message_port, payload in _messages(data):
         if done:
             raise RouteDumpUnreadable("a message follows the end of the dump")
         if message_sequence != sequence:
             raise RouteDumpUnreadable("a reply carries another sequence number")
+        if message_port != port:
+            raise RouteDumpUnreadable("a reply is addressed to another port id")
         if flags & _NLM_F_DUMP_INTR:
             raise RouteDumpUnreadable("the dump was interrupted")
         if message_type == _NLMSG_ERROR:
@@ -257,8 +288,8 @@ def _attributes(payload: bytes, start: int) -> dict[int, bytes]:
         length, attribute_type = _ATTRIBUTE.unpack_from(payload, offset)
         if length < _ATTRIBUTE.size or offset + length > len(payload):
             raise RouteDumpUnreadable("an attribute length is outside its message")
-        # The nested and byte-order flags are not part of the type here.
-        attribute_type &= 0x3FFF
+        if attribute_type & _ATTRIBUTE_FLAGS:
+            raise RouteDumpUnreadable("an attribute carries the nested or byte-order flag")
         if attribute_type in found:
             raise RouteDumpUnreadable("an attribute is repeated")
         found[attribute_type] = payload[offset + _ATTRIBUTE.size: offset + length]
@@ -438,14 +469,17 @@ def _rule(payload: bytes) -> dict:
         rule["action"] = _RULE_ACTIONS[action]
     elif action != _FR_ACT_TO_TBL:
         raise RouteDumpUnreadable("a rule carries an action this reader does not know")
+    if flags & _FIB_RULE_PERMANENT and rule not in _DEFAULT_RULES:
+        raise RouteDumpUnreadable("a rule other than a default one is marked permanent")
     return rule
 
 
-def parse_rule_dump(data: bytes, sequence: int = _RULE_SEQUENCE) -> list[dict]:
-    """The rules of an `RTM_GETRULE` dump, in the kernel's order. Raises
+def parse_rule_dump(data: bytes, *, sequence: int, port: int) -> list[dict]:
+    """The rules of an `RTM_GETRULE` dump, in the kernel's order, each
+    message carrying `sequence` and `port` (the socket's port id). Raises
     `RouteDumpUnreadable` rather than return part of it."""
 
-    return [_rule(payload) for payload in _payloads(data, _RTM_NEWRULE, sequence)]
+    return [_rule(payload) for payload in _payloads(data, _RTM_NEWRULE, sequence, port)]
 
 
 # -- routes ----------------------------------------------------------------------
@@ -516,9 +550,10 @@ def _route(payload: bytes, links: Mapping[int, Optional[str]]) -> Optional[dict]
     _family, dst_len, src_len, tos, header_table, _protocol, _scope, kind, flags = _body(payload)
     attributes = _attributes(payload, _BODY.size)
     table = _u32(attributes[_RTA_TABLE]) if _RTA_TABLE in attributes else header_table
-    if table != _MAIN_TABLE or flags & _RTM_F_CLONED:
+    if table != _MAIN_TABLE:
         return None
     destination = _destination(attributes.get(_RTA_DST), dst_len)
+    cloned = bool(flags & _RTM_F_CLONED)
     # A named output link is required of every route of `main`, inside the
     # /24 or not (wiring §4.4).
     device = (_link_name(links, _u32(attributes[_RTA_OIF]))
@@ -527,7 +562,14 @@ def _route(payload: bytes, links: Mapping[int, Optional[str]]) -> Optional[dict]
     # /24. `_routes_clear` parses `dst` itself; this only chooses the keys.
     if _RTA_DST not in attributes or not ipaddress.IPv4Network(
             (destination.split("/")[0], dst_len), strict=False).subnet_of(_HEADROOM):
-        return {"dst": destination}
+        # `ip` skips a cloned entry (a cache exception, not a route of the
+        # table); outside the /24 so does this reader.
+        return None if cloned else {"dst": destination}
+    if cloned:
+        # Inside it, unreadable rather than skipped: an IPv4 dump carries
+        # none unless asked (`RTM_F_CLONED` in the request, which this
+        # module never sets), so one here is not what was asked for.
+        raise RouteDumpUnreadable("a cloned entry inside the decoy network")
     if set(attributes) - _ROUTE_ATTRIBUTES or src_len or tos:
         raise RouteDumpUnreadable(
             "a route inside the decoy network carries what this reader does not know")
@@ -548,8 +590,8 @@ def _route(payload: bytes, links: Mapping[int, Optional[str]]) -> Optional[dict]
     return route
 
 
-def parse_route_dump(data: bytes, links: Mapping[int, Optional[str]],
-                     sequence: int = _ROUTE_SEQUENCE) -> list[dict]:
+def parse_route_dump(data: bytes, links: Mapping[int, Optional[str]], *,
+                     sequence: int, port: int) -> list[dict]:
     """The routes of `main` in an `RTM_GETROUTE` dump, in the kernel's order.
 
     `links` maps an interface index to its name (None when the link dump
@@ -561,19 +603,27 @@ def parse_route_dump(data: bytes, links: Mapping[int, Optional[str]],
             for index, name in links.items()):
         raise RouteDumpUnreadable("the link names are not a mapping of index to name")
     routes = (_route(payload, links)
-              for payload in _payloads(data, _RTM_NEWROUTE, sequence))
+              for payload in _payloads(data, _RTM_NEWROUTE, sequence, port))
     return [route for route in routes if route is not None]
 
 
 # -- the socket ------------------------------------------------------------------
 
 
-def _receive(request: bytes, sequence: int,
-             open_socket: Optional[Callable[[], "_socket.socket"]]) -> bytes:
-    """Send one dump request; every datagram until the dump's end, whole.
+def _sequence() -> int:
+    """A sequence number for one dump, drawn at random (never 0)."""
 
-    Each datagram must hold whole messages: one cut short (a receive buffer
-    too small, `MSG_TRUNC`) is refused, not joined to the next.
+    return secrets.randbelow(0xFFFFFFFE) + 1
+
+
+def _receive(request: bytes, sequence: int,
+             open_socket: Optional[Callable[[], "_socket.socket"]]) -> tuple[bytes, int]:
+    """Send one dump request; every datagram until the dump's end, whole,
+    and this socket's port id.
+
+    Each datagram must come from the kernel (sender port id 0) and arrive
+    whole: one cut short (`MSG_TRUNC`, a receive buffer too small) is
+    refused, not joined to the next.
     """
 
     try:
@@ -581,11 +631,16 @@ def _receive(request: bytes, sequence: int,
     except OSError as exc:
         raise RouteDumpUnreadable("a netlink socket could not be opened") from exc
     try:
+        port = connection.getsockname()[0]
         connection.send(request)
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = connection.recv(_RECEIVE_SIZE)
+            chunk, _ancillary, received, sender = connection.recvmsg(_RECEIVE_SIZE)
+            if received & _socket.MSG_TRUNC:
+                raise RouteDumpUnreadable("a datagram was cut short")
+            if not sender or sender[0] != _KERNEL_PORT:
+                raise RouteDumpUnreadable("a datagram did not come from the kernel")
             if not chunk:
                 raise RouteDumpUnreadable("the socket closed before the dump ended")
             total += len(chunk)
@@ -593,14 +648,16 @@ def _receive(request: bytes, sequence: int,
                 raise RouteDumpUnreadable("the dump exceeds its bound")
             chunks.append(chunk)
             if any(message_type in (_NLMSG_DONE, _NLMSG_ERROR)
-                   or message_sequence != sequence or flags & _NLM_F_DUMP_INTR
-                   for message_type, flags, message_sequence, _ in _messages(chunk)):
+                   or message_sequence != sequence or message_port != port
+                   or flags & _NLM_F_DUMP_INTR
+                   for message_type, flags, message_sequence, message_port, _
+                   in _messages(chunk)):
                 break
     except OSError as exc:
         raise RouteDumpUnreadable("the dump could not be received") from exc
     finally:
         connection.close()
-    return b"".join(chunks)
+    return b"".join(chunks), port
 
 
 def _open_route_socket() -> "_socket.socket":  # pragma: no cover - needs a kernel
@@ -619,9 +676,10 @@ def dump_ipv4_rules(*, open_socket: Optional[Callable[[], "_socket.socket"]] = N
     """`ip -j -4 rule show`, without `protocol`, from the kernel; None when
     the dump cannot be read whole (`forwarding_unreadable`)."""
 
+    sequence = _sequence()
     try:
-        data = _receive(rule_dump_request(), _RULE_SEQUENCE, open_socket)
-        return parse_rule_dump(data)
+        data, port = _receive(rule_dump_request(sequence), sequence, open_socket)
+        return parse_rule_dump(data, sequence=sequence, port=port)
     except RouteDumpUnreadable:
         return None
 
@@ -632,8 +690,9 @@ def dump_main_routes(links: Mapping[int, Optional[str]], *,
     """`ip -j -4 route show table main`, reduced to what `_routes_clear`
     reads, from the kernel; None when the dump cannot be read whole."""
 
+    sequence = _sequence()
     try:
-        data = _receive(route_dump_request(), _ROUTE_SEQUENCE, open_socket)
-        return parse_route_dump(data, links)
+        data, port = _receive(route_dump_request(sequence), sequence, open_socket)
+        return parse_route_dump(data, links, sequence=sequence, port=port)
     except RouteDumpUnreadable:
         return None
