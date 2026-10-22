@@ -693,7 +693,10 @@ def test_a_full_decoy_day_does_not_touch_edge_evidence(running, monkeypatch):
 
 
 def test_decoy_readers_never_take_edges_slots(running):
-    server = running(read_deadline=0.3)
+    # The deadline must outlast opening all the connections: at 0.3 s a
+    # loaded run freed the first slots before the last connects, so the
+    # two expected overload refusals never came.
+    server = running(read_deadline=1.5)
     held = []
     try:
         for _ in range(daemon.DECOY_MAX_CONNECTIONS + 2):
