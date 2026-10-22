@@ -30,7 +30,7 @@ called by nothing (G6 preparations A, C and D, and the v3 decoder):
 | forwarding, K1, routes | `runtime/.../decoy_reachability.py` (`pass_reachability_departures`) | condition 6, forwarding half |
 | masked-and-running units, leftovers | `runtime/.../decoy_residue.py` (`exposure_residue_departures`) | §6.3 G6 item (a) |
 | enforcement exclusivity | `src/azazel_nexus/exposure_exclusivity.py` | §6.2 |
-| scope file | `src/azazel_nexus/decoy_scope.py` (`render_scope_file`) | §4.3 |
+| scope file | `src/azazel_nexus/decoy_scope.py` (`render_scope_file`) | grant §4.3 |
 
 `ActivationController._withholding_reason` still returns
 `isolation_evidence_absent` for the tier on every pass
@@ -61,17 +61,19 @@ Read at `main` 7bdf724.
 | The observe-baseline generation (`observe-baseline-generation/v1`) limits its scope to `ACTIVATION_UNIT_ALLOWLIST` | `src/azazel_nexus/observe_baseline.py` `_scope` |
 | The verified commissioning evidence carries the signed proposal bytes and this boot's inventory | `src/azazel_nexus/commissioning_evidence.py` `CommissioningEvidence` |
 | The controller's unit: root, `CapabilityBoundingSet=CAP_DAC_READ_SEARCH`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`, `ReadWritePaths=-/run/azazel-activation`, no network ordering | `packaging/systemd/azazel-activated.service` |
+| The controller starts no process: in the runtime only `decoy_network.py` may spawn one (`SPAWN_EXEMPT`) | `tests/unit/test_runtime_boundary.py` |
+| What the controller can read: `/proc/sys/net`, the service manager's bus, `/sys/kernel/security`, `/etc/apparmor.d`, `/run/azazel-activation`, and route netlink without a capability; today's netlink reader sends one request, an `RTM_GETLINK` dump | `runtime/src/azazel_nexus_runtime/netlink.py` |
+| A listing of nftables needs `CAP_NET_ADMIN` (nfnetlink checks it per message, a listing included), which the controller does not have | grant §2; the controller's unit above |
 | The helper refuses to build when the bridge or its table already exists (`HELPER_ABSENT`) | `runtime/src/azazel_nexus_runtime/decoy_network.py` |
+| The isolation record accepts `scope_digest` `none`, and the decoy's gate does not compare the digest with anything | `src/azazel_nexus/decoy_isolation.py` (`NO_SCOPE`, `require_isolation_for_decoy`) |
 | The installer compiles the four profiles (`--skip-kernel-load --skip-cache`) and records nothing | `packaging/install.sh` |
 | The kernel's `raw_sha256` equals the SHA-256 of `apparmor_parser -Q -o` output (one VM, parser 4.1.0) | [grant §11](deception-exposure-grant.md#fifth-g4-rehearsal-2026-10-22-vm-mechanism-check-not-hardware-evidence), fifth rehearsal |
 
-*Inferred, to be checked in G6's VM rehearsal (§8):* that `nft -j list
-tables` needs `CAP_NET_ADMIN` (grant §2), so the controller cannot read the
-table; that the Service interface's `AppArmorProfile` is `(bs)`; that
-`ip -j` run by the controller under its sandbox reads the rules, routes,
-namespaces and links without a capability; that a profile compiled by the
-installer still equals the kernel's after a reboot through
-`apparmor.service` and its cache.
+*Inferred, to be checked in G6's VM rehearsal (§8):* that the Service
+interface's `AppArmorProfile` is `(bs)`; that `RTM_GETRULE` and
+`RTM_GETROUTE` dumps need no capability under the controller's sandbox
+(reachability §6, "Reads"); that a profile compiled by the installer still
+equals the kernel's after a reboot through `apparmor.service` and its cache.
 
 ## 3. Invariants
 
@@ -150,11 +152,11 @@ written before G6 keeps withholding.
 | P1 | §5 C1 1: the lease came from a verified v3 approval | `inputs.approval` | type check: exactly `ActivationApprovalV3` naming the three | `exposure_approval_not_v3` (new) |
 | P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_not_init_net_only` |
 | P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced` |
-| P4 | §5 C1 5: no ruleset loader enabled or active | `UnitFileState`, `ActiveState` of `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (bus) | new bus reader (§4.4), `host_firewall_refusal` | `host_firewall_unreadable`, `host_firewall_enabled`, `host_firewall_active` |
-| P5 | §6.3 G6 item (a): no definition-less running unit, no leftovers | `LoadState`, `UnitFileState`, `ActiveState` of the three units (bus); `ip -j netns list`, `ip -j link show` | new bus reader, fixed `ip` reads (§4.4), `decoy_residue.exposure_residue_departures` | `exposure_state_unreadable`, `exposure_unit_masked_running`, `exposure_leftovers_present` |
+| P4 | §5 C1 5: no ruleset loader enabled or active | `UnitFileState`, `ActiveState` of `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (bus) | the bus reads of §4.5, `host_firewall_refusal` | `host_firewall_unreadable`, `host_firewall_enabled`, `host_firewall_active` |
+| P5 | §6.3 G6 item (a): no definition-less running unit, no leftovers | `LoadState`, `UnitFileState`, `ActiveState` of the three units (bus); the entries of `/run/netns`; the links (`RTM_GETLINK`) | the bus reads of §4.5, the `/run/netns` reader, `netlink.read_links`, `decoy_residue.exposure_residue_departures` without the table (§4.4) | `exposure_state_unreadable`, `exposure_unit_masked_running`, `exposure_leftovers_present` |
 | P6 | §5 C1 3: a v3 proposal with a valid scope, its roles resolved to this boot's names | `inputs.evidence` (payload, current inventory) | `fabric_boundary.restore_commissioning_inputs`, `deception_scope_assignments`, `decoy_scope.decode_deception_scope`, `exposure_interfaces.resolve_role_interfaces` | `deception_scope_absent` (new: a v2 proposal), `deception_scope_refused` (new), then `role_evidence_unavailable`, `role_scope_mismatch`, `role_inventory_changed`, `role_interface_unresolved`, `role_interface_ambiguous`, `role_interface_name_refused` |
-| P7 | §5 C1 6, forwarding half (R1, R2, R5) | `/proc/sys/net/ipv{4,6}/conf`; `ip -j -4 rule show`, `ip -j -4 route show table main`; P6's names | `decoy_reachability.read_sysctls`, `pass_reachability_departures`, `reachability_refusal` | `forwarding_unreadable` alone, or the first of `forwarding_ingress_off`, `forwarding_role_on`, `forwarding_host_wide`, `forwarding_other_on`, `forwarding_ipv6_on`, `proxy_arp_on`, `ingress_containment_absent`, `decoy_prefix_routed` |
-| P8 | §4.3: the scope file renders | P6's `DeceptionScope` and ingress names | `decoy_scope.render_scope_file`, `parse_scope_file` (round trip) | `decoy_scope_unrenderable` (new) |
+| P7 | §5 C1 6, forwarding half (R1, R2, R5) | `/proc/sys/net/ipv{4,6}/conf`; the IPv4 rules and the routes of `main` (`RTM_GETRULE`, `RTM_GETROUTE` dumps, §4.4); P6's names | `decoy_reachability.read_sysctls`, the netlink dumps, `pass_reachability_departures`, `reachability_refusal` | `forwarding_unreadable` alone, or the first of `forwarding_ingress_off`, `forwarding_role_on`, `forwarding_host_wide`, `forwarding_other_on`, `forwarding_ipv6_on`, `proxy_arp_on`, `ingress_containment_absent`, `decoy_prefix_routed` |
+| P8 | grant §4.3: the scope file renders | P6's `DeceptionScope` and ingress names | `decoy_scope.render_scope_file`, `parse_scope_file` (round trip) | `decoy_scope_unrenderable` (new) |
 | P9 | §5 C1 2: the generation's exposure section describes this node | the generation's section (§5.1); the unit, watch and profile files measured now; P8's bytes | `exposure_generation.measure_exposure_section_inputs`, `verify_exposure_section` | `exposure_generation_absent` (new: no section), `exposure_files_unreadable` (new), `exposure_generation_differs` (new) |
 | P10 | §5 C1 4, second half: the loaded units name their profiles; the kernel's policy is the compiled one | `LoadState` and `AppArmorProfile` of the four units (bus); `.../apparmor/policy/profiles/*/raw_sha256`; the section's compiled hashes | `decoy_apparmor.loaded_unit_profile_refusal`, `read_policy_hashes`, `policy_hash_refusal` | `lsm_unit_profile_differs`, `lsm_policy_unverifiable`, `lsm_policy_differs` |
 
@@ -164,7 +166,8 @@ Why this order:
   should never fail (a v2 approval cannot name the units); it is there so
   that a later change to the decoders cannot make a v2 lease carry the tier.
 - **P2 to P5** are host facts that need no commissioning material: single
-  `/proc` and `/sys` files, then the bus, then `ip`. A host that is not a
+  `/proc` and `/sys` files, then the bus, then `/run/netns` and one
+  netlink dump. A host that is not a
   decoy host (no AppArmor, a firewall loader enabled) is told so at once.
   P3 is the half of condition 4 that needs nothing from the generation.
 - **P5 before P6**: leftovers are an operator action on this node, not a
@@ -182,38 +185,62 @@ grant; there is no retry loop
 ([reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired),
 "When the pass runs relative to networkd").
 
-### 4.4 The readers G6 adds
+### 4.4 What the controller can read (H1)
 
-Each is read-only and fixed. None is a new authority, but each is new code
-in the controller and is listed so the review can find it.
+The parts were written against the verify unit's inputs: `ip -j` output for
+the rules, the routes, the namespaces and the links, and `nft -j list
+tables` for the table. The controller has neither means. It starts no
+process (only `decoy_network.py` may spawn one), and its bounding set is
+`CAP_DAC_READ_SEARCH` alone, while an nftables listing needs
+`CAP_NET_ADMIN`. What it can read is `/proc/sys/net`, the bus,
+`/sys/kernel/security`, `/etc/apparmor.d`, `/run/azazel-activation`, and
+route netlink without a capability (§2). So each input is placed:
 
-- **Bus reads.** `GetUnitFileState` and the Unit interface's `ActiveState`
-  for the three firewall units (they are not governed units, so the
-  `DbusUnitManager` unit allowlist gains them for reads only, and no write
-  verb accepts them); `LoadState`, `UnitFileState` and `ActiveState` of the
-  three exposure units; the Service interface's `AppArmorProfile` of the four
-  units of `DECOY_APPARMOR_PROFILES`. A unit with no object maps to None only
-  for `NoSuchUnit` from `GetUnit` and the unit-file lookup's not-found;
-  every other error refuses (grant §9, "Open until G6").
-- **Fixed `ip` reads.** Exactly four argument lists, `ip -j -4 rule show`,
-  `ip -j -4 route show table main`, `ip -j netns list`, `ip -j link show`,
-  run as `/usr/bin/ip` with an empty environment, a bounded output and a
-  deadline, by a runner that refuses any other list (the shape of
-  `decoy_network.capture_fixed`). They need `AF_NETLINK`, which the
-  controller has, and no capability (*inferred*, §10 item 5). Why not a
-  netlink parser of Nexus's own: the verify unit reads the same dumps with
-  the same `ip`, so the pass and the verify judge one format
-  (`_rules_exact`).
-- **No table read.** `exposure_residue_departures` also takes
-  `nft -j list tables`. The controller has no `CAP_NET_ADMIN` and gains
-  none, so the pass cannot list the table (*inferred*, §10 item 5). G6
-  changes the residue judgement so that the pass passes no table listing
-  and judges the namespace, the veth end and the bridge only; a leftover
-  table alone is left to the helper, which refuses to build over it
-  (`HELPER_ABSENT`) and so fails its start closed. If the VM shows the
-  listing works without the capability, the table is read as designed.
+| input | option | idea | verdict |
+| --- | --- | --- | --- |
+| (a) the table `inet azazel_decoy` (P5) | A1 | the controller does not read it; the residue judgement takes no table listing and judges the namespace, the veth end and the bridge; a leftover table alone is the helper's to refuse (`HELPER_ABSENT` fails its start closed) | **recommended** |
+| | A2 | a verify-type one-shot with `CAP_NET_ADMIN`, ordered before the controller, records "no table" for this boot and the pass reads the record | a fourth `CAP_NET_ADMIN` holder and a new unit and record for one bit the helper already checks; **not chosen** |
+| | A3 | `CAP_NET_ADMIN` for the controller | a new privilege in the one root daemon that can unmask units; **rejected** |
+| (b) the rules and routes (P7), the links (P5) | B1 | widen `netlink.py`: add read-only `RTM_GETRULE` (IPv4) and `RTM_GETROUTE` (table `main`) dumps beside today's `RTM_GETLINK`, and a parser that yields the same dictionaries `ip -j -4 rule show` and `ip -j -4 route show table main` print, so `_rules_exact` and `_routes_clear` judge both the pass's and the verify's input with one comparison; no capability | **recommended** |
+| | B2 | let the controller spawn `/usr/bin/ip` with fixed argument lists only | a new permission (a second spawning module, an executable in the controller's closure); **owner decision** if B1 is not taken (§9 Q-N) |
+| (c) the namespaces (P5) | C1 | read the entries of `/run/netns` directly (no link followed, bounded), as `ip netns list` does | **recommended**; being implemented in a separate PR |
 
-### 4.5 What the pass records
+**What B1 must hold.** The parser must yield exactly the keys and values
+the verify's `ip -j` output gives for the same kernel objects (the VM's
+dumps of reachability §11 item 8 are the fixtures), or the pass and the
+verify would judge two formats: a selector the parser does not translate
+must make the rule unreadable (`forwarding_unreadable`), never drop out of
+the comparison, which is the flow-label lesson of §10 item 1. A test runs
+both readers over the same recorded objects. B1 is the netlink parser of
+Nexus's own that G2 avoided for the helper; for the controller it is the
+smaller step, because the controller already speaks route netlink
+(`RTM_GETLINK`) and B2 would add process creation.
+
+### 4.5 The bus reads G6 adds (M3)
+
+Read-only, through the controller's existing session; no write verb accepts
+any unit below that it does not already govern.
+
+| read | units | value | absent |
+| --- | --- | --- | --- |
+| the Unit interface's `LoadState` | the three exposure units, and the verify unit (P5, P10) | string | the unit has no object |
+| `GetUnitFileState` | `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (P4); the three exposure units (P5) | string, as given | no unit file |
+| the Unit interface's `ActiveState` | the same six | string, as given | no unit object |
+| the Service interface's `AppArmorProfile` | the four units of `DECOY_APPARMOR_PROFILES`, the verify unit included (P10) | `(bs)` *inferred*, kept as a pair | no unit object |
+
+The three firewall units are not governed, so the reader's unit allowlist
+gains them for these reads only. Errors map to None in exactly two cases:
+`org.freedesktop.systemd1.NoSuchUnit` from `GetUnit` (no unit object: no
+`LoadState`, `ActiveState` or `AppArmorProfile` to read), and
+`org.freedesktop.systemd1.NoSuchUnit` from `GetUnitFileState` (no unit
+file; systemd answers a name it cannot find so, *inferred*, to be read on
+the VM). A firewall unit maps to None as a whole only when both hold
+(`host_firewall_refusal`'s rule). Every other error, a reply of another
+type, or a value outside the closed sets of the parts is unreadable
+(`host_firewall_unreadable`, `exposure_state_unreadable`,
+`lsm_unit_profile_differs`), never None (grant §9, "Open until G6").
+
+### 4.6 What the pass records
 
 `activation.inputs_incomplete` gains `observed_inputs.exposure_evidence`, a
 fixed label: `not_attempted`, `not_in_scope`, `established`, or
@@ -272,8 +299,10 @@ is not what stops cross-schema reuse. It separates the **act**: an operator
 signing an ordinary activation cannot produce an exposure approval by the
 same command, the signer's refusal rules for exposure live in one place, and
 the trust store can later restrict which enrolled keys may sign exposure
-without a new schema. The cost is one enum value and one transcript label.
-Owner decision Q-C (§9).
+without a new schema. The cost is one enum value and one transcript label. The G6-prep
+verifier uses `ACTIVATION`, the purpose of v2; no v3 approval has been
+signed yet, so this is the cheapest moment to change it: afterwards every
+signed v3 would have to be signed again. Owner decision Q-C (§9).
 
 **What the signer may do** (`tools/operator_sign.py`, `--purpose
 activation-exposure`): sign a payload only if it is a well-formed canonical
@@ -342,9 +371,19 @@ four compiled-policy digests.
 The record is an input of `generation-publish`, never of the pass. The
 pass trusts only what the operator signed: the section in the generation.
 
+**What `scope_digest` is (L3).** Grant §4.4 item 5 said "the decoded
+scope" (its wording is corrected with this document); what `exposure_generation` digests is the **rendered scope file's
+bytes** (`decoy_scope.parse_scope_file(...).scope_digest`), the file that
+carries this boot's ingress names. So the publisher cannot digest the
+proposal's section: it must render exactly the file the pass will render,
+with the same resolution.
+
 **`az-activation generation-publish`**, when the policy names the tier:
-collects the verified commissioning evidence (as now), runs P6 and P8 to
-render the scope bytes in memory, measures the files with
+collects the verified commissioning evidence (as now), decodes the
+proposal's `deception_scope`, resolves the roles with
+`resolve_role_interfaces` over the same evidence and this boot's inventory,
+and renders the file with `render_scope_file` (P6 and P8, the same
+functions the pass calls, in memory), measures the files with
 `measure_exposure_section_inputs`, reads the compiled record (root's, one
 link, no link followed, bounded), builds the section, and prints, before
 the typed confirmation, the scope digest, the number of prefixes and
@@ -416,12 +455,28 @@ Any other exposure grant removes the markers and the scope file, masks
 every governed unit and raises, as today. The existing checks (lease and
 health, scope, edge-core's evidence) are unchanged.
 
-**The decoy and the record.** Grant §9's G6 row asks that an isolation
-record whose `scope_digest` is `none` (a helper run without a scope) is
-refused. The decoy (`decoyd.py`, `decoy_isolation.py`) gains that refusal:
-under its unit the helper always has the credential, so `none` means a run
-outside the unit. Whether the decoy should also compare the record's digest
-with the pass's file is §10 item 6.
+**The decoy and the record (M4).** Grant §9's G6 row asks that an
+isolation record whose `scope_digest` is `none` be refused, and that a
+granted decoy require the digest of the scope the pass rendered. Today
+`decoy_isolation` accepts `none` and `require_isolation_for_decoy` compares
+the digest with nothing. G6 makes the decoy refuse `none` and compare the
+record's digest with the pass's. The decoy must then learn that digest; two
+ways:
+
+| option | idea | unit file bytes | generation |
+| --- | --- | --- | --- |
+| D1 | `azazel-decoyd.service` gains `LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json`; the decoy reads its own credential path by the helper's rules and digests the bytes | one line added to the decoy's rendered unit; the hardening check that keeps the credential to the helper and the verify unit admits the decoy; its AppArmor profile gains a read of its credential path | the decoy's unit file digest and its profile file digest change, and with the profile its compiled hash |
+| D2 | the pass also writes `/run/azazel-activation/decoy-scope.digest` (`sha256:<hex>\n`, root `0644`, written and removed with the scope file), delivered as `LoadCredential=decoy-scope-digest:/run/azazel-activation/decoy-scope.digest`; the decoy compares the record with it | one line added to the decoy's rendered unit; a new credential name the hardening check admits for the decoy only; the profile gains a read of that path | as D1; and the pass writes, resets and reads back a second file |
+
+Either way a missing source fails the decoy's start (closed), the decoy
+reads an immutable snapshot for its whole run, and the change lands in G6
+together with the first exposure generation, so no signed generation has
+to be replaced. **Recommended: D2.** The decoy is the least privileged of
+the units and the one that talks to peers; D1 would hand it the approved
+prefixes and the ingress names, which it never needs, while D2 hands it
+only a digest. The cost is one more file in the pass's write and reset
+(§5.3 steps 1 to 3 apply to both files, the digest file written after the
+scope file and before the markers).
 
 ## 7. Tests G6 carries
 
@@ -460,13 +515,19 @@ style of `tests/unit/test_runtime_activation_pass.py`):
 8. **Scope file.** Removed at the start of every pass (also a stale
    temporary); a non-regular object at the name refuses the pass; written
    only on a grant; a failed write or read back narrows everything and
-   removes markers and file; never written when the tier is withheld.
+   removes markers and file; never written when the tier is withheld; the
+   same for the digest file of D2 (§6), and the decoy refusing a record
+   whose `scope_digest` is `none` or differs from its credential.
 9. **Tripwire.** Each condition of §6 violated alone (a partial grant, a v2
    approval, evidence with a refusal, another generation, no scope digest, a
    rolled-back pass, a read back that differs) narrows everything.
-10. **Readers.** The bus reader's None only for `NoSuchUnit` and not-found;
-    the `ip` runner refuses any other argument list and any environment; the
-    residue judgement without a table listing.
+10. **Readers.** The bus reads of §4.5, None only for the two
+    `NoSuchUnit` cases and every other error unreadable; the netlink rule and
+    route dumps (B1) yield, over the VM's recorded objects, exactly what the
+    verify's `ip -j` reading yields, and a rule attribute the parser does
+    not know makes the dump unreadable; the controller still spawns nothing
+    (`SPAWN_EXEMPT` unchanged); `/run/netns` read without following a link;
+    the residue judgement without a table listing (A1).
 11. **Boundaries.** The library still imports no runtime module; the
     controller's unit file gains no capability, address family or writable
     path (only, if §10 item 3 is decided, an `After=`); the import-closure
@@ -547,9 +608,11 @@ a reboot.
 
 6. **Restore** each change and reboot: the tier is granted again (boot 1)
    and starts (boot 2).
-7. **Inferred items of §2** recorded as observed: the `ip` reads and the bus
-   reads under the controller's sandbox; whether `nft -j list tables` works
-   without `CAP_NET_ADMIN` (§10 item 5); the `AppArmorProfile` value's form; the
+7. **Inferred items of §2** recorded as observed: the netlink dumps, the
+   `/run/netns` read and the bus reads under the controller's sandbox; the
+   rules and routes read by the pass equal, key for key, what the verify's
+   `ip -j` prints on the same host; `GetUnitFileState`'s answer for a unit
+   with no file; the `AppArmorProfile` value's form; the
    kernel hash after a reboot through `apparmor.service`'s cache; the
    controller's timing against networkd (§10 item 3).
 
@@ -572,13 +635,22 @@ a reboot.
   the owner's question. Under B0 the cost is the state the second G4
   rehearsal showed (a unit masked and running until the trip or the
   operator stops it), reported by the failed pass.
-- **Q-C. A dedicated `ApprovalPurpose`** (§5.1). Recommended: yes,
-  `ACTIVATION_EXPOSURE`. Declined, v3 verifies under `ACTIVATION` as the
-  G6-prep verifier does.
+- **Q-C. A dedicated `ApprovalPurpose`** (§5.1, L4). The v3 verifier as
+  built signs under `ACTIVATION`, the same purpose as v2. No v3 approval has
+  been signed yet, so changing it now costs nothing to migrate; after the
+  first signed v3 it costs a re-signing. Recommended: yes,
+  `ACTIVATION_EXPOSURE`. Declined, v3 verifies under `ACTIVATION`.
+- **Q-N. How the controller reads the rules and routes** (§4.4 H1 (b)).
+  Recommended B1, read-only `RTM_GETRULE` and `RTM_GETROUTE` dumps in
+  `netlink.py`: no new permission, so nothing for the owner to grant. Only
+  if B1 is declined does the owner decide B2, a permission for the
+  controller to spawn `/usr/bin/ip` with fixed argument lists, which is new.
 
 Also for the owner, with recommended defaults that only narrow:
 
 - **Q-V. The exposure fields in v3** (§5.1): recommended V2.
+- **Q-D. How the decoy learns the scope digest** (§6, M4): recommended D2.
+- **Q-A. The table at the pass** (§4.4 H1 (a)): recommended A1.
 - **Q-E. Exclusivity as a withhold** (§4.2 L2) rather than refusing the
   controller's construction: recommended, so the other tiers keep their
   verdicts.
@@ -620,15 +692,15 @@ Also for the owner, with recommended defaults that only narrow:
    whether K1 is installed before the link forwards, at boot and after a
    link flap, and how long the ingress forwards without K1 when the name pin
    fails. Part of R6.
-5. **The table listing at the pass** (§4.4): if `nft` needs
-   `CAP_NET_ADMIN` for a listing, the pass judges leftovers without the
-   table and relies on the helper's `HELPER_ABSENT`.
-6. **The decoy and the pass's scope.** The decoy refuses a record with
-   `scope_digest` `none` (§6). Comparing the record's digest with the
-   pass's file would need the decoy to read a root `0600` file or a second,
-   readable digest file under `/run/azazel-activation`; the verify already
-   compares the live table with the scope every period. Proposed: no second
-   file; revisit if `HG-06` shows a gap.
+5. **The table at the pass** (§4.4 A1): the pass judges leftovers without
+   the table and relies on the helper's `HELPER_ABSENT`. A leftover table
+   with no leftover bridge therefore grants the tier and fails the helper's
+   start in the next boot, which is closed but is noticed later than at the
+   pass; the operator's procedure for a crash already removes it
+   (reachability §8 item 4).
+6. **The decoy and the pass's scope** are decided in §6 (M4); what stays
+   open is only the VM check that the credential reaches the decoy under
+   its profile.
 7. **Evidence is a statement, not a proof.** `ExposureEvidence`, like
    `EdgeBaselineState`, could be constructed by any caller of `activate`.
    The production caller is the pass, and the tripwire re-checks the

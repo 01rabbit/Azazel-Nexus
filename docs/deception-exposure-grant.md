@@ -248,8 +248,11 @@ the design decision F2 asks for.
    generation metadata and the approval already carry. In addition the
    generation gains an exposure section: the digests of the exposure unit
    files (the three, and the verify and trip units of §6), of the AppArmor
-   profiles of §7, and of the decoded scope (`scope_digest`). The operator's
-   signer prints the scope digest and the number of prefixes and interfaces
+   profiles of §7, and of the rendered scope file (`scope_digest`, the
+   SHA-256 of the file's bytes, which carry this boot's ingress names; the
+   publisher renders the same file as the pass,
+   [wiring §5.2](deception-exposure-wiring.md#52-the-generations-exposure-section)).
+   The operator's signer prints the scope digest and the number of prefixes and interfaces
    before signing. A new generation schema version is needed (the current
    one is named observe-baseline); its name is an implementation choice.
    The section's computation and comparison are **implemented, not wired**
