@@ -8,8 +8,9 @@ withhold or stop, and are adopted as defaults the owner may overturn; R1, R2,
 R4 and R5 are required before G6. R6, the reading of commissioning §2, is
 **open** and returned to the owner. The pass's part lands in G6; the
 re-reading (R4) is implemented in G2 as far as
-[grant §6.3](deception-exposure-grant.md#63-g2-as-implemented) says, the
-exact rule attributes waiting for the VM (§11 item 8).**
+[grant §6.3](deception-exposure-grant.md#63-g2-as-implemented) says, its
+rules compared whole by the pass's comparison, fixed from networkd's dump on
+the VM (§11 item 8).**
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §4.5, §5, §6, §10 Q11) ·
 [Deception Lite prerequisites](deception-redirect-prerequisites.md) (§10, §13,
@@ -281,7 +282,9 @@ order. **Nothing calls it**: `_withholding_reason` still withholds the tier
 as `isolation_evidence_absent` on every pass, and a test fails the day the
 pass, the controller or the library imports the module. The reads and the
 verify's judgement (R4) moved into the same module (`decoy_watch` re-exports
-them; the verify's behaviour is G2's). What the pass's judgement adds to the
+them; the verify's behaviour is G2's but for the rules, which it compares
+with the pass's one comparison, `_rules_exact`, since #196 R4's remainder).
+What the pass's judgement adds to the
 verify's, as this section states it: the roles (`forwarding_role_on`; a role
 interface that forwards gives that code, not `forwarding_other_on`);
 `az-decoy0` is not exempt; no route inside `10.255.196.0/24` at all; every
@@ -289,22 +292,43 @@ name passes the scope's rule (`decoy_scope.interface_name_allowed`, which
 refuses `.`, `..`, `all`, `default` and `lo`) and its path under `conf/` has
 that directory as its exact parent (`conf_entry_path`), with 1 to 4 ingress
 names and no name in two places, or the whole judgement is
-`forwarding_unreadable` alone; and the rules are compared **whole**: each
-rule below 32766, with `protocol` left out, must equal the local rule or one
-rule of an ingress's K1 pair key for key, as iproute2 6.15 prints rules
-added by `ip rule` (container-checked), so any other selector or flag (`not`,
-`srclen`, `oif`, `fwmark`, `tos`, `uid_start`, `l3mdev`, `ipproto`, ports,
-`goto`, `tun_id`, `suppress_ifgroup`, `flow_to`, `iif_detached`) fails.
-At priority 32766 itself there must be exactly one rule, `from all lookup
-main` compared the same way: rules of equal priority are tried in the order
-they were added, so a second rule there could act before `main` (review of
-#293; the verify's G2 comparison does not read that priority). An argument
+`forwarding_unreadable` alone.
+
+**The rules, one comparison for the pass and the verify**
+(`decoy_reachability._rules_exact`, R2 and R4). The rules are compared
+**whole**: each rule below 32766, with `protocol` left out, must equal the
+local rule or one rule of an ingress's K1 pair key for key (keys, values and
+their JSON types), and the lists must be equal as multisets (none missing,
+none extra, none twice). The expected rules are those `ip -j -4 rule show`
+prints, observed on the VM (§11 item 8):
+
+- the lookup rule (1960), the same whether networkd or `ip rule add` made
+  it: `{"priority":1960,"src":"all","dst":"10.255.196.0","dstlen":30,"iif":"<if>","table":"main","suppress_prefixlen":29}`;
+- the discard rule (1961), in **two complete forms only**: with no table
+  (`ip rule add`, `{"priority":1961,"src":"all","iif":"<if>","action":"blackhole"}`)
+  or with `"table":"main"` (networkd 257 prints its `Type=blackhole` rule
+  this way); any other table (`local`, `default`, a number, a value of
+  another JSON type) is refused;
+- `protocol` is never compared: networkd's rules print `"protocol":"static"`
+  even without `-d`, and with `-d` the defaults print `"protocol":"kernel"`
+  and rules added by `ip rule` `"protocol":"unspec"`.
+
+So any other selector or flag (`not`, `srclen`, `oif`, `fwmark`, `tos`,
+`dscp`, `uid_start`, `l3mdev`, `ipproto`, ports, `goto`, `tun_id`,
+`suppress_ifgroup`, `flow_to`, `iif_detached`) fails. At priority 32766
+itself there must be exactly one rule, `from all lookup main` compared the
+same way: rules of equal priority are tried in the order they were added, so
+a second rule there could act before `main` (review of #293). The verify
+compares the rules exactly so, with the scope's ingress (without a scope,
+only the local rule may come before `main`); its differences from the pass
+(`az-decoy0` exempt from `forwarding_other_on`, the bridge's connected /30
+accepted) are in the forwarding and route rows, not in the rules. Stricter
+than G2's comparison, it trips on more; that is the closed side. An argument
 of another shape (a name that is not a string, a dump that is not
 `(int, bytes)`, a tree that is not `{str: {str: int | None}}`) is
 `forwarding_unreadable` alone and never an exception.
-*Still open:* the attribute set of networkd's rules on the VM (§11 item 8)
-may differ and is compared before G6 is wired; and the flow label on the
-target kernel, at the head of this section.
+*Still open:* the flow label on the target kernel, at the head of this
+section.
 
 **Interfaces.** The ingress names come from the `deception_bridge` role, and
 the `management` and `observation` names from their roles, resolved exactly
@@ -344,7 +368,7 @@ design's defaults, R1, R2 and R5 of §9, required before G6):
 | every other interface present, except the ingress (and, in the verify, `az-decoy0`) (R1) | `forwarding` is `0` | `forwarding_other_on` |
 | IPv6 `conf.all`, `conf.default` and every interface (R5) | `forwarding` is `0` | `forwarding_ipv6_on` |
 | `conf.all` and every ingress interface (R1) | `proxy_arp` is `0` | `proxy_arp_on` |
-| the IPv4 rules (R2) | every rule with a priority below 32766 is either the local rule (priority 0, `lookup local`, no selector) or one of the K1 pair of a resolved ingress interface, matching it exactly: priority, `iif`, destination, table, action, `suppress_prefixlength`, and no other selector (no source, `oif`, `fwmark`, `tos`, `uidrange`, `l3mdev`, IP protocol or port selector); each ingress has exactly its pair | `ingress_containment_absent` |
+| the IPv4 rules (R2) | every rule with a priority below 32766 is either the local rule (priority 0, `lookup local`, no selector) or one of the K1 pair of a resolved ingress interface, matching it exactly: priority, `iif`, destination, table, action, `suppress_prefixlength`, and no other selector (no source, `oif`, `fwmark`, `tos`, `dscp`, `uidrange`, `l3mdev`, IP protocol or port selector); the discard rule with no table or with table `main` (networkd's form), no other; `protocol` not compared; each ingress has exactly its pair; at 32766 exactly `from all lookup main`. The pass and the verify alike | `ingress_containment_absent` |
 | the routes of `main` (R2) | no route inside `10.255.196.0/24` (at the pass, before the bridge exists, none at all; in the verify, only the connected `10.255.196.0/30 dev az-decoy0`) | `decoy_prefix_routed` |
 | any read above | readable, in the closed form | `forwarding_unreadable` |
 
@@ -509,6 +533,19 @@ applies again), and installs them again only after commissioning closes.
    earlier and matches the ingress, this one is ignored and forwarding stays
    `0`, so the pass withholds (it fails closed). The pinned name is chosen
    not to collide with a kernel-assigned one and passes the name check of §6.
+
+   *Observed on the VM* (Debian 13, kernel 6.12, iproute2 6.15,
+   systemd-networkd 257, these two `[RoutingPolicyRule]` sections and
+   `IPv4Forwarding=yes` on a dummy link; a mechanism check, not hardware
+   evidence, §11 item 8): networkd made exactly the two rules of §5, printed
+   by `ip -j -4 rule show` with `"protocol":"static"` and the discard rule
+   with `"table":"main"`, the forms the comparison of §6 accepts (pinned by
+   `tests/unit/test_decoy_reachability.py`); `IPv4Forwarding=yes` set only
+   that link's `forwarding` to `1`, with `conf.all`, `conf.default`, every
+   other link and IPv6 left at `0`; after `networkctl reload` the rules were
+   still there. *Not established:* in which order networkd installs the rules
+   and turns the link's forwarding on (the journal did not show it), so the
+   window of §5 at boot and after a link flap is still to measure.
 3. **On the node, the bridge's forwarding**:
 
    ```
@@ -557,13 +594,13 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
    `AF_NETLINK`) and trips on a departure. *Required in G2, and part of the
    grant condition in G6.* **Implemented in G2**
    ([grant §6.3](deception-exposure-grant.md#63-g2-as-implemented)), with
-   two differences from the table of §6: the verify has the ingress from
-   the scope and not the management and observation roles, so
-   `forwarding_role_on` stays the pass's and those interfaces are covered by
-   `forwarding_other_on`; and the rules are compared down to priority, `iif`
-   and the K1 pair's defining attributes (`dst`/`dstlen`, table,
-   `suppress_prefixlen`, `blackhole`), the full attribute set and "no other
-   selector" waiting for §11 item 8 (G6). The dumps are read with two fixed
+   one difference from the table of §6 besides `az-decoy0` and its /30: the
+   verify has the ingress from the scope and not the management and
+   observation roles, so `forwarding_role_on` stays the pass's and those
+   interfaces are covered by `forwarding_other_on`. The rules are compared
+   whole, by the pass's own comparison (§6; G2 compared only priority, `iif`
+   and the K1 pair's defining attributes, and the rest waited for §11 item 8,
+   now observed). The dumps are read with two fixed
    `ip -j` commands, not a netlink parser of Nexus's own.
 5. **R5.** IPv6 forwarding off on `all`, `default` and every interface (the
    decoy is IPv4 only, and K1 does not cover IPv6). *Required before G6.*
@@ -629,8 +666,8 @@ The gate's claim and record format stay as in
    verify's JSON keys (`priority`, `iif`, `dst`, `dstlen`, `table`,
    `suppress_prefixlen`, `action`; routes' `dst`, `dev`, `gateway`,
    `nexthops`, `type`) are what Debian 13's iproute2 prints for networkd's
-   rules (container-checked with iproute2 6.15 and rules added by `ip rule`,
-   not by networkd);
+   rules (container-checked with iproute2 6.15 and rules added by `ip rule`;
+   networkd's rules observed on the VM in item 8);
 8. systemd-networkd 257 on Debian 13: per-link `IPv4Forwarding=yes` sets
    only that link's value; `IPForward=` and `IPMasquerade=` turn on host-wide
    forwarding; `[RoutingPolicyRule]` accepts `Table=main` and produces
@@ -639,7 +676,29 @@ The gate's claim and record format stay as in
    `protocol`) are recorded, and the comparison of §6 is fixed from them;
    **whether the rules are installed before the link's forwarding is turned
    on**, at boot and after `networkctl reload` and a link down/up; whether a
-   reload or link flap removes the rules for a moment (the verify's window);
+   reload or link flap removes the rules for a moment (the verify's window).
+   **Observed** (2026-10-23, VM: Debian 13, kernel 6.12, iproute2 6.15,
+   networkd 257, the `.network` of §8 on a dummy link; a mechanism check,
+   not hardware evidence):
+   - `ip -j -4 rule show` (no `-d`) printed
+     `{"priority":1960,"src":"all","dst":"10.255.196.0","dstlen":30,"iif":"<if>","table":"main","suppress_prefixlen":29,"protocol":"static"}`
+     and
+     `{"priority":1961,"src":"all","iif":"<if>","table":"main","action":"blackhole","protocol":"static"}`;
+     the local, main and default rules print `"protocol":"kernel"` only with
+     `-d`. Against rules added with `ip rule add`, two differences: the
+     discard rule carries `"table":"main"`, and `protocol` is printed
+     without `-d`. The comparison of §6 was fixed from this: `protocol` is
+     never compared, and the discard rule is accepted with no table or with
+     table `main` and nothing else; the pass and the verify share it, and
+     both accept networkd's rules and the rehearsal's `ip rule add` rules;
+   - `IPv4Forwarding=yes` set only that link's `forwarding` to `1`;
+     `conf.all`, `conf.default`, the other links and IPv6 stayed `0`;
+   - after `networkctl reload` the rules were still there;
+   - **not established**: the order in which the rules and the link's
+     forwarding are set (the journal did not show it), at boot and after a
+     link down/up, and whether a link flap removes the rules for a moment;
+     still to check; this observation does not cover `IPForward=` and
+     `IPMasquerade=`;
 9. a replacement NIC that takes the ingress's kernel name does not match the
    `.network` file, keeps forwarding `0`, and the pass withholds;
 10. **name swaps**: with the `.link` pin, and with the pin made to fail (its

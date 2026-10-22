@@ -30,12 +30,12 @@ scope-less mode: no credential directory compares nothing and exits 1.
    the scope, and not the management and observation ones, so "off on those
    roles" is covered by "off on every interface but the ingress and the
    bridge" (`forwarding_other_on`); the pass of G6 reads the roles.
-   The routing rules are checked as far as G2 goes: below the main table's
-   priority there is exactly the local rule and, per ingress, the K1 pair
-   with its defining attributes (destination, table, `suppress_prefixlength`,
-   `blackhole`). That no rule carries another selector, and the exact
-   attribute set, wait for the dump observed on the VM (reachability §11
-   item 8) and are G6's.
+   The routing rules are compared whole, by the pass's one comparison
+   (`decoy_reachability._rules_exact`): below the main table's priority
+   exactly the local rule and, per ingress, the K1 pair, attribute for
+   attribute as `ip -j` prints them (`protocol` left out; the discard rule
+   with no table or with table `main`, networkd's form), no other selector,
+   and exactly one rule at priority 32766, `from all lookup main`.
 
 **What it says.** One journal line of fixed check names and fixed reason
 codes, never an interface name, a prefix, an address or a value.
@@ -52,7 +52,8 @@ from .decoy_isolation_check import evaluate
 from .decoy_network import HELPER_VERIFY, Capture, capture_fixed, verify_plan
 # The reads and judgements of reachability §6 live in `decoy_reachability`
 # (#196 G6 preparation A), shared with the pass's judgement there; the
-# verify's names are re-exported here and its behaviour is G2's.
+# verify's names are re-exported here and its behaviour is G2's but for the
+# rules, now compared by the pass's comparison (#196 R4).
 from .decoy_reachability import (
     DECOY_PREFIX_ROUTED,
     FORWARDING_HOST_WIDE,
@@ -64,7 +65,7 @@ from .decoy_reachability import (
     IPV6_ABSENT,
     PROXY_ARP_ON,
     REACHABILITY_CODES,
-    _rules_contained,  # noqa: F401 - the G2 tests (#287 F3) call it through here
+    _rules_exact,  # noqa: F401 - the G2 tests (#287 F3) call it through here
     reachability_departures,
     read_sysctls,
 )
