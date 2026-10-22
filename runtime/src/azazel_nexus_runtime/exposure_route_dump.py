@@ -61,8 +61,8 @@ out of the comparison. The pass maps it to `forwarding_unreadable`.
 
 ## Who answered
 
-Every datagram must come from the kernel (sender port id 0, read with
-`recvmsg`) and arrive whole (no `MSG_TRUNC`); every message must carry this
+Every datagram must come from the kernel (sender address `(0, 0)`: port id
+0 and no multicast group, read with `recvmsg`) and arrive whole (no `MSG_TRUNC`); every message must carry this
 socket's own port id (`getsockname`) and the request's sequence number,
 which is drawn at random for each dump. A local process that unicasts a
 forged dump to this socket's port is refused by the first check; the other
@@ -107,8 +107,9 @@ _NLM_F_DUMP_INTR = 0x010
 _FAMILY_IPV4 = 2
 _HOST_LEN = 32
 
-#: The kernel's port id: the only sender a reply is accepted from.
-_KERNEL_PORT = 0
+#: The kernel's port id and no multicast group: the only sender address a
+#: reply is accepted from.
+_KERNEL_ADDRESS = (0, 0)
 
 _HEADER = struct.Struct("=IHHII")
 #: `struct fib_rule_hdr` and `struct rtmsg` share one layout.
@@ -144,11 +145,22 @@ _RULE_ATTRIBUTES = frozenset({
 
 _FIB_RULE_PERMANENT, _FIB_RULE_INVERT, _FIB_RULE_UNRESOLVED = 0x1, 0x2, 0x4
 _FIB_RULE_IIF_DETACHED, _FIB_RULE_OIF_DETACHED = 0x8, 0x10
-#: `FIB_RULE_PERMANENT` is set by the kernel on its three default rules (it
-#: forbids deleting them) and is not printed by `ip`. A request may set it on
-#: any rule too, so it is accepted only on a rule that reads exactly as one
-#: of the defaults (`_DEFAULT_RULES`); on any other rule it is a flag `ip`
-#: hides, and the dump is unreadable.
+#: `FIB_RULE_PERMANENT` forbids deleting a rule and is not printed by `ip`.
+#: The kernel does not set it on its three IPv4 default rules (the recorded
+#: dumps carry flags 0 on them), but a request may set it on any rule. It is
+#: accepted only on a rule that reads exactly as one of the defaults
+#: (`_DEFAULT_RULES`) and carries no attribute but its priority and table
+#: (`_PERMANENT_ATTRIBUTES`): an attribute parsed and dropped (`protocol`,
+#: the padding, a suppressor `ip` does not print) could tell an undeletable
+#: rule apart from the default it reads as, and the comparison would not see
+#: it. On any other rule it is a flag `ip` hides, and the dump is unreadable.
+#: No real kernel sends the accepted shape: the IPv4 defaults carry flags 0,
+#: and a kernel sends `FRA_SUPPRESS_PREFIXLEN` (and, since 4.17,
+#: `FRA_PROTOCOL`) with every rule. So in practice a permanent rule in a real
+#: dump -- which only a request can make -- is refused; on an older kernel
+#: whose rules carried fewer attributes, any permanent rule outside this
+#: shape is refused as well (closed).
+_PERMANENT_ATTRIBUTES = frozenset({_FRA_PRIORITY, _FRA_TABLE})
 _RULE_FLAGS = (_FIB_RULE_PERMANENT | _FIB_RULE_INVERT | _FIB_RULE_UNRESOLVED
                | _FIB_RULE_IIF_DETACHED | _FIB_RULE_OIF_DETACHED)
 
@@ -471,6 +483,9 @@ def _rule(payload: bytes) -> dict:
         raise RouteDumpUnreadable("a rule carries an action this reader does not know")
     if flags & _FIB_RULE_PERMANENT and rule not in _DEFAULT_RULES:
         raise RouteDumpUnreadable("a rule other than a default one is marked permanent")
+    if flags & _FIB_RULE_PERMANENT and set(attributes) - _PERMANENT_ATTRIBUTES:
+        raise RouteDumpUnreadable(
+            "a rule marked permanent carries an attribute the comparison drops")
     return rule
 
 
@@ -621,7 +636,7 @@ def _receive(request: bytes, sequence: int,
     """Send one dump request; every datagram until the dump's end, whole,
     and this socket's port id.
 
-    Each datagram must come from the kernel (sender port id 0) and arrive
+    Each datagram must come from the kernel (sender address `(0, 0)`) and arrive
     whole: one cut short (`MSG_TRUNC`, a receive buffer too small) is
     refused, not joined to the next.
     """
@@ -639,7 +654,7 @@ def _receive(request: bytes, sequence: int,
             chunk, _ancillary, received, sender = connection.recvmsg(_RECEIVE_SIZE)
             if received & _socket.MSG_TRUNC:
                 raise RouteDumpUnreadable("a datagram was cut short")
-            if not sender or sender[0] != _KERNEL_PORT:
+            if tuple(sender or ()) != _KERNEL_ADDRESS:
                 raise RouteDumpUnreadable("a datagram did not come from the kernel")
             if not chunk:
                 raise RouteDumpUnreadable("the socket closed before the dump ended")

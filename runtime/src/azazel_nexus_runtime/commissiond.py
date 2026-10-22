@@ -15,7 +15,7 @@ from pathlib import Path
 from azazel_nexus.commissioning import describe_for_operator
 from azazel_nexus.inventory import InterfaceReadout, read_interfaces
 
-from .netlink import LinkRecord, NetlinkUnavailable, read_links
+from .netlink import LinkRecord, NetlinkMalformed, NetlinkUnavailable, read_links
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import (
     Argument,
@@ -220,7 +220,10 @@ class CommissionService:
     def snapshot(self) -> Snapshot:
         try:
             return build_snapshot(sysfs=self.sysfs, read_links_fn=self.read_links_fn)
-        except NetlinkUnavailable as exc:
+        except (NetlinkUnavailable, NetlinkMalformed) as exc:
+            # A dump that cannot be read whole (a forged, interrupted or cut
+            # reply, #310) is refused as a missing one is: never an inventory,
+            # and not retried here.
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "netlink") from exc
 
     def handle(self, request) -> dict:

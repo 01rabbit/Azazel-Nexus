@@ -331,6 +331,55 @@ def test_an_ordinal_beyond_the_declared_ceiling_never_reaches_the_daemon():
         )
 
 
+@pytest.mark.parametrize("verb, arguments", [
+    ("commission.inventory", {}),
+    ("commission.permanent_mac", {"snapshot": "sha256:" + "0" * 64, "ordinal": 0}),
+])
+def test_an_interrupted_link_dump_is_a_refusal(tmp_path, monkeypatch, verb, arguments):
+    """A dump `read_links` cannot read whole (here `NLM_F_DUMP_INTR` on a
+    later datagram, #310) raises `NetlinkMalformed`; the service refuses,
+    as it does a missing dump, so the transport replies with a refusal."""
+
+    import struct
+
+    from azazel_nexus_runtime import netlink
+
+    header = struct.Struct("IHHII")
+    seq, port = 7, 4242
+
+    def message(kind, flags, body):
+        return header.pack(header.size + len(body), kind, flags, seq, port) + body
+
+    link = message(16, 0x2, struct.pack("BBHiII", 0, 0, 1, 1, 0, 0))
+    interrupted = message(16, 0x2 | 0x10, struct.pack("BBHiII", 0, 0, 1, 2, 0, 0))
+    done = message(3, 0x2, b"\x00" * 4)
+
+    class Fake:
+        def __init__(self):
+            self.datagrams = [link, interrupted, done]
+
+        def getsockname(self):
+            return (port, 0)
+
+        def send(self, payload):
+            return len(payload)
+
+        def recvmsg(self, size):
+            return self.datagrams.pop(0), [], 0, (0, 0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(netlink, "_sequence", lambda: seq)
+    service = CommissionService(
+        sysfs=_tree(tmp_path),
+        read_links_fn=lambda: netlink.read_links(open_socket=Fake),
+    )
+    with pytest.raises(RequestRefused) as refused:
+        service.handle(_request(verb, arguments))
+    assert isinstance(refused.value.__cause__, netlink.NetlinkMalformed)
+
+
 def test_a_netlink_failure_is_a_refusal_rather_than_an_empty_inventory(tmp_path):
     """Reporting no interfaces would be a sentence an operator acts on."""
 

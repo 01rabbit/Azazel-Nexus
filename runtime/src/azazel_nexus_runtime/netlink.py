@@ -46,10 +46,23 @@ described.
 
 *One interface has no permanent address* — a record with a reason. That is
 the normal state of a bridge, a tunnel or a loopback, and it is not an error.
+
+## Who answered (#310)
+
+A reply is read only if the kernel sent it, whole, for this request. Every
+datagram must come from the kernel (sender address `(0, 0)`: port id 0, no
+multicast group, read with `recvmsg`) and arrive whole (no `MSG_TRUNC`);
+every message up to `NLMSG_DONE` must carry this socket's own port id
+(`getsockname`) and the request's sequence number, drawn at random for each
+dump, and must not be marked interrupted (`NLM_F_DUMP_INTR`). A dump with no
+`NLMSG_DONE` is not whole either. Each of these is `NetlinkMalformed`, as a
+malformed buffer is: no interface is reported from it. The request is still
+the one `RTM_GETLINK` dump, and nothing new is kept.
 """
 
 from __future__ import annotations
 
+import secrets
 import socket as _socket
 import struct
 from dataclasses import dataclass
@@ -78,6 +91,11 @@ _NLMSG_DONE = 3
 
 _NLM_F_REQUEST = 0x001
 _NLM_F_DUMP = 0x300
+_NLM_F_DUMP_INTR = 0x010
+
+#: The only sender a reply is accepted from: the kernel's port id, no group.
+_KERNEL_ADDRESS = (0, 0)
+_RECEIVE_SIZE = 65536
 
 IFLA_IFNAME = 3
 IFLA_PERM_ADDRESS = 54
@@ -127,7 +145,7 @@ class LinkRecord:
             )
 
 
-def build_dump_request(sequence: int = 1) -> bytes:
+def build_dump_request(sequence: int) -> bytes:
     """The one message this module sends: `RTM_GETLINK`, dump, request."""
 
     body = _IFINFO.pack(_socket.AF_UNSPEC, 0, 0, 0, 0, 0)
@@ -141,8 +159,9 @@ def build_dump_request(sequence: int = 1) -> bytes:
     return header + body
 
 
-def _messages(data: bytes) -> Iterator[tuple[int, bytes]]:
-    """Walk the buffer, yielding `(type, payload)` and refusing nonsense."""
+def _messages(data: bytes) -> Iterator[tuple[int, int, int, int, bytes]]:
+    """Walk the buffer, yielding `(type, flags, sequence, port id, payload)`
+    and refusing nonsense."""
 
     offset = 0
     while offset < len(data):
@@ -151,7 +170,7 @@ def _messages(data: bytes) -> Iterator[tuple[int, bytes]]:
                 f"a message header starts at {offset} and the buffer ends at "
                 f"{len(data)}"
             )
-        length, message_type, _flags, _seq, _pid = _HEADER.unpack_from(data, offset)
+        length, message_type, flags, sequence, port = _HEADER.unpack_from(data, offset)
         if length < _HEADER.size:
             raise NetlinkMalformed(
                 f"a message at {offset} declares length {length}, below the "
@@ -162,7 +181,8 @@ def _messages(data: bytes) -> Iterator[tuple[int, bytes]]:
                 f"a message at {offset} declares {length} bytes and the buffer "
                 f"holds {len(data) - offset}"
             )
-        yield message_type, data[offset + _HEADER.size : offset + length]
+        yield (message_type, flags, sequence, port,
+               data[offset + _HEADER.size : offset + length])
         # Netlink messages are aligned to four bytes.
         offset += (length + 3) & ~3
 
@@ -190,8 +210,12 @@ def _attributes(payload: bytes) -> Iterator[tuple[int, bytes]]:
         offset += (length + 3) & ~3
 
 
-def parse_links(data: bytes) -> tuple[LinkRecord, ...]:
+def parse_links(data: bytes, *, sequence: int, port: int) -> tuple[LinkRecord, ...]:
     """Every interface the dump describes, in the order the kernel sent them.
+
+    Every message up to `NLMSG_DONE` must carry `sequence` (the request's)
+    and `port` (this socket's port id) and not be marked interrupted, and
+    `NLMSG_DONE` must come; otherwise `NetlinkMalformed`.
 
     Order is the kernel's and is presentation only. Nothing downstream
     matches on it -- which is why a commissioning request carries the digest
@@ -199,14 +223,29 @@ def parse_links(data: bytes) -> tuple[LinkRecord, ...]:
     """
 
     records: list[LinkRecord] = []
-    for message_type, payload in _messages(data):
+    done = False
+    for message_type, flags, message_sequence, message_port, payload in _messages(data):
+        if message_sequence != sequence:
+            raise NetlinkMalformed("a reply carries another sequence number")
+        if message_port != port:
+            raise NetlinkMalformed("a reply is addressed to another port id")
+        if flags & _NLM_F_DUMP_INTR:
+            raise NetlinkMalformed("the dump was interrupted")
         if message_type == _NLMSG_DONE:
+            # A dump that ends in an error (the errno `NLMSG_DONE` carries)
+            # is not a whole dump.
+            if len(payload) >= 4 and struct.unpack_from("i", payload, 0)[0] != 0:
+                (errno,) = struct.unpack_from("i", payload, 0)
+                raise NetlinkMalformed(f"the dump ended with errno {-errno}")
+            done = True
             break
         if message_type == _NLMSG_ERROR:
             (errno,) = struct.unpack_from("i", payload, 0) if payload else (0,)
             if errno:
                 raise NetlinkMalformed(f"the kernel answered with errno {-errno}")
-            continue
+            # errno 0 is an acknowledgement, and the request asks for none
+            # (no `NLM_F_ACK`): not part of a dump, so not read as one.
+            raise NetlinkMalformed("the kernel acknowledged a request that asked for none")
         if message_type != _RTM_NEWLINK:
             continue
         if len(payload) < _IFINFO.size:
@@ -227,6 +266,8 @@ def parse_links(data: bytes) -> tuple[LinkRecord, ...]:
             # commissioning.md 4 forbids inferring a role from, and the way
             # not to infer from a fact is not to keep it.
         records.append(_record(index, name, raw_mac))
+    if not done:
+        raise NetlinkMalformed("the dump has no end")
     return tuple(records)
 
 
@@ -279,16 +320,22 @@ def read_links(
     """
 
     factory = open_socket or _open_route_socket
+    sequence = _sequence()
     try:
         connection = factory()
     except OSError as exc:
         raise NetlinkUnavailable(f"a netlink socket could not be opened: {exc}") from exc
     try:
-        connection.send(build_dump_request())
+        port = connection.getsockname()[0]
+        connection.send(build_dump_request(sequence))
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = connection.recv(65536)
+            chunk, _ancillary, received, sender = connection.recvmsg(_RECEIVE_SIZE)
+            if received & _socket.MSG_TRUNC:
+                raise NetlinkMalformed("a datagram was cut short")
+            if tuple(sender or ()) != _KERNEL_ADDRESS:
+                raise NetlinkMalformed("a datagram did not come from the kernel")
             if not chunk:
                 break
             chunks.append(chunk)
@@ -298,18 +345,34 @@ def read_links(
                     f"the dump exceeded {limit} bytes; a link table this large "
                     "is not one this daemon will hold in memory"
                 )
-            if _dump_is_complete(chunk):
+            if _dump_is_complete(chunk, sequence, port):
                 break
     except OSError as exc:
         raise NetlinkUnavailable(f"the link dump failed: {exc}") from exc
     finally:
         connection.close()
-    return parse_links(b"".join(chunks))
+    return parse_links(b"".join(chunks), sequence=sequence, port=port)
 
 
-def _dump_is_complete(chunk: bytes) -> bool:
+def _sequence() -> int:
+    """A sequence number for one dump, drawn at random (never 0)."""
+
+    return secrets.randbelow(0xFFFFFFFE) + 1
+
+
+def _dump_is_complete(chunk: bytes, sequence: int, port: int) -> bool:
+    """Stop at `NLMSG_DONE`, or at a message `parse_links` will refuse:
+    any `NLMSG_ERROR` (errno 0 included -- no `NLM_F_ACK` is requested, so an
+    acknowledgement is unexpected and refused), another sequence or port id,
+    an interrupted dump."""
+
     try:
-        return any(message_type == _NLMSG_DONE for message_type, _ in _messages(chunk))
+        return any(
+            message_type in (_NLMSG_DONE, _NLMSG_ERROR)
+            or message_sequence != sequence or message_port != port
+            or flags & _NLM_F_DUMP_INTR
+            for message_type, flags, message_sequence, message_port, _ in _messages(chunk)
+        )
     except NetlinkMalformed:
         # An incomplete trailing message means more is coming, not that the
         # dump is over.
