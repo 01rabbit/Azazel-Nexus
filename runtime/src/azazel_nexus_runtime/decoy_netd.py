@@ -37,19 +37,25 @@ Started with no argument it builds; `ExecStop=` starts it with exactly
 `stop`, and it removes the record, takes the host end down, deletes the
 bridge and then the table, so the path is cut before the rules go; if cutting
 the path fails, the table stays and it exits 1. `stop` reads no scope: its
-undo lists are constants. Anything else is refused (exit 2). It reads no
+undo lists are constants. `azazel-decoy-verify.service` starts it with
+exactly `verify` (#196 G2, `docs/deception-exposure-grant.md` §6.1): it
+reads back and compares, changes nothing and writes no record
+(`decoy_watch.verify`), and exits 1 on any departure, which trips the decoy
+units. Anything else is refused (exit 2). It reads no
 decoy observation, no Edge decision, no environment and no socket. A failed
 step undoes what the earlier ones made and exits 1.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Optional, Sequence
 
 from azazel_nexus.decoy_scope import read_scope_credential
 
 from .decoy_isolation_check import Recorder
 from .decoy_network import HELPER_PLAN, Capture, Plan, Runner, helper_plan, main_for
+from .decoy_watch import verify
 
 __all__ = ["main"]
 
@@ -62,8 +68,11 @@ def _start_plan() -> Plan:
 
 def main(argv: Optional[Sequence[str]] = None, *, run: Optional[Runner] = None,
          capture: Optional[Capture] = None, recorder: Optional[Recorder] = None) -> int:
-    """Build (no argument) or remove (`stop`) the host side of the decoy network."""
+    """Build (no argument), remove (`stop`) or check (`verify`) the host side."""
 
+    if list(sys.argv[1:] if argv is None else argv) == ["verify"]:
+        # The verify unit (#196 G2): read-backs only, no recorder, no step.
+        return verify(capture=capture)
     return main_for("az-decoy-netd", HELPER_PLAN, argv, run,
                     recorder=Recorder() if recorder is None else recorder,
                     capture=capture, start_plan=_start_plan)

@@ -41,6 +41,9 @@ GOVERNED = tuple(d.name for d in CORE_UNITS)
 #: Installed and enabled beside the controller, and governed by nothing:
 #: the read-only Edge probe preflight (#206 P5).
 PROBE_PREFLIGHT = "azazel-edge-probe-preflight.service"
+#: The Deception Lite watch (#196 G2): not governed, never enabled.
+DECOY_VERIFY = "azazel-decoy-verify.service"
+DECOY_WATCH_FILES = (DECOY_VERIFY, "azazel-decoy-verify.timer", "azazel-decoy-trip.target")
 ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT)
 
 
@@ -95,11 +98,11 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
     present.
     """
 
-    present = sorted(path.name for path in UNIT_DIR.glob("*.service"))
-    assert present == sorted(ALL_UNITS), (
+    present = sorted(path.name for path in UNIT_DIR.iterdir())
+    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES), (
         f"the packaged units are {present}; the controller governs "
-        f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT} and "
-        f"{PROBE_PREFLIGHT}"
+        f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}, "
+        f"{PROBE_PREFLIGHT} and the Deception Lite watch {DECOY_WATCH_FILES}"
     )
 
 

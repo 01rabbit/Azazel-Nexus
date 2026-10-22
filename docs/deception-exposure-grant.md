@@ -5,7 +5,8 @@ phase; the review findings are those of
 [#276](https://github.com/01rabbit/Azazel-Nexus/issues/276)).
 Status: **decided (2026-10-22): the owner adopted every recommended default
 of §10 (Q1–Q12); G1–G3 in progress (G3's profiles and enforce-mode check
-are in, §7 "G3 as implemented"); the tier stays withheld until G6.**
+are in, §7 "G3 as implemented"; G2's watch is in, §6.3 "G2 as
+implemented"); the tier stays withheld until G6.**
 Related: [Deception Lite prerequisites](deception-redirect-prerequisites.md)
 (§7 Q9, Q10; §9; §10 "Before any grant"; §13; §14) ·
 [observe-baseline activation](activation-observe-baseline.md) ·
@@ -380,6 +381,124 @@ stop. The period is an owner choice (§10 Q6); 10 s keeps the load to one
   tables, not `inet azazel_decoy` (*inferred*; VM-check). The verify catches
   it either way.
 
+### 6.3 G2 as implemented
+
+The watch exists; **nothing is granted by it**: `_withholding_reason` still
+withholds the tier as `isolation_evidence_absent` on every pass, so on a node
+the decoy, and with it the watch, never starts in this build. Everything
+below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
+
+- **The verify unit** `azazel-decoy-verify.service` (one-shot), declared in
+  `hardening.DECOY_WATCH_PROFILES` and pinned whole by
+  `ServiceProfile._check_verify_unit`: `ExecStart=/usr/libexec/azazel/az-decoy-netd
+  verify` (the helper's wrapper; `ServiceProfile.arguments`, which only this
+  unit may set), root, `CapabilityBoundingSet=CAP_NET_ADMIN`,
+  `RestrictAddressFamilies=AF_NETLINK`, the shared sandbox, and
+  `DECOY_VERIFY_SANDBOX`: the helper's settings without `RemainAfterExit=`
+  (it runs again every period), `ExecStop=` and a runtime directory (it
+  writes nothing). It receives the scope by the same
+  `LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json` and
+  reads it from its own fixed path
+  (`decoy_scope.read_verify_scope_credential`,
+  `/run/credentials/azazel-decoy-verify.service/decoy-scope`, the helper's
+  rules); the hardening check that kept the credential to the helper now
+  keeps it to the helper and this unit. `After=azazel-decoy-netd.service`,
+  `OnFailure=azazel-decoy-trip.target`, `AppArmorProfile=azazel-decoy-verify`
+  and `AssertSecurity=apparmor`; no `Requires=`, no condition, no
+  `[Install]` (`ServiceProfile.wanted_by` is empty for it and only for it).
+- **What it runs** (`decoy_watch.verify`): the plan
+  `decoy_network.verify_plan` holds no step, no absence check and no undo,
+  only the four read-backs of `WATCH_READS` (the helper's `nft -j list table`
+  and `ip -j -d address show`, then `ip -j -4 rule show` and
+  `ip -j -4 route show table main`); `run_fixed` refuses every other
+  argument list. The table and links are judged by the helper's own
+  `decoy_isolation_check.evaluate` against the ruleset rendered from the
+  verify unit's copy of the scope (the nine checks; no record is written,
+  the `Recorder` is never constructed), and reachability R4 by
+  `decoy_watch.reachability_departures` (below). Exit 0 when everything
+  holds, 1 otherwise (a departure, a missing or flushed table, a read that
+  fails, a refused scope, an error while evaluating), 2 for any other
+  argument. One journal line of fixed check names and reason codes.
+- **The timer** `azazel-decoy-verify.timer`: `OnActiveSec=10s`,
+  `OnUnitActiveSec=10s`, `AccuracySec=1s` (the default of a minute would
+  stretch the period), `Unit=azazel-decoy-verify.service`, and
+  `PartOf=azazel-decoyd.service`, so that stopping or restarting the decoy
+  stops or restarts the watch with it. No `[Install]`.
+- **The trip unit is a target**, `azazel-decoy-trip.target`, not the
+  `.service` §6.1 names: its whole content is
+  `Conflicts=azazel-decoy-nsd.service`, and systemd 257 refuses a service with
+  no `ExecStart=`, `ExecStop=` or `SuccessAction=` ("Service has no
+  ExecStart=, ExecStop=, or SuccessAction=. Refusing", container-checked
+  with `systemd-analyze verify`; a target with the same content verifies
+  clean). A target runs nothing and holds nothing, which is what the design
+  asked of the trip unit; a service would have needed a program
+  (`/bin/true`) only to exist. A conflict holds both ways, so starting the
+  namespace unit again stops the target and a later failure trips again.
+- **The decoy** gains `Requires=azazel-decoy-verify.service
+  azazel-decoy-verify.timer` and `After=azazel-decoy-verify.service`
+  (pinned in the listener check); **the helper** gains `After=` on
+  `firewalld.service` and `netfilter-persistent.service`
+  (`hardening.HOST_FIREWALL_UNITS`; `nftables.service` was #281).
+- **Pinned and compared, not measured yet.** The three files are rendered
+  by `hardening` (the service by `render_unit`, the timer and the target by
+  `render_verify_timer` and `render_trip_target`) and compared byte for byte
+  with `packaging/systemd/` like every unit; the installer places them and
+  never masks or enables them. `activation_unit_files.require_watch_unit_files`
+  is the "checked like every governed unit file" part of §6.1: each of the
+  three must be in the vendor directory, protected as a measured file, equal
+  **byte for byte** to the rendering (nothing in them is site-specific), with
+  no drop-in and no file of the same name elsewhere **including a mask**
+  (a masked trip target would let a failed verify stop nothing; for a
+  governed unit a mask only withholds, so it is accepted there). **The pass
+  does not call it in this build**, and the generation does not digest the
+  files: `ACTIVATION_UNIT_ALLOWLIST`, `GRANTABLE_UNITS`, the policy scope and
+  the observe-baseline generation are unchanged. Adding the watch to the
+  allowlist would let a policy or a lease name units that are not granted,
+  adding them to `GRANTABLE_UNITS` would make them unmaskable by a pass and
+  give them markers (the n1 problem), and calling the check from today's
+  pass could only withhold the **other** tiers, since this one is already
+  withheld. Both the call and the digests belong to the generation's
+  exposure section of §4.4 item 5, which is G6.
+- **R4 in G2** (`decoy_watch`; [reachability](deception-exposure-reachability.md)
+  §6 and §9 R4). The verify reads, in the host namespace and through
+  `/proc/sys/net/ipv4/conf` and `ipv6/conf` opened without following a link
+  (each entry opened by name relative to the `conf/` directory, so the
+  directory is the exact parent; an entry gone since the listing is skipped,
+  a value file missing or not exactly `0\n`/`1\n` is unreadable, more than
+  4096 entries is unreadable, a missing `/proc/sys/net/ipv6` is IPv6 off):
+  every ingress forwards; `all` and `default` do not; no other interface
+  does but `az-decoy0`, whose value is not read (its forwarding is the
+  operator's, and off only makes the decoy unreachable); no IPv6 forwarding
+  anywhere; `proxy_arp` off on `all` and each ingress. The verify knows the
+  ingress from the scope and not the management and observation roles, so
+  `forwarding_role_on` is the pass's (G6) and "every other interface off"
+  (`forwarding_other_on`) covers those interfaces here. Rules: below the main
+  table's priority exactly the local rule (priority 0, table `local`, no
+  `iif`/`oif`) and, per ingress, the K1 pair: priority 1960 with that `iif`,
+  `dst` `10.255.196.0`, `dstlen` 30, table `main`, `suppress_prefixlen` 29;
+  priority 1961 with that `iif` and action `blackhole` (the keys `ip -j`
+  6.15 prints, container-checked); anything else before `main` is
+  `ingress_containment_absent`. **Left to G6**, after the VM's dump
+  (reachability §11 item 8): that no rule carries another selector (`src`
+  other than all, `oif`, `fwmark`, `tos`, `uidrange`, `l3mdev`, protocol or
+  port) and the exact attribute set; the `protocol` field stays out. Routes:
+  no route of `main` whose destination lies inside `10.255.196.0/24` but one
+  `10.255.196.0/30 dev az-decoy0` without gateway or next hops
+  (`decoy_prefix_routed`); a wider route (a default, a /16) is suppressed by
+  K1 and not counted. The rule and route dumps go through two fixed `ip -j`
+  read-backs rather than a netlink parser of our own: the helper's modules
+  may not name a socket (`tests/unit/test_runtime_boundary.py`), and `ip`
+  is already the program its profile runs.
+- **AppArmor** `azazel-decoy-verify` (`packaging/apparmor/`): the helper's
+  profile without its writable place (no rule on
+  `/run/azazel-decoy-isolation` but a `deny`, and no boot id), with its own
+  credential path and read-only rules for `forwarding` and `proxy_arp`
+  under `/proc/sys/net/ipv{4,6}/conf/*/`; it is in
+  `decoy_apparmor.DECOY_APPARMOR_PROFILES`, so the enforce-mode judgement
+  requires it (five blocks) and the installer compiles and places it.
+- **Import closure.** `az-decoy-netd` gains the runtime module `decoy_watch`
+  and no library module; the namespace unit and the decoy load nothing new.
+
 ## 7. LSM: AppArmor as a gate (F6)
 
 ### Current state
@@ -476,9 +595,10 @@ reached until G6. Revised after the review of #285.
   a stream client only (no `bind`, `listen` or `accept`); AppArmor 4.1's
   `unix` rules cannot name a path address (`addr=` with a path does not
   compile), so the file rule is what narrows it.
-- **The verify unit of §6** gets its own profile in G2: it runs the
-  helper's executable but writes nothing, so it does not share the helper's
-  profile, which may write the record.
+- **The verify unit of §6** has its own profile since G2,
+  `azazel-decoy-verify` (§6.3): it runs the helper's executable but writes
+  nothing, so it does not share the helper's profile, which may write the
+  record.
 - **Units:** `ServiceProfile.apparmor_profile`, exactly
   `decoy_apparmor.apparmor_profile_for(unit)`: each of the three names its
   own, rendered `AppArmorProfile=<name>` without `-`, **and
@@ -577,7 +697,7 @@ pass and the existing tests that pin it stay.
 | G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); the reply accept's `oifname { <ingress> }` and the ingress drop of [reachability](deception-exposure-reachability.md) R3; unit tests only, nothing wired into the pass | Q1–Q4 |
 | G1a *(implemented)* | the first half of G1: `commissioning-proposal/v3` (v2 plus a required `deception_scope`, `src/azazel_nexus/commissioning_approval.py`, `fabric_boundary.restore_commissioning_inputs`; M.I.O. reads its signed `mio_profile` from v2 and v3 alike), the strict decoder, the rendered scope file and its reader (`src/azazel_nexus/decoy_scope.py`, a standard-library leaf under the helper's boundary rules); tests only (`tests/unit/test_decoy_scope.py`, `tests/unit/test_commissioning_approval.py`); nothing calls it from the pass or the helper, no unit file changes. The ruleset, `nft -j`, isolation v2, masquerade and `LoadCredential=` are G1b | Q1–Q3 |
 | G1b *(implemented)* | the second half of G1: the helper's input (`LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json` on `azazel-decoy-netd.service`, pinned in `DECOY_HELPER_SANDBOX`, no `SetCredential=` fallback, no other unit may load it; `decoy_scope.read_scope_credential`, read after the previous isolation record is removed; a scope present and refused builds nothing and leaves no record); the ruleset from the scope, one transaction (`decoy_network.render_ruleset`: `elements`, quoted `iifname { ... }` on the accept, `oifname { ... }` on the reply and the ingress drop of [reachability](deception-exposure-reachability.md) R3, the A3 masquerade in a `postrouting` `nat` chain; without a scope the table of the first build); `_ALLOWED` replaced by a per-run `Plan` (the constants plus exactly the one ruleset); the check moved to `nft -j list table` against the expected listing rendered with the ruleset; `decoy-isolation/v2` with `approved_v4_matches`, `ingress_matches` (the ingress name set and its count; placement is `nft_table`'s) and `scope_digest`, v1 refused by the decoy; the check sees only its own table; the helper's import closure gains `azazel_nexus.decoy_scope` only. Container-checked with nftables 1.1.3 (a mechanism check): an anonymous set of names is listed reordered and, with one name, as the name; a /32 element as a bare address; adjacent prefixes are kept apart, overlapping ones refuse the whole transaction, duplicates are merged; the real helper loaded and checked scopes of 1 and 2 ingress, 3 and 16 prefixes, and an approved forwarded connect reached the decoy as `10.255.196.1`. Until G6 nothing writes the scope file, so a granted helper would fail to start; the tier stays withheld | Q1–Q4 |
-| G2 | the watch: verify unit, timer, trip unit, decoy `Requires=`, helper `After=` (§6); the verify re-reads forwarding, the ingress rules and the routes of `main` ([reachability](deception-exposure-reachability.md) R4); unit tests | Q6, Q7 |
+| G2 *(implemented)* | the watch (§6.3): `azazel-decoy-verify.service` (one-shot, `az-decoy-netd verify`, the helper's executable, sandbox and scope credential, read-only plan `decoy_network.verify_plan`, `OnFailure=` the trip unit, no marker, no `[Install]`); `azazel-decoy-verify.timer` (10 s, `AccuracySec=1s`, `PartOf=` the decoy); the trip unit as `azazel-decoy-trip.target` (only `Conflicts=azazel-decoy-nsd.service`; a service with no command is refused by systemd); the decoy's `Requires=` on the verify unit and the timer and `After=` on the verify unit; the helper's `After=` on `firewalld.service` and `netfilter-persistent.service`; the verify's re-reading of [reachability](deception-exposure-reachability.md) R4 (forwarding and `proxy_arp`, the rules before `main` down to priority, `iif` and the K1 pair's defining attributes, the routes of `main` in the /24; the exact rule attributes are G6's); its own AppArmor profile `azazel-decoy-verify`, required in enforce mode; the three files rendered and compared byte for byte, and `require_watch_unit_files` (byte-exact, no drop-in, no mask) defined but not called by the pass and not digested by the generation until G6; unit tests only, nothing run under systemd | Q6, Q7 |
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |
@@ -638,10 +758,23 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
    `10.255.196.1`; after `nft flush ruleset` the same connect gets no answer;
 2. the scope: elements and the `iifname` match load in one transaction;
    `nft -j list table` compares equal; a hand-added element fails the check;
-3. the watch: `systemctl reload nftables` (with the service started by hand)
-   stops the three units within one period; a decoy restart re-runs the
-   verify; a verify that fails before the decoy start keeps it down; a
-   successful one-shot verify does not stop the decoy through `Requires=`;
+3. the watch (G2, §6.3): `systemctl reload nftables` (with the service
+   started by hand) and a `firewalld` reload stop the three units within one
+   period; a decoy restart re-runs the verify; a verify that fails before
+   the decoy start keeps it down; a successful one-shot verify does not stop
+   the decoy through `Requires=`; the verify's `OnFailure=` starts
+   `azazel-decoy-trip.target` and its `Conflicts=` stops the namespace unit,
+   and through `Requires=` the helper and the decoy first, with the default
+   `OnFailureJobMode=replace`; starting the namespace unit again stops the
+   target, and a second failure trips again; the timer fires every 10 s
+   with `AccuracySec=1s` (`systemctl list-timers`) and stops with the decoy
+   (`PartOf=`); a verify start refused for a missing credential source
+   (243/CREDENTIALS) also counts as a failure and trips; whether the timer
+   and the verify keep running when the decoy was pulled in but skipped by
+   its grant-marker condition (`Requires=` pulls them in before the
+   decoy's condition is evaluated: an unmasked, ungranted decoy, which only
+   a hand-placed rehearsal makes), and how loud that is; that a verify run
+   (four read-backs) stays well inside the period;
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
    unloaded fails, and with AppArmor disabled (`apparmor=0`)
    `AssertSecurity=apparmor` fails it; the namespace unit's `ip netns add`
@@ -655,5 +788,7 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
    the pass, as root under the controller's sandbox, can read
    `/sys/kernel/security/apparmor/profiles`;
 5. `nft list` refused without `CAP_NET_ADMIN` (confirms the verify unit's
-   need);
+   need); the verify unit under its profile: the four read-backs, the
+   credential and the `/proc/sys/net` reads allowed, any write refused, no
+   denial logged in a passing run;
 6. every item of the §8 table, as a rehearsal of `HG-09`.

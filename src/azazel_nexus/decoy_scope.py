@@ -41,7 +41,10 @@ rules above. It returns the scope and `scope_digest` (SHA-256 of the file).
 `read_scope_credential` is the helper's entry: no scope at all only when the
 credential directory itself does not exist (the helper run outside its unit;
 under its unit `LoadCredential=` fails the start when the source is missing),
-and otherwise exactly `read_scope_file`.
+and otherwise exactly `read_scope_file`. `read_verify_scope_credential` is
+the same for the verify unit (#196 G2, grant §6.1), which loads the same
+source file as its own credential and reads it from its own fixed path,
+`VERIFY_SCOPE_CREDENTIAL_PATH`, by the same rules.
 
 **No content in messages.** Every refusal is a fixed phrase. No prefix,
 interface name or file content appears in an exception, a record or a log
@@ -78,10 +81,12 @@ __all__ = [
     "RESERVED_HEADROOM",
     "SCOPE_CREDENTIAL_PATH",
     "ScopeFile",
+    "VERIFY_SCOPE_CREDENTIAL_PATH",
     "decode_deception_scope",
     "parse_scope_file",
     "read_scope_credential",
     "read_scope_file",
+    "read_verify_scope_credential",
     "render_deception_scope",
     "render_scope_file",
 ]
@@ -112,6 +117,12 @@ MAX_SCOPE_BYTES = 2048
 #: the reader opens.
 SCOPE_CREDENTIAL_PATH = "/run/credentials/azazel-decoy-netd.service/decoy-scope"
 
+#: Where the verify unit receives the same file (#196 G2, grant §6.1: the
+#: same `LoadCredential=` line on `azazel-decoy-verify.service`; a test keeps
+#: it equal to `hardening.DECOY_SCOPE_CREDENTIAL` and the unit's name). The
+#: only path `read_verify_scope_credential` opens.
+VERIFY_SCOPE_CREDENTIAL_PATH = "/run/credentials/azazel-decoy-verify.service/decoy-scope"
+
 _SECTION_KEYS = frozenset({"approved_v4", "bridge_prefix", "ingress_role"})
 _FILE_KEYS = frozenset({"approved_v4", "contract", "ingress"})
 _IFNAME = re.compile(r"[A-Za-z0-9_.-]{1,15}", re.ASCII)
@@ -129,6 +140,7 @@ _HEADROOM = ipaddress.IPv4Network(RESERVED_HEADROOM)
 #: Private test seams. Production uses exactly these: the fixed credential
 #: path and root as the only trusted owner.
 _PATH = SCOPE_CREDENTIAL_PATH
+_VERIFY_PATH = VERIFY_SCOPE_CREDENTIAL_PATH
 _OWNER = 0
 
 
@@ -327,7 +339,13 @@ def read_scope_file() -> ScopeFile:
     nobody else; the file a regular one within `MAX_SCOPE_BYTES`.
     """
 
-    directory_path, _, name = _PATH.rpartition("/")
+    return _read_scope_at(_PATH)
+
+
+def _read_scope_at(path: str) -> ScopeFile:
+    """`read_scope_file`'s rules, at one of the two fixed credential paths."""
+
+    directory_path, _, name = path.rpartition("/")
     try:
         directory = os.open(directory_path, _DIR_FLAGS)
     except OSError:
@@ -378,11 +396,28 @@ def read_scope_credential() -> Optional[ScopeFile]:
     from the closed form, raises `DecoyScopeRefused`.
     """
 
-    directory_path = _PATH.rpartition("/")[0]
+    return _credential_at(_PATH)
+
+
+def read_verify_scope_credential() -> Optional[ScopeFile]:
+    """The verify unit's scope (#196 G2), by `read_scope_credential`'s rules.
+
+    The same source file, loaded by the verify unit's own `LoadCredential=`
+    and read from `VERIFY_SCOPE_CREDENTIAL_PATH` only. `None` only when that
+    unit's credential directory is absent (the executable run outside its
+    unit); anything else at that path is read and refuses as the helper's
+    does.
+    """
+
+    return _credential_at(_VERIFY_PATH)
+
+
+def _credential_at(path: str) -> Optional[ScopeFile]:
+    directory_path = path.rpartition("/")[0]
     try:
         os.lstat(directory_path)
     except FileNotFoundError:
         return None
     except OSError:
         raise DecoyScopeRefused("the scope's directory could not be read") from None
-    return read_scope_file()
+    return _read_scope_at(path)

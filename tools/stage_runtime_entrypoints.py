@@ -56,6 +56,11 @@ def declared_daemons(root: Path = ROOT) -> dict[str, str]:
             else:
                 continue
             fields = shlex.split(value)
+            if (unit.name == "azazel-decoy-verify.service"
+                    and fields == ["/usr/libexec/azazel/az-decoy-netd", "verify"]):
+                # The Deception Lite verify unit (#196 G2) runs the network
+                # helper's wrapper with exactly one fixed word, and only it.
+                fields = fields[:1]
             if len(fields) != 1 or not fields[0].startswith("/"):
                 raise ValueError(
                     f"unit must declare one fixed absolute executable: {unit.name}"

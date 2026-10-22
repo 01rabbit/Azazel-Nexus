@@ -15,10 +15,13 @@ Description=Azazel-Nexus Deception Lite decoy
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md
 After=azazel-activated.service
 After=azazel-decoy-netd.service
+After=azazel-decoy-verify.service
 ConditionPathExists=/run/azazel-activation/granted/azazel-decoyd.service
 AssertSecurity=apparmor
 Requires=azazel-activated.service
 Requires=azazel-decoy-netd.service
+Requires=azazel-decoy-verify.service
+Requires=azazel-decoy-verify.timer
 
 [Service]
 Type=exec

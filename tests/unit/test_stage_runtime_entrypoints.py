@@ -24,7 +24,10 @@ def test_staged_set_is_derived_from_the_installed_units_and_runtime_scripts() ->
     for unit in (ROOT / "packaging" / "systemd").glob("*.service"):
         for line in unit.read_text(encoding="utf-8").splitlines():
             if line.startswith(("ExecStart=", "ExecStartPre=+")):
-                unit_names.add(Path(line.split("=", 1)[1].removeprefix("+")).name)
+                # The verify unit (#196 G2) runs the helper's wrapper with
+                # one fixed word: the wrapper is the helper's.
+                value = line.split("=", 1)[1].removeprefix("+").split(" ")[0]
+                unit_names.add(Path(value).name)
 
     assert set(daemons) == unit_names - {"azazel-edge-core"}
     assert "azazel-edge-core" not in daemons

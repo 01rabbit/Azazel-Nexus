@@ -125,7 +125,12 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
     assert all(Path(item.path).is_absolute() for item in plan.directories)
     assert {item.source for item in plan.files if item.source.startswith("packaging/systemd/")} == {
         f"packaging/systemd/{service.unit}" for service in PROFILES
-    } | {"packaging/systemd/azazel-edge-probe-preflight.service"}
+    } | {"packaging/systemd/azazel-edge-probe-preflight.service"} | {
+        # The Deception Lite watch (#196 G2): installed, never enabled.
+        "packaging/systemd/azazel-decoy-verify.service",
+        "packaging/systemd/azazel-decoy-verify.timer",
+        "packaging/systemd/azazel-decoy-trip.target",
+    }
     assert plan.service_manager.mask_units == tuple(
         unit for action, unit in parse_preset_declarations(PRESET_TEXT) if action == "disable"
     )

@@ -17,7 +17,13 @@ from typing import Mapping, Sequence
 
 from azazel_nexus.layout import LAYOUT
 from .decoy_apparmor import DECOY_APPARMOR_PROFILES
-from .hardening import ALL_PROFILES, EDGE_PROBE_PREFLIGHT_UNIT, PROFILES, SYSTEM_ACCOUNTS
+from .hardening import (
+    ALL_PROFILES,
+    EDGE_PROBE_PREFLIGHT_UNIT,
+    PROFILES,
+    SYSTEM_ACCOUNTS,
+    packaged_unit_files,
+)
 
 __all__ = [
     "APPARMOR_DIRECTORY",
@@ -379,12 +385,14 @@ def build_install_plan(
             "install profile libexec path differs from rendered systemd entrypoints"
         )
 
+    # Every packaged unit file: each service, and the Deception Lite watch's
+    # timer and trip unit (#196 G2), which are installed and never enabled.
     files = tuple(
         FileDestination(
-            source=f"packaging/systemd/{service.unit}",
-            destination=f"{profile.unit_directory}/{service.unit}",
+            source=f"packaging/systemd/{unit}",
+            destination=f"{profile.unit_directory}/{unit}",
         )
-        for service in ALL_PROFILES
+        for unit, _ in packaged_unit_files()
     ) + (
         FileDestination(
             source="packaging/azazel-nexus.preset",

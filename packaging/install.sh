@@ -164,7 +164,7 @@ EOF
 # boot); with the service manager only, since apparmor_parser is required
 # only then. No unit is granted by this, and the pass never grants them yet.
 if [ "$WITH_SERVICE_MANAGER" = yes ]; then
-    for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoyd; do
+    for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoy-verify azazel-decoyd; do
         if ! apparmor_parser --skip-kernel-load --skip-cache --quiet "$HERE/apparmor/$profile"; then
             echo "refusing to install: AppArmor profile $profile does not compile." >&2
             exit 1
@@ -181,7 +181,8 @@ if [ "$WITH_SERVICE_MANAGER" = yes ]; then
         *,apparmor,*) ;;
         *)
             echo "WARNING: AppArmor is not enabled in this kernel. The Deception Lite" >&2
-            echo "units (azazel-decoy-nsd, azazel-decoy-netd, azazel-decoyd) cannot" >&2
+            echo "units (azazel-decoy-nsd, azazel-decoy-netd, azazel-decoy-verify," >&2
+            echo "azazel-decoyd) cannot" >&2
             echo "start here, and their tier is never granted. Nothing else changes." >&2
             ;;
     esac
@@ -393,15 +394,24 @@ install -m 0644 "$HERE"/systemd/azazel-knowledge-lited.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-nsd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-netd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoyd.service "$UNIT_DIR"
+# The Deception Lite watch (#196 G2): the verify unit, its timer and the trip
+# unit. No [Install] section and never masked or enabled: the decoy pulls the
+# first two in, and the verify unit's failure starts the third. Each can only
+# read or stop.
+install -m 0644 "$HERE"/systemd/azazel-decoy-verify.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-decoy-verify.timer "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-decoy-trip.target "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
-# The Deception Lite AppArmor profiles (#196 G3), one per exposure unit, each
-# named by its unit's AppArmorProfile=. Placed, not loaded: apparmor.service
-# loads them at the next boot, before any unit could start.
+# The Deception Lite AppArmor profiles (#196 G3), one per exposure unit and
+# one for the verify unit (#196 G2), each named by its unit's
+# AppArmorProfile=. Placed, not loaded: apparmor.service loads them at the
+# next boot, before any unit could start.
 install -d -m 0755 "${DESTDIR:-}/etc/apparmor.d"
 install -m 0644 "$HERE"/apparmor/azazel-decoy-nsd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-nsd"
 install -m 0644 "$HERE"/apparmor/azazel-decoy-netd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-netd"
+install -m 0644 "$HERE"/apparmor/azazel-decoy-verify "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-verify"
 install -m 0644 "$HERE"/apparmor/azazel-decoyd "${DESTDIR:-}/etc/apparmor.d/azazel-decoyd"
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then

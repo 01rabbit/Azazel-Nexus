@@ -1055,7 +1055,15 @@ def test_only_the_helper_loads_the_recorder_and_it_starts_no_process():
         if any(isinstance(node, ast.ImportFrom) and node.module
                and node.module.split(".")[-1] == "decoy_isolation_check"
                for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))))
-    assert importers == ["decoy_netd.py"]
+    # The helper's executable alone: its build (the recorder) and its verify
+    # (#196 G2, `decoy_watch`, which takes the judgement and never the
+    # recorder: the verify writes no record).
+    assert importers == ["decoy_netd.py", "decoy_watch.py"]
+    watch = ast.parse((RUNTIME / "decoy_watch.py").read_text(encoding="utf-8"))
+    taken = {alias.name for node in ast.walk(watch)
+             if isinstance(node, ast.ImportFrom) and node.module == "decoy_isolation_check"
+             for alias in node.names}
+    assert taken == {"evaluate"}
     tree = ast.parse((RUNTIME / "decoy_isolation_check.py").read_text(encoding="utf-8"))
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

@@ -730,9 +730,10 @@ def test_the_unit_renderer_never_loads_the_module_that_starts_processes():
 @pytest.mark.parametrize("name", ["decoy_nsd.py", "decoy_netd.py"])
 def test_the_executables_only_choose_their_step_list(name):
     tree = _tree(name)
-    # The helper also hands its isolation recorder to the runner (#196 §14)
-    # and reads its one input, the scope (#196 G1b).
-    extra = ({".decoy_isolation_check", "azazel_nexus.decoy_scope"}
+    # The helper also hands its isolation recorder to the runner (#196 §14),
+    # reads its one input, the scope (#196 G1b), and hands `verify` to the
+    # watch (#196 G2), choosing it from its arguments.
+    extra = ({".decoy_isolation_check", "azazel_nexus.decoy_scope", ".decoy_watch", "sys"}
              if name == "decoy_netd.py" else set())
     assert _imports(tree) == {"__future__", "typing", ".decoy_network"} | extra
     assert not _names(tree) & {"os", "subprocess", "socket", "environ", "open"}

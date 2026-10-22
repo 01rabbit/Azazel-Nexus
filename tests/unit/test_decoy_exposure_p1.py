@@ -241,13 +241,16 @@ def test_hg02_excludes_units_by_name_and_never_for_being_root(monkeypatch):
     until a reviewer names the unit in `HG02_EXCLUDED_UNITS`."""
     from azazel_nexus import hil_records
     from azazel_nexus.activation import CORE_UNITS, UnitDefinition, UnitTier
-    from azazel_nexus_runtime.hardening import ROOT_UNITS
+    from azazel_nexus_runtime.hardening import DECOY_VERIFY_UNIT, ROOT_UNITS
 
     assert hil_records.HG02_EXCLUDED_UNITS == frozenset({
         "azazel-activated.service", "azazel-decoy-nsd.service",
         "azazel-decoy-netd.service"})
-    # The same three units are the only root ones the hardening allows.
-    assert hil_records.HG02_EXCLUDED_UNITS == frozenset(ROOT_UNITS)
+    # The same three units are the only governed root ones the hardening
+    # allows. The fourth root unit, the Deception Lite verify unit (#196 G2),
+    # is not governed (not in CORE_UNITS), so it is no HG-02 subject at all.
+    assert DECOY_VERIFY_UNIT not in {d.name for d in CORE_UNITS}
+    assert hil_records.HG02_EXCLUDED_UNITS == frozenset(ROOT_UNITS) - {DECOY_VERIFY_UNIT}
     subjects = [d for d in CORE_UNITS if d.name not in hil_records.HG02_EXCLUDED_UNITS]
     assert _hg02([_attempt(d.name, d.account) for d in subjects]) == []
 

@@ -188,8 +188,10 @@ def test_baseline_matches_every_committed_unit_except_declared_controller_capabi
         for key, value in SHARED_HARDENING:
             if path.name == "azazel-activated.service" and key == "CapabilityBoundingSet":
                 assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in lines
-            elif path.name == "azazel-decoy-netd.service" and key == "CapabilityBoundingSet":
-                # #196 P1: the one-shot decoy network helper, and only it.
+            elif (path.name in ("azazel-decoy-netd.service", "azazel-decoy-verify.service")
+                    and key == "CapabilityBoundingSet"):
+                # #196 P1: the one-shot decoy network helper, and (#196 G2)
+                # the verify unit that runs its executable, and only they.
                 assert "CapabilityBoundingSet=CAP_NET_ADMIN" in lines
             elif path.name == "azazel-decoy-nsd.service" and key in (
                     "CapabilityBoundingSet", "RestrictNamespaces", "SystemCallFilter",

@@ -59,7 +59,9 @@ __all__ = [
     "require_governed_unit_content",
     "require_grantable_unit_files",
     "require_no_unit_overrides",
+    "require_watch_unit_files",
     "required_unit_lines",
+    "WATCH_UNITS",
 ]
 
 UNIT_DIRECTORY = "/usr/lib/systemd/system"
@@ -364,6 +366,81 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
         raise UnitFilesRefused("unit files unavailable") from None
     require_no_unit_overrides(scope)
     return measured
+
+
+#: The Deception Lite watch's unit files (#196 G2,
+#: docs/deception-exposure-grant.md §6.1): the verify unit, its timer and the
+#: trip unit. Not grantable, never masked, no grant marker: the decoy pulls
+#: them in. Checked by `require_watch_unit_files`.
+WATCH_UNITS = ("azazel-decoy-verify.service", "azazel-decoy-verify.timer",
+               "azazel-decoy-trip.target")
+
+
+def _watch_rendered() -> dict[str, str]:
+    from .hardening import packaged_unit_files
+
+    rendered = dict(packaged_unit_files())
+    return {unit: rendered[unit] for unit in WATCH_UNITS}
+
+
+def _same_name_is_absent(directory_fd: int, unit: str) -> None:
+    """No file of the name at all: for the watch a mask is not safe.
+
+    Masking the trip unit would let a failed verify start nothing and leave
+    the decoy running unwatched, so a `/dev/null` link is refused like any
+    other override.
+    """
+    if _entry(directory_fd, unit) is not None:
+        raise UnitOverrideRefused("watch unit overridden or masked by another unit file")
+
+
+def require_watch_unit_files() -> None:
+    """The watch's vendor files are exactly the rendered ones, unshaped (#196 G2).
+
+    Each of `WATCH_UNITS` must be in `/usr/lib/systemd/system`, protected as
+    every measured file is (root's, not group or other writable, one link,
+    not a link itself, stable while read), and equal **byte for byte** to
+    `hardening.packaged_unit_files()`: unlike a governed unit, nothing in
+    them is site-specific, so any difference is refused. No file of the same
+    name may exist in any other search-path directory (a mask included), and
+    no drop-in may apply, before or after the read. Fixed labels only.
+
+    Not called by the pass in this build: the exposure tier is withheld
+    unconditionally, so refusing here would only withhold other tiers. G6
+    wires it in with the generation's exposure section, which also digests
+    these files (§4.4 item 5).
+    """
+    expected = _watch_rendered()
+
+    def overrides() -> None:
+        for directory in _SEARCH_PATH:
+            fd = _open(directory, required=directory == UNIT_DIRECTORY)
+            if fd is None:
+                continue
+            try:
+                for unit in WATCH_UNITS:
+                    if directory != UNIT_DIRECTORY:
+                        _same_name_is_absent(fd, unit)
+                    for name in drop_in_directory_names(unit):
+                        _drop_in_is_absent_or_empty(fd, name)
+            finally:
+                os.close(fd)
+
+    try:
+        overrides()
+        fd = _open(UNIT_DIRECTORY, required=True)
+        try:
+            measured = {unit: _read(fd, unit) for unit in WATCH_UNITS}
+        finally:
+            os.close(fd)
+        for unit, data in measured.items():
+            if data != expected[unit].encode("ascii"):
+                raise UnitContentRefused("watch unit file differs from the declaration")
+        overrides()
+    except UnitFilesRefused:
+        raise
+    except Exception:  # noqa: BLE001 - redacted: labels only
+        raise UnitFilesRefused("watch unit files unavailable") from None
 
 
 def require_grantable_unit_files(units) -> None:

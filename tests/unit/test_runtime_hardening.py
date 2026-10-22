@@ -965,8 +965,13 @@ def _probed():
 
 
 def test_the_only_ungoverned_unit_is_the_probe_preflight():
+    from azazel_nexus_runtime.hardening import DECOY_WATCH_PROFILES
+
     assert [p.unit for p in UNGOVERNED_PROFILES] == [EDGE_PROBE_PREFLIGHT_UNIT]
-    assert ALL_PROFILES == PROFILES + UNGOVERNED_PROFILES
+    # The Deception Lite verify unit (#196 G2) is not governed either, but it
+    # is not enabled beside the controller: the decoy pulls it in.
+    assert [p.unit for p in DECOY_WATCH_PROFILES] == ["azazel-decoy-verify.service"]
+    assert ALL_PROFILES == PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
 
 
 def test_the_probe_preflight_is_not_governed_anywhere():
@@ -1046,11 +1051,12 @@ def _profile(unit):
     return next(p for p in PROFILES if p.unit == unit)
 
 
-def test_cap_net_admin_is_held_by_the_two_one_shot_decoy_units_alone():
-    """The helper (host side) and the namespace unit (the inside; #196 body, §13)."""
+def test_cap_net_admin_is_held_by_the_three_one_shot_decoy_units_alone():
+    """The helper (host side), the namespace unit (the inside; #196 body, §13)
+    and the verify unit, which lists the table (#196 G2, grant §10 Q7)."""
 
     holders = [p.unit for p in ALL_PROFILES if "CAP_NET_ADMIN" in p.capability_bounding_set]
-    assert holders == ["azazel-decoy-nsd.service", HELPER]
+    assert holders == ["azazel-decoy-nsd.service", HELPER, "azazel-decoy-verify.service"]
     for path in UNIT_DIR.glob("*.service"):
         if path.name not in holders:
             settings = _settings(path.name)
@@ -1211,9 +1217,13 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
                 "StateDirectory", "BindPaths"):
         assert key not in settings, key
     # After and Requires the helper as well as the controller: stopping the
-    # helper stops the decoy first.
-    assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT, HELPER]
-    assert settings["After"] == [ACTIVATION_CONTROLLER_UNIT, HELPER]
+    # helper stops the decoy first. And the watch (#196 G2): after a verify
+    # that passed, requiring it and its timer.
+    assert settings["Requires"] == [ACTIVATION_CONTROLLER_UNIT, HELPER,
+                                    "azazel-decoy-verify.service",
+                                    "azazel-decoy-verify.timer"]
+    assert settings["After"] == [ACTIVATION_CONTROLLER_UNIT, HELPER,
+                                 "azazel-decoy-verify.service"]
     from azazel_nexus.layout import spec_for
     spec = spec_for("/var/lib/azazel/decoy")
     assert (spec.owner, spec.group, spec.mode) == ("azdecoy", "root", 0o700)

@@ -73,6 +73,11 @@ UNIT_DIR = ROOT / "packaging" / "systemd"
 INSTALLER = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
 PRESET = (ROOT / "packaging" / "azazel-nexus.preset").read_text(encoding="utf-8")
 NAMES = dict(DECOY_APPARMOR_PROFILES)
+#: The verify unit of grant §6.1 (#196 G2): the helper's executable, its own
+#: profile, and the one unit outside the tier that names a profile.
+VERIFY = "azazel-decoy-verify.service"
+#: Every unit that names a profile, in the order they start.
+PROFILED_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, VERIFY, DECOY_UNIT)
 
 #: The gate's claims (§7 "What each profile must deny"), as rule lines. Each
 #: must appear, exactly, in every profile block: a child profile inherits
@@ -161,10 +166,12 @@ def _settings(text: str) -> dict[str, list[str]]:
 
 
 def test_one_profile_file_per_exposure_unit_and_nothing_else():
-    assert tuple(unit for unit, _ in DECOY_APPARMOR_PROFILES) == DECEPTION_EXPOSURE_UNITS
+    assert tuple(unit for unit, _ in DECOY_APPARMOR_PROFILES) == PROFILED_UNITS
+    assert set(DECEPTION_EXPOSURE_UNITS) == set(PROFILED_UNITS) - {VERIFY}
     assert NAMES == {
         DECOY_NAMESPACE_UNIT: "azazel-decoy-nsd",
         DECOY_NETWORK_HELPER_UNIT: "azazel-decoy-netd",
+        VERIFY: "azazel-decoy-verify",
         DECOY_UNIT: "azazel-decoyd",
     }
     assert sorted(path.name for path in PROFILE_DIR.iterdir()) == sorted(NAMES.values())
@@ -175,7 +182,8 @@ def test_every_profile_block_is_the_one_the_listing_check_requires():
 
     assert sorted(_all_blocks()) == sorted(REQUIRED_ENFORCED_PROFILES)
     assert REQUIRED_ENFORCED_PROFILES == (
-        "azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoyd", "azazel-decoy-nsd//ip")
+        "azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoy-verify", "azazel-decoyd",
+        "azazel-decoy-nsd//ip")
     for _, name in DECOY_APPARMOR_PROFILES:
         rules = _rules(name)
         # The profile is named, never attached by path: only the unit's
@@ -257,7 +265,7 @@ def test_no_profile_file_sets_a_mode_flag():
 def _unit_of(block: str):
     parent = block.split("//")[0]
     unit = next(unit for unit, name in DECOY_APPARMOR_PROFILES if name == parent)
-    return next(p for p in PROFILES if p.unit == unit)
+    return next(p for p in ALL_PROFILES if p.unit == unit)
 
 
 @pytest.mark.parametrize(("block", "expected"), [
@@ -266,6 +274,7 @@ def _unit_of(block: str):
     ("azazel-decoy-nsd", set()),
     ("azazel-decoy-nsd//ip", {"capability sys_admin,", "capability net_admin,"}),
     ("azazel-decoy-netd", {"capability net_admin,"}),
+    ("azazel-decoy-verify", {"capability net_admin,"}),
     ("azazel-decoyd", set()),
 ])
 def test_each_profile_allows_exactly_its_units_capabilities(block, expected):
@@ -297,6 +306,7 @@ def test_the_decoy_profile_denies_every_capability():
     ("azazel-decoy-nsd", set()),
     ("azazel-decoy-nsd//ip", {"network netlink raw,"}),
     ("azazel-decoy-netd", {"network netlink raw,"}),
+    ("azazel-decoy-verify", {"network netlink raw,"}),
     ("azazel-decoyd", {"network inet stream,"}),
 ])
 def test_each_profile_allows_only_its_units_address_families(block, expected):
@@ -340,6 +350,7 @@ PYTHON = f"{PROFILE_INTERPRETER} mrix,"
     # The child runs nothing.
     ("azazel-decoy-nsd//ip", set()),
     ("azazel-decoy-netd", {PYTHON, "/usr/bin/ip mrix,", "/usr/sbin/nft mrix,"}),
+    ("azazel-decoy-verify", {PYTHON, "/usr/bin/ip mrix,", "/usr/sbin/nft mrix,"}),
     ("azazel-decoyd", {PYTHON}),
 ])
 def test_each_profile_runs_only_its_fixed_programs(block, expected):
@@ -353,7 +364,8 @@ def test_the_profiles_python_is_the_one_the_installer_checks():
 
     assert PROFILE_INTERPRETER == "/" + BASE_INTERPRETER == "/usr/bin/python3.13"
     assert PROFILE_PYTHON_ROOTS == ("/usr/lib/python3.13", "/opt/azazel-nexus/venv")
-    for block in ("azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoyd"):
+    for block in ("azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoy-verify",
+                  "azazel-decoyd"):
         reads = {rule for rule, _ in _file_rules(_all_blocks()[block])}
         assert {f"{root}/** mr," for root in PROFILE_PYTHON_ROOTS} <= reads
         assert not any("python3*" in rule or "python3{" in rule
@@ -405,9 +417,50 @@ def test_the_helper_reads_its_scope_credential_and_only_there():
     credential = {rule for rule in blocks["azazel-decoy-netd"] if "/run/credentials" in rule}
     assert credential == {f"{directory} r,", f"{SCOPE_CREDENTIAL_PATH} r,"}
     for name, rules in blocks.items():
-        if name != "azazel-decoy-netd":
+        if name not in ("azazel-decoy-netd", "azazel-decoy-verify"):
             assert not any("/run/credentials" in rule or "decoy-scope" in rule
                            for rule in rules), name
+
+
+def test_the_verify_unit_reads_its_own_scope_credential_and_only_there():
+    """#196 G2: the same source file, at the verify unit's own credential path."""
+
+    from azazel_nexus.decoy_scope import VERIFY_SCOPE_CREDENTIAL_PATH
+
+    directory = VERIFY_SCOPE_CREDENTIAL_PATH.rpartition("/")[0] + "/"
+    rules = _all_blocks()["azazel-decoy-verify"]
+    credential = {rule for rule in rules if "/run/credentials" in rule}
+    assert credential == {f"{directory} r,", f"{VERIFY_SCOPE_CREDENTIAL_PATH} r,"}
+
+
+def test_the_verify_unit_writes_nothing_and_reads_only_forwarding_under_proc_sys():
+    """#196 G2: the helper's profile without its one writable place (grant §7)."""
+
+    rules = _all_blocks()["azazel-decoy-verify"]
+    assert _writes(rules) == set()
+    assert "deny /run/azazel-decoy-isolation{,/**} wlk," in rules
+    assert "deny @{PROC}/sys/** wlk," in rules
+    assert not any("/run/azazel-decoy-isolation" in rule for rule in _allows(rules))
+    sysctl = {rule for rule in _allows(rules) if "/sys/net" in rule}
+    assert sysctl == {
+        "@{PROC}/sys/net/ipv4/conf/ r,", "@{PROC}/sys/net/ipv4/conf/*/ r,",
+        "@{PROC}/sys/net/ipv4/conf/*/forwarding r,",
+        "@{PROC}/sys/net/ipv4/conf/*/proxy_arp r,",
+        "@{PROC}/sys/net/ipv6/ r,", "@{PROC}/sys/net/ipv6/conf/ r,",
+        "@{PROC}/sys/net/ipv6/conf/*/ r,", "@{PROC}/sys/net/ipv6/conf/*/forwarding r,",
+    }
+    # Its allows are the helper's but for the record and the boot id (which
+    # only the record needs), its credential and the forwarding reads.
+    helper = set(_allows(_all_blocks()["azazel-decoy-netd"]))
+    verify = set(_allows(rules))
+    assert helper - verify == {
+        "/run/azazel-decoy-isolation/ r,", "/run/azazel-decoy-isolation/* rw,",
+        "@{PROC}/sys/kernel/random/boot_id r,",
+        "/run/credentials/azazel-decoy-netd.service/ r,",
+        "/run/credentials/azazel-decoy-netd.service/decoy-scope r,",
+        "signal (send) set=(kill) peer=azazel-decoy-netd,",
+        "signal (receive) peer=azazel-decoy-netd,",
+    }
 
 
 def test_the_namespace_units_body_writes_nothing():
@@ -467,8 +520,22 @@ def test_each_exposure_unit_names_its_own_profile_without_a_dash(unit):
 
 def test_no_other_unit_asserts_apparmor():
     for profile in ALL_PROFILES:
-        if profile.unit not in DECEPTION_EXPOSURE_UNITS:
+        if profile.unit not in PROFILED_UNITS:
             assert "AssertSecurity" not in render_unit(profile)
+
+
+def test_the_verify_unit_names_its_own_profile_without_a_dash():
+    """#196 G2: like the three, `AppArmorProfile=` without `-` and the assertion."""
+
+    profile = next(p for p in ALL_PROFILES if p.unit == VERIFY)
+    assert profile.apparmor_profile == NAMES[VERIFY] == apparmor_profile_for(VERIFY)
+    for text in (render_unit(profile), (UNIT_DIR / VERIFY).read_text(encoding="utf-8")):
+        settings = _settings(text)
+        assert settings["AppArmorProfile"] == ["azazel-decoy-verify"]
+        assert settings["AssertSecurity"] == ["apparmor"]
+        assert "\nAssertSecurity=apparmor\n" in text.split("[Service]")[0]
+    with pytest.raises(ValueError, match="AppArmorProfile"):
+        replace(profile, apparmor_profile="azazel-decoy-netd")
 
 
 def _content(unit: str, text: str) -> None:
@@ -554,12 +621,12 @@ def test_the_unit_content_check_refuses_a_profile_on_another_unit(unit):
 
 def test_no_other_unit_names_a_profile():
     for profile in ALL_PROFILES:
-        if profile.unit in DECEPTION_EXPOSURE_UNITS:
+        if profile.unit in PROFILED_UNITS:
             continue
         assert profile.apparmor_profile == ""
         assert "AppArmorProfile" not in render_unit(profile)
-    for path in UNIT_DIR.glob("*.service"):
-        if path.name not in DECEPTION_EXPOSURE_UNITS:
+    for path in UNIT_DIR.iterdir():
+        if path.name not in PROFILED_UNITS:
             assert "AppArmorProfile" not in path.read_text(encoding="utf-8"), path.name
     assert apparmor_profile_for("azazel-activated.service") == ""
 
@@ -608,8 +675,8 @@ def test_the_installer_places_each_profile_and_loads_none():
                       "--replace", "apparmor_parser -r", "apparmor_parser -a",
                       "apparmor_parser -R", "systemctl reload apparmor"):
         assert forbidden not in INSTALLER, forbidden
-    assert ("for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoyd; do"
-            in INSTALLER)
+    assert ("for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoy-verify "
+            "azazel-decoyd; do" in INSTALLER)
 
 
 def test_the_installer_compiles_the_profiles_before_writing_anything():
@@ -775,6 +842,7 @@ ENFORCED = (
     b"azazel-decoy-nsd//ip (enforce)\n"
     b"azazel-decoy-nsd (enforce)\n"
     b"azazel-decoy-netd (enforce)\n"
+    b"azazel-decoy-verify (enforce)\n"
     b"unrelated-tool (complain)\n"
     b"lsb_release (enforce)\n"
 )
@@ -804,7 +872,7 @@ def test_a_profile_missing_from_the_listing_withholds(name):
 def test_an_empty_listing_withholds_as_absent():
     reason = exposure_lsm_refusal(LSM, b"")
     assert reason is not None and reason.startswith(LSM_PROFILES_ABSENT + ":")
-    assert "4 of the 4" in reason
+    assert "5 of the 5" in reason
 
 
 @pytest.mark.parametrize("mode", [b"complain", b"kill", b"unconfined", b"prompt", b"user"])
