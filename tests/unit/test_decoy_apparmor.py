@@ -1158,11 +1158,18 @@ def _imports_decoy_apparmor(path: Path) -> bool:
 
 
 def test_only_the_unit_renderer_and_the_install_plan_import_the_module():
-    """The pass, the controller and the library never call the check (G6 does)."""
+    """The pass, the controller and the library never call the check (G6 does).
+
+    `exposure_generation` (G6 preparation C) takes the four profile names
+    from here; it is itself imported by nothing in the product
+    (`test_exposure_g6_parts.py`). G6 puts this list back to the real
+    callers when it wires the parts in.
+    """
 
     importers = {path.relative_to(ROOT).as_posix() for path in _python_modules()
                  if _imports_decoy_apparmor(path)}
     assert importers == {
+        "runtime/src/azazel_nexus_runtime/exposure_generation.py",
         "runtime/src/azazel_nexus_runtime/hardening.py",
         "runtime/src/azazel_nexus_runtime/install_platform.py",
     }

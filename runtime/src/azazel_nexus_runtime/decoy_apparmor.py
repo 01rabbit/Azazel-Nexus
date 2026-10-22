@@ -20,6 +20,19 @@ codes the pass will give, but nothing on the pass calls it:
 G6 (§9). `tests/unit/test_decoy_apparmor.py` fails the day the activation
 pass, the controller or the library imports this module.
 
+**G6 preparation (implemented, not wired).** The two items §7 leaves to G6
+are here as pure judgements and a bounded reader, called by nothing:
+`loaded_unit_profile_refusal` compares each unit's loaded `AppArmorProfile`
+with its declared profile (the value the bus gives; this module reads no
+bus), and `policy_hash_refusal` compares the kernel's per-profile policy
+hash with an expected hash. The kernel's directory
+(`/sys/kernel/security/apparmor/policy/profiles/*/{name,sha256}`) is
+*inferred*, and so is how the expected hash would be derived from the placed
+files; this build derives none, so the comparison withholds as
+`lsm_policy_unverifiable` (fail closed) until G6 confirms both on the VM.
+`exposure_lsm_withholding` puts the three judgements in one order and
+`read_exposure_lsm_policy` makes the three securityfs reads in one call.
+
 A leaf: it imports only `os` and `errno`, so the unit renderer can take the
 names from here without loading anything else. Nothing here is a parameter
 of the product: the paths are constants (moved only by the tests, through
@@ -35,17 +48,26 @@ import os
 __all__ = [
     "DECOY_APPARMOR_PROFILES",
     "LSM_APPARMOR_DISABLED",
+    "LSM_LOADED_REASON_CODES",
+    "LSM_POLICY_DIFFERS",
+    "LSM_POLICY_UNVERIFIABLE",
     "LSM_PROFILES_ABSENT",
     "LSM_PROFILES_NOT_ENFORCED",
     "LSM_PROFILES_UNREADABLE",
     "LSM_REASON_CODES",
+    "LSM_UNIT_PROFILE_DIFFERS",
     "PROFILE_INTERPRETER",
     "PROFILE_PYTHON_ROOTS",
     "REQUIRED_ENFORCED_PROFILES",
     "UNREADABLE",
     "apparmor_profile_for",
     "exposure_lsm_refusal",
+    "exposure_lsm_withholding",
+    "loaded_unit_profile_refusal",
+    "policy_hash_refusal",
     "read_exposure_lsm",
+    "read_exposure_lsm_policy",
+    "read_policy_hashes",
     "wrapper_profile_refusal",
 ]
 
@@ -96,6 +118,18 @@ LSM_REASON_CODES: tuple[str, ...] = (
     LSM_PROFILES_NOT_ENFORCED,
 )
 
+#: The reasons of the loaded-policy comparison (§7 "Left to G6"), given after
+#: `LSM_REASON_CODES` by `exposure_lsm_withholding`. Not reached in this
+#: build either.
+LSM_UNIT_PROFILE_DIFFERS = "lsm_unit_profile_differs"
+LSM_POLICY_UNVERIFIABLE = "lsm_policy_unverifiable"
+LSM_POLICY_DIFFERS = "lsm_policy_differs"
+LSM_LOADED_REASON_CODES: tuple[str, ...] = (
+    LSM_UNIT_PROFILE_DIFFERS,
+    LSM_POLICY_UNVERIFIABLE,
+    LSM_POLICY_DIFFERS,
+)
+
 
 class _Unreadable:
     """A file that exists but could not be read (EACCES, EIO, a link, ...)."""
@@ -116,6 +150,20 @@ _LSM = "/sys/kernel/security/lsm"
 #: exists only while AppArmor is initialised; reading it needs root
 #: (*inferred*: euid 0 in the initial user namespace, no capability).
 _PROFILES = "/sys/kernel/security/apparmor/profiles"
+#: The kernel's per-profile policy directory: one entry per loaded profile of
+#: the root namespace, each holding `name` (the profile's name and a newline)
+#: and `sha256` (the hex digest of the profile's policy and a newline, empty
+#: when the kernel keeps no hash). *Inferred* from the kernel's apparmorfs
+#: (`CONFIG_SECURITY_APPARMOR_HASH`), not yet read on the VM; an absent
+#: directory or file withholds as `lsm_policy_unverifiable`. Also inferred:
+#: the file may be named `sha1` rather than `sha256` on some kernels (this
+#: reader looks for `sha256` only, so such a kernel withholds), and the hash
+#: is over the **compiled** policy the parser loaded, not over the bytes of
+#: the file in `/etc/apparmor.d`.
+_POLICY_PROFILES = "/sys/kernel/security/apparmor/policy/profiles"
+_POLICY_ENTRY_LIMIT = 4096
+_POLICY_NAME_LIMIT = 4096
+_POLICY_HASH_LIMIT = 256
 #: More than this is not a listing this judgement reads.
 _LSM_LIMIT = 4096
 _PROFILES_LIMIT = 1024 * 1024
@@ -248,6 +296,202 @@ def read_exposure_lsm():
     """
 
     return _read(_LSM, _LSM_LIMIT), _read(_PROFILES, _PROFILES_LIMIT)
+
+
+#: The units whose manager state may be `masked`: the three exposure units,
+#: masked until a pass grants them. The verify unit is never masked (a masked
+#: watch unit is refused by `activation_unit_files.require_watch_unit_files`).
+_MASKABLE_UNITS = frozenset(unit for unit, _ in DECOY_APPARMOR_PROFILES
+                            if unit != "azazel-decoy-verify.service")
+
+
+def loaded_unit_profile_refusal(loaded) -> str | None:
+    """Why the manager's loaded units would withhold the tier, or None (§7 (a)).
+
+    `loaded` maps each unit of `DECOY_APPARMOR_PROFILES`, exactly those four,
+    to what the manager holds: None when it holds no unit object (a later
+    load reads the files the pass checked), or `{"LoadState": str,
+    "AppArmorProfile": (bool, str)}`, the Unit interface's `LoadState` and the
+    Service interface's `AppArmorProfile` (D-Bus `(bs)`: the `-` prefix and
+    the name, per org.freedesktop.systemd1(5); *inferred* until read on the
+    VM). Pure: it reads nothing. A loaded unit must name exactly its profile
+    without `-`; an exposure unit may be `masked` (it cannot start); every
+    other state, shape or value is `lsm_unit_profile_differs`.
+
+    **What it does not see (review of #294).** Passing `masked` does not
+    look at `ActiveState`: a unit masked while it runs passes here. That
+    state, §6.3 (a) "masked and still running", is judged by
+    `decoy_residue` (a separate PR, #293), not by this function. None is
+    passed only because the G6 reader maps to None the one specific error
+    that means "no unit object" (`NoSuchUnit` from `GetUnit`) and refuses
+    every other error; that reader and its tests are G6's.
+    """
+
+    expected = dict(DECOY_APPARMOR_PROFILES)
+    if type(loaded) is not dict or set(loaded) != set(expected):
+        return (f"{LSM_UNIT_PROFILE_DIFFERS}: the loaded definitions read are not "
+                "exactly the Deception Lite units")
+    differ = 0
+    for unit, profile in DECOY_APPARMOR_PROFILES:
+        value = loaded[unit]
+        if value is None:
+            continue
+        if type(value) is not dict or set(value) != {"LoadState", "AppArmorProfile"}:
+            differ += 1
+            continue
+        state, attached = value["LoadState"], value["AppArmorProfile"]
+        if state == "masked" and unit in _MASKABLE_UNITS:
+            continue
+        if (state != "loaded" or type(attached) is not tuple or len(attached) != 2
+                or attached[0] is not False or type(attached[1]) is not str
+                or attached[1] != profile):
+            differ += 1
+    if differ:
+        return (f"{LSM_UNIT_PROFILE_DIFFERS}: {differ} of the {len(expected)} "
+                "Deception Lite units are loaded without exactly their AppArmor "
+                "profile")
+    return None
+
+
+def _hex_digest(value) -> bool:
+    return (type(value) is str and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+def policy_hash_refusal(entries, expected) -> str | None:
+    """Why the kernel's loaded policy would withhold the tier, or None (§7 (b)).
+
+    `entries` is what `read_policy_hashes()` gives: None when the kernel's
+    per-profile directory does not exist, `UNREADABLE`, or a tuple of
+    `(name, sha256)`, each bytes, None (absent) or `UNREADABLE`. `expected`
+    maps each of `REQUIRED_ENFORCED_PROFILES` to the 64-hex SHA-256 the
+    kernel should show for the placed file, or is None. Pure. In order:
+
+    * `lsm_policy_unverifiable`: no expected hashes (**this build derives
+      none**: how the kernel's hash relates to the compiled placed file is
+      *inferred*, G6), no directory, an unreadable one, an entry whose name
+      cannot be read, a required profile listed not exactly once, or its
+      hash absent, empty, unreadable or not one lowercase hex digest and a
+      newline;
+    * `lsm_policy_differs`: a required profile's hash is not the expected one.
+    """
+
+    names = REQUIRED_ENFORCED_PROFILES
+    if (type(expected) is not dict or set(expected) != set(names)
+            or not all(_hex_digest(expected[name]) for name in names)):
+        return (f"{LSM_POLICY_UNVERIFIABLE}: no expected policy hash of the placed "
+                "Deception Lite profiles is available to compare with")
+    if entries is None:
+        return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel shows no per-profile "
+                "policy hash")
+    if (entries is UNREADABLE or type(entries) is not tuple
+            or len(entries) > _POLICY_ENTRY_LIMIT):
+        return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel's per-profile policy "
+                "directory could not be read")
+    found: dict[bytes, list] = {}
+    for entry in entries:
+        if type(entry) is not tuple or len(entry) != 2 or type(entry[0]) is not bytes:
+            return (f"{LSM_POLICY_UNVERIFIABLE}: a profile's name in the kernel's "
+                    "policy directory could not be read")
+        found.setdefault(entry[0], []).append(entry[1])
+    differ = 0
+    for name in names:
+        hashes = found.get(name.encode("ascii") + b"\n", [])
+        if len(hashes) != 1:
+            return (f"{LSM_POLICY_UNVERIFIABLE}: a Deception Lite profile is not "
+                    "listed exactly once in the kernel's policy directory")
+        raw = hashes[0]
+        if (type(raw) is not bytes or not raw.endswith(b"\n")
+                or not _hex_digest(raw[:-1].decode("ascii", "replace"))):
+            return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel keeps no readable "
+                    "policy hash for a Deception Lite profile")
+        if raw[:-1].decode("ascii") != expected[name]:
+            differ += 1
+    if differ:
+        return (f"{LSM_POLICY_DIFFERS}: {differ} of the {len(names)} Deception Lite "
+                "profiles loaded in the kernel are not the placed ones")
+    return None
+
+
+_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _read_at(directory_fd: int, name: str, limit: int):
+    """One bounded read relative to an open directory; None if absent, else UNREADABLE."""
+
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     dir_fd=directory_fd)
+    except OSError as error:
+        return None if error.errno in _ABSENT else UNREADABLE
+    try:
+        data = os.read(fd, limit + 1)
+        return UNREADABLE if len(data) > limit else data
+    except OSError:
+        return UNREADABLE
+    finally:
+        os.close(fd)
+
+
+def read_policy_hashes():
+    """The kernel's `(name, sha256)` per loaded profile, as read now.
+
+    None when the directory does not exist, `UNREADABLE` when it exists and
+    cannot be listed or holds more than `_POLICY_ENTRY_LIMIT` entries, else a
+    tuple with one pair per entry, each file bytes, None or `UNREADABLE`.
+    Read-only, bounded, no link followed (an entry that is a link is read as
+    `UNREADABLE`). The path is *inferred* (module docstring).
+    """
+
+    try:
+        directory = os.open(_POLICY_PROFILES, _DIRECTORY)
+    except OSError as error:
+        return None if error.errno in _ABSENT else UNREADABLE
+    try:
+        names = os.listdir(directory)
+        if len(names) > _POLICY_ENTRY_LIMIT:
+            return UNREADABLE
+        entries = []
+        for entry in sorted(names):
+            try:
+                fd = os.open(entry, _DIRECTORY, dir_fd=directory)
+            except OSError as error:
+                if error.errno == errno.ENOENT:
+                    continue  # removed since the listing (a profile replaced)
+                entries.append((UNREADABLE, UNREADABLE))
+                continue
+            try:
+                entries.append((_read_at(fd, "name", _POLICY_NAME_LIMIT),
+                                _read_at(fd, "sha256", _POLICY_HASH_LIMIT)))
+            finally:
+                os.close(fd)
+        return tuple(entries)
+    except OSError:
+        return UNREADABLE
+    finally:
+        os.close(directory)
+
+
+def exposure_lsm_withholding(lsm, profiles, loaded, policy, expected) -> str | None:
+    """The tier's LSM condition (§5 item 4, §7), the first reason that holds, or None.
+
+    `exposure_lsm_refusal(lsm, profiles)`, then
+    `loaded_unit_profile_refusal(loaded)`, then
+    `policy_hash_refusal(policy, expected)`. Pure. **Called by nothing in
+    this build**; with `expected` None, as this build has it, it never
+    returns None.
+    """
+
+    return (exposure_lsm_refusal(lsm, profiles)
+            or loaded_unit_profile_refusal(loaded)
+            or policy_hash_refusal(policy, expected))
+
+
+def read_exposure_lsm_policy():
+    """`(lsm, profiles, policy)`: `read_exposure_lsm()`, then `read_policy_hashes()`."""
+
+    lsm, profiles = read_exposure_lsm()
+    return lsm, profiles, read_policy_hashes()
 
 
 def _within(path: str, root: str) -> bool:

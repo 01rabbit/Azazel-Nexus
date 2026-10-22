@@ -245,6 +245,9 @@ the design decision F2 asks for.
    signer prints the scope digest and the number of prefixes and interfaces
    before signing. A new generation schema version is needed (the current
    one is named observe-baseline); its name is an implementation choice.
+   The section's computation and comparison are **implemented, not wired**
+   (§9, "G6 preparation C"); the schema version that carries it is
+   introduced in G6.
 
 ### 4.5 A gap this exposed: how outside peers reach the decoy
 
@@ -774,7 +777,10 @@ reached until G6. Revised after the review of #285.
   generation's exposure section digests the files (§4.4 item 5), and G6
   compares the kernel's per-profile policy hash
   (`/sys/kernel/security/apparmor/policy/profiles/*/sha256`, *inferred*) with
-  the hash of the compiled placed files.
+  the hash of the compiled placed files. Both comparisons are
+  **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
+  `lsm_policy_unverifiable` until G6 confirms the kernel's directory and
+  derives the expected hash.
 
 ### The namespace unit after G4 (G4 follow-up, as implemented)
 
@@ -964,10 +970,118 @@ pass and the existing tests that pin it stay.
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |
-| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; the two open items of §6.3 "For G6" (a running exposure unit whose definition a mask removed, and whether the controller stops what it masks, with no new unit operation); an isolation record whose `scope_digest` is `none` (a helper run without a scope) is refused by the pass and the grant path, and a granted decoy requires the digest of the scope the pass rendered; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted. **Preparation A (implemented, not wired):** the pass's judgement of [reachability](deception-exposure-reachability.md) §6 (R1, R2, R5; `decoy_reachability.pass_reachability_departures`, with the reads and the verify's R4 judgement moved into the same module, the verify unchanged) and the detection of item (a) of §6.3 (`decoy_residue.exposure_residue_departures`); both pure, called by nothing, the tier still withheld as `isolation_evidence_absent` | G5, Q5, Q10, Q11 |
+| G6 prep: the v3 decoder, not wired *(implemented)* | condition 1 of §5 C1 as a part only: `azazel-nexus/activation-approval/v3` (`src/azazel_nexus/activation_approval_v3.py`), the v2 fields under the v3 schema name plus the three `DECEPTION_EXPOSURE` units, all three or none (a document naming one or two of them cannot be encoded, decoded or verified); the strict decoder (exact field set, no duplicate key, canonical re-encoding) and a verifier through the existing operator trust and the `ACTIVATION` purpose, returning its own result type. **Not connected:** the pass still reads v2 only and requires an `ObserveBaselineApproval`; `tools/operator_sign.py` cannot sign v3; `ACTIVATION_UNIT_ALLOWLIST`, `GRANTABLE_UNITS`, the policy scope and `_withholding_reason` are unchanged, so a v3 approval naming the tier is refused at the scope check. Tests with keys generated per test pin each of these and that nothing outside the tests imports the module (`tests/unit/test_activation_approval_v3.py`, `tests/unit/test_runtime_activation_pass.py`). Wiring it into the pass and the signer is G6 | G5 not required (grants nothing) |
+| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; the two open items of §6.3 "For G6" (a running exposure unit whose definition a mask removed, and whether the controller stops what it masks, with no new unit operation); an isolation record whose `scope_digest` is `none` (a helper run without a scope) is refused by the pass and the grant path, and a granted decoy requires the digest of the scope the pass rendered; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted. **Preparation A (implemented, not wired):** the pass's judgement of [reachability](deception-exposure-reachability.md) §6 (R1, R2, R5; `decoy_reachability.pass_reachability_departures`, with the reads and the verify's R4 judgement moved into the same module, the verify unchanged) and the detection of item (a) of §6.3 (`decoy_residue.exposure_residue_departures`); both pure, called by nothing, the tier still withheld as `isolation_evidence_absent`. When G6 uses approval v3, a dedicated `ApprovalPurpose` (for example `ACTIVATION_EXPOSURE`) is to be considered, so that a signature made for the observe-baseline purpose cannot be reused for the exposure tier | G5, Q5, Q10, Q11 |
 
 P5 and P6 of the prerequisites document (decisions, redirect) are unchanged
 and come after G6.
+
+### G6 preparation C (implemented, not wired)
+
+Parts of G6 built ahead of it as pure functions and bounded readers.
+**Nothing calls them**: no module of the pass, the controller or the library
+imports them, `_withholding_reason` still withholds the tier as
+`isolation_evidence_absent` on every pass, and `GRANTABLE_UNITS`,
+`ACTIVATION_UNIT_ALLOWLIST`, the policy scope and the observe-baseline
+generation schema are unchanged. No bus call, unit operation, approval field,
+flag or environment variable is added. `tests/unit/test_exposure_g6_parts.py`
+pins each part and that none is reached (a pass with every part replaced by
+one that fails when called still withholds the tier, and calls none).
+
+- **The generation's exposure section** (§4.4 item 5, §5 C1 condition 2;
+  `exposure_generation`). `build_exposure_section` digests (`sha256:<hex>`)
+  the three exposure unit files, the watch's three (§6.3), the four profile
+  files of `/etc/apparmor.d` (§7) and the rendered scope file
+  (`scope_digest`, accepted only as `decoy_scope.parse_scope_file` accepts
+  it); `verify_exposure_section` compares a recorded section with a fresh
+  measurement, one fixed label per difference.
+  `measure_exposure_section_inputs` reads them the way the observe-baseline
+  generation reads its unit files: the exposure units through
+  `activation_unit_files.measure_exposure_unit_files` (content, override
+  and drop-in checks, over `EXPOSURE_UNITS`, outside the allowlist), the
+  watch through `require_watch_unit_files`, which now returns the bytes it
+  compared so the digest is of exactly what it accepted, and the profiles
+  with the same file protections. The scope file is not read: the pass
+  renders it in G6. Not digested: Debian's `tunables/global` and
+  `abstractions/base`, which the profiles include; the kernel-hash
+  comparison below is what would catch a change there. **The generation
+  schema version that carries the section is introduced in G6.**
+- **Coexistence** (§6.2, §10 Q12; `exposure_withholding.host_firewall_refusal`).
+  Input: the unit-file state and the `ActiveState` of each of
+  `nftables.service`, `firewalld.service` and `netfilter-persistent.service`
+  as the bus gives them, None when systemd has neither a unit file nor a
+  unit object. A unit passes only when its file state is `disabled`,
+  `masked` or `masked-runtime` **and** it is `inactive`, or when it is None.
+  Every other file state, `static` and `indirect` included, is
+  `host_firewall_enabled`; a disabled or masked unit in any state but
+  `inactive` (`failed` and `activating` included) is `host_firewall_active`;
+  a value not read or unknown is `host_firewall_unreadable`. The active
+  state is required because a `disabled` unit still starts through another
+  unit's `Wants=` or `Requires=`, by hand or by D-Bus activation (review of
+  #294 F1).
+- **`fb_tunnels_only_for_init_net`** (§5 C1 condition 6;
+  `exposure_withholding.fb_tunnels_refusal`, `read_fb_tunnels`): only the
+  bytes `2\n` pass; absent, unreadable or any other value is
+  `fb_tunnels_not_init_net_only`. The forwarding half of condition 6 is
+  [reachability](deception-exposure-reachability.md)'s and not here.
+- **The LSM** (§5 C1 condition 4, §7 "Left to G6";
+  `decoy_apparmor.exposure_lsm_withholding`, reader
+  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal`, then
+  `loaded_unit_profile_refusal` (each of the four units not loaded, an
+  exposure unit `masked`, or `loaded` with `AppArmorProfile` exactly
+  `(false, <its profile>)`; otherwise `lsm_unit_profile_differs`; the
+  property is the Service interface's `(bs)`, *inferred* from
+  org.freedesktop.systemd1(5) until read on the VM; passing `masked` does
+  not look at `ActiveState`: "masked and still running", §6.3 (a), is
+  `decoy_residue`'s judgement, a separate PR, #293), then
+  `policy_hash_refusal` over `read_policy_hashes`, which lists
+  `/sys/kernel/security/apparmor/policy/profiles/*/{name,sha256}`
+  (*inferred*: the directory, the files and their form; the hash file may
+  be `sha1` rather than `sha256` on some kernels, which this reader then
+  treats as absent; and the hash is over the **compiled** policy the parser
+  loaded, not over the bytes of the placed file). A required profile
+  listed not exactly once, a hash absent, empty or not one lowercase hex
+  digest, or no expected hash is `lsm_policy_unverifiable`; a different hash
+  is `lsm_policy_differs`. **This build derives no expected hash**: how the
+  kernel's hash relates to the compiled placed file is *inferred*, so the
+  comparison fails closed until G6 confirms it on the VM.
+- **An enforcing unit and the exposure tier** (§6.2;
+  `azazel_nexus.exposure_exclusivity.exposure_enforcement_conflict`, input
+  the governed set). A set holding the exposure tier and any
+  `UnitTier.ENFORCEMENT` unit is `exposure_enforcement_exclusive`. A
+  `UnitDefinition` carries no Edge posture, so every enforcement unit is
+  counted, not only Edge's (the wider choice); today's `CORE_UNITS` hold
+  none, and Edge Core is `EDGE_BASELINE`, observe-only. G6 makes the
+  controller refuse such a set.
+
+Each part has its own reason codes; the order in which G6 asks them, and
+where in `_withholding_reason`, is G6's.
+
+**Open until G6** (review of #294):
+
+- **None means "not there" only through the G6 reader.** The coexistence
+  and loaded-unit judgements pass None (no unit file and no unit object;
+  no unit object). The G6 reader turns into None only the specific errors
+  that mean exactly that (`NoSuchUnit` from `GetUnit`, the unit-file
+  lookup's not-found) and refuses every other error; that reader and its
+  tests are G6's, not this PR's.
+- **The coexistence check is a snapshot.** `disabled` and `inactive` at the
+  pass do not stop a loader started later in the boot by another unit's
+  `Wants=`, by hand or by D-Bus activation; the watch (§6.1) is what sees
+  its flush.
+- **Another profile file of the same name.** The section digests
+  `/etc/apparmor.d/<name>` only. Another file in `/etc/apparmor.d` (or a
+  file it includes) may define a profile of the same name and, loaded after
+  ours, replace it. The enforce-mode listing does not see that; the
+  kernel-hash comparison would.
+- **The kernel hash closes these holes only if the expected hash covers
+  the includes.** An expected hash computed from the placed file alone
+  would differ from the kernel's for every honest load (the kernel hashes
+  the compiled policy, `tunables/global` and `abstractions/base` included)
+  or, if computed from a compilation that reads the current includes, would
+  accept an include changed before the pass. So G6 must compute it from a
+  compilation of the placed files together with includes whose content is
+  itself pinned (nothing pins them today).
 
 ## 10. Owner decisions
 

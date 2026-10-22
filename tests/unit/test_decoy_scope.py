@@ -516,11 +516,15 @@ def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
     """G1b wired the helper and G2 the verify unit (the helper's executable,
     `decoy_watch`); the pass is G6. #196 G6 preparation A: the shared
     reachability reads take only the interface-name rule from it
-    (`interface_name_allowed`), and nothing on the pass imports them."""
+    (`interface_name_allowed`), and nothing on the pass imports them.
+    `exposure_generation` (G6 preparation C) digests a scope file it is
+    given and is imported by nothing in the product
+    (`test_exposure_g6_parts.py`); G6 puts this list back to the real
+    callers when it wires the parts in."""
 
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
     assert _importers(runtime) == ["decoy_netd.py", "decoy_reachability.py",
-                                   "decoy_watch.py"]
+                                   "decoy_watch.py", "exposure_generation.py"]
     reachability = (runtime / "decoy_reachability.py").read_text(encoding="utf-8")
     assert ("from azazel_nexus.decoy_scope import MAX_INGRESS, interface_name_allowed"
             in reachability)
