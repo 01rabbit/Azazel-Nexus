@@ -1,7 +1,8 @@
 """#196 G6 preparation, all parts at once: built and not wired.
 
 `docs/deception-exposure-grant.md` §9 (the G6 row and its preparations A, C
-and D, and the v3 decoder row). The parts G6 is prepared with are each
+and D, and the v3 decoder row), and preparation K's record decoder
+(`apparmor_compiled`, wiring §5.2). The parts G6 is prepared with are each
 tested on their own (`test_activation_approval_v3.py`,
 `test_exposure_g6_parts.py`, `test_exposure_interfaces.py`,
 `test_decoy_reachability.py`, `test_decoy_apparmor.py`); that **none of
@@ -78,6 +79,8 @@ REACHABILITY = _RT + "decoy_reachability.py"
 RESIDUE = _RT + "decoy_residue.py"
 UNIT_FILES = _RT + "activation_unit_files.py"
 WATCH = _RT + "decoy_watch.py"
+COMPILED = _RT + "apparmor_compiled.py"
+RECORD_TOOL = "tools/record_apparmor_compiled.py"
 
 # -- the table: the only thing G6 edits ------------------------------------------
 
@@ -96,6 +99,10 @@ IMPORTERS: dict[str, frozenset[str]] = {
     "azazel_nexus_runtime.decoy_apparmor": frozenset({
         _RT + "hardening.py", _RT + "install_platform.py", GENERATION,
         "tools/check_decoy_apparmor_wrappers.py"}),
+    # Preparation K: the installer's compiled-policy record. Only the
+    # installer's tool writes it (and checks its output with the decoder);
+    # G6's `generation-publish` is to read it, never the pass.
+    "azazel_nexus_runtime.apparmor_compiled": frozenset({RECORD_TOOL}),
 }
 
 
@@ -135,6 +142,15 @@ NAME_FILES: dict[str, frozenset[str]] = {
             "conf_entry_path", decoy_reachability.FORWARDING_ROLE_ON),
     **_only({RESIDUE}, "exposure_residue_departures", "residue_refusal", "read_netns",
             *decoy_residue.RESIDUE_CODES),
+    # Preparation K. The record's field is the section's (`exposure_generation`)
+    # and the LSM judgement's (`decoy_apparmor`); the pass names none of these.
+    **_only({COMPILED, RECORD_TOOL}, "decode_apparmor_compiled", "encode_apparmor_compiled",
+            "normalize_parser_version", "ApparmorCompiled"),
+    **_only({COMPILED}, "azazel-nexus/apparmor-compiled/v1"),
+    **_only({COMPILED, RECORD_TOOL, "packaging/install.sh"}, "apparmor-compiled.json"),
+    **_only({COMPILED, RECORD_TOOL, "packaging/install.sh", "tools/build_offline_bundle.py"},
+            "apparmor_compiled"),
+    **_only({COMPILED, APPARMOR, GENERATION, RECORD_TOOL}, "apparmor_policy_hashes"),
 }
 
 #: The reason codes of the parts: none may start a verdict's or the ledger's
@@ -334,6 +350,10 @@ _POISONED_BEFORE = {
     "pass_reachability_departures", "read_sysctls", "reachability_refusal",
     "exposure_residue_departures", "read_netns", "residue_refusal",
 }
+#: Added since (#196 G6 preparation K): the record's decoder and encoder.
+_POISONED_SINCE = {
+    "decode_apparmor_compiled", "encode_apparmor_compiled", "normalize_parser_version",
+}
 
 
 def _poison_every_part(monkeypatch) -> list[str]:
@@ -360,6 +380,7 @@ def _poison_every_part(monkeypatch) -> list[str]:
             originals[id(getattr(module, name))] = f"{module.__name__}.{name}"
     labels = {label.rsplit(".", 1)[1] for label in originals.values()}
     assert labels >= _POISONED_BEFORE, sorted(_POISONED_BEFORE - labels)
+    assert labels >= _POISONED_SINCE, sorted(_POISONED_SINCE - labels)
 
     calls: list[str] = []
 

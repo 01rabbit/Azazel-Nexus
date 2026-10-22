@@ -859,6 +859,31 @@ To see their state, as root:
 sudo grep '^azazel-decoy' /sys/kernel/security/apparmor/profiles
 ```
 
+**The compiled-policy record** (#196 G6 preparation K; implemented, record
+only: the reader is G6's). With the service manager, after placing the four
+profiles, the installer compiles each placed file with `apparmor_parser -Q
+-o` into a private temporary file (nothing is loaded) and writes the
+SHA-256 of each output to `/etc/azazel/activation/apparmor-compiled.json`
+(root, `0644`; contract `azazel-nexus/apparmor-compiled/v1`, the four
+profile names to 64 lowercase hex digits, and the parser's version line
+for diagnosis, normalized to printable ASCII and never a reason to refuse).
+A profile that does not compile there refuses the install and shows the
+parser's first error lines; a failure before the record is renamed into
+place leaves an earlier record as it was, and a failed directory sync
+after the rename is only a warning. A `DESTDIR` or
+`--without-service-manager` run writes none. **Checked on the VM** (Debian
+13, parser 4.1.0; a mechanism check, not hardware evidence): the four
+values this installer recorded equalled the kernel's `raw_sha256` once
+`apparmor.service` loaded the profiles. Nothing reads the record in this
+build: G6's `generation-publish` is to copy it into the generation the
+operator signs. Do not edit it; install again to refresh it. To compare it
+with what the kernel holds, as root:
+
+```
+sudo cat /etc/azazel/activation/apparmor-compiled.json
+sudo cat /sys/kernel/security/apparmor/policy/profiles/azazel-decoyd.*/raw_sha256
+```
+
 **Removing a stale decoy child profile.** Before the G4 follow-up the
 namespace profile had a child, `azazel-decoy-nsd//ip`. Replacing a parent
 profile (`apparmor_parser -r`, or the installer placing a new file and
