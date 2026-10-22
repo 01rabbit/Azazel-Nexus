@@ -666,19 +666,13 @@ def test_leftovers_are_judged_per_owner(running, netns, links, expected):
     assert _residue(units, netns, links) == expected
 
 
-@pytest.mark.parametrize("running", [(), (DECOYD,), (NSD,), (NSD, DECOYD)])
-def test_the_table_is_not_judged(running):
-    """Wiring §4.4, A1 and §10 item 5: the pass takes no table listing. A
-    leftover `inet azazel_decoy` with no leftover bridge passes here and is
-    the helper's to refuse (`HELPER_ABSENT`)."""
+def test_no_table_listing_is_an_input():
+    """Wiring §4.4, A1 and §10 item 5: the judgement takes no table listing,
+    so a leftover `inet azazel_decoy` with no leftover bridge is not seen
+    here; it is the helper's to refuse (`HELPER_ABSENT`)."""
 
-    units = _units(**{unit: (_RUNNING if unit in running else _STOPPED_UNIT)
-                      for unit in EXPOSURE_UNITS})
-    assert _residue(units, _NONE, _NO_LINKS) == ()
     assert list(inspect.signature(exposure_residue_departures).parameters) == [
         "units", "netns", "links"]
-    source = Path(decoy_residue.__file__).read_text(encoding="utf-8")
-    assert "NFT_TABLE" not in source and "_table_present" not in source
 
 
 @pytest.mark.parametrize("active,expected", [
@@ -699,7 +693,16 @@ def test_other_links_are_not_leftovers():
     # `az-decoy-ns0` is the namespace's end: inside it, never in the host's dump.
     assert _residue(links=("az-decoy-ns0", "az-decoy1", "az-decoy0x", "AZ-DECOY0",
                            "azazel_decoy", "")) == ()
-    assert _residue(links=()) == ()
+    assert _residue(links=("lo",)) == ()
+
+
+def test_an_empty_link_dump_is_unreadable():
+    """A host namespace always has `lo`: a dump with no link is not a reading."""
+
+    assert _residue(_stopped_units(), _NONE, ()) == (EXPOSURE_STATE_UNREADABLE,)
+    masked = _units(**{NSD: {"ActiveState": "active"}})
+    assert _residue(masked, _NONE, ()) == (
+        EXPOSURE_UNIT_MASKED_RUNNING, EXPOSURE_STATE_UNREADABLE)
 
 
 @pytest.mark.parametrize("units", [

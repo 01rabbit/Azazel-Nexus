@@ -33,8 +33,8 @@ already read, whether the pass should refuse the grant because of that state:
 read from the service manager's bus, `/run/netns` through `read_netns`,
 and the host's link names from `netlink.read_links`), stops nothing,
 removes nothing and adds no unit operation: the operator stops such a unit
-and clears what is left (operations). It says reason codes only, each a fixed word with a fixed
-phrase, never a name, an address or a value.
+and clears what is left (operations). It says reason codes only, each a
+fixed word with a fixed phrase, never a name, an address or a value.
 
 **The namespace is read from `/run/netns`, not from `ip netns list`**
 (#196 cross review L2, H1(c)). iproute2 prints nothing and exits 0 when it
@@ -201,10 +201,13 @@ def _link_names(links: object) -> Optional[frozenset[str]]:
     `links` is the names of `netlink.read_links()`'s records, in its order,
     or None when the dump failed. A record without a name (`LinkRecord.name`
     None) could be any link, so the list is unreadable rather than
-    shortened (wiring §4.4, "What B1's parser must hold").
+    shortened (wiring §4.4, "What B1's parser must hold"). An empty dump is
+    unreadable too: every host namespace has `lo`, so no link at all is not
+    a reading of it.
     """
 
-    if type(links) is not tuple or not all(type(name) is str for name in links):
+    if (type(links) is not tuple or not links
+            or not all(type(name) is str for name in links)):
         return None
     return frozenset(links)
 
@@ -221,11 +224,13 @@ def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
     is no namespace, any other error unreadable, the entry a regular file or
     unreadable); `links` is the host namespace's link names as
     `netlink.read_links()` yields them (`tuple(r.name for r in records)`),
-    None when the dump failed, and a None name anywhere unreadable. No table
-    listing is taken (wiring §4.4, A1). Empty when neither state holds. Any
-    argument of another shape is `exposure_state_unreadable`, never an
-    exception. A unit state that cannot be read leaves both judgements unmade (`exposure_state_unreadable`
-    alone); an unreadable object read leaves the leftovers unjudged.
+    None when the dump failed; a None name anywhere, or no link at all (a
+    host always has `lo`), is unreadable. No table listing is taken (wiring
+    §4.4, A1). Empty when neither state holds. Any argument of another
+    shape is `exposure_state_unreadable`, never an exception. A unit state
+    that cannot be read leaves both judgements unmade
+    (`exposure_state_unreadable` alone); an unreadable object read leaves
+    the leftovers unjudged.
     """
 
     states = _unit_states(units)

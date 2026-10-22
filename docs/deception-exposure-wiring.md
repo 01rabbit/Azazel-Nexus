@@ -70,7 +70,7 @@ Read at `main` 7bdf724.
 | The isolation record accepts `scope_digest` `none`, and the decoy's gate does not compare the digest with anything | `src/azazel_nexus/decoy_isolation.py` (`NO_SCOPE`, `require_isolation_for_decoy`) |
 | The installer compiles the four profiles (`--skip-kernel-load --skip-cache`) and records nothing | `packaging/install.sh` |
 | `netlink.py` is the commissioning reader of permanent MACs: one request (`RTM_GETLINK`), pinned by its docstring and `tests/unit/test_runtime_netlink.py`; `LinkRecord.name` may be None | `runtime/src/azazel_nexus_runtime/netlink.py` |
-| The residue judgement reads the namespace from `/run/netns` (`read_netns`), takes the host's links as the names `netlink.read_links` yields (None for a failed dump), and takes no table listing (A1, §4.4) | `runtime/src/azazel_nexus_runtime/decoy_residue.py` (#302, #308) |
+| The residue judgement reads the namespace from `/run/netns` (`read_netns`), takes the host's links as the names `netlink.read_links` yields (None for a failed dump), and takes no table listing (A1, §4.4) | `runtime/src/azazel_nexus_runtime/decoy_residue.py` (namespace read in #302; links and no table done in #308) |
 | `measure_scoped_unit_files` limits its scope to `ACTIVATION_UNIT_ALLOWLIST`; the loaded-unit check (step 6b) already covers every grantable unit, the exposure units included | `runtime/src/azazel_nexus_runtime/activation_unit_files.py`; `activation_pass.py` step 6b |
 
 *Observed on a VM* (Debian 13, systemd 257; a mechanism check, not read
@@ -241,7 +241,7 @@ route netlink without a capability (§2). So each input is placed:
 
 | input | option | idea | verdict |
 | --- | --- | --- | --- |
-| (a) the table `inet azazel_decoy` (P5) | A1 | the controller does not read it; the residue judgement takes no table listing and judges the namespace, the veth end and the bridge; a leftover table alone is the helper's to refuse (`HELPER_ABSENT` fails its start closed) | **done** (this PR; owner decision Q-A = A1). A1 **removes a judgement** from the pass; it is not a narrowing default. §10 item 5 states what is lost |
+| (a) the table `inet azazel_decoy` (P5) | A1 | the controller does not read it; the residue judgement takes no table listing and judges the namespace, the veth end and the bridge; a leftover table alone is the helper's to refuse (`HELPER_ABSENT` fails its start closed) | **done** in #308 (owner decision Q-A = A1). A1 **removes a judgement** from the pass; it is not a narrowing default. §10 item 5 states what is lost |
 | | A2 | a verify-type one-shot with `CAP_NET_ADMIN`, ordered before the controller, records "no table" for this boot and the pass reads the record | a fourth `CAP_NET_ADMIN` holder and a new unit and record for one bit the helper already checks; **not chosen** |
 | | A3 | `CAP_NET_ADMIN` for the controller | a new privilege in the one root daemon that can unmask units; **rejected** |
 | (b) the rules and routes (P7) | B1 | read-only route netlink dumps, `RTM_GETRULE` (IPv4) and `RTM_GETROUTE` (table 254, `main`), in a **new module of their own** (proposed `exposure_route_dump`), not in `netlink.py`; its parser yields the dictionaries `ip -j` prints, so `_rules_exact` and `_routes_clear` stay the one comparison; no capability | **recommended; owner decision** (§9 Q-N): it is the netlink parser G2 avoided |
@@ -294,7 +294,7 @@ its judgement; only what it is handed changes:
 
 | part | today's input | G6 |
 | --- | --- | --- |
-| `decoy_residue.exposure_residue_departures` | `netns` from `read_netns` (#302); `links` and `tables` as `(status, ip/nft JSON)` | **done** (this PR): `tables` removed (A1); `links` a tuple of names from `netlink.read_links` (`tuple(r.name for r in records)`), None for a failed dump; a None name or a failed dump is `exposure_state_unreadable` |
+| `decoy_residue.exposure_residue_departures` | `netns` from `read_netns` (#302); `links` and `tables` as `(status, ip/nft JSON)` | **done** in #308: `tables` removed (A1); `links` a tuple of names from `netlink.read_links` (`tuple(r.name for r in records)`), None for a failed dump; a None name, an empty dump or a failed dump is `exposure_state_unreadable` |
 | `decoy_reachability.pass_reachability_departures` | `rules`, `routes` as `(status, ip -j JSON bytes)` | lists of dictionaries from B1, or a failed dump (under B2, unchanged) |
 | `decoy_reachability._rules_exact`, `_routes_clear` | lists of dictionaries | unchanged: the one comparison of the pass and the verify |
 | `decoy_watch` (the verify) | `ip -j` through the helper's plan, `parse_json_list` | unchanged |

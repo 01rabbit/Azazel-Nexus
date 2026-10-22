@@ -558,8 +558,8 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     `inet azazel_decoy` alone is the helper's to refuse (`HELPER_ABSENT`
     fails its start closed), noticed at the helper and not at the pass.
     The links come from the route-netlink dump `netlink.read_links`
-    (names only, no capability); a link without a name or a failed dump
-    is `exposure_state_unreadable`.
+    (names only, no capability); a link without a name, an empty dump (a
+    host always has `lo`) or a failed dump is `exposure_state_unreadable`.
   - (b) **The controller masks but does not stop.** The controller's
     preflight masks an exposure unit that is running without a grant, and
     leaves it running (seen in the second G4 rehearsal). It has no
