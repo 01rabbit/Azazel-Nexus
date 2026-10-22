@@ -511,7 +511,7 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     that state is handled **with no new authority**, for example: the pass
     refuses the grant while an exposure unit is masked and still running,
     or while a leftover of a definition-less stop (the namespace, the veth
-    pair, the table) is present; the operator stops such a unit by hand
+    pair, the bridge) is present; the operator stops such a unit by hand
     (operations); the leftovers are detected and reported. The `Conflicts=`
     above stops the three processes in that state (VM-checked, §11); the
     clean-up and the stop order are not covered by it.
@@ -520,14 +520,14 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     values the caller read (each exposure unit's `LoadState`,
     `UnitFileState` and `ActiveState` from the service manager's bus,
     `decoy_residue.read_netns`'s `(error, mode)` for `/run/netns/azazel-decoy`,
-    and the `(status, output)` of `ip -j link show` and
-    `nft -j list tables`), returns `exposure_unit_masked_running` (no
+    and the host's link names as `netlink.read_links` yields them, None
+    for a failed dump), returns `exposure_unit_masked_running` (no
     definition: `LoadState` `masked` or `not-found`, or `UnitFileState`
     `masked` or `masked-runtime`, while `ActiveState` is neither `inactive`
     nor `failed`), `exposure_leftovers_present` (judged per owner: the
     namespace `azazel-decoy` or the veth end `az-decoy-host0` present while
     the namespace unit is `inactive` or `failed`, or the bridge `az-decoy0`
-    or the table `inet azazel_decoy` present while the helper is; so the
+    present while the helper is; so the
     decoy running alone over its owners' leftovers is refused, review of
     #293) and
     `exposure_state_unreadable`, in that order, with fixed phrases that
@@ -551,11 +551,15 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     `exposure_state_unreadable`, and the entry must be the regular file
     `ip netns add` binds the nsfs file onto (a link or anything else under
     that name is `exposure_state_unreadable`). Nothing calls `read_netns`
-    either. **How the controller reads the host's links and the nft tables
-    is decided in G6**, in a design document of its own: in the
-    controller's sandbox `nft` needs `CAP_NET_ADMIN` and cannot read the
-    tables, so the two `(status, output)` inputs above are the shape of
-    the judgement, not a settled way of reading them.
+    either. **The table is not read by the pass** (A1, decided
+    2026-10-23; [wiring](deception-exposure-wiring.md) §4.4 and §10
+    item 5): in the controller's sandbox `nft` needs `CAP_NET_ADMIN`, so
+    the judgement takes no table listing, and a leftover
+    `inet azazel_decoy` alone is the helper's to refuse (`HELPER_ABSENT`
+    fails its start closed), noticed at the helper and not at the pass.
+    The links come from the route-netlink dump `netlink.read_links`
+    (names only, no capability); a link without a name or a failed dump
+    is `exposure_state_unreadable`.
   - (b) **The controller masks but does not stop.** The controller's
     preflight masks an exposure unit that is running without a grant, and
     leaves it running (seen in the second G4 rehearsal). It has no

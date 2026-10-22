@@ -70,7 +70,7 @@ Read at `main` 7bdf724.
 | The isolation record accepts `scope_digest` `none`, and the decoy's gate does not compare the digest with anything | `src/azazel_nexus/decoy_isolation.py` (`NO_SCOPE`, `require_isolation_for_decoy`) |
 | The installer compiles the four profiles (`--skip-kernel-load --skip-cache`) and records nothing | `packaging/install.sh` |
 | `netlink.py` is the commissioning reader of permanent MACs: one request (`RTM_GETLINK`), pinned by its docstring and `tests/unit/test_runtime_netlink.py`; `LinkRecord.name` may be None | `runtime/src/azazel_nexus_runtime/netlink.py` |
-| The residue judgement reads the namespace from `/run/netns` (`read_netns`) and still takes `ip -j link show` and `nft -j list tables` outputs | `runtime/src/azazel_nexus_runtime/decoy_residue.py` (#302) |
+| The residue judgement reads the namespace from `/run/netns` (`read_netns`), takes the host's links as the names `netlink.read_links` yields (None for a failed dump), and takes no table listing (A1, §4.4) | `runtime/src/azazel_nexus_runtime/decoy_residue.py` (#302, #308) |
 | `measure_scoped_unit_files` limits its scope to `ACTIVATION_UNIT_ALLOWLIST`; the loaded-unit check (step 6b) already covers every grantable unit, the exposure units included | `runtime/src/azazel_nexus_runtime/activation_unit_files.py`; `activation_pass.py` step 6b |
 
 *Observed on a VM* (Debian 13, systemd 257; a mechanism check, not read
