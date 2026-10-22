@@ -24,6 +24,14 @@ schema is accepted as the other. The context, the policy, both floors and the
 current time are supplied by the caller from independent readers, never from
 the approval. This module reads no file, holds no key, signs nothing and
 contacts no service manager.
+
+**What it says.** Every refusal is `ApprovalRefused` (the type v2 and the
+operator trust share, unchanged) with the message `"<code>: <phrase>"`: a
+code of `APPROVAL_V3_CODES` and its one fixed phrase
+(`APPROVAL_V3_PHRASES`), the wording this module used before the codes. A
+refusal raised by a shared helper (the time parser of
+`activation_approval`, `OperatorTrust.verify`) is given the code of its
+phrase; one this module does not know is `approval_v3_document_refused`.
 """
 
 from __future__ import annotations
@@ -44,6 +52,8 @@ from .operator_trust import (
 )
 
 __all__ = [
+    "APPROVAL_V3_CODES",
+    "APPROVAL_V3_PHRASES",
     "SCHEMA_V3",
     "ActivationApprovalV3",
     "DecodedApprovalV3",
@@ -53,6 +63,77 @@ __all__ = [
 ]
 
 SCHEMA_V3 = "azazel-nexus/activation-approval/v3"
+
+#: Each refusal's code and its one fixed phrase, the wording v3 used before
+#: the codes. The phrases of `_SHARED` are those the shared helpers raise; a
+#: test keeps them equal to what those helpers raise.
+APPROVAL_V3_PHRASES: dict[str, str] = {
+    "approval_v3_trust_required": "operator trust required",
+    "approval_v3_context_required": "activation context required",
+    "approval_v3_policy_required": "activation policy required",
+    "approval_v3_epoch_floor_required": "local security epoch floor required",
+    "approval_v3_sequence_floor_required": "local approval sequence floor required",
+    "approval_v3_payload_unbounded": "approval payload must be bounded nonempty bytes",
+    "approval_v3_field_duplicate": "duplicate activation approval field",
+    "approval_v3_fields_invalid": "invalid activation approval fields",
+    "approval_v3_identifier_invalid": "invalid approval identifier",
+    "approval_v3_operator_invalid": "invalid approval operator",
+    "approval_v3_sequence_invalid": "invalid approval sequence",
+    "approval_v3_expiry_not_after_grant": "approval expiry must follow its grant time",
+    "approval_v3_units_not_collection": "approval units must be a collection of unit names",
+    "approval_v3_units_not_distinct": "approval units must be distinct unit names",
+    "approval_v3_units_outside_tiers": "approval units outside the v3 tiers",
+    "approval_v3_exposure_partial": (
+        "approval names only part of the Deception Lite exposure tier, "
+        "which is approved together or not at all"),
+    "approval_v3_not_canonical": "activation approval is not canonical",
+    "approval_v3_operator_unauthorized": "operator is not authorized by the activation policy",
+    "approval_v3_context_mismatch": "activation approval does not match expected context",
+    "approval_v3_epoch_below_floor": "activation security epoch below the local floor",
+    "approval_v3_sequence_below_floor": "activation approval sequence below the local floor",
+    "approval_v3_units_outside_scope": "activation approval units outside the policy scope",
+    "approval_v3_outside_time_policy": "activation approval outside local time policy",
+    "approval_v3_document_refused": "activation approval document refused",
+    "approval_v3_time_form": "approval time must be UTC with whole seconds",
+    "approval_v3_time_invalid": "invalid approval time",
+    "approval_v3_operator_not_enrolled": "operator is not actively enrolled",
+    "approval_v3_signature_refused": "operator signature refused",
+    "approval_v3_purpose_unsupported": "unsupported approval purpose",
+    "approval_v3_context_digest_invalid": "invalid activation context digest",
+    "approval_v3_context_binding_invalid": "invalid activation commissioning evidence binding",
+    "approval_v3_context_generation_invalid": "invalid activation generation",
+    "approval_v3_context_epoch_invalid": "invalid activation security epoch",
+}
+APPROVAL_V3_CODES: tuple[str, ...] = tuple(APPROVAL_V3_PHRASES)
+
+#: The phrases the shared helpers raise (`activation_approval._utc`,
+#: `OperatorTrust.verify`, `ObserveBaselineContext`), to their codes.
+_SHARED = {APPROVAL_V3_PHRASES[code]: code for code in (
+    "approval_v3_time_form", "approval_v3_time_invalid",
+    "approval_v3_operator_not_enrolled", "approval_v3_signature_refused",
+    "approval_v3_purpose_unsupported", "approval_v3_payload_unbounded", "approval_v3_context_digest_invalid",
+    "approval_v3_context_binding_invalid", "approval_v3_context_generation_invalid",
+    "approval_v3_context_epoch_invalid")}
+_CODED = frozenset(f"{code}: {phrase}" for code, phrase in APPROVAL_V3_PHRASES.items())
+
+
+def _refused(code: str) -> ApprovalRefused:
+    return ApprovalRefused(f"{code}: {APPROVAL_V3_PHRASES[code]}")
+
+
+def _shared(exc: ApprovalRefused) -> ApprovalRefused:
+    """A shared helper's refusal under the code of its phrase; one already
+    coded stays as it is."""
+    if str(exc) in _CODED:
+        return exc
+    return _refused(_SHARED.get(str(exc), "approval_v3_document_refused"))
+
+
+def _time(value):
+    try:
+        return _utc(value)
+    except ApprovalRefused as exc:
+        raise _shared(exc) from None
 
 # v3 keeps its own copies of the rules it shares with v2 rather than v2's
 # private names, so a change to v2 cannot silently change v3 (the tests pin
@@ -77,9 +158,9 @@ if not _EXPOSURE <= _V3_UNITS:  # pragma: no cover - a definition error, not inp
     raise RuntimeError("the exposure units are not in the DECEPTION_EXPOSURE tier")
 
 
-def _nonnegative(value, message: str) -> int:
+def _nonnegative(value, code: str) -> int:
     if type(value) is not int or value < 0:
-        raise ApprovalRefused(message)
+        raise _refused(code)
     return value
 
 
@@ -87,24 +168,22 @@ def _unique_object(pairs):
     document = {}
     for key, value in pairs:
         if key in document:
-            raise ApprovalRefused("duplicate activation approval field")
+            raise _refused("approval_v3_field_duplicate")
         document[key] = value
     return document
 
 
 def _unit_list(units) -> list[str]:
     if isinstance(units, (str, bytes)) or not isinstance(units, (list, tuple, frozenset, set)):
-        raise ApprovalRefused("approval units must be a collection of unit names")
+        raise _refused("approval_v3_units_not_collection")
     names = list(units)
     if not names or any(type(name) is not str for name in names) or len(set(names)) != len(names):
-        raise ApprovalRefused("approval units must be distinct unit names")
+        raise _refused("approval_v3_units_not_distinct")
     if not set(names) <= _V3_UNITS:
-        raise ApprovalRefused("approval units outside the v3 tiers")
+        raise _refused("approval_v3_units_outside_tiers")
     exposure = set(names) & _EXPOSURE
     if exposure and exposure != _EXPOSURE:
-        raise ApprovalRefused(
-            "approval names only part of the Deception Lite exposure tier, "
-            "which is approved together or not at all")
+        raise _refused("approval_v3_exposure_partial")
     return sorted(names)
 
 
@@ -114,14 +193,14 @@ def activation_approval_v3_payload(
 ) -> bytes:
     """Unsigned canonical v3 bytes: the v2 fields under the v3 schema name."""
     if type(context) is not ObserveBaselineContext:
-        raise ApprovalRefused("activation context required")
+        raise _refused("approval_v3_context_required")
     if type(approval_id) is not str or not _APPROVAL_ID.fullmatch(approval_id):
-        raise ApprovalRefused("invalid approval identifier")
+        raise _refused("approval_v3_identifier_invalid")
     if type(operator) is not str or not _OPERATOR.fullmatch(operator):
-        raise ApprovalRefused("invalid approval operator")
-    _nonnegative(approval_seq, "invalid approval sequence")
-    if _utc(expires_at) <= _utc(granted_at):
-        raise ApprovalRefused("approval expiry must follow its grant time")
+        raise _refused("approval_v3_operator_invalid")
+    _nonnegative(approval_seq, "approval_v3_sequence_invalid")
+    if _time(expires_at) <= _time(granted_at):
+        raise _refused("approval_v3_expiry_not_after_grant")
     return json.dumps({
         "schema": SCHEMA_V3,
         "approval_id": approval_id,
@@ -142,10 +221,10 @@ def activation_approval_v3_payload(
 
 def _parse(payload: bytes) -> dict:
     if type(payload) is not bytes or not 0 < len(payload) <= MAX_APPROVAL_BYTES:
-        raise ApprovalRefused("approval payload must be bounded nonempty bytes")
+        raise _refused("approval_v3_payload_unbounded")
     document = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_object)
     if type(document) is not dict or set(document) != _FIELDS or document["schema"] != SCHEMA_V3:
-        raise ApprovalRefused("invalid activation approval fields")
+        raise _refused("approval_v3_fields_invalid")
     return document
 
 
@@ -187,11 +266,14 @@ def decode_activation_approval_v3(payload: bytes) -> DecodedApprovalV3:
             expires_at=document["expires_at"],
         )
         if payload != canonical:
-            raise ApprovalRefused("activation approval is not canonical")
-    except ApprovalRefused:
-        raise
+            raise _refused("approval_v3_not_canonical")
+    except ApprovalRefused as exc:
+        coded = _shared(exc)
+        if coded is exc:
+            raise
+        raise coded from None
     except Exception as exc:  # every other failure is the same redacted refusal
-        raise ApprovalRefused("activation approval document refused") from exc
+        raise _refused("approval_v3_document_refused") from exc
     return DecodedApprovalV3(
         approval_id=document["approval_id"], operator=document["operator"],
         context=context, approval_seq=document["approval_seq"],
@@ -225,41 +307,41 @@ def verify_activation_approval_v3(
     refused here at the scope check.
     """
     if type(trust) is not OperatorTrust:
-        raise ApprovalRefused("operator trust required")
+        raise _refused("approval_v3_trust_required")
     if type(expected) is not ObserveBaselineContext:
-        raise ApprovalRefused("activation context required")
+        raise _refused("approval_v3_context_required")
     if type(policy) is not ActivationApprovalPolicy:
-        raise ApprovalRefused("activation policy required")
-    _nonnegative(security_epoch_floor, "local security epoch floor required")
-    _nonnegative(approval_seq_floor, "local approval sequence floor required")
+        raise _refused("approval_v3_policy_required")
+    _nonnegative(security_epoch_floor, "approval_v3_epoch_floor_required")
+    _nonnegative(approval_seq_floor, "approval_v3_sequence_floor_required")
     try:
         document = _parse(payload)
         operator = document["operator"]
         if type(operator) is not str or not _OPERATOR.fullmatch(operator):
-            raise ApprovalRefused("invalid approval operator")
+            raise _refused("approval_v3_operator_invalid")
         trust.verify(operator=operator, purpose=ApprovalPurpose.ACTIVATION,
                      payload=payload, signature=signature)
         if operator not in policy.authorized_operators:
-            raise ApprovalRefused("operator is not authorized by the activation policy")
+            raise _refused("approval_v3_operator_unauthorized")
         canonical = activation_approval_v3_payload(
             context=expected, approval_id=document["approval_id"], operator=operator,
             approval_seq=document["approval_seq"], units=document["units"],
             granted_at=document["granted_at"], expires_at=document["expires_at"],
         )
         if payload != canonical:
-            raise ApprovalRefused("activation approval does not match expected context")
+            raise _refused("approval_v3_context_mismatch")
         if expected.security_epoch < security_epoch_floor:
-            raise ApprovalRefused("activation security epoch below the local floor")
+            raise _refused("approval_v3_epoch_below_floor")
         if document["approval_seq"] < approval_seq_floor:
-            raise ApprovalRefused("activation approval sequence below the local floor")
+            raise _refused("approval_v3_sequence_below_floor")
         units = frozenset(document["units"])
         if not units <= policy.unit_scope:
-            raise ApprovalRefused("activation approval units outside the policy scope")
-        start, end, instant = (_utc(document["granted_at"]),
-                               _utc(document["expires_at"]), _utc(now))
+            raise _refused("approval_v3_units_outside_scope")
+        start, end, instant = (_time(document["granted_at"]),
+                               _time(document["expires_at"]), _time(now))
         if (not start <= instant < end
                 or (end - start).total_seconds() > policy.max_lease_seconds):
-            raise ApprovalRefused("activation approval outside local time policy")
+            raise _refused("approval_v3_outside_time_policy")
         lease = ActivationLease(
             granted_by=operator, granted_at=document["granted_at"],
             expires_at=document["expires_at"], generation_digest=expected.generation_digest,
@@ -268,10 +350,13 @@ def verify_activation_approval_v3(
             commissioning_evidence_binding=expected.commissioning_evidence_binding,
             units=units,
         )
-    except ApprovalRefused:
-        raise
+    except ApprovalRefused as exc:
+        coded = _shared(exc)
+        if coded is exc:
+            raise
+        raise coded from None
     except Exception as exc:  # every other failure is the same redacted refusal
-        raise ApprovalRefused("activation approval document refused") from exc
+        raise _refused("approval_v3_document_refused") from exc
     return ActivationApprovalV3(lease=lease, approval_id=document["approval_id"],
                                 approval_seq=document["approval_seq"],
                                 security_epoch=expected.security_epoch)

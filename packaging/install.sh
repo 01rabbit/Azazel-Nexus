@@ -193,6 +193,21 @@ if [ "$WITH_SERVICE_MANAGER" = yes ]; then
             echo "start here, and their tier is never granted. Nothing else changes." >&2
             ;;
     esac
+    # A child profile or hat of a decoy profile still loaded in the kernel
+    # (the former azazel-decoy-nsd//ip of before the G4 follow-up) survives
+    # a replacement of its parent; the pass is to withhold the tier while one
+    # is listed (decoy_apparmor). Detected only: nothing is loaded,
+    # replaced or removed here (docs/operations.md, "Removing a stale decoy
+    # child profile").
+    if [ -r /sys/kernel/security/apparmor/profiles ] && grep -qE \
+        '^azazel-decoy(-nsd|-netd|-verify|d)//' /sys/kernel/security/apparmor/profiles; then
+        echo "NOTICE: a child profile of a Deception Lite AppArmor profile is still"
+        echo "loaded in the kernel. The Deception Lite tier is withheld until it is"
+        echo "gone: reboot, or, with the decoy units stopped, remove the parent"
+        echo "profile from the kernel and load it again (docs/operations.md,"
+        echo "\"Removing a stale decoy child profile\"). Nothing was loaded or removed."
+    fi
+    # end of the stale child check
 fi
 UNIT_DIR="${DESTDIR:-}$UNIT_DIR"
 PRESET_DIR="${DESTDIR:-}$PRESET_DIR"

@@ -15,11 +15,20 @@ the SHA-256 of
 each `sha256:<hex>`, measured the way the observe-baseline generation
 measures its unit files (`observe_baseline`, `activation_unit_files`): bytes
 read once, without following a link, from a root-owned file no one else may
-write, with one link, stable while read.
+write, with one link, stable while read. Beside the digests, the section
+records `apparmor_policy_hashes`: for each of the four profiles, the 64
+lowercase hex digits the kernel should show as its `raw_sha256` (§7 "Left
+to G6"). That field is a record, not a measurement: G6's installer computes
+it as the SHA-256 of its `apparmor_parser -Q -o` output; this build only
+accepts it, checks its form and hands it to
+`decoy_apparmor.policy_hash_refusal` (`expected_policy_hashes`).
 
-* `build_exposure_section` is pure: from supplied bytes to the section.
+* `build_exposure_section` is pure: from supplied bytes and the recorded
+  policy hashes to the section.
 * `verify_exposure_section` is pure: a recorded section against a fresh
-  measurement; any difference refuses (`GenerationRefused`, fixed labels).
+  measurement; any difference refuses (`GenerationRefused`).
+* `expected_policy_hashes` is pure: a recorded section's policy hashes, in
+  the form `decoy_apparmor.exposure_lsm_withholding` takes as `expected`.
 * `measure_exposure_section_inputs` is the reader: the exposure unit files
   through `activation_unit_files.measure_exposure_unit_files` (content and
   override checks included), the watch files through
@@ -27,6 +36,16 @@ write, with one link, stable while read.
   the rendering, no override, no mask; it returns what it read, so the
   digest is of exactly the accepted bytes), and the profile files. The scope
   file is not read here: the pass renders it in G6 and passes its bytes.
+
+**What it says.** Each refusal is `"<code>: <phrase>"` with a code of
+`EXPOSURE_SECTION_CODES` and its one fixed phrase
+(`EXPOSURE_SECTION_PHRASES`): `exposure_section_unverifiable` when the
+section, a supplied set, the scope or a file read is not in its closed
+form; `exposure_section_differs` when a well-formed record does not describe
+the bytes measured now. Nothing measured appears in it. The readers keep
+their exception types (`UnitContentRefused`, `UnitOverrideRefused`,
+`ExposureFilesRefused`, all `UnitFilesRefused`); their own labels stay on
+the chained cause.
 
 **What is not digested.** The profiles `include <tunables/global>` and
 `<abstractions/base>`, Debian's files; an edit there changes the compiled
@@ -63,9 +82,14 @@ from .decoy_apparmor import REQUIRED_ENFORCED_PROFILES
 
 __all__ = [
     "APPARMOR_DIRECTORY",
+    "EXPOSURE_SECTION_CODES",
+    "EXPOSURE_SECTION_DIFFERS",
     "EXPOSURE_SECTION_KEYS",
+    "EXPOSURE_SECTION_PHRASES",
+    "EXPOSURE_SECTION_UNVERIFIABLE",
     "ExposureFilesRefused",
     "build_exposure_section",
+    "expected_policy_hashes",
     "measure_apparmor_profile_files",
     "measure_exposure_section_inputs",
     "verify_exposure_section",
@@ -76,11 +100,35 @@ __all__ = [
 APPARMOR_DIRECTORY = "/etc/apparmor.d"
 
 #: The section's keys, all required, no other.
-EXPOSURE_SECTION_KEYS = ("apparmor_profiles", "scope_digest", "unit_files",
-                         "watch_unit_files")
+EXPOSURE_SECTION_KEYS = ("apparmor_policy_hashes", "apparmor_profiles", "scope_digest",
+                         "unit_files", "watch_unit_files")
+
+EXPOSURE_SECTION_UNVERIFIABLE = "exposure_section_unverifiable"
+EXPOSURE_SECTION_DIFFERS = "exposure_section_differs"
+#: In the order they are judged.
+EXPOSURE_SECTION_CODES: tuple[str, ...] = (
+    EXPOSURE_SECTION_UNVERIFIABLE, EXPOSURE_SECTION_DIFFERS)
+
+#: Each code's fixed phrase: no unit, profile or file name, digest or hash.
+EXPOSURE_SECTION_PHRASES: dict[str, str] = {
+    EXPOSURE_SECTION_UNVERIFIABLE: ("the exposure section, or the unit files, "
+                                    "profile files, scope or policy hashes it "
+                                    "describes, could not be read in their "
+                                    "closed form"),
+    EXPOSURE_SECTION_DIFFERS: ("the recorded exposure section does not describe "
+                               "the unit files, profile files and scope placed "
+                               "now"),
+}
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+#: `raw_sha256` as the kernel shows it, without the newline
+#: (`decoy_apparmor._hex_digest`; a test keeps them in agreement).
+_POLICY_HASH = re.compile(r"[0-9a-f]{64}\Z")
 _FILE_LIMIT = 1 << 20
+
+
+def _phrase(code: str) -> str:
+    return f"{code}: {EXPOSURE_SECTION_PHRASES[code]}"
 
 
 class ExposureFilesRefused(UnitFilesRefused):
@@ -96,29 +144,44 @@ def _digests(files, names) -> dict[str, str]:
     if (snapshot is None or set(snapshot) != set(names) or any(
             type(data) is not bytes or not 0 < len(data) <= _FILE_LIMIT
             for data in snapshot.values())):
-        raise GenerationRefused("exposure section files must match their set exactly")
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE))
     return {name: _digest(snapshot[name]) for name in sorted(names)}
+
+
+def _policy_hashes(hashes) -> dict[str, str]:
+    """Exactly the four profiles, each 64 lowercase hex digits, or refused."""
+
+    if (type(hashes) is not dict or set(hashes) != set(REQUIRED_ENFORCED_PROFILES)
+            or any(type(value) is not str or not _POLICY_HASH.match(value)
+                   for value in hashes.values())):
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE))
+    return {name: hashes[name] for name in sorted(REQUIRED_ENFORCED_PROFILES)}
 
 
 def build_exposure_section(
     *, unit_files: Mapping[str, bytes], watch_unit_files: Mapping[str, bytes],
-    apparmor_profiles: Mapping[str, bytes], scope_file: bytes,
+    apparmor_profiles: Mapping[str, bytes], apparmor_policy_hashes: dict[str, str],
+    scope_file: bytes,
 ) -> dict:
-    """The exposure section for these bytes; nothing is read or written.
+    """The exposure section for these bytes and hashes; nothing is read or written.
 
     `unit_files` maps exactly the three exposure units, `watch_unit_files`
     exactly the three watch units, `apparmor_profiles` exactly the four
-    profile names, each to the file's bytes; `scope_file` is the rendered
-    scope file, accepted only as `decoy_scope.parse_scope_file` accepts it.
-    Refuses (`GenerationRefused`) on any other set, an empty or oversized
-    file, or a refused scope.
+    profile names, each to the file's bytes; `apparmor_policy_hashes` maps
+    exactly the four profile names to the 64 lowercase hex digits the kernel
+    should show as `raw_sha256` (G6's installer records them; nothing here
+    derives one); `scope_file` is the rendered scope file, accepted only as
+    `decoy_scope.parse_scope_file` accepts it. Refuses
+    (`GenerationRefused`, `exposure_section_unverifiable`) on any other set,
+    an empty or oversized file, a hash of another form, or a refused scope.
     """
 
     try:
         scope_digest = parse_scope_file(scope_file).scope_digest
     except DecoyScopeRefused:
-        raise GenerationRefused("exposure section scope file refused") from None
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE)) from None
     return {
+        "apparmor_policy_hashes": _policy_hashes(apparmor_policy_hashes),
         "apparmor_profiles": _digests(apparmor_profiles, REQUIRED_ENFORCED_PROFILES),
         "scope_digest": scope_digest,
         "unit_files": _digests(unit_files, EXPOSURE_UNITS),
@@ -133,15 +196,16 @@ def _decoded(section) -> dict:
         "watch_unit_files": set(WATCH_UNITS),
     }
     if type(section) is not dict or set(section) != set(EXPOSURE_SECTION_KEYS):
-        raise GenerationRefused("exposure section fields refused")
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE))
     if type(section["scope_digest"]) is not str or not _DIGEST.match(section["scope_digest"]):
-        raise GenerationRefused("exposure section scope digest refused")
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE))
     for key, names in expected_sets.items():
         value = section[key]
         if (type(value) is not dict or set(value) != names
                 or any(type(digest) is not str or not _DIGEST.match(digest)
                        for digest in value.values())):
-            raise GenerationRefused("exposure section digests refused")
+            raise GenerationRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE))
+    _policy_hashes(section["apparmor_policy_hashes"])
     return section
 
 
@@ -153,23 +217,47 @@ def verify_exposure_section(
 
     `section` is the decoded section as a generation would record it; the
     rest is a fresh measurement (`measure_exposure_section_inputs`) and the
-    scope file the pass rendered. Pure. Each difference has its own fixed
-    label; nothing measured appears in it. A match describes the bytes; it
-    is not an approval and grants nothing.
+    scope file the pass rendered. Pure. A section not in its closed form, or
+    a measurement or scope that is not, is `exposure_section_unverifiable`;
+    a unit file, watch unit file, profile file or scope digest that differs
+    is `exposure_section_differs`; nothing measured appears in either. The
+    recorded `apparmor_policy_hashes` are checked for form only: they are
+    compared with the kernel by `decoy_apparmor.policy_hash_refusal`, not
+    with the files. A match describes the bytes; it is not an approval and
+    grants nothing.
     """
 
     recorded = _decoded(section)
     expected = build_exposure_section(
         unit_files=unit_files, watch_unit_files=watch_unit_files,
-        apparmor_profiles=apparmor_profiles, scope_file=scope_file)
-    if recorded["unit_files"] != expected["unit_files"]:
-        raise GenerationRefused("exposure unit file digest differs")
-    if recorded["watch_unit_files"] != expected["watch_unit_files"]:
-        raise GenerationRefused("watch unit file digest differs")
-    if recorded["apparmor_profiles"] != expected["apparmor_profiles"]:
-        raise GenerationRefused("AppArmor profile file digest differs")
-    if recorded["scope_digest"] != expected["scope_digest"]:
-        raise GenerationRefused("exposure scope digest differs")
+        apparmor_profiles=apparmor_profiles,
+        apparmor_policy_hashes=recorded["apparmor_policy_hashes"], scope_file=scope_file)
+    if any(recorded[key] != expected[key] for key in
+           ("unit_files", "watch_unit_files", "apparmor_profiles", "scope_digest")):
+        raise GenerationRefused(_phrase(EXPOSURE_SECTION_DIFFERS))
+
+
+def expected_policy_hashes(section) -> dict[str, str]:
+    """The recorded section's `apparmor_policy_hashes`, as `expected`.
+
+    A new dict of exactly the four profile names to 64 lowercase hex digits,
+    the form `decoy_apparmor.policy_hash_refusal` and
+    `exposure_lsm_withholding` take as `expected`. Pure; refuses
+    (`exposure_section_unverifiable`) a section not in its closed form.
+    G6 treats that `GenerationRefused` as the tier's
+    `exposure_section_unverifiable` (withheld), never as a missing
+    expectation to skip. **Called by nothing in this build** (G6).
+
+    **Why a recorded hash can be trusted** (finding 3 of the review of
+    #303). Nothing here re-derives the hashes; they are believed only
+    because G6 puts the section inside the generation document that
+    `generation_digest` covers, and the approval's context binds
+    `generation_digest`, so the operator's signature covers the whole
+    section, these hashes included. A section handed in from anywhere else
+    proves nothing.
+    """
+
+    return dict(_decoded(section)["apparmor_policy_hashes"])
 
 
 def measure_apparmor_profile_files() -> dict[str, bytes]:
@@ -178,7 +266,8 @@ def measure_apparmor_profile_files() -> dict[str, bytes]:
     Each path component root's and not group or other writable, no link
     followed; each file a regular root-owned file with one link, not group or
     other writable, non-empty, at most 1 MiB, stable while read (the unit
-    files' reader, `activation_unit_files`). Fixed labels only.
+    files' reader, `activation_unit_files`). Refuses
+    (`ExposureFilesRefused`) as `exposure_section_unverifiable` only.
     """
 
     try:
@@ -188,18 +277,23 @@ def measure_apparmor_profile_files() -> dict[str, bytes]:
                     for name in REQUIRED_ENFORCED_PROFILES}
         finally:
             os.close(fd)
-    except Exception:  # noqa: BLE001 - redacted: labels only
-        raise ExposureFilesRefused("AppArmor profile files unavailable") from None
+    except Exception:  # noqa: BLE001 - redacted: the code and its phrase only
+        raise ExposureFilesRefused(_phrase(EXPOSURE_SECTION_UNVERIFIABLE)) from None
 
 
 def measure_exposure_section_inputs() -> tuple[dict[str, bytes], dict[str, bytes],
                                                dict[str, bytes]]:
     """`(unit_files, watch_unit_files, apparmor_profiles)`, as installed now.
 
-    Read-only; refuses (`UnitFilesRefused` and its subclasses) as each
-    reader does. **Not called by the pass in this build** (G6).
+    Read-only; refuses as each reader does, keeping its exception type
+    (`UnitFilesRefused` and its subclasses) with the message
+    `exposure_section_unverifiable: <phrase>`; the reader's own fixed label
+    stays on the chained cause. **Not called by the pass in this build** (G6).
     """
 
-    unit_files = measure_exposure_unit_files()
-    watch_unit_files = require_watch_unit_files()
+    try:
+        unit_files = measure_exposure_unit_files()
+        watch_unit_files = require_watch_unit_files()
+    except UnitFilesRefused as exc:
+        raise type(exc)(_phrase(EXPOSURE_SECTION_UNVERIFIABLE)) from exc
     return unit_files, watch_unit_files, measure_apparmor_profile_files()

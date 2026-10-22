@@ -29,11 +29,18 @@ hash with an expected hash. The kernel's file is
 `/sys/kernel/security/apparmor/policy/profiles/*/raw_sha256`, the SHA-256 of
 the compiled policy the parser loaded; on the VM (Debian 13, kernel 6.12,
 AppArmor 4.1; a mechanism check, not hardware evidence) it equalled the
-SHA-256 of `apparmor_parser -Q -o` output for each decoy profile (§7). G6
-records that digest at install; this build records and derives none, so the
-comparison withholds as `lsm_policy_unverifiable` (fail closed).
-`exposure_lsm_withholding` puts the three judgements in one order and
-`read_exposure_lsm_policy` makes the three securityfs reads in one call.
+SHA-256 of `apparmor_parser -Q -o` output for each decoy profile (§7). The
+expected hashes take the form of the generation's exposure section field
+`apparmor_policy_hashes` (`exposure_generation.expected_policy_hashes` gives
+that field as `expected`). G6's installer records them; this build records
+and derives none, so the comparison withholds as `lsm_policy_unverifiable`
+(fail closed). `exposure_lsm_withholding` puts the three judgements in one
+order and `read_exposure_lsm_policy` makes the three securityfs reads in one
+call.
+
+**What it says.** Reason codes only, each a fixed word with a fixed phrase
+(`LSM_PHRASES`), as `"<code>: <phrase>"`; never a profile name, a unit name,
+a count or a hash.
 
 A leaf: it imports only `os` and `errno`, so the unit renderer can take the
 names from here without loading anything else. Nothing here is a parameter
@@ -51,8 +58,10 @@ __all__ = [
     "DECOY_APPARMOR_PROFILES",
     "LSM_APPARMOR_DISABLED",
     "LSM_LOADED_REASON_CODES",
+    "LSM_PHRASES",
     "LSM_POLICY_DIFFERS",
     "LSM_POLICY_UNVERIFIABLE",
+    "LSM_PROFILE_CHILD_PRESENT",
     "LSM_PROFILES_ABSENT",
     "LSM_PROFILES_NOT_ENFORCED",
     "LSM_PROFILES_UNREADABLE",
@@ -122,15 +131,50 @@ LSM_REASON_CODES: tuple[str, ...] = (
 
 #: The reasons of the loaded-policy comparison (§7 "Left to G6"), given after
 #: `LSM_REASON_CODES` by `exposure_lsm_withholding`. Not reached in this
-#: build either.
+#: build either. `lsm_profile_child_present` is judged over the G3 listing
+#: (`exposure_lsm_refusal`, after its own codes): a child profile or hat of a
+#: required profile is loaded (review of #196 G6 preparation, L5 and
+#: finding 5 of the review of #303).
+LSM_PROFILE_CHILD_PRESENT = "lsm_profile_child_present"
 LSM_UNIT_PROFILE_DIFFERS = "lsm_unit_profile_differs"
 LSM_POLICY_UNVERIFIABLE = "lsm_policy_unverifiable"
 LSM_POLICY_DIFFERS = "lsm_policy_differs"
 LSM_LOADED_REASON_CODES: tuple[str, ...] = (
+    LSM_PROFILE_CHILD_PRESENT,
     LSM_UNIT_PROFILE_DIFFERS,
     LSM_POLICY_UNVERIFIABLE,
     LSM_POLICY_DIFFERS,
 )
+
+#: Each code's fixed phrase: no profile or unit name, count or hash.
+LSM_PHRASES: dict[str, str] = {
+    LSM_APPARMOR_DISABLED: ("AppArmor is not among the active LSMs or shows no "
+                            "profile listing, so no Deception Lite profile "
+                            "confines the exposure units"),
+    LSM_PROFILES_UNREADABLE: ("the kernel's LSM list or AppArmor profile listing "
+                              "could not be read whole, or lists a Deception Lite "
+                              "profile in a form this check does not judge"),
+    LSM_PROFILES_ABSENT: "a Deception Lite AppArmor profile is not loaded",
+    LSM_PROFILES_NOT_ENFORCED: ("a Deception Lite AppArmor profile is loaded in a "
+                                "mode other than enforce"),
+    LSM_PROFILE_CHILD_PRESENT: ("a child profile or hat of a Deception Lite "
+                                "AppArmor profile is loaded; none is expected, and "
+                                "it stays until a reboot or until its parent is "
+                                "removed from the kernel and loaded again"),
+    LSM_UNIT_PROFILE_DIFFERS: ("the loaded definitions read are not exactly the "
+                               "Deception Lite units, or one is loaded without "
+                               "exactly its AppArmor profile"),
+    LSM_POLICY_UNVERIFIABLE: ("no expected policy hash of the Deception Lite "
+                              "profiles is recorded, or the kernel shows no "
+                              "readable policy hash listed exactly once for one "
+                              "of them"),
+    LSM_POLICY_DIFFERS: ("a Deception Lite profile loaded in the kernel is not "
+                         "the one whose policy hash was recorded"),
+}
+
+
+def _lsm(code: str) -> str:
+    return f"{code}: {LSM_PHRASES[code]}"
 
 
 class _Unreadable:
@@ -199,8 +243,9 @@ def _modes(raw: bytes) -> dict[bytes, set[bytes]] | None:
 
     Only the lines of the required profiles are read strictly: each must be
     exactly `name (mode)`, the mode lowercase ASCII letters and `_`. Every
-    other line (another profile, another policy namespace, a format this
-    check does not know) is skipped: it says nothing about these profiles.
+    other line (another profile, a child or hat, which `_children` judges,
+    another policy namespace, a format this check does not know) is skipped
+    here.
     """
 
     required = {name.encode("ascii") for name in REQUIRED_ENFORCED_PROFILES}
@@ -223,6 +268,19 @@ def _modes(raw: bytes) -> dict[bytes, set[bytes]] | None:
     return modes
 
 
+def _children(raw: bytes) -> bool:
+    """Whether a line of a child profile or hat of a required profile is listed.
+
+    `<name>//...` in any mode or form, leading blanks ignored, such as a
+    stale `azazel-decoy-nsd//ip` from before the G4 follow-up: replacing the
+    parent leaves it in the kernel (observed on the VM). Another policy
+    namespace's line (`:ns:<name>//...`) and a look-alike's are not ours.
+    """
+
+    nested = tuple(name.encode("ascii") + b"//" for name in REQUIRED_ENFORCED_PROFILES)
+    return any(line.lstrip().startswith(nested) for line in raw.split(b"\n"))
+
+
 def exposure_lsm_refusal(lsm, profiles) -> str | None:
     """Why the exposure tier would be withheld for the LSM, or None.
 
@@ -240,41 +298,33 @@ def exposure_lsm_refusal(lsm, profiles) -> str | None:
       `name (mode)` form;
     * `lsm_profiles_absent`: a required profile is not listed;
     * `lsm_profiles_not_enforced`: a required profile is listed in any mode
-      other than `enforce` (complain, kill, unconfined, ...), on any line.
+      other than `enforce` (complain, kill, unconfined, ...), on any line;
+    * `lsm_profile_child_present`: a line of a child profile or hat of a
+      required profile (`<name>//...`, any mode) is listed (`_children`).
+
+    Each as `"<code>: <phrase>"` with the code's one phrase (`LSM_PHRASES`).
     """
 
     if lsm is UNREADABLE or (type(lsm) is bytes and len(lsm) > _LSM_LIMIT):
-        return (f"{LSM_PROFILES_UNREADABLE}: the kernel's LSM list could not be "
-                "read")
-    if type(lsm) is not bytes:
-        return (f"{LSM_APPARMOR_DISABLED}: the kernel lists no LSM, so no "
-                "Deception Lite profile confines the exposure units")
-    if b"apparmor" not in lsm.strip().split(b","):
-        return (f"{LSM_APPARMOR_DISABLED}: AppArmor is not among the active "
-                "LSMs, so no Deception Lite profile confines the exposure units")
+        return _lsm(LSM_PROFILES_UNREADABLE)
+    if type(lsm) is not bytes or b"apparmor" not in lsm.strip().split(b","):
+        return _lsm(LSM_APPARMOR_DISABLED)
     if profiles is UNREADABLE:
-        return (f"{LSM_PROFILES_UNREADABLE}: the AppArmor profile listing could "
-                "not be read")
+        return _lsm(LSM_PROFILES_UNREADABLE)
     if type(profiles) is not bytes:
-        return (f"{LSM_APPARMOR_DISABLED}: AppArmor has no profile listing, so "
-                "no Deception Lite profile confines the exposure units")
+        return _lsm(LSM_APPARMOR_DISABLED)
     if len(profiles) > _PROFILES_LIMIT:
-        return (f"{LSM_PROFILES_UNREADABLE}: the AppArmor profile listing is "
-                "larger than this check reads")
+        return _lsm(LSM_PROFILES_UNREADABLE)
     listing = _modes(profiles)
     if listing is None:
-        return (f"{LSM_PROFILES_UNREADABLE}: a Deception Lite profile's line in "
-                "the AppArmor listing is not in the kernel's form")
+        return _lsm(LSM_PROFILES_UNREADABLE)
     names = [name.encode("ascii") for name in REQUIRED_ENFORCED_PROFILES]
-    absent = [name for name in names if name not in listing]
-    if absent:
-        return (f"{LSM_PROFILES_ABSENT}: {len(absent)} of the {len(names)} "
-                "Deception Lite AppArmor profiles are not loaded")
-    lax = [name for name in names if listing[name] != {_ENFORCE}]
-    if lax:
-        return (f"{LSM_PROFILES_NOT_ENFORCED}: {len(lax)} of the {len(names)} "
-                "Deception Lite AppArmor profiles are loaded in a mode other "
-                "than enforce")
+    if any(name not in listing for name in names):
+        return _lsm(LSM_PROFILES_ABSENT)
+    if any(listing[name] != {_ENFORCE} for name in names):
+        return _lsm(LSM_PROFILES_NOT_ENFORCED)
+    if _children(profiles):
+        return _lsm(LSM_PROFILE_CHILD_PRESENT)
     return None
 
 
@@ -344,27 +394,20 @@ def loaded_unit_profile_refusal(loaded) -> str | None:
 
     expected = dict(DECOY_APPARMOR_PROFILES)
     if type(loaded) is not dict or set(loaded) != set(expected):
-        return (f"{LSM_UNIT_PROFILE_DIFFERS}: the loaded definitions read are not "
-                "exactly the Deception Lite units")
-    differ = 0
+        return _lsm(LSM_UNIT_PROFILE_DIFFERS)
     for unit, profile in DECOY_APPARMOR_PROFILES:
         value = loaded[unit]
         if value is None:
             continue
         if type(value) is not dict or set(value) != {"LoadState", "AppArmorProfile"}:
-            differ += 1
-            continue
+            return _lsm(LSM_UNIT_PROFILE_DIFFERS)
         state, attached = value["LoadState"], value["AppArmorProfile"]
         if state == "masked" and unit in _MASKABLE_UNITS:
             continue
         if (state != "loaded" or type(attached) is not tuple or len(attached) != 2
                 or attached[0] is not False or type(attached[1]) is not str
                 or attached[1] != profile):
-            differ += 1
-    if differ:
-        return (f"{LSM_UNIT_PROFILE_DIFFERS}: {differ} of the {len(expected)} "
-                "Deception Lite units are loaded without exactly their AppArmor "
-                "profile")
+            return _lsm(LSM_UNIT_PROFILE_DIFFERS)
     return None
 
 
@@ -380,9 +423,11 @@ def policy_hash_refusal(entries, expected) -> str | None:
     per-profile directory does not exist, `UNREADABLE`, or a tuple of
     `(name, raw_sha256)`, each bytes, None (absent) or `UNREADABLE`.
     `expected` maps each of `REQUIRED_ENFORCED_PROFILES` to the 64-hex
-    SHA-256 the kernel should show (G6: the digest of the installer's
-    `apparmor_parser -Q -o` output, recorded in the generation), or is None.
-    Pure. In order:
+    SHA-256 the kernel should show, or is None: the generation's exposure
+    section field `apparmor_policy_hashes`, as
+    `exposure_generation.expected_policy_hashes` gives it (G6: the installer
+    records there the SHA-256 of its `apparmor_parser -Q -o` output). Pure.
+    In order:
 
     * `lsm_policy_unverifiable`: no expected hashes (**this build records
       none**; G6), no directory, an unreadable one, an entry whose name
@@ -390,43 +435,34 @@ def policy_hash_refusal(entries, expected) -> str | None:
       hash absent, empty, unreadable or not one lowercase hex digest and a
       newline;
     * `lsm_policy_differs`: a required profile's hash is not the expected one.
+
+    Each as `"<code>: <phrase>"` with the code's one phrase (`LSM_PHRASES`).
     """
 
     names = REQUIRED_ENFORCED_PROFILES
     if (type(expected) is not dict or set(expected) != set(names)
             or not all(_hex_digest(expected[name]) for name in names)):
-        return (f"{LSM_POLICY_UNVERIFIABLE}: no expected policy hash of the placed "
-                "Deception Lite profiles is available to compare with")
-    if entries is None:
-        return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel shows no per-profile "
-                "policy hash")
-    if (entries is UNREADABLE or type(entries) is not tuple
+        return _lsm(LSM_POLICY_UNVERIFIABLE)
+    if (entries is None or entries is UNREADABLE or type(entries) is not tuple
             or len(entries) > _POLICY_ENTRY_LIMIT):
-        return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel's per-profile policy "
-                "directory could not be read")
+        return _lsm(LSM_POLICY_UNVERIFIABLE)
     found: dict[bytes, list] = {}
     for entry in entries:
         if type(entry) is not tuple or len(entry) != 2 or type(entry[0]) is not bytes:
-            return (f"{LSM_POLICY_UNVERIFIABLE}: a profile's name in the kernel's "
-                    "policy directory could not be read")
+            return _lsm(LSM_POLICY_UNVERIFIABLE)
         found.setdefault(entry[0], []).append(entry[1])
-    differ = 0
+    differ = False
     for name in names:
         hashes = found.get(name.encode("ascii") + b"\n", [])
         if len(hashes) != 1:
-            return (f"{LSM_POLICY_UNVERIFIABLE}: a Deception Lite profile is not "
-                    "listed exactly once in the kernel's policy directory")
+            return _lsm(LSM_POLICY_UNVERIFIABLE)
         raw = hashes[0]
         if (type(raw) is not bytes or not raw.endswith(b"\n")
                 or not _hex_digest(raw[:-1].decode("ascii", "replace"))):
-            return (f"{LSM_POLICY_UNVERIFIABLE}: the kernel keeps no readable "
-                    "policy hash for a Deception Lite profile")
+            return _lsm(LSM_POLICY_UNVERIFIABLE)
         if raw[:-1].decode("ascii") != expected[name]:
-            differ += 1
-    if differ:
-        return (f"{LSM_POLICY_DIFFERS}: {differ} of the {len(names)} Deception Lite "
-                "profiles loaded in the kernel are not the placed ones")
-    return None
+            differ = True
+    return _lsm(LSM_POLICY_DIFFERS) if differ else None
 
 
 _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -551,9 +587,11 @@ def exposure_lsm_withholding(lsm, profiles, loaded, policy, expected) -> str | N
 
     `exposure_lsm_refusal(lsm, profiles)`, then
     `loaded_unit_profile_refusal(loaded)`, then
-    `policy_hash_refusal(policy, expected)`. Pure. **Called by nothing in
-    this build**; with `expected` None, as this build has it, it never
-    returns None.
+    `policy_hash_refusal(policy, expected)`. Pure. `expected` is the
+    exposure section's `apparmor_policy_hashes` as
+    `exposure_generation.expected_policy_hashes` gives it, or None.
+    **Called by nothing in this build**; with `expected` None, as this build
+    has it (nothing records the field yet), it never returns None.
     """
 
     return (exposure_lsm_refusal(lsm, profiles)

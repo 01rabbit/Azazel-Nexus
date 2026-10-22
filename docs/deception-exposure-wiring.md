@@ -168,7 +168,7 @@ lease refusals, `outside_lease_scope`), the exposure branch reads, in order:
 | # | check | input | reader | reason code |
 | --- | --- | --- | --- | --- |
 | L1 | the lease names all three or none | `lease.units` | existing branch | `exposure_tier_partial` (existing) |
-| L2 | no enforcement unit governed with the tier (§6.2) | `self.definitions` | `exposure_exclusivity.exposure_enforcement_conflict` | `exposure_enforcement_exclusive` |
+| L2 | no enforcement unit governed with the tier (§6.2) | `self.definitions` | `exposure_exclusivity.exposure_enforcement_conflict` | `exposure_enforcement_unreadable`, `exposure_enforcement_exclusive` |
 | L3 | the pass handed exposure evidence | `activate(..., exposure=)` | type check | `exposure_evidence_absent` (new; replaces `isolation_evidence_absent`) |
 | L4 | the evidence describes this generation | `evidence.generation_digest` against the verified generation | equality | `exposure_evidence_mismatch` (new) |
 | L5 | every runtime stage held | `evidence.refusal`, `evidence.stages` | the first stage that failed (§4.3) | that stage's code, or `exposure_stage_unreadable` |
@@ -185,8 +185,8 @@ written before G6 keeps withholding.
 | # | condition | input | reader (existing part) | reason codes, in order |
 | --- | --- | --- | --- | --- |
 | P1 | §5 C1 1: the lease came from a verified v3 approval | `inputs.approval` | type check: exactly `ActivationApprovalV3` naming the three | `exposure_approval_not_v3` (new) |
-| P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_not_init_net_only` |
-| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced` |
+| P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_unreadable`, `fb_tunnels_not_init_net_only` |
+| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced`, `lsm_profile_child_present` |
 | P4 | §5 C1 5: no ruleset loader enabled or active | `UnitFileState`, `ActiveState` of `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (bus) | the bus reads of §4.5, `host_firewall_refusal` | `host_firewall_unreadable`, `host_firewall_enabled`, `host_firewall_active` |
 | P5 | §6.3 G6 item (a): no definition-less running unit, no leftovers | `LoadState`, `UnitFileState`, `ActiveState` of the three units (bus); the entries of `/run/netns`; the links (`RTM_GETLINK`) | the bus reads of §4.5, `decoy_residue.read_netns`, `netlink.read_links` (names only), `decoy_residue.exposure_residue_departures` without the table (§4.4) | `exposure_state_unreadable`, `exposure_unit_masked_running`, `exposure_leftovers_present` |
 | P6 | §5 C1 3: a v3 proposal with a valid scope, its roles resolved to this boot's names | `inputs.evidence` (payload, current inventory) | `fabric_boundary.restore_commissioning_inputs`, `deception_scope_assignments`, `decoy_scope.decode_deception_scope`, `exposure_interfaces.resolve_role_interfaces` | `deception_scope_absent` (new: a v2 proposal), `deception_scope_refused` (new), then `role_evidence_unavailable`, `role_scope_mismatch`, `role_inventory_changed`, `role_interface_unresolved`, `role_interface_ambiguous`, `role_interface_name_refused` |
@@ -194,7 +194,7 @@ written before G6 keeps withholding.
 | P8 | grant §4.3: the scope file renders | P6's `DeceptionScope` and ingress names | `decoy_scope.render_scope_file`, `parse_scope_file` (round trip) | `decoy_scope_unrenderable` (new) |
 | P9 | §5 C1 2: the generation's exposure section describes this node | the generation's section (§5.1); the unit, watch and profile files measured now; P8's bytes | `exposure_generation.measure_exposure_section_inputs`, `verify_exposure_section` | `exposure_generation_absent` (new: no section), `exposure_files_unreadable` (new), `exposure_generation_differs` (new) |
 | P10 | §5.1 V2: the approval's exposure fields are this pass's | the verified v3's `exposure_scope_digest`, `exposure_prefix_count`, `exposure_ingress_count`; the section's `scope_digest`; P8's file | equality, in the pass | `exposure_approval_binding_differs` (new) |
-| P11 | §5 C1 4, second half: the loaded units name their profiles; the kernel's policy is the compiled one | `LoadState` and `AppArmorProfile` of the four units (bus); `.../apparmor/policy/profiles/*/raw_sha256`; the section's compiled hashes | `decoy_apparmor.loaded_unit_profile_refusal`, `read_policy_hashes`, `policy_hash_refusal` | `lsm_unit_profile_differs`, `lsm_policy_unverifiable`, `lsm_policy_differs` |
+| P11 | §5 C1 4, second half: the loaded units name their profiles; the kernel's policy is the compiled one | `LoadState` and `AppArmorProfile` of the four units (bus); `.../apparmor/policy/profiles/*/raw_sha256`; the section's `apparmor_policy_hashes` | `decoy_apparmor.loaded_unit_profile_refusal`, `read_policy_hashes`, `policy_hash_refusal` | `lsm_unit_profile_differs`, `lsm_policy_unverifiable`, `lsm_policy_differs` |
 
 Why this order:
 
@@ -299,7 +299,7 @@ its judgement; only what it is handed changes:
 | `decoy_watch` (the verify) | `ip -j` through the helper's plan, `parse_json_list` | unchanged |
 | `decoy_apparmor.loaded_unit_profile_refusal` | `LoadState`, `AppArmorProfile` | unchanged; fed by §4.5 |
 | `exposure_withholding.host_firewall_refusal` | file state and active state, None when neither exists | unchanged; fed by §4.5 |
-| `exposure_generation` | a section without compiled hashes | gains `apparmor_compiled` (§5.2) |
+| `exposure_generation` | the section has `apparmor_policy_hashes` (implemented, #303), which nothing fills | `generation-publish` fills it from the installer's record (§5.2) |
 | `activation_approval_v3` | the v2 fields under `ACTIVATION` | V2's three fields, shape only; the purpose of §9 Q-C; its own policy type (§5.1) |
 | `activation_unit_files.measure_scoped_unit_files` | scope inside `ACTIVATION_UNIT_ALLOWLIST` | scope inside the observe scope, the allowlist without the exposure units (§5.2) |
 
@@ -454,11 +454,17 @@ node and rightly withholds everything (#251 H-1). A change to an exposure
 unit **file** that the manager has not loaded is P9's and withholds the tier
 alone; once loaded at the next boot, a file without its guards is 6b's.
 
-**Content.** `EXPOSURE_SECTION_KEYS` gains one key, `apparmor_compiled`:
-for each of the four profiles, `sha256:<hex>` of the installer's compiled
-output (below). The section is then: the three exposure unit files, the
-three watch unit files, the four profile files, the scope digest and the
-four compiled-policy digests.
+**Content.** `EXPOSURE_SECTION_KEYS` holds `apparmor_policy_hashes`
+(implemented by #303, `exposure_generation`): exactly the four profile
+names, each mapped to the SHA-256 of the installer's compiled output
+(below) as **64 lowercase hex digits with no prefix**, the same form as the
+content of the kernel's `raw_sha256` without its newline. The section is
+then: the three exposure unit files, the three watch unit files, the four
+profile files (each `sha256:<hex>`, digests of files), the scope digest
+(`sha256:<hex>`) and the four policy hashes (bare hex, compared with the
+kernel). `build_exposure_section` refuses a hash in any other form (a
+`sha256:` prefix, upper case, another length) as
+`exposure_section_unverifiable`.
 
 **The installer records the compiled hash** (grant §7, "Left to G6"):
 
@@ -469,9 +475,17 @@ four compiled-policy digests.
    `apparmor.service`'s load (the form observed equal to the kernel's
    `raw_sha256`, grant §11).
 2. The SHA-256 of each output goes into one record,
-   `/etc/azazel/activation/apparmor-compiled.json`: canonical JSON with a
-   contract name (proposed `azazel-nexus/apparmor-compiled/v1`), the four
-   digests and, for diagnosis only, the parser's version line. Written as a
+   `/etc/azazel/activation/apparmor-compiled.json`: canonical JSON (sorted
+   keys, no spaces, one trailing newline) with exactly three keys:
+   `"contract"` (proposed `"azazel-nexus/apparmor-compiled/v1"`),
+   `"apparmor_policy_hashes"`, an object of exactly the four profile names,
+   each to 64 lowercase hex digits with no prefix (the section's field of
+   the same name, so `generation-publish` copies it unchanged), and
+   `"parser_version"`, the parser's version line, for diagnosis only and
+   never compared. For example (hashes shortened):
+   `{"apparmor_policy_hashes":{"azazel-decoy-netd":"3f…","azazel-decoy-nsd":"a1…","azazel-decoy-verify":"9c…","azazel-decoyd":"07…"},"contract":"azazel-nexus/apparmor-compiled/v1","parser_version":"AppArmor parser version 4.1.0"}`.
+   A record with another key set, another name set or a hash in another
+   form refuses `generation-publish`. Written as a
    private temporary file in the same directory, fsynced, renamed, the
    directory fsynced (root `0600` in the root `0700` directory the
    installer already creates). A failed compilation refuses the install, as
@@ -498,13 +512,14 @@ functions the pass calls, in memory), measures the files with
 `measure_exposure_section_inputs`, reads the compiled record (root's, one
 link, no link followed, bounded), builds the section, and prints, before
 the typed confirmation, the scope digest, the number of prefixes and
-ingress interfaces and the four compiled digests. `request` and `install`
+ingress interfaces and the four policy hashes. `request` and `install`
 re-measure and re-render the same way.
 
 **The pass compares** (P9, P11): `verify_exposure_section` with the files
 measured now and P8's bytes; then `policy_hash_refusal(read_policy_hashes(),
-expected)` with `expected` the section's `apparmor_compiled` values without
-the `sha256:` prefix. A kernel that loaded another compilation (a changed
+expected)` with `expected` the section's `apparmor_policy_hashes` as
+`exposure_generation.expected_policy_hashes` gives them, bare hex compared
+as they are with the kernel's `raw_sha256` (no prefix to strip). A kernel that loaded another compilation (a changed
 include, another file defining the same name, another parser, other kernel
 features) differs and withholds as `lsm_policy_differs` until the exposure
 is installed again, a new generation published and a new approval signed.

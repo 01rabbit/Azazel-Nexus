@@ -824,8 +824,9 @@ reached until G6. Revised after the review of #285.
   entry's `sha256` is another value and equals neither, nor the SHA-256 of
   the profile file. So in G6 the installer compiles each placed profile
   with `apparmor_parser -Q -o`, records the SHA-256 of that output in the
-  generation's exposure section, and the pass compares it with the
-  kernel's `raw_sha256`. The compiled output carries the includes
+  generation's exposure section (the field `apparmor_policy_hashes`: each
+  of the four profile names to 64 lowercase hex digits, §9 "G6 preparation
+  C"), and the pass compares it with the kernel's `raw_sha256`. The compiled output carries the includes
   (`tunables/global`, `abstractions/base`) as they were when the installer
   compiled, so a later change to an include, or another profile of the same
   name loaded after ours, no longer matches.
@@ -848,7 +849,35 @@ reached until G6. Revised after the review of #285.
   checking that the cache file it loads equals its compilation). Both
   comparisons are
   **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
-  `lsm_policy_unverifiable` until G6 records the expected hash.
+  `lsm_policy_unverifiable` until G6 records the expected hash. The
+  receiving half exists: the exposure section carries
+  `apparmor_policy_hashes`, and `exposure_generation.expected_policy_hashes`
+  gives it in the form `decoy_apparmor.exposure_lsm_withholding` takes as
+  `expected`. How the installer makes the record (compiling under the
+  load's conditions and taking the SHA-256 of the output) is G6's; nothing
+  in this build writes the field or calls either function. **The record is
+  only as good as what covers it** (review of #303, finding 3): nothing at
+  the pass re-derives the hashes, so they are trusted only because the
+  exposure section is part of the generation document that
+  `generation_digest` covers, and the approval's context binds
+  `generation_digest`, so the operator's signature covers the whole
+  section. G6 must keep it so; today `verify_exposure_section` checks the
+  field's form only.
+
+  **A stale child profile.** Replacing a parent profile does not remove a
+  child the kernel already holds: on the VM (Debian 13, AppArmor 4.1; a
+  mechanism check, not hardware evidence) `azazel-decoy-nsd//ip`, the child
+  of before the G4 follow-up, stayed listed after `apparmor_parser -r` of its
+  parent, and was gone after `apparmor_parser -R` of the parent followed by
+  `apparmor_parser -r -W`, with the units stopped. That it is gone after a
+  reboot is *inferred* (not checked). After G4's runs of the decoy units
+  (the helper running `nft` and `ip` repeatedly), no `//null-` child was
+  listed. While a child or hat of a required profile is listed, the tier
+  withholds as `lsm_profile_child_present`; the installer says so and loads
+  nothing; the operator reboots or, with the units stopped, removes the
+  parent and loads it again (`operations.md`, "Removing a stale decoy child
+  profile"). `aa-remove-unknown` is not used: it removes other tools'
+  profiles too.
 
 ### The namespace unit after G4 (G4 follow-up, as implemented)
 
@@ -1077,8 +1106,24 @@ one that fails when called still withholds the tier, and calls none).
   with the same file protections. The scope file is not read: the pass
   renders it in G6. Not digested: Debian's `tunables/global` and
   `abstractions/base`, which the profiles include; the kernel-hash
-  comparison below is what would catch a change there. **The generation
-  schema version that carries the section is introduced in G6.**
+  comparison below is what would catch a change there. The section also
+  records `apparmor_policy_hashes` (review of the G6 preparation, M2): each
+  of the four profile names to the 64 lowercase hex digits the kernel
+  should show as `raw_sha256`. It is a record, not a measurement:
+  `build_exposure_section` takes it as given and checks its form,
+  `verify_exposure_section` checks its form and does not compare it with
+  the files, and `expected_policy_hashes` hands it to the LSM judgement
+  below as `expected` (G6 treats its `GenerationRefused` as
+  `exposure_section_unverifiable`, never as an expectation to skip). G6's
+  installer makes it (§7, "Left to G6"); this build makes none. The record
+  is trusted only because the section is inside the generation document
+  that `generation_digest` covers and the approval's context binds that
+  digest, so the operator's signature covers the whole section (review of
+  #303, finding 3); the form check here is all this build does. A section, set, scope or file not in its closed form is
+  `exposure_section_unverifiable`; a recorded digest that is not the
+  measured one is `exposure_section_differs`; the readers keep their
+  exception types with that code. **The generation schema version that
+  carries the section is introduced in G6.**
 - **Coexistence** (§6.2, §10 Q12; `exposure_withholding.host_firewall_refusal`).
   Input: the unit-file state and the `ActiveState` of each of
   `nftables.service`, `firewalld.service` and `netfilter-persistent.service`
@@ -1094,12 +1139,16 @@ one that fails when called still withholds the tier, and calls none).
   #294 F1).
 - **`fb_tunnels_only_for_init_net`** (§5 C1 condition 6;
   `exposure_withholding.fb_tunnels_refusal`, `read_fb_tunnels`): only the
-  bytes `2\n` pass; absent, unreadable or any other value is
-  `fb_tunnels_not_init_net_only`. The forwarding half of condition 6 is
+  bytes `2\n` pass; absent or unreadable is `fb_tunnels_unreadable`, any
+  other value `fb_tunnels_not_init_net_only`. The forwarding half of condition 6 is
   [reachability](deception-exposure-reachability.md)'s and not here.
 - **The LSM** (§5 C1 condition 4, §7 "Left to G6";
   `decoy_apparmor.exposure_lsm_withholding`, reader
-  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal`, then
+  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal` (after its own
+  codes, a line of a child profile or hat of a required profile,
+  `<name>//...`, in any mode, is `lsm_profile_child_present`: none is
+  expected, review of the G6 preparation, L5, and of #303, finding 5; §7
+  "A stale child profile"), then
   `loaded_unit_profile_refusal` (each of the four units not loaded, an
   exposure unit `masked`, or `loaded` with `AppArmorProfile` exactly
   `(false, <its profile>)`; otherwise `lsm_unit_profile_differs`; the
@@ -1127,19 +1176,39 @@ one that fails when called still withholds the tier, and calls none).
   is trusted. A required profile listed not exactly once, a hash absent,
   empty or not one lowercase hex digest, or no expected hash is
   `lsm_policy_unverifiable`; a different hash is `lsm_policy_differs`.
-  **This build records no expected hash**, so the comparison fails closed;
-  G6 records it at install (§7, "Left to G6").
+  The expected hashes are the exposure section's `apparmor_policy_hashes`
+  (`exposure_generation.expected_policy_hashes`). **This build records no
+  expected hash**, so the comparison fails closed; G6 records it at install
+  (§7, "Left to G6").
 - **An enforcing unit and the exposure tier** (§6.2;
   `azazel_nexus.exposure_exclusivity.exposure_enforcement_conflict`, input
   the governed set). A set holding the exposure tier and any
-  `UnitTier.ENFORCEMENT` unit is `exposure_enforcement_exclusive`. A
+  `UnitTier.ENFORCEMENT` unit is `exposure_enforcement_exclusive`; anything
+  that is not a sequence of unit definitions is
+  `exposure_enforcement_unreadable`. A
   `UnitDefinition` carries no Edge posture, so every enforcement unit is
   counted, not only Edge's (the wider choice); today's `CORE_UNITS` hold
   none, and Edge Core is `EDGE_BASELINE`, observe-only. G6 makes the
   controller refuse such a set.
 
 Each part has its own reason codes; the order in which G6 asks them, and
-where in `_withholding_reason`, is G6's.
+where in `_withholding_reason`, is G6's. **One form for all** (review of the
+G6 preparation, M1): every part, as preparations A and D already did, says
+`"<code>: <phrase>"` with a fixed phrase per code from its `*_PHRASES`
+dictionary (`HOST_FIREWALL_PHRASES`, `FB_TUNNELS_PHRASES`, `LSM_PHRASES`,
+`EXPOSURE_ENFORCEMENT_PHRASES`, `EXPOSURE_SECTION_PHRASES`, and approval
+v3's `APPROVAL_V3_PHRASES`, whose phrases are its former wording and whose
+exception type, shared with v2, is unchanged); no phrase holds a count, a
+name or a value, and a value not read has its own code, never the code of
+the judgement it could not make. `tests/unit/test_exposure_reason_codes.py`
+pins that the codes of all parts are distinct, that none is a string
+elsewhere in the product (the activation reason codes among them), and that
+each phrase is a constant. The verify (G2) and the pass share the
+reachability codes `forwarding_other_on` and `decoy_prefix_routed` with
+narrower meanings in the verify (the bridge `az-decoy0` and the one
+connected /30 are allowed there); the names are kept for the records
+already written, the verify journals the codes alone, and the phrases say
+the pass's meaning (`decoy_reachability.REACHABILITY_CODES`).
 
 **Open until G6** (review of #294):
 

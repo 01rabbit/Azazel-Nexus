@@ -97,6 +97,23 @@ FORWARDING_UNREADABLE = "forwarding_unreadable"
 #: The codes the verify gives, in the order it reports them (G2).
 #: `forwarding_role_on` is the pass's: the verify has no roles, and
 #: `forwarding_other_on` covers those interfaces.
+#:
+#: **Two names, two meanings (review of #196 G6 preparation, L6).** The
+#: verify and the pass share the code names, kept for the records already
+#: written, but two of them judge less in the verify, which runs while the
+#: decoy is up:
+#:
+#: * `forwarding_other_on`: in the verify, an interface other than an
+#:   ingress and **other than the bridge `az-decoy0`** forwards (the bridge
+#:   forwards the replies, reachability §7, and its value is not read); in
+#:   the pass, `az-decoy0` included;
+#: * `decoy_prefix_routed`: in the verify, a route of `main` inside the
+#:   decoy network's /24 **other than its one connected /30**; in the pass,
+#:   any route inside the /24.
+#:
+#: The verify journals the codes alone (`decoy_watch.verify`); the phrases of
+#: `REACHABILITY_PHRASES` are the pass's (`reachability_refusal`) and say the
+#: pass's meaning.
 REACHABILITY_CODES: tuple[str, ...] = (
     FORWARDING_INGRESS_OFF,
     FORWARDING_HOST_WIDE,
@@ -121,18 +138,22 @@ PASS_REACHABILITY_CODES: tuple[str, ...] = (
     FORWARDING_UNREADABLE,
 )
 
-#: Each code's fixed phrase: no name, prefix, address or value.
+#: Each code's fixed phrase, in the pass's meaning (`reachability_refusal`;
+#: see `REACHABILITY_CODES` for the verify's): no name, prefix, address or
+#: value.
 REACHABILITY_PHRASES: dict[str, str] = {
     FORWARDING_INGRESS_OFF: "forwarding is not on for every ingress interface",
     FORWARDING_ROLE_ON: "forwarding is on for a management or observation interface",
     FORWARDING_HOST_WIDE: "IPv4 forwarding is on for all or for default interfaces",
-    FORWARDING_OTHER_ON: "forwarding is on for an interface that is not an ingress",
+    FORWARDING_OTHER_ON: ("forwarding is on for an interface that is not an ingress, "
+                          "the decoy's bridge included"),
     FORWARDING_IPV6_ON: "IPv6 forwarding is on",
     PROXY_ARP_ON: "proxy ARP is on host-wide or for an ingress interface",
     INGRESS_CONTAINMENT_ABSENT: ("the routing rules before the main table are not "
                                  "exactly the local rule and each ingress's "
                                  "containment pair"),
-    DECOY_PREFIX_ROUTED: "the main table routes inside the decoy network's prefix",
+    DECOY_PREFIX_ROUTED: ("the main table routes inside the decoy network's prefix, "
+                          "its connected link included"),
     FORWARDING_UNREADABLE: ("a forwarding, proxy ARP, rule or route read was "
                             "absent or not in its closed form"),
 }

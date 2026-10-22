@@ -16,6 +16,12 @@ bounded reader:
   prerequisites document): `fb_tunnels_refusal` withholds unless the value
   is exactly `2`; `read_fb_tunnels` reads it from `/proc/sys`.
 
+**What it says.** Reason codes only, each a fixed word with a fixed phrase
+(`HOST_FIREWALL_PHRASES`, `FB_TUNNELS_PHRASES`), as `"<code>: <phrase>"`;
+never a unit name, a count or a value. A value not read is its own code
+(`host_firewall_unreadable`, `fb_tunnels_unreadable`), never the code of the
+judgement it could not make.
+
 The LSM condition (§5 item 4) is `decoy_apparmor.exposure_lsm_withholding`
 and the governed-set exclusion of an enforcing Edge (§6.2) is the library's
 `azazel_nexus.exposure_exclusivity`.
@@ -36,9 +42,12 @@ import os
 
 __all__ = [
     "FB_TUNNELS_NOT_INIT_NET_ONLY",
+    "FB_TUNNELS_PHRASES",
     "FB_TUNNELS_REASON_CODES",
+    "FB_TUNNELS_UNREADABLE",
     "HOST_FIREWALL_ACTIVE",
     "HOST_FIREWALL_ENABLED",
+    "HOST_FIREWALL_PHRASES",
     "HOST_FIREWALL_REASON_CODES",
     "HOST_FIREWALL_UNITS",
     "HOST_FIREWALL_UNREADABLE",
@@ -61,7 +70,27 @@ HOST_FIREWALL_REASON_CODES: tuple[str, ...] = (
     HOST_FIREWALL_UNREADABLE, HOST_FIREWALL_ENABLED, HOST_FIREWALL_ACTIVE)
 
 FB_TUNNELS_NOT_INIT_NET_ONLY = "fb_tunnels_not_init_net_only"
-FB_TUNNELS_REASON_CODES: tuple[str, ...] = (FB_TUNNELS_NOT_INIT_NET_ONLY,)
+FB_TUNNELS_UNREADABLE = "fb_tunnels_unreadable"
+FB_TUNNELS_REASON_CODES: tuple[str, ...] = (
+    FB_TUNNELS_UNREADABLE, FB_TUNNELS_NOT_INIT_NET_ONLY)
+
+#: Each code's fixed phrase: no unit name, count or value.
+HOST_FIREWALL_PHRASES: dict[str, str] = {
+    HOST_FIREWALL_UNREADABLE: ("the host firewall loaders' unit states were not "
+                               "read in the form the bus gives, or not for "
+                               "exactly those loaders"),
+    HOST_FIREWALL_ENABLED: ("a host firewall loader, which can flush the decoy's "
+                            "table, is not disabled or masked"),
+    HOST_FIREWALL_ACTIVE: ("a host firewall loader is disabled or masked but "
+                           "not inactive"),
+}
+FB_TUNNELS_PHRASES: dict[str, str] = {
+    FB_TUNNELS_UNREADABLE: ("net.core.fb_tunnels_only_for_init_net does not "
+                            "exist on this kernel or could not be read"),
+    FB_TUNNELS_NOT_INIT_NET_ONLY: ("net.core.fb_tunnels_only_for_init_net is not "
+                                   "two, which it must be before the decoy's "
+                                   "namespace is made"),
+}
 
 #: The unit-file states that are **off** at boot: no `[Install]` link pulls
 #: the unit in. Off at boot is not off: a `disabled` unit still starts when
@@ -102,6 +131,10 @@ _FB_TUNNELS_LIMIT = 16
 _ABSENT = frozenset({errno.ENOENT, errno.ENOTDIR})
 
 
+def _host_firewall(code: str) -> str:
+    return f"{code}: {HOST_FIREWALL_PHRASES[code]}"
+
+
 def host_firewall_refusal(states) -> str | None:
     """Why a host firewall loader withholds the tier (§6.2), or None.
 
@@ -136,32 +169,26 @@ def host_firewall_refusal(states) -> str | None:
     """
 
     if type(states) is not dict or set(states) != set(HOST_FIREWALL_UNITS):
-        return (f"{HOST_FIREWALL_UNREADABLE}: the unit states read are not "
-                "exactly the host firewall loaders")
-    enabled = active = 0
+        return _host_firewall(HOST_FIREWALL_UNREADABLE)
+    enabled = active = False
     for unit in HOST_FIREWALL_UNITS:
         value = states[unit]
         if value is None:
             continue
         if type(value) is not dict or set(value) != {"UnitFileState", "ActiveState"}:
-            return (f"{HOST_FIREWALL_UNREADABLE}: a host firewall loader's unit "
-                    "state is not in the form read from the bus")
+            return _host_firewall(HOST_FIREWALL_UNREADABLE)
         file_state, active_state = value["UnitFileState"], value["ActiveState"]
         if (type(file_state) is not str or file_state not in _OFF_STATES | _ON_STATES
                 or type(active_state) is not str or active_state not in _ACTIVE_STATES):
-            return (f"{HOST_FIREWALL_UNREADABLE}: a host firewall loader's unit "
-                    "state could not be read")
+            return _host_firewall(HOST_FIREWALL_UNREADABLE)
         if file_state not in _OFF_STATES:
-            enabled += 1
+            enabled = True
         elif active_state != "inactive":
-            active += 1
+            active = True
     if enabled:
-        return (f"{HOST_FIREWALL_ENABLED}: {enabled} of the {len(HOST_FIREWALL_UNITS)} "
-                "host firewall loaders, each of which can flush the decoy's "
-                "table, is not disabled or masked")
+        return _host_firewall(HOST_FIREWALL_ENABLED)
     if active:
-        return (f"{HOST_FIREWALL_ACTIVE}: {active} of the {len(HOST_FIREWALL_UNITS)} "
-                "host firewall loaders is disabled or masked but not inactive")
+        return _host_firewall(HOST_FIREWALL_ACTIVE)
     return None
 
 
@@ -171,20 +198,16 @@ def fb_tunnels_refusal(value) -> str | None:
     `value` is the content of the sysctl file: bytes, None when it does not
     exist, or `UNREADABLE`. Pure. Only exactly `b"2\\n"` passes (fallback
     tunnel devices in no namespace but the initial one, so the decoy's
-    namespace holds only `lo` and its own link); anything else is
-    `fb_tunnels_not_init_net_only`.
+    namespace holds only `lo` and its own link). None, `UNREADABLE` or any
+    other value that is not bytes is `fb_tunnels_unreadable`; bytes other
+    than `2\\n` are `fb_tunnels_not_init_net_only`.
     """
 
     if value == b"2\n" and type(value) is bytes:
         return None
-    if value is None:
-        detail = "the sysctl does not exist on this kernel"
-    elif type(value) is not bytes:
-        detail = "the sysctl could not be read"
-    else:
-        detail = "it is not 2"
-    return (f"{FB_TUNNELS_NOT_INIT_NET_ONLY}: net.core.fb_tunnels_only_for_init_net "
-            f"must be 2 before the decoy's namespace is made; {detail}")
+    code = (FB_TUNNELS_NOT_INIT_NET_ONLY if type(value) is bytes
+            else FB_TUNNELS_UNREADABLE)
+    return f"{code}: {FB_TUNNELS_PHRASES[code]}"
 
 
 def read_fb_tunnels():
