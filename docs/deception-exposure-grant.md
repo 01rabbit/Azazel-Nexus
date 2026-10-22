@@ -776,11 +776,26 @@ reached until G6. Revised after the review of #285.
   policy loaded in the kernel is the one placed in `/etc/apparmor.d/`: the
   generation's exposure section digests the files (§4.4 item 5), and G6
   compares the kernel's per-profile policy hash
-  (`/sys/kernel/security/apparmor/policy/profiles/*/sha256`, *inferred*) with
-  the hash of the compiled placed files. Both comparisons are
+  (`/sys/kernel/security/apparmor/policy/profiles/*/raw_sha256`) with an
+  expected hash recorded at install. **How the expected hash is derived**
+  (from the fifth G4 rehearsal, §11; a VM check of the mechanism, not
+  hardware evidence): for each of the four decoy profiles the kernel's
+  `raw_sha256` equalled both the SHA-256 of the entry's `raw_data` and the
+  SHA-256 of `apparmor_parser -Q -o <out> /etc/apparmor.d/<name>`; the
+  entry's `sha256` is another value and equals neither, nor the SHA-256 of
+  the profile file. So in G6 the installer compiles each placed profile
+  with `apparmor_parser -Q -o`, records the SHA-256 of that output in the
+  generation's exposure section, and the pass compares it with the
+  kernel's `raw_sha256`. The compiled output carries the includes
+  (`tunables/global`, `abstractions/base`) as they were when the installer
+  compiled, so a later change to an include, or another profile of the same
+  name loaded after ours, no longer matches. *Inferred*, not checked: a
+  different `apparmor_parser` version may compile the same files to
+  different output, so after a parser upgrade the honest load no longer
+  matches the recorded hash and the tier withholds as `lsm_policy_differs`
+  until the exposure is installed again (re-recorded). Both comparisons are
   **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
-  `lsm_policy_unverifiable` until G6 confirms the kernel's directory and
-  derives the expected hash.
+  `lsm_policy_unverifiable` until G6 records the expected hash.
 
 ### The namespace unit after G4 (G4 follow-up, as implemented)
 
@@ -1035,16 +1050,17 @@ one that fails when called still withholds the tier, and calls none).
   not look at `ActiveState`: "masked and still running", §6.3 (a), is
   `decoy_residue`'s judgement, a separate PR, #293), then
   `policy_hash_refusal` over `read_policy_hashes`, which lists
-  `/sys/kernel/security/apparmor/policy/profiles/*/{name,sha256}`
-  (*inferred*: the directory, the files and their form; the hash file may
-  be `sha1` rather than `sha256` on some kernels, which this reader then
-  treats as absent; and the hash is over the **compiled** policy the parser
-  loaded, not over the bytes of the placed file). A required profile
-  listed not exactly once, a hash absent, empty or not one lowercase hex
-  digest, or no expected hash is `lsm_policy_unverifiable`; a different hash
-  is `lsm_policy_differs`. **This build derives no expected hash**: how the
-  kernel's hash relates to the compiled placed file is *inferred*, so the
-  comparison fails closed until G6 confirms it on the VM.
+  `/sys/kernel/security/apparmor/policy/profiles/*/{name,raw_sha256}`.
+  On the VM (fifth G4 rehearsal, §11; a mechanism check, not hardware
+  evidence) each entry held `attach mode name raw_abi raw_data raw_sha256
+  sha256`, no `sha1`; `raw_sha256` is the SHA-256 of the compiled policy
+  (equal to that of `raw_data` and of `apparmor_parser -Q -o` output), and
+  `sha256`, another value, is not read: an entry with `sha256` and no
+  `raw_sha256` withholds. A required profile listed not exactly once, a
+  hash absent, empty or not one lowercase hex digest, or no expected hash
+  is `lsm_policy_unverifiable`; a different hash is `lsm_policy_differs`.
+  **This build records no expected hash**, so the comparison fails closed;
+  G6 records it at install (§7, "Left to G6").
 - **An enforcing unit and the exposure tier** (§6.2;
   `azazel_nexus.exposure_exclusivity.exposure_enforcement_conflict`, input
   the governed set). A set holding the exposure tier and any
@@ -1078,10 +1094,16 @@ where in `_withholding_reason`, is G6's.
   the includes.** An expected hash computed from the placed file alone
   would differ from the kernel's for every honest load (the kernel hashes
   the compiled policy, `tunables/global` and `abstractions/base` included)
-  or, if computed from a compilation that reads the current includes, would
-  accept an include changed before the pass. So G6 must compute it from a
-  compilation of the placed files together with includes whose content is
-  itself pinned (nothing pins them today).
+  or, if computed at the pass from a compilation that reads the current
+  includes, would accept an include changed before the pass. **There is now
+  a way to close it** (fifth G4 rehearsal, §11; a VM check of the
+  mechanism): the kernel's `raw_sha256` equals the SHA-256 of
+  `apparmor_parser -Q -o` output, so G6's installer records that digest in
+  the generation's exposure section when it compiles, which fixes the
+  includes' content at that moment, and the pass compares the kernel's
+  `raw_sha256` with the record (§7, "Left to G6"). Still open: nothing
+  records the digest yet (G6), and a parser upgrade may change the output
+  (*inferred*), which then needs a reinstall.
 
 ## 10. Owner decisions
 
@@ -1188,14 +1210,13 @@ bounds each `ExecStopPost=` command on its own (timings not measured); the
 roll-back at a later step and with the handle already present, under
 AppArmor; the decoy's report to the intake (P2's send; the intake was not
 run, so its connect under the profile is not shown either); a trip from
-`systemctl reload nftables` or a `firewalld` reload (`nft delete table`
-and, in the second rehearsal, `systemctl start nftables.service` were
-used); whether a failed `AssertSecurity=apparmor` on the verify
+a `firewalld` reload (`nft delete table`, in the second rehearsal
+`systemctl start nftables.service` and in the fifth `systemctl reload
+nftables.service` were used); whether a failed `AssertSecurity=apparmor` on the verify
 unit makes it failed so that `OnFailure=` trips; a verify already running
 during an ordinary stop; a name taken over by something else between runs
 (item 2's hand-added element and the names of §7's table); a start with
-AppArmor disabled (`apparmor=0`); the pass reading
-`/sys/kernel/security/apparmor/profiles` under the controller's sandbox; the
+AppArmor disabled (`apparmor=0`); the
 full §8 table for every unit, and `systemd-analyze security`. Added by the
 review of #289:
 
@@ -1290,12 +1311,30 @@ intake about three seconds after the connections, before the decoy reports
 (at the connection's close). Not a defect; noted so the next rehearsal waits
 for the close.
 
+### Fifth G4 rehearsal (2026-10-22, VM; mechanism check, not hardware evidence)
+
+The same VM (Debian 13, kernel 6.12.111+deb13-arm64, AppArmor 4.1,
+systemd 257). **A VM check of the mechanism, not hardware evidence**; no
+record for `HG-06`, `HG-09` or `HG-10`, and nothing granted by the pass.
+
+| what | how | observed | result |
+| --- | --- | --- | --- |
+| the kernel's per-profile files | listing `/sys/kernel/security/apparmor/policy/profiles/<name>.<n>/` | `attach mode name raw_abi raw_data raw_sha256 sha256`; no `sha1` | the reader now reads `raw_sha256` (§9, "G6 preparation C") |
+| which hash the kernel shows | for each of the four decoy profiles, the kernel's `raw_sha256` against the SHA-256 of `raw_data` and of `apparmor_parser -Q -o <out> /etc/apparmor.d/<name>` | all three equal, for all four; `sha256` is another value, equal to neither and not to the SHA-256 of the profile file | the expected hash can be derived at install (§7, "Left to G6") |
+| the pass's reads under the controller's sandbox | a copy of `azazel-activated.service` with only `ExecStart=` replaced by a test Python, its dependencies and conditions removed | `/sys/kernel/security/apparmor/profiles`, `/sys/kernel/security/lsm`, the policy directory and `sha256` all readable; `raw_sha256` is in the same directory; no AppArmor denial | ok |
+| trip by `systemctl reload nftables.service` | Debian's default `/etc/nftables.conf` (it holds `flush ruleset`) | about 11 s later the verify failed, the trip ran and the three units stopped | ok (closed) |
+| trip by `systemctl start nftables.service` (again) | the same file | the same, about 9 s later | ok (closed) |
+
+The controller copy read `sha256` and listed `raw_sha256` beside it but did
+not read `raw_sha256` itself; that it is readable there is *inferred* from
+the same directory and mode, and G6 confirms it with the reader.
+
 **Still open after G4:** whether `TimeoutStopSec=` bounds each
 `ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
-probe (it cannot run one); a trip from `firewalld` or `systemctl reload
-nftables`; a failed `AssertSecurity=apparmor` on the verify unit and
-`OnFailure=`; a start with `apparmor=0`; the pass reading the profiles under
-the controller's sandbox; a kernel with fine-grained `AF_UNIX` mediation;
+probe (it cannot run one); a trip from a `firewalld` reload; a failed
+`AssertSecurity=apparmor` on the verify unit and `OnFailure=`; a start with
+`apparmor=0`; a kernel with fine-grained `AF_UNIX` mediation; whether a
+parser upgrade changes the compiled output (§7, "Left to G6");
 the full §8 table and `systemd-analyze security` per unit. These are G5
 (`HG-09`, `HG-10`) or G6 work.
 

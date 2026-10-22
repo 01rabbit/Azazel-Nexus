@@ -512,7 +512,7 @@ def test_the_policy_reader(tmp_path, monkeypatch):
         entry = base / f"{name}.{index}"
         entry.mkdir()
         (entry / "name").write_bytes(name.encode() + b"\n")
-        (entry / "sha256").write_bytes((HASHES[name] + "\n").encode())
+        (entry / "raw_sha256").write_bytes((HASHES[name] + "\n").encode())
     nohash = base / "other.9"
     nohash.mkdir()
     (nohash / "name").write_bytes(b"other\n")
@@ -525,6 +525,37 @@ def test_the_policy_reader(tmp_path, monkeypatch):
     assert policy_hash_refusal(tuple(e for e in entries if e[0] is not UNREADABLE),
                                HASHES) is None
     assert policy_hash_refusal(entries, HASHES).startswith(LSM_POLICY_UNVERIFIABLE)
+
+
+def _policy_directory(tmp_path, monkeypatch, files):
+    base = tmp_path / "profiles"
+    monkeypatch.setattr(decoy_apparmor, "_POLICY_PROFILES", str(base))
+    base.mkdir()
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        entry = base / f"{name}.{index}"
+        entry.mkdir()
+        (entry / "name").write_bytes(name.encode() + b"\n")
+        for file, value in files(name).items():
+            (entry / file).write_bytes((value + "\n").encode())
+
+
+def test_the_reader_compares_raw_sha256_not_sha256(tmp_path, monkeypatch):
+    # The VM's entry holds both; `raw_sha256` is the compiled policy's digest,
+    # `sha256` another value. Only `raw_sha256` is read.
+    _policy_directory(tmp_path, monkeypatch, lambda name: {
+        "raw_sha256": HASHES[name], "sha256": "f" * 64})
+    entries = read_policy_hashes()
+    assert sorted(hash for _, hash in entries) == sorted(
+        (value + "\n").encode() for value in HASHES.values())
+    assert policy_hash_refusal(entries, HASHES) is None
+
+
+def test_sha256_without_raw_sha256_withholds(tmp_path, monkeypatch):
+    _policy_directory(tmp_path, monkeypatch, lambda name: {"sha256": HASHES[name]})
+    entries = read_policy_hashes()
+    assert all(hash is None for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(
+        LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash")
 
 
 def test_the_policy_path_is_securityfs():
