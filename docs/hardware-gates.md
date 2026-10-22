@@ -130,7 +130,12 @@ expects every non-root governed daemon exactly once, so a record captured
 before P1 (no `azdecoy` attempt) no longer conforms: HG-02 is to be captured
 afresh. The decoy network helper (`azazel-decoy-netd.service`) runs as root
 and is not an HG-02 subject; it is kept from the service manager by its
-sandbox (`AF_NETLINK` only), which the decoy-sandbox gate is to observe
+sandbox: `RestrictAddressFamilies=AF_NETLINK` (no `AF_UNIX` socket) and
+`InaccessiblePaths=` over `/run/dbus/system_bus_socket` and
+`/run/systemd/private`, which the decoy-sandbox gate is to observe (its
+AppArmor profile's `deny` rules for the two sockets are defence in depth
+only: on Debian 13's kernel they did not refuse a path connect, G4 on a VM,
+[grant design §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6))
 ([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented)).
 Since #196 option (a) the decoy namespace unit (`azazel-decoy-nsd.service`)
 is a second root unit and likewise not an HG-02 subject: like the helper it

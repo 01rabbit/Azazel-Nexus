@@ -22,11 +22,13 @@
 # there is the one socket, pinned by tests/unit/test_decoy_apparmor.py.
 # G4 (Debian 13, kernel 6.12, AppArmor 4.1.0; a mechanism check, not
 # hardware evidence): file writes under /var/lib/azazel were refused, but a
-# connect to /run/dbus/system_bus_socket under this profile succeeded: this
-# kernel does not mediate a path connect by the file rules. What keeps the
-# decoy from the service manager is the unit's InaccessiblePaths= over the
-# two sockets; the rules below are defence in depth for a kernel that
-# mediates path unix. The intake connect was not run on the VM.
+# connect to /run/dbus/system_bus_socket under this profile succeeded (with
+# aa-exec, outside the unit): this kernel does not mediate a path connect
+# by the file rules. Keeping the decoy from the service manager is, by
+# design, the unit's InaccessiblePaths= over the two sockets (a connect
+# under the unit's sandbox was not run in G4); the rules below are defence
+# in depth for a kernel that mediates path unix. The intake connect was
+# not run on the VM.
 #
 # `attach_disconnected` (G4, docs/deception-exposure-grant.md §11): under
 # systemd's sandbox (PrivateDevices=, PrivateTmp=, ProtectSystem=) a path can
@@ -58,8 +60,8 @@ profile azazel-decoyd flags=(attach_disconnected) {
   deny /run/systemd/{system,system.control,transient}{,/**} wlk,
   deny /etc/azazel{,/**} wlk,
   # Not `deny /var/lib/azazel{,/**} wlk`: see the head of this file.
-  # Defence in depth only (G4, head of this file): InaccessiblePaths= is
-  # what hides these two sockets.
+  # Defence in depth only (G4, head of this file): by design the unit's
+  # InaccessiblePaths= hides these two sockets.
   deny /run/dbus/system_bus_socket rw,
   deny /run/systemd/private rw,
   deny dbus,
@@ -112,7 +114,13 @@ profile azazel-decoyd flags=(attach_disconnected) {
   owner @{PROC}/@{pid}/ns/net r,
   # Not `owner`: /proc/<pid>/net is owned by root, not by the decoy's
   # account (G4: operation="open" name="/proc/<pid>/net/dev" fsuid=979
-  # ouid=0 was refused).
+  # ouid=0 was refused). Without `owner` this matches every pid, PID 1's
+  # (the host namespace's links) included. The unit's ProtectProc=invisible
+  # hides other users' processes from the decoy's /proc, so only its own
+  # pids remain to match (review of #289 F1). Not ProcSubset=pid: it would
+  # hide /proc/sys, and the decoy reads /proc/sys/kernel/random/boot_id.
+  # That /proc/self/net/dev and boot_id stay readable under the unit is a VM
+  # item (§11).
   @{PROC}/@{pid}/net/dev r,
   /run/netns/azazel-decoy r,
 

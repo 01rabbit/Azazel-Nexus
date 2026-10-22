@@ -403,10 +403,11 @@ granted, an LSM profile confining the namespace unit (and the helper) must
 exist and be a gate. That means a hardware-gate record showing that, under
 the profile, the unit cannot write the activation state, the grant markers
 or the unit files; and one showing that the unit cannot reach the service
-manager. The second is the sandbox's, not the profile's: on Debian 13's
-kernel (6.12, AppArmor 4.1.0) a path connect to
+manager. The second is, by design, the sandbox's, not the profile's: on
+Debian 13's kernel (6.12, AppArmor 4.1.0) a path connect to
 `/run/dbus/system_bus_socket` succeeded under the profiles (G4 rehearsal on
-a VM, a mechanism check, not hardware evidence; [grant design
+a VM with `aa-exec`, outside the units; a mechanism check, not hardware
+evidence; a connect under the units' sandbox was not run; [grant design
 §11](deception-exposure-grant.md#11-to-check-on-the-vm-g4-a-mechanism-check-not-hardware-evidence)).
 The namespace unit cannot make an `AF_UNIX` socket
 (`RestrictAddressFamilies=AF_NETLINK`), and the helper, the verify unit and

@@ -10,7 +10,7 @@ later. These tests pin:
   namespace unit, which runs only `ip`) mounts; no child profile (G4
   follow-up: under `NoNewPrivileges=yes` the kernel refused the namespace
   unit's `Cx` transition); `attach_disconnected` on every profile, with
-  `attach_disconnected.path=/azazel-disconnected/` on the namespace unit's
+  `attach_disconnected.path=/.azazel-nsfs/` on the namespace unit's
   alone (G4), and no other flag;
 * the units: each of the three names exactly its own profile, without `-`,
   rendered from `ServiceProfile` and nowhere else; no other unit names one;
@@ -84,7 +84,7 @@ PROFILED_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, VERIFY, DECOY
 
 #: The one flag of every profile, and the namespace unit's prefix for
 #: disconnected paths (G4: its nsfs bind source; grant §7).
-DISCONNECTED = "/azazel-disconnected/"
+DISCONNECTED = "/.azazel-nsfs/"
 FLAGS = {
     "azazel-decoy-nsd": f"flags=(attach_disconnected, attach_disconnected.path={DISCONNECTED})",
     "azazel-decoy-netd": "flags=(attach_disconnected)",
@@ -545,17 +545,30 @@ def test_the_decoy_reads_its_net_dev_without_owner():
     assert "@{PROC}/@{pid}/net/dev r," in rules
     assert "owner @{PROC}/@{pid}/net/dev r," not in rules
     assert "owner @{PROC}/@{pid}/ns/net r," in rules
+    # Without `owner` it matches every pid, so the unit hides other users'
+    # processes (review of #289 F1); not ProcSubset=pid, which would hide the
+    # boot id the decoy reads under /proc/sys.
+    settings = _settings((UNIT_DIR / DECOY_UNIT).read_text(encoding="utf-8"))
+    assert settings["ProtectProc"] == ["invisible"]
+    assert "ProcSubset" not in settings
+    assert "@{PROC}/sys/kernel/random/boot_id r," in rules
 
 
 def test_the_service_manager_sockets_are_hidden_by_the_sandbox_not_only_the_profile():
     """G4: on Debian 13's kernel a path connect to the D-Bus socket succeeded
-    under all three profiles that could make one; the profiles' denies are
-    defence in depth. The unit's address families (namespace unit) or its
-    `InaccessiblePaths=` (the others) are what keep it from the manager."""
+    under all three profiles that could make one (aa-exec, outside the units);
+    the profiles' denies are defence in depth. By design the address families
+    (namespace unit) or `InaccessiblePaths=` (the others) keep it from the
+    manager; a connect under the units was not run in G4."""
 
     for unit, name in DECOY_APPARMOR_PROFILES:
-        text = (PROFILE_DIR / name).read_text(encoding="utf-8")
-        assert "Defence in depth" in text, name
+        # The two denies stay, exactly and once, for a kernel that mediates
+        # path unix.
+        rules = _all_blocks()[name]
+        for deny in ("deny /run/dbus/system_bus_socket rw,", "deny /run/systemd/private rw,"):
+            assert rules.count(deny) == 1, (name, deny)
+        assert not any("system_bus_socket" in rule or "/run/systemd/private" in rule
+                       for rule in _allows(rules)), name
         settings = _settings((UNIT_DIR / unit).read_text(encoding="utf-8"))
         if unit == DECOY_NAMESPACE_UNIT:
             assert settings["RestrictAddressFamilies"] == ["AF_NETLINK"]

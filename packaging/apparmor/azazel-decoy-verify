@@ -47,9 +47,10 @@ profile azazel-decoy-verify flags=(attach_disconnected) {
   deny /etc/azazel{,/**} wlk,
   deny /var/lib/azazel{,/**} wlk,
   # Defence in depth only: on Debian 13's kernel (6.12, AppArmor 4.1.0) a
-  # connect to a path socket was not refused by these two rules (G4). What
-  # keeps this unit from the service manager is the unit's
-  # InaccessiblePaths= over the two sockets.
+  # connect to a path socket was not refused by these two rules (G4, with
+  # aa-exec outside the unit). Keeping this unit from the service manager
+  # is, by design, the unit's InaccessiblePaths= over the two sockets; a
+  # connect under the unit's sandbox was not run in G4 (§11).
   deny /run/dbus/system_bus_socket rw,
   deny /run/systemd/private rw,
   deny dbus,

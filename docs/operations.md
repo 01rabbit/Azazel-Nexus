@@ -753,9 +753,10 @@ one verify run. It has been rehearsed on a Debian 13 VM (G4, grant §11: a
 `nft delete table inet azazel_decoy` tripped the three units in about 2 s;
 a mechanism check, not hardware evidence) and not yet observed on the real
 host; a firewall reload as the trigger was not part of that run. The trip
-leaves the units stopped; the helper's stop then fails at `nft delete
-table` (the table is already gone), so `azazel-decoy-netd.service` ends
-**`failed`** after the trip. That is expected, and it is a closed state:
+leaves the units stopped, and `azazel-decoy-netd.service` ends
+**`failed`** after the trip (seen on the VM). The cause is inferred, not
+read from the journal in that run: its `ExecStop=` (`az-decoy-netd stop`)
+fails at `nft delete table` because the table is already gone. That is expected, and it is a closed state:
 the decoy is down, and the next start of the namespace unit brings the
 helper up again with no `reset-failed` needed (seen on the VM). Do not
 treat the helper's `failed` as the cause; the verify's journal holds it. Find the cause
@@ -795,13 +796,16 @@ it has no child profile (the G4 follow-up, grant design §7). All four carry
 `flags=(attach_disconnected)`, so that a path under systemd's sandbox (such
 as the verify unit's `/dev/null`) is named rather than refused; the denies
 still apply to the name. The namespace unit's also sets
-`attach_disconnected.path=/azazel-disconnected/`: the namespace `ip netns
+`attach_disconnected.path=/.azazel-nsfs/`: the namespace `ip netns
 add` binds onto its handle is such a path, and the prefix keeps it apart
 from the host's real `/` (grant design §7). The profiles' `deny` rules for
 the D-Bus and systemd sockets are defence in depth only: on Debian 13's
 kernel a connect to those sockets was not refused by them (G4 rehearsal),
-and what keeps the units from the service manager is their sandbox
-(`RestrictAddressFamilies=` and `InaccessiblePaths=`). Do not remove those
+and keeping the units from the service manager is, by design, their
+sandbox's part (`RestrictAddressFamilies=` and `InaccessiblePaths=`; not
+yet observed under the units). The decoy's unit also has
+`ProtectProc=invisible`, because its profile's `/proc/<pid>/net/dev` rule
+cannot be `owner` and would otherwise match the host's processes. Do not remove those
 unit lines or add a drop-in that changes them. With
 AppArmor enabled, a start without that profile loaded fails; with AppArmor
 disabled systemd ignores `AppArmorProfile=` and the assertion fails the
