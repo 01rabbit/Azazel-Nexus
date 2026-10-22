@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
+import errno
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -503,16 +504,46 @@ def test_a_different_loaded_policy_withholds():
     assert reason.startswith(LSM_POLICY_DIFFERS + ": 1 of the 4")
 
 
-def test_the_policy_reader(tmp_path, monkeypatch):
-    base = tmp_path / "profiles"
+NO_HASH = LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash"
+
+
+def _linked_policy(tmp_path, monkeypatch, target=None, hashes=HASHES, raw_sha256=True):
+    """The VM's layout: `raw_sha256 -> ../../raw_data/<n>/sha256` in each entry.
+
+    `target(n)` replaces the link's text; `hashes` None places no raw data;
+    `raw_sha256` False places no `raw_sha256` at all. `name` and `sha256` are
+    regular files, `sha256` holding another value, as on the VM.
+    """
+
+    policy = tmp_path / "policy"
+    base, raw_data = policy / "profiles", policy / "raw_data"
     monkeypatch.setattr(decoy_apparmor, "_POLICY_PROFILES", str(base))
-    assert read_policy_hashes() is None
-    base.mkdir()
+    monkeypatch.setattr(decoy_apparmor, "_POLICY_RAW_DATA", str(raw_data))
+    base.mkdir(parents=True)
+    raw_data.mkdir()
     for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
-        entry = base / f"{name}.{index}"
+        number = 120 + index
+        entry = base / f"{name}.{number}"
         entry.mkdir()
         (entry / "name").write_bytes(name.encode() + b"\n")
-        (entry / "sha256").write_bytes((HASHES[name] + "\n").encode())
+        (entry / "sha256").write_bytes(b"f" * 64 + b"\n")
+        if hashes is not None:
+            (raw_data / str(number)).mkdir()
+            (raw_data / str(number) / "sha256").write_bytes((hashes[name] + "\n").encode())
+        if raw_sha256:
+            link = target(number) if target else f"../../raw_data/{number}/sha256"
+            os.symlink(link, entry / "raw_sha256")
+    return base, raw_data
+
+
+def _hashes():
+    return [hash for _, hash in read_policy_hashes()]
+
+
+def test_the_policy_reader(tmp_path, monkeypatch):
+    monkeypatch.setattr(decoy_apparmor, "_POLICY_PROFILES", str(tmp_path / "none"))
+    assert read_policy_hashes() is None
+    base, _ = _linked_policy(tmp_path, monkeypatch)
     nohash = base / "other.9"
     nohash.mkdir()
     (nohash / "name").write_bytes(b"other\n")
@@ -527,8 +558,152 @@ def test_the_policy_reader(tmp_path, monkeypatch):
     assert policy_hash_refusal(entries, HASHES).startswith(LSM_POLICY_UNVERIFIABLE)
 
 
+def test_a_raw_sha256_link_of_the_kernels_form_is_read_through_raw_data(tmp_path,
+                                                                        monkeypatch):
+    _linked_policy(tmp_path, monkeypatch)
+    entries = read_policy_hashes()
+    assert sorted(hash for _, hash in entries) == sorted(
+        (value + "\n").encode() for value in HASHES.values())
+    assert policy_hash_refusal(entries, HASHES) is None
+
+
+def test_the_reader_compares_raw_sha256_not_sha256(tmp_path, monkeypatch):
+    # The VM's entry holds both; `raw_sha256` is the compiled policy's digest,
+    # `sha256` another value. Only `raw_sha256` is read: a `sha256` equal to
+    # the expected hash does not pass a `raw_sha256` that differs.
+    base, _ = _linked_policy(tmp_path, monkeypatch, hashes={
+        name: "0" * 64 for name in REQUIRED_ENFORCED_PROFILES})
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        (base / f"{name}.{120 + index}" / "sha256").write_bytes(
+            (HASHES[name] + "\n").encode())
+    assert policy_hash_refusal(read_policy_hashes(), HASHES).startswith(
+        LSM_POLICY_DIFFERS + ": 4 of the 4")
+
+
+def test_sha256_without_raw_sha256_withholds(tmp_path, monkeypatch):
+    base, _ = _linked_policy(tmp_path, monkeypatch, raw_sha256=False)
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        (base / f"{name}.{120 + index}" / "sha256").write_bytes(
+            (HASHES[name] + "\n").encode())
+    entries = read_policy_hashes()
+    assert all(hash is None for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(NO_HASH)
+
+
+#: Targets that, followed, reach the very file the kernel's form names
+#: (`raw_data/<n>/sha256`, which holds the expected hash): only the check of
+#: the form refuses them.
+_REACHING = [
+    lambda tmp, n: str(tmp / "policy" / "raw_data" / str(n) / "sha256"),
+    lambda tmp, n: f"../../raw_data/./{n}/sha256",
+    lambda tmp, n: f"../../raw_data/{n}/../{n}/sha256",
+    lambda tmp, n: f"../../../policy/raw_data/{n}/sha256",
+    lambda tmp, n: f"../../raw_data//{n}/sha256",
+    lambda tmp, n: f"../.././raw_data/{n}/sha256",
+]
+
+
+@pytest.mark.parametrize("target", _REACHING)
+def test_a_link_reaching_the_right_hash_by_another_form_withholds(tmp_path, monkeypatch,
+                                                                  target):
+    base, _ = _linked_policy(tmp_path, monkeypatch, lambda n: target(tmp_path, n))
+    # Followed, each link would give the expected hash ...
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        assert (base / f"{name}.{120 + index}" / "raw_sha256").read_bytes() == (
+            HASHES[name] + "\n").encode()
+    # ... and the reader refuses every one for its form.
+    entries = read_policy_hashes()
+    assert all(hash is UNREADABLE for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(NO_HASH)
+
+
+@pytest.mark.parametrize("target", [
+    lambda n: "../../../etc/x",
+    lambda n: "../../raw_data/x/sha256",
+    lambda n: "../../raw_data//sha256",
+    lambda n: f"../../raw_data/0{n}/sha256",
+    lambda n: f"../../raw_data/{n}/sha256/",
+    lambda n: f"../../raw_data/{n}/raw_data",
+    lambda n: f"../raw_data/{n}/sha256",
+    lambda n: f"../../raw_data/-{n}/sha256",
+    lambda n: "../../raw_data/" + "1" * 21 + "/sha256",
+])
+def test_a_raw_sha256_link_of_any_other_form_withholds(tmp_path, monkeypatch, target):
+    # Forms that do not reach the hash at all: refused for the form, before
+    # anything is opened.
+    _linked_policy(tmp_path, monkeypatch, target)
+    entries = read_policy_hashes()
+    assert all(hash is UNREADABLE for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(NO_HASH)
+
+
+def test_a_raw_sha256_link_whose_target_is_absent_withholds(tmp_path, monkeypatch):
+    _linked_policy(tmp_path, monkeypatch, hashes=None)
+    entries = read_policy_hashes()
+    assert all(hash is None for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(NO_HASH)
+
+
+def test_a_raw_sha256_regular_file_withholds(tmp_path, monkeypatch):
+    # Only the observed form, a link, is accepted.
+    base, _ = _linked_policy(tmp_path, monkeypatch, raw_sha256=False)
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        (base / f"{name}.{120 + index}" / "raw_sha256").write_bytes(
+            (HASHES[name] + "\n").encode())
+    assert _hashes() == [UNREADABLE] * 4
+    assert policy_hash_refusal(read_policy_hashes(), HASHES).startswith(NO_HASH)
+
+
+def test_a_raw_data_directory_that_is_a_link_withholds(tmp_path, monkeypatch):
+    _, raw_data = _linked_policy(tmp_path, monkeypatch)
+    moved = tmp_path / "moved"
+    os.rename(raw_data, moved)
+    os.symlink(moved, raw_data)
+    assert _hashes() == [UNREADABLE] * 4
+
+
+def test_a_raw_data_entry_that_is_a_link_or_a_file_withholds(tmp_path, monkeypatch):
+    _, raw_data = _linked_policy(tmp_path, monkeypatch)
+    moved = tmp_path / "elsewhere"
+    os.rename(raw_data / "120", moved)
+    os.symlink(moved, raw_data / "120")
+    (raw_data / "121" / "sha256").unlink()
+    os.symlink(moved / "sha256", raw_data / "121" / "sha256")
+    (raw_data / "122" / "sha256").unlink()
+    (raw_data / "122").rmdir()
+    (raw_data / "122").write_bytes((HASHES[REQUIRED_ENFORCED_PROFILES[2]] + "\n").encode())
+    assert _hashes().count(UNREADABLE) == 3
+
+
+@pytest.mark.parametrize("content", [
+    b"", b"\n", b"A" * 64 + b"\n", b"0" * 63 + b"\n", b"0" * 64, b"0" * 64 + b"\n\n",
+    b"0" * 300,
+])
+def test_a_malformed_or_oversized_target_hash_withholds(tmp_path, monkeypatch, content):
+    _, raw_data = _linked_policy(tmp_path, monkeypatch)
+    (raw_data / "120" / "sha256").write_bytes(content)
+    assert policy_hash_refusal(read_policy_hashes(), HASHES).startswith(NO_HASH)
+    if len(content) > decoy_apparmor._POLICY_HASH_LIMIT:
+        assert UNREADABLE in _hashes()
+
+
+@pytest.mark.parametrize("code", [errno.EACCES, errno.EPERM, errno.EIO, errno.ELOOP])
+def test_a_readlink_error_other_than_einval_withholds(tmp_path, monkeypatch, code):
+    _linked_policy(tmp_path, monkeypatch)
+
+    def refuse(*args, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(decoy_apparmor.os, "readlink", refuse)
+    assert _hashes() == [UNREADABLE] * 4
+    assert policy_hash_refusal(read_policy_hashes(), HASHES).startswith(NO_HASH)
+
+
 def test_the_policy_path_is_securityfs():
     assert decoy_apparmor._POLICY_PROFILES == "/sys/kernel/security/apparmor/policy/profiles"
+    # The directory the kernel's `../../raw_data` names from a profile's entry.
+    assert decoy_apparmor._POLICY_RAW_DATA == os.path.normpath(
+        decoy_apparmor._POLICY_PROFILES + "/x/../../raw_data")
 
 
 ENFORCED = b"".join(name.encode() + b" (enforce)\n" for name in REQUIRED_ENFORCED_PROFILES)
