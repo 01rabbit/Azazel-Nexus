@@ -23,22 +23,39 @@ already read, whether the pass should refuse the grant because of that state:
 * `exposure_state_unreadable`: a value absent or not in its closed form.
 
 **Implemented, not wired (#196 G6 preparation A).** Nothing calls
-`exposure_residue_departures`: `ActivationController._withholding_reason`
-still withholds the tier as `isolation_evidence_absent` unconditionally, and
-wiring this in is G6 (grant §9). It reads nothing itself (the caller passes
-what it read from the service manager's bus, `ip` and `nft`), stops nothing,
-removes nothing and adds no unit operation: the operator stops such a unit
-and clears what is left (operations). It says reason codes only, each a
-fixed word with a fixed phrase, never a name, an address or a value.
+`exposure_residue_departures` or `read_netns`:
+`ActivationController._withholding_reason` still withholds the tier as
+`isolation_evidence_absent` unconditionally, and wiring this in is G6
+(grant §9). The judgement reads nothing itself (the caller passes what it
+read from the service manager's bus, `/run/netns` through `read_netns`,
+and the link and table lists), stops nothing, removes nothing and adds no
+unit operation: the operator stops such a unit and clears what is left
+(operations). It says reason codes only, each a fixed word with a fixed
+phrase, never a name, an address or a value.
+
+**The namespace is read from `/run/netns`, not from `ip netns list`**
+(#196 cross review L2, H1(c)). iproute2 prints nothing and exits 0 when it
+cannot open `/run/netns`, so "unreadable" passed as "no namespace"; and the
+pass that will call this in G6 runs in the controller, which starts no
+process (only the network helper may spawn one, `test_runtime_boundary`).
+`read_netns` opens `/run/netns` itself (`O_DIRECTORY|O_NOFOLLOW`) and looks
+the one name `azazel-decoy` up in it without following a link. How the
+controller reads the host's links and the nft tables is not settled here:
+in the controller's sandbox `nft` needs `CAP_NET_ADMIN` and cannot read
+them. That is decided in G6, in a design document of its own.
 
 A leaf apart from `decoy_addresses` (the fixed names) and
 `decoy_reachability.parse_json_list` (the one `ip -j` parser): no socket,
-no process, no environment, no file.
+no process, no environment; the one file read is `read_netns`'s, read-only
+and with no link followed.
 """
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from typing import Mapping, Optional
 
 from .decoy_addresses import BRIDGE, HOST_VETH, NAMESPACE, NFT_TABLE
@@ -53,6 +70,7 @@ __all__ = [
     "RESIDUE_PHRASES",
     "UNIT_PROPERTIES",
     "exposure_residue_departures",
+    "read_netns",
     "residue_refusal",
 ]
 
@@ -103,6 +121,11 @@ _DEFINITIONLESS = frozenset({"masked", "not-found"})
 #: A unit in one of these runs nothing (`ExecStop=`'s clean-up aside).
 _STOPPED = frozenset({"inactive", "failed"})
 
+#: Private test seam: where the named network namespaces are. Production is
+#: exactly this (`hardening.NETNS_DIRECTORY`, a test keeps them equal).
+_NETNS = "/run/netns"
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
 
 def _unit_states(units: object) -> Optional[dict[str, tuple[str, str, str]]]:
     """`unit -> (LoadState, UnitFileState, ActiveState)`, or None when not closed."""
@@ -123,8 +146,57 @@ def _unit_states(units: object) -> Optional[dict[str, tuple[str, str, str]]]:
     return states
 
 
-def _names(read: object, key: str, *,
-           empty_allowed: bool = False) -> Optional[frozenset[str]]:
+def read_netns() -> tuple[int, Optional[int]]:
+    """`(error, mode)`: what `/run/netns` holds under `azazel-decoy`, read now.
+
+    `error` is 0 when `/run/netns` was opened (`O_DIRECTORY|O_NOFOLLOW`, so
+    a link in its place is an error) and the name looked up in it, or the
+    `errno` of the first of the two that failed; `mode` is the entry's
+    `st_mode` as `lstat` gives it (a link is not followed), None when there
+    is no such entry or on an error. Read-only, one directory and one name;
+    nothing here is judged (`exposure_residue_departures`).
+    """
+
+    try:
+        directory = os.open(_NETNS, _DIR_FLAGS)
+    except OSError as error:
+        return error.errno or errno.EIO, None
+    try:
+        entry = os.stat(NAMESPACE, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return 0, None
+    except OSError as error:
+        return error.errno or errno.EIO, None
+    finally:
+        os.close(directory)
+    return 0, entry.st_mode
+
+
+def _namespace_present(read: object) -> Optional[bool]:
+    """Whether `read_netns` found the namespace; None unreadable.
+
+    No `/run/netns` at all (`ENOENT` opening it) is no namespace; any other
+    error is unreadable (iproute2's `ip netns list` printed nothing for both).
+    The entry is the empty regular file `ip netns add` binds the namespace's
+    nsfs file onto; a link, a directory or anything else under that name is
+    not that, and is unreadable.
+    """
+
+    if type(read) is not tuple or len(read) != 2:
+        return None
+    error, mode = read
+    if type(error) is not int or (mode is not None and type(mode) is not int):
+        return None
+    if error == errno.ENOENT and mode is None:
+        return False
+    if error != 0:
+        return None
+    if mode is None:
+        return False
+    return True if stat.S_ISREG(mode) else None
+
+
+def _names(read: object, key: str) -> Optional[frozenset[str]]:
     """The names an `ip -j` list holds under `key`; None unreadable."""
 
     if type(read) is not tuple or len(read) != 2:
@@ -132,10 +204,6 @@ def _names(read: object, key: str, *,
     status, output = read
     if status != 0 or type(output) is not bytes:
         return None
-    # `ip -j netns list` prints nothing at all when there is no namespace
-    # (iproute2 6.15, container-checked).
-    if empty_allowed and not output.strip():
-        return frozenset()
     listed = parse_json_list(output)
     if listed is None or not all(type(item.get(key)) is str for item in listed):
         return None
@@ -171,15 +239,19 @@ def _table_present(read: object) -> Optional[bool]:
 
 
 def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
-                                netns: tuple[int, bytes], links: tuple[int, bytes],
+                                netns: tuple[int, Optional[int]],
+                                links: tuple[int, bytes],
                                 tables: tuple[int, bytes]) -> tuple[str, ...]:
     """The reason codes of G6 item (a) that hold, in the order of `RESIDUE_CODES`.
 
     Pure. `units` maps each of `EXPOSURE_UNITS` to its `LoadState`,
     `UnitFileState` and `ActiveState` as the service manager's bus gave them
-    (strings); `netns`, `links` and `tables` are `(status, output)` of
-    `ip -j netns list`, `ip -j link show` (host namespace) and
-    `nft -j list tables`. Empty when neither state holds. Any argument of
+    (strings); `netns` is `read_netns()`'s `(error, mode)` (no `/run/netns`
+    is no namespace, any other error unreadable, the entry a regular file or
+    unreadable); `links` and `tables` are `(status, output)` of
+    `ip -j link show` (host namespace) and `nft -j list tables` (how the
+    controller reads these two is decided in G6). Empty when neither state
+    holds. Any argument of
     another shape is `exposure_state_unreadable`, never an exception. A unit state that
     cannot be read leaves both judgements unmade (`exposure_state_unreadable`
     alone); an unreadable object read leaves the leftovers unjudged.
@@ -193,15 +265,15 @@ def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
         if ((load in _DEFINITIONLESS or file_state in _MASKED_FILE_STATES)
                 and active not in _STOPPED):
             found.add(EXPOSURE_UNIT_MASKED_RUNNING)
-    namespaces = _names(netns, "name", empty_allowed=True)
+    namespace = _namespace_present(netns)
     link_names = _names(links, "ifname")
     table = _table_present(tables)
-    if namespaces is None or link_names is None or table is None:
+    if namespace is None or link_names is None or table is None:
         found.add(EXPOSURE_STATE_UNREADABLE)
     else:
         namespace_unit, helper, _ = EXPOSURE_UNITS
         owned = (
-            (namespace_unit, NAMESPACE in namespaces or HOST_VETH in link_names),
+            (namespace_unit, namespace or HOST_VETH in link_names),
             (helper, BRIDGE in link_names or table),
         )
         if any(present and states[owner][2] in _STOPPED for owner, present in owned):
