@@ -325,8 +325,9 @@ needs (health, lease, generation, clock, high water):
    is *inferred* dropped by that kernel. Its effect on the target kernel
    (or a fixed target kernel), the head of
    [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired),
-   is checked before G6 wires this in, as are the networkd rules' attributes
-   (reachability §11 item 8).
+   is checked before G6 wires this in. The networkd rules' attributes were
+   observed on the VM (reachability §11 item 8) and the comparison, shared
+   with the verify, accepts them.
 
 Each failure withholds the tier with its own reason code, and nothing else.
 
@@ -581,16 +582,25 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
   anywhere; `proxy_arp` off on `all` and each ingress. The verify knows the
   ingress from the scope and not the management and observation roles, so
   `forwarding_role_on` is the pass's (G6) and "every other interface off"
-  (`forwarding_other_on`) covers those interfaces here. Rules: below the main
-  table's priority exactly the local rule (priority 0, table `local`, no
-  `iif`/`oif`) and, per ingress, the K1 pair: priority 1960 with that `iif`,
-  `dst` `10.255.196.0`, `dstlen` 30, table `main`, `suppress_prefixlen` 29;
-  priority 1961 with that `iif` and action `blackhole` (the keys `ip -j`
-  6.15 prints, container-checked); anything else before `main` is
-  `ingress_containment_absent`. **Left to G6**, after the VM's dump
-  (reachability §11 item 8): that no rule carries another selector (`src`
-  other than all, `oif`, `fwmark`, `tos`, `uidrange`, `l3mdev`, protocol or
-  port) and the exact attribute set; the `protocol` field stays out. Routes:
+  (`forwarding_other_on`) covers those interfaces here. Rules (since #196
+  R4's remainder; G2 compared only priority, `iif` and the K1 pair's
+  defining attributes): compared **whole** by the pass's one comparison,
+  `decoy_reachability._rules_exact`
+  ([reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired)).
+  Below the main table's priority exactly the local rule
+  `{"priority":0,"src":"all","table":"local"}` and, per ingress, the K1
+  pair as `ip -j -4 rule show` prints it: priority 1960 with that `iif`,
+  `src` all, `dst` `10.255.196.0`, `dstlen` 30, table `main`,
+  `suppress_prefixlen` 29; priority 1961 with that `iif`, `src` all and
+  action `blackhole`, with no table (`ip rule add`) or table `main`
+  (networkd 257's form, observed on the VM, reachability §11 item 8) and no
+  other; no other key (`oif`, `fwmark`, `tos`, `dscp`, `uidrange`, `l3mdev`,
+  IP protocol, port, ...), `protocol` never compared (networkd prints
+  `static` even without `-d`); and at priority 32766 exactly one rule,
+  `from all lookup main`. Anything else is `ingress_containment_absent`.
+  Stricter than G2's, it trips on more (the closed side); the rehearsal's
+  K1 added with `ip rule add` and networkd's K1 both pass (pinned by
+  `tests/unit/test_decoy_reachability.py` with the VM's output). Routes:
   no route of `main` whose destination lies inside `10.255.196.0/24` but one
   `10.255.196.0/30 dev az-decoy0` without gateway or next hops
   (`decoy_prefix_routed`); a wider route (a default, a /16) is suppressed by
@@ -1002,7 +1012,7 @@ pass and the existing tests that pin it stay.
 | G1 | the scope: proposal v3 and its decoder (§4.1, §4.2); the rendered scope and its reader (§4.3); the ruleset, plan and `nft -j` check from the scope; isolation contract v2; masquerade (A3); the reply accept's `oifname { <ingress> }` and the ingress drop of [reachability](deception-exposure-reachability.md) R3; unit tests only, nothing wired into the pass | Q1–Q4 |
 | G1a *(implemented)* | the first half of G1: `commissioning-proposal/v3` (v2 plus a required `deception_scope`, `src/azazel_nexus/commissioning_approval.py`, `fabric_boundary.restore_commissioning_inputs`; M.I.O. reads its signed `mio_profile` from v2 and v3 alike), the strict decoder, the rendered scope file and its reader (`src/azazel_nexus/decoy_scope.py`, a standard-library leaf under the helper's boundary rules); tests only (`tests/unit/test_decoy_scope.py`, `tests/unit/test_commissioning_approval.py`); nothing calls it from the pass or the helper, no unit file changes. The ruleset, `nft -j`, isolation v2, masquerade and `LoadCredential=` are G1b | Q1–Q3 |
 | G1b *(implemented)* | the second half of G1: the helper's input (`LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json` on `azazel-decoy-netd.service`, pinned in `DECOY_HELPER_SANDBOX`, no `SetCredential=` fallback, no other unit may load it; `decoy_scope.read_scope_credential`, read after the previous isolation record is removed; a scope present and refused builds nothing and leaves no record); the ruleset from the scope, one transaction (`decoy_network.render_ruleset`: `elements`, quoted `iifname { ... }` on the accept, `oifname { ... }` on the reply and the ingress drop of [reachability](deception-exposure-reachability.md) R3, the A3 masquerade in a `postrouting` `nat` chain; without a scope the table of the first build); `_ALLOWED` replaced by a per-run `Plan` (the constants plus exactly the one ruleset); the check moved to `nft -j list table` against the expected listing rendered with the ruleset; `decoy-isolation/v2` with `approved_v4_matches`, `ingress_matches` (the ingress name set and its count; placement is `nft_table`'s) and `scope_digest`, v1 refused by the decoy; the check sees only its own table; the helper's import closure gains `azazel_nexus.decoy_scope` only. Container-checked with nftables 1.1.3 (a mechanism check): an anonymous set of names is listed reordered and, with one name, as the name; a /32 element as a bare address; adjacent prefixes are kept apart, overlapping ones refuse the whole transaction, duplicates are merged; the real helper loaded and checked scopes of 1 and 2 ingress, 3 and 16 prefixes, and an approved forwarded connect reached the decoy as `10.255.196.1`. Until G6 nothing writes the scope file, so a granted helper would fail to start; the tier stays withheld | Q1–Q4 |
-| G2 *(implemented)* | the watch (§6.3): `azazel-decoy-verify.service` (one-shot, `az-decoy-netd verify`, the helper's executable, sandbox and scope credential, read-only plan `decoy_network.verify_plan`, `OnFailure=` the trip unit, no marker, no `[Install]`); `azazel-decoy-verify.timer` (10 s, `AccuracySec=1s`, `PartOf=` the decoy); the trip unit as `azazel-decoy-trip.target` (only `Conflicts=azazel-decoy-nsd.service`; since the G4 follow-up `Conflicts=` on all three, §6.3; a service with no command is refused by systemd); the decoy's `Requires=` on the verify unit and the timer and `After=` on the verify unit; the helper's `After=` on `firewalld.service` and `netfilter-persistent.service`; the verify's re-reading of [reachability](deception-exposure-reachability.md) R4 (forwarding and `proxy_arp`, the rules before `main` down to priority, `iif` and the K1 pair's defining attributes, the routes of `main` in the /24; the exact rule attributes are G6's); its own AppArmor profile `azazel-decoy-verify`, required in enforce mode; the three files rendered and compared byte for byte, and `require_watch_unit_files` (byte-exact, no drop-in, no mask) defined but not called by the pass and not digested by the generation until G6; unit tests only, nothing run under systemd | Q6, Q7 |
+| G2 *(implemented)* | the watch (§6.3): `azazel-decoy-verify.service` (one-shot, `az-decoy-netd verify`, the helper's executable, sandbox and scope credential, read-only plan `decoy_network.verify_plan`, `OnFailure=` the trip unit, no marker, no `[Install]`); `azazel-decoy-verify.timer` (10 s, `AccuracySec=1s`, `PartOf=` the decoy); the trip unit as `azazel-decoy-trip.target` (only `Conflicts=azazel-decoy-nsd.service`; since the G4 follow-up `Conflicts=` on all three, §6.3; a service with no command is refused by systemd); the decoy's `Requires=` on the verify unit and the timer and `After=` on the verify unit; the helper's `After=` on `firewalld.service` and `netfilter-persistent.service`; the verify's re-reading of [reachability](deception-exposure-reachability.md) R4 (forwarding and `proxy_arp`, the rules before `main` down to priority, `iif` and the K1 pair's defining attributes, the routes of `main` in the /24; since #196 R4's remainder the rules are compared whole by the pass's comparison, §6.3); its own AppArmor profile `azazel-decoy-verify`, required in enforce mode; the three files rendered and compared byte for byte, and `require_watch_unit_files` (byte-exact, no drop-in, no mask) defined but not called by the pass and not digested by the generation until G6; unit tests only, nothing run under systemd | Q6, Q7 |
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |

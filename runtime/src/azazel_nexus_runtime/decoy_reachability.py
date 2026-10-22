@@ -4,8 +4,9 @@
 Two callers share this module, each with its own judgement:
 
 * **the verify** (`decoy_watch.verify`, `az-decoy-netd verify`, #196 G2,
-  R4): `reachability_departures`. Its behaviour is G2's, unchanged by the
-  move of this code out of `decoy_watch` (#196 G6 preparation A).
+  R4): `reachability_departures`. Its behaviour is G2's, moved out of
+  `decoy_watch` (#196 G6 preparation A), but for the rules: since #196 R4's
+  remainder they are compared by the pass's one comparison (`_rules_exact`).
 * **the activation pass** (G6): `pass_reachability_departures`, the reading
   of condition 6 of grant §5. **Implemented, not wired**: nothing calls it.
   `ActivationController._withholding_reason` still withholds the tier as
@@ -20,15 +21,6 @@ What the pass adds to the verify's judgement, as §6 states it:
   roles and covers them as "every other interface" (`forwarding_other_on`);
 * `az-decoy0` is not exempt (it does not exist before the helper runs, so a
   value for it is another interface that forwards);
-* the rules before `main` are compared **exactly** (and at priority 32766
-  there is exactly the one `from all lookup main`): every rule below
-  priority 32766 must equal, attribute for attribute as `ip -j` prints it,
-  either the local rule or one rule of an ingress's K1 pair, with the rule's
-  `protocol` left out; any other key (`not`, `srclen`, `oif`, `fwmark`,
-  `tos`, `uid_start`, `l3mdev`, `ipproto`, `sport*`, `dport*`, `goto`,
-  `tun_id`, `suppress_ifgroup`, `flow_to`, ...) fails. The key set is
-  iproute2 6.15's for rules added by `ip rule` (container-checked); the
-  dump of networkd's rules on the VM (§11 item 8) is still to confirm it;
 * no route of `main` inside `10.255.196.0/24` at all (before the bridge
   exists, not even the connected /30);
 * every interface name it is given passes `decoy_scope.interface_name_allowed`
@@ -36,6 +28,17 @@ What the pass adds to the verify's judgement, as §6 states it:
   `default`, `.` or `..`) and its path under `conf/` has that directory as
   its exact parent (`conf_entry_path`), or the reads withhold as
   `forwarding_unreadable`.
+
+**The rules, one comparison for both** (`_rules_exact`, §6 R2 and R4): the
+rules before `main` are compared **exactly**, and at priority 32766 there is
+exactly the one `from all lookup main`: every rule below priority 32766 must
+equal, attribute for attribute as `ip -j -4 rule show` prints it, either the
+local rule or one rule of an ingress's K1 pair, with the rule's `protocol`
+left out; the K1 discard rule is accepted in two complete forms only, with no
+`table` (`ip rule add`) or with `"table":"main"` (networkd 257, observed on
+the VM, §11 item 8). Any other key (`not`, `srclen`, `oif`, `fwmark`, `tos`,
+`dscp`, `uid_start`, `l3mdev`, `ipproto`, `sport*`, `dport*`, `goto`,
+`tun_id`, `suppress_ifgroup`, `flow_to`, ...) or another table fails.
 
 **What it says.** Reason codes only, each a fixed word with a fixed phrase
 (`REACHABILITY_PHRASES`); never an interface name, a prefix, an address or a
@@ -272,16 +275,19 @@ def read_sysctls(ingress: tuple[str, ...]):
 
 #: The main table's rule priority: the rules before it are the ones read.
 _MAIN_PRIORITY = 32766
-#: A rule's missing (or non-text) `iif`: a sentinel no interface name equals.
-_NO_IIF = object()
 #: The K1 pair of reachability §5, per ingress interface.
 _K1_LOOKUP, _K1_BLACKHOLE = 1960, 1961
 _DECOY_NETWORK = ipaddress.IPv4Network(DECOY_SUBNET)
 #: The decoy network's /24 (`decoy_scope.RESERVED_HEADROOM`): no route of
 #: `main` inside it but (in the verify) the bridge's connected /30.
 _HEADROOM = ipaddress.IPv4Network("10.255.196.0/24")
-#: Who installed a rule: left out of the pass's exact comparison (§6).
+#: Who installed a rule: left out of the exact comparison (§6). networkd's
+#: rules print `"protocol":"static"` even without `-d` (VM, §11 item 8).
 _IGNORED_RULE_KEYS = frozenset({"protocol"})
+#: The one table a K1 discard rule may carry: networkd 257 prints its
+#: blackhole rule with `"table":"main"`, `ip rule add` without a table
+#: (VM, §11 item 8). The two complete forms are accepted, no other table.
+_K1_BLACKHOLE_TABLE = "main"
 #: The one rule the pass accepts at the main table's own priority: rules of
 #: equal priority are tried in the order they were added, so another rule
 #: there could still act before `main` (§6, review of #293).
@@ -298,53 +304,6 @@ def parse_json_list(output: bytes) -> Optional[list[dict]]:
     if type(document) is not list or not all(type(item) is dict for item in document):
         return None
     return document
-
-
-def _rules_contained(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
-    """Below `main`, exactly the local rule and each ingress's K1 pair (the verify's).
-
-    None when a rule has no integer priority (output this does not read).
-    G2's comparison: the priorities, the `iif` of each, the local rule's
-    table, and the K1 pair's defining attributes as `ip -j` 6.15 prints them
-    (container-checked): the lookup's `dst`/`dstlen`, `table` and
-    `suppress_prefixlen`, the discard's `action`. The pass compares the whole
-    attribute set (`_rules_exact`); the verify is unchanged until G6 wires
-    the same comparison, after the VM's dump (reachability §11 item 8).
-    """
-
-    below = []
-    for rule in rules:
-        priority = rule.get("priority")
-        if type(priority) is not int:
-            return None
-        if priority < _MAIN_PRIORITY:
-            below.append(rule)
-    local = [rule for rule in below if rule["priority"] == 0]
-    if (len(local) != 1 or local[0].get("table") != "local"
-            or "iif" in local[0] or "oif" in local[0]):
-        return False
-    # A rule without `iif`, or with one that is not a name, is never an
-    # ingress's (review of #287 F3): it is matched as `_NO_IIF`, which no
-    # scope name can equal, never as the text "None".
-    pairs = [(rule["priority"], rule["iif"] if type(rule.get("iif")) is str else _NO_IIF)
-             for rule in below if rule["priority"] != 0]
-    expected = ([(_K1_LOOKUP, name) for name in ingress]
-                + [(_K1_BLACKHOLE, name) for name in ingress])
-    if (len(pairs) != len(expected) or any(iif is _NO_IIF for _, iif in pairs)
-            or sorted(pairs) != sorted(expected)):
-        return False
-    for rule in below:
-        if rule["priority"] == _K1_LOOKUP and not (
-                rule.get("dst") == str(_DECOY_NETWORK.network_address)
-                and rule.get("dstlen") == _DECOY_NETWORK.prefixlen
-                and rule.get("table") == "main"
-                and rule.get("suppress_prefixlen") == 29
-                and "action" not in rule):
-            return False
-        if rule["priority"] == _K1_BLACKHOLE and not (
-                rule.get("action") == "blackhole" and "table" not in rule):
-            return False
-    return True
 
 
 def _expected_rules(ingress: tuple[str, ...]) -> list[dict]:
@@ -364,13 +323,25 @@ def _expected_rules(ingress: tuple[str, ...]) -> list[dict]:
 def _rules_exact(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
     """Below `main`, exactly the local rule and each ingress's K1 pair, whole.
 
-    The pass's comparison (§6 R2): each rule below priority 32766, with its
-    `protocol` left out, must equal one expected rule attribute for
+    The one comparison of the rules, the pass's and the verify's alike (§6
+    R2, R4; #196 R4): each rule below priority 32766, with its
+    `protocol` left out (and a K1 discard rule's `"table":"main"`, the form
+    networkd 257 prints, set aside: the discard rule is accepted with no
+    table or with table `main`, no other), must equal one expected rule attribute for
     attribute (keys, values and their JSON types), and the two lists must
     be equal as multisets: no rule missing, none extra, none twice. Any
     other selector or flag is an extra key, so it fails. At priority 32766
     itself there must be exactly one rule, `from all lookup main`, compared
-    the same way. None when a rule has no integer priority.
+    the same way. None when a rule has no integer priority. The verify
+    passes the scope's ingress (none without a scope: then only the local
+    rule); its differences from the pass (`az-decoy0`'s forwarding and its
+    connected /30) are in the sysctls and the routes, not here.
+
+    `ingress` is distinct by its callers' rules: the scope refuses ingress
+    names that are not sorted and distinct (`decoy_scope._ingress_names`),
+    and the pass refuses a name in two places (`_names_closed`). Rules of
+    the same priority (1960, 1961) do not overlap because each carries a
+    different `iif`.
     """
 
     below, at_main = [], []
@@ -380,6 +351,13 @@ def _rules_exact(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
             return None
         stripped = {key: value for key, value in rule.items()
                     if key not in _IGNORED_RULE_KEYS}
+        # Only the text "main" equals it: no other JSON value does.
+        if (priority == _K1_BLACKHOLE and stripped.get("action") == "blackhole"
+                and stripped.get("table") == _K1_BLACKHOLE_TABLE):
+            # networkd's form of the discard rule: the expected rule once its
+            # `table main` is set aside. Every other key is still compared
+            # below, and any other table stays an extra key, so it fails.
+            del stripped["table"]
         if priority < _MAIN_PRIORITY:
             below.append(stripped)
         elif priority == _MAIN_PRIORITY:
@@ -511,7 +489,8 @@ def reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
     * no IPv6 forwarding anywhere (or no IPv6 at all);
     * `proxy_arp` off on `all` and on every ingress;
     * the routing rules contain each ingress (K1) and nothing else comes
-      before the main table;
+      before the main table, compared whole as the pass compares them
+      (`_rules_exact`: no other selector, exactly one rule at 32766);
     * no route of `main` inside the decoy network's /24 but its own /30.
 
     Anything not in its closed form (`0\\n` or `1\\n`, an ingress absent, a
@@ -520,7 +499,7 @@ def reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
 
     found = _sysctl_departures(ipv4, ipv6, ingress, (), (BRIDGE,))
     found |= _dump_departures(rules, routes,
-                              lambda listed: _rules_contained(listed, ingress),
+                              lambda listed: _rules_exact(listed, ingress),
                               _routes_clear)
     return tuple(code for code in REACHABILITY_CODES if code in found)
 

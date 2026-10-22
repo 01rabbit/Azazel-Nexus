@@ -9,9 +9,11 @@ reads the host's sysctls or talks to the service manager):
   §6, in its fixed order; what the pass adds to the verify (the roles,
   `az-decoy0` not exempt, the rules compared whole, no route in the /24 at
   all); the interface-name rules and `conf_entry_path`;
-* that the verify's judgement is the one G2 had (its own tests are
-  `test_decoy_watch.py`; here, that the two share the reads and differ only
-  where §6 says);
+* that the verify's judgement is the one G2 had but for the rules (its own
+  tests are `test_decoy_watch.py`; here, that the two share the reads and
+  the one rule comparison, `_rules_exact`, and differ only where §6 says),
+  with networkd's K1 and the rehearsal's `ip rule add` K1 as the VM printed
+  them (Debian 13, kernel 6.12, iproute2 6.15, networkd 257);
 * `decoy_residue.exposure_residue_departures`: a masked unit still running,
   and the leftovers of a definition-less stop while no unit runs;
 * that **nothing calls either**: no module of the product imports them but
@@ -255,6 +257,101 @@ def test_any_other_selector_on_an_accepted_rule_fails(index, extra):
     rules = _rule_list()
     rules[index] = {**rules[index], **extra}
     assert _pass(rules=(0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
+    # The verify compares the same way (#196 R4, one comparison).
+    assert _verify((0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
+
+
+def _verify(rules, ingress=INGRESS):
+    """The verify's departures with everything else as the verify finds it."""
+
+    connected = {"dst": "10.255.196.0/30", "dev": "az-decoy0", "protocol": "kernel",
+                 "scope": "link", "prefsrc": "10.255.196.1", "flags": []}
+    return reachability_departures(_ipv4(**{"az-decoy0": {"forwarding": 1}}), _ipv6(),
+                                   rules, _routes(connected), ingress)
+
+
+#: `ip -j -4 rule show` (no `-d`) on the VM (Debian 13, kernel 6.12,
+#: iproute2 6.15, systemd-networkd 257; a mechanism check, not hardware
+#: evidence), K1 made by networkd from `[RoutingPolicyRule]` on a dummy link,
+#: verbatim but for the interface name: the discard rule carries
+#: `"table":"main"` and both carry `"protocol":"static"` even without `-d`.
+def _networkd_k1(name):
+    return [{"priority": 1960, "src": "all", "dst": "10.255.196.0", "dstlen": 30,
+             "iif": name, "table": "main", "suppress_prefixlen": 29,
+             "protocol": "static"},
+            {"priority": 1961, "src": "all", "iif": name, "table": "main",
+             "action": "blackhole", "protocol": "static"}]
+
+
+#: The defaults as the VM prints them (`-d` adds `"protocol":"kernel"`).
+_DEFAULTS = [{"priority": 0, "src": "all", "table": "local"},
+             {"priority": 32766, "src": "all", "table": "main"},
+             {"priority": 32767, "src": "all", "table": "default"}]
+
+
+def _listing(*k1):
+    rules = [_DEFAULTS[0]]
+    for pair in k1:
+        rules += pair
+    return (0, json.dumps(rules + _DEFAULTS[1:]).encode())
+
+
+def test_networkds_k1_as_the_vm_prints_it_holds_for_the_verify_and_the_pass():
+    rules = _listing(*(_networkd_k1(name) for name in INGRESS))
+    assert _verify(rules) == ()
+    assert _pass(rules=rules) == ()
+    # With `-d` the defaults carry `"protocol":"kernel"`: left out too.
+    detailed = [{**rule, "protocol": rule.get("protocol", "kernel")}
+                for rule in json.loads(rules[1])]
+    assert _verify((0, json.dumps(detailed).encode())) == ()
+    assert _pass(rules=(0, json.dumps(detailed).encode())) == ()
+
+
+def test_the_rehearsals_k1_added_by_ip_rule_holds_for_the_verify_and_the_pass():
+    """The VM rehearsal: two K1 rules added with `ip rule add` on the test
+    ingress, printed as the VM prints them (no table on the discard rule)."""
+
+    plain = [{"priority": 1961, "src": "all", "iif": "azin0", "action": "blackhole"},
+             {"priority": 1960, "src": "all", "dst": "10.255.196.0", "dstlen": 30,
+              "iif": "azin0", "table": "main", "suppress_prefixlen": 29}]
+    rules = _listing(plain)
+    ipv4 = _ipv4(azin0={"forwarding": 1, "proxy_arp": 0},
+                 eth9={"forwarding": 0}, lan0={"forwarding": 0},
+                 **{"az-decoy0": {"forwarding": 1}})
+    connected = {"dst": "10.255.196.0/30", "dev": "az-decoy0", "protocol": "kernel",
+                 "scope": "link", "prefsrc": "10.255.196.1", "flags": []}
+    assert reachability_departures(ipv4, _ipv6(), rules, _routes(connected),
+                                   ("azin0",)) == ()
+    # One of each form on two ingress is the same containment.
+    assert _verify(_listing(_k1("eth9"), _networkd_k1("lan0"))) == ()
+
+
+@pytest.mark.parametrize("table", ["local", "default", "100", "MAIN", 254, None, ["main"]])
+def test_the_discard_rule_takes_no_other_table(table):
+    """Two complete forms of the discard rule only: no table, or `main`."""
+
+    for form in (_k1, _networkd_k1):
+        pair = form("eth9")
+        pair[1] = {**pair[1], "table": table}
+        rules = _listing(pair, _k1("lan0"))
+        assert _verify(rules) == (INGRESS_CONTAINMENT_ABSENT,), (form, table)
+        assert _pass(rules=rules) == (INGRESS_CONTAINMENT_ABSENT,), (form, table)
+
+
+def test_networkds_form_is_still_compared_whole():
+    """`table main` is set aside only on the discard rule, nothing else."""
+
+    for change in ({"fwmark": "0x1"}, {"dscp": "AF11"}, {"iif": "wlan0"},
+                   {"action": "unreachable"}, {"priority": 1962}):
+        pair = _networkd_k1("eth9")
+        pair[1] = {**pair[1], **change}
+        rules = _listing(pair, _networkd_k1("lan0"))
+        assert _verify(rules) == (INGRESS_CONTAINMENT_ABSENT,), change
+        assert _pass(rules=rules) == (INGRESS_CONTAINMENT_ABSENT,), change
+    # A `table main` lookup rule at 1961 without the discard is not K1.
+    pair = _networkd_k1("eth9")
+    del pair[1]["action"]
+    assert _verify(_listing(pair, _networkd_k1("lan0"))) == (INGRESS_CONTAINMENT_ABSENT,)
 
 
 @pytest.mark.parametrize("change", [
@@ -335,9 +432,8 @@ def test_exactly_one_main_rule_at_its_priority(change):
     elif change == "other table":
         rules.append({**_MAIN, "table": "100"})
     assert _pass(rules=(0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
-    # The verify's comparison is G2's: it does not read priority 32766.
-    assert reachability_departures(_ipv4(), _ipv6(), (0, json.dumps(rules).encode()),
-                                   _routes(), INGRESS) == ()
+    # The verify reads priority 32766 the same way (#196 R4).
+    assert _verify((0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
 
 
 def test_the_main_rules_protocol_is_left_out_too():
@@ -410,23 +506,34 @@ def test_no_phrase_carries_a_name_an_address_or_a_value():
             assert word not in phrase, phrase
 
 
-def test_the_verify_judgement_is_g2s():
+def test_the_verify_judgement_is_g2s_but_for_the_rules():
     """The shared reads did not change the verify (`test_decoy_watch.py` pins it
     in full): the same names are the same objects, and the departures for a
-    G2 host are those G2 gave."""
+    G2 host are those G2 gave. The rules are the exception (#196 R4): the
+    verify compares them with the pass's one comparison."""
 
     for name in ("reachability_departures", "read_sysctls", "IPV6_ABSENT",
-                 "REACHABILITY_CODES", "_rules_contained"):
+                 "REACHABILITY_CODES", "_rules_exact"):
         assert getattr(decoy_watch, name) is getattr(decoy_reachability, name), name
+    assert not hasattr(decoy_reachability, "_rules_contained")
     ipv4 = _ipv4(**{"az-decoy0": {"forwarding": 1}, "mgmt0": {"forwarding": 1}})
     assert reachability_departures(ipv4, _ipv6(), _rules(), _routes(), INGRESS) == (
         FORWARDING_OTHER_ON,)
-    # The verify still accepts a selector the pass refuses (G2's comparison;
-    # the full attribute set waits for the VM's dump, reachability §11 item 8).
+    # A selector the pass refuses, the verify now refuses too.
     rules = _rule_list()
     rules[1] = {**rules[1], "fwmark": "0x5"}
-    assert reachability_departures(_ipv4(), _ipv6(), (0, json.dumps(rules).encode()),
-                                   _routes(), INGRESS) == ()
+    assert _verify((0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
+    # The verify's own differences stay: `az-decoy0` forwards, its /30 routed.
+    assert _verify(_rules()) == ()
+    assert _pass(_ipv4(**{"az-decoy0": {"forwarding": 1}})) == (FORWARDING_OTHER_ON,)
+
+
+def test_one_function_compares_the_rules_for_both():
+    """Neither judgement has a comparison of its own (#196 R4)."""
+
+    source = Path(decoy_reachability.__file__).read_text(encoding="utf-8")
+    assert source.count("lambda listed: _rules_exact(listed, ingress)") == 2
+    assert "_expected_rules(" in source and source.count("def _rules_") == 1
 
 
 # -- G6 item (a): a masked unit still running, and leftovers ---------------------

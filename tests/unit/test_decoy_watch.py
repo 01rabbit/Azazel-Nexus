@@ -560,7 +560,8 @@ def test_each_rule_departure_is_containment_absent(rules):
 @pytest.mark.parametrize(("index", "field", "value"), [
     (1, "table", "100"), (1, "dst", "10.255.196.4"), (1, "dstlen", 24),
     (1, "suppress_prefixlen", 0), (1, "action", "blackhole"), (2, "action", "unreachable"),
-    (2, "table", "main"), (0, "table", "main"), (0, "iif", "eth9"),
+    (2, "table", "100"), (2, "table", "local"), (2, "table", None),
+    (0, "table", "main"), (0, "iif", "eth9"),
 ])
 def test_a_k1_rule_without_its_defining_attribute_departs(index, field, value):
     rules = json.loads(_rules()[1])
@@ -950,20 +951,22 @@ def test_an_absent_scope_exits_one_and_reads_nothing(monkeypatch, watch, capsys)
 
 @pytest.mark.parametrize("missing", [None, 7, ["None"]])
 def test_a_rule_without_a_named_iif_is_never_an_ingress_rule(missing):
-    """F3: an absent `iif` is a sentinel, not the text "None"."""
+    """F3: an absent `iif` is never the text "None" (the whole-rule
+    comparison, `_rules_exact`, compares the value and its JSON type)."""
 
     ingress = ("None",)
+    main = {"priority": 32766, "src": "all", "table": "main"}
     lookup = {"priority": 1960, "src": "all", "dst": "10.255.196.0", "dstlen": 30,
               "table": "main", "suppress_prefixlen": 29}
     blackhole = {"priority": 1961, "src": "all", "action": "blackhole"}
     if missing is not None:
         lookup["iif"] = blackhole["iif"] = missing
-    rules = [{"priority": 0, "src": "all", "table": "local"}, lookup, blackhole]
-    assert decoy_watch._rules_contained(rules, ingress) is False
-    named = [rules[0], {**lookup, "iif": "None"}, {**blackhole, "iif": "None"}]
-    assert decoy_watch._rules_contained(named, ingress) is True
+    rules = [{"priority": 0, "src": "all", "table": "local"}, lookup, blackhole, main]
+    assert decoy_watch._rules_exact(rules, ingress) is False
+    named = [rules[0], {**lookup, "iif": "None"}, {**blackhole, "iif": "None"}, main]
+    assert decoy_watch._rules_exact(named, ingress) is True
     # Without iif the pair would match every interface: never containment.
-    assert decoy_watch._rules_contained(rules, ()) is False
+    assert decoy_watch._rules_exact(rules, ()) is False
 
 
 def test_the_verify_plan_cannot_start_anything_but_its_four_reads(monkeypatch):
