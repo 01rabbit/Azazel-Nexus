@@ -243,6 +243,9 @@ _EXTRA_KEYS = [
     {"oif": "mgmt0"}, {"uid_start": 1, "uid_end": 2}, {"ipproto": "tcp"},
     {"sport_start": 1, "sport_end": 2}, {"dport": 3}, {"l3mdev": None}, {"goto": 1966},
     {"tun_id": 5}, {"suppress_ifgroup": "3"}, {"flow_to": "4"}, {"iif_detached": None},
+    # As printed on the VM (Debian 13, kernel 6.12, iproute2 6.15; review of
+    # #293): `dscp` is shown there, though not in the container.
+    {"dscp": "AF11"}, {"uid_start": 100, "uid_end": 200}, {"dport": 22},
 ]
 
 

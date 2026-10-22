@@ -309,11 +309,14 @@ needs (health, lease, generation, clock, high water):
    it from values passed in and nothing calls it; the
    `fb_tunnels_only_for_init_net` read is not part of it and is G6's.
    **This condition is not yet met:** a rule selector that `ip -j` does not
-   print (`dscp` and `flowlabel` were listed without it in the container)
-   would let a discard rule look right and discard less, so the VM check at
-   the head of
-   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired)
-   must be done, and its answer adopted, before G6 wires this in.
+   print would let a discard rule look right and discard less. On the VM
+   (kernel 6.12) `dscp`, `tos`, `fwmark`, `ipproto`, `dport`, `uidrange`
+   and `l3mdev` are printed and refused; the flow label was not shown and
+   is *inferred* dropped by that kernel. Its effect on the target kernel
+   (or a fixed target kernel), the head of
+   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired),
+   is checked before G6 wires this in, as are the networkd rules' attributes
+   (reachability §11 item 8).
 
 Each failure withholds the tier with its own reason code, and nothing else.
 

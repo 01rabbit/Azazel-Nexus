@@ -233,16 +233,34 @@ exists only after the tier is granted and the helper has run. So:
 
 ## 6. The pass condition (G6; implemented, not wired)
 
-**Required before G6 is wired (review of #293): add rules with a `dscp`
-and with a `flowlabel` selector on the VM's kernel and check what
-`ip -j -4 rule show` prints for them.** In the container a rule added with
-either selector was listed **without** it. If the VM shows the same, a
-K1 discard rule (1961) carrying such a selector looks exactly like the
-expected one, while a packet that does not match the selector is not
-discarded and goes on to `main` and is forwarded: the path K1 exists to
-close. The comparison below then cannot be relied on, and G6 needs
-`ip -d -j`, the raw netlink dump, or a change of design. Until that is
-checked, this condition is **not met**, whatever the function below says.
+**Selectors `ip -j` might not print (review of #293).** A K1 discard rule
+(1961) carrying a selector that the dump does not show would look exactly
+like the expected one, while a packet that does not match the selector is
+not discarded and goes on to `main` and is forwarded: the path K1 exists to
+close. In the container a rule added with `dscp` or `flowlabel` was listed
+without it. Checked on the VM (Debian 13, kernel 6.12.111+deb13-arm64,
+iproute2 6.15.0; a check of the mechanism, not hardware evidence), with
+rules at priorities 1960 and 1961 on a dummy interface:
+
+- **checked:** `dscp` (`"dscp":"AF11"`, also on the K1 lookup rule), `tos`
+  (`"tos":"0x10"`), `fwmark` (`"fwmark":"0x1"`), `ipproto`
+  (`"ipproto":"tcp"`), `dport` (`"dport":22`), `uidrange`
+  (`"uid_start":100,"uid_end":200`) and `l3mdev` (`"l3mdev":null`) are all
+  printed by `ip -j -4 rule show`, so the whole-rule comparison below
+  refuses them. `ip -d -j` only adds `"protocol":"unspec"`, which the
+  comparison leaves out. The plain K1 pair is printed as
+  `{"priority":1960,"src":"all","dst":"10.255.196.0","dstlen":30,"iif":"<if>","table":"main","suppress_prefixlen":29}`
+  and `{"priority":1961,"src":"all","iif":"<if>","action":"blackhole"}`,
+  exactly the key sets the comparison expects. The container's missing
+  `dscp` is attributed to the container host's kernel;
+- **remaining:** a rule added with `flowlabel 0x1234` showed no flow label
+  in `ip -j`, `ip -d -j` or the text listing. *Inferred:* kernel 6.12 does
+  not know `FRA_FLOWLABEL` (added, from memory, in 6.13) and dropped it, so
+  the rule matches every packet, which is the safe side; that it is dropped
+  rather than kept and not printed is not established. On a kernel that
+  has `FRA_FLOWLABEL`, iproute2 6.15 is expected to print it. **Before G6
+  is wired, the flow label's effect is checked on the target kernel (or the
+  target kernel is fixed).**
 
 Condition 6 of [grant §5](deception-exposure-grant.md#5-the-grant-condition)
 ("the forwarding condition of §4.5") is this section. The pass reads; it never
@@ -285,11 +303,8 @@ of another shape (a name that is not a string, a dump that is not
 `(int, bytes)`, a tree that is not `{str: {str: int | None}}`) is
 `forwarding_unreadable` alone and never an exception.
 *Still open:* the attribute set of networkd's rules on the VM (§11 item 8)
-may differ and is compared before G6 is wired; and a rule added with a
-`dscp` or `flowlabel` selector was listed **without** it in the container
-(iproute2 6.15 on the container host's kernel; whether the kernel dropped
-the attribute or `ip` does not print it was not established). That is the
-required VM check at the head of this section.
+may differ and is compared before G6 is wired; and the flow label on the
+target kernel, at the head of this section.
 
 **Interfaces.** The ingress names come from the `deception_bridge` role, and
 the `management` and `observation` names from their roles, resolved exactly
