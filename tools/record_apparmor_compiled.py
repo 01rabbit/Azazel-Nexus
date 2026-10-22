@@ -24,7 +24,8 @@ fsync of the directory after the rename is a warning, not a refusal. The
 version line is diagnosis only and never refuses: it is normalized
 (`apparmor_compiled.normalize_parser_version`), `unknown` when not read.
 
-Fixed profile names (`decoy_apparmor.REQUIRED_ENFORCED_PROFILES`); the two
+Fixed profile names (`apparmor_compiled.APPARMOR_PROFILE_NAMES`, equal to
+`decoy_apparmor.REQUIRED_ENFORCED_PROFILES`); the two
 paths default to the installed ones and are arguments only so a test can
 point them elsewhere. Nothing reads the record in this build (G6).
 """
@@ -47,12 +48,12 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 from azazel_nexus_runtime.apparmor_compiled import (  # noqa: E402
     APPARMOR_COMPILED_MODE,
     APPARMOR_COMPILED_PATH,
+    APPARMOR_PROFILE_NAMES,
     ApparmorCompiledRefused,
     decode_apparmor_compiled,
     encode_apparmor_compiled,
     normalize_parser_version,
 )
-from azazel_nexus_runtime.decoy_apparmor import REQUIRED_ENFORCED_PROFILES  # noqa: E402
 
 APPARMOR_DIRECTORY = "/etc/apparmor.d"
 PARSER = "apparmor_parser"
@@ -106,7 +107,7 @@ def compiled_hashes(parser: str, apparmor_dir: Path) -> dict[str, str]:
 
     hashes = {}
     with tempfile.TemporaryDirectory(prefix="az-apparmor-compiled.") as scratch:
-        for name in sorted(REQUIRED_ENFORCED_PROFILES):
+        for name in APPARMOR_PROFILE_NAMES:
             out = Path(scratch) / name
             try:
                 run = subprocess.run(
