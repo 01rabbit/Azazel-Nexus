@@ -43,6 +43,7 @@ from azazel_nexus_runtime import (
     decoy_isolation_check,
     decoy_netd,
     decoy_network,
+    decoy_reachability,
     decoy_watch,
 )
 from azazel_nexus_runtime.decoy_network import (
@@ -640,7 +641,7 @@ def net(tmp_path, monkeypatch):
                    b"1\n" if (family, name) == ("ipv4", "eth9") else b"0\n")
             if family == "ipv4":
                 _write(root / family / "conf" / name / "proxy_arp", b"0\n")
-    monkeypatch.setattr(decoy_watch, "_NET", str(root))
+    monkeypatch.setattr(decoy_reachability, "_NET", str(root))
     return root
 
 
@@ -692,7 +693,7 @@ def test_an_absent_ipv4_tree_is_unreadable(net):
 def test_the_reader_is_what_the_profile_allows():
     """`/proc/sys/net/ipv{4,6}/conf/*/` and its two files: nothing else."""
 
-    assert decoy_watch._NET == "/proc/sys/net"
+    assert decoy_reachability._NET == "/proc/sys/net"
     profile = (REPO / "packaging" / "apparmor" / "azazel-decoy-verify").read_text()
     for path in ("ipv4/conf/*/forwarding", "ipv4/conf/*/proxy_arp",
                  "ipv6/conf/*/forwarding"):
