@@ -471,18 +471,16 @@ def _read_raw_sha256(entry_fd: int):
     decimal, is read as `_POLICY_RAW_DATA/<n>/sha256`, each step opened
     without following a link; any other target (`../../../etc/x`, an
     absolute path, a name that is not a number) is `UNREADABLE`. A target
-    that does not exist is None, as an absent file. A regular file (a kernel
-    that keeps the hash in the entry itself) is read as it is, without
-    following a link: it is the kernel's own file in the entry, as `name`
-    is, so it is no less the kernel's than the link's target, and the
-    format and limit checks apply to it the same.
+    that does not exist is None, as an absent file. Only the observed form,
+    a link, is accepted: a regular file (`readlink` fails with `EINVAL`) or
+    any other error is `UNREADABLE`. Whether `<n>` matches the entry's own
+    number is not checked: the link is the kernel's, and it is trusted.
     """
 
     try:
         target = os.readlink("raw_sha256", dir_fd=entry_fd)
     except OSError as error:
-        if error.errno == errno.EINVAL:  # not a link: a regular file
-            return _read_at(entry_fd, "raw_sha256", _POLICY_HASH_LIMIT)
+        # EINVAL: not a link. Only the kernel's observed form is accepted.
         return None if error.errno in _ABSENT else UNREADABLE
     number = _raw_data_number(target)
     if number is None:
@@ -490,7 +488,8 @@ def _read_raw_sha256(entry_fd: int):
     try:
         raw_data = os.open(_POLICY_RAW_DATA, _DIRECTORY)
     except OSError as error:
-        return None if error.errno in _ABSENT else UNREADABLE
+        # ENOTDIR or ELOOP: a link or a file in place of the directory.
+        return None if error.errno == errno.ENOENT else UNREADABLE
     try:
         try:
             directory = os.open(number, _DIRECTORY, dir_fd=raw_data)

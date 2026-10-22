@@ -789,11 +789,25 @@ reached until G6. Revised after the review of #285.
   kernel's `raw_sha256`. The compiled output carries the includes
   (`tunables/global`, `abstractions/base`) as they were when the installer
   compiled, so a later change to an include, or another profile of the same
-  name loaded after ours, no longer matches. *Inferred*, not checked: a
-  different `apparmor_parser` version may compile the same files to
-  different output, so after a parser upgrade the honest load no longer
-  matches the recorded hash and the tier withholds as `lsm_policy_differs`
-  until the exposure is installed again (re-recorded). Both comparisons are
+  name loaded after ours, no longer matches.
+  **Checked on that VM only** (AppArmor parser 4.1.0, one VM, the four
+  profiles): three compilations with `apparmor_parser -Q -o` gave the same
+  output each time, equal to the kernel's `raw_sha256` and to the cache
+  file `/var/cache/apparmor/979b3ac6.0/<name>` that `apparmor.service`
+  loads at boot. **Still *inferred*, not checked**: what changes the
+  compiled output, and with it the kernel's hash, beyond the placed files
+  and their includes: the kernel's features and policy ABI (the cache
+  directory's name, `979b3ac6.0`, is *inferred* to be a hash of the
+  features), `/etc/apparmor/parser.conf`, the `apparmor_parser` version, a
+  load through a cache in `/var/cache/apparmor` other than the
+  installer's compilation, the flags of the load, and a file holding more
+  than one profile. Whichever changes, the honest load no longer matches
+  the recorded hash and the tier withholds as `lsm_policy_differs` (closed)
+  until the exposure is installed again and the hash re-recorded. **A G6
+  requirement**: the installer compiles under the same conditions as the
+  load (the same features, `parser.conf` and flags; without the cache, or
+  checking that the cache file it loads equals its compilation). Both
+  comparisons are
   **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
   `lsm_policy_unverifiable` until G6 records the expected hash.
 
@@ -1063,11 +1077,12 @@ one that fails when called still withholds the tier, and calls none).
   elsewhere, a name that is not a number all withhold), and opens
   `/sys/kernel/security/apparmor/policy/raw_data/<n>/sha256` from that
   fixed directory, each step without following a link; a target that does
-  not exist withholds. A regular file `raw_sha256` (a kernel that keeps the
-  hash in the entry) is read as it is, without following a link, with the
-  same checks: it is the kernel's own file in the entry, as `name` is. A required profile listed not exactly once, a
-  hash absent, empty or not one lowercase hex digest, or no expected hash
-  is `lsm_policy_unverifiable`; a different hash is `lsm_policy_differs`.
+  not exist withholds. Only the observed form is accepted: a regular file
+  `raw_sha256`, or any error reading the link, withholds. Whether `<n>` is
+  the entry's own number is not checked: the link is the kernel's, and it
+  is trusted. A required profile listed not exactly once, a hash absent,
+  empty or not one lowercase hex digest, or no expected hash is
+  `lsm_policy_unverifiable`; a different hash is `lsm_policy_differs`.
   **This build records no expected hash**, so the comparison fails closed;
   G6 records it at install (§7, "Left to G6").
 - **An enforcing unit and the exposure tier** (§6.2;
@@ -1111,8 +1126,10 @@ where in `_withholding_reason`, is G6's.
   the generation's exposure section when it compiles, which fixes the
   includes' content at that moment, and the pass compares the kernel's
   `raw_sha256` with the record (§7, "Left to G6"). Still open: nothing
-  records the digest yet (G6), and a parser upgrade may change the output
-  (*inferred*), which then needs a reinstall.
+  records the digest yet (G6), and what besides the files changes the
+  compiled output (features, `parser.conf`, the parser's version, a cache,
+  load flags, several profiles in one file; *inferred*, §7) then needs a
+  reinstall.
 
 ## 10. Owner decisions
 
@@ -1221,12 +1238,12 @@ AppArmor; the decoy's report to the intake (P2's send; the intake was not
 run, so its connect under the profile is not shown either); a trip from
 a `firewalld` reload (`nft delete table`, in the second rehearsal
 `systemctl start nftables.service` and in the fifth `systemctl reload
-nftables.service` were used); whether a failed `AssertSecurity=apparmor` on the verify
-unit makes it failed so that `OnFailure=` trips; a verify already running
-during an ordinary stop; a name taken over by something else between runs
-(item 2's hand-added element and the names of §7's table); a start with
-AppArmor disabled (`apparmor=0`); the
-full §8 table for every unit, and `systemd-analyze security`. Added by the
+nftables.service` were used); whether a failed `AssertSecurity=apparmor`
+on the verify unit makes it failed so that `OnFailure=` trips; a verify
+already running during an ordinary stop; a name taken over by something
+else between runs (item 2's hand-added element and the names of §7's
+table); a start with AppArmor disabled (`apparmor=0`); the full §8 table
+for every unit, and `systemd-analyze security`. Added by the
 review of #289:
 
 - that a connect to `/run/dbus/system_bus_socket` and to
@@ -1331,24 +1348,29 @@ record for `HG-06`, `HG-09` or `HG-10`, and nothing granted by the pass.
 | the kernel's per-profile files | listing `/sys/kernel/security/apparmor/policy/profiles/<name>.<n>/` | `attach mode name raw_abi raw_data raw_sha256 sha256`; no `sha1` | the reader now reads `raw_sha256` (§9, "G6 preparation C") |
 | their form | the entry `azazel-decoyd.122/` | `attach`, `mode`, `name` and `sha256` are regular files; `raw_abi -> ../../raw_data/122/abi`, `raw_data -> ../../raw_data/122/raw_data` and `raw_sha256 -> ../../raw_data/122/sha256` are symbolic links | the reader reads the link, accepts only that form and opens `policy/raw_data/<n>/sha256` itself (§9) |
 | which hash the kernel shows | for each of the four decoy profiles, the kernel's `raw_sha256` against the SHA-256 of `raw_data` and of `apparmor_parser -Q -o <out> /etc/apparmor.d/<name>` | all three equal, for all four; `sha256` is another value, equal to neither and not to the SHA-256 of the profile file | the expected hash can be derived at install (§7, "Left to G6") |
-| the pass's reads under the controller's sandbox | a copy of `azazel-activated.service` with only `ExecStart=` replaced by a test Python, its dependencies and conditions removed | `/sys/kernel/security/apparmor/profiles`, `/sys/kernel/security/lsm`, the policy directory and `sha256` all readable; `raw_sha256` is in the same directory; no AppArmor denial | ok |
+| the pass's reads under the controller's sandbox | a copy of `azazel-activated.service` with only `ExecStart=` replaced by a test Python, its dependencies and conditions removed; its sandbox (`ProtectSystem=` and the rest) kept | `/sys/kernel/security/apparmor/profiles`, `/sys/kernel/security/lsm`, the policy directory and `sha256` all readable; no AppArmor denial | ok |
+| compiling again, and the cache | `apparmor_parser -Q -o` three times per profile (parser 4.1.0); the cache file `/var/cache/apparmor/979b3ac6.0/<name>` that `apparmor.service` loads at boot | for all four, the three outputs equal, and equal to the kernel's `raw_sha256` and to the cache file | ok on this VM and this version; other features, `parser.conf`, versions and several profiles per file stay *inferred* (§7) |
 | trip by `systemctl reload nftables.service` | Debian's default `/etc/nftables.conf` (it holds `flush ruleset`) | about 11 s later the verify failed, the trip ran and the three units stopped | ok (closed) |
 | trip by `systemctl start nftables.service` (again) | the same file | the same, about 9 s later | ok (closed) |
-| the reader's steps under the controller's sandbox | the same controller copy, running the reader's steps: `readlink` of `raw_sha256` relative to the entry, the check of the form `../../raw_data/<n>/sha256`, then the fixed `policy/raw_data` opened and `<n>` and `sha256` opened in turn with `O_NOFOLLOW` | for all four profiles (`azazel-decoy-netd.124`, `azazel-decoy-nsd.122`, `azazel-decoy-verify.126`, `azazel-decoyd.127`) 64 hex digits read, each equal to the kernel's `raw_sha256`; no AppArmor denial | ok |
+| reading `raw_data/<n>/sha256` under the controller's sandbox | the same controller copy (only `ExecStart=` replaced, `ProtectSystem=` and the rest of its sandbox kept), running the reader's steps: `readlink` of `raw_sha256` relative to the entry, the check of the form `../../raw_data/<n>/sha256`, then the fixed `policy/raw_data` opened and `<n>` and `sha256` opened in turn with `O_NOFOLLOW` | for all four profiles (`azazel-decoy-netd.124`, `azazel-decoy-nsd.122`, `azazel-decoy-verify.126`, `azazel-decoyd.127`) 64 hex digits read, each equal to the kernel's `raw_sha256`; no AppArmor denial | ok |
 
 That `raw_sha256` is a link is checked (row "their form"); before this
 check the reader opened it without following a link and would have
-withheld on every pass. That the pass can read it through the link's
-target under the controller's sandbox is checked too (the last row); the
+withheld on every pass. That the pass can read `raw_data/<n>/sha256`
+through the link's form under the controller's sandbox is checked (the
+last row): the copy replaced only `ExecStart=` and kept the sandbox. The
 comparison itself stays unwired and withholds until G6 records the
-expected hash.
+expected hash. One VM, one run, four profiles: none of this is hardware
+evidence.
 
 **Still open after G4:** whether `TimeoutStopSec=` bounds each
 `ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
 probe (it cannot run one); a trip from a `firewalld` reload; a failed
 `AssertSecurity=apparmor` on the verify unit and `OnFailure=`; a start with
-`apparmor=0`; a kernel with fine-grained `AF_UNIX` mediation; whether a
-parser upgrade changes the compiled output (§7, "Left to G6");
+`apparmor=0`; a kernel with fine-grained `AF_UNIX` mediation; what
+besides the files changes the compiled output (features, `parser.conf`,
+the parser's version, load flags, several profiles in one file; §7,
+"Left to G6");
 the full §8 table and `systemd-analyze security` per unit. These are G5
 (`HG-09`, `HG-10`) or G6 work.
 
