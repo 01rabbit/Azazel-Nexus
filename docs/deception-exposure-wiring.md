@@ -6,7 +6,8 @@ Status: **proposed; revised after the cross review of the G6 parts and the
 independent review of #301. Not to be merged as code before G5 (`HG-06`, `HG-09`,
 `HG-10` accepted on the real host) and before the owner answers R6
 ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design))
-and the questions of §9 below.** This document changes no code.
+(the questions of §9 below were answered on 2026-10-23, each as
+recommended).** This document changes no code.
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §5, §6.3, §7, §9, §10, §11) ·
 [how outside peers reach the decoy](deception-exposure-reachability.md) (§6,
@@ -849,6 +850,12 @@ a reboot.
    the VM image.
 
 ## 9. Owner decisions before G6
+
+**Answered 2026-10-23** for Q-B to Q-E below, each as recommended: **B0**
+(no stop), **Q-C yes** (`ACTIVATION_EXPOSURE`), **Q-N B1** (the route
+dump module), **V2**, **D2**, **A1**, and exclusivity **as a withhold**
+(Q-E). Q-R6 is still open, and G6 is still not merged before it and G5.
+The questions are kept below as they were asked.
 
 - **Q-R6. R6** ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design)):
   is forwarding switched on for the ingress before activation compatible
