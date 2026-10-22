@@ -318,9 +318,16 @@ So any other selector or flag (`not`, `srclen`, `oif`, `fwmark`, `tos`,
 `suppress_ifgroup`, `flow_to`, `iif_detached`) fails. At priority 32766
 itself there must be exactly one rule, `from all lookup main` compared the
 same way: rules of equal priority are tried in the order they were added, so
-a second rule there could act before `main` (review of #293). The verify
+a second rule there could act before `main` (review of #293). Below 32766
+the same order question does not arise: the rules sharing a priority (each
+ingress's 1960, each ingress's 1961) differ in `iif`, so no packet matches
+two of them, and the ingress names are distinct (the scope refuses names
+that are not sorted and distinct, the pass a name in two places). The verify
 compares the rules exactly so, with the scope's ingress (without a scope,
-only the local rule may come before `main`); its differences from the pass
+only the local rule may come before `main`), and **the verify too requires
+exactly one rule at priority 32766, `from all lookup main`**: a second rule
+there, a selector on it, another table or no such rule is
+`ingress_containment_absent` and trips the units. Its differences from the pass
 (`az-decoy0` exempt from `forwarding_other_on`, the bridge's connected /30
 accepted) are in the forwarding and route rows, not in the rules. Stricter
 than G2's comparison, it trips on more; that is the closed side. An argument
@@ -546,6 +553,17 @@ applies again), and installs them again only after commissioning closes.
    still there. *Not established:* in which order networkd installs the rules
    and turns the link's forwarding on (the journal did not show it), so the
    window of §5 at boot and after a link flap is still to measure.
+
+   *Observed on the VM with this PR's comparison* (#300 at 619dfe0, same
+   VM; a mechanism check, not hardware evidence): with the test ingress
+   `azin0`'s two K1 rules and `IPv4Forwarding=yes` made by networkd's
+   `.network`, the three decoy units started and the verify said "match"
+   all three times in 25 s, with no trip; only the approved source reached
+   the decoy. `ip rule show` printed
+   `1961: from all iif azin0 lookup main blackhole proto static`, and the
+   discard rule with its table still discards: `ip route get <dst> from
+   172.31.250.3 iif azin0` answered `RTNETLINK answers: Invalid argument`
+   for `192.168.11.1` and `8.8.8.8` and `dev az-decoy0` for `10.255.196.2`.
 3. **On the node, the bridge's forwarding**:
 
    ```
@@ -694,6 +712,15 @@ The gate's claim and record format stay as in
    - `IPv4Forwarding=yes` set only that link's `forwarding` to `1`;
      `conf.all`, `conf.default`, the other links and IPv6 stayed `0`;
    - after `networkctl reload` the rules were still there;
+   - with the comparison fixed from this (#300 at 619dfe0), networkd's K1
+     and forwarding on the test ingress `azin0`, and the three decoy units
+     started: the verify said "match" three times in 25 s and did not trip,
+     and only the approved source reached the decoy. `ip rule show` printed
+     `1961: from all iif azin0 lookup main blackhole proto static`; `ip
+     route get <dst> from 172.31.250.3 iif azin0` answered `RTNETLINK
+     answers: Invalid argument` for `192.168.11.1` and `8.8.8.8` (discarded
+     by the blackhole) and `dev az-decoy0` for `10.255.196.2`: the discard
+     rule carrying `table main` still closes the path on kernel 6.12;
    - **not established**: the order in which the rules and the link's
      forwarding are set (the journal did not show it), at boot and after a
      link down/up, and whether a link flap removes the rules for a moment;

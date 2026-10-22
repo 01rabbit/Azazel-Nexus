@@ -336,6 +336,12 @@ def _rules_exact(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
     passes the scope's ingress (none without a scope: then only the local
     rule); its differences from the pass (`az-decoy0`'s forwarding and its
     connected /30) are in the sysctls and the routes, not here.
+
+    `ingress` is distinct by its callers' rules: the scope refuses ingress
+    names that are not sorted and distinct (`decoy_scope._ingress_names`),
+    and the pass refuses a name in two places (`_names_closed`). Rules of
+    the same priority (1960, 1961) do not overlap because each carries a
+    different `iif`.
     """
 
     below, at_main = [], []
@@ -345,9 +351,9 @@ def _rules_exact(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
             return None
         stripped = {key: value for key, value in rule.items()
                     if key not in _IGNORED_RULE_KEYS}
+        # Only the text "main" equals it: no other JSON value does.
         if (priority == _K1_BLACKHOLE and stripped.get("action") == "blackhole"
-                and type(stripped.get("table")) is str
-                and stripped["table"] == _K1_BLACKHOLE_TABLE):
+                and stripped.get("table") == _K1_BLACKHOLE_TABLE):
             # networkd's form of the discard rule: the expected rule once its
             # `table main` is set aside. Every other key is still compared
             # below, and any other table stays an extra key, so it fails.
