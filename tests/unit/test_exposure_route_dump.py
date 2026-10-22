@@ -103,9 +103,9 @@ DSCP, FLOWLABEL, FLOWLABEL_MASK, SPORT_MASK, DPORT_MASK, DSCP_MASK = 25, 26, 27,
 
 
 def _rule(*attrs, dst_len=0, src_len=0, tos=0, table=0, action=1, flags=0, family=2,
-          res=(0, 0), protocol=True, seq=RULE_SEQ) -> bytes:
+          res=(0, 0), protocol=True, proto=3, seq=RULE_SEQ) -> bytes:
     body = _BODY.pack(family, dst_len, src_len, tos, table, res[0], res[1], action, flags)
-    extra = _u8(PROTOCOL, 3) if protocol else b""
+    extra = _u8(PROTOCOL, proto) if protocol else b""
     return _message(RTM_NEWRULE, body + extra + b"".join(attrs), seq=seq)
 
 
@@ -196,13 +196,18 @@ def _k1_blackhole(name, table=0):
                  _s32(SUP_PREFIXLEN, -1), table=table, action=6)
 
 
+#: `RTPROT_KERNEL`, the protocol the kernel gives its default rules.
+RTPROT_KERNEL = 2
+
+
 def _defaults():
-    """The kernel's three, marked permanent as the kernel marks them."""
-    return (_rule(_u32(TABLE, 255), _s32(SUP_PREFIXLEN, -1), table=255, flags=0x1),
+    """The kernel's three as it sends them: flags 0 (not permanent),
+    protocol `kernel` (as the recorded dumps carry them)."""
+    return (_rule(_u32(TABLE, 255), _s32(SUP_PREFIXLEN, -1), table=255, proto=RTPROT_KERNEL),
             _rule(_u32(PRIO, 32766), _u32(TABLE, 254), _s32(SUP_PREFIXLEN, -1), table=254,
-                  flags=0x1),
+                  proto=RTPROT_KERNEL),
             _rule(_u32(PRIO, 32767), _u32(TABLE, 253), _s32(SUP_PREFIXLEN, -1), table=253,
-                  flags=0x1))
+                  proto=RTPROT_KERNEL))
 
 
 def test_k1_in_both_forms_reads_as_ip_prints_it_and_holds():
@@ -583,12 +588,43 @@ def test_an_attribute_type_with_the_nested_or_byte_order_flag_is_unreadable(flag
             _routes(route)
 
 
+def test_the_recorded_defaults_are_not_marked_permanent():
+    """The kernel does not mark its IPv4 defaults permanent (#310)."""
+
+    for name in ("full", "k1"):
+        data = (FIXTURES / f"{name}-rules.bin").read_bytes()
+        offset = 0
+        while offset < len(data):
+            length, kind = _HEADER.unpack_from(data, offset)[:2]
+            if kind == RTM_NEWRULE:
+                assert not _BODY.unpack_from(data, offset + _HEADER.size)[8] & 0x1
+            offset += (length + 3) & ~3
+
+
+def _permanent_default(*attrs):
+    return _rule(_u32(PRIO, 32766), _u32(TABLE, 254), *attrs, table=254, flags=0x1,
+                 protocol=False)
+
+
 def test_permanent_is_accepted_on_the_three_defaults_only():
     local, main, default = _defaults()
     assert _rules(local, main, default) == [
         {"priority": 0, "src": "all", "table": "local"},
         {"priority": 32766, "src": "all", "table": "main"},
         {"priority": 32767, "src": "all", "table": "default"}]
+    # A default's shape, its priority and table and nothing else: accepted.
+    assert _rules(local, _permanent_default(), default)[1] == {
+        "priority": 32766, "src": "all", "table": "main"}
+    # The same with an attribute the comparison drops is not (#310): the
+    # protocol (any value, the kernel's too), the padding, a suppressor `ip`
+    # does not print. Unmarked, each reads as the default (the control).
+    for dropped in (_u8(PROTOCOL, RTPROT_KERNEL), _u8(PROTOCOL, 4), _attr(PAD, b""),
+                    _s32(SUP_PREFIXLEN, -1), _s32(SUP_IFGROUP, -1), _u8(L3MDEV, 0)):
+        assert _rules(local, _rule(_u32(PRIO, 32766), _u32(TABLE, 254), dropped,
+                                   table=254, protocol=False), default)[1] == {
+            "priority": 32766, "src": "all", "table": "main"}
+        with pytest.raises(RouteDumpUnreadable, match="permanent"):
+            _rules(local, _permanent_default(dropped), default)
     for rule in (_k1_lookup("lan0"), _k1_blackhole("lan0")):
         permanent = bytearray(rule)
         # `fib_rule_hdr.flags` is the u32 after the eight one-byte fields.
@@ -698,6 +734,10 @@ def _unopenable():
     lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=(31337, 0)),
     lambda: FakeSocket([_ok_rule(), _done(RULE_SEQ)], sender=(1, 0)),
     lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=()),
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=None),
+    # From the kernel's port id, but through a multicast group (#310).
+    lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], sender=(0, 1)),
+    lambda: FakeSocket([_ok_rule(), _done(RULE_SEQ)], sender=(0, 0x10)),
     # Addressed to another port id than this socket's.
     lambda: FakeSocket([_ok_rule() + _done(RULE_SEQ)], port=PORT + 1),
     # Cut short by the receive buffer (`MSG_TRUNC`), even if it parses.

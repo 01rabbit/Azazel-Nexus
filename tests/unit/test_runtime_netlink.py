@@ -21,10 +21,12 @@ from __future__ import annotations
 import ast
 import socket
 import struct
+import sys
 from pathlib import Path
 
 import pytest
 
+from azazel_nexus_runtime import netlink
 from azazel_nexus_runtime.netlink import (
     IFLA_IFNAME,
     IFLA_PERM_ADDRESS,
@@ -46,7 +48,15 @@ NETLINK_SOURCE = (
 _HEADER = struct.Struct("IHHII")
 _IFINFO = struct.Struct("BBHiII")
 _RTM_NEWLINK = 16
+_NLMSG_ERROR = 2
 _NLMSG_DONE = 3
+_NLM_F_MULTI = 0x2
+_NLM_F_DUMP_INTR = 0x10
+
+#: The capture's sequence number and port id, as recorded.
+CAPTURE_SEQ, CAPTURE_PORT = 1, 18036
+#: The sequence number and port id the constructed replies carry.
+SEQ, PORT = 1, 4242
 
 
 def _attribute(kind: int, payload: bytes) -> bytes:
@@ -54,23 +64,32 @@ def _attribute(kind: int, payload: bytes) -> bytes:
     return struct.pack("HH", length, kind) + payload + b"\x00" * (-length % 4)
 
 
-def _link(index: int, *attributes: bytes, name: str = "eth9") -> bytes:
+def _link(index: int, *attributes: bytes, name: str = "eth9", seq: int = SEQ,
+          port: int = PORT, flags: int = _NLM_F_MULTI) -> bytes:
     body = _IFINFO.pack(0, 0, 1, index, 0, 0)
     body += _attribute(IFLA_IFNAME, name.encode() + b"\x00")
     for attribute in attributes:
         body += attribute
-    return _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, 0, 1, 0) + body
+    return _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, flags, seq, port) + body
 
 
-def _done() -> bytes:
-    return _HEADER.pack(_HEADER.size, _NLMSG_DONE, 0, 1, 0)
+def _done(seq: int = SEQ, port: int = PORT, flags: int = _NLM_F_MULTI) -> bytes:
+    return _HEADER.pack(_HEADER.size + 4, _NLMSG_DONE, flags, seq, port) + b"\x00" * 4
+
+
+def _parse(data: bytes) -> tuple[LinkRecord, ...]:
+    return parse_links(data, sequence=SEQ, port=PORT)
+
+
+def _parse_capture() -> tuple[LinkRecord, ...]:
+    return parse_links(CAPTURE.read_bytes(), sequence=CAPTURE_SEQ, port=CAPTURE_PORT)
 
 
 # -- the real capture ----------------------------------------------------
 
 
 def test_the_captured_dump_parses():
-    records = parse_links(CAPTURE.read_bytes())
+    records = _parse_capture()
     assert records, "the capture described no interfaces"
     assert all(isinstance(record, LinkRecord) for record in records)
 
@@ -83,7 +102,7 @@ def test_the_capture_contains_both_answers():
     that decides whether a node can be commissioned at all.
     """
 
-    records = parse_links(CAPTURE.read_bytes())
+    records = _parse_capture()
     with_address = [r for r in records if r.permanent_mac is not None]
     without = [r for r in records if r.permanent_mac is None]
     assert with_address and without
@@ -92,7 +111,7 @@ def test_the_capture_contains_both_answers():
 
 
 def test_an_interface_without_a_permanent_address_says_why():
-    records = parse_links(CAPTURE.read_bytes())
+    records = _parse_capture()
     absent = next(r for r in records if r.permanent_mac is None)
     assert "no permanent address" in absent.reason
 
@@ -101,7 +120,7 @@ def test_an_interface_without_a_permanent_address_says_why():
 
 
 def test_the_only_message_this_module_sends_is_a_getlink_dump():
-    request = build_dump_request()
+    request = build_dump_request(SEQ)
     _length, message_type, flags, _seq, _pid = _HEADER.unpack_from(request, 0)
     assert message_type == RTM_GETLINK
     assert flags & 0x001 and flags & 0x300
@@ -175,7 +194,7 @@ def test_an_all_zero_permanent_address_is_an_absence_not_an_address():
     """
 
     data = _link(1, _attribute(IFLA_PERM_ADDRESS, b"\x00" * 6)) + _done()
-    (record,) = parse_links(data)
+    (record,) = _parse(data)
     assert record.permanent_mac is None
     assert "all zeroes" in record.reason
 
@@ -183,14 +202,14 @@ def test_an_all_zero_permanent_address_is_an_absence_not_an_address():
 def test_a_permanent_address_of_the_wrong_length_is_refused():
     for length in (0, 5, 7, 16):
         data = _link(1, _attribute(IFLA_PERM_ADDRESS, b"\x11" * length)) + _done()
-        (record,) = parse_links(data)
+        (record,) = _parse(data)
         assert record.permanent_mac is None
         assert "bytes" in record.reason
 
 
 def test_a_well_formed_address_is_rendered_lowercase_and_colon_separated():
     data = _link(1, _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("AABBCCDDEEFF"))) + _done()
-    (record,) = parse_links(data)
+    (record,) = _parse(data)
     assert record.permanent_mac == "aa:bb:cc:dd:ee:ff"
 
 
@@ -216,7 +235,7 @@ def test_unknown_attributes_are_parsed_past():
         )
         + _done()
     )
-    (record,) = parse_links(data)
+    (record,) = _parse(data)
     assert record.permanent_mac == "12:22:33:44:55:66"
 
 
@@ -227,7 +246,7 @@ def test_a_message_longer_than_the_buffer_is_refused():
     data = bytearray(_link(1) + _done())
     struct.pack_into("I", data, 0, len(data) + 64)
     with pytest.raises(NetlinkMalformed):
-        parse_links(bytes(data))
+        _parse(bytes(data))
 
 
 def test_a_message_shorter_than_its_own_header_is_refused():
@@ -242,14 +261,14 @@ def test_a_message_shorter_than_its_own_header_is_refused():
     data = bytearray(_link(1) + _done())
     struct.pack_into("I", data, 0, 4)
     with pytest.raises(NetlinkMalformed) as refused:
-        parse_links(bytes(data))
+        _parse(bytes(data))
     assert "below the" in str(refused.value)
     assert "header it must contain" in str(refused.value)
 
 
 def test_a_truncated_header_is_refused():
     with pytest.raises(NetlinkMalformed):
-        parse_links(_link(1) + b"\x00\x00\x00")
+        _parse(_link(1) + b"\x00\x00\x00")
 
 
 def test_an_attribute_longer_than_its_message_is_refused():
@@ -260,7 +279,7 @@ def test_an_attribute_longer_than_its_message_is_refused():
     attribute_at = offset + ((name_length + 3) & ~3)
     struct.pack_into("H", link, attribute_at, 4096)
     with pytest.raises(NetlinkMalformed):
-        parse_links(bytes(link) + _done())
+        _parse(bytes(link) + _done())
 
 
 def test_an_attribute_shorter_than_its_own_header_is_refused():
@@ -276,17 +295,17 @@ def test_an_attribute_shorter_than_its_own_header_is_refused():
     """
 
     body = _IFINFO.pack(0, 0, 1, 1, 0, 0) + struct.pack("HH", 2, IFLA_PERM_ADDRESS)
-    data = _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, 0, 1, 0) + body
+    data = _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, 0, SEQ, PORT) + body
     with pytest.raises(NetlinkMalformed) as refused:
-        parse_links(data + _done())
+        _parse(data + _done())
     assert "below its own header" in str(refused.value)
 
 
 def test_a_link_message_too_small_for_its_interface_header_is_refused():
     body = b"\x00" * 4
-    data = _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, 0, 1, 0) + body
+    data = _HEADER.pack(_HEADER.size + len(body), _RTM_NEWLINK, 0, SEQ, PORT) + body
     with pytest.raises(NetlinkMalformed):
-        parse_links(data + _done())
+        _parse(data + _done())
 
 
 def test_a_kernel_error_is_raised_rather_than_reported_as_no_interfaces():
@@ -297,19 +316,102 @@ def test_a_kernel_error_is_raised_rather_than_reported_as_no_interfaces():
     """
 
     body = struct.pack("i", -1) + b"\x00" * 16
-    data = _HEADER.pack(_HEADER.size + len(body), 2, 0, 1, 0) + body
+    data = _HEADER.pack(_HEADER.size + len(body), 2, 0, SEQ, PORT) + body
     with pytest.raises(NetlinkMalformed) as refused:
-        parse_links(data)
+        _parse(data)
     assert "errno" in str(refused.value)
 
 
 def test_messages_after_done_are_not_read():
     data = _link(1, _attribute(IFLA_PERM_ADDRESS, b"\x11" * 6)) + _done() + _link(2)
-    records = parse_links(data)
+    records = _parse(data)
     assert [record.index for record in records] == [1]
 
 
+# -- the framing of a dump (#310) ----------------------------------------
+
+
+def _ok() -> bytes:
+    return _link(1, _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("122233445566")))
+
+
+def test_a_message_of_another_sequence_is_refused():
+    with pytest.raises(NetlinkMalformed, match="sequence"):
+        _parse(_link(1, seq=SEQ + 1) + _done())
+    with pytest.raises(NetlinkMalformed, match="sequence"):
+        _parse(_ok() + _done(seq=SEQ + 1))
+
+
+def test_a_message_addressed_to_another_port_id_is_refused():
+    with pytest.raises(NetlinkMalformed, match="port id"):
+        _parse(_link(1, port=PORT + 1) + _done())
+    with pytest.raises(NetlinkMalformed, match="port id"):
+        _parse(_ok() + _done(port=0))
+
+
+def test_an_interrupted_dump_is_refused():
+    with pytest.raises(NetlinkMalformed, match="interrupted"):
+        _parse(_link(1, flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR) + _done())
+    with pytest.raises(NetlinkMalformed, match="interrupted"):
+        _parse(_ok() + _done(flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR))
+
+
+def test_a_dump_without_its_end_is_refused():
+    with pytest.raises(NetlinkMalformed, match="no end"):
+        _parse(_ok())
+    with pytest.raises(NetlinkMalformed, match="no end"):
+        _parse(b"")
+
+
+def test_the_whole_dump_of_this_request_is_read():
+    """The control for the four above: the same messages, framed right."""
+
+    (record,) = _parse(_ok() + _done())
+    assert record.permanent_mac == "12:22:33:44:55:66"
+
+
 # -- the socket wrapper --------------------------------------------------
+
+
+class FakeSocket:
+    """Replies as given. `sender` is the source address `recvmsg` reports,
+    `truncated` the indexes of datagrams reported with `MSG_TRUNC`, `port`
+    this socket's port id."""
+
+    def __init__(self, datagrams, *, sender=(0, 0), port=PORT, truncated=(),
+                 fail_send=False):
+        self.datagrams = list(datagrams)
+        self.sender = sender
+        self.port = port
+        self.truncated = set(truncated)
+        self.fail_send = fail_send
+        self.sent: list[bytes] = []
+        self.received = 0
+        self.closed = False
+
+    def getsockname(self):
+        return (self.port, 0)
+
+    def send(self, payload):
+        if self.fail_send:
+            raise OSError("no")
+        self.sent.append(payload)
+        return len(payload)
+
+    def recvmsg(self, size):
+        if not self.datagrams:
+            raise TimeoutError("timed out")
+        flags = socket.MSG_TRUNC if self.received in self.truncated else 0
+        self.received += 1
+        return self.datagrams.pop(0)[:size], [], flags, self.sender
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fixed_sequence(monkeypatch):
+    monkeypatch.setattr(netlink, "_sequence", lambda: SEQ)
 
 
 def test_an_unopenable_socket_is_reported_as_unavailable():
@@ -320,41 +422,89 @@ def test_an_unopenable_socket_is_reported_as_unavailable():
         read_links(open_socket=refuse)
 
 
-def test_a_dump_that_exceeds_the_limit_is_refused():
+def test_a_dump_that_exceeds_the_limit_is_refused(fixed_sequence):
     """A link table this large is not one this daemon holds in memory."""
 
-    class Flood:
-        def send(self, payload):
-            return len(payload)
-
-        def recv(self, size):
-            return b"\x00" * size
-
-        def close(self):
-            pass
-
+    fake = FakeSocket([b"\x00" * 2048] * 8)
     with pytest.raises(NetlinkMalformed):
-        read_links(open_socket=Flood, limit=4096)
+        read_links(open_socket=lambda: fake, limit=4096)
+    assert fake.closed
 
 
-def test_a_dump_delivered_in_pieces_is_reassembled():
-    pieces = [
-        _link(1, _attribute(IFLA_PERM_ADDRESS, bytes.fromhex("122233445566"))),
-        _done(),
-    ]
-
-    class Chunked:
-        def __init__(self):
-            self.remaining = list(pieces)
-
-        def send(self, payload):
-            return len(payload)
-
-        def recv(self, size):
-            return self.remaining.pop(0) if self.remaining else b""
-
-        def close(self):
-            pass
-
-    records = read_links(open_socket=Chunked)
+def test_a_dump_delivered_in_pieces_is_reassembled(fixed_sequence):
+    fake = FakeSocket([_ok(), _done(), b"never read"])
+    records = read_links(open_socket=lambda: fake)
     assert [record.permanent_mac for record in records] == ["12:22:33:44:55:66"]
+    assert fake.sent == [build_dump_request(SEQ)] and fake.closed
+    assert fake.datagrams == [b"never read"]
+
+
+def test_each_dump_draws_its_own_sequence_number():
+    seen = []
+    for _ in range(3):
+        fake = FakeSocket([])
+        with pytest.raises(NetlinkUnavailable):  # times out
+            read_links(open_socket=lambda: fake)
+        (request,) = fake.sent
+        seen.append(_HEADER.unpack_from(request, 0)[3])
+    assert len(set(seen)) == 3 and 0 not in seen
+
+
+@pytest.mark.parametrize("make", [
+    # A datagram from another sender than the kernel: a forged dump.
+    lambda: FakeSocket([_ok() + _done()], sender=(31337, 0)),
+    lambda: FakeSocket([_ok(), _done()], sender=(1, 0)),
+    # From the kernel's port id, but through a multicast group.
+    lambda: FakeSocket([_ok() + _done()], sender=(0, 1)),
+    lambda: FakeSocket([_ok() + _done()], sender=()),
+    lambda: FakeSocket([_ok() + _done()], sender=None),
+    # Addressed to another port id than this socket's.
+    lambda: FakeSocket([_ok() + _done()], port=PORT + 1),
+    # Another sequence number than this request's.
+    lambda: FakeSocket([_link(1, seq=SEQ + 1) + _done()]),
+    lambda: FakeSocket([_ok(), _done(seq=SEQ + 1)]),
+    # Interrupted.
+    lambda: FakeSocket([_link(1, flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR), _done()]),
+    # Cut short by the receive buffer (`MSG_TRUNC`), even if it parses.
+    lambda: FakeSocket([_ok() + _done()], truncated={0}),
+    lambda: FakeSocket([_ok(), _done()], truncated={1}),
+    # Closed before the dump's end.
+    lambda: FakeSocket([_ok(), b""]),
+])
+def test_a_dump_not_received_whole_from_the_kernel_is_malformed(make, fixed_sequence):
+    """Refused as a malformed buffer is: no interface is reported."""
+
+    fake = make()
+    with pytest.raises(NetlinkMalformed):
+        read_links(open_socket=lambda: fake)
+    assert fake.closed
+
+
+@pytest.mark.parametrize("make", [
+    lambda: FakeSocket([_ok()]),                   # times out before the end
+    lambda: FakeSocket([], fail_send=True),
+])
+def test_a_dump_that_cannot_be_obtained_is_unavailable(make, fixed_sequence):
+    fake = make()
+    with pytest.raises(NetlinkUnavailable):
+        read_links(open_socket=lambda: fake)
+    assert fake.closed
+
+
+def test_the_kernels_whole_reply_is_read(fixed_sequence):
+    """The control: the same fake, from the kernel, whole, to this port."""
+
+    fake = FakeSocket([_ok() + _done()])
+    (record,) = read_links(open_socket=lambda: fake)
+    assert record.permanent_mac == "12:22:33:44:55:66"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs a Linux kernel")
+def test_the_kernel_answers_this_reader():
+    """The real socket: this namespace's links, read through every check."""
+
+    try:
+        records = read_links()
+    except NetlinkUnavailable as exc:  # pragma: no cover - no netlink here
+        pytest.skip(f"no route netlink: {exc}")
+    assert records and any(record.name == "lo" for record in records)
