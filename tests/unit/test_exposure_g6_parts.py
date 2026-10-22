@@ -558,8 +558,91 @@ def test_sha256_without_raw_sha256_withholds(tmp_path, monkeypatch):
         LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash")
 
 
+def _linked_policy(tmp_path, monkeypatch, target=None, hashes=HASHES):
+    """The VM's layout: `raw_sha256 -> ../../raw_data/<n>/sha256` in each entry."""
+
+    policy = tmp_path / "policy"
+    base, raw_data = policy / "profiles", policy / "raw_data"
+    monkeypatch.setattr(decoy_apparmor, "_POLICY_PROFILES", str(base))
+    monkeypatch.setattr(decoy_apparmor, "_POLICY_RAW_DATA", str(raw_data))
+    base.mkdir(parents=True)
+    raw_data.mkdir()
+    for index, name in enumerate(REQUIRED_ENFORCED_PROFILES):
+        number = 120 + index
+        entry = base / f"{name}.{number}"
+        entry.mkdir()
+        (entry / "name").write_bytes(name.encode() + b"\n")
+        (entry / "sha256").write_bytes(b"f" * 64 + b"\n")
+        if hashes is not None:
+            (raw_data / str(number)).mkdir()
+            (raw_data / str(number) / "sha256").write_bytes((hashes[name] + "\n").encode())
+        link = target(number) if target else f"../../raw_data/{number}/sha256"
+        os.symlink(link, entry / "raw_sha256")
+    return raw_data
+
+
+def test_a_raw_sha256_link_of_the_kernels_form_is_read_through_raw_data(tmp_path,
+                                                                        monkeypatch):
+    _linked_policy(tmp_path, monkeypatch)
+    entries = read_policy_hashes()
+    assert sorted(hash for _, hash in entries) == sorted(
+        (value + "\n").encode() for value in HASHES.values())
+    assert policy_hash_refusal(entries, HASHES) is None
+
+
+@pytest.mark.parametrize("target", [
+    lambda n: "../../../etc/x",
+    lambda n: f"/sys/kernel/security/apparmor/policy/raw_data/{n}/sha256",
+    lambda n: "../../raw_data/x/sha256",
+    lambda n: "../../raw_data//sha256",
+    lambda n: f"../../raw_data/0{n}/sha256",
+    lambda n: f"../../raw_data/{n}/../{n}/sha256",
+    lambda n: f"../../raw_data/{n}/sha256/",
+    lambda n: f"../../raw_data/{n}/raw_data",
+    lambda n: f"../raw_data/{n}/sha256",
+    lambda n: f"../../raw_data/-{n}/sha256",
+    lambda n: "../../raw_data/" + "1" * 21 + "/sha256",
+])
+def test_a_raw_sha256_link_of_any_other_form_withholds(tmp_path, monkeypatch, target):
+    # Every target holds the expected hash, so only the form refuses.
+    _linked_policy(tmp_path, monkeypatch, target)
+    entries = read_policy_hashes()
+    assert all(hash is UNREADABLE for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(
+        LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash")
+
+
+def test_a_raw_sha256_link_whose_target_is_absent_withholds(tmp_path, monkeypatch):
+    _linked_policy(tmp_path, monkeypatch, hashes=None)
+    entries = read_policy_hashes()
+    assert all(hash is None for _, hash in entries)
+    assert policy_hash_refusal(entries, HASHES).startswith(
+        LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash")
+
+
+def test_a_raw_data_entry_that_is_a_link_withholds(tmp_path, monkeypatch):
+    raw_data = _linked_policy(tmp_path, monkeypatch)
+    moved = tmp_path / "elsewhere"
+    os.rename(raw_data / "120", moved)
+    os.symlink(moved, raw_data / "120")
+    (raw_data / "121" / "sha256").unlink()
+    os.symlink(moved / "sha256", raw_data / "121" / "sha256")
+    hashes = [hash for _, hash in read_policy_hashes()]
+    assert hashes.count(UNREADABLE) == 2
+
+
+def test_a_raw_sha256_regular_file_is_read_as_it_is(tmp_path, monkeypatch):
+    # Another kernel may keep the hash in the entry itself: read it, no link
+    # followed, with the same checks.
+    _policy_directory(tmp_path, monkeypatch, lambda name: {"raw_sha256": HASHES[name]})
+    assert policy_hash_refusal(read_policy_hashes(), HASHES) is None
+
+
 def test_the_policy_path_is_securityfs():
     assert decoy_apparmor._POLICY_PROFILES == "/sys/kernel/security/apparmor/policy/profiles"
+    # The directory the kernel's `../../raw_data` names from a profile's entry.
+    assert decoy_apparmor._POLICY_RAW_DATA == os.path.normpath(
+        decoy_apparmor._POLICY_PROFILES + "/x/../../raw_data")
 
 
 ENFORCED = b"".join(name.encode() + b" (enforce)\n" for name in REQUIRED_ENFORCED_PROFILES)

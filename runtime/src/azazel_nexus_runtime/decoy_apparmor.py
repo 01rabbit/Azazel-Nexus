@@ -162,10 +162,20 @@ _PROFILES = "/sys/kernel/security/apparmor/profiles"
 #: `apparmor_parser -Q -o` output for the placed file, while `sha256` is
 #: another value, equal to neither nor to the SHA-256 of the file in
 #: `/etc/apparmor.d`, so it is not read. An absent directory or file
-#: withholds as `lsm_policy_unverifiable`. Still *inferred*: whether
-#: `raw_sha256` is a link on some kernels (this reader follows none, so a
-#: link reads as unreadable and withholds); G6 checks it with the reader.
+#: withholds as `lsm_policy_unverifiable`. On that kernel `raw_sha256` is a
+#: symbolic link, `raw_sha256 -> ../../raw_data/<n>/sha256` (as are `raw_abi`
+#: and `raw_data`; `name` and `sha256` are regular files); see
+#: `_read_raw_sha256` for how it is read without following it.
 _POLICY_PROFILES = "/sys/kernel/security/apparmor/policy/profiles"
+#: Where the kernel keeps each loaded policy's raw data, `<n>/sha256` among
+#: it: the directory `raw_sha256`'s link names, relative to a profile's
+#: entry (`../../raw_data`), resolved here as a fixed path rather than by
+#: following the link.
+_POLICY_RAW_DATA = "/sys/kernel/security/apparmor/policy/raw_data"
+_RAW_SHA256_PREFIX = "../../raw_data/"
+_RAW_SHA256_SUFFIX = "/sha256"
+#: A decimal number of at most this many digits names a raw data directory.
+_RAW_DATA_DIGITS = 20
 _POLICY_ENTRY_LIMIT = 4096
 _POLICY_NAME_LIMIT = 4096
 _POLICY_HASH_LIMIT = 256
@@ -439,6 +449,63 @@ def _read_at(directory_fd: int, name: str, limit: int):
         os.close(fd)
 
 
+def _raw_data_number(target) -> str | None:
+    """The `<n>` of exactly `../../raw_data/<n>/sha256`, `<n>` decimal, else None."""
+
+    if (type(target) is not str or not target.startswith(_RAW_SHA256_PREFIX)
+            or not target.endswith(_RAW_SHA256_SUFFIX)):
+        return None
+    number = target[len(_RAW_SHA256_PREFIX):-len(_RAW_SHA256_SUFFIX)]
+    if (not 0 < len(number) <= _RAW_DATA_DIGITS
+            or not all(c in "0123456789" for c in number)
+            or (len(number) > 1 and number[0] == "0")):
+        return None
+    return number
+
+
+def _read_raw_sha256(entry_fd: int):
+    """An entry's `raw_sha256`: None if absent, `UNREADABLE`, or its bytes.
+
+    On the VM's kernel it is a link to `../../raw_data/<n>/sha256`. The link
+    is read (`readlink`), not followed: a target of exactly that form, `<n>`
+    decimal, is read as `_POLICY_RAW_DATA/<n>/sha256`, each step opened
+    without following a link; any other target (`../../../etc/x`, an
+    absolute path, a name that is not a number) is `UNREADABLE`. A target
+    that does not exist is None, as an absent file. A regular file (a kernel
+    that keeps the hash in the entry itself) is read as it is, without
+    following a link: it is the kernel's own file in the entry, as `name`
+    is, so it is no less the kernel's than the link's target, and the
+    format and limit checks apply to it the same.
+    """
+
+    try:
+        target = os.readlink("raw_sha256", dir_fd=entry_fd)
+    except OSError as error:
+        if error.errno == errno.EINVAL:  # not a link: a regular file
+            return _read_at(entry_fd, "raw_sha256", _POLICY_HASH_LIMIT)
+        return None if error.errno in _ABSENT else UNREADABLE
+    number = _raw_data_number(target)
+    if number is None:
+        return UNREADABLE
+    try:
+        raw_data = os.open(_POLICY_RAW_DATA, _DIRECTORY)
+    except OSError as error:
+        return None if error.errno in _ABSENT else UNREADABLE
+    try:
+        try:
+            directory = os.open(number, _DIRECTORY, dir_fd=raw_data)
+        except OSError as error:
+            # ENOTDIR here is a link or a file in place of the directory
+            # (O_NOFOLLOW with O_DIRECTORY), not an absent one.
+            return None if error.errno == errno.ENOENT else UNREADABLE
+        try:
+            return _read_at(directory, "sha256", _POLICY_HASH_LIMIT)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(raw_data)
+
+
 def read_policy_hashes():
     """The kernel's `(name, raw_sha256)` per loaded profile, as read now.
 
@@ -446,8 +513,9 @@ def read_policy_hashes():
     cannot be listed or holds more than `_POLICY_ENTRY_LIMIT` entries, else a
     tuple with one pair per entry, each file bytes, None or `UNREADABLE`.
     Read-only, bounded, no link followed (an entry that is a link is read as
-    `UNREADABLE`). The files are `_POLICY_PROFILES`'s; the kernel's other
-    file, `sha256`, is not read.
+    `UNREADABLE`; `raw_sha256` is read as `_read_raw_sha256` says). The
+    files are `_POLICY_PROFILES`'s; the kernel's other file, `sha256`, is
+    not read.
     """
 
     try:
@@ -469,7 +537,7 @@ def read_policy_hashes():
                 continue
             try:
                 entries.append((_read_at(fd, "name", _POLICY_NAME_LIMIT),
-                                _read_at(fd, "raw_sha256", _POLICY_HASH_LIMIT)))
+                                _read_raw_sha256(fd)))
             finally:
                 os.close(fd)
         return tuple(entries)

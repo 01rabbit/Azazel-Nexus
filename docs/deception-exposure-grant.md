@@ -1056,7 +1056,16 @@ one that fails when called still withholds the tier, and calls none).
   sha256`, no `sha1`; `raw_sha256` is the SHA-256 of the compiled policy
   (equal to that of `raw_data` and of `apparmor_parser -Q -o` output), and
   `sha256`, another value, is not read: an entry with `sha256` and no
-  `raw_sha256` withholds. A required profile listed not exactly once, a
+  `raw_sha256` withholds. On that kernel `raw_sha256` is a symbolic link,
+  `../../raw_data/<n>/sha256` (checked, §11). The reader does not follow
+  it: it reads the link (`readlink` relative to the entry), accepts only
+  exactly that form with `<n>` a decimal number (an absolute path, `..`
+  elsewhere, a name that is not a number all withhold), and opens
+  `/sys/kernel/security/apparmor/policy/raw_data/<n>/sha256` from that
+  fixed directory, each step without following a link; a target that does
+  not exist withholds. A regular file `raw_sha256` (a kernel that keeps the
+  hash in the entry) is read as it is, without following a link, with the
+  same checks: it is the kernel's own file in the entry, as `name` is. A required profile listed not exactly once, a
   hash absent, empty or not one lowercase hex digest, or no expected hash
   is `lsm_policy_unverifiable`; a different hash is `lsm_policy_differs`.
   **This build records no expected hash**, so the comparison fails closed;
@@ -1320,14 +1329,18 @@ record for `HG-06`, `HG-09` or `HG-10`, and nothing granted by the pass.
 | what | how | observed | result |
 | --- | --- | --- | --- |
 | the kernel's per-profile files | listing `/sys/kernel/security/apparmor/policy/profiles/<name>.<n>/` | `attach mode name raw_abi raw_data raw_sha256 sha256`; no `sha1` | the reader now reads `raw_sha256` (§9, "G6 preparation C") |
+| their form | the entry `azazel-decoyd.122/` | `attach`, `mode`, `name` and `sha256` are regular files; `raw_abi -> ../../raw_data/122/abi`, `raw_data -> ../../raw_data/122/raw_data` and `raw_sha256 -> ../../raw_data/122/sha256` are symbolic links | the reader reads the link, accepts only that form and opens `policy/raw_data/<n>/sha256` itself (§9) |
 | which hash the kernel shows | for each of the four decoy profiles, the kernel's `raw_sha256` against the SHA-256 of `raw_data` and of `apparmor_parser -Q -o <out> /etc/apparmor.d/<name>` | all three equal, for all four; `sha256` is another value, equal to neither and not to the SHA-256 of the profile file | the expected hash can be derived at install (§7, "Left to G6") |
 | the pass's reads under the controller's sandbox | a copy of `azazel-activated.service` with only `ExecStart=` replaced by a test Python, its dependencies and conditions removed | `/sys/kernel/security/apparmor/profiles`, `/sys/kernel/security/lsm`, the policy directory and `sha256` all readable; `raw_sha256` is in the same directory; no AppArmor denial | ok |
 | trip by `systemctl reload nftables.service` | Debian's default `/etc/nftables.conf` (it holds `flush ruleset`) | about 11 s later the verify failed, the trip ran and the three units stopped | ok (closed) |
 | trip by `systemctl start nftables.service` (again) | the same file | the same, about 9 s later | ok (closed) |
 
 The controller copy read `sha256` and listed `raw_sha256` beside it but did
-not read `raw_sha256` itself; that it is readable there is *inferred* from
-the same directory and mode, and G6 confirms it with the reader.
+not read `raw_sha256`'s target (`policy/raw_data/<n>/sha256`) itself; that
+it is readable there is *inferred* from the same securityfs tree, and G6
+confirms it with the reader. That `raw_sha256` is a link is checked (row
+"their form"); before this check the reader opened it without following a
+link and would have withheld on every pass.
 
 **Still open after G4:** whether `TimeoutStopSec=` bounds each
 `ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
