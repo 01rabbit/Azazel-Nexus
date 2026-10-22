@@ -720,6 +720,19 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   verify unit and the decoy have neither, and the namespace unit's mounts
   are only `ip`'s fixed ones (none of them a bind from the denied paths).
   Not `attach_disconnected.path` and no other flag; a test pins it.
+- **Checked so far, without AppArmor** (a privileged Debian 13 container
+  with systemd 257.13 as PID 1 on colima's kernel; the rendered unit with
+  only its `AppArmorProfile=`, `AssertSecurity=`, grant-marker and controller
+  lines removed; a mechanism check of systemd's sequencing, **not VM or
+  hardware evidence**): `systemd-analyze verify` accepts the unit; a clean
+  start built the namespace, the pair, the address and the default route,
+  and a stop removed both; with `/run/netns/azazel-decoy` already present
+  the start failed at step 1 (`File exists`) and `ExecStopPost=` removed it;
+  with a link `az-decoy-host0` already present the start failed at step 2
+  (`RTNETLINK answers: File exists`) and `ExecStopPost=` removed it and the
+  namespace; a start after each failure succeeded. The four profiles
+  compile with `apparmor_parser` 4.1.0 (no kernel load). Everything under
+  AppArmor, and the timeout path, is §11 item 4.
 
 ## 8. The decoy-sandbox gate (Q10, F7)
 
