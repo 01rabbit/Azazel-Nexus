@@ -7,13 +7,28 @@ may in addition name the three `DECEPTION_EXPOSURE` units
 naming only part of the tier cannot be encoded, decoded or verified, so a
 partial exposure set never reaches a lease.
 
+It also carries, always, what the operator reads before signing
+(`docs/deception-exposure-wiring.md` §5.1, owner decision Q-V = V2):
+`exposure_scope_digest` (`sha256:` and 64 lowercase hex digits, the form of
+the generation's exposure section `scope_digest`), `exposure_prefix_count`
+(1 to `decoy_scope.MAX_PREFIXES`) and `exposure_ingress_count` (1 to
+`decoy_scope.MAX_INGRESS`), the bounds the rendered scope file is held to.
+Their **shape only** is checked here; comparing them with the generation's
+section and this boot's rendering is the pass's (stage P10), not this
+module's.
+
+A v3 approval is attributed only under `ApprovalPurpose.ACTIVATION_EXPOSURE`
+(owner decision Q-C): a v3 document signed under `ACTIVATION`, the purpose
+of v2, is refused, and v2's verifier refuses the new purpose.
+
 **Nothing calls this module.** It is a part for G6 (§9) and grants nothing
 on its own:
 
 - the activation pass reads v2 only (`activation_store.
   load_observe_baseline_approval`, `verify_observe_baseline_approval`) and
   requires an `ObserveBaselineApproval`, which this module never returns;
-- `tools/operator_sign.py` cannot produce a v3 approval;
+- `tools/operator_sign.py` cannot produce a v3 approval and does not offer
+  the `ACTIVATION_EXPOSURE` purpose;
 - the policy scope cannot name an exposure unit: `ActivationApprovalPolicy`
   refuses one, so a v3 approval naming the tier is refused by this verifier
   at the scope check until G6 changes the policy, the allowlist and
@@ -44,6 +59,7 @@ from dataclasses import dataclass, field
 from .activation import CORE_UNITS, DECEPTION_EXPOSURE_UNITS, ActivationLease, UnitTier
 from .activation_approval import _utc
 from .activation_approval_v2 import ActivationApprovalPolicy, ObserveBaselineContext
+from .decoy_scope import MAX_INGRESS, MAX_PREFIXES
 from .operator_trust import (
     MAX_APPROVAL_BYTES,
     ApprovalPurpose,
@@ -86,6 +102,9 @@ APPROVAL_V3_PHRASES: dict[str, str] = {
     "approval_v3_exposure_partial": (
         "approval names only part of the Deception Lite exposure tier, "
         "which is approved together or not at all"),
+    "approval_v3_exposure_scope_digest_invalid": "invalid approval exposure scope digest",
+    "approval_v3_exposure_prefix_count_invalid": "invalid approval exposure prefix count",
+    "approval_v3_exposure_ingress_count_invalid": "invalid approval exposure ingress count",
     "approval_v3_not_canonical": "activation approval is not canonical",
     "approval_v3_operator_unauthorized": "operator is not authorized by the activation policy",
     "approval_v3_context_mismatch": "activation approval does not match expected context",
@@ -145,7 +164,14 @@ _FIELDS = frozenset({
     "generation_digest", "commissioning_digest", "commissioning_evidence_binding",
     "policy_digest", "security_epoch", "approval_seq", "units", "granted_at",
     "expires_at",
+}) | frozenset({
+    # v3's own (wiring §5.1, V2): shape only here, compared by the pass (P10).
+    "exposure_scope_digest", "exposure_prefix_count", "exposure_ingress_count",
 })
+
+#: The form of the generation's exposure section `scope_digest`
+#: (`exposure_generation._DIGEST`; a test keeps them equal).
+_SCOPE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 _EXPOSURE = frozenset(DECEPTION_EXPOSURE_UNITS)
 
@@ -160,6 +186,12 @@ if not _EXPOSURE <= _V3_UNITS:  # pragma: no cover - a definition error, not inp
 
 def _nonnegative(value, code: str) -> int:
     if type(value) is not int or value < 0:
+        raise _refused(code)
+    return value
+
+
+def _bounded(value, maximum: int, code: str) -> int:
+    if type(value) is not int or not 1 <= value <= maximum:
         raise _refused(code)
     return value
 
@@ -190,8 +222,10 @@ def _unit_list(units) -> list[str]:
 def activation_approval_v3_payload(
     *, context: ObserveBaselineContext, approval_id: str, operator: str,
     approval_seq: int, units: Iterable[str], granted_at: str, expires_at: str,
+    exposure_scope_digest: str, exposure_prefix_count: int, exposure_ingress_count: int,
 ) -> bytes:
-    """Unsigned canonical v3 bytes: the v2 fields under the v3 schema name."""
+    """Unsigned canonical v3 bytes: the v2 fields under the v3 schema name,
+    and the three exposure fields, checked for shape only."""
     if type(context) is not ObserveBaselineContext:
         raise _refused("approval_v3_context_required")
     if type(approval_id) is not str or not _APPROVAL_ID.fullmatch(approval_id):
@@ -201,6 +235,11 @@ def activation_approval_v3_payload(
     _nonnegative(approval_seq, "approval_v3_sequence_invalid")
     if _time(expires_at) <= _time(granted_at):
         raise _refused("approval_v3_expiry_not_after_grant")
+    if type(exposure_scope_digest) is not str or not _SCOPE_DIGEST.fullmatch(
+            exposure_scope_digest):
+        raise _refused("approval_v3_exposure_scope_digest_invalid")
+    _bounded(exposure_prefix_count, MAX_PREFIXES, "approval_v3_exposure_prefix_count_invalid")
+    _bounded(exposure_ingress_count, MAX_INGRESS, "approval_v3_exposure_ingress_count_invalid")
     return json.dumps({
         "schema": SCHEMA_V3,
         "approval_id": approval_id,
@@ -216,7 +255,15 @@ def activation_approval_v3_payload(
         "units": _unit_list(units),
         "granted_at": granted_at,
         "expires_at": expires_at,
+        "exposure_scope_digest": exposure_scope_digest,
+        "exposure_prefix_count": exposure_prefix_count,
+        "exposure_ingress_count": exposure_ingress_count,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _exposure_fields(document: dict) -> dict:
+    return {name: document[name] for name in (
+        "exposure_scope_digest", "exposure_prefix_count", "exposure_ingress_count")}
 
 
 def _parse(payload: bytes) -> dict:
@@ -240,14 +287,18 @@ class DecodedApprovalV3:
     units: frozenset[str]
     granted_at: str
     expires_at: str
+    exposure_scope_digest: str
+    exposure_prefix_count: int
+    exposure_ingress_count: int
 
 
 def decode_activation_approval_v3(payload: bytes) -> DecodedApprovalV3:
     """Strictly decode v3 bytes, or `ApprovalRefused`.
 
     The bytes must re-encode to exactly themselves (field set, schema, types,
-    sorted distinct units, all-or-none exposure, key order, separators). The
-    context is taken from the document, so this proves shape only.
+    sorted distinct units, all-or-none exposure, the exposure fields' shape,
+    key order, separators). The context is taken from the document, so this
+    proves shape only.
     """
     try:
         document = _parse(payload)
@@ -263,7 +314,7 @@ def decode_activation_approval_v3(payload: bytes) -> DecodedApprovalV3:
             context=context, approval_id=document["approval_id"],
             operator=document["operator"], approval_seq=document["approval_seq"],
             units=document["units"], granted_at=document["granted_at"],
-            expires_at=document["expires_at"],
+            expires_at=document["expires_at"], **_exposure_fields(document),
         )
         if payload != canonical:
             raise _refused("approval_v3_not_canonical")
@@ -278,19 +329,23 @@ def decode_activation_approval_v3(payload: bytes) -> DecodedApprovalV3:
         approval_id=document["approval_id"], operator=document["operator"],
         context=context, approval_seq=document["approval_seq"],
         units=frozenset(document["units"]), granted_at=document["granted_at"],
-        expires_at=document["expires_at"],
+        expires_at=document["expires_at"], **_exposure_fields(document),
     )
 
 
 @dataclass(frozen=True)
 class ActivationApprovalV3:
     """A verified v3 approval. Deliberately not `ObserveBaselineApproval`:
-    the activation pass accepts only that type."""
+    the activation pass accepts only that type. The exposure fields are as
+    signed, checked for shape only: they are for the pass to compare (P10)."""
 
     lease: ActivationLease
     approval_id: str
     approval_seq: int
     security_epoch: int
+    exposure_scope_digest: str
+    exposure_prefix_count: int
+    exposure_ingress_count: int
 
 
 def verify_activation_approval_v3(
@@ -300,9 +355,11 @@ def verify_activation_approval_v3(
 ) -> ActivationApprovalV3:
     """Verify a v3 approval the way v2 is verified, with the v3 unit rule.
 
-    Attribution through the existing operator trust and the `ACTIVATION`
-    purpose, the policy's operator set, exact context, canonical bytes, both
-    floors, the policy's unit scope and the time window. While the policy
+    Attribution through the existing operator trust and the
+    `ACTIVATION_EXPOSURE` purpose (never `ACTIVATION`, v2's), the policy's
+    operator set, exact context, canonical bytes (the exposure fields' shape
+    included, not their values), both floors, the policy's unit scope and the
+    time window. While the policy
     scope cannot name an exposure unit, a v3 approval naming the tier is
     refused here at the scope check.
     """
@@ -319,7 +376,7 @@ def verify_activation_approval_v3(
         operator = document["operator"]
         if type(operator) is not str or not _OPERATOR.fullmatch(operator):
             raise _refused("approval_v3_operator_invalid")
-        trust.verify(operator=operator, purpose=ApprovalPurpose.ACTIVATION,
+        trust.verify(operator=operator, purpose=ApprovalPurpose.ACTIVATION_EXPOSURE,
                      payload=payload, signature=signature)
         if operator not in policy.authorized_operators:
             raise _refused("approval_v3_operator_unauthorized")
@@ -327,6 +384,7 @@ def verify_activation_approval_v3(
             context=expected, approval_id=document["approval_id"], operator=operator,
             approval_seq=document["approval_seq"], units=document["units"],
             granted_at=document["granted_at"], expires_at=document["expires_at"],
+            **_exposure_fields(document),
         )
         if payload != canonical:
             raise _refused("approval_v3_context_mismatch")
@@ -359,4 +417,5 @@ def verify_activation_approval_v3(
         raise _refused("approval_v3_document_refused") from exc
     return ActivationApprovalV3(lease=lease, approval_id=document["approval_id"],
                                 approval_seq=document["approval_seq"],
-                                security_epoch=expected.security_epoch)
+                                security_epoch=expected.security_epoch,
+                                **_exposure_fields(document))

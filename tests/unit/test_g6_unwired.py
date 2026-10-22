@@ -118,6 +118,13 @@ NAME_FILES: dict[str, frozenset[str]] = {
     **_only({V3}, "activation_approval_v3", "activation-approval/v3", "ApprovalV3",
             "decode_activation_approval_v3", "verify_activation_approval_v3",
             "activation_approval_v3_payload"),
+    # v3's fields of wiring §5.1 (V2), and its purpose (Q-C): the enum value
+    # is defined in the operator trust and used by v3 only; the signer, the
+    # pass and `az-activation` do not name it.
+    **_only({V3}, "exposure_scope_digest", "exposure_prefix_count",
+            "exposure_ingress_count"),
+    **_only({V3, _LIB + "operator_trust.py"}, "ACTIVATION_EXPOSURE"),
+    **_only({_LIB + "operator_trust.py"}, "activation-exposure"),
     # Preparation C.
     **_only({UNIT_FILES, GENERATION}, "measure_exposure_unit_files"),
     **_only({APPARMOR, GENERATION, WITHHOLDING}, "exposure_lsm_withholding"),

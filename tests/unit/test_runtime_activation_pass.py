@@ -541,9 +541,11 @@ def _sign_v3(world):
     world.payload = activation_approval_v3_payload(
         context=world.context(), approval_id="approval-1", operator="operator-a",
         approval_seq=5, units=world.units, granted_at="2026-10-20T12:00:00Z",
-        expires_at="2026-10-22T00:00:00Z")
+        expires_at="2026-10-22T00:00:00Z", exposure_scope_digest="sha256:" + "e" * 64,
+        exposure_prefix_count=1, exposure_ingress_count=1)
+    # v3's own purpose (wiring §5.1, Q-C), the only one its verifier accepts.
     world.signature = world.key.sign(
-        approval_message(ApprovalPurpose.ACTIVATION, world.payload)).signature
+        approval_message(ApprovalPurpose.ACTIVATION_EXPOSURE, world.payload)).signature
 
 
 def _assert_granted(world, outcome):

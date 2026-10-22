@@ -214,6 +214,12 @@ _V3_WORDING = {
     "activation approval outside local time policy",
     "activation approval document refused",
 }
+#: The phrases v3 gained after the codes, with its exposure fields (wiring
+#: §5.1, V2): v3's own, raised by no shared helper.
+_V3_EXPOSURE_FIELD_WORDING = {
+    "invalid approval exposure scope digest", "invalid approval exposure prefix count",
+    "invalid approval exposure ingress count",
+}
 
 
 def _string_constants(relative: str) -> set[str]:
@@ -256,8 +262,10 @@ def _raised_in(relative: str, outer: str, inner: str | None) -> set[str]:
 def test_approval_v3_keeps_its_wording_and_the_helpers_phrases():
     phrases = set(v3.APPROVAL_V3_PHRASES.values())
     assert _V3_WORDING <= phrases
+    assert _V3_EXPOSURE_FIELD_WORDING <= phrases
     shared = set(v3._SHARED)
-    assert shared == phrases - _V3_WORDING | {
+    assert not shared & _V3_EXPOSURE_FIELD_WORDING
+    assert shared == phrases - _V3_WORDING - _V3_EXPOSURE_FIELD_WORDING | {
         "approval payload must be bounded nonempty bytes"}
     # v2 and the operator trust raise the same type with their own wording.
     assert v3.ApprovalRefused is ApprovalRefused

@@ -31,6 +31,10 @@ class ApprovalPurpose(str, Enum):
     LOCAL_MODEL_ADMISSION = "local-model-admission"
     SUPPORTING_BOOTSTRAP = "supporting-bootstrap"
     ACTIVATION_EPOCH_RAISE = "activation-epoch-raise"
+    # The only purpose an activation approval v3 verifies under (#196 G6,
+    # wiring §5.1, Q-C). Not wired: nothing verifies or signs it yet, and
+    # `tools/operator_sign.py` does not offer it.
+    ACTIVATION_EXPOSURE = "activation-exposure"
 
 
 def approval_message(purpose: ApprovalPurpose, payload: bytes) -> bytes:
