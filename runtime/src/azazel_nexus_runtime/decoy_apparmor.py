@@ -61,6 +61,7 @@ __all__ = [
     "LSM_PHRASES",
     "LSM_POLICY_DIFFERS",
     "LSM_POLICY_UNVERIFIABLE",
+    "LSM_PROFILE_CHILD_PRESENT",
     "LSM_PROFILES_ABSENT",
     "LSM_PROFILES_NOT_ENFORCED",
     "LSM_PROFILES_UNREADABLE",
@@ -130,11 +131,16 @@ LSM_REASON_CODES: tuple[str, ...] = (
 
 #: The reasons of the loaded-policy comparison (§7 "Left to G6"), given after
 #: `LSM_REASON_CODES` by `exposure_lsm_withholding`. Not reached in this
-#: build either.
+#: build either. `lsm_profile_child_present` is judged over the G3 listing
+#: (`exposure_lsm_refusal`, after its own codes): a child profile or hat of a
+#: required profile is loaded (review of #196 G6 preparation, L5 and
+#: finding 5 of the review of #303).
+LSM_PROFILE_CHILD_PRESENT = "lsm_profile_child_present"
 LSM_UNIT_PROFILE_DIFFERS = "lsm_unit_profile_differs"
 LSM_POLICY_UNVERIFIABLE = "lsm_policy_unverifiable"
 LSM_POLICY_DIFFERS = "lsm_policy_differs"
 LSM_LOADED_REASON_CODES: tuple[str, ...] = (
+    LSM_PROFILE_CHILD_PRESENT,
     LSM_UNIT_PROFILE_DIFFERS,
     LSM_POLICY_UNVERIFIABLE,
     LSM_POLICY_DIFFERS,
@@ -147,11 +153,14 @@ LSM_PHRASES: dict[str, str] = {
                             "confines the exposure units"),
     LSM_PROFILES_UNREADABLE: ("the kernel's LSM list or AppArmor profile listing "
                               "could not be read whole, or lists a Deception Lite "
-                              "profile, a child profile or a hat of one in a form "
-                              "this check does not judge"),
+                              "profile in a form this check does not judge"),
     LSM_PROFILES_ABSENT: "a Deception Lite AppArmor profile is not loaded",
     LSM_PROFILES_NOT_ENFORCED: ("a Deception Lite AppArmor profile is loaded in a "
                                 "mode other than enforce"),
+    LSM_PROFILE_CHILD_PRESENT: ("a child profile or hat of a Deception Lite "
+                                "AppArmor profile is loaded; none is expected, and "
+                                "it stays until a reboot or until its parent is "
+                                "removed from the kernel and loaded again"),
     LSM_UNIT_PROFILE_DIFFERS: ("the loaded definitions read are not exactly the "
                                "Deception Lite units, or one is loaded without "
                                "exactly its AppArmor profile"),
@@ -233,21 +242,15 @@ def _modes(raw: bytes) -> dict[bytes, set[bytes]] | None:
     """`required name -> {modes}`; None when a required name's line is malformed.
 
     Only the lines of the required profiles are read strictly: each must be
-    exactly `name (mode)`, the mode lowercase ASCII letters and `_`. A line
-    of a child profile or a hat of a required profile (`<name>//<child>`,
-    such as a stale `azazel-decoy-nsd//ip` from before the G4 follow-up) is
-    malformed too: none is expected, and what it may do under the parent is
-    not judged here (review of #196 G6 preparation, L5). Every other line
-    (another profile, another policy namespace, a format this check does not
-    know) is skipped: it says nothing about these profiles.
+    exactly `name (mode)`, the mode lowercase ASCII letters and `_`. Every
+    other line (another profile, a child or hat, which `_children` judges,
+    another policy namespace, a format this check does not know) is skipped
+    here.
     """
 
     required = {name.encode("ascii") for name in REQUIRED_ENFORCED_PROFILES}
-    nested = tuple(name + b"//" for name in required)
     modes: dict[bytes, set[bytes]] = {}
     for line in raw.split(b"\n"):
-        if line.lstrip().startswith(nested):
-            return None
         name, separator, rest = line.rpartition(b" (")
         if not separator:
             # `name mode` or no mode at all: refused if it names a required
@@ -265,6 +268,19 @@ def _modes(raw: bytes) -> dict[bytes, set[bytes]] | None:
     return modes
 
 
+def _children(raw: bytes) -> bool:
+    """Whether a line of a child profile or hat of a required profile is listed.
+
+    `<name>//...` in any mode or form, leading blanks ignored, such as a
+    stale `azazel-decoy-nsd//ip` from before the G4 follow-up: replacing the
+    parent leaves it in the kernel (observed on the VM). Another policy
+    namespace's line (`:ns:<name>//...`) and a look-alike's are not ours.
+    """
+
+    nested = tuple(name.encode("ascii") + b"//" for name in REQUIRED_ENFORCED_PROFILES)
+    return any(line.lstrip().startswith(nested) for line in raw.split(b"\n"))
+
+
 def exposure_lsm_refusal(lsm, profiles) -> str | None:
     """Why the exposure tier would be withheld for the LSM, or None.
 
@@ -278,12 +294,13 @@ def exposure_lsm_refusal(lsm, profiles) -> str | None:
       LSMs, or no listing (booted with `apparmor=0`, an `lsm=` list without
       it, or no securityfs);
     * `lsm_profiles_unreadable`: a file present and not readable, a file out
-      of bounds, a required profile's line not in the kernel's
-      `name (mode)` form, or a line of a child profile or hat of a required
-      profile (`<name>//...`, any mode);
+      of bounds, or a required profile's line not in the kernel's
+      `name (mode)` form;
     * `lsm_profiles_absent`: a required profile is not listed;
     * `lsm_profiles_not_enforced`: a required profile is listed in any mode
-      other than `enforce` (complain, kill, unconfined, ...), on any line.
+      other than `enforce` (complain, kill, unconfined, ...), on any line;
+    * `lsm_profile_child_present`: a line of a child profile or hat of a
+      required profile (`<name>//...`, any mode) is listed (`_children`).
 
     Each as `"<code>: <phrase>"` with the code's one phrase (`LSM_PHRASES`).
     """
@@ -306,6 +323,8 @@ def exposure_lsm_refusal(lsm, profiles) -> str | None:
         return _lsm(LSM_PROFILES_ABSENT)
     if any(listing[name] != {_ENFORCE} for name in names):
         return _lsm(LSM_PROFILES_NOT_ENFORCED)
+    if _children(profiles):
+        return _lsm(LSM_PROFILE_CHILD_PRESENT)
     return None
 
 

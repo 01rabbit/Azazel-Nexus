@@ -855,7 +855,29 @@ reached until G6. Revised after the review of #285.
   gives it in the form `decoy_apparmor.exposure_lsm_withholding` takes as
   `expected`. How the installer makes the record (compiling under the
   load's conditions and taking the SHA-256 of the output) is G6's; nothing
-  in this build writes the field or calls either function.
+  in this build writes the field or calls either function. **The record is
+  only as good as what covers it** (review of #303, finding 3): nothing at
+  the pass re-derives the hashes, so they are trusted only because the
+  exposure section is part of the generation document that
+  `generation_digest` covers, and the approval's context binds
+  `generation_digest`, so the operator's signature covers the whole
+  section. G6 must keep it so; today `verify_exposure_section` checks the
+  field's form only.
+
+  **A stale child profile.** Replacing a parent profile does not remove a
+  child the kernel already holds: on the VM (Debian 13, AppArmor 4.1; a
+  mechanism check, not hardware evidence) `azazel-decoy-nsd//ip`, the child
+  of before the G4 follow-up, stayed listed after `apparmor_parser -r` of its
+  parent, and was gone after `apparmor_parser -R` of the parent followed by
+  `apparmor_parser -r -W`, with the units stopped. That it is gone after a
+  reboot is *inferred* (not checked). After G4's runs of the decoy units
+  (the helper running `nft` and `ip` repeatedly), no `//null-` child was
+  listed. While a child or hat of a required profile is listed, the tier
+  withholds as `lsm_profile_child_present`; the installer says so and loads
+  nothing; the operator reboots or, with the units stopped, removes the
+  parent and loads it again (`operations.md`, "Removing a stale decoy child
+  profile"). `aa-remove-unknown` is not used: it removes other tools'
+  profiles too.
 
 ### The namespace unit after G4 (G4 follow-up, as implemented)
 
@@ -1091,8 +1113,13 @@ one that fails when called still withholds the tier, and calls none).
   `build_exposure_section` takes it as given and checks its form,
   `verify_exposure_section` checks its form and does not compare it with
   the files, and `expected_policy_hashes` hands it to the LSM judgement
-  below as `expected`. G6's installer makes it (§7, "Left to G6"); this
-  build makes none. A section, set, scope or file not in its closed form is
+  below as `expected` (G6 treats its `GenerationRefused` as
+  `exposure_section_unverifiable`, never as an expectation to skip). G6's
+  installer makes it (§7, "Left to G6"); this build makes none. The record
+  is trusted only because the section is inside the generation document
+  that `generation_digest` covers and the approval's context binds that
+  digest, so the operator's signature covers the whole section (review of
+  #303, finding 3); the form check here is all this build does. A section, set, scope or file not in its closed form is
   `exposure_section_unverifiable`; a recorded digest that is not the
   measured one is `exposure_section_differs`; the readers keep their
   exception types with that code. **The generation schema version that
@@ -1117,10 +1144,11 @@ one that fails when called still withholds the tier, and calls none).
   [reachability](deception-exposure-reachability.md)'s and not here.
 - **The LSM** (§5 C1 condition 4, §7 "Left to G6";
   `decoy_apparmor.exposure_lsm_withholding`, reader
-  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal` (a line of a
-  child profile or hat of a required profile, `<name>//...`, in any mode,
-  is `lsm_profiles_unreadable`: none is expected, review of the G6
-  preparation, L5), then
+  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal` (after its own
+  codes, a line of a child profile or hat of a required profile,
+  `<name>//...`, in any mode, is `lsm_profile_child_present`: none is
+  expected, review of the G6 preparation, L5, and of #303, finding 5; §7
+  "A stale child profile"), then
   `loaded_unit_profile_refusal` (each of the four units not loaded, an
   exposure unit `masked`, or `loaded` with `AppArmorProfile` exactly
   `(false, <its profile>)`; otherwise `lsm_unit_profile_differs`; the

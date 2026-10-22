@@ -859,6 +859,37 @@ To see their state, as root:
 sudo grep '^azazel-decoy' /sys/kernel/security/apparmor/profiles
 ```
 
+**Removing a stale decoy child profile.** Before the G4 follow-up the
+namespace profile had a child, `azazel-decoy-nsd//ip`. Replacing a parent
+profile (`apparmor_parser -r`, or the installer placing a new file and
+`apparmor.service` loading it) does **not** remove a child the kernel
+already holds: on the VM (Debian 13, AppArmor 4.1; a mechanism check, not
+hardware evidence) `azazel-decoy-nsd//ip (complain)` stayed listed after the
+parent was replaced. The pass is to withhold the tier while any
+`azazel-decoy…//…` line is listed (`lsm_profile_child_present`), and the
+installer says so when it sees one (it loads and removes nothing). Clear it
+in one of two ways:
+
+- **Reboot.** `apparmor.service` loads `/etc/apparmor.d` into an empty
+  kernel policy at boot, and that file has no child. *Inferred*: not
+  checked on the VM.
+- **Without a reboot** (checked on the VM): with the units that use the
+  parent stopped, remove the parent from the kernel, then load it again from
+  its file, as root. For the namespace profile:
+
+  ```
+  sudo systemctl stop azazel-decoyd.service azazel-decoy-netd.service azazel-decoy-nsd.service
+  sudo apparmor_parser -R /etc/apparmor.d/azazel-decoy-nsd
+  sudo apparmor_parser -r -W /etc/apparmor.d/azazel-decoy-nsd
+  sudo grep '^azazel-decoy' /sys/kernel/security/apparmor/profiles
+  ```
+
+  The last command must list the four profiles in `(enforce)` and no line
+  with `//`. For another parent, use its name and stop the unit that names
+  it. Do not use `aa-remove-unknown`: it removes every loaded profile that
+  has no file in `/etc/apparmor.d`, other tools' included, and is not
+  needed here.
+
 **Removing what a failed start left behind.** The namespace unit removes
 its objects itself: its `ExecStopPost=` lines (`ip link delete
 az-decoy-host0`, then `ip netns delete azazel-decoy`) run after every stop

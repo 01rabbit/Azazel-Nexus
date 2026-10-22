@@ -822,6 +822,53 @@ def test_the_installer_warns_when_apparmor_is_disabled():
     assert "exit" not in block.split("WARNING: AppArmor")[1].split("esac")[0]
 
 
+def _stale_child_check() -> str:
+    start = INSTALLER.index("    # A child profile or hat of a decoy profile still loaded")
+    end = INSTALLER.index("    # end of the stale child check")
+    return INSTALLER[start:end]
+
+
+@pytest.mark.parametrize(("listing", "said"), [
+    (b"azazel-decoy-nsd (enforce)\nazazel-decoy-nsd//ip (complain)\n", True),
+    (b"azazel-decoyd//hat (enforce)\n", True),
+    (b"azazel-decoy-verify//x (enforce)\n", True),
+    (b"azazel-decoy-netd//null-/usr/sbin/nft (complain)\n", True),
+    (b"azazel-decoy-nsd (enforce)\nazazel-decoyd (enforce)\n", False),
+    (b":ns:azazel-decoy-nsd//ip (complain)\n", False),
+    (b"azazel-decoy-nsdx//ip (complain)\nother//azazel-decoy-nsd//ip (enforce)\n", False),
+    (b"", False),
+    (None, False),
+])
+def test_the_installer_says_a_stale_child_must_go_and_changes_nothing(tmp_path, listing,
+                                                                      said):
+    """Finding 4 of the review of #303: a stale child is detected and the
+    operator told to reboot or remove and reload the parent; the installer
+    loads, replaces and removes nothing, and does not refuse."""
+
+    block = _stale_child_check()
+    # Inside the service-manager block, after the AppArmor-disabled warning.
+    assert INSTALLER.index("WARNING: AppArmor is not enabled") < INSTALLER.index(block)
+    opened = INSTALLER.rindex('if [ "$WITH_SERVICE_MANAGER" = yes ]; then', 0,
+                              INSTALLER.index(block))
+    assert "\nfi\n" not in INSTALLER[opened:INSTALLER.index(block)]
+    for forbidden in ("apparmor_parser", "aa-", "exit", ">&2"):
+        assert forbidden not in block, forbidden
+    path = tmp_path / "profiles"
+    if listing is not None:
+        path.write_bytes(listing)
+    script = block.replace("/sys/kernel/security/apparmor/profiles", str(path))
+    assert script != block
+    run = subprocess.run(["bash", "-c", script], capture_output=True, check=True)
+    assert run.stderr == b""
+    if said:
+        out = run.stdout.decode()
+        assert "NOTICE: a child profile of a Deception Lite AppArmor profile" in out
+        assert "reboot, or, with the decoy units stopped, remove the parent" in out
+        assert "Nothing was loaded or removed." in out
+    else:
+        assert run.stdout == b""
+
+
 def test_the_installer_checks_the_decoy_wrappers_against_the_profiles():
     """Finding 4 of #285: refused with the service manager, a warning without."""
 
@@ -1028,9 +1075,17 @@ def test_apparmor_disabled_withholds(lsm, profiles):
     b"azazel-decoyd (Enforce)",
     b"azazel-decoyd (enforce)\r",
     b"azazel-decoy-nsd (enforce) ",
-    # A child profile or a hat of a required profile, in any mode (review of
-    # #196 G6 preparation, L5): none is expected, and what it may do is not
-    # judged. The former child of the G4 follow-up, if still loaded, is one.
+])
+def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
+    """Finding 8 of #285: the required names' lines are read strictly."""
+
+    reason = exposure_lsm_refusal(LSM, ENFORCED + line + b"\n")
+    assert reason is not None and reason.startswith(LSM_PROFILES_UNREADABLE + ":")
+
+
+@pytest.mark.parametrize("line", [
+    # The former child of the G4 follow-up: replacing its parent leaves it
+    # in the kernel (observed on the VM, Debian 13, AppArmor 4.1).
     b"azazel-decoy-nsd//ip (complain)",
     b"azazel-decoy-nsd//ip (enforce)",
     b"azazel-decoyd//hat (enforce)",
@@ -1038,11 +1093,18 @@ def test_apparmor_disabled_withholds(lsm, profiles):
     b" azazel-decoy-verify//x (kill)",
     b"azazel-decoyd//",
 ])
-def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
-    """Finding 8 of #285: the required names' lines are read strictly."""
+def test_a_child_profile_or_hat_of_a_required_profile_withholds(line):
+    """Review of #196 G6 preparation (L5) and of #303 (finding 5): a child or a
+    hat of a required profile, in any mode, has its own code, after the G3
+    codes, and is not "unreadable"."""
 
-    reason = exposure_lsm_refusal(LSM, ENFORCED + line + b"\n")
-    assert reason is not None and reason.startswith(LSM_PROFILES_UNREADABLE + ":")
+    from azazel_nexus_runtime.decoy_apparmor import LSM_PROFILE_CHILD_PRESENT
+
+    assert exposure_lsm_refusal(LSM, ENFORCED + line + b"\n").startswith(
+        LSM_PROFILE_CHILD_PRESENT + ":")
+    # The G3 codes come first: an absent or lax profile is said before it.
+    assert exposure_lsm_refusal(LSM, _without(b"azazel-decoyd") + line + b"\n"
+                                ).startswith(LSM_PROFILES_ABSENT + ":")
 
 
 @pytest.mark.parametrize("line", [

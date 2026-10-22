@@ -168,7 +168,7 @@ lease refusals, `outside_lease_scope`), the exposure branch reads, in order:
 | # | check | input | reader | reason code |
 | --- | --- | --- | --- | --- |
 | L1 | the lease names all three or none | `lease.units` | existing branch | `exposure_tier_partial` (existing) |
-| L2 | no enforcement unit governed with the tier (§6.2) | `self.definitions` | `exposure_exclusivity.exposure_enforcement_conflict` | `exposure_enforcement_exclusive` |
+| L2 | no enforcement unit governed with the tier (§6.2) | `self.definitions` | `exposure_exclusivity.exposure_enforcement_conflict` | `exposure_enforcement_unreadable`, `exposure_enforcement_exclusive` |
 | L3 | the pass handed exposure evidence | `activate(..., exposure=)` | type check | `exposure_evidence_absent` (new; replaces `isolation_evidence_absent`) |
 | L4 | the evidence describes this generation | `evidence.generation_digest` against the verified generation | equality | `exposure_evidence_mismatch` (new) |
 | L5 | every runtime stage held | `evidence.refusal`, `evidence.stages` | the first stage that failed (§4.3) | that stage's code, or `exposure_stage_unreadable` |
@@ -185,8 +185,8 @@ written before G6 keeps withholding.
 | # | condition | input | reader (existing part) | reason codes, in order |
 | --- | --- | --- | --- | --- |
 | P1 | §5 C1 1: the lease came from a verified v3 approval | `inputs.approval` | type check: exactly `ActivationApprovalV3` naming the three | `exposure_approval_not_v3` (new) |
-| P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_not_init_net_only` |
-| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced` |
+| P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_unreadable`, `fb_tunnels_not_init_net_only` |
+| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced`, `lsm_profile_child_present` |
 | P4 | §5 C1 5: no ruleset loader enabled or active | `UnitFileState`, `ActiveState` of `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (bus) | the bus reads of §4.5, `host_firewall_refusal` | `host_firewall_unreadable`, `host_firewall_enabled`, `host_firewall_active` |
 | P5 | §6.3 G6 item (a): no definition-less running unit, no leftovers | `LoadState`, `UnitFileState`, `ActiveState` of the three units (bus); the entries of `/run/netns`; the links (`RTM_GETLINK`) | the bus reads of §4.5, `decoy_residue.read_netns`, `netlink.read_links` (names only), `decoy_residue.exposure_residue_departures` without the table (§4.4) | `exposure_state_unreadable`, `exposure_unit_masked_running`, `exposure_leftovers_present` |
 | P6 | §5 C1 3: a v3 proposal with a valid scope, its roles resolved to this boot's names | `inputs.evidence` (payload, current inventory) | `fabric_boundary.restore_commissioning_inputs`, `deception_scope_assignments`, `decoy_scope.decode_deception_scope`, `exposure_interfaces.resolve_role_interfaces` | `deception_scope_absent` (new: a v2 proposal), `deception_scope_refused` (new), then `role_evidence_unavailable`, `role_scope_mismatch`, `role_inventory_changed`, `role_interface_unresolved`, `role_interface_ambiguous`, `role_interface_name_refused` |

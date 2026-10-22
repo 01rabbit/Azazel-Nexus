@@ -793,7 +793,10 @@ def test_the_section_records_the_expected_policy_hashes_for_the_lsm_judgement():
         lsm, ENFORCED, _loaded(), _entries(**{"azazel-decoyd": other}),
         expected_policy_hashes(section)).startswith(LSM_POLICY_DIFFERS + ":")
     # The record is not a measurement of the files: verify checks its form
-    # only, so another record of the same files verifies.
+    # only, so another record of the same files verifies. **Today only the
+    # form is checked; G6 changes this** (finding 3 of the review of #303):
+    # the record is trusted because the generation digest, and through it
+    # the signed approval, covers the whole section.
     _, recorded_other = _section_recording(RECORDED)
     verify_exposure_section(recorded_other, **files, scope_file=SCOPE)
     # Each accepted hash is one `policy_hash_refusal` accepts, and no other.
@@ -823,7 +826,8 @@ def test_a_policy_hash_record_of_another_form_builds_no_section(hashes):
 
 
 def test_the_new_lsm_reason_codes_are_distinct_from_the_g3_ones():
-    assert LSM_LOADED_REASON_CODES == ("lsm_unit_profile_differs", "lsm_policy_unverifiable",
+    assert LSM_LOADED_REASON_CODES == ("lsm_profile_child_present",
+                                       "lsm_unit_profile_differs", "lsm_policy_unverifiable",
                                        "lsm_policy_differs")
     assert not set(LSM_LOADED_REASON_CODES) & set(LSM_REASON_CODES)
 

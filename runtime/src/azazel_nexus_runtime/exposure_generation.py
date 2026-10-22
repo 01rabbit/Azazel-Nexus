@@ -244,7 +244,17 @@ def expected_policy_hashes(section) -> dict[str, str]:
     the form `decoy_apparmor.policy_hash_refusal` and
     `exposure_lsm_withholding` take as `expected`. Pure; refuses
     (`exposure_section_unverifiable`) a section not in its closed form.
-    **Called by nothing in this build** (G6).
+    G6 treats that `GenerationRefused` as the tier's
+    `exposure_section_unverifiable` (withheld), never as a missing
+    expectation to skip. **Called by nothing in this build** (G6).
+
+    **Why a recorded hash can be trusted** (finding 3 of the review of
+    #303). Nothing here re-derives the hashes; they are believed only
+    because G6 puts the section inside the generation document that
+    `generation_digest` covers, and the approval's context binds
+    `generation_digest`, so the operator's signature covers the whole
+    section, these hashes included. A section handed in from anywhere else
+    proves nothing.
     """
 
     return dict(_decoded(section)["apparmor_policy_hashes"])

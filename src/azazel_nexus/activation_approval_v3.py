@@ -98,6 +98,7 @@ APPROVAL_V3_PHRASES: dict[str, str] = {
     "approval_v3_time_invalid": "invalid approval time",
     "approval_v3_operator_not_enrolled": "operator is not actively enrolled",
     "approval_v3_signature_refused": "operator signature refused",
+    "approval_v3_purpose_unsupported": "unsupported approval purpose",
     "approval_v3_context_digest_invalid": "invalid activation context digest",
     "approval_v3_context_binding_invalid": "invalid activation commissioning evidence binding",
     "approval_v3_context_generation_invalid": "invalid activation generation",
@@ -110,7 +111,7 @@ APPROVAL_V3_CODES: tuple[str, ...] = tuple(APPROVAL_V3_PHRASES)
 _SHARED = {APPROVAL_V3_PHRASES[code]: code for code in (
     "approval_v3_time_form", "approval_v3_time_invalid",
     "approval_v3_operator_not_enrolled", "approval_v3_signature_refused",
-    "approval_v3_payload_unbounded", "approval_v3_context_digest_invalid",
+    "approval_v3_purpose_unsupported", "approval_v3_payload_unbounded", "approval_v3_context_digest_invalid",
     "approval_v3_context_binding_invalid", "approval_v3_context_generation_invalid",
     "approval_v3_context_epoch_invalid")}
 _CODED = frozenset(f"{code}: {phrase}" for code, phrase in APPROVAL_V3_PHRASES.items())

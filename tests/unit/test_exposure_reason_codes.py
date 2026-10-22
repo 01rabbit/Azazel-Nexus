@@ -88,21 +88,37 @@ def test_the_codes_of_all_parts_are_distinct_and_new_to_the_product():
     # The activation reason codes, by name, and every snake_case string
     # anywhere else in the product (the activation pass's codes, the
     # controller's, the verify's check names, ...).
+    # Python: every snake_case word inside any string constant (`\b`, so a
+    # code embedded in a longer message counts too), over the product, the
+    # tools, the lab and the bench. The part modules themselves are skipped.
     elsewhere: dict[str, Path] = {}
-    for base in (ROOT / "src", ROOT / "runtime" / "src"):
+    word = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+    for base in (ROOT / "src", ROOT / "runtime" / "src", ROOT / "tools",
+                 ROOT / "lab" / "src", ROOT / "bench"):
+        assert base.is_dir(), base
         for path in sorted(base.rglob("*.py")):
             if path.name in PARTS:
                 continue
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    match = re.match(r"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(:|\Z)", node.value)
-                    if match:
-                        elsewhere.setdefault(match.group(1), path)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            # Docstrings and other bare string statements are prose that may
+            # name a code; only strings a program can emit count.
+            prose = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in prose):
+                    for found in word.findall(node.value):
+                        elsewhere.setdefault(found, path)
     for known in ("exposure_tier_partial", "isolation_evidence_absent", "lease_absent",
                   "outside_lease_scope", "wiring_absent", "edge_not_ready"):
         assert known in elsewhere, known
     for code in ALL_CODES:
         assert code not in elsewhere, (code, elsewhere.get(code))
+    # packaging/: a plain search of every file (shell, units, profiles).
+    for path in sorted((ROOT / "packaging").rglob("*")):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for code in ALL_CODES:
+                assert not re.search(rf"\b{code}\b", text), (path, code)
 
 
 def _withholding_reasons():
@@ -169,7 +185,7 @@ def test_what_each_part_says_is_one_code_and_its_phrase():
         "host_firewall_unreadable", "host_firewall_enabled", "host_firewall_active",
         "fb_tunnels_unreadable", "fb_tunnels_not_init_net_only",
         "lsm_apparmor_disabled", "lsm_profiles_unreadable", "lsm_profiles_absent",
-        "lsm_profiles_not_enforced", "lsm_unit_profile_differs",
+        "lsm_profiles_not_enforced", "lsm_profile_child_present", "lsm_unit_profile_differs",
         "lsm_policy_unverifiable", "lsm_policy_differs", "exposure_section_unverifiable",
         "exposure_enforcement_unreadable", "approval_v3_payload_unbounded",
         "approval_v3_fields_invalid", "approval_v3_document_refused",
@@ -206,15 +222,60 @@ def _string_constants(relative: str) -> set[str]:
             if isinstance(node, ast.Constant) and isinstance(node.value, str)}
 
 
+#: What v3 calls in the shared modules, by (file, class or function, method).
+#: Nothing else of theirs raises inside v3: the trust and the policy are built
+#: by the caller, and v3 only type-checks the policy and reads its fields.
+_V3_CALLS = (
+    ("src/azazel_nexus/operator_trust.py", "approval_message", None),
+    ("src/azazel_nexus/operator_trust.py", "OperatorTrust", "verify"),
+    ("src/azazel_nexus/activation_approval.py", "_utc", None),
+    ("src/azazel_nexus/activation_approval_v2.py", "ObserveBaselineContext", "__post_init__"),
+)
+
+
+def _raised_in(relative: str, outer: str, inner: str | None) -> set[str]:
+    """Every message an `ApprovalRefused(...)` or `_nonnegative(..., msg)` in
+    that function (or method) passes, as written."""
+
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    node = next(n for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name == outer)
+    if inner is not None:
+        node = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == inner)
+    found = set()
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            continue
+        if call.func.id == "ApprovalRefused":
+            found.add(call.args[0].value)
+        elif call.func.id == "_nonnegative":
+            found.add(call.args[1].value)
+    return found
+
+
 def test_approval_v3_keeps_its_wording_and_the_helpers_phrases():
     phrases = set(v3.APPROVAL_V3_PHRASES.values())
     assert _V3_WORDING <= phrases
     shared = set(v3._SHARED)
     assert shared == phrases - _V3_WORDING | {
         "approval payload must be bounded nonempty bytes"}
-    helpers = (_string_constants("src/azazel_nexus/operator_trust.py")
-               | _string_constants("src/azazel_nexus/activation_approval.py")
-               | _string_constants("src/azazel_nexus/activation_approval_v2.py"))
-    assert shared <= helpers
     # v2 and the operator trust raise the same type with their own wording.
     assert v3.ApprovalRefused is ApprovalRefused
+
+
+def test_approval_v3_codes_every_phrase_the_helpers_it_calls_raise():
+    """Finding 1 of the review of #303, both ways: every message the shared
+    helpers v3 calls can raise has its code in `_SHARED`, and `_SHARED`
+    holds nothing they do not raise."""
+
+    raised = set().union(*(_raised_in(*call) for call in _V3_CALLS))
+    assert raised == set(v3._SHARED)
+    # v3 calls nothing else of those modules that could raise.
+    tree = ast.parse((ROOT / "src/azazel_nexus/activation_approval_v3.py").read_text(
+        encoding="utf-8"))
+    imported = {(node.module, alias.name) for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) for alias in node.names}
+    assert {name for module, name in imported if module in (
+        "activation_approval", "activation_approval_v2", "operator_trust")} == {
+        "_utc", "ActivationApprovalPolicy", "ObserveBaselineContext", "MAX_APPROVAL_BYTES",
+        "ApprovalPurpose", "ApprovalRefused", "OperatorTrust"}
