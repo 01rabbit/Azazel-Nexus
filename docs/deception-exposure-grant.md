@@ -417,8 +417,10 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
   the `Recorder` is never constructed), and reachability R4 by
   `decoy_watch.reachability_departures` (below). Exit 0 when everything
   holds, 1 otherwise (a departure, a missing or flushed table, a read that
-  fails, a refused scope, an error while evaluating), 2 for any other
-  argument. One journal line of fixed check names and reason codes.
+  fails, a refused scope, an **absent** scope, an error while evaluating),
+  2 for any other argument. Unlike the helper, the verify has no
+  scope-less mode: with no credential directory it compares nothing and
+  exits 1 (review of #287 F1). One journal line of fixed check names and reason codes.
 - **The timer** `azazel-decoy-verify.timer`: `OnActiveSec=10s`,
   `OnUnitActiveSec=10s`, `AccuracySec=1s` (the default of a minute would
   stretch the period), `Unit=azazel-decoy-verify.service`, and
@@ -458,7 +460,10 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
   give them markers (the n1 problem), and calling the check from today's
   pass could only withhold the **other** tiers, since this one is already
   withheld. Both the call and the digests belong to the generation's
-  exposure section of §4.4 item 5, which is G6.
+  exposure section of §4.4 item 5, which is G6. **Until G6, a change to
+  the three watch units (a mask, a drop-in, a `--runtime` mask) is not
+  detected; the tier is withheld unconditionally, so the decoy does not
+  start.**
 - **R4 in G2** (`decoy_watch`; [reachability](deception-exposure-reachability.md)
   §6 and §9 R4). The verify reads, in the host namespace and through
   `/proc/sys/net/ipv4/conf` and `ipv6/conf` opened without following a link
@@ -774,7 +779,18 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
    its grant-marker condition (`Requires=` pulls them in before the
    decoy's condition is evaluated: an unmasked, ungranted decoy, which only
    a hand-placed rehearsal makes), and how loud that is; that a verify run
-   (four read-backs) stays well inside the period;
+   (four read-backs) stays well inside the period; during an ordinary
+   stop of the three units, whether a verify already running reads the
+   table after the helper removed it and trips (the order of the stop jobs
+   against a running verify, and what the journal then shows; a trip there
+   only stops what is stopping, review of #287 F6); whether a failed
+   `AssertSecurity=apparmor` on the verify unit (AppArmor disabled, or a
+   profile not loaded) leaves the unit **failed**, so that `OnFailure=`
+   starts the trip unit, or only fails the start job, in which case it does
+   not (an assertion failure is a job result, *inferred* not a unit failure;
+   the decoy's own start still fails through `Requires=`, but a verify
+   started by the timer while the decoy runs would stop nothing; review of
+   #287 F2);
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
    unloaded fails, and with AppArmor disabled (`apparmor=0`)
    `AssertSecurity=apparmor` fails it; the namespace unit's `ip netns add`

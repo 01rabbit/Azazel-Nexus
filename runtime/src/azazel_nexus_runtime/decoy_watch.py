@@ -16,7 +16,8 @@ stops nothing itself.
 the files under `/proc/sys/net/ipv4/conf` and `/proc/sys/net/ipv6/conf`
 that hold `forwarding` and `proxy_arp`. Its scope is its own credential
 (`azazel_nexus.decoy_scope.read_verify_scope_credential`: the same source
-file as the helper's, by the same rules).
+file as the helper's, by the same rules). Unlike the helper it has no
+scope-less mode: no credential directory compares nothing and exits 1.
 
 **What it compares.**
 
@@ -208,6 +209,8 @@ def read_sysctls(ingress: tuple[str, ...]):
 
 #: The main table's rule priority: the rules before it are the ones read.
 _MAIN_PRIORITY = 32766
+#: A rule's missing (or non-text) `iif`: a sentinel no interface name equals.
+_NO_IIF = object()
 #: The K1 pair of reachability §5, per ingress interface.
 _K1_LOOKUP, _K1_BLACKHOLE = 1960, 1961
 _DECOY_NETWORK = ipaddress.IPv4Network(DECOY_SUBNET)
@@ -251,10 +254,15 @@ def _rules_contained(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bo
     if (len(local) != 1 or local[0].get("table") != "local"
             or "iif" in local[0] or "oif" in local[0]):
         return False
-    pairs = sorted((rule["priority"], str(rule.get("iif"))) for rule in below
-                   if rule["priority"] != 0)
-    if pairs != sorted([(_K1_LOOKUP, name) for name in ingress]
-                       + [(_K1_BLACKHOLE, name) for name in ingress]):
+    # A rule without `iif`, or with one that is not a name, is never an
+    # ingress's (review of #287 F3): it is matched as `_NO_IIF`, which no
+    # scope name can equal, never as the text "None".
+    pairs = [(rule["priority"], rule["iif"] if type(rule.get("iif")) is str else _NO_IIF)
+             for rule in below if rule["priority"] != 0]
+    expected = ([(_K1_LOOKUP, name) for name in ingress]
+                + [(_K1_BLACKHOLE, name) for name in ingress])
+    if (len(pairs) != len(expected) or any(iif is _NO_IIF for _, iif in pairs)
+            or sorted(pairs) != sorted(expected)):
         return False
     for rule in below:
         if rule["priority"] == _K1_LOOKUP and not (
@@ -395,6 +403,13 @@ def verify(*, capture: Optional[Capture] = None, read_scope=None,
 
     try:
         scope = (read_verify_scope_credential if read_scope is None else read_scope)()
+        if scope is None:
+            # No credential directory (review of #287 F1): unlike the
+            # helper, the verify has no scope-less mode. Comparing with the
+            # table of the first build would let a verify pass with nothing
+            # to compare against; it refuses instead.
+            _say("the decoy scope is absent; nothing was compared")
+            return 1
         plan = verify_plan(scope)
     except ValueError:
         _say("the decoy scope could not be read; nothing was compared")

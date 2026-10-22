@@ -842,3 +842,87 @@ def test_the_pass_does_not_call_the_watch_check_yet():
     for name in ("activation_pass.py", "activated.py", "activation_loaded_units.py",
                  "activation_cli.py"):
         assert "require_watch_unit_files" not in (runtime / name).read_text(), name
+
+
+# -- review of #287 ---------------------------------------------------------------
+
+
+def test_an_absent_scope_exits_one_and_reads_nothing(monkeypatch, watch, capsys):
+    """F1: no credential directory is not the table of the first build."""
+
+    monkeypatch.setattr(decoy_watch, "read_verify_scope_credential", lambda: None)
+    capture = _capture()
+    sysctls = []
+    monkeypatch.setattr(decoy_watch, "read_sysctls",
+                        lambda ingress: sysctls.append(ingress) or (_ipv4(), _ipv6()))
+    assert decoy_netd.main(["verify"], capture=capture) == 1
+    assert capture.calls == [] and sysctls == []
+    assert "the decoy scope is absent; nothing was compared" in capsys.readouterr().err
+    # Even when the host shows exactly the scope-less table and no ingress.
+    outputs = {"nft_table": (0, NFT_JSON_EMPTY.encode()),
+               "host_links": _outputs()["host_links"],
+               "host_rules": _rules(), "main_routes": _routes()}
+    empty = Capture({command: outputs[name] for name, command in WATCH_READS})
+    assert decoy_watch.verify(capture=empty, read_scope=lambda: None,
+                              sysctls=lambda ingress: (_ipv4(), _ipv6())) == 1
+    assert empty.calls == []
+
+
+@pytest.mark.parametrize("missing", [None, 7, ["None"]])
+def test_a_rule_without_a_named_iif_is_never_an_ingress_rule(missing):
+    """F3: an absent `iif` is a sentinel, not the text "None"."""
+
+    ingress = ("None",)
+    lookup = {"priority": 1960, "src": "all", "dst": "10.255.196.0", "dstlen": 30,
+              "table": "main", "suppress_prefixlen": 29}
+    blackhole = {"priority": 1961, "src": "all", "action": "blackhole"}
+    if missing is not None:
+        lookup["iif"] = blackhole["iif"] = missing
+    rules = [{"priority": 0, "src": "all", "table": "local"}, lookup, blackhole]
+    assert decoy_watch._rules_contained(rules, ingress) is False
+    named = [rules[0], {**lookup, "iif": "None"}, {**blackhole, "iif": "None"}]
+    assert decoy_watch._rules_contained(named, ingress) is True
+    # Without iif the pair would match every interface: never containment.
+    assert decoy_watch._rules_contained(rules, ()) is False
+
+
+def test_the_verify_plan_cannot_start_anything_but_its_four_reads(monkeypatch):
+    """No argument list that loads, deletes or changes anything is in the plan,
+    and `run_fixed`/`capture_fixed` refuse any other before a process exists."""
+
+    spawned = []
+
+    def spawn(argv, actions):
+        spawned.append(argv)
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(decoy_network, "_spawn", spawn)
+    plan = verify_plan(SCOPE)
+    assert len(plan.allowed) == 4
+    for argv in plan.allowed:
+        assert argv[0] in (decoy_network.IP, decoy_network.NFT)
+        assert argv[1] == "-j"
+    writes = [(decoy_network.NFT, render_ruleset(SCOPE).text),
+              (decoy_network.NFT, "flush", "ruleset"),
+              (decoy_network.NFT, "delete", "table", "inet", "azazel_decoy"),
+              (IP, "link", "delete", "az-decoy0"),
+              (IP, "rule", "add", "priority", "1", "lookup", "main")]
+    for argv in writes:
+        with pytest.raises(ValueError):
+            run_fixed(argv, plan=plan)
+        with pytest.raises(ValueError):
+            decoy_network.capture_fixed(argv, plan=plan)
+    assert spawned == []
+
+
+def test_without_a_scope_the_rendered_table_approves_nothing():
+    """`render_ruleset(None)`: the first build's table, no element, no ingress,
+    no digest; the verify refuses to compare against it (F1)."""
+
+    ruleset = render_ruleset(None)
+    assert ruleset.text == decoy_network.NFT_RULESET
+    assert ruleset.approved_v4 == () and ruleset.ingress == ()
+    assert ruleset.scope_digest is None
+    assert "elements" not in ruleset.text and "iifname {" not in ruleset.text
+    assert "masquerade" not in ruleset.text
+    assert verify_plan(None).ruleset == ruleset
