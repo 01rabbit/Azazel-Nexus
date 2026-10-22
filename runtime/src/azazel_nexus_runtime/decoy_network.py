@@ -3,13 +3,17 @@
 `docs/deception-redirect-prerequisites.md` §5 D1, §10 and §13. Two one-shot
 units build it and take it down, in this order, and in reverse on stop:
 
-1. `az-decoy-nsd` (`azazel-decoy-nsd.service`, `NAMESPACE_STEPS`) creates the
-   namespace `/run/netns/azazel-decoy`, creates the veth pair with the decoy's
-   end (`DECOY_VETH`) placed directly into it, and configures the inside:
-   `lo` up, the decoy's fixed address, its link up, its default route. Every
-   one of those inside acts needs `CAP_NET_ADMIN` in the namespace, and
-   reaching the inside (`ip -n`) needs `setns`, so `CAP_SYS_ADMIN`, and a
-   private mount namespace for `ip`'s own `/sys`. Only that unit has both.
+1. `azazel-decoy-nsd.service` creates the namespace `/run/netns/azazel-decoy`,
+   creates the veth pair with the decoy's end placed directly into it, and
+   configures the inside: `lo` up, the decoy's fixed address, its link up,
+   its default route. Every one of those inside acts needs `CAP_NET_ADMIN`
+   in the namespace, and reaching the inside (`ip -n`) needs `setns`, so
+   `CAP_SYS_ADMIN`, and a private mount namespace for `ip`'s own `/sys`.
+   Only that unit has both. It runs no Python and nothing of this module:
+   its unit file runs the fixed `ip` commands itself
+   (`hardening.DECOY_NAMESPACE_START`, undone by `DECOY_NAMESPACE_UNDO`;
+   G4 follow-up, `docs/deception-exposure-grant.md` §11), so that only `ip`
+   ever holds its two capabilities.
 2. `az-decoy-netd` (`azazel-decoy-netd.service`, `HELPER_STEPS`), in the
    host namespace with `CAP_NET_ADMIN` only, first checks that neither the
    bridge nor the table exists (`HELPER_ABSENT`), loads the fixed nftables
@@ -24,17 +28,16 @@ because the namespace unit made it, and the helper is `After=` and
 list in the run's `Plan` (`run_fixed` refuses anything else): the module's
 constants, and for the helper exactly one more, the ruleset rendered from
 the run's scope (#196 G1b). No shell, no argument list from a caller, an
-empty environment (nothing here reads one). The process is started with `os.posix_spawn`, which needs
-no pipe: the namespace unit's system call filter denies `@ipc` (pipes), and
-`subprocess` would need one. `SIGPIPE` is reset to its default in the child.
+empty environment (nothing here reads one). The process is started with
+`os.posix_spawn`, which needs no pipe for a step (`subprocess` would make
+one). `SIGPIPE` is reset to its default in the child.
 
 **What is read back** (#196 §14). Nothing, except the helper's two
 inspection commands (`HELPER_VERIFY`), run by `capture_fixed` after the
 helper has built the host side: their standard output goes through one pipe
 into a bounded buffer (`CAPTURE_LIMIT`), and the helper's isolation recorder
-(`decoy_isolation_check`) turns it into fixed results. Only the helper reads
-anything back; the namespace unit never does, and its filter keeps denying
-pipes. If the inspection does not pass, or its record cannot be written,
+(`decoy_isolation_check`) turns it into fixed results. Only the helper (and
+its verify unit, #196 G2) reads anything back. If the inspection does not pass, or its record cannot be written,
 the helper undoes what it built and exits 1.
 
 **Fail closed.** Something already present that the helper would replace
@@ -76,11 +79,9 @@ from .decoy_addresses import (
     DECOY_ADDRESS,
     DECOY_PORTS,
     HOST_VETH,
-    NAMESPACE,
     NFT_TABLE,
     PREFIX_LENGTH,
 )
-from .decoy_netns import DECOY_VETH
 
 __all__ = [
     "APPROVED_SET",
@@ -93,9 +94,6 @@ __all__ = [
     "IP",
     "MAX_INGRESS",
     "MAX_PREFIXES",
-    "NAMESPACE_ABSENT",
-    "NAMESPACE_PLAN",
-    "NAMESPACE_STEPS",
     "NFT",
     "NFT_RULESET",
     "Plan",
@@ -137,7 +135,8 @@ MAX_INGRESS = 4
 #: so that nothing the decoder would refuse reaches the nftables text even if
 #: a caller hands it something else. The values are copies of
 #: `azazel_nexus.decoy_scope`'s (this module does not import the library, so
-#: that the namespace unit never loads it); a test keeps them equal.
+#: that the helper's closure stays its pinned runtime modules); a test keeps
+#: them equal.
 #:
 #: Interface names: the characters, the decoy network's own prefix, a leading
 #: `-`, an all-digit name (an interface index to nftables), and the reserved
@@ -383,28 +382,6 @@ def _ip(*args: str) -> tuple[str, ...]:
     return (IP, *args)
 
 
-def _inside(*args: str) -> tuple[str, ...]:
-    return (IP, "-n", NAMESPACE, *args)
-
-
-#: `az-decoy-nsd` checks nothing first: `ip netns add` and the veth pair
-#: each refuse to replace an existing one.
-NAMESPACE_ABSENT: tuple[tuple[str, ...], ...] = ()
-
-#: `az-decoy-nsd`: the namespace, the veth pair, and the inside.
-NAMESPACE_STEPS: tuple[Step, ...] = (
-    Step(_ip("netns", "add", NAMESPACE), _ip("netns", "delete", NAMESPACE)),
-    Step(_ip("link", "add", "name", HOST_VETH, "type", "veth",
-             "peer", "name", DECOY_VETH, "netns", NAMESPACE),
-         _ip("link", "delete", HOST_VETH)),
-    Step(_inside("link", "set", "dev", "lo", "up")),
-    Step(_inside("address", "add", f"{DECOY_ADDRESS}/{PREFIX_LENGTH}",
-                 "dev", DECOY_VETH)),
-    Step(_inside("link", "set", "dev", DECOY_VETH, "up")),
-    Step(_inside("route", "add", "default", "via", BRIDGE_ADDRESS,
-                 "dev", DECOY_VETH)),
-)
-
 #: `az-decoy-netd` changes nothing while either exists (each must fail):
 #: a bridge left behind would be one the rules it is about to load could be
 #: undone under; a table is never replaced (`create table` is the second
@@ -456,17 +433,17 @@ HELPER_VERIFY: tuple[tuple[str, tuple[str, ...]], ...] = (
 class Plan:
     """Every argument list one run may start, and nothing else (#196 G1b).
 
-    Built once per run: the namespace unit's is a constant
-    (`NAMESPACE_PLAN`); the helper's is the constant argument lists plus
+    Built once per run: the helper's is the constant argument lists plus
     exactly the one ruleset argument list rendered from the run's scope
-    (`helper_plan`). `run_fixed` and `capture_fixed` refuse anything outside
+    (`helper_plan`); the verify unit's holds the read-backs only
+    (`verify_plan`). `run_fixed` and `capture_fixed` refuse anything outside
     it; no caller hands them an argument list of its own.
     """
 
     steps: tuple[Step, ...]
     absent: tuple[tuple[str, ...], ...] = ()
     verify: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    #: The helper's table (`None` for the namespace unit).
+    #: The run's table (`None` only for a plan built without one).
     ruleset: Optional[Ruleset] = None
     allowed: frozenset[tuple[str, ...]] = field(init=False, repr=False, compare=False)
     read_back: frozenset[tuple[str, ...]] = field(init=False, repr=False, compare=False)
@@ -479,10 +456,6 @@ class Plan:
              *(command for _, command in self.verify))))
         object.__setattr__(self, "read_back",
                            frozenset(command for _, command in self.verify))
-
-
-#: The namespace unit's plan: constants only, nothing read back.
-NAMESPACE_PLAN = Plan(NAMESPACE_STEPS, NAMESPACE_ABSENT)
 
 
 def helper_plan(scope: Optional[ScopeLike] = None) -> Plan:

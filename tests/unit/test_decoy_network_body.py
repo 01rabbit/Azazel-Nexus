@@ -1,10 +1,13 @@
-"""The bodies of the decoy namespace unit and the network helper (#196, §13).
+"""The steps of the decoy namespace unit and the body of the network helper (#196, §13).
 
-`az-decoy-nsd` and `az-decoy-netd` run the fixed step lists of
-`decoy_network` and nothing else. These tests pin, with a fake executor
-(nothing here starts `ip` or `nft`, creates a namespace or opens a socket):
+`az-decoy-netd` runs the fixed step lists of `decoy_network` and nothing
+else. The namespace unit runs no Python since the G4 follow-up: its unit file
+runs the fixed `ip` command lines of `hardening.DECOY_NAMESPACE_START` and
+undoes them with `DECOY_NAMESPACE_UNDO` (`ExecStopPost=`). These tests pin,
+with a fake executor for the helper (nothing here starts `ip` or `nft`,
+creates a namespace or opens a socket):
 
-* the exact commands, as goldens, and their order;
+* the exact commands of both units, as goldens, and their order;
 * the exact nftables ruleset, as a golden, with nothing approved, and that it
   never replaces an existing table (`create table`);
 * that the helper changes nothing when the bridge or the table already
@@ -38,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from azazel_nexus_runtime import decoy_netd, decoy_netns, decoy_network, decoy_nsd
+from azazel_nexus_runtime import decoy_netd, decoy_netns, decoy_network
 from azazel_nexus_runtime.decoy_addresses import (
     BRIDGE,
     BRIDGE_ADDRESS,
@@ -55,8 +58,6 @@ from azazel_nexus_runtime.decoy_network import (
     HELPER_STEPS,
     HELPER_VERIFY,
     IP,
-    NAMESPACE_PLAN,
-    NAMESPACE_STEPS,
     NFT,
     NFT_RULESET,
     STEP_SECONDS,
@@ -134,8 +135,21 @@ table inet azazel_decoy {
 }
 """
 
-UNITS = [(decoy_nsd, NSD_START, NSD_STOP), (decoy_netd, NETD_START, NETD_STOP)]
-IDS = ["nsd", "netd"]
+#: The one executable left with a body here; the namespace unit's steps are
+#: unit-file lines (G4 follow-up), pinned in the section below.
+UNITS = [(decoy_netd, NETD_START, NETD_STOP)]
+IDS = ["netd"]
+UNIT_DIR = Path(__file__).resolve().parents[2] / "packaging" / "systemd"
+
+
+def _unit_settings(name):
+    found = {}
+    for line in (UNIT_DIR / name).read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith(("#", "[")):
+            continue
+        key, _, value = line.partition("=")
+        found.setdefault(key, []).append(value)
+    return found
 
 
 class FakeRunner:
@@ -221,12 +235,9 @@ def test_start_runs_exactly_the_golden_commands_in_order(module, start, stop, ca
     assert module.main([], run=run) == 0
     assert run.calls == start
     assert "configured" in capsys.readouterr().err
-    if module is decoy_netd:
-        # Prepared before anything ran, read back and recorded after the build.
-        assert recorder.events == ["prepare", ("record", ["host_links", "nft_table"])]
-        assert recorder.captured == NETD_VERIFY
-    else:
-        assert recorder.events == [] and recorder.captured == []
+    # Prepared before anything ran, read back and recorded after the build.
+    assert recorder.events == ["prepare", ("record", ["host_links", "nft_table"])]
+    assert recorder.captured == NETD_VERIFY
 
 
 @pytest.mark.parametrize(("module", "start", "stop"), UNITS, ids=IDS)
@@ -234,7 +245,7 @@ def test_stop_runs_every_undo_in_reverse(module, start, stop, recorder):
     run = FakeRunner()
     assert module.main(["stop"], run=run) == 0
     assert run.calls == stop
-    assert recorder.events == (["withdraw"] if module is decoy_netd else [])
+    assert recorder.events == ["withdraw"]
 
 
 # -- the isolation record (#196 §14) --------------------------------------------
@@ -300,10 +311,8 @@ def test_only_the_helper_reads_back_and_only_its_two_inspection_commands():
     # (#196 G1b: its structure is compared, not its text).
     assert HELPER_VERIFY[0][1] == (NFT, "-j", *HELPER_ABSENT[1][1:])
     assert HELPER_PLAN.read_back == {tuple(argv) for argv in NETD_VERIFY}
-    assert NAMESPACE_PLAN.read_back == frozenset()
-    tree = _tree("decoy_nsd.py")
-    assert "recorder" not in {kw.arg for node in ast.walk(tree)
-                              if isinstance(node, ast.Call) for kw in node.keywords}
+    # The namespace unit reads nothing back: it runs no Python at all.
+    assert not (RUNTIME / "decoy_nsd.py").exists()
 
 
 # -- the helper changes nothing that is already there --------------------------
@@ -356,8 +365,7 @@ def _expected_after_failure(steps, failed_at, timed_out=False):
 @pytest.mark.parametrize("timed_out", [False, True], ids=["failed", "timed-out"])
 @pytest.mark.parametrize("failed_at", range(6))
 @pytest.mark.parametrize(("module", "steps", "checks"),
-                         [(decoy_nsd, NAMESPACE_STEPS, []),
-                          (decoy_netd, HELPER_STEPS, NETD_CHECKS)], ids=IDS)
+                         [(decoy_netd, HELPER_STEPS, NETD_CHECKS)], ids=IDS)
 def test_a_failed_step_undoes_what_was_made_and_exits_1(module, steps, checks, failed_at,
                                                         timed_out, capsys, recorder):
     code = TIMED_OUT if timed_out else 1
@@ -371,15 +379,6 @@ def test_a_timed_out_bridge_is_removed_with_what_came_before():
     run = FakeRunner(status=_fail(NETD_STEPS[1], TIMED_OUT))
     assert decoy_netd.main([], run=run) == 1
     assert run.calls == NETD_START[:4] + [BRIDGE_DELETE, TABLE_DELETE]
-
-
-def test_a_failure_after_the_namespace_removes_it_and_nothing_else():
-    run = FakeRunner(status=_fail(NSD_START[1]))
-    assert decoy_nsd.main([], run=run) == 1
-    assert run.calls == NSD_START[:2] + [NSD_STOP[1]]
-    run = FakeRunner(status=_fail(NSD_START[5]))
-    assert decoy_nsd.main([], run=run) == 1
-    assert run.calls == NSD_START + NSD_STOP
 
 
 def test_while_the_path_may_remain_the_rules_stay_at_start(capsys):
@@ -408,20 +407,11 @@ def test_a_failed_table_deletion_at_stop_is_reported():
     assert run.calls == NETD_STOP
 
 
-def test_the_namespace_stop_keeps_going_after_a_failed_link_deletion():
-    """Deleting the namespace takes the pair with it; nothing is guarded here."""
-
-    run = FakeRunner(status=_fail(NSD_STOP[0]))
-    assert decoy_nsd.main(["stop"], run=run) == 1
-    assert run.calls == NSD_STOP
-
-
 def test_only_the_table_is_a_guard():
     assert [step.guard for step in HELPER_STEPS] == [True] + [False] * 5
-    assert not any(step.guard for step in NAMESPACE_STEPS)
 
 
-@pytest.mark.parametrize("module", [decoy_nsd, decoy_netd], ids=IDS)
+@pytest.mark.parametrize("module", [decoy_netd], ids=IDS)
 @pytest.mark.parametrize("argv", [["--namespace", "x"], ["/run/netns/other"], ["--force"],
                                   ["stop", "now"], ["start"], ["STOP"], [""]])
 def test_anything_but_no_argument_or_stop_is_refused(module, argv, capsys):
@@ -435,14 +425,24 @@ def test_anything_but_no_argument_or_stop_is_refused(module, argv, capsys):
 
 
 def test_every_command_is_ip_or_nft_by_absolute_path_with_constant_arguments():
+    from azazel_nexus_runtime.hardening import (
+        DECOY_NAMESPACE_IP,
+        DECOY_NAMESPACE_START,
+        DECOY_NAMESPACE_UNDO,
+    )
+
     assert (IP, NFT) == ("/usr/bin/ip", "/usr/sbin/nft")
-    for argv in NAMESPACE_PLAN.allowed | HELPER_PLAN.allowed:
+    for argv in HELPER_PLAN.allowed:
         assert argv[0] in (IP, NFT)
+        assert all(isinstance(arg, str) and arg for arg in argv)
+    # The namespace unit runs the same ip, and only ip.
+    assert DECOY_NAMESPACE_IP == IP
+    for argv in DECOY_NAMESPACE_START + DECOY_NAMESPACE_UNDO:
+        assert argv[0] == IP
         assert all(isinstance(arg, str) and arg for arg in argv)
     # Only the namespace unit enters the namespace; the helper never does.
     assert all("-n" not in step.argv and "netns" != step.argv[1] for step in HELPER_STEPS)
-    assert NAMESPACE_STEPS[0].argv[1:3] == ("netns", "add")
-    assert decoy_network.NAMESPACE_ABSENT == ()
+    assert DECOY_NAMESPACE_START[0][1:3] == ("netns", "add")
 
 
 def test_the_helper_loads_the_rules_before_it_makes_any_path():
@@ -468,19 +468,64 @@ def test_nothing_is_approved_and_the_decoy_initiates_nothing():
 def test_the_longest_start_fits_in_the_units_start_timeout():
     """Review of #273: systemd must never kill a start half-undone."""
 
-    from azazel_nexus_runtime.hardening import DECOY_HELPER_SANDBOX, DECOY_NAMESPACE_SANDBOX
+    from azazel_nexus_runtime.hardening import DECOY_HELPER_SANDBOX
 
-    for sandbox, steps, checks in ((DECOY_NAMESPACE_SANDBOX, NAMESPACE_STEPS, ()),
-                                   (DECOY_HELPER_SANDBOX, HELPER_STEPS, HELPER_ABSENT)):
-        timeout = dict(sandbox)["TimeoutStartSec"]
-        assert timeout == "30s"
-        undos = sum(step.undo is not None for step in steps)
-        # The helper reads back after the build, and undoes all of it when
-        # the record does not pass (#196 §14).
-        verify = len(HELPER_VERIFY) if steps is HELPER_STEPS else 0
-        commands = len(checks) + len(steps) + verify + undos
-        # Each command is killed at STEP_SECONDS; the 0.01 s polls add little.
-        assert commands * (STEP_SECONDS + 0.1) + 2 < 30, commands
+    timeout = dict(DECOY_HELPER_SANDBOX)["TimeoutStartSec"]
+    assert timeout == "30s"
+    undos = sum(step.undo is not None for step in HELPER_STEPS)
+    # The helper reads back after the build, and undoes all of it when the
+    # record does not pass (#196 §14).
+    commands = len(HELPER_ABSENT) + len(HELPER_STEPS) + len(HELPER_VERIFY) + undos
+    # Each command is killed at STEP_SECONDS; the 0.01 s polls add little.
+    assert commands * (STEP_SECONDS + 0.1) + 2 < 30, commands
+
+
+# -- the namespace unit: fixed ip lines in its unit file (G4 follow-up) ----------
+
+
+def test_the_namespace_unit_runs_exactly_the_golden_commands_in_order():
+    from azazel_nexus_runtime.hardening import DECOY_NAMESPACE_START, DECOY_NAMESPACE_UNDO
+
+    assert [list(argv) for argv in DECOY_NAMESPACE_START] == NSD_START
+    assert [list(argv) for argv in DECOY_NAMESPACE_UNDO] == NSD_STOP
+    settings = _unit_settings("azazel-decoy-nsd.service")
+    # Six ExecStart= lines, one per step, in order; a one-shot unit stops at
+    # the first that fails and fails the start.
+    assert settings["ExecStart"] == [" ".join(argv) for argv in NSD_START]
+    assert settings["Type"] == ["oneshot"]
+
+
+def test_the_namespace_unit_undoes_in_reverse_after_a_stop_and_after_a_failed_start():
+    """`ExecStopPost=`, not `ExecStop=`: systemd runs `ExecStop=` only after a
+    start that succeeded, and `ExecStopPost=` after every stop and after a
+    start that failed or timed out (systemd.service(5), systemd 257). The
+    pair first, then the namespace; `-` on the pair only, because a failing
+    command skips the ones after it and the pair is absent whenever the start
+    failed before step 2."""
+
+    settings = _unit_settings("azazel-decoy-nsd.service")
+    assert "ExecStop" not in settings
+    assert settings["ExecStopPost"] == ["-" + " ".join(NSD_STOP[0]), " ".join(NSD_STOP[1])]
+    # The deadlines that replace the former 2 s per step.
+    assert settings["TimeoutStartSec"] == ["30s"]
+    assert settings["TimeoutStopSec"] == ["30s"]
+    # The undo covers every object a step makes: the pair and the namespace;
+    # an address, a link state and a route go with their link or namespace.
+    made = [argv for argv in NSD_START if argv[1:3] in (["netns", "add"], ["link", "add"])]
+    assert len(made) == 2
+    assert [argv[1] for argv in reversed(made)] == [argv[1] for argv in NSD_STOP]
+
+
+@pytest.mark.parametrize("word", ["a b", "%n", "$X", "a;b", "'x'", '"x"', "a\\b", "", "--",
+                                  "x\n"])
+def test_a_namespace_command_line_takes_only_plain_words(word):
+    from azazel_nexus_runtime.hardening import _command_line
+
+    with pytest.raises(ValueError):
+        _command_line((IP, "link", "delete", word))
+    with pytest.raises(ValueError):
+        _command_line(("/usr/sbin/ip", "netns", "add", "azazel-decoy"))
+    assert _command_line((IP, "-n", "azazel-decoy", "link")) == "/usr/bin/ip -n azazel-decoy link"
 
 
 def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(monkeypatch):
@@ -492,26 +537,24 @@ def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(m
 
     monkeypatch.setattr(decoy_network.os, "posix_spawn", spawn)
     monkeypatch.setattr(decoy_network.os, "waitpid", lambda pid, flags: (pid, 0))
-    assert decoy_network.run_fixed(tuple(NSD_START[0]), plan=NAMESPACE_PLAN) == 0
-    assert seen == {"path": IP, "argv": NSD_START[0], "env": {},
+    assert decoy_network.run_fixed(tuple(NETD_CHECKS[0]), plan=HELPER_PLAN) == 0
+    assert seen == {"path": IP, "argv": NETD_CHECKS[0], "env": {},
                     "kwargs": {"setsigdef": (decoy_network.signal.SIGPIPE,),
                                "file_actions": ()}}
-    for plan in (NAMESPACE_PLAN, HELPER_PLAN):
+    for plan in (HELPER_PLAN, decoy_network.verify_plan()):
         for argv in [("/bin/sh", "-c", "true"), ("ip", "netns", "add", NAMESPACE),
                      (IP, "netns", "add", "other"), (IP, "netns", "delete", "other"),
                      (NFT, "flush", "ruleset"), (NFT, "list", "ruleset"),
                      (IP, "link", "delete", "eth0")]:
             with pytest.raises(ValueError):
                 decoy_network.run_fixed(argv, plan=plan)
-    # Each unit's plan holds its own commands and nothing of the other's
-    # (#196 G1b: the plan replaced one module-wide allowance).
+    # The helper's plan holds none of the namespace unit's commands (#196
+    # G1b: the plan replaced one module-wide allowance).
+    for argv in NSD_START + NSD_STOP:
+        with pytest.raises(ValueError):
+            decoy_network.run_fixed(tuple(argv), plan=HELPER_PLAN)
     with pytest.raises(ValueError):
-        decoy_network.run_fixed(tuple(NETD_STEPS[0]), plan=NAMESPACE_PLAN)
-    with pytest.raises(ValueError):
-        decoy_network.run_fixed(tuple(NSD_START[0]), plan=HELPER_PLAN)
-    with pytest.raises(ValueError):
-        decoy_network.run_fixed(tuple(NSD_START[0]), plan=None)
-    assert NAMESPACE_PLAN.allowed == {tuple(a) for a in NSD_START + NSD_STOP}
+        decoy_network.run_fixed(tuple(NETD_CHECKS[0]), plan=None)
     assert HELPER_PLAN.allowed == {tuple(a) for a in NETD_START + NETD_STOP + NETD_VERIFY}
 
 
@@ -523,10 +566,6 @@ def test_the_read_back_refuses_every_other_command_before_a_process(monkeypatch)
                  ("/usr/bin/ip", "-n", "azazel-decoy", "-j", "-d", "address", "show")]:
         with pytest.raises(ValueError):
             REAL_CAPTURE(tuple(argv), plan=HELPER_PLAN)
-    # Nothing is read back under the namespace unit's plan.
-    for argv in NETD_VERIFY:
-        with pytest.raises(ValueError):
-            REAL_CAPTURE(tuple(argv), plan=NAMESPACE_PLAN)
 
 
 class FakeChild:
@@ -654,7 +693,7 @@ def test_a_program_that_cannot_be_started_is_a_failure(monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(decoy_network.os, "posix_spawn", missing)
-    assert decoy_network.run_fixed(tuple(NSD_START[0]), plan=NAMESPACE_PLAN) == 127
+    assert decoy_network.run_fixed(tuple(NETD_CHECKS[0]), plan=HELPER_PLAN) == 127
 
 
 def _tree(name):
@@ -727,14 +766,12 @@ def test_the_unit_renderer_never_loads_the_module_that_starts_processes():
                 ".decoy_nsd", ".decoy_netd"} & imports
 
 
-@pytest.mark.parametrize("name", ["decoy_nsd.py", "decoy_netd.py"])
-def test_the_executables_only_choose_their_step_list(name):
-    tree = _tree(name)
+def test_the_executable_only_chooses_its_step_list():
+    tree = _tree("decoy_netd.py")
     # The helper also hands its isolation recorder to the runner (#196 §14),
     # reads its one input, the scope (#196 G1b), and hands `verify` to the
     # watch (#196 G2), choosing it from its arguments.
-    extra = ({".decoy_isolation_check", "azazel_nexus.decoy_scope", ".decoy_watch", "sys"}
-             if name == "decoy_netd.py" else set())
+    extra = {".decoy_isolation_check", "azazel_nexus.decoy_scope", ".decoy_watch", "sys"}
     assert _imports(tree) == {"__future__", "typing", ".decoy_network"} | extra
     assert not _names(tree) & {"os", "subprocess", "socket", "environ", "open"}
 
@@ -743,11 +780,14 @@ def test_the_executables_only_choose_their_step_list(name):
 
 
 def test_the_decoy_end_is_the_name_the_decoy_checks_for():
-    assert decoy_network.DECOY_VETH is decoy_netns.DECOY_VETH
+    from azazel_nexus_runtime import hardening
+
+    assert hardening.DECOY_VETH is decoy_netns.DECOY_VETH
     assert decoy_netns.DECOY_VETH == "az-decoy-ns0"
-    assert decoy_netns._ALLOWED_INTERFACES == {"lo", decoy_network.DECOY_VETH}
+    assert decoy_netns._ALLOWED_INTERFACES == {"lo", decoy_netns.DECOY_VETH}
+    assert decoy_netns.DECOY_VETH in hardening.DECOY_NAMESPACE_START[1]
     assert f"/run/netns/{NAMESPACE}" == decoy_netns.DECOY_NAMESPACE_PATH
-    for name in (BRIDGE, HOST_VETH, decoy_network.DECOY_VETH):
+    for name in (BRIDGE, HOST_VETH, decoy_netns.DECOY_VETH):
         assert 0 < len(name.encode("ascii")) <= 15, name
 
 
@@ -775,7 +815,8 @@ def test_the_units_name_the_same_namespace_subnet_and_stop_commands():
     )
 
     assert DECOY_NAMESPACE_PATH == decoy_netns.DECOY_NAMESPACE_PATH
-    assert ("ExecStop", "/usr/libexec/azazel/az-decoy-nsd stop") in DECOY_NAMESPACE_SANDBOX
+    assert ("ExecStopPost", "/usr/bin/ip netns delete azazel-decoy") in DECOY_NAMESPACE_SANDBOX
+    assert "ExecStop" not in dict(DECOY_NAMESPACE_SANDBOX)
     assert ("ExecStop", "/usr/libexec/azazel/az-decoy-netd stop") in DECOY_HELPER_SANDBOX
     decoy = next(p for p in PROFILES if p.unit == "azazel-decoyd.service")
     assert [v for k, v in decoy.extra if k == "IPAddressAllow"] == [DECOY_SUBNET]

@@ -14,7 +14,8 @@ namespace with no capability (§13). These tests pin:
   tier rule that closes review n1: the three units are governed, scoped and
   marked **together or not at all**, so a dependency skipped for a missing
   grant marker can never count as success for a granted dependent;
-* that the unit is still never granted. Its body is tested in
+* that the unit is still never granted. Its steps (fixed `ip` command lines
+  in the unit file since the G4 follow-up) are tested in
   `test_decoy_network_body.py`.
 
 No test runs `ip` or `unshare`, creates a namespace or opens a socket. None
@@ -112,8 +113,13 @@ def test_the_namespace_unit_runs_once_as_root_with_exactly_its_two_capabilities(
     assert settings["Type"] == ["oneshot"]
     assert settings["RemainAfterExit"] == ["yes"]
     assert settings["User"] == ["root"]
-    assert settings["ExecStart"] == ["/usr/libexec/azazel/az-decoy-nsd"]
-    assert settings["ExecStop"] == ["/usr/libexec/azazel/az-decoy-nsd stop"]
+    # G4 follow-up: ip itself, six fixed lines, no Python body; the undo is
+    # ExecStopPost= (pinned in test_decoy_network_body.py).
+    assert len(settings["ExecStart"]) == 6
+    assert all(line.startswith("/usr/bin/ip ") for line in settings["ExecStart"])
+    assert all(line.removeprefix("-").startswith("/usr/bin/ip ")
+               for line in settings["ExecStopPost"])
+    assert "ExecStop" not in settings
     # CAP_NET_ADMIN as well: every act inside the namespace needs it (§13).
     assert settings["CapabilityBoundingSet"] == ["CAP_SYS_ADMIN CAP_NET_ADMIN"]
     assert settings["AmbientCapabilities"] == [""]
@@ -146,7 +152,7 @@ def test_the_namespace_unit_builds_no_mount_namespace():
     for key in MOUNT_NAMESPACE_SETTINGS:
         assert key not in settings, key
     for key in ("IPAddressAllow", "SupplementaryGroups", "Environment", "EnvironmentFile",
-                "ExecStartPre", "ExecStartPost", "ExecStopPost",
+                "ExecStartPre", "ExecStartPost", "ExecStop", "ExecReload", "ExecCondition",
                 "JoinsNamespaceOf", "DeviceAllow"):
         assert key not in settings, key
 
@@ -268,10 +274,21 @@ def test_no_other_unit_may_loosen_the_shared_hardening(unit, change):
     {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS + ("IPAddressDeny",)},
     {"shared_omissions": DECOY_NAMESPACE_SHARED_OMISSIONS[1:]},
     {"extra": DECOY_NAMESPACE_SANDBOX[:-1]},
-    {"extra": tuple(item for item in DECOY_NAMESPACE_SANDBOX if item[0] != "ExecStop")},
-    {"extra": tuple(("ExecStop", "/usr/sbin/ip netns delete azazel-decoy")
-                    if item[0] == "ExecStop" else item
-                    for item in DECOY_NAMESPACE_SANDBOX)},
+    {"extra": tuple(item for item in DECOY_NAMESPACE_SANDBOX if item[0] != "ExecStopPost")},
+    {"extra": tuple(item for item in DECOY_NAMESPACE_SANDBOX if item[0] != "ExecStart")},
+    {"extra": tuple(("ExecStopPost", "/usr/sbin/ip netns delete azazel-decoy")
+                    if item == ("ExecStopPost", "/usr/bin/ip netns delete azazel-decoy")
+                    else item for item in DECOY_NAMESPACE_SANDBOX)},
+    {"extra": tuple(("ExecStopPost", "-/usr/bin/ip netns delete azazel-decoy")
+                    if item == ("ExecStopPost", "/usr/bin/ip netns delete azazel-decoy")
+                    else item for item in DECOY_NAMESPACE_SANDBOX)},
+    {"extra": DECOY_NAMESPACE_SANDBOX + (("ExecStart", "/usr/bin/ip netns add other"),)},
+    {"extra": DECOY_NAMESPACE_SANDBOX + (("ExecStop", "/usr/bin/ip netns delete azazel-decoy"),)},
+    {"extra": DECOY_NAMESPACE_SANDBOX + (("ExecStartPre", "/usr/bin/ip netns list"),)},
+    {"extra": DECOY_NAMESPACE_SANDBOX + (("TimeoutStartSec", "infinity"),)},
+    {"arguments": ()},
+    {"arguments": ("netns", "add", "other")},
+    {"arguments": ("verify",)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("NetworkNamespacePath", DECOY_NAMESPACE_PATH),)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("Environment", "AZAZEL_NETNS=other"),)},
     {"extra": DECOY_NAMESPACE_SANDBOX + (("ProtectProc", "invisible"),)},
@@ -345,7 +362,8 @@ def test_the_installer_masks_and_never_enables_the_namespace_unit():
     assert f"systemctl start {NSD}" not in INSTALLER
     assert f"disable {NSD}" in PRESET.splitlines()
     assert f"enable {NSD}" not in PRESET.splitlines()
-    assert " az-decoy-nsd " in INSTALLER
+    # G4 follow-up: no wrapper to require; the unit runs the system's ip.
+    assert "az-decoy-nsd" not in INSTALLER
     # Nothing the installer does creates a namespace or touches /run/netns.
     assert "/run/netns" not in INSTALLER
     assert "ip netns" not in INSTALLER and "unshare" not in INSTALLER
@@ -492,7 +510,7 @@ def test_the_marker_writer_is_unchanged_for_the_rest(marker_root):
     assert written == ("azazel-mio-entryd.service",)
 
 
-# -- the executable: its body is tested in test_decoy_network_body.py ------
+# -- its steps are tested in test_decoy_network_body.py -------------------------
 
 
 def test_the_unit_table_addresses_the_namespace_unit_by_fixed_key_only():
@@ -509,7 +527,7 @@ def test_the_unit_table_addresses_the_namespace_unit_by_fixed_key_only():
 
 RESERVED = sorted({key for key, _ in SHARED_HARDENING} | {
     "ReadWritePaths", "BindPaths", "InaccessiblePaths", "SystemCallFilter", "User",
-    "CapabilityBoundingSet", "AmbientCapabilities",
+    "CapabilityBoundingSet", "AmbientCapabilities", "ExecStart",
     "ExecStop", "ExecStopPost", "ExecStartPost", "ExecReload"})
 
 
@@ -545,6 +563,7 @@ def test_no_packaged_unit_states_a_reserved_key_in_extra():
 
 @pytest.mark.parametrize("change", [
     {"executable": "/usr/sbin/ip"},
+    {"executable": "/usr/libexec/azazel/az-decoy-nsd"},
     {"executable": "/usr/libexec/azazel/az-decoy-netd"},
     {"after": ()},
     {"after": (ACTIVATION_CONTROLLER_UNIT, DECOY_UNIT)},
@@ -562,5 +581,5 @@ def test_no_packaged_unit_states_a_reserved_key_in_extra():
                     ("ConditionPathExists", "/"))},
 ], ids=lambda change: next(iter(change)))
 def test_the_namespace_unit_wiring_is_pinned(change):
-    with pytest.raises(ValueError, match="az-decoy-nsd|grant marker"):
+    with pytest.raises(ValueError, match="runs /usr/bin/ip|grant marker"):
         replace(_profile(NSD), **change)

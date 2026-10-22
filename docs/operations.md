@@ -633,7 +633,8 @@ ships (a later phase of #196), nothing sends an interaction, so the count stays 
 
 The decoy's network is built by two one-shot units, never granted in this
 build: `azazel-decoy-nsd.service` creates the namespace
-`/run/netns/azazel-decoy` and the veth pair, `azazel-decoy-netd.service` the
+`/run/netns/azazel-decoy` and the veth pair (its unit file runs six fixed
+`/usr/bin/ip` commands and no other program), `azazel-decoy-netd.service` the
 bridge `az-decoy0` and the `inet azazel_decoy` nftables table, which drops
 everything to and from the decoy until approved prefixes exist
 ([prerequisites §13](deception-redirect-prerequisites.md#13-the-namespace-units-and-the-helpers-bodies-as-implemented)).
@@ -761,14 +762,20 @@ verify unit, names its own profile with `AppArmorProfile=`
 (`azazel-decoy-nsd`, `azazel-decoy-netd`, `azazel-decoy-verify`,
 `azazel-decoyd`), without `-`, and carries `AssertSecurity=apparmor`. The
 verify unit's profile is the helper's without its one writable place, plus
-read access to `forwarding` and `proxy_arp` under `/proc/sys/net`. With
+read access to `forwarding` and `proxy_arp` under `/proc/sys/net`. The
+namespace unit's profile confines `ip` itself, which systemd starts under it;
+it has no child profile (the G4 follow-up, grant design §7). All four carry
+`flags=(attach_disconnected)`, so that a path under systemd's sandbox (such
+as the verify unit's `/dev/null`) is named rather than refused; the denies
+still apply to the name. With
 AppArmor enabled, a start without that profile loaded fails; with AppArmor
 disabled systemd ignores `AppArmorProfile=` and the assertion fails the
 start instead, so none of them runs unconfined. The installer needs the
 Debian package `apparmor` (not `apparmor-utils`), compiles the four
 profiles before it writes anything, warns when the kernel has AppArmor
 disabled, and places them in `/etc/apparmor.d/`; it does not load them. It
-also refuses to install when the decoy wrappers' interpreter is not
+also refuses to install when the decoy wrappers' (`az-decoy-netd`,
+`az-decoyd`; the namespace unit has none) interpreter is not
 `/usr/bin/python3.13` or their code lies outside `/usr/lib/python3.13` and
 `/opt/azazel-nexus/venv` (the only places the profiles let them read):
 install the runtime into that venv. The package's `apparmor.service` loads them at the next boot. Do not
@@ -784,14 +791,19 @@ To see their state, as root:
 sudo grep '^azazel-decoy' /sys/kernel/security/apparmor/profiles
 ```
 
-**Removing what a failed start left behind.** Each executable undoes its own
-steps when a start fails. If it was killed before it could (for example
+**Removing what a failed start left behind.** The namespace unit removes
+its objects itself: its `ExecStopPost=` lines (`ip link delete
+az-decoy-host0`, then `ip netns delete azazel-decoy`) run after every stop
+and after a start that failed or timed out, including one that failed because
+an `azazel-decoy` namespace was already there, which it then removes; that
+start still fails, and the next one starts clean. The helper undoes its own
+steps when a start fails; if it was killed before it could (for example
 `SIGKILL` at `TimeoutStartSec=`), systemd runs no `ExecStop=` after a failed
-one-shot start, and the namespace unit's objects stay: the handle
-`/run/netns/azazel-decoy` and the host end `az-decoy-host0` of the veth
-pair. The next start of the namespace unit then fails at its first step.
-Remove them by hand, as root, with the same fixed commands the unit uses, in
-this order:
+one-shot start, and its objects stay (see "Existing objects are never
+overwritten" above). If the namespace unit's objects are still there (the
+handle `/run/netns/azazel-decoy`, the host end `az-decoy-host0`), for example
+because its undo was itself killed at `TimeoutStopSec=`, remove them by hand,
+as root, with the same fixed commands the unit uses, in this order:
 
 ```
 sudo systemctl stop azazel-decoyd.service azazel-decoy-netd.service azazel-decoy-nsd.service

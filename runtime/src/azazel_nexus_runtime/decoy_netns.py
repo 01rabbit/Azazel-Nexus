@@ -56,7 +56,8 @@ __all__ = [
 DECOY_NAMESPACE_PATH = "/run/netns/azazel-decoy"
 
 #: The decoy's end of the veth pair, inside the namespace. Fixed here; the
-#: namespace unit (`az-decoy-nsd`, `decoy_network`) imports it when it creates
+#: unit renderer (`hardening.DECOY_NAMESPACE_START`) imports it for the
+#: namespace unit's `ip` line that creates
 #: the pair; at most 15 bytes (`IFNAMSIZ`), a test checks both.
 DECOY_VETH = "az-decoy-ns0"
 

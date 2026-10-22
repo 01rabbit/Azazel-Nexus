@@ -17,8 +17,10 @@ from typing import Mapping, Sequence
 
 from azazel_nexus.layout import LAYOUT
 from .decoy_apparmor import DECOY_APPARMOR_PROFILES
+from azazel_nexus.activation import DECOY_NAMESPACE_UNIT
 from .hardening import (
     ALL_PROFILES,
+    DECOY_NAMESPACE_IP,
     EDGE_PROBE_PREFLIGHT_UNIT,
     PROFILES,
     SYSTEM_ACCOUNTS,
@@ -371,14 +373,19 @@ def build_install_plan(
             "Edge probe preflight"
         )
 
-    # Nexus stages Python wrappers; the separately verified Edge package owns its binary.
+    # Nexus stages Python wrappers; the separately verified Edge package owns its binary,
+    # and the decoy namespace unit runs the system's iproute2 `ip` itself (#196 G4
+    # follow-up), which Nexus neither stages nor ships.
     for service in PROFILES:
         if (service.unit == "azazel-edge-core.service"
                 and service.executable != "/opt/azazel/edge-core/bin/azazel-edge-core"):
             raise ValueError("Edge Core must use its fixed package executable")
+        if (service.unit == DECOY_NAMESPACE_UNIT
+                and service.executable != DECOY_NAMESPACE_IP):
+            raise ValueError("the decoy namespace unit must run the fixed ip executable")
     declared_exec_directories = {
         str(PurePosixPath(service.executable).parent) for service in PROFILES
-        if service.unit != "azazel-edge-core.service"
+        if service.unit not in ("azazel-edge-core.service", DECOY_NAMESPACE_UNIT)
     }
     if declared_exec_directories != {profile.libexec_directory}:
         raise ValueError(

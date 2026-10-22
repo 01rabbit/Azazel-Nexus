@@ -104,6 +104,14 @@ def test_every_shipped_unit_is_one_the_runtime_provides():
     verify = (REPO / "packaging" / "systemd" / "azazel-decoy-verify.service")
     assert "ExecStart=/usr/libexec/azazel/az-decoy-netd verify\n" in verify.read_text(
         encoding="utf-8")
+    # The Deception Lite namespace unit (#196 G4 follow-up) runs the system's
+    # iproute2 ip from its unit file and no entry point of the runtime.
+    assert "azazel-decoy-nsd" in shipped
+    shipped.remove("azazel-decoy-nsd")
+    namespace = (REPO / "packaging" / "systemd" / "azazel-decoy-nsd.service")
+    assert "ExecStart=/usr/bin/ip netns add azazel-decoy\n" in namespace.read_text(
+        encoding="utf-8")
+    assert "az-decoy-nsd =" not in entry_points
     for unit in sorted(shipped):
         script = unit.replace("azazel-", "az-")
         assert f"{script} =" in entry_points, f"{unit} has no entry point"

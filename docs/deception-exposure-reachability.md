@@ -44,7 +44,7 @@ Read at `main` 66ba040.
 | fact | reference |
 | --- | --- |
 | The /30, the bridge and the decoy address are constants | `runtime/src/azazel_nexus_runtime/decoy_addresses.py:34-36` |
-| The decoy's default route is `10.255.196.1` on its veth | `decoy_network.py` `NAMESPACE_STEPS` (last step) |
+| The decoy's default route is `10.255.196.1` on its veth | `hardening.py` `DECOY_NAMESPACE_START` (last step; an `ExecStart=` line of `azazel-decoy-nsd.service`) |
 | The forward accept toward the decoy names `oifname "az-decoy0"`, `@approved_v4`, the address and the ports; the reply accept names `iifname "az-decoy0"`, `ct state established` and no output interface; the input chain drops everything from `az-decoy0` | `decoy_network.py` `NFT_RULESET` |
 | The table is `inet` (IPv4 and IPv6) and only drops (`policy accept` everywhere); it opens nothing another table closes | `decoy_network.py` `NFT_RULESET` and its docstring |
 | The helper sets no sysctl and reads none; nothing in the runtime writes `/proc/sys` | `decoy_network.py` (`_ALLOWED`); `hardening.py:97` (`ProtectKernelTunables=yes` in the shared sandbox) |

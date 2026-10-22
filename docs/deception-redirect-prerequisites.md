@@ -505,7 +505,7 @@ and the profile now follows the configuration that did:
 | file-system sandbox | **none**: the seven `SHARED_HARDENING` settings that build a mount namespace (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`) are left out, and it declares no `ReadWritePaths=`, `RuntimeDirectory=`, `ProtectProc=`, `ProcSubset=`, `InaccessiblePaths=`, `PrivateNetwork=` or any other setting that builds one. `/run/netns` is created by `ip` itself; `ServiceProfile` refuses `/run/netns` as a declared writable path on every unit |
 | kept from the shared set | `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `IPAddressDeny=any`, `UMask=0027`; plus `RestrictRealtime=yes` |
 | type | `oneshot`, `RemainAfterExit=yes` |
-| executable | `az-decoy-nsd`: when declared, it refused and exited 1; the body is in §13 |
+| executable | `az-decoy-nsd` when declared (it refused and exited 1), then the Python body of §13; since the G4 follow-up none: the unit runs `/usr/bin/ip` itself, six fixed `ExecStart=` lines and two fixed `ExecStopPost=` lines (§13, [grant §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)) |
 
 **Why it has no file-system sandbox.** systemd runs a unit with any of those
 settings in a mount namespace of its own, and cuts propagation from it to the
@@ -520,10 +520,12 @@ the like, or remount the cgroup file system read-write; no unit setting
 stops that. The bounding set, the system call filter,
 `RestrictNamespaces=net mnt`, netlink as its only family (every netlink
 protocol, nftables included) and `NoNewPrivileges=` narrow what it is
-handed, and nothing more. Its containment rests on the
-body itself: fixed in code, taking no input (no argument, file, environment
-or socket), statically reviewed, and later confined by a mandatory access
-control (LSM) profile. To be weighed in the body phase: **removing the
+handed, and nothing more. Its containment rests on what
+it runs: since the G4 follow-up only `/usr/bin/ip`, with fixed command lines
+in its own unit file, taking no input (no argument, file, environment or
+socket from anyone), statically reviewed, and confined by its AppArmor
+profile ([grant §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)).
+To be weighed in the body phase: **removing the
 privilege instead**, by letting systemd hold the namespace. For example,
 the helper and the decoy share one network namespace through
 `PrivateNetwork=yes` and `JoinsNamespaceOf=`, and the helper moves one veth
@@ -552,8 +554,11 @@ preset-disables and masks it; it never enables or starts it.
 
 **The body** is in §13. The VM-checked configuration ran
 `ExecStart=/usr/sbin/ip netns add <name>` and `ExecStop=/usr/sbin/ip netns
-delete <name>`; the body runs the same two acts first and last, through its
-fixed executable, and configures the inside in between.
+delete <name>`; the body ran the same two acts first and last, through its
+fixed executable, and configured the inside in between. Since the G4
+follow-up the unit is back to that shape: `ip` lines in the unit file, the
+first `ExecStart=/usr/bin/ip netns add azazel-decoy` and the last undo
+`ExecStopPost=/usr/bin/ip netns delete azazel-decoy` (§13).
 
 The chain is namespace unit → helper → decoy: the helper has `After=` and
 `Requires=` on the namespace unit, the decoy on the helper.
@@ -1035,8 +1040,24 @@ or hardware evidence; `HG-06` and the decoy-sandbox gate stay open.
 
 ## 13. The namespace unit's and the helper's bodies as implemented
 
-The bodies deferred in §10. `az-decoy-nsd` and `az-decoy-netd` now build the
-decoy network and take it down. Like the decoy (§12) they still **admit
+The bodies deferred in §10. `az-decoy-nsd` and `az-decoy-netd` built the
+decoy network and took it down.
+
+> **Since the G4 follow-up** ([grant §11](deception-exposure-grant.md#11-to-check-on-the-vm-g4-a-mechanism-check-not-hardware-evidence),
+> 2026-10-22) the namespace unit has **no Python body**: under
+> `NoNewPrivileges=yes` the kernel refused the body's AppArmor transition
+> into the `ip` child profile (VM, Debian 13, AppArmor 4.1; a mechanism
+> check, not hardware evidence), so `az-decoy-nsd`, `decoy_nsd.py` and
+> `decoy_network.NAMESPACE_STEPS` are gone. The unit file runs the same six
+> commands as `ExecStart=` lines (`hardening.DECOY_NAMESPACE_START`) and the
+> same two undo commands as `ExecStopPost=` lines (`DECOY_NAMESPACE_UNDO`),
+> each `/usr/bin/ip` under the one profile `azazel-decoy-nsd`. What the body
+> did and where it is now is in the grant design's §7 ("The namespace unit
+> after G4"). The helper's body below is unchanged; the namespace unit's
+> parts of this section are the record of the body it had, corrected where
+> marked.
+
+The helper now builds its part of the decoy network and takes it down. Like the decoy (§12) they still **admit
 nothing**: the `DECEPTION_EXPOSURE` tier is withheld as
 `isolation_evidence_absent` on every pass, no policy can name the three
 units, and the installer installs, preset-disables and masks them. The
@@ -1060,17 +1081,18 @@ makes a private mount namespace for itself after `setns` (strace:
 `ServiceProfile`; `CAP_SYS_ADMIN` is still this unit's alone, and
 `CAP_NET_ADMIN` is held by this unit and the helper and by no other.
 
-| | `azazel-decoy-nsd.service` (`NAMESPACE_STEPS`) | `azazel-decoy-netd.service` (`HELPER_STEPS`) |
+| | `azazel-decoy-nsd.service` (`hardening.DECOY_NAMESPACE_START`, unit-file lines since G4) | `azazel-decoy-netd.service` (`HELPER_STEPS`) |
 | --- | --- | --- |
 | where | host namespace, and the decoy namespace through `ip -n` | host namespace only; never enters the decoy's |
 | checks first | none: `ip netns add` and the veth pair each refuse to replace an existing one | `ip link show dev az-decoy0` and `nft list table inet azazel_decoy` must both **fail** (find nothing); if either finds something, it exits 1 having changed nothing |
 | start | 1. `ip netns add azazel-decoy`; 2. `ip link add name az-decoy-host0 type veth peer name az-decoy-ns0 netns azazel-decoy` (the decoy's end is created inside; `netns NAME` opens the handle, no `setns`); 3. `ip -n azazel-decoy link set dev lo up`; 4. `… address add 10.255.196.2/30 dev az-decoy-ns0`; 5. `… link set dev az-decoy-ns0 up`; 6. `… route add default via 10.255.196.1 dev az-decoy-ns0` | 1. `nft <NFT_RULESET>` (the rules first, one transaction, which `create table` makes fail if the table exists); 2. `ip link add name az-decoy0 type bridge`; 3. `ip address add 10.255.196.1/30 dev az-decoy0`; 4. `ip link set dev az-decoy-host0 master az-decoy0`; 5. `ip link set dev az-decoy0 up`; 6. `ip link set dev az-decoy-host0 up` |
-| `ExecStop=… stop` | `ip link delete az-decoy-host0` (the pair goes with it), then `ip netns delete azazel-decoy` | `ip link set dev az-decoy-host0 down`, `ip link delete az-decoy0`, then `nft delete table inet azazel_decoy`: the path is cut before the rules go, and if cutting it fails the table stays (exit 1) |
+| stop | `ExecStopPost=-ip link delete az-decoy-host0` (the pair goes with it), then `ExecStopPost=ip netns delete azazel-decoy`; after every stop and after a start that failed or timed out (since G4; `ExecStop=… stop` of the body before) | `ExecStop=… stop`: `ip link set dev az-decoy-host0 down`, `ip link delete az-decoy0`, then `nft delete table inet azazel_decoy`: the path is cut before the rules go, and if cutting it fails the table stays (exit 1) |
 
 The full paths are `/usr/bin/ip` (the file iproute2 installs on Debian 13;
 `/usr/sbin/ip` links to it) and `/usr/sbin/nft`. The decoy's end is
 `decoy_netns.DECOY_VETH` (`az-decoy-ns0`), imported from the decoy's own
-check (§12), so the two cannot differ; the host's end is `az-decoy-host0`;
+check (§12) by the unit renderer (`hardening.py`, since G4), so the two
+cannot differ; the host's end is `az-decoy-host0`;
 both fit `IFNAMSIZ`. The /30 has two hosts, the bridge (`.1`) and the decoy
 (`.2`). `azazel_nexus.decoy` still has no default bridge prefix; the
 commissioned prefix replaces this fixed one when §7 Q9 reaches the units.
@@ -1094,7 +1116,11 @@ the host namespace and the inside needs one in the decoy's, so it would be two
 against; and its ordering and lifetime are not VM-checked. Not clearly
 simpler, so option (a) stays.
 
-**How a command is run** (`runtime/src/azazel_nexus_runtime/decoy_network.py`).
+**How a command is run** (`runtime/src/azazel_nexus_runtime/decoy_network.py`;
+since G4 the helper's and the verify unit's only: the namespace unit's
+commands are run by systemd from its unit file, one `ExecStart=` line each,
+under `TimeoutStartSec=30s` for the six together and `TimeoutStopSec=30s`
+for the undo, in place of 2 s per step).
 `os.posix_spawn` of an argument tuple in the run's plan (`run_fixed` refuses
 any other, before a process is made): the module's constants, which are
 exactly the goldens of the tests, and since #196 G1b, for the helper,
@@ -1128,8 +1154,8 @@ under its unit a missing source file fails the start (systemd's
 `243/CREDENTIALS`), and there is no `SetCredential=` fallback. Until G6 no
 pass writes the file, so a granted helper would fail to start; no pass
 grants it. `decoy_network` is the only module of the
-distribution that names `posix_spawn`, and only the two executables import it
-(`tests/unit/test_runtime_boundary.py`; no module on the model acquisition
+distribution that names `posix_spawn`, and only the helper's executable and
+its watch import it since G4 (`tests/unit/test_runtime_boundary.py`; no module on the model acquisition
 path may import it either). The names and addresses live in the leaf
 `decoy_addresses.py`, which imports nothing; the unit renderer
 (`hardening.py`) takes the decoy subnet from there and never loads the module
@@ -1154,7 +1180,10 @@ at stop, so while the bridge or the host end may still be there the rules
 stay (review of #273; before, a failed bridge deletion was followed by the
 table's). The namespace unit has no guard: deleting the namespace takes the
 pair with it. Leftovers of a crash make the next start of the namespace unit
-fail at its first step, which then removes only what it made itself.
+fail at its first step. The body then removed only what it had made itself;
+since G4 the unit's `ExecStopPost=` removes the pair and the namespace of
+those fixed names whatever made them, and the start still fails (grant §7,
+"The namespace unit after G4", for why that change is accepted).
 
 **The rules** (`NFT_RULESET`, a golden in the tests). One `inet` table,
 `azazel_decoy`, made with `create table`, so an existing table of that name
@@ -1222,7 +1251,9 @@ operator's setting is in
 `DECOY_HELPER_SANDBOX`. A narrower `SystemCallFilter=` for the helper is not
 in this change; the shared `@system-service` stays, and narrowing it is a VM
 item. `ExecStop=`, `ExecStopPost=`, `ExecStartPost=` and `ExecReload=` are
-now reserved keys: only the two pinned extras name one.
+now reserved keys: only the pinned extras name one (since G4: the helper's
+`ExecStop=`, and the namespace unit's further `ExecStart=` lines and its two
+`ExecStopPost=` lines; `ExecStart=` was reserved already).
 
 **Tests** (`tests/unit/test_decoy_network_body.py`, with the profile tests
 updated). A fake executor records every command: the exact command lists of

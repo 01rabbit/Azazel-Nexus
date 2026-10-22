@@ -31,7 +31,9 @@ LIBEXEC_RELATIVE = Path("usr/libexec/azazel")
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
+from azazel_nexus.activation import DECOY_NAMESPACE_UNIT  # noqa: E402
 from azazel_nexus_runtime import startup_wrapper  # noqa: E402
+from azazel_nexus_runtime.hardening import DECOY_NAMESPACE_START  # noqa: E402
 from azazel_nexus_runtime.install_platform import (  # noqa: E402
     CURRENT_INSTALL_PLATFORM_PROFILES,
     InstallPlatformProfile,
@@ -56,6 +58,15 @@ def declared_daemons(root: Path = ROOT) -> dict[str, str]:
             else:
                 continue
             fields = shlex.split(value)
+            if unit.name == DECOY_NAMESPACE_UNIT:
+                # The Deception Lite namespace unit (#196 G4 follow-up) runs
+                # the system's iproute2 ip from its unit file, no runtime
+                # entrypoint: its lines must be exactly the declared ones,
+                # and nothing is staged for it.
+                if tuple(fields) not in DECOY_NAMESPACE_START:
+                    raise ValueError(
+                        "the decoy namespace unit runs only its fixed ip commands")
+                continue
             if (unit.name == "azazel-decoy-verify.service"
                     and fields == ["/usr/libexec/azazel/az-decoy-netd", "verify"]):
                 # The Deception Lite verify unit (#196 G2) runs the network
