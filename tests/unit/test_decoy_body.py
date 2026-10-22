@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import socket
 import tempfile
@@ -415,8 +416,14 @@ def test_no_peer_address_is_sent_or_kept(decoy, intake):
     client.close()
     wait_for(lambda: len(intake.lines) == 1)
     (line,) = intake.lines
-    assert LOOPBACK.encode() not in line and b"127" not in line
-    assert str(source_port).encode() not in line
+    # The random event_id (hex) and the timestamp can hold any digits by
+    # chance; look for an address or the port as a token, outside event_id.
+    fields = json.loads(line)
+    fields.pop("event_id")
+    rest = json.dumps(fields).encode()
+    assert LOOPBACK.encode() not in line
+    assert re.search(rb"(?<![0-9])127[.]", rest) is None
+    assert re.search(rb"(?<![0-9])%d(?![0-9])" % source_port, rest) is None
     assert set(json.loads(line)) == {
         "schema_version", "event_id", "environment_id", "package_id", "node_id",
         "event_type", "observed_at", "evidence_refs", "metadata"}
