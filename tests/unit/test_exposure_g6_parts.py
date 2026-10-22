@@ -38,7 +38,9 @@ from azazel_nexus.activation import (
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 from azazel_nexus.decoy_scope import parse_scope_file
 from azazel_nexus.exposure_exclusivity import (
+    EXPOSURE_ENFORCEMENT_CODES,
     EXPOSURE_ENFORCEMENT_EXCLUSIVE,
+    EXPOSURE_ENFORCEMENT_UNREADABLE,
     exposure_enforcement_conflict,
 )
 from azazel_nexus.generation import GenerationRefused
@@ -63,15 +65,21 @@ from azazel_nexus_runtime.decoy_apparmor import (
 )
 from azazel_nexus_runtime.exposure_generation import (
     APPARMOR_DIRECTORY,
+    EXPOSURE_SECTION_CODES,
+    EXPOSURE_SECTION_DIFFERS,
     EXPOSURE_SECTION_KEYS,
+    EXPOSURE_SECTION_PHRASES,
+    EXPOSURE_SECTION_UNVERIFIABLE,
     ExposureFilesRefused,
     build_exposure_section,
+    expected_policy_hashes,
     measure_exposure_section_inputs,
     verify_exposure_section,
 )
 from azazel_nexus_runtime.exposure_withholding import (
     FB_TUNNELS_NOT_INIT_NET_ONLY,
     FB_TUNNELS_REASON_CODES,
+    FB_TUNNELS_UNREADABLE,
     HOST_FIREWALL_ACTIVE,
     HOST_FIREWALL_ENABLED,
     HOST_FIREWALL_REASON_CODES,
@@ -89,6 +97,15 @@ WATCH = unit_files.WATCH_UNITS
 SCOPE = (b'{"approved_v4":["10.20.0.0/24","172.16.8.0/22","192.168.10.0/24"],'
          b'"contract":"azazel-nexus/decoy-scope/v1","ingress":["enp3s0"]}\n')
 VENDOR = "usr/lib/systemd/system"
+#: The policy hashes an installer would record (G6: the SHA-256 of its
+#: `apparmor_parser -Q -o` output); here, any 64 lowercase hex digits.
+RECORDED = {name: sha256(b"compiled " + name.encode()).hexdigest()
+            for name in REQUIRED_ENFORCED_PROFILES}
+UNVERIFIABLE = re.escape(
+    f"{EXPOSURE_SECTION_UNVERIFIABLE}: "
+    f"{EXPOSURE_SECTION_PHRASES[EXPOSURE_SECTION_UNVERIFIABLE]}") + r"\Z"
+DIFFERS = re.escape(
+    f"{EXPOSURE_SECTION_DIFFERS}: {EXPOSURE_SECTION_PHRASES[EXPOSURE_SECTION_DIFFERS]}") + r"\Z"
 
 
 def _sha(data: bytes) -> str:
@@ -132,7 +149,8 @@ def test_the_section_digests_exactly_what_is_placed(root):
     assert measured["watch_unit_files"] == {u: rendered[u].encode() for u in WATCH}
     assert measured["apparmor_profiles"] == {
         n: (PROFILE_DIR / n).read_bytes() for n in REQUIRED_ENFORCED_PROFILES}
-    section = build_exposure_section(**measured, scope_file=SCOPE)
+    section = build_exposure_section(**measured, apparmor_policy_hashes=RECORDED,
+                                     scope_file=SCOPE)
     assert tuple(sorted(section)) == EXPOSURE_SECTION_KEYS
     assert section["unit_files"] == {u: _sha(rendered[u].encode())
                                      for u in sorted(EXPOSURE_UNITS)}
@@ -140,6 +158,7 @@ def test_the_section_digests_exactly_what_is_placed(root):
     assert section["apparmor_profiles"] == {
         n: _sha((PROFILE_DIR / n).read_bytes()) for n in REQUIRED_ENFORCED_PROFILES}
     assert section["scope_digest"] == parse_scope_file(SCOPE).scope_digest == _sha(SCOPE)
+    assert section["apparmor_policy_hashes"] == RECORDED
     verify_exposure_section(section, **measured, scope_file=SCOPE)
 
 
@@ -148,32 +167,35 @@ def test_the_watch_check_returns_the_bytes_it_compared(root):
     assert unit_files.require_watch_unit_files() == {u: rendered[u].encode() for u in WATCH}
 
 
-@pytest.mark.parametrize("key, name, label", [
-    ("unit_files", "azazel-decoyd.service", "exposure unit file digest differs"),
-    ("watch_unit_files", "azazel-decoy-trip.target", "watch unit file digest differs"),
-    ("apparmor_profiles", "azazel-decoy-nsd", "AppArmor profile file digest differs"),
+@pytest.mark.parametrize("key, name", [
+    ("unit_files", "azazel-decoyd.service"),
+    ("watch_unit_files", "azazel-decoy-trip.target"),
+    ("apparmor_profiles", "azazel-decoy-nsd"),
 ])
-def test_each_changed_file_is_refused_with_its_label(root, key, name, label):
+def test_each_changed_file_is_refused_as_differs(root, key, name):
     measured = _measured()
-    section = build_exposure_section(**measured, scope_file=SCOPE)
+    section = build_exposure_section(**measured, apparmor_policy_hashes=RECORDED,
+                                     scope_file=SCOPE)
     changed = {k: dict(v) for k, v in measured.items()}
     changed[key][name] = changed[key][name] + b"#\n"
-    with pytest.raises(GenerationRefused, match=label):
+    with pytest.raises(GenerationRefused, match=DIFFERS):
         verify_exposure_section(section, **changed, scope_file=SCOPE)
 
 
 def test_another_scope_is_refused(root):
     measured = _measured()
-    section = build_exposure_section(**measured, scope_file=SCOPE)
+    section = build_exposure_section(**measured, apparmor_policy_hashes=RECORDED,
+                                     scope_file=SCOPE)
     other = SCOPE.replace(b"enp3s0", b"enp4s0")
-    with pytest.raises(GenerationRefused, match="exposure scope digest differs"):
+    with pytest.raises(GenerationRefused, match=DIFFERS):
         verify_exposure_section(section, **measured, scope_file=other)
 
 
 @pytest.mark.parametrize("scope", [b"", b"{}\n", SCOPE.rstrip(b"\n"), SCOPE + b" ", "x"])
 def test_a_refused_scope_file_builds_no_section(root, scope):
-    with pytest.raises(GenerationRefused, match="scope file refused"):
-        build_exposure_section(**_measured(), scope_file=scope)
+    with pytest.raises(GenerationRefused, match=UNVERIFIABLE):
+        build_exposure_section(**_measured(), apparmor_policy_hashes=RECORDED,
+                               scope_file=scope)
 
 
 @pytest.mark.parametrize("key", ["unit_files", "watch_unit_files", "apparmor_profiles"])
@@ -191,8 +213,8 @@ def test_the_supplied_sets_must_be_exact(root, key, change):
     else:
         files[first] = files[first].decode()
     measured[key] = files
-    with pytest.raises(GenerationRefused, match="must match their set exactly"):
-        build_exposure_section(**measured, scope_file=SCOPE)
+    with pytest.raises(GenerationRefused, match=UNVERIFIABLE):
+        build_exposure_section(**measured, apparmor_policy_hashes=RECORDED, scope_file=SCOPE)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -202,13 +224,24 @@ def test_the_supplied_sets_must_be_exact(root, key, change):
     lambda s: s["unit_files"].pop("azazel-decoyd.service"),
     lambda s: s["watch_unit_files"].update({"azazel-decoy-trip.target": "md5:x"}),
     lambda s: s["apparmor_profiles"].update({"x": "sha256:" + "0" * 64}),
+    lambda s: s.pop("apparmor_policy_hashes"),
+    lambda s: s["apparmor_policy_hashes"].pop("azazel-decoyd"),
+    lambda s: s["apparmor_policy_hashes"].update({"x": "0" * 64}),
+    lambda s: s["apparmor_policy_hashes"].update({"azazel-decoyd": "0" * 63}),
+    lambda s: s["apparmor_policy_hashes"].update({"azazel-decoyd": "A" * 64}),
+    lambda s: s["apparmor_policy_hashes"].update({"azazel-decoyd": "sha256:" + "0" * 64}),
+    lambda s: s["apparmor_policy_hashes"].update({"azazel-decoyd": "0" * 64 + "\n"}),
+    lambda s: s.update(apparmor_policy_hashes=list(RECORDED.items())),
 ])
 def test_a_malformed_recorded_section_is_refused(root, mutate):
     measured = _measured()
-    section = build_exposure_section(**measured, scope_file=SCOPE)
+    section = build_exposure_section(**measured, apparmor_policy_hashes=RECORDED,
+                                     scope_file=SCOPE)
     mutate(section)
-    with pytest.raises(GenerationRefused, match="exposure section"):
+    with pytest.raises(GenerationRefused, match=UNVERIFIABLE):
         verify_exposure_section(section, **measured, scope_file=SCOPE)
+    with pytest.raises(GenerationRefused, match=UNVERIFIABLE):
+        expected_policy_hashes(section)
 
 
 def test_an_exposure_unit_file_without_its_profile_line_is_refused(root):
@@ -216,8 +249,10 @@ def test_an_exposure_unit_file_without_its_profile_line_is_refused(root):
     text = path.read_text()
     assert "AppArmorProfile=azazel-decoyd\n" in text
     path.write_text(text.replace("AppArmorProfile=azazel-decoyd\n", ""))
-    with pytest.raises(unit_files.UnitContentRefused):
+    with pytest.raises(unit_files.UnitContentRefused, match=UNVERIFIABLE) as caught:
         measure_exposure_section_inputs()
+    # The reader's own label stays on the chained cause.
+    assert type(caught.value.__cause__) is unit_files.UnitContentRefused
 
 
 def test_a_drop_in_on_an_exposure_unit_is_refused(root):
@@ -236,7 +271,7 @@ def test_a_masked_watch_unit_is_refused_by_the_measurement(root):
     for path in (etc, etc.parent):
         path.chmod(0o755)
     os.symlink("/dev/null", etc / "azazel-decoy-trip.target")
-    with pytest.raises(unit_files.UnitOverrideRefused):
+    with pytest.raises(unit_files.UnitOverrideRefused, match=UNVERIFIABLE):
         measure_exposure_section_inputs()
 
 
@@ -254,7 +289,7 @@ def test_an_unprotected_profile_file_is_refused(root, change):
         os.symlink(target, path)
     else:
         path.write_bytes(b"")
-    with pytest.raises(ExposureFilesRefused, match="AppArmor profile files unavailable"):
+    with pytest.raises(ExposureFilesRefused, match=UNVERIFIABLE):
         measure_exposure_section_inputs()
 
 
@@ -386,11 +421,18 @@ def test_only_two_passes():
     assert fb_tunnels_refusal(b"2\n") is None
 
 
-@pytest.mark.parametrize("value", [b"0\n", b"1\n", b"2", b"2\n\n", b" 2\n", b"02\n",
-                                   None, exposure_withholding.UNREADABLE, "2\n", 2])
+@pytest.mark.parametrize("value", [b"0\n", b"1\n", b"2", b"2\n\n", b" 2\n", b"02\n", b""])
 def test_anything_but_two_withholds(value):
     reason = fb_tunnels_refusal(value)
     assert reason is not None and reason.startswith(FB_TUNNELS_NOT_INIT_NET_ONLY + ":")
+
+
+@pytest.mark.parametrize("value", [None, exposure_withholding.UNREADABLE, "2\n", 2])
+def test_a_sysctl_absent_or_not_read_withholds_as_unreadable(value):
+    """Review of #196 G6 preparation (M1): not read is its own code, not
+    "not 2"."""
+
+    assert fb_tunnels_refusal(value).startswith(FB_TUNNELS_UNREADABLE + ":")
 
 
 def test_the_reader_is_bounded_and_follows_no_link(tmp_path, monkeypatch):
@@ -501,10 +543,11 @@ def test_malformed_expected_hashes_withhold(expected):
 def test_a_different_loaded_policy_withholds():
     other = ("0" * 64 + "\n").encode()
     reason = policy_hash_refusal(_entries(**{"azazel-decoy-nsd": other}), HASHES)
-    assert reason.startswith(LSM_POLICY_DIFFERS + ": 1 of the 4")
+    assert reason.startswith(LSM_POLICY_DIFFERS + ":")
+    assert not re.search(r"\d", reason.split(":", 1)[1])
 
 
-NO_HASH = LSM_POLICY_UNVERIFIABLE + ": the kernel keeps no readable policy hash"
+NO_HASH = LSM_POLICY_UNVERIFIABLE + ":"
 
 
 def _linked_policy(tmp_path, monkeypatch, target=None, hashes=HASHES, raw_sha256=True):
@@ -577,7 +620,7 @@ def test_the_reader_compares_raw_sha256_not_sha256(tmp_path, monkeypatch):
         (base / f"{name}.{120 + index}" / "sha256").write_bytes(
             (HASHES[name] + "\n").encode())
     assert policy_hash_refusal(read_policy_hashes(), HASHES).startswith(
-        LSM_POLICY_DIFFERS + ": 4 of the 4")
+        LSM_POLICY_DIFFERS + ":")
 
 
 def test_sha256_without_raw_sha256_withholds(tmp_path, monkeypatch):
@@ -720,6 +763,65 @@ def test_the_lsm_judgements_in_order():
     assert exposure_lsm_withholding(lsm, ENFORCED, _loaded(), _entries(), HASHES) is None
 
 
+def _section_recording(hashes):
+    files = {
+        "unit_files": {u: b"[Unit]\n" + u.encode() for u in EXPOSURE_UNITS},
+        "watch_unit_files": {u: b"[Unit]\n" + u.encode() for u in WATCH},
+        "apparmor_profiles": {n: b"profile " + n.encode() for n in REQUIRED_ENFORCED_PROFILES},
+    }
+    return files, build_exposure_section(**files, apparmor_policy_hashes=hashes,
+                                         scope_file=SCOPE)
+
+
+def test_the_section_records_the_expected_policy_hashes_for_the_lsm_judgement():
+    """Review of #196 G6 preparation (M2): the kernel's expected hashes are a
+    field of the exposure section, in the form `exposure_lsm_withholding`
+    takes as `expected`. Nothing derives or records one in this build."""
+
+    files, section = _section_recording(HASHES)
+    assert section["apparmor_policy_hashes"] == HASHES
+    assert list(section["apparmor_policy_hashes"]) == sorted(REQUIRED_ENFORCED_PROFILES)
+    expected = expected_policy_hashes(section)
+    assert expected == HASHES and type(expected) is dict
+    expected["azazel-decoyd"] = "f" * 64
+    assert section["apparmor_policy_hashes"] == HASHES  # a copy
+    lsm = b"lockdown,capability,apparmor\n"
+    assert exposure_lsm_withholding(lsm, ENFORCED, _loaded(), _entries(),
+                                    expected_policy_hashes(section)) is None
+    other = ("0" * 64 + "\n").encode()
+    assert exposure_lsm_withholding(
+        lsm, ENFORCED, _loaded(), _entries(**{"azazel-decoyd": other}),
+        expected_policy_hashes(section)).startswith(LSM_POLICY_DIFFERS + ":")
+    # The record is not a measurement of the files: verify checks its form
+    # only, so another record of the same files verifies.
+    _, recorded_other = _section_recording(RECORDED)
+    verify_exposure_section(recorded_other, **files, scope_file=SCOPE)
+    # Each accepted hash is one `policy_hash_refusal` accepts, and no other.
+    from azazel_nexus_runtime import exposure_generation
+
+    assert ([bool(exposure_generation._POLICY_HASH.match(p)) for p in _HASH_PROBES]
+            == [decoy_apparmor._hex_digest(p) for p in _HASH_PROBES]
+            == [True, True] + [False] * 6)
+
+
+_HASH_PROBES = ["0" * 64, "a" * 64, "A" * 64, "0" * 63, "0" * 65, "g" * 64,
+                "0" * 64 + "\n", " " + "0" * 63]
+
+
+@pytest.mark.parametrize("hashes", [
+    None, {}, list(HASHES.items()),
+    {k: v for k, v in HASHES.items() if k != "azazel-decoyd"},
+    {**HASHES, "other": "0" * 64},
+    {**HASHES, "azazel-decoyd": "0" * 63},
+    {**HASHES, "azazel-decoyd": "A" * 64},
+    {**HASHES, "azazel-decoyd": "sha256:" + "0" * 64},
+    {**HASHES, "azazel-decoyd": ("0" * 64).encode()},
+])
+def test_a_policy_hash_record_of_another_form_builds_no_section(hashes):
+    with pytest.raises(GenerationRefused, match=UNVERIFIABLE):
+        _section_recording(hashes)
+
+
 def test_the_new_lsm_reason_codes_are_distinct_from_the_g3_ones():
     assert LSM_LOADED_REASON_CODES == ("lsm_unit_profile_differs", "lsm_policy_unverifiable",
                                        "lsm_policy_differs")
@@ -756,9 +858,9 @@ def test_enforcement_without_the_exposure_tier_does_not_conflict():
 
 
 @pytest.mark.parametrize("definitions", [None, 3, ["azazel-decoyd.service"], (object(),)])
-def test_anything_but_definitions_is_refused(definitions):
+def test_anything_but_definitions_is_refused_as_unreadable(definitions):
     assert exposure_enforcement_conflict(definitions).startswith(
-        EXPOSURE_ENFORCEMENT_EXCLUSIVE + ":")
+        EXPOSURE_ENFORCEMENT_UNREADABLE + ":")
 
 
 # -- not wired -------------------------------------------------------------------
@@ -788,7 +890,7 @@ NEW_NAMES = (
     "read_exposure_lsm_policy", "host_firewall_refusal", "fb_tunnels_refusal",
     "read_fb_tunnels", "exposure_enforcement_conflict", "build_exposure_section",
     "verify_exposure_section", "measure_exposure_section_inputs",
-    "measure_apparmor_profile_files",
+    "measure_apparmor_profile_files", "expected_policy_hashes",
 )
 
 
@@ -823,7 +925,8 @@ def test_the_new_names_appear_only_where_they_are_defined():
 
 def test_the_new_reason_codes_appear_only_where_they_are_defined():
     codes = (LSM_LOADED_REASON_CODES + HOST_FIREWALL_REASON_CODES
-             + FB_TUNNELS_REASON_CODES + (EXPOSURE_ENFORCEMENT_EXCLUSIVE,))
+             + FB_TUNNELS_REASON_CODES + EXPOSURE_ENFORCEMENT_CODES
+             + EXPOSURE_SECTION_CODES)
     for path in _product_modules():
         text = path.read_text(encoding="utf-8")
         for code in codes:
@@ -874,7 +977,8 @@ def test_a_pass_with_every_part_poisoned_still_withholds_the_tier(tmp_path, monk
                                 "read_fb_tunnels")),
         (exposure_generation, ("build_exposure_section", "verify_exposure_section",
                                "measure_exposure_section_inputs",
-                               "measure_apparmor_profile_files")),
+                               "measure_apparmor_profile_files",
+                               "expected_policy_hashes")),
         (unit_files, ("measure_exposure_unit_files", "require_watch_unit_files")),
         (exposure_exclusivity, ("exposure_enforcement_conflict",)),
     ):

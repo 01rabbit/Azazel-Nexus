@@ -978,7 +978,9 @@ def test_a_profile_missing_from_the_listing_withholds(name):
 def test_an_empty_listing_withholds_as_absent():
     reason = exposure_lsm_refusal(LSM, b"")
     assert reason is not None and reason.startswith(LSM_PROFILES_ABSENT + ":")
-    assert "4 of the 4" in reason
+    # One fixed phrase per code: no count (review of #196 G6 preparation, M1).
+    assert reason == exposure_lsm_refusal(LSM, _without(b"azazel-decoyd"))
+    assert not any(c.isdigit() for c in reason)
 
 
 @pytest.mark.parametrize("mode", [b"complain", b"kill", b"unconfined", b"prompt", b"user"])
@@ -1026,6 +1028,15 @@ def test_apparmor_disabled_withholds(lsm, profiles):
     b"azazel-decoyd (Enforce)",
     b"azazel-decoyd (enforce)\r",
     b"azazel-decoy-nsd (enforce) ",
+    # A child profile or a hat of a required profile, in any mode (review of
+    # #196 G6 preparation, L5): none is expected, and what it may do is not
+    # judged. The former child of the G4 follow-up, if still loaded, is one.
+    b"azazel-decoy-nsd//ip (complain)",
+    b"azazel-decoy-nsd//ip (enforce)",
+    b"azazel-decoyd//hat (enforce)",
+    b"azazel-decoy-netd//null-/usr/sbin/nft (complain)",
+    b" azazel-decoy-verify//x (kill)",
+    b"azazel-decoyd//",
 ])
 def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
     """Finding 8 of #285: the required names' lines are read strictly."""
@@ -1042,8 +1053,9 @@ def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
     b"azazel-decoyd-lookalike (complain)",
     b":ns:azazel-decoyd (complain)",
     b"garbage without a mode",
-    # The former child (G4 follow-up): a stale listing of it is not required.
-    b"azazel-decoy-nsd//ip (complain)",
+    # Another namespace's child, and a look-alike's: not ours.
+    b":ns:azazel-decoy-nsd//ip (complain)",
+    b"azazel-decoy-nsdx//ip (complain)",
 ])
 def test_other_lines_in_any_form_do_not_matter(line):
     """Finding 8 of #285: only the required names' lines are judged."""
