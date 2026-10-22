@@ -376,6 +376,23 @@ def test_without_the_pinned_fabric_it_withholds(monkeypatch):
     assert reason == _refusal(ROLE_EVIDENCE_UNAVAILABLE)
 
 
+class _Exploding(dict):
+    def __getitem__(self, key):
+        raise RuntimeError("not a document")
+
+    def get(self, key, default=None):
+        raise RuntimeError("not a document")
+
+
+@needs_fabric
+def test_any_other_exception_withholds_as_evidence_unavailable():
+    context = _node()
+    proposal = _Exploding(_proposal(context))
+    reason = resolve_role_interfaces(proposal=proposal, current_inventory=_current(),
+                                     scope=_scope(context))
+    assert reason == _refusal(ROLE_EVIDENCE_UNAVAILABLE)
+
+
 @pytest.mark.parametrize("bad", [None, 0, "x", b"x", [], (), {}, object()])
 def test_an_argument_of_any_shape_gives_a_reason_never_an_exception(bad):
     for kwargs in (dict(proposal=bad, current_inventory=None, scope=None),

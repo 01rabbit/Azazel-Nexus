@@ -41,10 +41,22 @@ the one interface an identity resolves to, never looked up by name. Refused:
 * `role_interface_unresolved`: an assignment's identity matches no
   interface of this boot or several, or the one it matches has no kernel
   name;
-* `role_interface_ambiguous`: one interface holds two roles, or a name
-  belongs to more than one interface of this boot;
+* `role_interface_ambiguous`: a role interface's name belongs to more than
+  one interface of this boot (one with no role counted);
 * `role_interface_name_refused`: a name fails grant §4.3
   (`decoy_scope.interface_name_allowed`).
+
+**A rename withholds; it never rebinds.** The inventories are compared
+whole, the kernel names included, so a boot in which any interface has
+another name than at commissioning withholds as `role_inventory_changed`
+and no role moves to another interface. It follows that every name this
+returns is the name the interface had when it was commissioned.
+
+**The caller passes only a proposal whose signature it has verified.**
+Nothing here verifies a signature; restoring a document is not trusting it.
+
+One interface in two roles never reaches the resolution: the proposal's
+own decoder refuses it (`role_evidence_unavailable`).
 
 No `management` or no `observation` role is not a refusal: an interface
 that holds neither is "every other interface" to the pass's judgement,
@@ -125,8 +137,8 @@ ROLE_INTERFACE_PHRASES: dict[str, str] = {
                              "inventory"),
     ROLE_INTERFACE_UNRESOLVED: ("a commissioned identity matches no interface "
                                 "of this boot, several, or one without a name"),
-    ROLE_INTERFACE_AMBIGUOUS: ("an interface holds more than one role, or a "
-                               "name belongs to more than one interface"),
+    ROLE_INTERFACE_AMBIGUOUS: ("a role interface's name belongs to more than "
+                               "one interface"),
     ROLE_INTERFACE_NAME_REFUSED: "a role interface's name is not allowed",
 }
 
@@ -200,17 +212,18 @@ def _resolve(proposal: Any, current_inventory: Any, scope: Any) -> RoleInterface
                                            strict=True):
             identity = identify_interface(current_inventory.interfaces, assignment.selector)
             name = identity.kernel_name_observed
+            # `identity.interface_key != key` is a second defence and not
+            # reached: the inventories are equal, so the key is the retained one.
             if identity.interface_key != key or type(name) is not str or not name:
                 raise _Withheld(ROLE_INTERFACE_UNRESOLVED)
             resolved.append((key, role, name))
     except _UNREADABLE:
         raise _Withheld(ROLE_INTERFACE_UNRESOLVED) from None
 
-    keys = [key for key, _, _ in resolved]
-    names = [name for _, _, name in resolved]
+    # Two role interfaces of one name are counted here too. (An interface in
+    # two roles was refused when the proposal was restored.)
     observed = [item.kernel_name_observed for item in current_inventory.interfaces]
-    if (len(set(keys)) != len(keys) or len(set(names)) != len(names)
-            or any(observed.count(name) != 1 for name in names)):
+    if any(observed.count(name) != 1 for _, _, name in resolved):
         raise _Withheld(ROLE_INTERFACE_AMBIGUOUS)
 
     wanted = {INGRESS_ROLE: [], _MANAGEMENT: [], _OBSERVATION: []}
@@ -237,5 +250,5 @@ def resolve_role_interfaces(*, proposal: Any, current_inventory: Any,
         return _resolve(proposal, current_inventory, scope)
     except _Withheld as withheld:
         return _refusal(withheld.code)
-    except _UNREADABLE:
+    except Exception:  # noqa: BLE001 - any other failure withholds, never raises
         return _refusal(ROLE_EVIDENCE_UNAVAILABLE)
