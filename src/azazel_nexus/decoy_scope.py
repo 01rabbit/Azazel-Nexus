@@ -83,6 +83,7 @@ __all__ = [
     "ScopeFile",
     "VERIFY_SCOPE_CREDENTIAL_PATH",
     "decode_deception_scope",
+    "interface_name_allowed",
     "parse_scope_file",
     "read_scope_credential",
     "read_scope_file",
@@ -257,13 +258,29 @@ def decode_deception_scope(section: object, *,
     return scope
 
 
+def interface_name_allowed(name: object) -> bool:
+    """Whether `name` may name an interface of a role (grant §4.3).
+
+    `[A-Za-z0-9_.-]{1,15}`, not beginning with `az-decoy` (the decoy
+    network's own links), and none of `lo`, `all`, `default`, `.` and `..`
+    (compared without case), nor a name that begins with `-` or is all
+    digits. The scope's ingress names are checked with it, and the pass's
+    reading of reachability §6 (`decoy_reachability`, #196 G6) checks the
+    ingress, management and observation names with it before any of them
+    becomes a path under `/proc/sys/net/ipv{4,6}/conf`.
+    """
+
+    return (type(name) is str and _IFNAME.fullmatch(name) is not None
+            and name.lower() not in _RESERVED_IFNAMES and not name.startswith("-")
+            and not name.isdigit()
+            and not name.lower().startswith(_RESERVED_IFNAME_PREFIX))
+
+
 def _ingress_names(value: object) -> tuple[str, ...]:
     if type(value) is not list or not 1 <= len(value) <= MAX_INGRESS:
         raise DecoyScopeRefused("the ingress interfaces are not a list of 1 to 4")
     for name in value:
-        if (type(name) is not str or not _IFNAME.fullmatch(name)
-                or name.lower() in _RESERVED_IFNAMES or name.startswith("-")
-                or name.isdigit() or name.lower().startswith(_RESERVED_IFNAME_PREFIX)):
+        if not interface_name_allowed(name):
             raise DecoyScopeRefused("an ingress interface name is not allowed")
     for before, after in zip(value, value[1:]):
         if not before < after:

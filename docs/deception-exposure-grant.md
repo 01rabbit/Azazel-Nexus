@@ -301,10 +301,13 @@ needs (health, lease, generation, clock, high water):
 6. **the static preconditions**: `net.core.fb_tunnels_only_for_init_net` is
    `2` (§13 of the prerequisites document) and the forwarding condition of
    §4.5, specified in
-   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-not-implemented-here)
+   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired)
    (only its rows in bold were decided by the owner; the others are that
    design's narrowing defaults, required before G6, which the owner may
-   overturn).
+   overturn). The forwarding part is **implemented, not wired** (#196 G6
+   preparation A): `decoy_reachability.pass_reachability_departures` judges
+   it from values passed in and nothing calls it; the
+   `fb_tunnels_only_for_init_net` read is not part of it and is G6's.
 
 Each failure withholds the tier with its own reason code, and nothing else.
 
@@ -489,6 +492,25 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     (operations); the leftovers are detected and reported. The `Conflicts=`
     above stops the three processes in that state (VM-checked, §11); the
     clean-up and the stop order are not covered by it.
+    **The detection is implemented, not wired** (#196 G6 preparation A):
+    `decoy_residue.exposure_residue_departures`, a pure function over
+    values the caller read (each exposure unit's `LoadState`,
+    `UnitFileState` and `ActiveState` from the service manager's bus, and
+    the `(status, output)` of `ip -j netns list`, `ip -j link show` and
+    `nft -j list tables`), returns `exposure_unit_masked_running` (masked
+    by `LoadState` or `UnitFileState` while `ActiveState` is neither
+    `inactive` nor `failed`), `exposure_leftovers_present` (the namespace
+    `azazel-decoy`, the links `az-decoy-host0` or `az-decoy0`, or the table
+    `inet azazel_decoy` present while every exposure unit is `inactive` or
+    `failed`; a running unit's own objects are not leftovers) and
+    `exposure_state_unreadable`, in that order, with fixed phrases that
+    name no object. It reads nothing, stops nothing and removes nothing; it
+    adds no unit operation and no `DbusUnitManager` method. Nothing calls
+    it: `_withholding_reason` still withholds the tier as
+    `isolation_evidence_absent`, and a test fails the day anything imports
+    the module. Which bus call reads the three properties (the controller
+    has `GetUnitFileState` and `GetActiveState` today, not `LoadState`) is
+    part of wiring it, in G6.
   - (b) **The controller masks but does not stop.** The controller's
     preflight masks an exposure unit that is running without a grant, and
     leaves it running (seen in the second G4 rehearsal). It has no
@@ -564,6 +586,9 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
   namespace unit's child, §7) and the installer compiles and places it.
 - **Import closure.** `az-decoy-netd` gains the runtime module `decoy_watch`
   and no library module; the namespace unit and the decoy load nothing new.
+  Since #196 G6 preparation A it also loads `decoy_reachability` (the reads
+  and judgements of reachability §6 moved out of `decoy_watch`, under the
+  helper's rules), and still no new library module.
 
 ## 7. LSM: AppArmor as a gate (F6)
 
@@ -927,7 +952,7 @@ pass and the existing tests that pin it stay.
 | G3 | AppArmor profiles, `AppArmorProfile=`, the pass's reading of enforce mode (as a withholding reason that is never reached yet); installer adds the package | Q8 |
 | G4 | VM rehearsal of G1–G3 with markers placed by hand and a VM-only rehearsal key (never evidence); the items of §11 | G1–G3 |
 | G5 | hardware: `HG-06`, `HG-09`, `HG-10` on the real host | G4, owner |
-| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; the two open items of §6.3 "For G6" (a running exposure unit whose definition a mask removed, and whether the controller stops what it masks, with no new unit operation); an isolation record whose `scope_digest` is `none` (a helper run without a scope) is refused by the pass and the grant path, and a granted decoy requires the digest of the scope the pass rendered; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted | G5, Q5, Q10, Q11 |
+| G6 | the grant: approval v3, the allowlist and policy scope, the generation's exposure section, the pass rendering the scope, the conditions of §5 in `_withholding_reason`, the changed tripwire; the two open items of §6.3 "For G6" (a running exposure unit whose definition a mask removed, and whether the controller stops what it masks, with no new unit operation); an isolation record whose `scope_digest` is `none` (a helper run without a scope) is refused by the pass and the grant path, and a granted decoy requires the digest of the scope the pass rendered; a VM rehearsal of grant → reboot → start and of each refusal on the branch before merge; merged only after G5 is accepted. **Preparation A (implemented, not wired):** the pass's judgement of [reachability](deception-exposure-reachability.md) §6 (R1, R2, R5; `decoy_reachability.pass_reachability_departures`, with the reads and the verify's R4 judgement moved into the same module, the verify unchanged) and the detection of item (a) of §6.3 (`decoy_residue.exposure_residue_departures`); both pure, called by nothing, the tier still withheld as `isolation_evidence_absent` | G5, Q5, Q10, Q11 |
 
 P5 and P6 of the prerequisites document (decisions, redirect) are unchanged
 and come after G6.

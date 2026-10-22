@@ -731,7 +731,7 @@ the package and are never masked, enabled or granted (they have no
   10 s (`azazel-decoy-verify.timer`). It lists the table and the host's links
   and compares them with the scope exactly as the helper's isolation check
   does, and it re-reads the reachability conditions
-  ([reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-not-implemented-here),
+  ([reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired),
   R4): forwarding on the ingress interfaces and off everywhere else but
   `az-decoy0` (IPv6 off everywhere), `proxy_arp` off, no IPv4 routing rule
   before the main table but the local rule and each ingress's two K1 rules,

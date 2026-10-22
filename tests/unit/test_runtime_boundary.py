@@ -896,8 +896,12 @@ def test_the_family_scan_allows_only_named_constants_and_af_unix(tmp_path):
 #: the helper's executable (`az-decoy-netd verify`) and under the same rules:
 #: no socket (it reads rules and routes through the fixed `ip -j` commands of
 #: `decoy_network.WATCH_READS`), no process of its own, no environment.
+#: #196 G6 preparation A: the watch's reads and judgements of reachability §6
+#: moved to `decoy_reachability.py`, shared with the pass's judgement (not
+#: wired), under the same rules.
 NETD_PROCESS = {"decoy_netd.py", "decoy_isolation_check.py", "decoy_network.py",
-                "decoy_addresses.py", "decoy_netns.py", "decoy_watch.py"}
+                "decoy_addresses.py", "decoy_netns.py", "decoy_watch.py",
+                "decoy_reachability.py"}
 
 #: What no module of either helper may name: everything the decoy process
 #: may not, but `posix_spawn` (pinned to `decoy_network.py` alone, below),
@@ -951,13 +955,25 @@ HELPER_MUTATIONS = [
     # #196 G2: the watch may not open a netlink socket of its own, nor start
     # a process, nor read the environment.
     ("watch-socket", "decoy_watch.py",
-     ("import os\n", "import os\nimport socket\n"), "decoy_watch.py"),
+     ("import sys\n", "import sys\nimport socket\n"), "decoy_watch.py"),
     ("watch-fork", "decoy_watch.py",
-     ("import os\n", "import os\nfrom os import fork\n"), "decoy_watch.py"),
+     ("import sys\n", "import sys\nfrom os import fork\n"), "decoy_watch.py"),
     ("watch-environ", "decoy_watch.py",
-     ("import os\n", "import os\nfrom os import environ\n"), "decoy_watch.py"),
+     ("import sys\n", "import sys\nfrom os import environ\n"), "decoy_watch.py"),
     ("watch-new-import", "decoy_watch.py",
-     ("from .decoy_addresses import", "from .systemd_bus import connect\nfrom .decoy_addresses import"),
+     ("from .decoy_isolation_check import",
+      "from .systemd_bus import connect\nfrom .decoy_isolation_check import"),
+     "decoy_netd.py closure"),
+    # #196 G6 preparation A: the shared reachability reads, likewise.
+    ("reachability-socket", "decoy_reachability.py",
+     ("import os\n", "import os\nimport socket\n"), "decoy_reachability.py"),
+    ("reachability-fork", "decoy_reachability.py",
+     ("import os\n", "import os\nfrom os import fork\n"), "decoy_reachability.py"),
+    ("reachability-environ", "decoy_reachability.py",
+     ("import os\n", "import os\nfrom os import environ\n"), "decoy_reachability.py"),
+    ("reachability-new-import", "decoy_reachability.py",
+     ("from .decoy_addresses import",
+      "from .systemd_bus import connect\nfrom .decoy_addresses import"),
      "decoy_netd.py closure"),
     ("netns-methodcaller", "decoy_netns.py",
      ("import os\n", "import os\nfrom operator import methodcaller\n"), "decoy_netns.py"),
@@ -1004,6 +1020,8 @@ DECOY_IMPORT_CLOSURES = {
         "azazel_nexus_runtime.decoy_isolation_check", "azazel_nexus_runtime.decoy_netd",
         "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
         "azazel_nexus_runtime.decoy_watch",
+        # #196 G6 preparation A: the watch's reachability reads, moved.
+        "azazel_nexus_runtime.decoy_reachability",
     },
 }
 

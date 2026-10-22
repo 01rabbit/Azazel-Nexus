@@ -231,7 +231,7 @@ exists only after the tier is granted and the helper has run. So:
   reads the rules and withholds. The pass closes the grant, not that window;
   it is a VM item (§11) and part of R6.
 
-## 6. The pass condition (G6; not implemented here)
+## 6. The pass condition (G6; implemented, not wired)
 
 Condition 6 of [grant §5](deception-exposure-grant.md#5-the-grant-condition)
 ("the forwarding condition of §4.5") is this section. The pass reads; it never
@@ -241,6 +241,37 @@ writes. The same reads are repeated by the verify unit of
 units as a table departure does. Read once, at the pass, K1 could be lost
 afterwards (a networkd reload, a link flap that re-configures the link) with
 nothing noticing.
+
+**Implemented, not wired (#196 G6 preparation A).** The pass's judgement of
+this section is `decoy_reachability.pass_reachability_departures`, a pure
+function over the values read (the sysctl trees of `read_sysctls`, the
+`(status, output)` of `ip -j -4 rule show` and `ip -j -4 route show table
+main`, and the ingress, management and observation names already resolved
+from their roles). It returns the nine codes of the table below in its
+order. **Nothing calls it**: `_withholding_reason` still withholds the tier
+as `isolation_evidence_absent` on every pass, and a test fails the day the
+pass, the controller or the library imports the module. The reads and the
+verify's judgement (R4) moved into the same module (`decoy_watch` re-exports
+them; the verify's behaviour is G2's). What the pass's judgement adds to the
+verify's, as this section states it: the roles (`forwarding_role_on`; a role
+interface that forwards gives that code, not `forwarding_other_on`);
+`az-decoy0` is not exempt; no route inside `10.255.196.0/24` at all; every
+name passes the scope's rule (`decoy_scope.interface_name_allowed`, which
+refuses `.`, `..`, `all`, `default` and `lo`) and its path under `conf/` has
+that directory as its exact parent (`conf_entry_path`), with 1 to 4 ingress
+names and no name in two places, or the whole judgement is
+`forwarding_unreadable` alone; and the rules are compared **whole**: each
+rule below 32766, with `protocol` left out, must equal the local rule or one
+rule of an ingress's K1 pair key for key, as iproute2 6.15 prints rules
+added by `ip rule` (container-checked), so any other selector or flag (`not`,
+`srclen`, `oif`, `fwmark`, `tos`, `uid_start`, `l3mdev`, `ipproto`, ports,
+`goto`, `tun_id`, `suppress_ifgroup`, `flow_to`, `iif_detached`) fails.
+*Still open:* the attribute set of networkd's rules on the VM (§11 item 8)
+may differ and is compared before G6 is wired; and a rule added with a
+`dscp` or `flowlabel` selector was listed **without** it in the container
+(iproute2 6.15 on the container host's kernel; whether the kernel dropped
+the attribute or `ip` does not print it was not established), so until the
+VM shows otherwise the comparison cannot be said to refuse those two.
 
 **Interfaces.** The ingress names come from the `deception_bridge` role, and
 the `management` and `observation` names from their roles, resolved exactly
@@ -476,10 +507,12 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
    container bridges), and `proxy_arp` off. A host where anything else
    forwards is not a decoy host in this phase; `default` at `0` also keeps an
    interface added after the pass from forwarding. *Required before G6.*
+   **Implemented, not wired** in the pass's judgement (§6).
 2. **R2.** Containment of the ingress by K1, with the route precondition of
    §5, checked as `ingress_containment_absent` and `decoy_prefix_routed`.
    *Required before G6.* Without it a granted tier implies a node that routes
-   whatever its ingress receives.
+   whatever its ingress receives. **Implemented, not wired** in the pass's
+   judgement (§6), with the rules compared whole.
 3. **R3** (implemented in G1b). The G1 ruleset: the reply accept gains `oifname { <ingress> }`;
    the forward chain gains K2's drop; both rendered from the scope and
    compared by the isolation check like the rest.
@@ -498,6 +531,7 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
    `ip -j` commands, not a netlink parser of Nexus's own.
 5. **R5.** IPv6 forwarding off on `all`, `default` and every interface (the
    decoy is IPv4 only, and K1 does not cover IPv6). *Required before G6.*
+   **Implemented, not wired** in the pass's judgement (§6).
 6. **R6 (open, returned to the owner).** The reading of commissioning §2 in
    §5: forwarding switched on for the ingress before activation is
    compatible with "must not forward" only because K1 discards everything
