@@ -20,7 +20,8 @@ What the pass adds to the verify's judgement, as §6 states it:
   roles and covers them as "every other interface" (`forwarding_other_on`);
 * `az-decoy0` is not exempt (it does not exist before the helper runs, so a
   value for it is another interface that forwards);
-* the rules before `main` are compared **exactly**: every rule below
+* the rules before `main` are compared **exactly** (and at priority 32766
+  there is exactly the one `from all lookup main`): every rule below
   priority 32766 must equal, attribute for attribute as `ip -j` prints it,
   either the local rule or one rule of an ingress's K1 pair, with the rule's
   `protocol` left out; any other key (`not`, `srclen`, `oif`, `fwmark`,
@@ -281,6 +282,10 @@ _DECOY_NETWORK = ipaddress.IPv4Network(DECOY_SUBNET)
 _HEADROOM = ipaddress.IPv4Network("10.255.196.0/24")
 #: Who installed a rule: left out of the pass's exact comparison (§6).
 _IGNORED_RULE_KEYS = frozenset({"protocol"})
+#: The one rule the pass accepts at the main table's own priority: rules of
+#: equal priority are tried in the order they were added, so another rule
+#: there could still act before `main` (§6, review of #293).
+_MAIN_RULE = {"priority": _MAIN_PRIORITY, "src": "all", "table": "main"}
 
 
 def parse_json_list(output: bytes) -> Optional[list[dict]]:
@@ -363,23 +368,28 @@ def _rules_exact(rules: list[dict], ingress: tuple[str, ...]) -> Optional[bool]:
     `protocol` left out, must equal one expected rule attribute for
     attribute (keys, values and their JSON types), and the two lists must
     be equal as multisets: no rule missing, none extra, none twice. Any
-    other selector or flag is an extra key, so it fails. None when a rule
-    has no integer priority.
+    other selector or flag is an extra key, so it fails. At priority 32766
+    itself there must be exactly one rule, `from all lookup main`, compared
+    the same way. None when a rule has no integer priority.
     """
 
-    below = []
+    below, at_main = [], []
     for rule in rules:
         priority = rule.get("priority")
         if type(priority) is not int:
             return None
+        stripped = {key: value for key, value in rule.items()
+                    if key not in _IGNORED_RULE_KEYS}
         if priority < _MAIN_PRIORITY:
-            below.append({key: value for key, value in rule.items()
-                          if key not in _IGNORED_RULE_KEYS})
+            below.append(stripped)
+        elif priority == _MAIN_PRIORITY:
+            at_main.append(stripped)
 
     def canonical(rule: dict) -> str:
         return json.dumps(rule, sort_keys=True)
 
-    return (sorted(map(canonical, below))
+    return (at_main == [_MAIN_RULE]
+            and sorted(map(canonical, below))
             == sorted(map(canonical, _expected_rules(ingress))))
 
 
@@ -515,17 +525,42 @@ def reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
     return tuple(code for code in REACHABILITY_CODES if code in found)
 
 
-def _names_closed(ingress: tuple[str, ...], management: tuple[str, ...],
-                  observation: tuple[str, ...]) -> bool:
-    """1 to 4 ingress names, every name allowed, no name in two places."""
+def _names_closed(ingress: object, management: object, observation: object) -> bool:
+    """1 to 4 ingress names, every name allowed, no name in two places.
 
+    Tuples of strings only; anything else is not closed (never an exception).
+    """
+
+    if not (type(ingress) is tuple and type(management) is tuple
+            and type(observation) is tuple):
+        return False
     names = (*ingress, *management, *observation)
-    return (type(ingress) is tuple and type(management) is tuple
-            and type(observation) is tuple
+    return (all(type(name) is str for name in names)
             and 1 <= len(ingress) <= MAX_INGRESS
             and len(set(names)) == len(names)
             and all(conf_entry_path(family, name) is not None
                     for name in names for family in _FAMILIES))
+
+
+def _dump_closed(read: object) -> bool:
+    """`(status, output)`: an `int` status and `bytes` output."""
+
+    return (type(read) is tuple and len(read) == 2 and type(read[0]) is int
+            and type(read[1]) is bytes)
+
+
+def _tree_closed(tree: object) -> bool:
+    """None, or `{str: {str: int | None}}` as `read_sysctls` gives it."""
+
+    return tree is None or (type(tree) is dict and all(
+        type(name) is str and type(values) is dict
+        and all(type(key) is str and (value is None or type(value) is int)
+                for key, value in values.items())
+        for name, values in tree.items()))
+
+
+def _trees_closed(ipv4: object, ipv6: object) -> bool:
+    return _tree_closed(ipv4) and (ipv6 is IPV6_ABSENT or _tree_closed(ipv6))
 
 
 def pass_reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
@@ -560,10 +595,15 @@ def pass_reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
     * `forwarding_unreadable`: a read absent or not in its closed form, a
       dump that failed, or a name that is not 1 to 4 ingress names, each
       allowed by grant §4.3 and the rules of §6, in no two places; in that
-      last case nothing else is judged and it is the only code.
+      case, and for any argument of another shape (a name that is not a
+      string, a dump that is not `(int, bytes)`, a tree that is not
+      `{str: {str: int | None}}`), nothing else is judged and it is the only
+      code: an argument never raises.
     """
 
-    if not _names_closed(ingress, management, observation):
+    if not (_names_closed(ingress, management, observation)
+            and _dump_closed(rules) and _dump_closed(routes)
+            and _trees_closed(ipv4, ipv6)):
         return (FORWARDING_UNREADABLE,)
     found = _sysctl_departures(ipv4, ipv6, ingress, (*management, *observation), ())
     found |= _dump_departures(rules, routes,

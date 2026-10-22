@@ -7,13 +7,19 @@ them, and with no `ExecStop=` or `ExecStopPost=` nothing cleans up (the
 second and third G4 rehearsals, grant §11). This module judges, from values
 already read, whether the pass should refuse the grant because of that state:
 
-* `exposure_unit_masked_running`: an exposure unit is masked (its
-  `LoadState` or `UnitFileState` says so) and is not stopped (its
-  `ActiveState` is neither `inactive` nor `failed`);
-* `exposure_leftovers_present`: the namespace `azazel-decoy`, the host's
-  links `az-decoy-host0` or `az-decoy0`, or the table `inet azazel_decoy` is
-  present while no exposure unit is running (every `ActiveState` is
-  `inactive` or `failed`): what a stop without its clean-up leaves;
+* `exposure_unit_masked_running`: an exposure unit has no definition (its
+  `LoadState` is `masked` or `not-found`, or its `UnitFileState` is
+  `masked` or `masked-runtime`) and is not stopped (its `ActiveState` is
+  neither `inactive` nor `failed`);
+* `exposure_leftovers_present`, judged per owner: an object is present
+  while the unit that creates and removes it is stopped. The namespace
+  unit owns the namespace `azazel-decoy` and the host's veth end
+  `az-decoy-host0` (its `ExecStart=` and `ExecStopPost=`); the helper owns
+  the bridge `az-decoy0` and the table `inet azazel_decoy` (its steps and
+  `ExecStop=`). So the decoy running alone with the namespace unit and
+  the helper stopped and their objects present is a leftover, and so is
+  the helper stopped with the bridge or the table present while the
+  namespace unit runs;
 * `exposure_state_unreadable`: a value absent or not in its closed form.
 
 **Implemented, not wired (#196 G6 preparation A).** Nothing calls
@@ -91,6 +97,9 @@ _UNIT_FILE_STATES = frozenset({"enabled", "enabled-runtime", "linked", "linked-r
                                "alias", "masked", "masked-runtime", "static", "indirect",
                                "disabled", "generated", "transient", "bad", ""})
 _MASKED_FILE_STATES = frozenset({"masked", "masked-runtime"})
+#: A `LoadState` with no definition behind it: masked, or the file removed
+#: (`not-found`) while the unit still runs.
+_DEFINITIONLESS = frozenset({"masked", "not-found"})
 #: A unit in one of these runs nothing (`ExecStop=`'s clean-up aside).
 _STOPPED = frozenset({"inactive", "failed"})
 
@@ -114,9 +123,9 @@ def _unit_states(units: object) -> Optional[dict[str, tuple[str, str, str]]]:
     return states
 
 
-def _named(read: object, key: str, wanted: frozenset[str], *,
-           empty_allowed: bool = False) -> Optional[bool]:
-    """Whether an `ip -j` list names one of `wanted` under `key`; None unreadable."""
+def _names(read: object, key: str, *,
+           empty_allowed: bool = False) -> Optional[frozenset[str]]:
+    """The names an `ip -j` list holds under `key`; None unreadable."""
 
     if type(read) is not tuple or len(read) != 2:
         return None
@@ -126,11 +135,11 @@ def _named(read: object, key: str, wanted: frozenset[str], *,
     # `ip -j netns list` prints nothing at all when there is no namespace
     # (iproute2 6.15, container-checked).
     if empty_allowed and not output.strip():
-        return False
+        return frozenset()
     listed = parse_json_list(output)
     if listed is None or not all(type(item.get(key)) is str for item in listed):
         return None
-    return any(item[key] in wanted for item in listed)
+    return frozenset(item[key] for item in listed)
 
 
 def _table_present(read: object) -> Optional[bool]:
@@ -170,7 +179,8 @@ def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
     `UnitFileState` and `ActiveState` as the service manager's bus gave them
     (strings); `netns`, `links` and `tables` are `(status, output)` of
     `ip -j netns list`, `ip -j link show` (host namespace) and
-    `nft -j list tables`. Empty when neither state holds. A unit state that
+    `nft -j list tables`. Empty when neither state holds. Any argument of
+    another shape is `exposure_state_unreadable`, never an exception. A unit state that
     cannot be read leaves both judgements unmade (`exposure_state_unreadable`
     alone); an unreadable object read leaves the leftovers unjudged.
     """
@@ -180,16 +190,22 @@ def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
         return (EXPOSURE_STATE_UNREADABLE,)
     found: set[str] = set()
     for load, file_state, active in states.values():
-        if ((load == "masked" or file_state in _MASKED_FILE_STATES)
+        if ((load in _DEFINITIONLESS or file_state in _MASKED_FILE_STATES)
                 and active not in _STOPPED):
             found.add(EXPOSURE_UNIT_MASKED_RUNNING)
-    present = (_named(netns, "name", frozenset({NAMESPACE}), empty_allowed=True),
-               _named(links, "ifname", frozenset({HOST_VETH, BRIDGE})),
-               _table_present(tables))
-    if any(value is None for value in present):
+    namespaces = _names(netns, "name", empty_allowed=True)
+    link_names = _names(links, "ifname")
+    table = _table_present(tables)
+    if namespaces is None or link_names is None or table is None:
         found.add(EXPOSURE_STATE_UNREADABLE)
-    elif any(present) and all(active in _STOPPED for _, _, active in states.values()):
-        found.add(EXPOSURE_LEFTOVERS_PRESENT)
+    else:
+        namespace_unit, helper, _ = EXPOSURE_UNITS
+        owned = (
+            (namespace_unit, NAMESPACE in namespaces or HOST_VETH in link_names),
+            (helper, BRIDGE in link_names or table),
+        )
+        if any(present and states[owner][2] in _STOPPED for owner, present in owned):
+            found.add(EXPOSURE_LEFTOVERS_PRESENT)
     return tuple(code for code in RESIDUE_CODES if code in found)
 
 

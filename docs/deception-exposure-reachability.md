@@ -233,6 +233,17 @@ exists only after the tier is granted and the helper has run. So:
 
 ## 6. The pass condition (G6; implemented, not wired)
 
+**Required before G6 is wired (review of #293): add rules with a `dscp`
+and with a `flowlabel` selector on the VM's kernel and check what
+`ip -j -4 rule show` prints for them.** In the container a rule added with
+either selector was listed **without** it. If the VM shows the same, a
+K1 discard rule (1961) carrying such a selector looks exactly like the
+expected one, while a packet that does not match the selector is not
+discarded and goes on to `main` and is forwarded: the path K1 exists to
+close. The comparison below then cannot be relied on, and G6 needs
+`ip -d -j`, the raw netlink dump, or a change of design. Until that is
+checked, this condition is **not met**, whatever the function below says.
+
 Condition 6 of [grant §5](deception-exposure-grant.md#5-the-grant-condition)
 ("the forwarding condition of §4.5") is this section. The pass reads; it never
 writes. The same reads are repeated by the verify unit of
@@ -266,12 +277,19 @@ rule of an ingress's K1 pair key for key, as iproute2 6.15 prints rules
 added by `ip rule` (container-checked), so any other selector or flag (`not`,
 `srclen`, `oif`, `fwmark`, `tos`, `uid_start`, `l3mdev`, `ipproto`, ports,
 `goto`, `tun_id`, `suppress_ifgroup`, `flow_to`, `iif_detached`) fails.
+At priority 32766 itself there must be exactly one rule, `from all lookup
+main` compared the same way: rules of equal priority are tried in the order
+they were added, so a second rule there could act before `main` (review of
+#293; the verify's G2 comparison does not read that priority). An argument
+of another shape (a name that is not a string, a dump that is not
+`(int, bytes)`, a tree that is not `{str: {str: int | None}}`) is
+`forwarding_unreadable` alone and never an exception.
 *Still open:* the attribute set of networkd's rules on the VM (§11 item 8)
 may differ and is compared before G6 is wired; and a rule added with a
 `dscp` or `flowlabel` selector was listed **without** it in the container
 (iproute2 6.15 on the container host's kernel; whether the kernel dropped
-the attribute or `ip` does not print it was not established), so until the
-VM shows otherwise the comparison cannot be said to refuse those two.
+the attribute or `ip` does not print it was not established). That is the
+required VM check at the head of this section.
 
 **Interfaces.** The ingress names come from the `deception_bridge` role, and
 the `management` and `observation` names from their roles, resolved exactly

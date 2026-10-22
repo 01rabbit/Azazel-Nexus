@@ -312,6 +312,70 @@ def test_a_name_outside_the_rules_withholds_and_nothing_else_is_judged(
                  management=management, observation=observation) == (FORWARDING_UNREADABLE,)
 
 
+_MAIN = {"priority": 32766, "src": "all", "table": "main"}
+
+
+@pytest.mark.parametrize("change", [
+    "second",           # another rule at 32766 could act before `main`
+    "missing",          # no `lookup main` at all
+    "selector",         # `main` itself with a selector
+    "other table",      # 32766 pointing elsewhere
+])
+def test_exactly_one_main_rule_at_its_priority(change):
+    """Review of #293 item 4: rules of equal priority run in the order added."""
+
+    rules = [rule for rule in _rule_list() if rule["priority"] != 32766]
+    if change == "second":
+        rules += [_MAIN, {"priority": 32766, "src": "all", "iif": "eth9", "table": "100"}]
+    elif change == "selector":
+        rules.append({**_MAIN, "fwmark": "0x1"})
+    elif change == "other table":
+        rules.append({**_MAIN, "table": "100"})
+    assert _pass(rules=(0, json.dumps(rules).encode())) == (INGRESS_CONTAINMENT_ABSENT,)
+    # The verify's comparison is G2's: it does not read priority 32766.
+    assert reachability_departures(_ipv4(), _ipv6(), (0, json.dumps(rules).encode()),
+                                   _routes(), INGRESS) == ()
+
+
+def test_the_main_rules_protocol_is_left_out_too():
+    rules = [{**rule, "protocol": "kernel"} if rule["priority"] == 32766 else rule
+             for rule in _rule_list()]
+    assert _pass(rules=(0, json.dumps(rules).encode())) == ()
+
+
+_BAD_SHAPES = [
+    {"ingress": 7}, {"ingress": "eth9"}, {"ingress": ["eth9"]}, {"ingress": (7,)},
+    {"ingress": (None,)}, {"management": None}, {"observation": "mon0"},
+    {"management": (b"mgmt0",)},
+    {"rules": None}, {"rules": [0, b"[]"]}, {"rules": (0,)}, {"rules": (0, b"[]", 1)},
+    {"rules": (0, "[]")}, {"rules": ("0", b"[]")}, {"rules": (None, b"[]")},
+    {"routes": None}, {"routes": (0, None)}, {"routes": (0, bytearray(b"[]"))},
+    {"routes": b"[]"},
+    {"ipv4": []}, {"ipv4": {"all": None}}, {"ipv4": {"all": {"forwarding": "1"}}},
+    {"ipv4": {7: {"forwarding": 0}}}, {"ipv4": {"all": {"forwarding": True}}},
+    {"ipv6": []}, {"ipv6": {"all": [0]}}, {"ipv6": "absent"},
+]
+
+
+@pytest.mark.parametrize("bad", _BAD_SHAPES, ids=lambda bad: repr(bad)[:40])
+def test_an_argument_of_another_shape_is_unreadable_never_an_exception(bad):
+    """Review of #293 item 3."""
+
+    arguments = {"ipv4": _ipv4(), "ipv6": _ipv6(), "rules": _rules(), "routes": _routes(),
+                 "ingress": INGRESS, "management": MANAGEMENT, "observation": OBSERVATION}
+    arguments.update(bad)
+    assert pass_reachability_departures(
+        arguments.pop("ipv4"), arguments.pop("ipv6"), arguments.pop("rules"),
+        arguments.pop("routes"), **arguments) == (FORWARDING_UNREADABLE,)
+
+
+def test_absent_trees_are_still_judged_as_reads():
+    for ipv4, ipv6 in ((_ipv4(), None), (None, IPV6_ABSENT)):
+        assert pass_reachability_departures(
+            ipv4, ipv6, _rules(), _routes(), ingress=INGRESS, management=MANAGEMENT,
+            observation=OBSERVATION) == (FORWARDING_UNREADABLE,)
+
+
 def test_conf_entry_path_fixes_the_parent_and_refuses_the_reserved_names():
     assert conf_entry_path("ipv4", "eth9") == "/proc/sys/net/ipv4/conf/eth9"
     assert conf_entry_path("ipv6", "eth.9") == "/proc/sys/net/ipv6/conf/eth.9"
@@ -449,6 +513,55 @@ def test_leftovers_while_a_unit_runs_are_its_own_objects():
     # Masked and running with leftovers: the running unit is the reason.
     assert _residue(_units(**{NSD: {"ActiveState": "active"}}), netns) == (
         EXPOSURE_UNIT_MASKED_RUNNING,)
+
+
+_RUNNING = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active"}
+_STOPPED_UNIT = {"LoadState": "loaded", "UnitFileState": "enabled",
+                 "ActiveState": "inactive"}
+_NAMESPACE = (0, b'[{"name":"azazel-decoy"}]')
+_HOST_VETH = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy-host0"}]')
+_BRIDGE = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy0"}]')
+_TABLE = (0, json.dumps({"nftables": [
+    {"table": {"family": "inet", "name": "azazel_decoy", "handle": 1}}]}).encode())
+
+
+@pytest.mark.parametrize("running,netns,links,tables,expected", [
+    # Review of #293 item 2: the decoy running alone, its two owners stopped.
+    ((DECOYD,), _NAMESPACE, _NO_LINKS, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _HOST_VETH, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _NO_LINKS, _TABLE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _NO_LINKS, _NO_TABLES, ()),
+    # The helper stopped: its bridge or table left; the namespace unit's are its own.
+    ((NSD, DECOYD), _NAMESPACE, _HOST_VETH, _NO_TABLES, ()),
+    ((NSD,), _NONE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((NSD, DECOYD), _NAMESPACE, _HOST_VETH, _TABLE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    # The namespace unit stopped: its namespace or veth end left.
+    ((NETD, DECOYD), _NONE, _BRIDGE, _TABLE, ()),
+    ((NETD,), _NAMESPACE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((NETD,), _NONE, _HOST_VETH, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    # All three running: every object is theirs.
+    ((NSD, NETD, DECOYD), _NAMESPACE, (0, b'[{"ifname":"az-decoy0"},'
+                                       b'{"ifname":"az-decoy-host0"}]'), _TABLE, ()),
+])
+def test_leftovers_are_judged_per_owner(running, netns, links, tables, expected):
+    units = _units(**{unit: (_RUNNING if unit in running else _STOPPED_UNIT)
+                      for unit in EXPOSURE_UNITS})
+    assert _residue(units, netns, links, tables) == expected
+
+
+@pytest.mark.parametrize("active,expected", [
+    ("active", (EXPOSURE_UNIT_MASKED_RUNNING,)),
+    ("deactivating", (EXPOSURE_UNIT_MASKED_RUNNING,)),
+    ("inactive", ()), ("failed", ()),
+])
+def test_a_unit_whose_file_is_gone_counts_as_masked(active, expected):
+    """Review of #293 item 2: `not-found` while running has no definition either."""
+
+    gone = {"LoadState": "not-found", "UnitFileState": "", "ActiveState": active}
+    units = _units(**{unit: _STOPPED_UNIT for unit in EXPOSURE_UNITS})
+    units[NETD] = gone
+    assert _residue(units) == expected
 
 
 def test_other_namespaces_links_and_tables_are_not_leftovers():

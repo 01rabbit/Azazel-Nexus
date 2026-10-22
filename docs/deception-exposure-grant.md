@@ -308,6 +308,12 @@ needs (health, lease, generation, clock, high water):
    preparation A): `decoy_reachability.pass_reachability_departures` judges
    it from values passed in and nothing calls it; the
    `fb_tunnels_only_for_init_net` read is not part of it and is G6's.
+   **This condition is not yet met:** a rule selector that `ip -j` does not
+   print (`dscp` and `flowlabel` were listed without it in the container)
+   would let a discard rule look right and discard less, so the VM check at
+   the head of
+   [reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-implemented-not-wired)
+   must be done, and its answer adopted, before G6 wires this in.
 
 Each failure withholds the tier with its own reason code, and nothing else.
 
@@ -497,12 +503,15 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     values the caller read (each exposure unit's `LoadState`,
     `UnitFileState` and `ActiveState` from the service manager's bus, and
     the `(status, output)` of `ip -j netns list`, `ip -j link show` and
-    `nft -j list tables`), returns `exposure_unit_masked_running` (masked
-    by `LoadState` or `UnitFileState` while `ActiveState` is neither
-    `inactive` nor `failed`), `exposure_leftovers_present` (the namespace
-    `azazel-decoy`, the links `az-decoy-host0` or `az-decoy0`, or the table
-    `inet azazel_decoy` present while every exposure unit is `inactive` or
-    `failed`; a running unit's own objects are not leftovers) and
+    `nft -j list tables`), returns `exposure_unit_masked_running` (no
+    definition: `LoadState` `masked` or `not-found`, or `UnitFileState`
+    `masked` or `masked-runtime`, while `ActiveState` is neither `inactive`
+    nor `failed`), `exposure_leftovers_present` (judged per owner: the
+    namespace `azazel-decoy` or the veth end `az-decoy-host0` present while
+    the namespace unit is `inactive` or `failed`, or the bridge `az-decoy0`
+    or the table `inet azazel_decoy` present while the helper is; so the
+    decoy running alone over its owners' leftovers is refused, review of
+    #293) and
     `exposure_state_unreadable`, in that order, with fixed phrases that
     name no object. It reads nothing, stops nothing and removes nothing; it
     adds no unit operation and no `DbusUnitManager` method. Nothing calls
