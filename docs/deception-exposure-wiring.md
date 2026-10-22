@@ -474,8 +474,10 @@ offline bundle), and `runtime/.../apparmor_compiled.py`
 section's rule to the hashes; it is called by nothing but the tool, which
 checks its own output with it before the rename. `generation-publish` and
 the pass do not read the record in this build
-(`tests/unit/test_apparmor_compiled_record.py`; its registration in the
-shared table of unwired parts is G6's). Two choices made in the
+(`tests/unit/test_apparmor_compiled_record.py`, and the shared table of
+unwired parts, `tests/unit/test_g6_unwired.py`: `apparmor_compiled` may be
+imported by the tool alone, its names appear nowhere else, and the
+poisoned pass replaces `decode_apparmor_compiled` too). Two choices made in the
 implementation, against the proposal below: the record is compiled right
 after the profiles are placed, in the service-manager half, and the
 earlier `--skip-kernel-load` check before anything is written stays as it

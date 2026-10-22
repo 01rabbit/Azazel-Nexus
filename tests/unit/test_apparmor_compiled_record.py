@@ -6,10 +6,12 @@ which compiles each placed profile with `apparmor_parser -Q -o` and writes
 the SHA-256 of each output to `/etc/azazel/activation/apparmor-compiled.json`;
 `azazel_nexus_runtime.apparmor_compiled` is its strict decoder.
 
-The unwired checks at the end (nothing but the installer's tool calls the
-decoder; neither `generation-publish` nor the pass reads the record) are
-kept here for now. Registering them in the shared table of unwired parts
-(`tests/unit/test_g6_unwired.py`) is G6's; a duplicate is harmless.
+The module and its names are registered in the shared table of unwired
+parts (`tests/unit/test_g6_unwired.py`: `IMPORTERS`, `NAME_FILES`, and the
+poisoned pass, which covers `decode_apparmor_compiled`). The checks at the
+end (nothing but the installer's tool calls the decoder; neither
+`generation-publish` nor the pass reads the record) repeat part of that
+here; the duplicate is harmless.
 """
 
 from __future__ import annotations
@@ -593,7 +595,7 @@ def test_the_tool_records_what_apparmor_parser_compiles(tmp_path):
     assert len(set(record.apparmor_policy_hashes.values())) == 4
 
 
-# -- not wired (G6 registers these in the shared unwired table) -------------------
+# -- not wired (also in the shared table, test_g6_unwired.py) --------------------
 
 
 def _imports_of(path: Path) -> set[str]:
