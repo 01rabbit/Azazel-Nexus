@@ -193,6 +193,22 @@ def _mask_and_confirm_inactive(manager: UnitManager, unit: str) -> None:
         raise UnitOperationFailed("masked unit has no confirmed inactive state")
 
 
+def _unit_failure(unit: str, exc: BaseException) -> str:
+    """``"<unit>: <reason>"`` for the ledger: the unit and a fixed reason only.
+
+    The reason is the message only of an exact ``UnitOperationFailed`` whose
+    one argument is a string; the D-Bus client translates every bus failure
+    into that class with a fixed (or method-name) message. Any other
+    exception is recorded by its class name, as ``_remask_all`` already does,
+    so no text an exception happens to carry (a path, a peer's error text)
+    reaches the activation ledger, and a ``__str__`` that itself raises
+    cannot leave this narrowing before its record (#251 M-5).
+    """
+    if type(exc) is UnitOperationFailed and len(exc.args) == 1 and type(exc.args[0]) is str:
+        return f"{unit}: {exc.args[0]}"
+    return f"{unit}: {type(exc).__name__}"
+
+
 class ManagedUnitController(UnitController):
     """Bridges the library's controller to a `UnitManager`.
 
@@ -359,7 +375,7 @@ class ActivationDaemon:
                 _mask_and_confirm_inactive(self.manager, unit)
                 taken_back.append(unit)
             except Exception as exc:  # noqa: BLE001 - recorded below, then escalated
-                failures.append(f"{unit}: {exc}")
+                failures.append(_unit_failure(unit, exc))
 
         self._record(
             {
@@ -387,7 +403,7 @@ class ActivationDaemon:
             try:
                 _mask_and_confirm_inactive(self.manager, definition.name)
             except Exception as exc:  # noqa: BLE001
-                unreachable.append(f"{definition.name}: {exc}")
+                unreachable.append(_unit_failure(definition.name, exc))
         self._record(
             {
                 "event_type": "activation.rollback_failed",
