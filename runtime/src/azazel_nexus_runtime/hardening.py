@@ -87,6 +87,7 @@ __all__ = [
     "DECOY_NAMESPACE_START",
     "DECOY_NAMESPACE_UNDO",
     "DECOY_SCOPE_CREDENTIAL",
+    "DECOY_TRIP_CONFLICTS",
     "DECOY_TRIP_UNIT",
     "DECOY_VERIFY_SANDBOX",
     "DECOY_VERIFY_TIMER",
@@ -815,6 +816,19 @@ DECOY_VERIFY_TIMER = "azazel-decoy-verify.timer"
 #: `ExecStop=` or `SuccessAction=` ("Refusing", container-checked with
 #: `systemd-analyze verify`). A target runs nothing and holds nothing.
 DECOY_TRIP_UNIT = "azazel-decoy-trip.target"
+#: The units the trip unit conflicts with, each by name (#196 G4, grant
+#: §6.3): the namespace unit, the network helper and the decoy. Naming all
+#: three makes the job engine queue a stop job for each directly, so the
+#: trip does not depend on the `Requires=` chain from the decoy to the
+#: namespace unit. The 2026-10-22 VM rehearsal (not hardware evidence)
+#: showed that chain can be gone: after a mask and a daemon-reload the
+#: running units' definitions were `/dev/null`, and a trip that named only
+#: the namespace unit stopped it alone. Ordered as the units are started
+#: (`After=`); stop jobs run in the reverse of that order, so the decoy and
+#: the helper stop before the namespace unit and its `ExecStopPost=` runs
+#: last. A conflict holds both ways: starting any of the three stops the
+#: target, which re-arms it, as starting the namespace unit already did.
+DECOY_TRIP_CONFLICTS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
 #: How often the timer re-runs the verify unit (§10 Q6: 10 s).
 DECOY_WATCH_PERIOD = "10s"
 
@@ -1866,8 +1880,8 @@ DECOY_WATCH_PROFILES: tuple[ServiceProfile, ...] = (
             "conditions, and writes nothing: the isolation record stays the "
             "helper's. A departure, an unreadable read or a refused scope "
             "makes it fail, and its failure starts azazel-decoy-trip.target, "
-            "which stops the namespace unit and through Requires= the helper "
-            "and the decoy. It has no grant marker and no [Install] section: "
+            "which stops the namespace unit, the helper and the decoy, each "
+            "by name. It has no grant marker and no [Install] section: "
             "the decoy pulls it and its timer in. It is root, so netlink is "
             "its only address family and the service manager's private "
             "sockets are inaccessible to it. It starts only with AppArmor "
@@ -1926,26 +1940,30 @@ def render_verify_timer() -> str:
 def render_trip_target() -> str:
     """`azazel-decoy-trip.target`, byte for byte (#196 G2, grant §6.1).
 
-    Its only content is `Conflicts=` on the namespace unit: starting it (the
-    verify unit's `OnFailure=`) makes systemd's job engine stop the namespace
-    unit, and through `Requires=` the helper and the decoy first. Nothing
-    runs, nothing holds a privilege, no D-Bus call is made. Starting the
-    namespace unit again stops the target (a conflict holds both ways), so a
-    later failure trips again. Started by hand, it is a stop button for the
-    three units and nothing more.
+    Its only content is `Conflicts=` on the namespace unit, the helper and
+    the decoy (`DECOY_TRIP_CONFLICTS`, one line each): starting it (the
+    verify unit's `OnFailure=`) makes systemd's job engine stop all three,
+    each named directly rather than through `Requires=` (#196 G4: a chain
+    that a mask and a daemon-reload can remove), the decoy and the helper
+    first by the reverse of their `After=`. Nothing runs, nothing holds a
+    privilege, no D-Bus call is made. Starting any of the three again stops
+    the target (a conflict holds both ways), so a later failure trips
+    again. Started by hand, it is a stop button for the three units and
+    nothing more.
     """
 
     return "\n".join((
         *_GENERATED_HEADER,
         "# Started by azazel-decoy-verify.service on failure (OnFailure=); it runs nothing.",
-        "# Conflicts= makes the job engine stop the namespace unit, and through Requires=",
-        "# the network helper and the decoy first.",
+        "# Conflicts= makes the job engine stop each of the three units directly, not",
+        "# through Requires=; the decoy and the network helper stop before the namespace",
+        "# unit, by the reverse of their After= order.",
         "# It has no grant marker and no [Install] section.",
         "",
         "[Unit]",
         "Description=Azazel-Nexus Deception Lite trip",
         f"Documentation={_GRANT_DOCUMENTATION}",
-        f"Conflicts={DECOY_NAMESPACE_UNIT}",
+        *(f"Conflicts={unit}" for unit in DECOY_TRIP_CONFLICTS),
         "",
     ))
 
