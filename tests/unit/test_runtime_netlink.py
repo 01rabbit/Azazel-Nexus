@@ -363,6 +363,25 @@ def test_a_dump_without_its_end_is_refused():
         _parse(b"")
 
 
+def test_a_dump_that_ends_with_an_error_is_refused():
+    """`NLMSG_DONE` carries the dump's errno; a non-zero one is no end."""
+
+    done = bytearray(_done())
+    struct.pack_into("i", done, _HEADER.size, -16)
+    with pytest.raises(NetlinkMalformed, match="ended with errno 16"):
+        _parse(_ok() + bytes(done))
+
+
+def test_an_acknowledgement_is_refused_because_none_was_asked_for():
+    """No `NLM_F_ACK` in the request, so an errno-0 `NLMSG_ERROR` is not
+    part of the dump."""
+
+    body = struct.pack("i", 0) + b"\x00" * 16
+    ack = _HEADER.pack(_HEADER.size + len(body), _NLMSG_ERROR, 0, SEQ, PORT) + body
+    with pytest.raises(NetlinkMalformed, match="acknowledged"):
+        _parse(_ok() + ack + _done())
+
+
 def test_the_whole_dump_of_this_request_is_read():
     """The control for the four above: the same messages, framed right."""
 
@@ -463,8 +482,11 @@ def test_each_dump_draws_its_own_sequence_number():
     # Another sequence number than this request's.
     lambda: FakeSocket([_link(1, seq=SEQ + 1) + _done()]),
     lambda: FakeSocket([_ok(), _done(seq=SEQ + 1)]),
-    # Interrupted.
+    # Interrupted, on the first datagram or only on a later one.
     lambda: FakeSocket([_link(1, flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR), _done()]),
+    lambda: FakeSocket([_ok(), _link(2, flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR),
+                        _done()]),
+    lambda: FakeSocket([_ok(), _link(2), _done(flags=_NLM_F_MULTI | _NLM_F_DUMP_INTR)]),
     # Cut short by the receive buffer (`MSG_TRUNC`), even if it parses.
     lambda: FakeSocket([_ok() + _done()], truncated={0}),
     lambda: FakeSocket([_ok(), _done()], truncated={1}),

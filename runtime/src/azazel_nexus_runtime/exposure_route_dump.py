@@ -154,8 +154,12 @@ _FIB_RULE_IIF_DETACHED, _FIB_RULE_OIF_DETACHED = 0x8, 0x10
 #: the padding, a suppressor `ip` does not print) could tell an undeletable
 #: rule apart from the default it reads as, and the comparison would not see
 #: it. On any other rule it is a flag `ip` hides, and the dump is unreadable.
-#: A kernel since 4.17 sends `FRA_PROTOCOL` with every rule, so there a
-#: permanent rule is always unreadable.
+#: No real kernel sends the accepted shape: the IPv4 defaults carry flags 0,
+#: and a kernel sends `FRA_SUPPRESS_PREFIXLEN` (and, since 4.17,
+#: `FRA_PROTOCOL`) with every rule. So in practice a permanent rule in a real
+#: dump -- which only a request can make -- is refused; on an older kernel
+#: whose rules carried fewer attributes, any permanent rule outside this
+#: shape is refused as well (closed).
 _PERMANENT_ATTRIBUTES = frozenset({_FRA_PRIORITY, _FRA_TABLE})
 _RULE_FLAGS = (_FIB_RULE_PERMANENT | _FIB_RULE_INVERT | _FIB_RULE_UNRESOLVED
                | _FIB_RULE_IIF_DETACHED | _FIB_RULE_OIF_DETACHED)

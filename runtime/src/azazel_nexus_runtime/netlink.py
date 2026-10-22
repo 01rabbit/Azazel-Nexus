@@ -232,13 +232,20 @@ def parse_links(data: bytes, *, sequence: int, port: int) -> tuple[LinkRecord, .
         if flags & _NLM_F_DUMP_INTR:
             raise NetlinkMalformed("the dump was interrupted")
         if message_type == _NLMSG_DONE:
+            # A dump that ends in an error (the errno `NLMSG_DONE` carries)
+            # is not a whole dump.
+            if len(payload) >= 4 and struct.unpack_from("i", payload, 0)[0] != 0:
+                (errno,) = struct.unpack_from("i", payload, 0)
+                raise NetlinkMalformed(f"the dump ended with errno {-errno}")
             done = True
             break
         if message_type == _NLMSG_ERROR:
             (errno,) = struct.unpack_from("i", payload, 0) if payload else (0,)
             if errno:
                 raise NetlinkMalformed(f"the kernel answered with errno {-errno}")
-            continue
+            # errno 0 is an acknowledgement, and the request asks for none
+            # (no `NLM_F_ACK`): not part of a dump, so not read as one.
+            raise NetlinkMalformed("the kernel acknowledged a request that asked for none")
         if message_type != _RTM_NEWLINK:
             continue
         if len(payload) < _IFINFO.size:
@@ -354,8 +361,10 @@ def _sequence() -> int:
 
 
 def _dump_is_complete(chunk: bytes, sequence: int, port: int) -> bool:
-    """Stop at `NLMSG_DONE`, or at a message `parse_links` will refuse
-    (an error, another sequence or port id, an interrupted dump)."""
+    """Stop at `NLMSG_DONE`, or at a message `parse_links` will refuse:
+    any `NLMSG_ERROR` (errno 0 included -- no `NLM_F_ACK` is requested, so an
+    acknowledgement is unexpected and refused), another sequence or port id,
+    an interrupted dump."""
 
     try:
         return any(
