@@ -20,7 +20,10 @@ exactly three keys:
   exposure section's field of the same name (a test keeps them in
   agreement), so G6's `generation-publish` copies it unchanged;
 * `parser_version`: the parser's version line, for diagnosis only, never
-  compared.
+  compared, and never a reason to refuse an install: the writer passes it
+  through `normalize_parser_version` (each character outside printable
+  ASCII becomes `?`, at most 255 characters, `unknown` when empty), and the
+  decoder accepts exactly the values that normalization leaves unchanged.
 
 * `encode_apparmor_compiled` is pure: the record's bytes, or refused.
 * `decode_apparmor_compiled` is pure and strict: the bytes as read, to the
@@ -53,10 +56,13 @@ __all__ = [
     "APPARMOR_COMPILED_PATH",
     "APPARMOR_COMPILED_REFUSED",
     "APPARMOR_PROFILE_NAMES",
+    "PARSER_VERSION_LIMIT",
+    "PARSER_VERSION_UNKNOWN",
     "ApparmorCompiled",
     "ApparmorCompiledRefused",
     "decode_apparmor_compiled",
     "encode_apparmor_compiled",
+    "normalize_parser_version",
 ]
 
 APPARMOR_COMPILED_CONTRACT = "azazel-nexus/apparmor-compiled/v1"
@@ -77,8 +83,9 @@ APPARMOR_COMPILED_REFUSED = ("the AppArmor compiled-policy record is not in its 
 #: `raw_sha256` as the kernel shows it, without the newline
 #: (`exposure_generation._POLICY_HASH`; a test keeps them in agreement).
 _POLICY_HASH = re.compile(r"[0-9a-f]{64}\Z")
-#: Printable ASCII, no leading or trailing space, bounded.
-_VERSION = re.compile(r"[!-~](?:[ -~]{0,254}[!-~])?\Z")
+#: `normalize_parser_version`'s bound, and its value for an empty line.
+PARSER_VERSION_LIMIT = 255
+PARSER_VERSION_UNKNOWN = "unknown"
 _RECORD_LIMIT = 4096
 
 
@@ -105,8 +112,16 @@ def _policy_hashes(hashes) -> dict[str, str]:
     return {name: hashes[name] for name in APPARMOR_PROFILE_NAMES}
 
 
+def normalize_parser_version(value: str) -> str:
+    """The version line as recorded: printable ASCII only (others become `?`),
+    at most 255 characters, `unknown` when empty. Diagnosis only."""
+
+    text = "".join(c if " " <= c <= "~" else "?" for c in str(value))
+    return text[:PARSER_VERSION_LIMIT] or PARSER_VERSION_UNKNOWN
+
+
 def _parser_version(value) -> str:
-    if type(value) is not str or not _VERSION.match(value):
+    if type(value) is not str or normalize_parser_version(value) != value:
         raise _refuse()
     return value
 
@@ -141,7 +156,8 @@ def decode_apparmor_compiled(raw) -> ApparmorCompiled:
     `raw` is the file's bytes, at most 4 KiB. Accepted only when it is the
     canonical encoding (`encode_apparmor_compiled`) of exactly the three
     keys, the contract above, exactly the four profile names each to 64
-    lowercase hex digits, and a printable version line. Pure; nothing read
+    lowercase hex digits, and a version line `normalize_parser_version`
+    leaves unchanged. Pure; nothing read
     appears in the refusal. **Called by nothing but the installer's tool in
     this build**; G6's `generation-publish` is to call it.
     """

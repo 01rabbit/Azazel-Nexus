@@ -864,7 +864,10 @@ reached until G6. Revised after the review of #285.
   `/etc/azazel/activation/apparmor-compiled.json` (canonical JSON, contract
   `azazel-nexus/apparmor-compiled/v1`, root `0644`, written atomically);
   `apparmor_compiled.decode_apparmor_compiled` is its strict decoder, with
-  the section's rule for the hashes. Nothing is loaded, and nothing reads
+  the section's rule for the hashes. **Checked on the VM** (Debian 13,
+  parser 4.1.0; a mechanism check, not hardware evidence): the four values
+  this installer recorded equalled the kernel's `raw_sha256` of the four
+  profiles once `apparmor.service` had loaded them. Nothing is loaded, and nothing reads
   the record but the tool checking its own output: `generation-publish`
   copying it into the section is G6's, and nothing in this build writes
   the section's field or calls either function. **The record is

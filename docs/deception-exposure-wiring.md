@@ -484,8 +484,18 @@ and the placed copy gave the same output); and the record is `0644`, not
 `0600`: it holds the hashes of compiled public policy, no secret, its
 directory is root's `0700` anyway, and what matters to its reader is that
 only root may write it. A run without the service manager, or one that
-fails, leaves an earlier record as it was; a stale record can only make
-the pass withhold as `lsm_policy_differs` (closed).
+fails **before the rename**, leaves an earlier record as it was (and no
+temporary file); once renamed the record is checked and in place, so a
+failed fsync of the directory after it is a warning, not a refusal. A
+stale record can only make the pass withhold as `lsm_policy_differs`
+(closed). `parser_version` never refuses the install: the version line is
+normalized (each character outside printable ASCII becomes `?`, at most
+255 characters, `unknown` when empty or not read), and the decoder accepts
+exactly what that normalization leaves unchanged. A failed compilation
+shows the parser's first error lines, printable ASCII only. **Checked on
+the VM** (Debian 13, parser 4.1.0; a mechanism check, not hardware
+evidence): the four values the installer recorded equalled the kernel's
+`raw_sha256` of the four profiles after `apparmor.service` loaded them.
 
 1. After placing the four profiles in `/etc/apparmor.d` (root, `0644`),
    with the service manager only, for each profile:

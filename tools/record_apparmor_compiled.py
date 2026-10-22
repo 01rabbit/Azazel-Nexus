@@ -14,10 +14,15 @@ Nothing is loaded, replaced or removed in the kernel: `-Q` skips the load,
 and the profiles are loaded by `apparmor.service` at the next boot. The
 record is written as a private temporary file in the same directory,
 fsynced, given mode 0644, renamed into place and the directory fsynced; it
-is checked with the library's strict decoder before the rename. Any failure
-(a profile that does not compile, an empty output, a version line of
-another form, the directory a link) refuses (exit 1) and leaves an earlier
-record as it was.
+is checked with the library's strict decoder before the rename. A failure
+before the rename (a profile that does not compile, an empty output, the
+directory a link, a write, fsync or rename that fails) refuses (exit 1),
+removes the temporary file and leaves an earlier record as it was; a failed
+compilation shows the first lines of the parser's error output, printable
+ASCII only. Once renamed, the record is checked and in place: a failed
+fsync of the directory after the rename is a warning, not a refusal. The
+version line is diagnosis only and never refuses: it is normalized
+(`apparmor_compiled.normalize_parser_version`), `unknown` when not read.
 
 Fixed profile names (`decoy_apparmor.REQUIRED_ENFORCED_PROFILES`); the two
 paths default to the installed ones and are arguments only so a test can
@@ -45,6 +50,7 @@ from azazel_nexus_runtime.apparmor_compiled import (  # noqa: E402
     ApparmorCompiledRefused,
     decode_apparmor_compiled,
     encode_apparmor_compiled,
+    normalize_parser_version,
 )
 from azazel_nexus_runtime.decoy_apparmor import REQUIRED_ENFORCED_PROFILES  # noqa: E402
 
@@ -52,6 +58,10 @@ APPARMOR_DIRECTORY = "/etc/apparmor.d"
 PARSER = "apparmor_parser"
 _OUTPUT_LIMIT = 64 << 20
 _TIMEOUT = 300
+#: How much of the parser's error output a failed compilation shows.
+_STDERR_LINES = 5
+_STDERR_WIDTH = 200
+_TEMPORARY_ATTEMPTS = 16
 
 
 class Refused(Exception):
@@ -65,16 +75,30 @@ def _parser() -> str:
     return found
 
 
+def _ascii(text: str) -> str:
+    return "".join(c if " " <= c <= "~" else "?" for c in text)
+
+
 def parser_version(parser: str) -> str:
+    """The first line of `--version`, normalized; `unknown` when not read.
+
+    Diagnosis only: nothing here refuses the install."""
+
     try:
         run = subprocess.run([parser, "--version"], stdin=subprocess.DEVNULL,
                              capture_output=True, timeout=_TIMEOUT, check=False)
     except (OSError, subprocess.SubprocessError):
-        raise Refused("apparmor_parser --version could not be run") from None
-    lines = run.stdout.decode("ascii", "replace").splitlines()
-    if run.returncode != 0 or not lines:
-        raise Refused("apparmor_parser --version gave no version line")
-    return lines[0].strip()
+        return normalize_parser_version("")
+    lines = run.stdout.decode("utf-8", "replace").splitlines()
+    first = lines[0].strip() if run.returncode == 0 and lines else ""
+    return normalize_parser_version(first)
+
+
+def _show_stderr(name: str, stderr: bytes) -> None:
+    lines = [line.strip() for line in stderr.decode("utf-8", "replace").splitlines()]
+    for line in [line for line in lines if line][:_STDERR_LINES]:
+        print(f"apparmor_parser ({name}): {_ascii(line)[:_STDERR_WIDTH]}",
+              file=sys.stderr)
 
 
 def compiled_hashes(parser: str, apparmor_dir: Path) -> dict[str, str]:
@@ -92,6 +116,7 @@ def compiled_hashes(parser: str, apparmor_dir: Path) -> dict[str, str]:
             except (OSError, subprocess.SubprocessError):
                 raise Refused(f"AppArmor profile {name} could not be compiled") from None
             if run.returncode != 0:
+                _show_stderr(name, run.stderr or b"")
                 raise Refused(f"AppArmor profile {name} does not compile")
             try:
                 fd = os.open(out, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -124,7 +149,7 @@ def write_record(path: Path, record: bytes) -> None:
         raise Refused(f"{path.parent} is not a directory") from None
     temporary = None
     try:
-        for attempt in range(16):
+        for attempt in range(_TEMPORARY_ATTEMPTS):
             candidate = f".{path.name}.{os.getpid()}.{attempt}.tmp"
             try:
                 fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -145,7 +170,13 @@ def write_record(path: Path, record: bytes) -> None:
             os.close(fd)
         os.rename(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
         temporary = None
-        os.fsync(directory)
+        try:
+            os.fsync(directory)
+        except OSError:
+            # Renamed, checked and in place; only its durability across a
+            # crash right now is not assured.
+            print(f"WARNING: {path.parent} could not be synced after the record "
+                  "was renamed into place; the record stands.", file=sys.stderr)
     except OSError:
         raise Refused(f"{path} could not be written") from None
     finally:
@@ -172,7 +203,8 @@ def record(apparmor_dir: Path, output: Path) -> dict[str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                     allow_abbrev=False)
     parser.add_argument("--apparmor-dir", type=Path, default=Path(APPARMOR_DIRECTORY))
     parser.add_argument("--output", type=Path, default=Path(APPARMOR_COMPILED_PATH))
     args = parser.parse_args(argv)

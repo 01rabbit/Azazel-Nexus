@@ -866,10 +866,15 @@ profiles, the installer compiles each placed file with `apparmor_parser -Q
 SHA-256 of each output to `/etc/azazel/activation/apparmor-compiled.json`
 (root, `0644`; contract `azazel-nexus/apparmor-compiled/v1`, the four
 profile names to 64 lowercase hex digits, and the parser's version line
-for diagnosis). A profile that does not compile there refuses the install.
-A `DESTDIR` or `--without-service-manager` run writes none. On the VM
-(Debian 13, parser 4.1.0) that value equalled the kernel's `raw_sha256`
-once `apparmor.service` loaded the profile. Nothing reads the record in this
+for diagnosis, normalized to printable ASCII and never a reason to refuse).
+A profile that does not compile there refuses the install and shows the
+parser's first error lines; a failure before the record is renamed into
+place leaves an earlier record as it was, and a failed directory sync
+after the rename is only a warning. A `DESTDIR` or
+`--without-service-manager` run writes none. **Checked on the VM** (Debian
+13, parser 4.1.0; a mechanism check, not hardware evidence): the four
+values this installer recorded equalled the kernel's `raw_sha256` once
+`apparmor.service` loaded the profiles. Nothing reads the record in this
 build: G6's `generation-publish` is to copy it into the generation the
 operator signs. Do not edit it; install again to refresh it. To compare it
 with what the kernel holds, as root:

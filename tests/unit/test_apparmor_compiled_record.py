@@ -38,6 +38,7 @@ from azazel_nexus_runtime.apparmor_compiled import (
     ApparmorCompiledRefused,
     decode_apparmor_compiled,
     encode_apparmor_compiled,
+    normalize_parser_version,
 )
 from azazel_nexus_runtime.decoy_apparmor import REQUIRED_ENFORCED_PROFILES
 from azazel_nexus.generation import GenerationRefused
@@ -104,8 +105,9 @@ def test_the_record_is_the_wiring_documents_form():
     _document(apparmor_policy_hashes=list(HASHES.items())),
     _document(apparmor_policy_hashes=None),
     _document(parser_version=""),
-    _document(parser_version=" AppArmor"),
     _document(parser_version="AppArmor\nparser"),
+    _document(parser_version="AppArmor\tparser"),
+    _document(parser_version="x" * 256),
     _document(parser_version="x" * 257),
     _document(parser_version=4),
     [],
@@ -150,6 +152,36 @@ def test_the_hash_rule_is_the_exposure_sections(bad):
         record_accepts = False
     assert record_accepts is section_accepts
     assert exposure_generation._POLICY_HASH.pattern == r"[0-9a-f]{64}\Z"
+
+
+@pytest.mark.parametrize("hashes", [
+    {k: v for k, v in HASHES.items() if k != "azazel-decoy-nsd"},
+    {},
+    {**HASHES, "azazel-decoy-extra": "0" * 64},
+    {**{k: v for k, v in HASHES.items() if k != "azazel-decoyd"}, "azazel-decoyd ": "0" * 64},
+    {**{k: v for k, v in HASHES.items() if k != "azazel-decoyd"}, "AZAZEL-DECOYD": "0" * 64},
+    {**{k: v for k, v in HASHES.items() if k != "azazel-decoyd"},
+     "azazel-decoyd.service": "0" * 64},
+    {**{k: v for k, v in HASHES.items() if k != "azazel-decoy-nsd"},
+     "azazel-decoy-nsd//ip": "0" * 64},
+    {**{k: v for k, v in HASHES.items() if k != "azazel-decoyd"}, b"azazel-decoyd": "0" * 64},
+    dict(HASHES),
+])
+def test_the_name_set_rule_is_the_exposure_sections(hashes):
+    """Missing, extra and other names (review of #304, 4): both accept or both refuse."""
+
+    try:
+        exposure_generation._policy_hashes(hashes)
+        section_accepts = True
+    except GenerationRefused:
+        section_accepts = False
+    try:
+        encode_apparmor_compiled(hashes, VERSION)
+        record_accepts = True
+    except ApparmorCompiledRefused:
+        record_accepts = False
+    assert record_accepts is section_accepts
+    assert record_accepts is (hashes == HASHES)
 
 
 def test_the_decoded_hashes_are_what_the_section_takes():
@@ -285,14 +317,21 @@ def test_a_staged_install_writes_no_record(tmp_path):
 
 # -- the tool, with a stand-in compiler ------------------------------------------
 
-FAKE_PARSER = """#!/bin/sh
+FAKE_PARSER = r"""#!/bin/sh
 if [ "$1" = --version ]; then
-    echo "AppArmor parser version 9.9.9"
+    [ -n "${VERSION_FAIL:-}" ] && exit 1
+    [ -n "${VERSION_EMPTY:-}" ] && exit 0
+    printf '%s\n' "${VERSION_OUT:-AppArmor parser version 9.9.9}"
     echo "Copyright (C) somebody"
     exit 0
 fi
 [ "$1" = -Q ] && [ "$2" = -o ] && [ "$#" -eq 4 ] || exit 64
-[ -n "${FAIL_ON:-}" ] && [ "$(basename "$4")" = "$FAIL_ON" ] && exit 1
+if [ -n "${FAIL_ON:-}" ] && [ "$(basename "$4")" = "$FAIL_ON" ]; then
+    printf 'AppArmor parser error at line 1: d\303\251j\303\240 vu\n'
+    printf '\n'
+    for n in 2 3 4 5 6 7 8; do printf 'line %s\001\n' "$n"; done
+    exit 1
+fi >&2
 { printf 'compiled:'; cat "$4"; } > "$3"
 """
 
@@ -311,7 +350,8 @@ def fake(tmp_path, monkeypatch):
     output_dir = tmp_path / "activation"
     output_dir.mkdir(mode=0o700)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
-    monkeypatch.delenv("FAIL_ON", raising=False)
+    for name in ("FAIL_ON", "VERSION_FAIL", "VERSION_EMPTY", "VERSION_OUT"):
+        monkeypatch.delenv(name, raising=False)
     return profiles, output_dir / "apparmor-compiled.json"
 
 
@@ -337,8 +377,149 @@ def test_a_profile_that_does_not_compile_refuses_and_keeps_the_earlier_record(
     assert _tool().main(["--apparmor-dir", str(profiles), "--output", str(output)]) == 1
     assert output.read_bytes() == b"earlier\n"
     assert sorted(p.name for p in output.parent.iterdir()) == [output.name]
-    assert "refusing to install: AppArmor profile azazel-decoy-netd does not compile" in \
-        capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "refusing to install: AppArmor profile azazel-decoy-netd does not compile" in err
+    # The parser's first lines (blank ones skipped), printable ASCII only.
+    shown = [line for line in err.splitlines() if line.startswith("apparmor_parser (")]
+    assert shown == [
+        "apparmor_parser (azazel-decoy-netd): AppArmor parser error at line 1: d?j? vu",
+        "apparmor_parser (azazel-decoy-netd): line 2?",
+        "apparmor_parser (azazel-decoy-netd): line 3?",
+        "apparmor_parser (azazel-decoy-netd): line 4?",
+        "apparmor_parser (azazel-decoy-netd): line 5?",
+    ]
+    assert err.isascii()
+
+
+@pytest.mark.parametrize(("env", "recorded"), [
+    ({"VERSION_OUT": "AppArmor parser vérsion 4.1.0"}, "AppArmor parser v?rsion 4.1.0"),
+    ({"VERSION_OUT": "AppArmor\tparser\x7f4.1"}, "AppArmor?parser?4.1"),
+    ({"VERSION_OUT": "v" * 400}, "v" * 255),
+    ({"VERSION_OUT": "   "}, "unknown"),
+    ({"VERSION_EMPTY": "1"}, "unknown"),
+    ({"VERSION_FAIL": "1"}, "unknown"),
+])
+def test_a_version_line_of_another_form_is_normalized_not_refused(fake, monkeypatch, env,
+                                                                  recorded):
+    """The version line is diagnosis only (review of #304, 1): it never refuses."""
+
+    profiles, output = fake
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert _tool().main(["--apparmor-dir", str(profiles), "--output", str(output)]) == 0
+    record = decode_apparmor_compiled(output.read_bytes())
+    assert record.parser_version == recorded
+    assert normalize_parser_version(recorded) == recorded
+
+
+@pytest.mark.parametrize(("value", "normalized"), [
+    ("AppArmor parser version 4.1.0", "AppArmor parser version 4.1.0"),
+    (" lead and trail ", " lead and trail "),
+    ("é\n\x00", "???"),
+    ("", "unknown"),
+    ("y" * 256, "y" * 255),
+])
+def test_the_decoder_accepts_exactly_what_normalization_leaves(value, normalized):
+    assert normalize_parser_version(value) == normalized
+    raw = encode_apparmor_compiled(HASHES, normalized)
+    assert decode_apparmor_compiled(raw).parser_version == normalized
+    if normalized != value:
+        with pytest.raises(ApparmorCompiledRefused):
+            decode_apparmor_compiled(_canonical(_document(parser_version=value)))
+
+
+def test_the_tool_takes_no_abbreviated_option(fake):
+    profiles, output = fake
+    with pytest.raises(SystemExit):
+        _tool().main(["--apparmor", str(profiles), "--out", str(output)])
+    assert not output.exists()
+
+
+# -- the write, failing at each step (review of #304, 2 and 3) -------------------
+
+
+def _entries(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir())
+
+
+RECORD = encode_apparmor_compiled(HASHES, VERSION)
+
+
+def _failing(real, *, when=lambda *args: True):
+    def fail(*args, **kwargs):
+        if when(*args):
+            raise OSError(5, "injected")
+        return real(*args, **kwargs)
+    return fail
+
+
+def _is_directory(fd, *_):
+    return stat.S_ISDIR(os.fstat(fd).st_mode)
+
+
+@pytest.mark.parametrize("step", ["write", "fchmod", "fsync", "rename"])
+def test_a_failure_before_the_rename_keeps_the_earlier_record_and_no_temporary(
+        tmp_path, monkeypatch, step):
+    tool = _tool()
+    directory = tmp_path / "activation"
+    directory.mkdir(mode=0o700)
+    output = directory / "apparmor-compiled.json"
+    output.write_bytes(b"earlier\n")
+    when = (lambda fd, *_: not _is_directory(fd)) if step == "fsync" else (lambda *a: True)
+    monkeypatch.setattr(tool.os, step, _failing(getattr(os, step), when=when))
+    with pytest.raises(tool.Refused):
+        tool.write_record(output, RECORD)
+    monkeypatch.undo()
+    assert output.read_bytes() == b"earlier\n"
+    assert _entries(directory) == [output.name]
+
+
+def test_a_failed_directory_sync_after_the_rename_warns_and_keeps_the_record(
+        tmp_path, monkeypatch, capsys):
+    tool = _tool()
+    directory = tmp_path / "activation"
+    directory.mkdir(mode=0o700)
+    output = directory / "apparmor-compiled.json"
+    output.write_bytes(b"earlier\n")
+    monkeypatch.setattr(tool.os, "fsync", _failing(os.fsync, when=_is_directory))
+    tool.write_record(output, RECORD)
+    monkeypatch.undo()
+    assert output.read_bytes() == RECORD
+    assert stat.S_IMODE(output.stat().st_mode) == 0o644
+    assert _entries(directory) == [output.name]
+    assert "WARNING:" in capsys.readouterr().err
+
+
+def test_the_tool_succeeds_when_only_the_directory_sync_fails(fake, monkeypatch, capsys):
+    profiles, output = fake
+    tool = _tool()
+    monkeypatch.setattr(tool.os, "fsync", _failing(os.fsync, when=_is_directory))
+    assert tool.main(["--apparmor-dir", str(profiles), "--output", str(output)]) == 0
+    monkeypatch.undo()
+    decode_apparmor_compiled(output.read_bytes())
+    assert "the record stands" in capsys.readouterr().err
+
+
+def test_temporary_names_that_keep_colliding_refuse_and_change_nothing(tmp_path):
+    tool = _tool()
+    directory = tmp_path / "activation"
+    directory.mkdir(mode=0o700)
+    output = directory / "apparmor-compiled.json"
+    output.write_bytes(b"earlier\n")
+    taken = [f".{output.name}.{os.getpid()}.{attempt}.tmp"
+             for attempt in range(tool._TEMPORARY_ATTEMPTS)]
+    for name in taken:
+        (directory / name).write_bytes(b"someone else's\n")
+    with pytest.raises(tool.Refused):
+        tool.write_record(output, RECORD)
+    assert output.read_bytes() == b"earlier\n"
+    assert _entries(directory) == sorted([output.name, *taken])
+    assert all((directory / name).read_bytes() == b"someone else's\n" for name in taken)
+    # One free name is enough.
+    (directory / taken[-1]).unlink()
+    tool.write_record(output, RECORD)
+    assert output.read_bytes() == RECORD
+    assert _entries(directory) == sorted([output.name, *taken[:-1]])
 
 
 def test_a_missing_profile_refuses(fake):
