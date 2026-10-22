@@ -1004,9 +1004,11 @@ DECOY_NAMESPACE_SANDBOX: tuple[tuple[str, str], ...] = (
     # the namespace exists, and stopping it (and, through `Requires=`, the
     # helper and the decoy first) is the hook for removing it last.
     ("RemainAfterExit", "yes"),
-    # The deadlines that replace the former body's 2 s per step: the whole
-    # start, and the whole undo. Past either, systemd kills the `ip` that is
-    # running; a start killed that way fails, and the undo below runs.
+    # The deadlines that replace the former body's 2 s per step: 30 s for
+    # the whole start, and up to 30 s for each undo command (*inferred*:
+    # systemd may re-arm the stop timer per `ExecStopPost=` command; to be
+    # measured, grant §11 item 4). Past either, systemd kills the `ip` that
+    # is running; a start killed that way fails, and the undo below runs.
     ("TimeoutStartSec", "30s"),
     ("TimeoutStopSec", "30s"),
     # The undo, in reverse order: the veth pair, then the namespace. Not

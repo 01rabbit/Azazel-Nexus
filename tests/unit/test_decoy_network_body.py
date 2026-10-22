@@ -506,7 +506,8 @@ def test_the_namespace_unit_undoes_in_reverse_after_a_stop_and_after_a_failed_st
     settings = _unit_settings("azazel-decoy-nsd.service")
     assert "ExecStop" not in settings
     assert settings["ExecStopPost"] == ["-" + " ".join(NSD_STOP[0]), " ".join(NSD_STOP[1])]
-    # The deadlines that replace the former 2 s per step.
+    # The deadlines that replace the former 2 s per step: 30 s for the
+    # start, up to 30 s per undo command (inferred; grant §11 item 4).
     assert settings["TimeoutStartSec"] == ["30s"]
     assert settings["TimeoutStopSec"] == ["30s"]
     # The undo covers every object a step makes: the pair and the namespace;

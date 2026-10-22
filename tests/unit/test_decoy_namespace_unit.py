@@ -583,3 +583,27 @@ def test_no_packaged_unit_states_a_reserved_key_in_extra():
 def test_the_namespace_unit_wiring_is_pinned(change):
     with pytest.raises(ValueError, match="runs /usr/bin/ip|grant marker"):
         replace(_profile(NSD), **change)
+
+
+def test_the_installer_and_the_runbook_require_the_ip_the_unit_runs():
+    """G4 follow-up (review of #288): Nexus does not stage ip, so the
+    installer refuses without it, by the same path the unit runs."""
+
+    from azazel_nexus_runtime.hardening import DECOY_NAMESPACE_IP, DECOY_NAMESPACE_START
+
+    assert DECOY_NAMESPACE_IP == "/usr/bin/ip"
+    assert all(argv[0] == DECOY_NAMESPACE_IP for argv in DECOY_NAMESPACE_START)
+    check = f"if [ ! -x {DECOY_NAMESPACE_IP} ]; then"
+    assert INSTALLER.count(check) == 1
+    at = INSTALLER.index(check)
+    # With the service manager only, refused (exit 1), before anything is written.
+    block = INSTALLER[INSTALLER.rindex('if [ "$WITH_SERVICE_MANAGER" = yes ]; then', 0, at):at]
+    assert "\nfi\n" not in block
+    after = INSTALLER[at:INSTALLER.index("fi\n", at)]
+    assert "refusing to install" in after and "iproute2" in after and "exit 1" in after
+    for first_write in ("useradd", "make_dir 0755 root /etc/azazel",
+                        'install -d -m 0755 "$UNIT_DIR"'):
+        assert at < INSTALLER.index(first_write), first_write
+    runbook = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    assert "**Prerequisite: iproute2.**" in runbook
+    assert f"`{DECOY_NAMESPACE_IP}`" in runbook

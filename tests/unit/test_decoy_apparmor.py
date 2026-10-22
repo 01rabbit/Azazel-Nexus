@@ -700,8 +700,11 @@ def test_the_installer_compiles_the_profiles_before_writing_anything():
     for first_write in ("useradd", "make_dir 0755 root /etc/azazel",
                         'install -d -m 0755 "$UNIT_DIR"'):
         assert compile_at < INSTALLER.index(first_write), first_write
-    block = INSTALLER[INSTALLER.rindex("\n", 0, compile_at - 200):compile_at]
-    assert 'if [ "$WITH_SERVICE_MANAGER" = yes ]; then' in block
+    # Inside the service-manager block (which since the review of #288 also
+    # checks /usr/bin/ip first), with no `fi` between its start and here.
+    opened = INSTALLER.rindex('if [ "$WITH_SERVICE_MANAGER" = yes ]; then', 0, compile_at)
+    block = INSTALLER[opened:compile_at]
+    assert "\nfi\n" not in block and compile_at - opened < 1200
 
 
 def test_the_install_plan_places_the_profiles_and_requires_the_package_with_systemd():

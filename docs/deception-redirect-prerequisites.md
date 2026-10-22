@@ -1120,7 +1120,8 @@ simpler, so option (a) stays.
 since G4 the helper's and the verify unit's only: the namespace unit's
 commands are run by systemd from its unit file, one `ExecStart=` line each,
 under `TimeoutStartSec=30s` for the six together and `TimeoutStopSec=30s`
-for the undo, in place of 2 s per step).
+for the undo, up to 30 s per undo command (*inferred*, measured in grant
+§11 item 4), in place of 2 s per step).
 `os.posix_spawn` of an argument tuple in the run's plan (`run_fixed` refuses
 any other, before a process is made): the module's constants, which are
 exactly the goldens of the tests, and since #196 G1b, for the helper,

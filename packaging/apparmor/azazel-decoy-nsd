@@ -31,6 +31,10 @@
 # applies to that name. What it could alias is a file reached through a
 # detached mount that names itself as something else; making such a mount
 # takes `mount`, and the only mounts allowed here are ip's fixed ones below.
+# That rests on an assumption: the rbind/bind of /run/netns/ onto itself
+# only carries what is under /run/netns/, and nothing here can place a
+# denied path there (no other mount rule, no write there but the directory
+# and the one handle).
 #
 # INFERRED marks a rule that was not confirmed on a kernel; the exact rules
 # are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.

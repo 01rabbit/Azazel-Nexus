@@ -37,12 +37,32 @@ def test_staged_set_is_derived_from_the_installed_units_and_runtime_scripts() ->
     assert "az-core-reserve-probe" not in daemons
 
 
-@pytest.mark.parametrize("line", [
-    "ExecStart=/usr/bin/ip netns add other",
-    "ExecStart=/usr/libexec/azazel/az-decoy-nsd",
-    "ExecStart=/bin/sh -c true",
-])
-def test_the_namespace_units_lines_must_be_its_fixed_ip_commands(tmp_path, line):
+_NSD_FIRST = "ExecStart=/usr/bin/ip netns add azazel-decoy\n"
+_NSD_SECOND = ("ExecStart=/usr/bin/ip link add name az-decoy-host0 type veth peer name "
+               "az-decoy-ns0 netns azazel-decoy\n")
+_NSD_UNDO_1 = "ExecStopPost=-/usr/bin/ip link delete az-decoy-host0\n"
+_NSD_UNDO_2 = "ExecStopPost=/usr/bin/ip netns delete azazel-decoy\n"
+
+
+@pytest.mark.parametrize("change", [
+    ("[Service]\n", "[Service]\nExecStart=/usr/bin/ip netns add other\n"),
+    ("[Service]\n", "[Service]\nExecStart=/usr/libexec/azazel/az-decoy-nsd\n"),
+    ("[Service]\n", "[Service]\nExecStart=/bin/sh -c true\n"),
+    ("[Service]\n", "[Service]\nExecStartPre=/usr/bin/ip netns list\n"),
+    ("[Service]\n", "[Service]\nExecStop=/usr/bin/ip netns delete azazel-decoy\n"),
+    # Order, repetition and omission of the start lines.
+    (_NSD_FIRST + _NSD_SECOND, _NSD_SECOND + _NSD_FIRST),
+    (_NSD_FIRST, _NSD_FIRST + _NSD_FIRST),
+    (_NSD_SECOND, ""),
+    # The undo: dropped, reordered, its dash moved, or another added.
+    (_NSD_UNDO_2, ""),
+    (_NSD_UNDO_1 + _NSD_UNDO_2, _NSD_UNDO_2 + _NSD_UNDO_1),
+    (_NSD_UNDO_2, "ExecStopPost=-/usr/bin/ip netns delete azazel-decoy\n"),
+    (_NSD_UNDO_2, _NSD_UNDO_2 + "ExecStopPost=/usr/bin/ip link delete eth0\n"),
+], ids=["other-ns", "wrapper", "shell", "start-pre", "exec-stop", "reordered",
+        "repeated", "missing", "undo-missing", "undo-reordered", "undo-dash",
+        "undo-extra"])
+def test_the_namespace_units_lines_must_be_its_fixed_ip_commands(tmp_path, change):
     """#196 G4 follow-up: nothing is staged for it, and nothing else may run there."""
 
     root = tmp_path / "root"
@@ -54,7 +74,9 @@ def test_the_namespace_units_lines_must_be_its_fixed_ip_commands(tmp_path, line)
     assert declared_daemons(root) == declared_daemons()
     unit = root / "packaging" / "systemd" / "azazel-decoy-nsd.service"
     text = unit.read_text(encoding="utf-8")
-    unit.write_text(text.replace("[Service]\n", f"[Service]\n{line}\n", 1), encoding="utf-8")
+    old, new = change
+    assert text.count(old) == 1
+    unit.write_text(text.replace(old, new, 1), encoding="utf-8")
     with pytest.raises(ValueError, match="fixed ip commands"):
         declared_daemons(root)
 

@@ -693,7 +693,7 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   | property of the body | in the unit |
   | --- | --- |
   | fixed arguments, no input | the unit file's lines; no `Environment=`, no file, no socket, no argument from anyone |
-  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together and `TimeoutStopSec=30s` for the undo. **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline |
+  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, *inferred* to apply to each `ExecStopPost=` command on its own (systemd may re-arm the timer per command), so up to 30 s per undo command; to be measured (§11 item 4). **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start |
   | a failed step undoes the earlier ones | `ExecStopPost=`: a one-shot unit stops at the first `ExecStart=` that fails, and systemd runs `ExecStopPost=` after a start that failed or timed out, and after every stop; `ExecStop=` only after a start that succeeded (systemd.service(5), systemd 257) |
   | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it, and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
   | something already present | `ip netns add` fails (`File exists`), the start fails at step 1 and nothing else runs: **closed**. **Changed**: the undo then removes the namespace and pair of those names, which the body left alone ("not ours to remove") |
@@ -719,6 +719,11 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   such a mount needs `CAP_SYS_ADMIN` and a `mount` rule: the helper, the
   verify unit and the decoy have neither, and the namespace unit's mounts
   are only `ip`'s fixed ones (none of them a bind from the denied paths).
+  This rests on an assumption, stated here: the namespace unit's `rbind`
+  and `bind` of `/run/netns/` onto itself only carry what is under
+  `/run/netns/`, and the profile gives no means of placing a denied path
+  there (no other mount or bind rule, and no write to `/run/netns` but the
+  directory and the one handle).
   Not `attach_disconnected.path` and no other flag; a test pins it.
 - **Checked so far, without AppArmor** (a privileged Debian 13 container
   with systemd 257.13 as PID 1 on colima's kernel; the rendered unit with
@@ -907,7 +912,9 @@ G4 follow-up.
    taken by hand) running both `ExecStopPost=` lines and leaving no pair
    and no namespace, a start with `/run/netns/azazel-decoy` already present
    failing at step 1 and then removing it (the accepted change of §7), a
-   start timing out (`TimeoutStartSec=`) running the undo, and
+   start timing out (`TimeoutStartSec=`) running the undo, whether
+   `TimeoutStopSec=` bounds each `ExecStopPost=` command on its own or the
+   two together (*inferred*: each on its own, up to 30 s per command), and
    `systemctl stop` removing both; with `attach_disconnected` on the four
    profiles, the verify unit's `/dev/null` access no longer denied and no
    new denial in a passing run of any of the four; the decoy's connect to the intake's socket

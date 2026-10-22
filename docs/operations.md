@@ -639,6 +639,17 @@ bridge `az-decoy0` and the `inet azazel_decoy` nftables table, which drops
 everything to and from the decoy until approved prefixes exist
 ([prerequisites §13](deception-redirect-prerequisites.md#13-the-namespace-units-and-the-helpers-bodies-as-implemented)).
 
+**Prerequisite: iproute2.** The namespace unit runs `/usr/bin/ip` from the
+Debian package `iproute2` itself; Nexus does not ship or stage it. With the
+service manager the installer refuses when `/usr/bin/ip` is missing.
+
+**A namespace unit start that fails with `File exists`.** The names
+`azazel-decoy` (the namespace) and `az-decoy*` (the links) are reserved for
+the decoy. If the unit's start fails at `ip netns add` or `ip link add` with
+`File exists`, find out what created an object of that name (an earlier
+crashed run, or something else using a reserved name) before starting it
+again: the unit's roll-back (`ExecStopPost=`) has already removed it.
+
 **Existing objects are never overwritten.** The helper refuses to start, and
 changes nothing, while a bridge `az-decoy0` or a table `inet azazel_decoy`
 already exists, and its ruleset is loaded with `create table`, which never

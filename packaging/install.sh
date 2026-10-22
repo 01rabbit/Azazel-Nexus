@@ -164,6 +164,13 @@ EOF
 # boot); with the service manager only, since apparmor_parser is required
 # only then. No unit is granted by this, and the pass never grants them yet.
 if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    # The decoy namespace unit runs the system's iproute2 ip by this fixed
+    # path from its unit file (#196 G4 follow-up; hardening.DECOY_NAMESPACE_IP,
+    # a test keeps them equal). Nexus does not stage it, so check it here.
+    if [ ! -x /usr/bin/ip ]; then
+        echo "refusing to install: /usr/bin/ip is missing (install the Debian package iproute2)." >&2
+        exit 1
+    fi
     for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoy-verify azazel-decoyd; do
         if ! apparmor_parser --skip-kernel-load --skip-cache --quiet "$HERE/apparmor/$profile"; then
             echo "refusing to install: AppArmor profile $profile does not compile." >&2
