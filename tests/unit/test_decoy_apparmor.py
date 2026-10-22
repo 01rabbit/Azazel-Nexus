@@ -1162,7 +1162,8 @@ def test_only_the_unit_renderer_and_the_install_plan_import_the_module():
 
     `exposure_generation` (G6 preparation C) takes the four profile names
     from here; it is itself imported by nothing in the product
-    (`test_exposure_g6_parts.py`).
+    (`test_exposure_g6_parts.py`). G6 puts this list back to the real
+    callers when it wires the parts in.
     """
 
     importers = {path.relative_to(ROOT).as_posix() for path in _python_modules()

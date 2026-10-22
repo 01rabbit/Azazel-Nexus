@@ -970,14 +970,18 @@ one that fails when called still withholds the tier, and calls none).
   comparison below is what would catch a change there. **The generation
   schema version that carries the section is introduced in G6.**
 - **Coexistence** (§6.2, §10 Q12; `exposure_withholding.host_firewall_refusal`).
-  Input: the unit-file state of each of `nftables.service`,
-  `firewalld.service` and `netfilter-persistent.service` as the bus gives it,
-  None for no unit file. Only `disabled`, `masked`, `masked-runtime` and no
-  file pass; every other state systemd names, `static` and `indirect`
-  included (another unit can still pull them in), is
-  `host_firewall_enabled`; a value not read or unknown is
-  `host_firewall_unreadable`. *Inferred*: how the G6 reader maps systemd's
-  answer for an absent unit to None.
+  Input: the unit-file state and the `ActiveState` of each of
+  `nftables.service`, `firewalld.service` and `netfilter-persistent.service`
+  as the bus gives them, None when systemd has neither a unit file nor a
+  unit object. A unit passes only when its file state is `disabled`,
+  `masked` or `masked-runtime` **and** it is `inactive`, or when it is None.
+  Every other file state, `static` and `indirect` included, is
+  `host_firewall_enabled`; a disabled or masked unit in any state but
+  `inactive` (`failed` and `activating` included) is `host_firewall_active`;
+  a value not read or unknown is `host_firewall_unreadable`. The active
+  state is required because a `disabled` unit still starts through another
+  unit's `Wants=` or `Requires=`, by hand or by D-Bus activation (review of
+  #294 F1).
 - **`fb_tunnels_only_for_init_net`** (§5 C1 condition 6;
   `exposure_withholding.fb_tunnels_refusal`, `read_fb_tunnels`): only the
   bytes `2\n` pass; absent, unreadable or any other value is
@@ -990,10 +994,15 @@ one that fails when called still withholds the tier, and calls none).
   exposure unit `masked`, or `loaded` with `AppArmorProfile` exactly
   `(false, <its profile>)`; otherwise `lsm_unit_profile_differs`; the
   property is the Service interface's `(bs)`, *inferred* from
-  org.freedesktop.systemd1(5) until read on the VM), then
+  org.freedesktop.systemd1(5) until read on the VM; passing `masked` does
+  not look at `ActiveState`: "masked and still running", §6.3 (a), is
+  `decoy_residue`'s judgement, a separate PR, #293), then
   `policy_hash_refusal` over `read_policy_hashes`, which lists
   `/sys/kernel/security/apparmor/policy/profiles/*/{name,sha256}`
-  (*inferred*: the directory, the files and their form). A required profile
+  (*inferred*: the directory, the files and their form; the hash file may
+  be `sha1` rather than `sha256` on some kernels, which this reader then
+  treats as absent; and the hash is over the **compiled** policy the parser
+  loaded, not over the bytes of the placed file). A required profile
   listed not exactly once, a hash absent, empty or not one lowercase hex
   digest, or no expected hash is `lsm_policy_unverifiable`; a different hash
   is `lsm_policy_differs`. **This build derives no expected hash**: how the
@@ -1010,6 +1019,32 @@ one that fails when called still withholds the tier, and calls none).
 
 Each part has its own reason codes; the order in which G6 asks them, and
 where in `_withholding_reason`, is G6's.
+
+**Open until G6** (review of #294):
+
+- **None means "not there" only through the G6 reader.** The coexistence
+  and loaded-unit judgements pass None (no unit file and no unit object;
+  no unit object). The G6 reader turns into None only the specific errors
+  that mean exactly that (`NoSuchUnit` from `GetUnit`, the unit-file
+  lookup's not-found) and refuses every other error; that reader and its
+  tests are G6's, not this PR's.
+- **The coexistence check is a snapshot.** `disabled` and `inactive` at the
+  pass do not stop a loader started later in the boot by another unit's
+  `Wants=`, by hand or by D-Bus activation; the watch (§6.1) is what sees
+  its flush.
+- **Another profile file of the same name.** The section digests
+  `/etc/apparmor.d/<name>` only. Another file in `/etc/apparmor.d` (or a
+  file it includes) may define a profile of the same name and, loaded after
+  ours, replace it. The enforce-mode listing does not see that; the
+  kernel-hash comparison would.
+- **The kernel hash closes these holes only if the expected hash covers
+  the includes.** An expected hash computed from the placed file alone
+  would differ from the kernel's for every honest load (the kernel hashes
+  the compiled policy, `tunables/global` and `abstractions/base` included)
+  or, if computed from a compilation that reads the current includes, would
+  accept an include changed before the pass. So G6 must compute it from a
+  compilation of the placed files together with includes whose content is
+  itself pinned (nothing pins them today).
 
 ## 10. Owner decisions
 

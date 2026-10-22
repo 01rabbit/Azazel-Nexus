@@ -8,9 +8,10 @@ bounded reader:
 * **coexistence** (§6.2, §10 Q12): `host_firewall_refusal` withholds while
   any of `nftables.service`, `firewalld.service` or
   `netfilter-persistent.service` (`hardening.HOST_FIREWALL_UNITS`) is not
-  provably off. Its input is each unit's unit-file state **as read through
-  the bus the pass already uses** (`GetUnitFileState`); this module reads no
-  bus and adds no bus call;
+  provably off: `disabled` or masked **and** `inactive`. Its input is each
+  unit's unit-file state and active state **as read through the bus the
+  pass already uses** (`GetUnitFileState`, the Unit interface's
+  `ActiveState`); this module reads no bus and adds no bus call;
 * **`net.core.fb_tunnels_only_for_init_net`** (§5 item 6, §13 of the
   prerequisites document): `fb_tunnels_refusal` withholds unless the value
   is exactly `2`; `read_fb_tunnels` reads it from `/proc/sys`.
@@ -36,6 +37,7 @@ import os
 __all__ = [
     "FB_TUNNELS_NOT_INIT_NET_ONLY",
     "FB_TUNNELS_REASON_CODES",
+    "HOST_FIREWALL_ACTIVE",
     "HOST_FIREWALL_ENABLED",
     "HOST_FIREWALL_REASON_CODES",
     "HOST_FIREWALL_UNITS",
@@ -53,18 +55,24 @@ HOST_FIREWALL_UNITS: tuple[str, ...] = (
     "nftables.service", "firewalld.service", "netfilter-persistent.service")
 
 HOST_FIREWALL_ENABLED = "host_firewall_enabled"
+HOST_FIREWALL_ACTIVE = "host_firewall_active"
 HOST_FIREWALL_UNREADABLE = "host_firewall_unreadable"
 HOST_FIREWALL_REASON_CODES: tuple[str, ...] = (
-    HOST_FIREWALL_UNREADABLE, HOST_FIREWALL_ENABLED)
+    HOST_FIREWALL_UNREADABLE, HOST_FIREWALL_ENABLED, HOST_FIREWALL_ACTIVE)
 
 FB_TUNNELS_NOT_INIT_NET_ONLY = "fb_tunnels_not_init_net_only"
 FB_TUNNELS_REASON_CODES: tuple[str, ...] = (FB_TUNNELS_NOT_INIT_NET_ONLY,)
 
-#: The unit-file states that are **off**: a state in which neither boot nor
-#: another unit's `WantedBy=` pulls the unit in. None stands for no unit file
-#: at all (the bus reports none; how the G6 reader maps systemd's error for
-#: an absent unit to None is *inferred*, to be checked on the VM).
-_OFF_STATES = frozenset({None, "disabled", "masked", "masked-runtime"})
+#: The unit-file states that are **off** at boot: no `[Install]` link pulls
+#: the unit in. Off at boot is not off: a `disabled` unit still starts when
+#: another unit wants it, by hand or by D-Bus activation, so
+#: `host_firewall_refusal` also requires `ActiveState` `inactive`.
+_OFF_STATES = frozenset({"disabled", "masked", "masked-runtime"})
+#: Every `ActiveState` systemd 257 names. Only `inactive` passes.
+_ACTIVE_STATES = frozenset({
+    "active", "reloading", "inactive", "failed", "activating", "deactivating",
+    "maintenance", "refreshing",
+})
 #: Every other state systemd 257 names (`systemd_bus._UNIT_FILE_STATES`):
 #: enabled, linked, alias, static, indirect, generated, transient, invalid or
 #: bad.
@@ -97,32 +105,63 @@ _ABSENT = frozenset({errno.ENOENT, errno.ENOTDIR})
 def host_firewall_refusal(states) -> str | None:
     """Why a host firewall loader withholds the tier (§6.2), or None.
 
-    `states` maps exactly the three `HOST_FIREWALL_UNITS` to the unit-file
-    state the bus gave (a string), None for no unit file, or `UNREADABLE`.
-    Pure. `host_firewall_unreadable` for a mapping that is not exactly the
-    three, a value not read, or a state systemd does not name;
-    `host_firewall_enabled` for any state but `disabled`, `masked`,
-    `masked-runtime` or no file. The judgement does not read
-    `/etc/nftables.conf` (§6.2 rejects that: includes and other loaders make
-    it unreliable).
+    `states` maps exactly the three `HOST_FIREWALL_UNITS` to what the bus
+    gave for each: None when systemd has neither a unit file nor a unit
+    object for it, or `{"UnitFileState": str, "ActiveState": str}` (either
+    value may be `UNREADABLE`). Pure. In order:
+
+    * `host_firewall_unreadable`: a mapping that is not exactly the three, a
+      value of another shape, a value not read, or a state systemd does not
+      name;
+    * `host_firewall_enabled`: a unit-file state other than `disabled`,
+      `masked` or `masked-runtime`;
+    * `host_firewall_active`: an `ActiveState` other than `inactive`.
+
+    **Why both (review of #294 F1).** A `disabled` unit still starts when
+    another unit's `Wants=` or `Requires=` pulls it in, by hand, or by D-Bus
+    activation, and a unit masked while it ran keeps running; the file state
+    alone says nothing about now. `inactive` is required, not merely "not
+    active": `failed`, `activating`, `deactivating`, `reloading`,
+    `maintenance` and `refreshing` withhold too.
+
+    **Still open until G6.** The pair is a snapshot at the pass: a disabled
+    unit started later in the boot (a `Wants=` from another unit, a manual
+    start) is not seen here; the watch (§6.1) is what notices its flush. The
+    None case rests on the G6 reader: it maps to None only the specific
+    errors that mean "no such unit file" and "no such unit object" and
+    refuses every other error; that mapping and its tests are G6's.
+
+    The judgement does not read `/etc/nftables.conf` (§6.2 rejects that:
+    includes and other loaders make it unreliable).
     """
 
     if type(states) is not dict or set(states) != set(HOST_FIREWALL_UNITS):
-        return (f"{HOST_FIREWALL_UNREADABLE}: the unit-file states read are not "
+        return (f"{HOST_FIREWALL_UNREADABLE}: the unit states read are not "
                 "exactly the host firewall loaders")
-    on = 0
+    enabled = active = 0
     for unit in HOST_FIREWALL_UNITS:
-        state = states[unit]
-        if state is not None and (type(state) is not str
-                                  or state not in _OFF_STATES | _ON_STATES):
-            return (f"{HOST_FIREWALL_UNREADABLE}: a host firewall loader's "
-                    "unit-file state could not be read")
-        if state not in _OFF_STATES:
-            on += 1
-    if on:
-        return (f"{HOST_FIREWALL_ENABLED}: {on} of the {len(HOST_FIREWALL_UNITS)} "
+        value = states[unit]
+        if value is None:
+            continue
+        if type(value) is not dict or set(value) != {"UnitFileState", "ActiveState"}:
+            return (f"{HOST_FIREWALL_UNREADABLE}: a host firewall loader's unit "
+                    "state is not in the form read from the bus")
+        file_state, active_state = value["UnitFileState"], value["ActiveState"]
+        if (type(file_state) is not str or file_state not in _OFF_STATES | _ON_STATES
+                or type(active_state) is not str or active_state not in _ACTIVE_STATES):
+            return (f"{HOST_FIREWALL_UNREADABLE}: a host firewall loader's unit "
+                    "state could not be read")
+        if file_state not in _OFF_STATES:
+            enabled += 1
+        elif active_state != "inactive":
+            active += 1
+    if enabled:
+        return (f"{HOST_FIREWALL_ENABLED}: {enabled} of the {len(HOST_FIREWALL_UNITS)} "
                 "host firewall loaders, each of which can flush the decoy's "
                 "table, is not disabled or masked")
+    if active:
+        return (f"{HOST_FIREWALL_ACTIVE}: {active} of the {len(HOST_FIREWALL_UNITS)} "
+                "host firewall loaders is disabled or masked but not inactive")
     return None
 
 

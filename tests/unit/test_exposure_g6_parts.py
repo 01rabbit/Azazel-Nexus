@@ -71,6 +71,7 @@ from azazel_nexus_runtime.exposure_generation import (
 from azazel_nexus_runtime.exposure_withholding import (
     FB_TUNNELS_NOT_INIT_NET_ONLY,
     FB_TUNNELS_REASON_CODES,
+    HOST_FIREWALL_ACTIVE,
     HOST_FIREWALL_ENABLED,
     HOST_FIREWALL_REASON_CODES,
     HOST_FIREWALL_UNITS,
@@ -289,9 +290,14 @@ def test_the_firewall_units_are_the_helpers_ordering_units():
     assert HOST_FIREWALL_UNITS == ordered
 
 
-@pytest.mark.parametrize("state", [None, "disabled", "masked", "masked-runtime"])
-def test_a_firewall_loader_that_is_off_or_absent_does_not_withhold(state):
-    assert host_firewall_refusal({u: state for u in HOST_FIREWALL_UNITS}) is None
+def _unit(file_state="disabled", active_state="inactive"):
+    return {"UnitFileState": file_state, "ActiveState": active_state}
+
+
+@pytest.mark.parametrize("value", [None, _unit("disabled"), _unit("masked"),
+                                   _unit("masked-runtime")])
+def test_a_firewall_loader_off_and_inactive_or_absent_does_not_withhold(value):
+    assert host_firewall_refusal({u: value for u in HOST_FIREWALL_UNITS}) is None
 
 
 @pytest.mark.parametrize("unit", HOST_FIREWALL_UNITS)
@@ -299,35 +305,77 @@ def test_a_firewall_loader_that_is_off_or_absent_does_not_withhold(state):
                                    "alias", "static", "indirect", "generated", "transient",
                                    "invalid", "bad"])
 def test_any_firewall_loader_not_provably_off_withholds(unit, state):
-    states = {u: "disabled" for u in HOST_FIREWALL_UNITS}
-    states[unit] = state
+    states = {u: _unit() for u in HOST_FIREWALL_UNITS}
+    states[unit] = _unit(state)
     reason = host_firewall_refusal(states)
     assert reason is not None and reason.startswith(HOST_FIREWALL_ENABLED + ":")
 
 
+@pytest.mark.parametrize("unit", HOST_FIREWALL_UNITS)
+@pytest.mark.parametrize("file_state", ["disabled", "masked", "masked-runtime"])
+@pytest.mark.parametrize("active_state", ["active", "reloading", "failed", "activating",
+                                          "deactivating", "maintenance", "refreshing"])
+def test_a_disabled_or_masked_loader_that_is_not_inactive_withholds(unit, file_state,
+                                                                    active_state):
+    """Review of #294 F1: a disabled unit still starts through another unit's
+    `Wants=`, by hand or by D-Bus activation; a masked one may still run."""
+
+    states = {u: _unit() for u in HOST_FIREWALL_UNITS}
+    states[unit] = _unit(file_state, active_state)
+    reason = host_firewall_refusal(states)
+    assert reason is not None and reason.startswith(HOST_FIREWALL_ACTIVE + ":")
+
+
 def test_every_state_the_bus_accepts_is_judged():
-    from azazel_nexus_runtime.systemd_bus import _UNIT_FILE_STATES
+    from azazel_nexus_runtime.systemd_bus import _ACTIVE_STATES, _UNIT_FILE_STATES
 
     for state in _UNIT_FILE_STATES:
-        reason = host_firewall_refusal({u: state for u in HOST_FIREWALL_UNITS})
+        reason = host_firewall_refusal({u: _unit(state) for u in HOST_FIREWALL_UNITS})
         if state in {"disabled", "masked", "masked-runtime"}:
             assert reason is None
         else:
             assert reason.startswith(HOST_FIREWALL_ENABLED + ":"), state
+    for state in _ACTIVE_STATES:
+        reason = host_firewall_refusal({u: _unit("disabled", state)
+                                        for u in HOST_FIREWALL_UNITS})
+        if state == "inactive":
+            assert reason is None
+        else:
+            assert reason.startswith(HOST_FIREWALL_ACTIVE + ":"), state
+
+
+def test_enabled_is_reported_before_active():
+    states = {u: _unit() for u in HOST_FIREWALL_UNITS}
+    states["nftables.service"] = _unit("enabled", "active")
+    states["firewalld.service"] = _unit("disabled", "active")
+    assert host_firewall_refusal(states).startswith(HOST_FIREWALL_ENABLED + ":")
+
+
+_NONE = {u: None for u in HOST_FIREWALL_UNITS}
 
 
 @pytest.mark.parametrize("states", [
     None, [], {}, {"nftables.service": None},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "iptables.service": None},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "firewalld.service": UNREADABLE},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "firewalld.service": exposure_withholding.UNREADABLE},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "nftables.service": "Enabled"},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "nftables.service": b"enabled"},
-    {**{u: None for u in HOST_FIREWALL_UNITS}, "nftables.service": True},
+    {**_NONE, "iptables.service": None},
+    {**_NONE, "firewalld.service": UNREADABLE},
+    {**_NONE, "firewalld.service": exposure_withholding.UNREADABLE},
+    {**_NONE, "nftables.service": "disabled"},
+    {**_NONE, "nftables.service": ("disabled", "inactive")},
+    {**_NONE, "nftables.service": {"UnitFileState": "disabled"}},
+    {**_NONE, "nftables.service": {**_unit(), "SubState": "dead"}},
+    {**_NONE, "nftables.service": _unit("Enabled")},
+    {**_NONE, "nftables.service": _unit(b"enabled")},
+    {**_NONE, "nftables.service": _unit(exposure_withholding.UNREADABLE)},
+    {**_NONE, "nftables.service": _unit("disabled", exposure_withholding.UNREADABLE)},
+    {**_NONE, "nftables.service": _unit("disabled", None)},
+    {**_NONE, "nftables.service": _unit("disabled", "Inactive")},
+    {**_NONE, "nftables.service": _unit(None, "inactive")},
 ])
 def test_an_unread_or_malformed_state_withholds_as_unreadable(states):
     reason = host_firewall_refusal(states)
     assert reason is not None and reason.startswith(HOST_FIREWALL_UNREADABLE + ":")
+
+
 
 
 # -- fb_tunnels_only_for_init_net (§5 item 6) -----------------------------------
@@ -539,6 +587,18 @@ def test_anything_but_definitions_is_refused(definitions):
 
 
 # -- not wired -------------------------------------------------------------------
+#
+# Two layers, on purpose (review of #294 F5). The static layer (the tests on
+# imports, names and reason codes below, and `_withholding_reason`'s branch)
+# says no product module can reach a part. The dynamic layer (a pass with
+# every part replaced by one that fails when called) says a real pass does
+# not, whatever path the static scan might miss (a `getattr`, an import made
+# at run time). Either alone could pass while the other fails.
+#
+# When G6 wires the parts in, these tests are replaced, not loosened, and the
+# importer lists that this PR widened go back to naming only real callers:
+# `test_decoy_apparmor.py` (`exposure_generation.py` added) and
+# `test_decoy_scope.py` (`exposure_generation.py` added).
 
 
 NEW_MODULES = ("exposure_withholding", "exposure_generation", "exposure_exclusivity")

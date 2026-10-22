@@ -155,7 +155,11 @@ _PROFILES = "/sys/kernel/security/apparmor/profiles"
 #: and `sha256` (the hex digest of the profile's policy and a newline, empty
 #: when the kernel keeps no hash). *Inferred* from the kernel's apparmorfs
 #: (`CONFIG_SECURITY_APPARMOR_HASH`), not yet read on the VM; an absent
-#: directory or file withholds as `lsm_policy_unverifiable`.
+#: directory or file withholds as `lsm_policy_unverifiable`. Also inferred:
+#: the file may be named `sha1` rather than `sha256` on some kernels (this
+#: reader looks for `sha256` only, so such a kernel withholds), and the hash
+#: is over the **compiled** policy the parser loaded, not over the bytes of
+#: the file in `/etc/apparmor.d`.
 _POLICY_PROFILES = "/sys/kernel/security/apparmor/policy/profiles"
 _POLICY_ENTRY_LIMIT = 4096
 _POLICY_NAME_LIMIT = 4096
@@ -313,6 +317,14 @@ def loaded_unit_profile_refusal(loaded) -> str | None:
     VM). Pure: it reads nothing. A loaded unit must name exactly its profile
     without `-`; an exposure unit may be `masked` (it cannot start); every
     other state, shape or value is `lsm_unit_profile_differs`.
+
+    **What it does not see (review of #294).** Passing `masked` does not
+    look at `ActiveState`: a unit masked while it runs passes here. That
+    state, §6.3 (a) "masked and still running", is judged by
+    `decoy_residue` (a separate PR, #293), not by this function. None is
+    passed only because the G6 reader maps to None the one specific error
+    that means "no unit object" (`NoSuchUnit` from `GetUnit`) and refuses
+    every other error; that reader and its tests are G6's.
     """
 
     expected = dict(DECOY_APPARMOR_PROFILES)
