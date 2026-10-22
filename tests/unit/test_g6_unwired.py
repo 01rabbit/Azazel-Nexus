@@ -2,10 +2,12 @@
 
 `docs/deception-exposure-grant.md` §9 (the G6 row and its preparations A, C
 and D, and the v3 decoder row), and preparation K's record decoder
-(`apparmor_compiled`, wiring §5.2). The parts G6 is prepared with are each
+(`apparmor_compiled`, wiring §5.2), and B1's route-netlink dumps
+(`exposure_route_dump`, wiring §4.4). The parts G6 is prepared with are each
 tested on their own (`test_activation_approval_v3.py`,
 `test_exposure_g6_parts.py`, `test_exposure_interfaces.py`,
-`test_decoy_reachability.py`, `test_decoy_apparmor.py`); that **none of
+`test_decoy_reachability.py`, `test_decoy_apparmor.py`,
+`test_exposure_route_dump.py`); that **none of
 them is reached** is pinned here once, from one table:
 
 * `IMPORTERS`: each part's module and the exact set of files that may
@@ -81,6 +83,7 @@ UNIT_FILES = _RT + "activation_unit_files.py"
 WATCH = _RT + "decoy_watch.py"
 COMPILED = _RT + "apparmor_compiled.py"
 RECORD_TOOL = "tools/record_apparmor_compiled.py"
+ROUTE_DUMP = _RT + "exposure_route_dump.py"
 
 # -- the table: the only thing G6 edits ------------------------------------------
 
@@ -104,6 +107,9 @@ IMPORTERS: dict[str, frozenset[str]] = {
     # installer's tool writes it (and checks its output with the decoder);
     # G6's `generation-publish` is to read it, never the pass.
     "azazel_nexus_runtime.apparmor_compiled": frozenset({RECORD_TOOL}),
+    # B1 (wiring §4.4, §9 Q-N): the rules and main routes from route netlink.
+    # Only the pass is to import it; nothing does yet.
+    "azazel_nexus_runtime.exposure_route_dump": frozenset(),
 }
 
 
@@ -159,6 +165,10 @@ NAME_FILES: dict[str, frozenset[str]] = {
     **_only({COMPILED, RECORD_TOOL, "packaging/install.sh", "tools/build_offline_bundle.py"},
             "apparmor_compiled"),
     **_only({COMPILED, APPARMOR, GENERATION, RECORD_TOOL}, "apparmor_policy_hashes"),
+    # B1. Its module name too: it is named nowhere.
+    **_only({ROUTE_DUMP}, "exposure_route_dump", "dump_ipv4_rules", "dump_main_routes",
+            "parse_rule_dump", "parse_route_dump", "rule_dump_request",
+            "route_dump_request", "RouteDumpUnreadable"),
 }
 
 #: The reason codes of the parts: none may start a verdict's or the ledger's
@@ -358,9 +368,12 @@ _POISONED_BEFORE = {
     "pass_reachability_departures", "read_sysctls", "reachability_refusal",
     "exposure_residue_departures", "read_netns", "residue_refusal",
 }
-#: Added since (#196 G6 preparation K): the record's decoder and encoder.
+#: Added since (#196 G6 preparation K): the record's decoder and encoder;
+#: and B1's dumps (wiring §4.4).
 _POISONED_SINCE = {
     "decode_apparmor_compiled", "encode_apparmor_compiled", "normalize_parser_version",
+    # B1: the route-netlink dumps.
+    "dump_ipv4_rules", "dump_main_routes", "parse_rule_dump", "parse_route_dump",
 }
 
 
