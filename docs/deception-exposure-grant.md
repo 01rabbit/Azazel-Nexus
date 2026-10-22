@@ -1334,13 +1334,14 @@ record for `HG-06`, `HG-09` or `HG-10`, and nothing granted by the pass.
 | the pass's reads under the controller's sandbox | a copy of `azazel-activated.service` with only `ExecStart=` replaced by a test Python, its dependencies and conditions removed | `/sys/kernel/security/apparmor/profiles`, `/sys/kernel/security/lsm`, the policy directory and `sha256` all readable; `raw_sha256` is in the same directory; no AppArmor denial | ok |
 | trip by `systemctl reload nftables.service` | Debian's default `/etc/nftables.conf` (it holds `flush ruleset`) | about 11 s later the verify failed, the trip ran and the three units stopped | ok (closed) |
 | trip by `systemctl start nftables.service` (again) | the same file | the same, about 9 s later | ok (closed) |
+| the reader's steps under the controller's sandbox | the same controller copy, running the reader's steps: `readlink` of `raw_sha256` relative to the entry, the check of the form `../../raw_data/<n>/sha256`, then the fixed `policy/raw_data` opened and `<n>` and `sha256` opened in turn with `O_NOFOLLOW` | for all four profiles (`azazel-decoy-netd.124`, `azazel-decoy-nsd.122`, `azazel-decoy-verify.126`, `azazel-decoyd.127`) 64 hex digits read, each equal to the kernel's `raw_sha256`; no AppArmor denial | ok |
 
-The controller copy read `sha256` and listed `raw_sha256` beside it but did
-not read `raw_sha256`'s target (`policy/raw_data/<n>/sha256`) itself; that
-it is readable there is *inferred* from the same securityfs tree, and G6
-confirms it with the reader. That `raw_sha256` is a link is checked (row
-"their form"); before this check the reader opened it without following a
-link and would have withheld on every pass.
+That `raw_sha256` is a link is checked (row "their form"); before this
+check the reader opened it without following a link and would have
+withheld on every pass. That the pass can read it through the link's
+target under the controller's sandbox is checked too (the last row); the
+comparison itself stays unwired and withholds until G6 records the
+expected hash.
 
 **Still open after G4:** whether `TimeoutStopSec=` bounds each
 `ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
