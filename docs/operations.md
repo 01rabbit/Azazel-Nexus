@@ -749,15 +749,31 @@ the package and are never masked, enabled or granted (they have no
   manager for this.
 
 The window between a flush and the stop is at most one period (10 s) plus
-one verify run. It is a mechanism designed and unit-tested here, not yet
-observed on a VM or the real host (grant §11 item 3). The trip leaves the
-units stopped; the helper's stop then fails at `nft delete table` (the table
-is already gone) and reports a failure, which is expected. Find the cause
+one verify run. It has been rehearsed on a Debian 13 VM (G4, grant §11: a
+`nft delete table inet azazel_decoy` tripped the three units in about 2 s;
+a mechanism check, not hardware evidence) and not yet observed on the real
+host; a firewall reload as the trigger was not part of that run. The trip
+leaves the units stopped; the helper's stop then fails at `nft delete
+table` (the table is already gone), so `azazel-decoy-netd.service` ends
+**`failed`** after the trip. That is expected, and it is a closed state:
+the decoy is down, and the next start of the namespace unit brings the
+helper up again with no `reset-failed` needed (seen on the VM). Do not
+treat the helper's `failed` as the cause; the verify's journal holds it. Find the cause
 with `journalctl -u azazel-decoy-verify.service`, fix it (the firewall that
 reloaded, the forwarding or routing configuration of
 [reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)),
 and start the decoy again: starting the namespace unit stops the trip target,
 so a later failure trips again. Do not load the table again by hand.
+
+**Rehearsing on a VM** (grant §11). A rehearsal places the grant markers by
+hand, uses a VM-only scope file, and runs copies of the units without
+`Requires=`/`After=azazel-activated.service`; the pass grants nothing. Such
+a run checks the mechanism only: never record it as `HG-06`, `HG-09` or
+`HG-10` evidence, and never do it on a node in service. Afterwards remove
+the copies, the markers and the scope file, and `systemctl daemon-reload`.
+A helper left `failed` by a trip (above) is part of the expected result,
+not a fault of the rehearsal.
+
 Starting `azazel-decoy-trip.target` by hand is a stop button for the three
 units and nothing more. Do not mask, edit or add a drop-in to any of the
 three watch units: a masked trip target would let a failed verify stop
@@ -778,7 +794,15 @@ namespace unit's profile confines `ip` itself, which systemd starts under it;
 it has no child profile (the G4 follow-up, grant design §7). All four carry
 `flags=(attach_disconnected)`, so that a path under systemd's sandbox (such
 as the verify unit's `/dev/null`) is named rather than refused; the denies
-still apply to the name. With
+still apply to the name. The namespace unit's also sets
+`attach_disconnected.path=/azazel-disconnected/`: the namespace `ip netns
+add` binds onto its handle is such a path, and the prefix keeps it apart
+from the host's real `/` (grant design §7). The profiles' `deny` rules for
+the D-Bus and systemd sockets are defence in depth only: on Debian 13's
+kernel a connect to those sockets was not refused by them (G4 rehearsal),
+and what keeps the units from the service manager is their sandbox
+(`RestrictAddressFamilies=` and `InaccessiblePaths=`). Do not remove those
+unit lines or add a drop-in that changes them. With
 AppArmor enabled, a start without that profile loaded fails; with AppArmor
 disabled systemd ignores `AppArmorProfile=` and the assertion fails the
 start instead, so none of them runs unconfined. The installer needs the

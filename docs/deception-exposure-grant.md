@@ -531,6 +531,18 @@ profile, and a hardware-gate record of it, a condition of any grant.
   `/run/dbus/system_bus_socket` and `/run/systemd/private`; `ptrace`;
   `capability mac_admin` (also outside the bounding set) and writes under
   `/sys/kernel/security`; `change_profile`.
+  **The `unix` item is defence in depth, not the wall (G4, §11).** On
+  Debian 13's kernel (6.12.111, AppArmor 4.1.0) an `AF_UNIX` connect to
+  `/run/dbus/system_bus_socket` succeeded under each of the three profiles
+  whose units can make such a socket: this kernel does not mediate a
+  connect to a path socket by the file rules (`deny ... rw`). What keeps
+  the units from the service manager is systemd's sandbox: the namespace
+  unit's `RestrictAddressFamilies=AF_NETLINK` (no `AF_UNIX` socket can be
+  made) and the `InaccessiblePaths=` over the two sockets on the helper,
+  the verify unit and the decoy. The profiles keep the two `deny` rules for
+  a kernel that mediates path `unix`; that claim belongs to the sandbox
+  gate (`HG-09`, §8), not to the LSM gate. (VM-checked; a mechanism check,
+  not hardware evidence.)
 - **What the namespace unit's profile allows**: `capability sys_admin
   net_admin`, `network netlink raw`, `/usr/bin/ip` itself (systemd runs it
   under the profile; since the G4 follow-up there is no Python body and no
@@ -543,7 +555,7 @@ profile, and a hardware-gate record of it, a condition of any grant.
   property (fixed command lines, no input) and the watch's (§6). The gate claims only what
   the profile denies.
 - **Fail closed twice.** `AppArmorProfile=` without `-` makes a start without
-  the loaded profile fail (*inferred*; VM-check), and the pass withholds the
+  the loaded profile fail (VM-checked in G4: `231/APPARMOR`; not hardware evidence), and the pass withholds the
   tier unless the profiles are listed in enforce mode (§5 item 4). Booting
   with `apparmor=0` or an `lsm=` list without AppArmor therefore withholds.
 - **Measured.** The profile files are digested into the generation (§4.4
@@ -595,8 +607,9 @@ reached until G6. Revised after the review of #285.
   load).
 - **The decoy's report.** Its connect to the intake's socket
   `/var/lib/azazel/run/decoy-intake/decoy-intake.sock` is mediated as a
-  write to the socket file, the same rule that keeps the D-Bus and systemd
-  sockets out of reach. A `deny` over `/var/lib/azazel` would outrank any
+  write to the socket file on a kernel that mediates path `unix` (on
+  Debian 13's kernel it is not, G4: see "What each profile must deny"
+  above; the intake connect itself was not run on the VM). A `deny` over `/var/lib/azazel` would outrank any
   allow and drop every report, so the decoy's profile has none: its writes
   under `/var/lib/azazel` are refused by the profile's default, and its one
   allow there is `rw` on that socket (pinned by a test). Its AF_UNIX rule is
@@ -724,7 +737,30 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   `/run/netns/`, and the profile gives no means of placing a denied path
   there (no other mount or bind rule, and no write to `/run/netns` but the
   directory and the one handle).
-  Not `attach_disconnected.path` and no other flag; a test pins it.
+  **`attach_disconnected.path=/azazel-disconnected/` on the namespace
+  unit's profile alone (G4).** The network namespace `ip netns add` opens
+  is an nsfs file, itself a disconnected path. With `attach_disconnected`
+  alone it is named `/`: the VM refused its open (`operation="open"
+  name="/"`) and its bind onto the handle (`operation="mount" info="failed
+  srcname match" srcname="/" flags="rw, bind"`). Allowing that bind would
+  take `mount options=(rw, bind) / -> /run/netns/azazel-decoy`, and that
+  rule would equally let the host's real, connected `/` be bound onto the
+  handle, where every denied path is reached again under another name
+  (`/run/netns/azazel-decoy/etc/azazel/...`), escaping the denies by
+  aliasing. With the prefix, only what is disconnected is named
+  `/azazel-disconnected/`, and the real `/` keeps its own name; the profile
+  allows `/azazel-disconnected/ r` (the prefix alone, nothing under it) and
+  `mount options=(rw, bind) /azazel-disconnected/ -> /run/netns/azazel-decoy`,
+  and no rule names `/` as a source. The earlier bind rule from
+  `@{PROC}/@{pid}/{,task/@{tid}/}ns/net` was not used on the VM; it is
+  kept, because another kernel may name the source by its `/proc` path.
+  The VM also showed that `ip netns add` flocks `/run/netns/`
+  (`operation="file_lock" requested_mask="k"`), so that directory's rule is
+  `rwk`. The other three profiles carry `attach_disconnected` alone; no
+  other flag; a test pins both.
+- **The decoy's `/proc/<pid>/net/dev` (G4).** The decoy reads it without
+  `owner`: `/proc/<pid>/net` is owned by root, not by the decoy's account,
+  and the `owner` rule was refused (`operation="open" fsuid=979 ouid=0`).
 - **Checked so far, without AppArmor** (a privileged Debian 13 container
   with systemd 257.13 as PID 1 on colima's kernel; the rendered unit with
   only its `AppArmorProfile=`, `AssertSecurity=`, grant-marker and controller
@@ -737,7 +773,7 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   (`RTNETLINK answers: File exists`) and `ExecStopPost=` removed it and the
   namespace; a start after each failure succeeded. The four profiles
   compile with `apparmor_parser` 4.1.0 (no kernel load). Everything under
-  AppArmor, and the timeout path, is §11 item 4.
+  AppArmor, and the timeout path, is §11 item 4; the G4 rehearsal results in §11 record which parts were since seen on a VM.
 
 ## 8. The decoy-sandbox gate (Q10, F7)
 
@@ -754,11 +790,11 @@ markers placed by hand (then also through a real grant, after G6):
 | capabilities | `CapEff`, `CapPrm`, `CapBnd`, `CapAmb` in `/proc/<pid>/status` | decoy: all zero; helper and verify: bounding exactly `CAP_NET_ADMIN`, ambient zero; namespace unit: bounding exactly the two |
 | no new privileges, seccomp | `NoNewPrivs`, `Seccomp` in `/proc/<pid>/status` | `1` and `2` for each |
 | address families | a test probe run under a copy of each unit with only `ExecStart=` replaced, attempting each other family | refused (`EAFNOSUPPORT`/`EPERM`) |
-| service manager | the same probe connecting to `/run/dbus/system_bus_socket` and `/run/systemd/private`, and `systemctl unmask` | refused for every unit |
+| service manager | the same probe connecting to `/run/dbus/system_bus_socket` and `/run/systemd/private`, and `systemctl unmask` | refused for every unit, **by the sandbox**: no `AF_UNIX` socket for the namespace unit (`RestrictAddressFamilies=AF_NETLINK`), the two sockets absent under `InaccessiblePaths=` for the others. Not credited to AppArmor: on Debian 13's kernel the profiles' `deny ... rw` did not refuse a path connect (G4, §7) |
 | activation state | the probe writing under `/run/azazel-activation`, `/etc/systemd/system`, `/usr/lib/systemd/system`, `/var/lib/azazel/state` | refused for every unit (for the namespace unit, by the LSM) |
 | IP filter | `bpftool cgroup show` on each unit's cgroup | the ingress and egress programs are attached; a kernel without cgroup BPF makes systemd skip the filter with only a warning, so absence is a failure |
 | namespace | the decoy's `/proc/self/ns/net` against `/run/netns/azazel-decoy`; its links | same namespace; only `lo` and `az-decoy-ns0` |
-| user namespace | the decoy's `uid_map` | a single mapping of its own account |
+| user namespace | the decoy's `uid_map` | a single mapping of its own account (see the note below the table) |
 | limits | the decoy's cgroup `memory.max`, `pids.max` | `128M`, `16` |
 | LSM | `/proc/<pid>/attr/current` (or `attr/apparmor/current`) | the unit's profile, `(enforce)` |
 | exposure score | `systemd-analyze security <unit>` | recorded per unit, no threshold; a change between runs is reviewed |
@@ -767,12 +803,25 @@ Recorded as a HIL record under the virtualization negative filter, per
 hardware class; a VM run of the same table is a rehearsal only. The probe
 copies are removed after the run and never packaged.
 
+**Note on the user namespace row (G4).** The VM rehearsal (§11) showed the
+decoy's `uid_map` as two lines, `0 0 1` and `979 979 1`: systemd 257's
+`PrivateUsers=yes` maps root as well as the unit's own account. The row's
+"a single mapping of its own account" does not match that. Which one the
+gate accepts (the row amended to "root and its own account, each to
+itself, nothing else", or a change of the unit) is decided in `HG-09`; until
+then a run that shows the two lines is recorded as it is, not as a pass.
+
 **Gate bookkeeping.** `HG-08` is reserved by
 [commissioning storage at boot](commissioning-storage-at-boot.md) §5 Q7.
-Proposed: `HG-09` for this sandbox gate and `HG-10` for the LSM gate of §7
-(its claim: under the profiles, the units cannot write the activation state,
-the grant markers or the unit files, and cannot reach the service manager).
-Numbers are provisional until added to [hardware gates](hardware-gates.md).
+Proposed: `HG-09` for this sandbox gate (its claim includes that no unit
+can reach the service manager, held by the address families and
+`InaccessiblePaths=`) and `HG-10` for the LSM gate of §7 (its claim: under
+the profiles, the units cannot write the activation state, the grant
+markers or the unit files). "Cannot reach the service manager" is not an
+AppArmor claim: on Debian 13's kernel the profiles did not refuse a path
+connect to the D-Bus socket (G4, §7, §11); their `deny` rules for the two
+sockets are defence in depth. Numbers are provisional until added to
+[hardware gates](hardware-gates.md).
 
 ## 9. Phases
 
@@ -863,8 +912,52 @@ answered, both against G3:
   process's root). Resolved by `flags=(attach_disconnected)` on all four
   profiles (§7; what that does and does not weaken is stated there).
 
-The items below are what is still to check; item 4 is rewritten for the
-G4 follow-up.
+### G4 rehearsal results (2026-10-22, VM; mechanism check, not hardware evidence)
+
+Debian 13 VM, kernel 6.12.111+deb13-arm64, AppArmor 4.1.0, systemd 257;
+`main` c11c4a5 with the two candidate profile changes now in
+`packaging/apparmor/` (the namespace unit's `attach_disconnected.path`, its
+`/azazel-disconnected/` rules and `rwk` on `/run/netns/`; the decoy's
+`net/dev` without `owner`; §7). The grant markers were placed by hand, the
+scope was a VM-only file, and the units ran as copies without
+`Requires=`/`After=azazel-activated.service`. Nothing was granted by the
+pass. **This is a check of the mechanism on a VM, not hardware evidence**,
+and it is no record for `HG-06`, `HG-09` or `HG-10`.
+
+| what | observed | result |
+| --- | --- | --- |
+| start | `azazel-decoy-nsd`, `-netd`, `azazel-decoyd`, `azazel-decoy-verify` and its timer all `active` | ok |
+| isolation record v2 | all nine checks `pass`, `scope_digest` present | ok |
+| verify, R4 included | "the table, the host's links, forwarding, the routing rules and the routes match", every 10 s | ok |
+| masquerade (A3), item 1 | approved source `172.31.250.2/32` (ingress `azin0`, the two K1 rules, `forwarding=1` on `azin0` and `az-decoy0`): the fake banner on 2222, 2323 and 8080; unapproved `172.31.250.3`: all three timed out. The decoy's cgroup allows only `10.255.196.0/30`, so the approved source arriving shows the masquerade indirectly | ok |
+| decoy confinement (§8 rows) | `attr/current` `azazel-decoyd (enforce)`; `CapPrm`, `CapEff`, `CapBnd`, `CapAmb` all 0; `NoNewPrivs` 1; `Seccomp` 2 | ok |
+| decoy `uid_map` (§8 row) | two lines, `0 0 1` and `979 979 1` (`PrivateUsers=yes` maps root and the account) | **differs from the §8 row**; noted there, decided in `HG-09` |
+| trip (item 3) | `nft delete table inet azazel_decoy`: about 2 s later the verify failed, `OnFailure=` started `azazel-decoy-trip.target`, and the three units stopped in order; nothing left behind. Starting the namespace unit again stopped the target (`Conflicts=`) and all three came back `active` | ok (closed) |
+| helper after the trip | `azazel-decoy-netd` ended `failed` after its stop (inferred: its `ExecStop=` cleanup failed because the table was already gone) | closed-side; recorded in [operations](operations.md) |
+| AppArmor, writes (item 4) | under the decoy's, the helper's and the verify unit's profiles (`aa-exec` with `python3.13`), writes to `/etc/azazel`, `/run/azazel-activation/granted`, `/etc/systemd/system` and `/var/lib/azazel` all refused | ok |
+| AppArmor, profile missing (item 4) | the decoy started with its profile unloaded: `231/APPARMOR` ("Failed at step APPARMOR") | ok (fails closed) |
+| AppArmor, service manager sockets | under each of the three profiles an `AF_UNIX` connect to `/run/dbus/system_bus_socket` **succeeded**: this kernel does not mediate a path connect by the file rules | **AppArmor does not hold this**; the sandbox does (namespace unit: `AF_NETLINK` only; the others: `InaccessiblePaths=`). §7 and §8 corrected |
+| AppArmor, new denials | the namespace unit: `file_lock` on `/run/netns/`, `open` of `/` (the nsfs file) and the nsfs bind's `srcname="/"`; the decoy: `owner` on `/proc/<pid>/net/dev` (`fsuid=979 ouid=0`). The verify unit's `/dev/null` denial is gone with `attach_disconnected`. The helper and the verify unit showed no denial | fixed by the candidate rules (§7) |
+
+**Not checked in G4** (still open, listed in the items below): the
+namespace unit's `TimeoutStartSec=` path and whether `TimeoutStopSec=`
+bounds each `ExecStopPost=` command on its own (timings not measured); the
+roll-back at a later step and with the handle already present, under
+AppArmor; the decoy's report to the intake (P2's send; the intake was not
+run, so its connect under the profile is not shown either); a trip from
+`systemctl reload nftables` or a `firewalld` reload (only `nft delete
+table` was used); whether a failed `AssertSecurity=apparmor` on the verify
+unit makes it failed so that `OnFailure=` trips; a verify already running
+during an ordinary stop; a name taken over by something else between runs
+(item 2's hand-added element and the names of §7's table); a start with
+AppArmor disabled (`apparmor=0`); the pass reading
+`/sys/kernel/security/apparmor/profiles` under the controller's sandbox; the
+full §8 table for every unit, and `systemd-analyze security`.
+
+### The items
+
+The items below are what was to check; item 4 is rewritten for the
+G4 follow-up, and the table above records which of them G4 answered.
 
 1. masquerade (A3): a connect from an approved source on the ingress reaches
    the decoy and the banner returns; the decoy's cgroup filter sees
