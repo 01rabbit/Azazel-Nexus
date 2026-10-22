@@ -245,6 +245,9 @@ the design decision F2 asks for.
    signer prints the scope digest and the number of prefixes and interfaces
    before signing. A new generation schema version is needed (the current
    one is named observe-baseline); its name is an implementation choice.
+   The section's computation and comparison are **implemented, not wired**
+   (§9, "G6 preparation C"); the schema version that carries it is
+   introduced in G6.
 
 ### 4.5 A gap this exposed: how outside peers reach the decoy
 
@@ -737,7 +740,10 @@ reached until G6. Revised after the review of #285.
   generation's exposure section digests the files (§4.4 item 5), and G6
   compares the kernel's per-profile policy hash
   (`/sys/kernel/security/apparmor/policy/profiles/*/sha256`, *inferred*) with
-  the hash of the compiled placed files.
+  the hash of the compiled placed files. Both comparisons are
+  **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
+  `lsm_policy_unverifiable` until G6 confirms the kernel's directory and
+  derives the expected hash.
 
 ### The namespace unit after G4 (G4 follow-up, as implemented)
 
@@ -931,6 +937,78 @@ pass and the existing tests that pin it stay.
 
 P5 and P6 of the prerequisites document (decisions, redirect) are unchanged
 and come after G6.
+
+### G6 preparation C (implemented, not wired)
+
+Parts of G6 built ahead of it as pure functions and bounded readers.
+**Nothing calls them**: no module of the pass, the controller or the library
+imports them, `_withholding_reason` still withholds the tier as
+`isolation_evidence_absent` on every pass, and `GRANTABLE_UNITS`,
+`ACTIVATION_UNIT_ALLOWLIST`, the policy scope and the observe-baseline
+generation schema are unchanged. No bus call, unit operation, approval field,
+flag or environment variable is added. `tests/unit/test_exposure_g6_parts.py`
+pins each part and that none is reached (a pass with every part replaced by
+one that fails when called still withholds the tier, and calls none).
+
+- **The generation's exposure section** (§4.4 item 5, §5 C1 condition 2;
+  `exposure_generation`). `build_exposure_section` digests (`sha256:<hex>`)
+  the three exposure unit files, the watch's three (§6.3), the four profile
+  files of `/etc/apparmor.d` (§7) and the rendered scope file
+  (`scope_digest`, accepted only as `decoy_scope.parse_scope_file` accepts
+  it); `verify_exposure_section` compares a recorded section with a fresh
+  measurement, one fixed label per difference.
+  `measure_exposure_section_inputs` reads them the way the observe-baseline
+  generation reads its unit files: the exposure units through
+  `activation_unit_files.measure_exposure_unit_files` (content, override
+  and drop-in checks, over `EXPOSURE_UNITS`, outside the allowlist), the
+  watch through `require_watch_unit_files`, which now returns the bytes it
+  compared so the digest is of exactly what it accepted, and the profiles
+  with the same file protections. The scope file is not read: the pass
+  renders it in G6. Not digested: Debian's `tunables/global` and
+  `abstractions/base`, which the profiles include; the kernel-hash
+  comparison below is what would catch a change there. **The generation
+  schema version that carries the section is introduced in G6.**
+- **Coexistence** (§6.2, §10 Q12; `exposure_withholding.host_firewall_refusal`).
+  Input: the unit-file state of each of `nftables.service`,
+  `firewalld.service` and `netfilter-persistent.service` as the bus gives it,
+  None for no unit file. Only `disabled`, `masked`, `masked-runtime` and no
+  file pass; every other state systemd names, `static` and `indirect`
+  included (another unit can still pull them in), is
+  `host_firewall_enabled`; a value not read or unknown is
+  `host_firewall_unreadable`. *Inferred*: how the G6 reader maps systemd's
+  answer for an absent unit to None.
+- **`fb_tunnels_only_for_init_net`** (§5 C1 condition 6;
+  `exposure_withholding.fb_tunnels_refusal`, `read_fb_tunnels`): only the
+  bytes `2\n` pass; absent, unreadable or any other value is
+  `fb_tunnels_not_init_net_only`. The forwarding half of condition 6 is
+  [reachability](deception-exposure-reachability.md)'s and not here.
+- **The LSM** (§5 C1 condition 4, §7 "Left to G6";
+  `decoy_apparmor.exposure_lsm_withholding`, reader
+  `read_exposure_lsm_policy`): G3's `exposure_lsm_refusal`, then
+  `loaded_unit_profile_refusal` (each of the four units not loaded, an
+  exposure unit `masked`, or `loaded` with `AppArmorProfile` exactly
+  `(false, <its profile>)`; otherwise `lsm_unit_profile_differs`; the
+  property is the Service interface's `(bs)`, *inferred* from
+  org.freedesktop.systemd1(5) until read on the VM), then
+  `policy_hash_refusal` over `read_policy_hashes`, which lists
+  `/sys/kernel/security/apparmor/policy/profiles/*/{name,sha256}`
+  (*inferred*: the directory, the files and their form). A required profile
+  listed not exactly once, a hash absent, empty or not one lowercase hex
+  digest, or no expected hash is `lsm_policy_unverifiable`; a different hash
+  is `lsm_policy_differs`. **This build derives no expected hash**: how the
+  kernel's hash relates to the compiled placed file is *inferred*, so the
+  comparison fails closed until G6 confirms it on the VM.
+- **An enforcing unit and the exposure tier** (§6.2;
+  `azazel_nexus.exposure_exclusivity.exposure_enforcement_conflict`, input
+  the governed set). A set holding the exposure tier and any
+  `UnitTier.ENFORCEMENT` unit is `exposure_enforcement_exclusive`. A
+  `UnitDefinition` carries no Edge posture, so every enforcement unit is
+  counted, not only Edge's (the wider choice); today's `CORE_UNITS` hold
+  none, and Edge Core is `EDGE_BASELINE`, observe-only. G6 makes the
+  controller refuse such a set.
+
+Each part has its own reason codes; the order in which G6 asks them, and
+where in `_withholding_reason`, is G6's.
 
 ## 10. Owner decisions
 

@@ -44,7 +44,7 @@ import stat
 
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 
-from .activation_markers import GRANTABLE_UNITS, grant_marker_path
+from .activation_markers import EXPOSURE_UNITS, GRANTABLE_UNITS, grant_marker_path
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
 
 __all__ = [
@@ -54,6 +54,7 @@ __all__ = [
     "UnitFilesRefused",
     "UnitOverrideRefused",
     "drop_in_directory_names",
+    "measure_exposure_unit_files",
     "measure_scoped_unit_files",
     "rendered_unit",
     "require_governed_unit_content",
@@ -350,7 +351,22 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
     (`UnitFilesRefused`) when a file is missing, linked, not root-owned,
     group/other writable, multiply linked or changing.
     """
-    scope = _scope(units, ACTIVATION_UNIT_ALLOWLIST)
+    return _measure(_scope(units, ACTIVATION_UNIT_ALLOWLIST))
+
+
+def measure_exposure_unit_files() -> dict[str, bytes]:
+    """The three Deception Lite exposure units' vendor files, measured (#196 G6 prep).
+
+    The same reading and refusals as `measure_scoped_unit_files`, over
+    exactly `activation_markers.EXPOSURE_UNITS`, which no activation policy
+    may name (`ACTIVATION_UNIT_ALLOWLIST` is unchanged): the input of the
+    generation's exposure section (docs/deception-exposure-grant.md §4.4
+    item 5, `exposure_generation`). **Not called by the pass in this build.**
+    """
+    return _measure(_scope(sorted(EXPOSURE_UNITS)))
+
+
+def _measure(scope: tuple[str, ...]) -> dict[str, bytes]:
     require_no_unit_overrides(scope)
     try:
         fd = _open(UNIT_DIRECTORY, required=True)
@@ -394,7 +410,7 @@ def _same_name_is_absent(directory_fd: int, unit: str) -> None:
         raise UnitOverrideRefused("watch unit overridden or masked by another unit file")
 
 
-def require_watch_unit_files() -> None:
+def require_watch_unit_files() -> dict[str, bytes]:
     """The watch's vendor files are exactly the rendered ones, unshaped (#196 G2).
 
     Each of `WATCH_UNITS` must be in `/usr/lib/systemd/system`, protected as
@@ -404,6 +420,10 @@ def require_watch_unit_files() -> None:
     them is site-specific, so any difference is refused. No file of the same
     name may exist in any other search-path directory (a mask included), and
     no drop-in may apply, before or after the read. Fixed labels only.
+
+    Returns the bytes it read and compared, so that the generation's
+    exposure section (§4.4 item 5, `exposure_generation`) digests exactly
+    what this check accepted, without a second read.
 
     Not called by the pass in this build: the exposure tier is withheld
     unconditionally, so refusing here would only withhold other tiers. G6
@@ -441,6 +461,7 @@ def require_watch_unit_files() -> None:
         raise
     except Exception:  # noqa: BLE001 - redacted: labels only
         raise UnitFilesRefused("watch unit files unavailable") from None
+    return measured
 
 
 def require_grantable_unit_files(units) -> None:
