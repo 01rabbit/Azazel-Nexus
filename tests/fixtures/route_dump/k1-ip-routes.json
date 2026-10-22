@@ -1,0 +1,23 @@
+[
+ {
+  "dst": "default",
+  "gateway": "192.0.2.254",
+  "dev": "lan0",
+  "flags": []
+ },
+ {
+  "dst": "10.0.0.0/8",
+  "gateway": "192.0.2.3",
+  "dev": "lan0",
+  "metric": 5,
+  "flags": []
+ },
+ {
+  "dst": "192.0.2.0/24",
+  "dev": "lan0",
+  "protocol": "kernel",
+  "scope": "link",
+  "prefsrc": "192.0.2.1",
+  "flags": []
+ }
+]

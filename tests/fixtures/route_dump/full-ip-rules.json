@@ -1,0 +1,209 @@
+[
+ {
+  "priority": 0,
+  "src": "all",
+  "table": "local"
+ },
+ {
+  "priority": 100,
+  "src": "192.0.2.0",
+  "srclen": 24,
+  "dst": "198.51.100.7",
+  "table": "100"
+ },
+ {
+  "priority": 101,
+  "not": null,
+  "src": "all",
+  "fwmark": "0x5",
+  "fwmask": "0xff",
+  "oif": "eth9",
+  "table": "default"
+ },
+ {
+  "priority": 102,
+  "src": "all",
+  "tos": "0x10",
+  "uid_start": 1,
+  "uid_end": 2,
+  "ipproto": "ipproto-253",
+  "sport_start": 1,
+  "sport_end": 2,
+  "dport": 3,
+  "table": "300"
+ },
+ {
+  "priority": 103,
+  "src": "all",
+  "action": "unreachable"
+ },
+ {
+  "priority": 104,
+  "src": "all",
+  "action": "prohibit"
+ },
+ {
+  "priority": 105,
+  "src": "all",
+  "goto": 200
+ },
+ {
+  "priority": 106,
+  "src": "all",
+  "nop": null
+ },
+ {
+  "priority": 107,
+  "src": "all",
+  "l3mdev": null
+ },
+ {
+  "priority": 108,
+  "src": "all",
+  "tun_id": 5,
+  "table": "5"
+ },
+ {
+  "priority": 109,
+  "src": "all",
+  "table": "main",
+  "suppress_ifgroup": "3"
+ },
+ {
+  "priority": 110,
+  "src": "all",
+  "table": "main",
+  "flow_to": "4"
+ },
+ {
+  "priority": 111,
+  "src": "all",
+  "table": "main",
+  "flow_from": "3",
+  "flow_to": "5"
+ },
+ {
+  "priority": 112,
+  "src": "all",
+  "goto": 999,
+  "unresolved": null
+ },
+ {
+  "priority": 113,
+  "src": "all",
+  "iif": "lan0",
+  "oif": "eth9",
+  "table": "local"
+ },
+ {
+  "priority": 114,
+  "src": "all",
+  "sport": 1000,
+  "dport": 22,
+  "table": "main"
+ },
+ {
+  "priority": 115,
+  "src": "all",
+  "uid_start": 100,
+  "uid_end": 200,
+  "table": "main"
+ },
+ {
+  "priority": 116,
+  "src": "all",
+  "fwmark": "0x7",
+  "table": "main"
+ },
+ {
+  "priority": 117,
+  "src": "all",
+  "iif": "nosuch",
+  "iif_detached": null,
+  "table": "main"
+ },
+ {
+  "priority": 118,
+  "src": "all",
+  "oif": "nosuch",
+  "oif_detached": null,
+  "table": "main"
+ },
+ {
+  "priority": 119,
+  "src": "all",
+  "fwmark": "0",
+  "fwmask": "0xff",
+  "table": "main"
+ },
+ {
+  "priority": 120,
+  "src": "0.0.0.0",
+  "srclen": 8,
+  "table": "main"
+ },
+ {
+  "priority": 121,
+  "src": "1.2.3.4",
+  "table": "1000"
+ },
+ {
+  "priority": 122,
+  "src": "all",
+  "table": "252"
+ },
+ {
+  "priority": 123,
+  "src": "all",
+  "table": "default",
+  "suppress_prefixlen": 0
+ },
+ {
+  "priority": 200,
+  "src": "all",
+  "table": "main"
+ },
+ {
+  "priority": 1960,
+  "src": "all",
+  "dst": "10.255.196.0",
+  "dstlen": 30,
+  "iif": "lan0",
+  "table": "main",
+  "suppress_prefixlen": 29
+ },
+ {
+  "priority": 1960,
+  "src": "all",
+  "dst": "10.255.196.0",
+  "dstlen": 30,
+  "iif": "eth9",
+  "table": "main",
+  "suppress_prefixlen": 29,
+  "protocol": "static"
+ },
+ {
+  "priority": 1961,
+  "src": "all",
+  "iif": "lan0",
+  "action": "blackhole"
+ },
+ {
+  "priority": 1961,
+  "src": "all",
+  "iif": "eth9",
+  "table": "main",
+  "action": "blackhole",
+  "protocol": "static"
+ },
+ {
+  "priority": 32766,
+  "src": "all",
+  "table": "main"
+ },
+ {
+  "priority": 32767,
+  "src": "all",
+  "table": "default"
+ }
+]

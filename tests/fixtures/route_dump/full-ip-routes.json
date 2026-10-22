@@ -1,0 +1,114 @@
+[
+ {
+  "dst": "default",
+  "gateway": "192.0.2.254",
+  "dev": "lan0",
+  "flags": []
+ },
+ {
+  "dst": "10.0.0.0/8",
+  "gateway": "192.0.2.3",
+  "dev": "lan0",
+  "metric": 5,
+  "flags": []
+ },
+ {
+  "dst": "10.255.196.0/30",
+  "dev": "eth9",
+  "protocol": "kernel",
+  "scope": "link",
+  "prefsrc": "10.255.196.1",
+  "flags": []
+ },
+ {
+  "dst": "10.255.196.16/30",
+  "gateway": "192.0.2.5",
+  "dev": "lan0",
+  "flags": []
+ },
+ {
+  "dst": "10.255.196.32/28",
+  "flags": [],
+  "nexthops": [
+   {
+    "gateway": "192.0.2.6",
+    "dev": "lan0",
+    "weight": 2,
+    "flags": []
+   },
+   {
+    "gateway": "192.0.2.7",
+    "dev": "lan0",
+    "weight": 1,
+    "flags": []
+   }
+  ]
+ },
+ {
+  "dst": "10.255.196.48/30",
+  "gateway": "192.0.2.5",
+  "dev": "lan0",
+  "prefsrc": "192.0.2.1",
+  "metric": 7,
+  "flags": [],
+  "metrics": [
+   {
+    "mtu": 1400
+   }
+  ]
+ },
+ {
+  "dst": "10.255.196.52/30",
+  "via": {
+   "family": "inet6",
+   "host": "fe80::1"
+  },
+  "dev": "lan0",
+  "flags": [
+   "onlink"
+  ]
+ },
+ {
+  "type": "blackhole",
+  "dst": "10.255.196.64/30",
+  "flags": []
+ },
+ {
+  "type": "unreachable",
+  "dst": "10.255.196.68/30",
+  "flags": []
+ },
+ {
+  "type": "throw",
+  "dst": "10.255.196.88/30",
+  "flags": []
+ },
+ {
+  "type": "local",
+  "dst": "10.255.196.96/30",
+  "dev": "lan0",
+  "scope": "host",
+  "flags": []
+ },
+ {
+  "dst": "10.255.196.200",
+  "dev": "eth9",
+  "scope": "link",
+  "flags": []
+ },
+ {
+  "dst": "192.0.2.0/24",
+  "dev": "lan0",
+  "protocol": "kernel",
+  "scope": "link",
+  "prefsrc": "192.0.2.1",
+  "flags": []
+ },
+ {
+  "dst": "198.51.100.0/24",
+  "nhid": 9,
+  "gateway": "192.0.2.9",
+  "dev": "lan0",
+  "flags": []
+ }
+]

@@ -1,0 +1,50 @@
+[
+ {
+  "priority": 0,
+  "src": "all",
+  "table": "local"
+ },
+ {
+  "priority": 1960,
+  "src": "all",
+  "dst": "10.255.196.0",
+  "dstlen": 30,
+  "iif": "lan0",
+  "table": "main",
+  "suppress_prefixlen": 29
+ },
+ {
+  "priority": 1960,
+  "src": "all",
+  "dst": "10.255.196.0",
+  "dstlen": 30,
+  "iif": "eth9",
+  "table": "main",
+  "suppress_prefixlen": 29,
+  "protocol": "static"
+ },
+ {
+  "priority": 1961,
+  "src": "all",
+  "iif": "lan0",
+  "action": "blackhole"
+ },
+ {
+  "priority": 1961,
+  "src": "all",
+  "iif": "eth9",
+  "table": "main",
+  "action": "blackhole",
+  "protocol": "static"
+ },
+ {
+  "priority": 32766,
+  "src": "all",
+  "table": "main"
+ },
+ {
+  "priority": 32767,
+  "src": "all",
+  "table": "default"
+ }
+]
