@@ -703,7 +703,12 @@ def test_decoy_readers_never_take_edges_slots(running):
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             held.append(client)
             client.connect(str(server.decoy_path))
-            client.sendall(b"{")
+            try:
+                client.sendall(b"{")
+            except OSError:
+                # An overflow connection may be closed by the intake before
+                # this write: that close is the refusal under test.
+                pass
         wait_for(lambda: server.refused["decoy_overloaded"] == 2)
         send(server.path, json.dumps(edge_event()).encode() + b"\n")
         wait_for(lambda: server.accepted == 1)
