@@ -15,7 +15,10 @@ reads the host's sysctls or talks to the service manager):
   with networkd's K1 and the rehearsal's `ip rule add` K1 as the VM printed
   them (Debian 13, kernel 6.12, iproute2 6.15, networkd 257);
 * `decoy_residue.exposure_residue_departures`: a masked unit still running,
-  and the leftovers of a definition-less stop while no unit runs;
+  and the leftovers of a definition-less stop while no unit runs, judged on
+  the namespace, the veth end and the bridge; the links are names as
+  `netlink.read_links` yields them, and no table listing is taken
+  (`docs/deception-exposure-wiring.md` §4.4, A1);
 * `decoy_residue.read_netns`: the namespace looked up in `/run/netns`
   itself, not through `ip netns list` (#196 L2, H1(c)): no directory is no
   namespace, any other error and a link under the name are unreadable
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import inspect
 import json
 import os
 import re
@@ -555,14 +559,13 @@ def _units(**changes):
 _NONE = (0, None)
 #: `read_netns()`: the nsfs bind, a regular file as `lstat` gives it.
 _NAMESPACE = (0, stat.S_IFREG | 0o444)
-_NO_LINKS = (0, json.dumps([{"ifindex": 1, "ifname": "lo"},
-                            {"ifindex": 2, "ifname": "eth9"}]).encode())
-_NO_TABLES = (0, json.dumps({"nftables": [{"metainfo": {"version": "1.1.3"}}]}).encode())
+#: `tuple(r.name for r in netlink.read_links())` on a host with no decoy link.
+_NO_LINKS = ("lo", "eth9")
 
 
-def _residue(units=None, netns=_NONE, links=_NO_LINKS, tables=_NO_TABLES):
+def _residue(units=None, netns=_NONE, links=_NO_LINKS):
     return exposure_residue_departures(_units() if units is None else units,
-                                       netns, links, tables)
+                                       netns, links)
 
 
 NSD, NETD, DECOYD = EXPOSURE_UNITS
@@ -608,20 +611,19 @@ def test_a_running_unit_that_is_not_masked_is_not_this_check():
     assert _residue(_units(**{DECOYD: running})) == ()
 
 
-@pytest.mark.parametrize("netns,links,tables", [
-    (_NAMESPACE, _NO_LINKS, _NO_TABLES),
-    (_NONE, (0, b'[{"ifname":"az-decoy-host0"}]'), _NO_TABLES),
-    (_NONE, (0, b'[{"ifname":"lo"},{"ifname":"az-decoy0"}]'), _NO_TABLES),
-    (_NONE, _NO_LINKS, (0, json.dumps({"nftables": [
-        {"metainfo": {}}, {"table": {"family": "inet", "name": "azazel_decoy",
-                                     "handle": 1}}]}).encode())),
+@pytest.mark.parametrize("netns,links", [
+    (_NAMESPACE, _NO_LINKS),
+    (_NONE, ("az-decoy-host0",)),
+    (_NONE, ("lo", "az-decoy0")),
+    (_NONE, ("lo", "eth9", "az-decoy-host0", "az-decoy0")),
+    (_NAMESPACE, ("lo", "az-decoy-host0", "az-decoy0")),
 ])
 @pytest.mark.parametrize("active", ["inactive", "failed"])
-def test_leftovers_while_no_unit_runs_are_refused(netns, links, tables, active):
+def test_leftovers_while_no_unit_runs_are_refused(netns, links, active):
     """Third G4 rehearsal: two veth links and a namespace left behind."""
 
     units = _units(**{unit: {"ActiveState": active} for unit in EXPOSURE_UNITS})
-    assert _residue(units, netns, links, tables) == (EXPOSURE_LEFTOVERS_PRESENT,)
+    assert _residue(units, netns, links) == (EXPOSURE_LEFTOVERS_PRESENT,)
 
 
 def test_leftovers_while_a_unit_runs_are_its_own_objects():
@@ -636,35 +638,47 @@ def test_leftovers_while_a_unit_runs_are_its_own_objects():
 _RUNNING = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active"}
 _STOPPED_UNIT = {"LoadState": "loaded", "UnitFileState": "enabled",
                  "ActiveState": "inactive"}
-_HOST_VETH = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy-host0"}]')
-_BRIDGE = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy0"}]')
-_TABLE = (0, json.dumps({"nftables": [
-    {"table": {"family": "inet", "name": "azazel_decoy", "handle": 1}}]}).encode())
+_HOST_VETH = ("lo", "az-decoy-host0")
+_BRIDGE = ("lo", "az-decoy0")
 
 
-@pytest.mark.parametrize("running,netns,links,tables,expected", [
+@pytest.mark.parametrize("running,netns,links,expected", [
     # Review of #293 item 2: the decoy running alone, its two owners stopped.
-    ((DECOYD,), _NAMESPACE, _NO_LINKS, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((DECOYD,), _NONE, _HOST_VETH, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((DECOYD,), _NONE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((DECOYD,), _NONE, _NO_LINKS, _TABLE, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((DECOYD,), _NONE, _NO_LINKS, _NO_TABLES, ()),
-    # The helper stopped: its bridge or table left; the namespace unit's are its own.
-    ((NSD, DECOYD), _NAMESPACE, _HOST_VETH, _NO_TABLES, ()),
-    ((NSD,), _NONE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((NSD, DECOYD), _NAMESPACE, _HOST_VETH, _TABLE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NAMESPACE, _NO_LINKS, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _HOST_VETH, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _BRIDGE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((DECOYD,), _NONE, _NO_LINKS, ()),
+    # The helper stopped: its bridge left; the namespace unit's are its own.
+    ((NSD, DECOYD), _NAMESPACE, _HOST_VETH, ()),
+    ((NSD,), _NONE, _BRIDGE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((NSD, DECOYD), _NAMESPACE, ("lo", "az-decoy-host0", "az-decoy0"),
+     (EXPOSURE_LEFTOVERS_PRESENT,)),
     # The namespace unit stopped: its namespace or veth end left.
-    ((NETD, DECOYD), _NONE, _BRIDGE, _TABLE, ()),
-    ((NETD,), _NAMESPACE, _BRIDGE, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
-    ((NETD,), _NONE, _HOST_VETH, _NO_TABLES, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((NETD, DECOYD), _NONE, _BRIDGE, ()),
+    ((NETD,), _NAMESPACE, _BRIDGE, (EXPOSURE_LEFTOVERS_PRESENT,)),
+    ((NETD,), _NONE, _HOST_VETH, (EXPOSURE_LEFTOVERS_PRESENT,)),
     # All three running: every object is theirs.
-    ((NSD, NETD, DECOYD), _NAMESPACE, (0, b'[{"ifname":"az-decoy0"},'
-                                       b'{"ifname":"az-decoy-host0"}]'), _TABLE, ()),
+    ((NSD, NETD, DECOYD), _NAMESPACE, ("az-decoy0", "az-decoy-host0"), ()),
 ])
-def test_leftovers_are_judged_per_owner(running, netns, links, tables, expected):
+def test_leftovers_are_judged_per_owner(running, netns, links, expected):
     units = _units(**{unit: (_RUNNING if unit in running else _STOPPED_UNIT)
                       for unit in EXPOSURE_UNITS})
-    assert _residue(units, netns, links, tables) == expected
+    assert _residue(units, netns, links) == expected
+
+
+@pytest.mark.parametrize("running", [(), (DECOYD,), (NSD,), (NSD, DECOYD)])
+def test_the_table_is_not_judged(running):
+    """Wiring §4.4, A1 and §10 item 5: the pass takes no table listing. A
+    leftover `inet azazel_decoy` with no leftover bridge passes here and is
+    the helper's to refuse (`HELPER_ABSENT`)."""
+
+    units = _units(**{unit: (_RUNNING if unit in running else _STOPPED_UNIT)
+                      for unit in EXPOSURE_UNITS})
+    assert _residue(units, _NONE, _NO_LINKS) == ()
+    assert list(inspect.signature(exposure_residue_departures).parameters) == [
+        "units", "netns", "links"]
+    source = Path(decoy_residue.__file__).read_text(encoding="utf-8")
+    assert "NFT_TABLE" not in source and "_table_present" not in source
 
 
 @pytest.mark.parametrize("active,expected", [
@@ -681,11 +695,11 @@ def test_a_unit_whose_file_is_gone_counts_as_masked(active, expected):
     assert _residue(units) == expected
 
 
-def test_other_namespaces_links_and_tables_are_not_leftovers():
-    assert _residue(links=(0, b'[{"ifname":"az-decoy-ns0"},{"ifname":"az-decoy1"}]'),
-                    tables=(0, json.dumps({"nftables": [
-                        {"table": {"family": "ip", "name": "azazel_decoy"}},
-                        {"table": {"family": "inet", "name": "filter"}}]}).encode())) == ()
+def test_other_links_are_not_leftovers():
+    # `az-decoy-ns0` is the namespace's end: inside it, never in the host's dump.
+    assert _residue(links=("az-decoy-ns0", "az-decoy1", "az-decoy0x", "AZ-DECOY0",
+                           "azazel_decoy", "")) == ()
+    assert _residue(links=()) == ()
 
 
 @pytest.mark.parametrize("units", [
@@ -699,34 +713,62 @@ def test_other_namespaces_links_and_tables_are_not_leftovers():
     None,
 ])
 def test_a_unit_state_not_in_its_closed_form_is_unreadable(units):
-    assert exposure_residue_departures(units, _NONE, _NO_LINKS, _NO_TABLES) == (
+    assert exposure_residue_departures(units, _NONE, _NO_LINKS) == (
         EXPOSURE_STATE_UNREADABLE,)
 
 
-@pytest.mark.parametrize("netns,links,tables", [
-    ((errno.EACCES, None), _NO_LINKS, _NO_TABLES),
-    ((errno.ENOTDIR, None), _NO_LINKS, _NO_TABLES),
-    ((errno.ELOOP, None), _NO_LINKS, _NO_TABLES),
-    ((0, stat.S_IFLNK | 0o777), _NO_LINKS, _NO_TABLES),
-    ((0, stat.S_IFDIR | 0o755), _NO_LINKS, _NO_TABLES),
-    ((errno.ENOENT, stat.S_IFREG | 0o444), _NO_LINKS, _NO_TABLES),
-    ((0, b""), _NO_LINKS, _NO_TABLES),
-    ((0, b'[{"name":"azazel-decoy"}]'), _NO_LINKS, _NO_TABLES),
-    ((True, None), _NO_LINKS, _NO_TABLES),
-    (_NONE, (0, b""), _NO_TABLES),
-    (_NONE, (0, b'[{"ifname": 3}]'), _NO_TABLES),
-    (_NONE, _NO_LINKS, (0, b"")),
-    (_NONE, _NO_LINKS, (0, b'{"nftables": [{"table": {"family": "inet"}}]}')),
-    (_NONE, _NO_LINKS, (0, b'{"nftables": {}}')),
-    (_NONE, _NO_LINKS, (2, b"")),
-    ("", _NO_LINKS, _NO_TABLES),
+@pytest.mark.parametrize("netns,links", [
+    ((errno.EACCES, None), _NO_LINKS),
+    ((errno.ENOTDIR, None), _NO_LINKS),
+    ((errno.ELOOP, None), _NO_LINKS),
+    ((0, stat.S_IFLNK | 0o777), _NO_LINKS),
+    ((0, stat.S_IFDIR | 0o755), _NO_LINKS),
+    ((errno.ENOENT, stat.S_IFREG | 0o444), _NO_LINKS),
+    ((0, b""), _NO_LINKS),
+    ((0, b'[{"name":"azazel-decoy"}]'), _NO_LINKS),
+    ((True, None), _NO_LINKS),
+    ("", _NO_LINKS),
+    # The link dump failed (`NetlinkUnavailable`, `NetlinkMalformed`).
+    (_NONE, None),
+    # A record without a name could be any link, the bridge among them.
+    (_NONE, (None,)),
+    (_NONE, ("lo", None, "eth9")),
+    (_NAMESPACE, ("lo", None)),
+    (_NONE, ("lo", None, "az-decoy0")),
+    # Not the names as `read_links` yields them.
+    (_NONE, ["lo", "eth9"]),
+    (_NONE, frozenset({"lo"})),
+    (_NONE, "az-decoy0"),
+    (_NONE, ("lo", b"az-decoy0")),
+    (_NONE, (0, b'[{"ifname":"lo"}]')),
 ])
-def test_an_object_read_that_cannot_be_read_is_unreadable(netns, links, tables):
-    assert _residue(None, netns, links, tables) == (EXPOSURE_STATE_UNREADABLE,)
+def test_an_object_read_that_cannot_be_read_is_unreadable(netns, links):
+    assert _residue(None, netns, links) == (EXPOSURE_STATE_UNREADABLE,)
     # The running-mask judgement stands on the unit states alone.
     masked = _units(**{NSD: {"ActiveState": "active"}})
-    assert _residue(masked, netns, links, tables) == (
+    assert _residue(masked, netns, links) == (
         EXPOSURE_UNIT_MASKED_RUNNING, EXPOSURE_STATE_UNREADABLE)
+    assert residue_refusal(_residue(None, netns, links)) == (
+        "exposure_state_unreadable: " + RESIDUE_PHRASES[EXPOSURE_STATE_UNREADABLE])
+
+
+def test_the_links_are_the_names_read_links_yields():
+    """The future pass hands `tuple(r.name for r in netlink.read_links())`."""
+
+    from azazel_nexus_runtime.netlink import LinkRecord
+
+    def names(*pairs):
+        return tuple(LinkRecord(index, name, None, reason="absent").name
+                     for index, name in pairs)
+
+    stopped = _stopped_units()
+    assert _residue(stopped, _NONE, names((1, "lo"), (2, "eth9"))) == ()
+    assert _residue(stopped, _NONE, names((1, "lo"), (7, "az-decoy-host0"))) == (
+        EXPOSURE_LEFTOVERS_PRESENT,)
+    assert _residue(stopped, _NONE, names((1, "lo"), (8, "az-decoy0"))) == (
+        EXPOSURE_LEFTOVERS_PRESENT,)
+    assert _residue(stopped, _NONE, names((1, "lo"), (9, None))) == (
+        EXPOSURE_STATE_UNREADABLE,)
 
 
 # -- the namespace read from /run/netns, not `ip netns list` (#196 L2, H1(c)) ----
@@ -886,8 +928,8 @@ def test_both_modules_are_leaves():
     assert imports("decoy_reachability.py") == {
         "__future__", "ipaddress", "json", "os", "typing", "azazel_nexus.decoy_scope",
         ".decoy_addresses"}
+    # No `ip -j` parser and no nftables JSON since A1: the links are names.
     assert imports("decoy_residue.py") == {
-        "__future__", "errno", "json", "os", "stat", "typing", ".decoy_addresses",
-        ".decoy_reachability"}
+        "__future__", "errno", "os", "stat", "typing", ".decoy_addresses"}
     for name in ("decoy_reachability.py", "decoy_residue.py"):
         assert _helper_offences(RUNTIME / name) == [], name
