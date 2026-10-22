@@ -1209,71 +1209,9 @@ def test_the_production_paths_are_securityfs():
 
 
 # -- not reached in this build --------------------------------------------------
-
-
-def _python_modules():
-    for base in (ROOT / "src", ROOT / "runtime" / "src"):
-        yield from sorted(base.rglob("*.py"))
-
-
-def _imports_decoy_apparmor(path: Path) -> bool:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module.endswith("decoy_apparmor"):
-                return True
-            if any(alias.name == "decoy_apparmor" for alias in node.names):
-                return True
-        elif isinstance(node, ast.Import):
-            if any(alias.name.endswith("decoy_apparmor") for alias in node.names):
-                return True
-    return False
-
-
-def test_only_the_unit_renderer_and_the_install_plan_import_the_module():
-    """The pass, the controller and the library never call the check (G6 does).
-
-    `exposure_generation` (G6 preparation C) takes the four profile names
-    from here; it is itself imported by nothing in the product
-    (`test_exposure_g6_parts.py`). G6 puts this list back to the real
-    callers when it wires the parts in.
-    """
-
-    importers = {path.relative_to(ROOT).as_posix() for path in _python_modules()
-                 if _imports_decoy_apparmor(path)}
-    assert importers == {
-        "runtime/src/azazel_nexus_runtime/exposure_generation.py",
-        "runtime/src/azazel_nexus_runtime/hardening.py",
-        "runtime/src/azazel_nexus_runtime/install_platform.py",
-    }
-
-
-def test_the_reason_codes_appear_nowhere_else_in_the_product():
-    for path in _python_modules():
-        if path.name == "decoy_apparmor.py":
-            continue
-        text = path.read_text(encoding="utf-8")
-        for code in LSM_REASON_CODES:
-            assert code not in text, (path, code)
-        assert "exposure_lsm_refusal" not in text, path
-        assert "read_exposure_lsm" not in text, path
-
-
-def test_the_tier_is_still_withheld_unconditionally():
-    """`_withholding_reason` still returns `isolation_evidence_absent` for the
-    tier with nothing before it that reads the LSM (the controller-level
-    run is `test_activation.py`)."""
-
-    from azazel_nexus import activation
-
-    source = Path(activation.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    method = next(node for node in ast.walk(tree)
-                  if isinstance(node, ast.FunctionDef) and node.name == "_withholding_reason")
-    body = ast.get_source_segment(source, method)
-    branch = body[body.index("if definition.tier is UnitTier.DECEPTION_EXPOSURE:"):
-                  body.index("if definition.tier is UnitTier.EDGE_BASELINE:")]
-    returns = re.findall(r'return \(\s*"([a-z_]+):', branch)
-    assert returns == ["exposure_tier_partial", "isolation_evidence_absent"]
-    assert "lsm" not in branch.lower() and "apparmor" not in branch.lower()
+#
+# Which files import the module (the unit renderer, the install plan, the
+# wrapper check and `exposure_generation`), that its LSM names and reason codes
+# appear nowhere else, and that the tier is still withheld unconditionally, are
+# `test_g6_unwired.py` (#196 L1), with every other G6 part. G6 edits that
+# table when it wires the check in.

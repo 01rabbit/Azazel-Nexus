@@ -7,7 +7,6 @@ generated in memory for each test; nothing is read from the host or kept.
 import ast
 import hashlib
 import json
-import subprocess
 from itertools import combinations
 from pathlib import Path
 
@@ -384,6 +383,11 @@ def test_typed_trust_context_and_policy_are_required(approved):
 
 
 # -- not wired -----------------------------------------------------------------
+#
+# That nothing outside the tests imports or names v3, statically or through
+# importlib, `__import__` or runpy, is `test_g6_unwired.py` (#196 L1): one
+# table for every G6 part. What stays here is v3's own: the verifier the pass
+# uses and the signing tool refuse it, and no scope was widened.
 
 
 @pytest.mark.parametrize("units", [LOOP, LOOP + EXPOSURE])
@@ -405,77 +409,6 @@ def test_the_signing_tool_refuses_v3():
         payload = activation_approval_v3_payload(context=CONTEXT, **FIELDS | dict(units=units))
         with pytest.raises(operator_sign.SignRefused):
             operator_sign.activation_summary(payload)
-
-
-def _imports(path: Path) -> set[str]:
-    imported = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.ImportFrom):
-            imported.add(("." * node.level) + (node.module or ""))
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-    return imported
-
-
-MODULE = REPO / "src/azazel_nexus/activation_approval_v3.py"
-
-
-def _tracked_outside_tests_and_docs() -> list[Path]:
-    """Every tracked file except tests/ and docs/. Without a checkout this
-    fails rather than skips: the property is not established without it."""
-    listed = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"],
-                            capture_output=True, check=True).stdout
-    names = [name for name in listed.decode("utf-8").split("\0") if name]
-    assert names, "git ls-files listed nothing"
-    files = [REPO / name for name in names if not name.startswith(("tests/", "docs/"))]
-    for root in ("src", "runtime", "tools", "bench"):
-        assert any(path.is_relative_to(REPO / root) for path in files), root
-    assert MODULE in files
-    return files
-
-
-def test_nothing_outside_the_tests_imports_or_names_v3():
-    for path in _tracked_outside_tests_and_docs():
-        if path == MODULE or not path.is_file():
-            continue
-        raw = path.read_bytes()
-        for needle in (b"activation_approval_v3", b"activation-approval/v3", b"ApprovalV3"):
-            assert needle not in raw, (path, needle)
-        if path.suffix == ".py":
-            assert not {"activation_approval_v3", ".activation_approval_v3"} & _imports(path), path
-
-
-_DYNAMIC = {"import_module", "__import__", "find_spec", "spec_from_file_location",
-            "module_from_spec", "reload", "run_module", "run_path"}
-
-
-def _dynamic_import_strings(path: Path) -> list[str]:
-    """Every string constant inside an importlib, `__import__` or runpy call."""
-    found = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name in _DYNAMIC:
-            found.extend(sub.value for sub in ast.walk(node)
-                         if isinstance(sub, ast.Constant) and isinstance(sub.value, str))
-    return found
-
-
-def test_no_dynamic_import_reaches_an_activation_approval_module():
-    sources = [path for path in _tracked_outside_tests_and_docs()
-               if path.suffix == ".py" and path.is_file()]
-    for path in sources:
-        text = path.read_text(encoding="utf-8")
-        for value in _dynamic_import_strings(path):
-            assert "activation_approval" not in value and "approval_v" not in value, (
-                path, value)
-        # A name assembled from pieces would escape the scan above, so a file
-        # that imports dynamically may not mention the family at all.
-        if path != MODULE and any(f"{name}(" in text for name in _DYNAMIC):
-            assert "activation_approval" not in text, path
 
 
 def test_no_scope_was_widened():

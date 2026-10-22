@@ -20,10 +20,10 @@ reads the host's sysctls or talks to the service manager):
   itself, not through `ip netns list` (#196 L2, H1(c)): no directory is no
   namespace, any other error and a link under the name are unreadable
   (read from a directory under `tmp_path`, never the host's);
-* that **nothing calls either**: no module of the product imports them but
-  the verify (the shared reads), the tier is withheld as
+* that both are leaves. That **nothing calls either** (no module of the
+  product imports them but the verify, the tier is withheld as
   `isolation_evidence_absent` with both made to fail if called, and
-  `_withholding_reason` is unchanged.
+  `_withholding_reason` is unchanged) is `test_g6_unwired.py`.
 
 None of this is VM or hardware evidence.
 """
@@ -41,11 +41,7 @@ from pathlib import Path
 import pytest
 
 from azazel_nexus.activation import (
-    ARTIFACT_TRANSPORT,
     DECEPTION_EXPOSURE_UNITS,
-    LOCAL_MODEL_PROVIDER,
-    REMOTE_INFERENCE_TRANSPORT,
-    EdgeBaselineState,
 )
 from azazel_nexus_runtime import decoy_reachability, decoy_residue, decoy_watch
 from azazel_nexus_runtime.decoy_reachability import (
@@ -862,52 +858,12 @@ def test_the_namespace_is_not_read_through_ip_netns_list():
 
 
 # -- not wired: nothing calls either ---------------------------------------------
-
-
-def _python_modules():
-    for base in (REPO / "src", REPO / "runtime" / "src"):
-        yield from sorted(base.rglob("*.py"))
-
-
-def _imported(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            names.add(module.rsplit(".", 1)[-1])
-            names |= {alias.name for alias in node.names}
-        elif isinstance(node, ast.Import):
-            names |= {alias.name.rsplit(".", 1)[-1] for alias in node.names}
-    return names
-
-
-def test_only_the_verify_and_the_residue_check_import_the_reachability_module():
-    """The pass, the controller and the library never call it (G6 does)."""
-
-    importers = {path.relative_to(REPO).as_posix() for path in _python_modules()
-                 if "decoy_reachability" in _imported(path)}
-    assert importers == {
-        "runtime/src/azazel_nexus_runtime/decoy_watch.py",
-        "runtime/src/azazel_nexus_runtime/decoy_residue.py",
-    }
-
-
-def test_nothing_imports_the_residue_module():
-    assert not any("decoy_residue" in _imported(path) for path in _python_modules())
-
-
-def test_the_pass_only_names_appear_nowhere_else_in_the_product():
-    words = ("pass_reachability_departures", "reachability_refusal", "conf_entry_path",
-             FORWARDING_ROLE_ON, "exposure_residue_departures", "residue_refusal",
-             "read_netns",
-             *RESIDUE_CODES)
-    for path in _python_modules():
-        if path.name in ("decoy_reachability.py", "decoy_residue.py"):
-            continue
-        text = path.read_text(encoding="utf-8")
-        for word in words:
-            assert word not in text, (path, word)
+#
+# Which files import either module (the verify and the residue check only),
+# that the pass-only names and codes appear nowhere else, that the tier is
+# withheld with both made to fail if called, and `_withholding_reason`'s
+# branch, are `test_g6_unwired.py` (#196 L1), with every other G6 part. What
+# stays here is that both are leaves.
 
 
 def test_both_modules_are_leaves():
@@ -935,52 +891,3 @@ def test_both_modules_are_leaves():
         ".decoy_reachability"}
     for name in ("decoy_reachability.py", "decoy_residue.py"):
         assert _helper_offences(RUNTIME / name) == [], name
-
-
-def test_the_tier_is_withheld_with_both_made_to_fail_if_called(tmp_path, monkeypatch):
-    """`_withholding_reason` reaches neither: with each judgement and the reader
-    replaced by one that raises, the pass runs and the three exposure units are
-    withheld as `isolation_evidence_absent`."""
-
-    from test_activation import ACTOR, NOW, _confirmed_role, _controller, _lease, _record
-
-    def called(*args, **kwargs):
-        raise AssertionError("a G6 judgement was called before G6")
-
-    for module, name in ((decoy_reachability, "pass_reachability_departures"),
-                         (decoy_reachability, "read_sysctls"),
-                         (decoy_reachability, "reachability_refusal"),
-                         (decoy_residue, "exposure_residue_departures"),
-                         (decoy_residue, "read_netns"),
-                         (decoy_residue, "residue_refusal")):
-        monkeypatch.setattr(module, name, called)
-    controller, units, ledger, _ = _controller(tmp_path)
-    outcome = controller.activate(
-        now=NOW, actor=ACTOR, lease=_lease(),
-        edge=EdgeBaselineState(True, True, True, True, True), healthy=True,
-        record=_record(roles=(_confirmed_role(),)),
-        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
-    )
-    for unit in DECEPTION_EXPOSURE_UNITS:
-        verdict = next(v for v in outcome.verdicts if v.unit == unit)
-        assert not verdict.granted
-        assert verdict.reason.startswith("isolation_evidence_absent")
-    reasons = [v.reason for v in outcome.verdicts if v.reason] + [
-        entry.event.get("reason", "") for entry in ledger]
-    codes = (*PASS_REACHABILITY_CODES, *RESIDUE_CODES)
-    assert not any(reason.startswith(code) for reason in reasons for code in codes)
-
-
-def test_withholding_reason_still_returns_isolation_evidence_absent():
-    from azazel_nexus import activation
-
-    source = Path(activation.__file__).read_text(encoding="utf-8")
-    method = next(node for node in ast.walk(ast.parse(source))
-                  if isinstance(node, ast.FunctionDef) and node.name == "_withholding_reason")
-    body = ast.get_source_segment(source, method)
-    branch = body[body.index("if definition.tier is UnitTier.DECEPTION_EXPOSURE:"):
-                  body.index("if definition.tier is UnitTier.EDGE_BASELINE:")]
-    assert re.findall(r'return \(\s*"([a-z_]+):', branch) == [
-        "exposure_tier_partial", "isolation_evidence_absent"]
-    for word in ("reachability", "forwarding", "residue", "leftover", "masked"):
-        assert word not in branch.lower(), word
