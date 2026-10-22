@@ -97,6 +97,13 @@ def test_every_shipped_unit_is_one_the_runtime_provides():
     preflight = (REPO / "packaging" / "systemd" / "azazel-edge-probe-preflight.service")
     assert "ExecStart=/usr/libexec/azazel/az-edge-probed\n" in preflight.read_text(
         encoding="utf-8")
+    # The Deception Lite verify unit (#196 G2) runs the network helper's
+    # entry point with one fixed word.
+    assert "azazel-decoy-verify" in shipped
+    shipped.remove("azazel-decoy-verify")
+    verify = (REPO / "packaging" / "systemd" / "azazel-decoy-verify.service")
+    assert "ExecStart=/usr/libexec/azazel/az-decoy-netd verify\n" in verify.read_text(
+        encoding="utf-8")
     for unit in sorted(shipped):
         script = unit.replace("azazel-", "az-")
         assert f"{script} =" in entry_points, f"{unit} has no entry point"

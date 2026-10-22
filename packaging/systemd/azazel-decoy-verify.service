@@ -1,0 +1,51 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once per period, and before every decoy start.
+# It holds CAP_NET_ADMIN alone, as a bounding set and never as an ambient capability, because listing the table needs it; it runs the network helper's executable with the one word verify, which starts only fixed read-back commands (the decoy table, the host's links, the IPv4 routing rules and the main table's routes) and reads forwarding and proxy_arp under /proc/sys/net.
+# It compares them with the scope it receives as the credential decoy-scope, the helper's one input, and with the operator's reachability conditions, and writes nothing: the isolation record stays the helper's.
+# A departure, an unreadable read or a refused scope makes it fail, and its failure starts azazel-decoy-trip.target, which stops the namespace unit and through Requires= the helper and the decoy.
+# It has no grant marker and no [Install] section: the decoy pulls it and its timer in.
+# It is root, so netlink is its only address family and the service manager's private sockets are inaccessible to it.
+# It starts only with AppArmor enabled and its profile azazel-decoy-verify loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
+
+[Unit]
+Description=Azazel-Nexus Deception Lite watch
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md
+After=azazel-decoy-netd.service
+AssertSecurity=apparmor
+OnFailure=azazel-decoy-trip.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/libexec/azazel/az-decoy-netd verify
+AppArmorProfile=azazel-decoy-verify
+TimeoutStartSec=30s
+LoadCredential=decoy-scope:/run/azazel-activation/decoy-scope.json
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictRealtime=yes
+InaccessiblePaths=-/run/dbus/system_bus_socket
+InaccessiblePaths=-/run/systemd/private
+RestrictAddressFamilies=AF_NETLINK
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027

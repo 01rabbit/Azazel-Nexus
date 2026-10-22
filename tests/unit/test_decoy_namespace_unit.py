@@ -289,7 +289,9 @@ def test_only_the_controller_and_the_two_one_shot_decoy_units_may_run_as_root(un
         replace(_profile(unit), account="root", is_decoy_listener=False,
                 address_families=("AF_UNIX",))
     roots = [p.unit for p in ALL_PROFILES if p.account == "root"]
-    assert roots == [ACTIVATION_CONTROLLER_UNIT, NSD, DECOY_NETWORK_HELPER_UNIT]
+    # The fourth is the verify unit (#196 G2), the helper's executable.
+    assert roots == [ACTIVATION_CONTROLLER_UNIT, NSD, DECOY_NETWORK_HELPER_UNIT,
+                     "azazel-decoy-verify.service"]
 
 
 # -- the chain and the marker lines -------------------------------------------
@@ -300,10 +302,16 @@ def test_the_chain_is_namespace_then_helper_then_decoy():
     assert DECEPTION_EXPOSURE_UNITS == (NSD, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
     assert nsd["After"] == [ACTIVATION_CONTROLLER_UNIT]
     assert nsd["Requires"] == [ACTIVATION_CONTROLLER_UNIT]
-    assert netd["After"] == [ACTIVATION_CONTROLLER_UNIT, NSD, "nftables.service"]
+    assert netd["After"] == [ACTIVATION_CONTROLLER_UNIT, NSD, "nftables.service",
+                             "firewalld.service", "netfilter-persistent.service"]
     assert netd["Requires"] == [ACTIVATION_CONTROLLER_UNIT, NSD]
-    assert decoyd["After"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT]
-    assert decoyd["Requires"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT]
+    # The watch (#196 G2): the decoy starts after a verify that passed and
+    # pulls in the verify unit and its timer.
+    assert decoyd["After"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT,
+                               "azazel-decoy-verify.service"]
+    assert decoyd["Requires"] == [ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT,
+                                  "azazel-decoy-verify.service",
+                                  "azazel-decoy-verify.timer"]
     # No other unit depends on the namespace unit, and none of the three
     # pulls another in by Wants= or binds to it.
     for profile in ALL_PROFILES:
@@ -525,7 +533,8 @@ def test_no_packaged_unit_states_a_reserved_key_in_extra():
     from azazel_nexus_runtime.hardening import DECOY_MANAGER_SOCKETS_INACCESSIBLE
 
     for profile in ALL_PROFILES:
-        if profile.unit in (NSD, DECOY_NETWORK_HELPER_UNIT):
+        # The verify unit's extra is pinned whole as well (#196 G2).
+        if profile.unit in (NSD, DECOY_NETWORK_HELPER_UNIT, "azazel-decoy-verify.service"):
             continue
         extra = profile.extra
         if profile.unit == DECOY_UNIT:

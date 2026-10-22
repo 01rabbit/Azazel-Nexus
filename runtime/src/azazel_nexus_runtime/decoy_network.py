@@ -112,6 +112,8 @@ __all__ = [
     "render_ruleset",
     "run_fixed",
     "tear_down",
+    "verify_plan",
+    "WATCH_READS",
 ]
 
 #: The two programs this module may start, by absolute path. `/usr/bin/ip`
@@ -493,6 +495,30 @@ def helper_plan(scope: Optional[ScopeLike] = None) -> Plan:
 #: The helper's plan without a scope; also what `stop` runs from, which
 #: needs no scope (its undo lists are constants).
 HELPER_PLAN = helper_plan(None)
+
+#: The verify unit's read-backs (#196 G2, docs/deception-exposure-grant.md
+#: §6.1; reachability R4), by fixed name: the helper's two, then the IPv4
+#: routing rules and the routes of the main table, in `ip`'s JSON form. Read
+#: only: a dump of rules or routes changes nothing. Four commands of at most
+#: `STEP_SECONDS` each fit in the verify unit's `TimeoutStartSec=30s` and in
+#: one watch period of 10 s.
+WATCH_READS: tuple[tuple[str, tuple[str, ...]], ...] = HELPER_VERIFY + (
+    ("host_rules", (IP, "-j", "-4", "rule", "show")),
+    ("main_routes", (IP, "-j", "-4", "route", "show", "table", "main")),
+)
+
+
+def verify_plan(scope: Optional[ScopeLike] = None) -> Plan:
+    """The verify unit's plan: the read-backs only, nothing that changes state.
+
+    No step, no check of absence, no undo: `run_fixed` refuses every argument
+    list (the plan allows only what `capture_fixed` reads back), so the only
+    processes the verify can start are the four `WATCH_READS`. The ruleset is
+    rendered from the verify unit's own copy of the scope by the same
+    function as the helper's, and is only compared, never loaded.
+    """
+
+    return Plan((), (), WATCH_READS, render_ruleset(scope))
 
 #: The most `capture_fixed` reads from one command. More is not the host
 #: side of the decoy network as built; the command is killed and its output

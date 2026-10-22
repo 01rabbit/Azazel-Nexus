@@ -892,8 +892,12 @@ def test_the_family_scan_allows_only_named_constants_and_af_unix(tmp_path):
 #: (#276 F4), by full path. Both are root; a new import is a diff a reviewer
 #: sees, never a module that arrived through another one.
 NSD_PROCESS = {"decoy_nsd.py", "decoy_network.py", "decoy_addresses.py", "decoy_netns.py"}
+#: #196 G2: `decoy_watch.py`, the verify unit's reads and judgement, runs in
+#: the helper's executable (`az-decoy-netd verify`) and under the same rules:
+#: no socket (it reads rules and routes through the fixed `ip -j` commands of
+#: `decoy_network.WATCH_READS`), no process of its own, no environment.
 NETD_PROCESS = {"decoy_netd.py", "decoy_isolation_check.py", "decoy_network.py",
-                "decoy_addresses.py", "decoy_netns.py"}
+                "decoy_addresses.py", "decoy_netns.py", "decoy_watch.py"}
 
 #: What no module of either helper may name: everything the decoy process
 #: may not, but `posix_spawn` (pinned to `decoy_network.py` alone, below),
@@ -947,6 +951,17 @@ HELPER_MUTATIONS = [
      ("import os\n", "import os\nfrom os import execvp\n"), "decoy_network.py"),
     ("check-environ", "decoy_isolation_check.py",
      ("import os\n", "import os\nfrom os import environ\n"), "decoy_isolation_check.py"),
+    # #196 G2: the watch may not open a netlink socket of its own, nor start
+    # a process, nor read the environment.
+    ("watch-socket", "decoy_watch.py",
+     ("import os\n", "import os\nimport socket\n"), "decoy_watch.py"),
+    ("watch-fork", "decoy_watch.py",
+     ("import os\n", "import os\nfrom os import fork\n"), "decoy_watch.py"),
+    ("watch-environ", "decoy_watch.py",
+     ("import os\n", "import os\nfrom os import environ\n"), "decoy_watch.py"),
+    ("watch-new-import", "decoy_watch.py",
+     ("from .decoy_addresses import", "from .systemd_bus import connect\nfrom .decoy_addresses import"),
+     "decoy_netd.py closure"),
     ("netns-methodcaller", "decoy_netns.py",
      ("import os\n", "import os\nfrom operator import methodcaller\n"), "decoy_netns.py"),
 ]
@@ -983,12 +998,15 @@ DECOY_IMPORT_CLOSURES = {
     # #196 G1b: the helper reads its one input, the scope file, with the
     # standard-library leaf `decoy_scope`; one module more, and only here
     # (the namespace unit and the decoy do not load it).
+    # #196 G2: and the watch (`az-decoy-netd verify`), a runtime module that
+    # brings no library module with it.
     "decoy_netd": {
         "azazel_nexus", "azazel_nexus.boot_id", "azazel_nexus.decoy_isolation",
         "azazel_nexus.decoy_scope",
         "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
         "azazel_nexus_runtime.decoy_isolation_check", "azazel_nexus_runtime.decoy_netd",
         "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
+        "azazel_nexus_runtime.decoy_watch",
     },
     "decoy_nsd": {
         "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
@@ -1355,11 +1373,13 @@ def test_the_decoy_network_module_is_scanned_like_every_other_runtime_module():
     path = RUNTIME / "decoy_network.py"
     assert not _exempt(path, EGRESS_EXEMPT) and not _exempt(path, LISTENER_EXEMPT)
     assert not _names_in(path) & (INTERNET_FORBIDDEN | {"socket", "subprocess"})
-    # Only the two one-shot decoy executables import it.
+    # Only the two one-shot decoy executables import it, and the helper's
+    # watch (#196 G2, `az-decoy-netd verify`), which runs in the helper's
+    # executable.
     importers = sorted(
         source.name for source in RUNTIME.rglob("*.py")
         if any(isinstance(node, ast.ImportFrom) and node.module
                and node.module.split(".")[-1] == "decoy_network"
                for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))))
     )
-    assert importers == ["decoy_netd.py", "decoy_nsd.py"]
+    assert importers == ["decoy_netd.py", "decoy_nsd.py", "decoy_watch.py"]

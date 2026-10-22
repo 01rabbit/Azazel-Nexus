@@ -689,10 +689,9 @@ a grant in this build.
 The check reads only the decoy's own table, `inet azazel_decoy`. NAT,
 `mark`, `notrack` or any other rule in another table is not seen, and the
 decoy table's drops (the ingress drop K2 and the reply rule R3) do nothing
-against another table's rewriting. Do not add rules that touch the decoy's
-traffic in other tables; changes there are left to the later periodic
-re-check and to the rule that no ruleset-managing service is enabled with
-the decoy units.
+against another table's rewriting, nor does the watch below. Do not add
+rules that touch the decoy's traffic in other tables; the pass is to
+withhold the tier while a ruleset-managing service is enabled (G6).
 
 An ingress interface is for the decoy alone (the `deception_bridge` role):
 the decoy table drops everything received on an ingress that does not go to
@@ -701,41 +700,72 @@ the decoy table drops everything received on an ingress that does not go to
 **A firewall reload removes the decoy table.** Reloading `nftables.service`,
 or anything else that runs `nft flush ruleset` (Debian's default
 `/etc/nftables.conf` begins with it, and the unit's stop runs it), removes
-`inet azazel_decoy` together with every other table. The same holds for an
-Edge enforce posture that replaces the ruleset. At boot this no longer
-happens: the helper is ordered after `nftables.service`
-(`After=` only, so a host without that unit is unaffected), and the
-firewall's load runs before the table is built. Later it still does: a
-reload, stop, restart or start of `nftables.service`, Edge's enforce, or any
-other flush removes the table, and the ordering does not stop or restart the
-helper. Nothing notices: the helper stays active, its record still reads
-`pass`, and the decoy keeps listening with no table in front of it
-([prerequisites §10](deception-redirect-prerequisites.md#10-p1-as-implemented),
-"Before any grant"). After any such reload, and whenever the decoy units
-are running, check that the table is there:
+`inet azazel_decoy` together with every other table. The same holds for a
+`firewalld` reload and for an Edge enforce posture that replaces the
+ruleset. At boot this does not happen: the helper is ordered after
+`nftables.service`, `firewalld.service` and `netfilter-persistent.service`
+(`After=` only, so a host without them is unaffected), and their load runs
+before the table is built. Later it still does, and the ordering does not
+stop or restart the helper.
+
+**The watch** (#196 G2,
+[grant design §6.1](deception-exposure-grant.md#61-detection-and-stop)) is
+what notices. The decoy pulls in two more units, which are installed with
+the package and are never masked, enabled or granted (they have no
+`[Install]` section and no grant marker):
+
+- `azazel-decoy-verify.service` runs `az-decoy-netd verify`, the helper's
+  executable with one more word, once before the decoy starts and then every
+  10 s (`azazel-decoy-verify.timer`). It lists the table and the host's links
+  and compares them with the scope exactly as the helper's isolation check
+  does, and it re-reads the reachability conditions
+  ([reachability §6](deception-exposure-reachability.md#6-the-pass-condition-g6-not-implemented-here),
+  R4): forwarding on the ingress interfaces and off everywhere else but
+  `az-decoy0` (IPv6 off everywhere), `proxy_arp` off, no IPv4 routing rule
+  before the main table but the local rule and each ingress's two K1 rules,
+  and no route of `main` inside `10.255.196.0/24` but the bridge's own /30.
+  It writes nothing; the isolation record stays the helper's. Its journal
+  line is fixed names only, for example `az-decoy-netd verify: departed:
+  nft_table unreadable, approved_v4_matches unreadable, ingress_matches
+  unreadable` or `... departed: forwarding_other_on`; it never shows an
+  interface name, a prefix or an address.
+- When it fails (a departure, a table that is gone, a read it cannot make,
+  or a scope it refuses), its `OnFailure=` starts
+  `azazel-decoy-trip.target`, whose only content is
+  `Conflicts=azazel-decoy-nsd.service`: systemd stops the decoy, the helper
+  and the namespace unit, in that order. Nothing in Nexus calls the service
+  manager for this.
+
+The window between a flush and the stop is at most one period (10 s) plus
+one verify run. It is a mechanism designed and unit-tested here, not yet
+observed on a VM or the real host (grant §11 item 3). The trip leaves the
+units stopped; the helper's stop then fails at `nft delete table` (the table
+is already gone) and reports a failure, which is expected. Find the cause
+with `journalctl -u azazel-decoy-verify.service`, fix it (the firewall that
+reloaded, the forwarding or routing configuration of
+[reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)),
+and start the decoy again: starting the namespace unit stops the trip target,
+so a later failure trips again. Do not load the table again by hand.
+Starting `azazel-decoy-trip.target` by hand is a stop button for the three
+units and nothing more. Do not mask, edit or add a drop-in to any of the
+three watch units: a masked trip target would let a failed verify stop
+nothing. To check the table yourself:
 
 ```
 sudo nft list table inet azazel_decoy
+sudo systemctl list-timers azazel-decoy-verify.timer
 ```
 
-If it reports that the table does not exist, stop the three units. Stopping
-the namespace unit stops the decoy and the helper first:
-
-```
-sudo systemctl stop azazel-decoy-nsd.service
-```
-
-The helper's stop then fails at `nft delete table` (the table is already
-gone) and reports a failure; that is expected. Do not load the table again
-by hand. A fresh start of the three units builds and checks it again.
-
-**AppArmor profiles** (#196 G3). Each of the three units names its own
-profile with `AppArmorProfile=` (`azazel-decoy-nsd`, `azazel-decoy-netd`,
-`azazel-decoyd`), without `-`, and carries `AssertSecurity=apparmor`. With
+**AppArmor profiles** (#196 G3, G2). Each of the three units, and the
+verify unit, names its own profile with `AppArmorProfile=`
+(`azazel-decoy-nsd`, `azazel-decoy-netd`, `azazel-decoy-verify`,
+`azazel-decoyd`), without `-`, and carries `AssertSecurity=apparmor`. The
+verify unit's profile is the helper's without its one writable place, plus
+read access to `forwarding` and `proxy_arp` under `/proc/sys/net`. With
 AppArmor enabled, a start without that profile loaded fails; with AppArmor
 disabled systemd ignores `AppArmorProfile=` and the assertion fails the
 start instead, so none of them runs unconfined. The installer needs the
-Debian package `apparmor` (not `apparmor-utils`), compiles the three
+Debian package `apparmor` (not `apparmor-utils`), compiles the four
 profiles before it writes anything, warns when the kernel has AppArmor
 disabled, and places them in `/etc/apparmor.d/`; it does not load them. It
 also refuses to install when the decoy wrappers' interpreter is not

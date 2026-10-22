@@ -1,8 +1,8 @@
 """The Deception Lite AppArmor profiles, and whether they are enforced (#196 G3).
 
 `docs/deception-exposure-grant.md` §7 (L1, decided as §10 Q8): each of the
-three exposure units names its own profile with `AppArmorProfile=` (no `-`)
-and carries `AssertSecurity=apparmor`. With AppArmor enabled, a start without
+three exposure units, and the verify unit of §6 (G2), names its own profile
+with `AppArmorProfile=` (no `-`) and carries `AssertSecurity=apparmor`. With AppArmor enabled, a start without
 the profile loaded fails; with AppArmor disabled systemd ignores
 `AppArmorProfile=`, and the assertion fails the start instead, so the unit
 never runs unconfined. The activation pass is to withhold the tier unless
@@ -49,13 +49,16 @@ __all__ = [
     "wrapper_profile_refusal",
 ]
 
-#: Each exposure unit and the AppArmor profile it names, in the order the
-#: units start. The profile file of the same name is in `packaging/apparmor/`
-#: and is installed to `/etc/apparmor.d/`. The verify unit of §6 is G2's and
-#: gets its own profile there.
+#: Each exposure unit, and the verify unit of §6 (#196 G2), with the
+#: AppArmor profile it names, in the order the units start. The profile file
+#: of the same name is in `packaging/apparmor/` and is installed to
+#: `/etc/apparmor.d/`. The verify unit runs the helper's executable but
+#: writes nothing, so it has a profile of its own, the helper's without its
+#: one writable place.
 DECOY_APPARMOR_PROFILES: tuple[tuple[str, str], ...] = (
     ("azazel-decoy-nsd.service", "azazel-decoy-nsd"),
     ("azazel-decoy-netd.service", "azazel-decoy-netd"),
+    ("azazel-decoy-verify.service", "azazel-decoy-verify"),
     ("azazel-decoyd.service", "azazel-decoyd"),
 )
 
@@ -63,7 +66,7 @@ DECOY_APPARMOR_PROFILES: tuple[tuple[str, str], ...] = (
 #: (only `ip` holds the capabilities and may mount; the Python body may not).
 NAMESPACE_IP_CHILD = "azazel-decoy-nsd//ip"
 
-#: Every profile the kernel must list in enforce mode: the three, and the
+#: Every profile the kernel must list in enforce mode: the four, and the
 #: namespace unit's child. A child is loaded with its parent, but it is
 #: checked on its own: a listing that held the parent and not the child was
 #: not made from the packaged file.

@@ -513,10 +513,11 @@ def _importers(root):
 
 
 def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
-    """G1b wired the helper (its one importer in the runtime); the pass is G6."""
+    """G1b wired the helper and G2 the verify unit (the helper's executable,
+    `decoy_watch`); the pass is G6."""
 
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
-    assert _importers(runtime) == ["decoy_netd.py"]
+    assert _importers(runtime) == ["decoy_netd.py", "decoy_watch.py"]
     for name in ("activation_pass.py", "activation_markers.py", "activated.py"):
         path = runtime / name
         if path.is_file():

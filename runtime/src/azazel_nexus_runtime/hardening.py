@@ -75,15 +75,26 @@ __all__ = [
     "DECOY_NAMESPACE_SHARED_OMISSIONS",
     "DECOY_NAMESPACE_SHARED_OVERRIDES",
     "DECOY_SCOPE_CREDENTIAL",
+    "DECOY_TRIP_UNIT",
+    "DECOY_VERIFY_SANDBOX",
+    "DECOY_VERIFY_TIMER",
+    "DECOY_VERIFY_UNIT",
+    "DECOY_WATCH_PERIOD",
+    "DECOY_WATCH_PROFILES",
+    "DECOY_WATCH_UNIT_FILES",
     "EDGE_PROBE_PREFLIGHT_UNIT",
     "GRANT_MARKER_UNITS",
     "HOST_FIREWALL_UNIT",
+    "HOST_FIREWALL_UNITS",
     "PROFILES",
     "UNGOVERNED_PROFILES",
     "SHARED_HARDENING",
     "ServiceProfile",
     "SYSTEM_ACCOUNTS",
+    "packaged_unit_files",
+    "render_trip_target",
     "render_unit",
+    "render_verify_timer",
 ]
 
 #: Applied to every unit, with no per-daemon exceptions.
@@ -252,6 +263,19 @@ class ServiceProfile:
     #: fails; with AppArmor disabled systemd ignores `AppArmorProfile=`, and
     #: the assertion fails the start instead. Never unconfined.
     apparmor_profile: str = ""
+    #: Fixed words after the executable in `ExecStart=`. Empty for every
+    #: unit but the Deception Lite verify unit, whose one word is exactly
+    #: `verify` (#196 G2, docs/deception-exposure-grant.md §6.1): the
+    #: helper's executable, with one more fixed word.
+    arguments: tuple[str, ...] = ()
+    #: `OnFailure=` units. Empty for every unit but the verify unit, whose
+    #: failure starts exactly `DECOY_TRIP_UNIT` (#196 G2).
+    on_failure: tuple[str, ...] = ()
+    #: `WantedBy=` of the `[Install]` section. Every unit has
+    #: `multi-user.target` but the verify unit, which has no `[Install]`
+    #: section at all (#196 G2, grant §6.1): it starts only because the decoy
+    #: pulls it in, never because something enabled it.
+    wanted_by: tuple[str, ...] = ("multi-user.target",)
 
     def __post_init__(self) -> None:
         if self.apparmor_profile != apparmor_profile_for(self.unit):
@@ -260,6 +284,16 @@ class ServiceProfile:
                 f"{apparmor_profile_for(self.unit) or 'absent'}; only the "
                 "Deception Lite exposure units name a profile, each its own"
             )
+        # The verify unit's three own fields (#196 G2): its fixed word, its
+        # trip and its missing [Install] belong to it and to no other unit.
+        is_verify = self.unit == DECOY_VERIFY_UNIT
+        if (self.arguments != (("verify",) if is_verify else ())
+                or self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
+                or self.wanted_by != (() if is_verify else ("multi-user.target",))):
+            raise ValueError(
+                f"{self.unit}: only {DECOY_VERIFY_UNIT} runs its executable with "
+                f"the word verify, has OnFailure={DECOY_TRIP_UNIT} and has no "
+                "[Install] section; every other unit has none of the three")
         if not self.address_families:
             raise ValueError(
                 f"{self.unit} declares no address family. `AF_UNIX` at least "
@@ -304,7 +338,7 @@ class ServiceProfile:
                 "out are three acts with three blast radii; a unit holding two "
                 "of them is a node where one compromise is two"
             )
-        if (self.unit == DECOY_NETWORK_HELPER_UNIT
+        if (self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT)
                 and self.address_families != ("AF_NETLINK",)):
             raise ValueError(
                 f"{self.unit} is root: with AF_UNIX it could reach the service "
@@ -320,32 +354,36 @@ class ServiceProfile:
                 f"{self.unit}: CAP_SYS_ADMIN is held by "
                 f"{DECOY_NAMESPACE_UNIT} and by no other unit"
             )
-        # CAP_NET_ADMIN belongs to exactly the two one-shot decoy units: the
-        # network helper (the host side) and the namespace unit (the inside,
-        # which only a process in the namespace can configure; #196 body).
+        # CAP_NET_ADMIN belongs to exactly the three one-shot decoy units: the
+        # network helper (the host side), the namespace unit (the inside,
+        # which only a process in the namespace can configure; #196 body) and
+        # the verify unit, which only lists the table (#196 G2, grant §10
+        # Q7: a listing needs it).
         if (("CAP_NET_ADMIN" in self.capability_bounding_set)
-                != (self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_NAMESPACE_UNIT))):
+                != (self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_NAMESPACE_UNIT,
+                                  DECOY_VERIFY_UNIT))):
             raise ValueError(
                 f"{self.unit}: CAP_NET_ADMIN is held by "
-                f"{DECOY_NETWORK_HELPER_UNIT} and {DECOY_NAMESPACE_UNIT} "
-                "and by no other unit"
+                f"{DECOY_NETWORK_HELPER_UNIT}, {DECOY_NAMESPACE_UNIT} and "
+                f"{DECOY_VERIFY_UNIT} and by no other unit"
             )
-        if (self.unit == DECOY_NETWORK_HELPER_UNIT
+        if (self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT)
                 and self.capability_bounding_set != ("CAP_NET_ADMIN",)):
             raise ValueError(
                 f"{self.unit} holds exactly CAP_NET_ADMIN; anything wider is "
                 "a reviewed change to this declaration"
             )
-        # The exposure scope is the helper's input alone (#196 G1b): another
-        # unit loading it, or the grant directory it lives in, as a
-        # credential would read what only the helper may act on.
-        if self.unit != DECOY_NETWORK_HELPER_UNIT and any(
+        # The exposure scope is the helper's input and the verify unit's
+        # (#196 G1b, G2): another unit loading it, or the grant directory it
+        # lives in, as a credential would read what only those two may act on
+        # or compare with.
+        if self.unit not in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT) and any(
                 key.startswith(("LoadCredential", "SetCredential", "ImportCredential"))
                 and ("decoy-scope" in value or "/run/azazel-activation" in value)
                 for key, value in self.extra):
             raise ValueError(
                 f"{self.unit}: the decoy scope is {DECOY_NETWORK_HELPER_UNIT}'s "
-                "credential alone")
+                f"and {DECOY_VERIFY_UNIT}'s credential alone")
         if self.unit == DECOY_NAMESPACE_UNIT:
             self._check_namespace_unit()
         elif self.shared_overrides or self.shared_omissions:
@@ -368,19 +406,21 @@ class ServiceProfile:
                 raise ValueError(
                     f"{self.unit} writes only its runtime directory "
                     f"{DECOY_ISOLATION_DIRECTORY} ({DECOY_ISOLATION_DIRECTORY_MODE})")
-            # What it is ordered against, fixed (#276 F1): after the
-            # controller, the namespace unit and the host firewall; requiring
-            # only the first two; nothing else.
+            # What it is ordered against, fixed (#276 F1, #196 G2 §6.2):
+            # after the controller, the namespace unit and the three host
+            # firewall loaders; requiring only the first two; nothing else.
             if (self.after != (ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
-                               HOST_FIREWALL_UNIT)
+                               *HOST_FIREWALL_UNITS)
                     or self.requires != (ACTIVATION_CONTROLLER_UNIT,
                                          DECOY_NAMESPACE_UNIT)
                     or self.binds_to or self.before or self.conflicts
                     or not self.default_dependencies):
                 raise ValueError(
                     f"{self.unit} is after {ACTIVATION_CONTROLLER_UNIT}, "
-                    f"{DECOY_NAMESPACE_UNIT} and {HOST_FIREWALL_UNIT}, and "
-                    "requires only the first two")
+                    f"{DECOY_NAMESPACE_UNIT} and {', '.join(HOST_FIREWALL_UNITS)}, "
+                    "and requires only the first two")
+        elif self.unit == DECOY_VERIFY_UNIT:
+            self._check_verify_unit()
         else:
             # `extra` renders before the shared lines, so a shared key, an
             # identity, a capability or a path setting placed there would sit
@@ -405,6 +445,18 @@ class ServiceProfile:
                     f"{self.unit}: the decoy listener is {DECOY_UNIT}, runs "
                     "under its own account and holds no capability or group"
                 )
+            # The watch (#196 G2, grant §6.1): the decoy pulls in the verify
+            # unit and its timer, and starts only after a verify that passed.
+            if (self.after != (ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT,
+                               DECOY_VERIFY_UNIT)
+                    or self.requires != (ACTIVATION_CONTROLLER_UNIT,
+                                         DECOY_NETWORK_HELPER_UNIT,
+                                         DECOY_VERIFY_UNIT, DECOY_VERIFY_TIMER)
+                    or self.binds_to or self.before or self.conflicts):
+                raise ValueError(
+                    f"{self.unit} is after {ACTIVATION_CONTROLLER_UNIT}, "
+                    f"{DECOY_NETWORK_HELPER_UNIT} and {DECOY_VERIFY_UNIT}, and "
+                    f"requires those three and {DECOY_VERIFY_TIMER}")
             allowed = [value for key, value in self.extra if key == "IPAddressAllow"]
             # Least privilege (#276 F10): it binds the IPv4 wildcard only
             # (`decoy_listener.open_namespace_listener`), so no AF_INET6; it
@@ -530,6 +582,38 @@ class ServiceProfile:
         if self.is_decoy_listener and (self.read_write_paths
                                        or self.optional_read_write_paths):
             raise ValueError(f"{self.unit} writes no file and declares no writable path")
+
+    def _check_verify_unit(self) -> None:
+        """The Deception Lite verify unit, pinned whole (#196 G2, grant §6.1).
+
+        The helper's executable with the one word `verify`, the helper's
+        identity and sandbox (root, exactly `CAP_NET_ADMIN` as a bounding
+        set, netlink only, the scope as its one credential, the manager's
+        sockets inaccessible) and nothing it does not need: no writable path,
+        no runtime directory, no `ExecStop=`, no `RemainAfterExit=` (it runs
+        again every period). After the helper, requiring nothing; no grant
+        marker condition; its failure starts the trip unit.
+        """
+
+        if (self.executable != "/usr/libexec/azazel/az-decoy-netd"
+                or self.account != "root" or self.supplementary_groups
+                or self.unit_type != "oneshot" or self.extra != DECOY_VERIFY_SANDBOX):
+            raise ValueError(
+                f"{self.unit} runs az-decoy-netd verify as root, one-shot, with "
+                "exactly DECOY_VERIFY_SANDBOX in extra")
+        if (self.runtime_directory or self.read_write_paths
+                or self.optional_read_write_paths):
+            raise ValueError(f"{self.unit} writes nothing: no runtime directory, "
+                             "no writable path")
+        if (self.after != (DECOY_NETWORK_HELPER_UNIT,) or self.requires
+                or self.binds_to or self.before or self.conflicts
+                or not self.default_dependencies or self.conditions):
+            raise ValueError(
+                f"{self.unit} is after {DECOY_NETWORK_HELPER_UNIT}, requires "
+                "nothing and has no condition (no grant marker)")
+        if (self.is_artifact_fetcher or self.is_model_host
+                or self.is_inference_transport or self.is_decoy_listener):
+            raise ValueError(f"{self.unit} holds no network role")
 
     def _check_namespace_unit(self) -> None:
         """The decoy namespace unit, pinned whole (#196 (a)).
@@ -685,11 +769,30 @@ SYSTEM_ACCOUNTS = (
 )
 
 
-#: The units that run as root: the activation controller, and the two
-#: one-shot Deception Lite units whose single bounding-set capability reaches
-#: only uid 0 without an ambient grant (#196 P1, #196 (a)).
+#: The Deception Lite watch (#196 G2, docs/deception-exposure-grant.md §6.1,
+#: decided as §10 Q6 and Q7): a one-shot verify unit, the timer that re-runs
+#: it, and the trip unit its failure starts. None of the three carries a
+#: grant marker or an `[Install]` section: the decoy pulls the verify unit
+#: and the timer in (`Requires=`), so a marker could only let systemd skip
+#: them as a success and leave the decoy running unwatched (the n1 problem).
+#: Not governed, never masked or unmasked by a pass, and in no lease: each
+#: can only read or stop.
+DECOY_VERIFY_UNIT = "azazel-decoy-verify.service"
+DECOY_VERIFY_TIMER = "azazel-decoy-verify.timer"
+#: A target, not a service: its whole content is `Conflicts=` on the
+#: namespace unit, and systemd 257 refuses a service with no `ExecStart=`,
+#: `ExecStop=` or `SuccessAction=` ("Refusing", container-checked with
+#: `systemd-analyze verify`). A target runs nothing and holds nothing.
+DECOY_TRIP_UNIT = "azazel-decoy-trip.target"
+#: How often the timer re-runs the verify unit (§10 Q6: 10 s).
+DECOY_WATCH_PERIOD = "10s"
+
+
+#: The units that run as root: the activation controller, and the three
+#: one-shot Deception Lite units whose bounding-set capabilities reach only
+#: uid 0 without an ambient grant (#196 P1, #196 (a), #196 G2).
 ROOT_UNITS = (ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
-              DECOY_NETWORK_HELPER_UNIT)
+              DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT)
 
 
 #: Where named network namespaces live (iproute2's convention; `ip netns
@@ -732,6 +835,15 @@ DECOY_ISOLATION_DIRECTORY_MODE = "0755"
 #: restart or start of the firewall still removes the table, and nothing
 #: notices (§10, "Before any grant").
 HOST_FIREWALL_UNIT = "nftables.service"
+
+#: Every host firewall loader the network helper is ordered after (#196 G2,
+#: docs/deception-exposure-grant.md §6.2): Debian's `nftables.service`,
+#: `firewalld.service` and `netfilter-persistent.service`, each of which can
+#: flush the ruleset when it loads. Ordering only, as for the first: a no-op
+#: where the unit does not exist. The pass is to withhold the tier while any
+#: of them is enabled (G6); a reload later in the boot is the watch's (§6.1).
+HOST_FIREWALL_UNITS: tuple[str, ...] = (
+    HOST_FIREWALL_UNIT, "firewalld.service", "netfilter-persistent.service")
 
 #: The `SHARED_HARDENING` entries the decoy namespace unit does not carry
 #: (#196 (a), n3), and only it: every shared setting that makes systemd
@@ -856,6 +968,21 @@ DECOY_HELPER_SANDBOX: tuple[tuple[str, str], ...] = (
     ("TimeoutStartSec", "30s"),
     ("ExecStop", "/usr/libexec/azazel/az-decoy-netd stop"),
     # Its one input (#196 G1b, docs/deception-exposure-grant.md §4.3 H3).
+    ("LoadCredential", DECOY_SCOPE_CREDENTIAL),
+    ("ProtectClock", "yes"),
+    ("ProtectHostname", "yes"),
+    ("ProtectKernelLogs", "yes"),
+    ("RestrictRealtime", "yes"),
+) + DECOY_MANAGER_SOCKETS_INACCESSIBLE
+
+#: The verify unit's own settings, pinned whole (#196 G2, grant §6.1, §10
+#: Q7): the helper's sandbox without what makes it a builder. The scope
+#: arrives the same way and from the same file; no `RemainAfterExit=` (it is
+#: started again every period, and a successful one-shot that has exited
+#: does not stop the decoy that `Requires=` it, *inferred*, §11 item 3), no
+#: `ExecStop=` and no runtime directory (it writes nothing).
+DECOY_VERIFY_SANDBOX: tuple[tuple[str, str], ...] = (
+    ("TimeoutStartSec", "30s"),
     ("LoadCredential", DECOY_SCOPE_CREDENTIAL),
     ("ProtectClock", "yes"),
     ("ProtectHostname", "yes"),
@@ -1429,10 +1556,11 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # After and Requires the namespace unit (#196 (a)): it configures the
         # veth into a namespace that unit created. Granted together with it
         # or not at all, so a skipped namespace unit cannot count as success.
-        # After, and only After, the host firewall (#276 F1): its boot-time
-        # `flush ruleset` must not run after the table was loaded and checked.
+        # After, and only After, the host firewall loaders (#276 F1, #196
+        # G2 §6.2): a boot-time `flush ruleset` must not run after the table
+        # was loaded and checked.
         after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
-               HOST_FIREWALL_UNIT),
+               *HOST_FIREWALL_UNITS),
         requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT),
         conditions=_grant_condition(DECOY_NETWORK_HELPER_UNIT),
         unit_type="oneshot",
@@ -1482,8 +1610,13 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # the file system) and writes nothing. /var/lib/azazel/decoy stays in
         # the layout, the azdecoy account's, for a later phase that needs it.
         read_write_paths=(),
-        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
-        requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT),
+        # The watch (#196 G2, grant §6.1): it starts only after a verify
+        # that passed, and pulls in the verify unit's timer, which re-runs
+        # it every period; a failed verify starts the trip unit.
+        after=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT,
+               DECOY_VERIFY_UNIT),
+        requires=(ACTIVATION_CONTROLLER_UNIT, DECOY_NETWORK_HELPER_UNIT,
+                  DECOY_VERIFY_UNIT, DECOY_VERIFY_TIMER),
         conditions=_grant_condition(DECOY_UNIT),
         is_decoy_listener=True,
         unit_type="exec",
@@ -1572,8 +1705,145 @@ def _edge_probe_preflight() -> ServiceProfile:
 #: respect to activation -- it can only narrow what a pass grants.
 UNGOVERNED_PROFILES: tuple[ServiceProfile, ...] = (_edge_probe_preflight(),)
 
-#: Every packaged unit, governed or not, for the renderer and the installer.
-ALL_PROFILES: tuple[ServiceProfile, ...] = PROFILES + UNGOVERNED_PROFILES
+#: The Deception Lite verify unit (#196 G2, docs/deception-exposure-grant.md
+#: §6.1). Not governed and not enabled: no grant marker, no `[Install]`;
+#: `azazel-decoyd.service` pulls it in with `Requires=` and starts after it,
+#: and its timer re-runs it every `DECOY_WATCH_PERIOD`. It runs the helper's
+#: fixed executable with the one word `verify`: the read-back commands only
+#: (`decoy_network.verify_plan`), the same comparison against the scope as
+#: the helper's isolation check, and the re-reading of reachability R4. It
+#: writes nothing; the isolation record stays the helper's.
+DECOY_WATCH_PROFILES: tuple[ServiceProfile, ...] = (
+    ServiceProfile(
+        unit=DECOY_VERIFY_UNIT,
+        executable="/usr/libexec/azazel/az-decoy-netd",
+        arguments=("verify",),
+        account="root",
+        description="Azazel-Nexus Deception Lite watch",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md",
+        # The helper's family and nothing else: `nft` and `ip` reach the
+        # kernel over netlink. No AF_UNIX: it is root.
+        address_families=("AF_NETLINK",),
+        read_write_paths=(),
+        # After the helper, so that the verify before the decoy's start reads
+        # what the helper built. Requiring nothing: the decoy requires it.
+        after=(DECOY_NETWORK_HELPER_UNIT,),
+        unit_type="oneshot",
+        runtime_directory="",
+        capability_bounding_set=("CAP_NET_ADMIN",),
+        extra=DECOY_VERIFY_SANDBOX,
+        apparmor_profile=apparmor_profile_for(DECOY_VERIFY_UNIT),
+        on_failure=(DECOY_TRIP_UNIT,),
+        wanted_by=(),
+        rationale=(
+            "Runs once per period, and before every decoy start. It holds "
+            "CAP_NET_ADMIN alone, as a bounding set and never as an ambient "
+            "capability, because listing the table needs it; it runs the "
+            "network helper's executable with the one word verify, which "
+            "starts only fixed read-back commands (the decoy table, the host's "
+            "links, the IPv4 routing rules and the main table's routes) and "
+            "reads forwarding and proxy_arp under /proc/sys/net. It compares "
+            "them with the scope it receives as the credential decoy-scope, "
+            "the helper's one input, and with the operator's reachability "
+            "conditions, and writes nothing: the isolation record stays the "
+            "helper's. A departure, an unreadable read or a refused scope "
+            "makes it fail, and its failure starts azazel-decoy-trip.target, "
+            "which stops the namespace unit and through Requires= the helper "
+            "and the decoy. It has no grant marker and no [Install] section: "
+            "the decoy pulls it and its timer in. It is root, so netlink is "
+            "its only address family and the service manager's private "
+            "sockets are inaccessible to it. It starts only with AppArmor "
+            "enabled and its profile azazel-decoy-verify loaded "
+            "(AppArmorProfile= without a dash, AssertSecurity=apparmor)"
+        ),
+    ),
+)
+
+#: Every packaged service, governed or not, for the renderer and the installer.
+ALL_PROFILES: tuple[ServiceProfile, ...] = (
+    PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES)
+
+_GENERATED_HEADER = (
+    "# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:",
+    "# tests/unit/test_runtime_hardening.py compares this file against what",
+    "# the declaration renders, and a hand edit is a difference.",
+    "#",
+)
+
+_GRANT_DOCUMENTATION = (
+    "https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md")
+
+
+def render_verify_timer() -> str:
+    """`azazel-decoy-verify.timer`, byte for byte (#196 G2, grant §6.1).
+
+    Re-runs the verify unit every `DECOY_WATCH_PERIOD`, the first time one
+    period after the decoy pulled the timer in (the decoy's own start already
+    ran one verify). `AccuracySec=1s`: systemd's default of one minute would
+    let the period stretch to that. `PartOf=` the decoy, so that stopping or
+    restarting the decoy stops or restarts the watch with it; nothing else.
+    No `[Install]`, no `Persistent=`, no `WakeSystem=`.
+    """
+
+    return "\n".join((
+        *_GENERATED_HEADER,
+        "# Re-runs azazel-decoy-verify.service every 10 seconds while the decoy runs.",
+        "# The decoy pulls it in with Requires= and it stops with the decoy (PartOf=).",
+        "# It has no grant marker and no [Install] section.",
+        "",
+        "[Unit]",
+        "Description=Azazel-Nexus Deception Lite watch period",
+        f"Documentation={_GRANT_DOCUMENTATION}",
+        f"PartOf={DECOY_UNIT}",
+        "",
+        "[Timer]",
+        f"OnActiveSec={DECOY_WATCH_PERIOD}",
+        f"OnUnitActiveSec={DECOY_WATCH_PERIOD}",
+        "AccuracySec=1s",
+        f"Unit={DECOY_VERIFY_UNIT}",
+        "",
+    ))
+
+
+def render_trip_target() -> str:
+    """`azazel-decoy-trip.target`, byte for byte (#196 G2, grant §6.1).
+
+    Its only content is `Conflicts=` on the namespace unit: starting it (the
+    verify unit's `OnFailure=`) makes systemd's job engine stop the namespace
+    unit, and through `Requires=` the helper and the decoy first. Nothing
+    runs, nothing holds a privilege, no D-Bus call is made. Starting the
+    namespace unit again stops the target (a conflict holds both ways), so a
+    later failure trips again. Started by hand, it is a stop button for the
+    three units and nothing more.
+    """
+
+    return "\n".join((
+        *_GENERATED_HEADER,
+        "# Started by azazel-decoy-verify.service on failure (OnFailure=); it runs nothing.",
+        "# Conflicts= makes the job engine stop the namespace unit, and through Requires=",
+        "# the network helper and the decoy first.",
+        "# It has no grant marker and no [Install] section.",
+        "",
+        "[Unit]",
+        "Description=Azazel-Nexus Deception Lite trip",
+        f"Documentation={_GRANT_DOCUMENTATION}",
+        f"Conflicts={DECOY_NAMESPACE_UNIT}",
+        "",
+    ))
+
+
+#: The watch's two units that are not services, with their rendering.
+DECOY_WATCH_UNIT_FILES: tuple[tuple[str, str], ...] = (
+    (DECOY_VERIFY_TIMER, render_verify_timer()),
+    (DECOY_TRIP_UNIT, render_trip_target()),
+)
+
+
+def packaged_unit_files() -> tuple[tuple[str, str], ...]:
+    """`(name, text)` of every file in `packaging/systemd/`, in order."""
+
+    return tuple((profile.unit, render_unit(profile)) for profile in ALL_PROFILES) + (
+        DECOY_WATCH_UNIT_FILES)
 
 
 def render_unit(profile: ServiceProfile) -> str:
@@ -1617,6 +1887,8 @@ def render_unit(profile: ServiceProfile) -> str:
         lines.append(f"Requires={unit}")
     for unit in profile.binds_to:
         lines.append(f"BindsTo={unit}")
+    for unit in profile.on_failure:
+        lines.append(f"OnFailure={unit}")
     lines += [
         "",
         "[Service]",
@@ -1628,7 +1900,7 @@ def render_unit(profile: ServiceProfile) -> str:
             "SupplementaryGroups=" + " ".join(profile.supplementary_groups)
         )
     lines += [
-        f"ExecStart={profile.executable}",
+        "ExecStart=" + " ".join((profile.executable, *profile.arguments)),
     ]
     if profile.apparmor_profile:
         lines.append(f"AppArmorProfile={profile.apparmor_profile}")
@@ -1657,7 +1929,9 @@ def render_unit(profile: ServiceProfile) -> str:
         if key == "CapabilityBoundingSet" and profile.capability_bounding_set:
             value = " ".join(profile.capability_bounding_set)
         lines.append(f"{key}={value}")
-    lines += ["", "[Install]", "WantedBy=multi-user.target", ""]
+    if profile.wanted_by:
+        lines += ["", "[Install]", *(f"WantedBy={unit}" for unit in profile.wanted_by)]
+    lines.append("")
     return "\n".join(lines)
 
 

@@ -276,7 +276,7 @@ def test_real_bundle_contains_every_apparmor_profile_the_installer_places(tmp_pa
     script = (root / "packaging/install.sh").read_text(encoding="utf-8")
     placed = set(re.findall(r'"\$HERE"/(apparmor/[A-Za-z0-9_.-]+) ', script))
     assert placed == {"apparmor/azazel-decoy-nsd", "apparmor/azazel-decoy-netd",
-                      "apparmor/azazel-decoyd"}
+                      "apparmor/azazel-decoy-verify", "apparmor/azazel-decoyd"}
     output = tmp_path / "source.tar.gz"
     build_bundle(root, output)
     shipped = set(_members(output))

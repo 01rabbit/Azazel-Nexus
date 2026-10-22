@@ -74,7 +74,9 @@ def test_the_firewall_unit_is_debians_nftables_service():
 
 def test_helper_is_ordered_after_the_firewall_once():
     after = _settings(_helper_text())["After"]
-    assert after == [ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT, FIREWALL]
+    # #196 G2 (grant §6.2): also after the two other ruleset loaders.
+    assert after == [ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT, FIREWALL,
+                     "firewalld.service", "netfilter-persistent.service"]
 
 
 def test_helper_has_no_strong_dependency_and_no_before_on_the_firewall():

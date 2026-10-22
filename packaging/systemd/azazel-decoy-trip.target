@@ -1,0 +1,13 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Started by azazel-decoy-verify.service on failure (OnFailure=); it runs nothing.
+# Conflicts= makes the job engine stop the namespace unit, and through Requires=
+# the network helper and the decoy first.
+# It has no grant marker and no [Install] section.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite trip
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md
+Conflicts=azazel-decoy-nsd.service

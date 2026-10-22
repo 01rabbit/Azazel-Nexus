@@ -6,8 +6,10 @@ Status: **proposal. The default of Q11 was decided by the owner on
 2026-10-22 (§4). The further conditions this design adds (§9, R1–R5) only
 withhold or stop, and are adopted as defaults the owner may overturn; R1, R2,
 R4 and R5 are required before G6. R6, the reading of commissioning §2, is
-**open** and returned to the owner. Nothing here is implemented; the pass's
-part lands in G6, the re-reading in G2.**
+**open** and returned to the owner. The pass's part lands in G6; the
+re-reading (R4) is implemented in G2 as far as
+[grant §6.3](deception-exposure-grant.md#63-g2-as-implemented) says, the
+exact rule attributes waiting for the VM (§11 item 8).**
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §4.5, §5, §6, §10 Q11) ·
 [Deception Lite prerequisites](deception-redirect-prerequisites.md) (§10, §13,
@@ -484,7 +486,16 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
 4. **R4.** The verify unit of grant §6 repeats every read of §6 (it needs no
    capability for them: `/proc/sys` is readable under its sandbox and it has
    `AF_NETLINK`) and trips on a departure. *Required in G2, and part of the
-   grant condition in G6.*
+   grant condition in G6.* **Implemented in G2**
+   ([grant §6.3](deception-exposure-grant.md#63-g2-as-implemented)), with
+   two differences from the table of §6: the verify has the ingress from
+   the scope and not the management and observation roles, so
+   `forwarding_role_on` stays the pass's and those interfaces are covered by
+   `forwarding_other_on`; and the rules are compared down to priority, `iif`
+   and the K1 pair's defining attributes (`dst`/`dstlen`, table,
+   `suppress_prefixlen`, `blackhole`), the full attribute set and "no other
+   selector" waiting for §11 item 8 (G6). The dumps are read with two fixed
+   `ip -j` commands, not a netlink parser of Nexus's own.
 5. **R5.** IPv6 forwarding off on `all`, `default` and every interface (the
    decoy is IPv4 only, and K1 does not cover IPv6). *Required before G6.*
 6. **R6 (open, returned to the owner).** The reading of commissioning §2 in
@@ -542,8 +553,14 @@ The gate's claim and record format stay as in
    dropped (after R3), and with `rp_filter=1` on the ingress the request is;
 7. the pass's and verify's reads under their sandboxes: `/proc/sys/net/ipv4/conf/*`
    and `ipv6/conf/*` readable, a write refused, the `RTM_GETRULE` and
-   `RTM_GETROUTE` dumps without a capability; the IPv6 tree absent under
-   `ipv6.disable=1`;
+   `RTM_GETROUTE` dumps without a capability (the verify makes them with
+   `ip -j -4 rule show` and `ip -j -4 route show table main` under its
+   AppArmor profile); the IPv6 tree absent under `ipv6.disable=1`; that the
+   verify's JSON keys (`priority`, `iif`, `dst`, `dstlen`, `table`,
+   `suppress_prefixlen`, `action`; routes' `dst`, `dev`, `gateway`,
+   `nexthops`, `type`) are what Debian 13's iproute2 prints for networkd's
+   rules (container-checked with iproute2 6.15 and rules added by `ip rule`,
+   not by networkd);
 8. systemd-networkd 257 on Debian 13: per-link `IPv4Forwarding=yes` sets
    only that link's value; `IPForward=` and `IPMasquerade=` turn on host-wide
    forwarding; `[RoutingPolicyRule]` accepts `Table=main` and produces

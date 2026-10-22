@@ -1,0 +1,18 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Re-runs azazel-decoy-verify.service every 10 seconds while the decoy runs.
+# The decoy pulls it in with Requires= and it stops with the decoy (PartOf=).
+# It has no grant marker and no [Install] section.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite watch period
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md
+PartOf=azazel-decoyd.service
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=azazel-decoy-verify.service
