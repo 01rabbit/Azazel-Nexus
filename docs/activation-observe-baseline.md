@@ -1234,6 +1234,17 @@ units, and neither file is one of them.
   is fail-closed (nothing new starts; a granted unit that stops cannot
   restart this boot without a marker) but costs availability. The exact
   outcome on systemd 257 has to be observed on the VM.
+  Status: the grant-bearing VM check awaits the operator's signature; the
+  unit tests are done. `tests/unit/test_runtime_activated_second_pass.py`
+  pins, through a fake system bus answered below `SystemdBusSession` (so the
+  client's translation of error replies, calls that do not complete and a
+  foreign reply owner is included), the preflight remask, the two records
+  `activation.evidence_preflight_masked` and `activation.rollback_failed`
+  holding unit names and fixed reasons only, `RollbackFailed`, and the first
+  pass's markers removed. Ledger lines written before this change may hold
+  free exception text in `still_unreachable` and `could_not_mask`. A VM
+  rehearsal without a grant (2026-10-22) showed that path; it is not
+  hardware evidence.
 - **M-6: Edge health is trust in `azprobe`** (§8.1). The probe result is
   accepted when it is owned by `azprobe` (or root) and not group or world
   writable, so
