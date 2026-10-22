@@ -317,6 +317,9 @@ is not `all`, `default`, `lo`, `.` or `..`; the path built from it must have
 before it is opened. "Every other interface" means the entries the kernel
 lists under `/proc/sys/net/ipv4/conf` and `/proc/sys/net/ipv6/conf`, checked
 the same way.
+The resolution is `azazel_nexus.exposure_interfaces.resolve_role_interfaces`
+(#196 G6 preparation D; implemented, not wired: nothing calls it), described
+in [grant §9](deception-exposure-grant.md#9-phases).
 
 **Reads.** Files under `/proc/sys/net/ipv4/conf/` and
 `/proc/sys/net/ipv6/conf/`, opened without following links, read within a
