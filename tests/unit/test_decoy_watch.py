@@ -8,7 +8,7 @@ starts a unit or reads the host's sysctls):
 * the three unit files: rendered from the declaration and committed byte for
   byte; no `[Install]` section and no grant-marker condition on any of them;
   the decoy pulling in the verify unit and the timer; the trip unit holding
-  only `Conflicts=` on the namespace unit;
+  only `Conflicts=` on the namespace unit, the helper and the decoy (#196 G4);
 * the verify unit's pinned declaration: the helper's executable with the one
   word `verify`, the helper's sandbox without what makes it a builder, and
   the scope credential shared by exactly the helper and the verify unit;
@@ -71,6 +71,7 @@ from azazel_nexus_runtime.decoy_watch import (
 from azazel_nexus_runtime.hardening import (
     ALL_PROFILES,
     DECOY_SCOPE_CREDENTIAL,
+    DECOY_TRIP_CONFLICTS,
     DECOY_TRIP_UNIT,
     DECOY_VERIFY_SANDBOX,
     DECOY_VERIFY_TIMER,
@@ -79,6 +80,7 @@ from azazel_nexus_runtime.hardening import (
     HOST_FIREWALL_UNITS,
     PROFILES,
     packaged_unit_files,
+    render_trip_target,
     render_unit,
 )
 from test_decoy_isolation_evidence import NFT_JSON, NFT_JSON_EMPTY, RULESET, SCOPE, _outputs
@@ -179,8 +181,31 @@ def test_the_timer_runs_the_verify_unit_every_ten_seconds_and_stops_with_the_dec
                              "OnUnitActiveSec", "AccuracySec", "Unit"}
 
 
-def test_the_trip_unit_is_only_a_conflict_with_the_namespace_unit():
-    """Stopping is the job engine's: no D-Bus, no process, no privilege."""
+TRIP_TEXT = """\
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Started by azazel-decoy-verify.service on failure (OnFailure=); it runs nothing.
+# Conflicts= makes the job engine stop each of the three units directly, not
+# through Requires=; the decoy and the network helper stop before the namespace
+# unit, by the reverse of their After= order.
+# It has no grant marker and no [Install] section.
+
+[Unit]
+Description=Azazel-Nexus Deception Lite trip
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md
+Conflicts=azazel-decoy-nsd.service
+Conflicts=azazel-decoy-netd.service
+Conflicts=azazel-decoyd.service
+"""
+
+
+def test_the_trip_unit_is_only_a_conflict_with_the_three_units():
+    """Stopping is the job engine's: no D-Bus, no process, no privilege.
+
+    Each of the three is named, so the trip does not rest on the `Requires=`
+    chain, which a mask and a daemon-reload removed on the VM (#196 G4)."""
 
     text = (UNIT_DIR / DECOY_TRIP_UNIT).read_text(encoding="ascii")
     assert DECOY_TRIP_UNIT.endswith(".target")
@@ -190,8 +215,48 @@ def test_the_trip_unit_is_only_a_conflict_with_the_namespace_unit():
         "Description": ["Azazel-Nexus Deception Lite trip"],
         "Documentation": [
             "https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md"],
-        "Conflicts": [DECOY_NAMESPACE_UNIT],
+        "Conflicts": [DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT],
     }
+
+
+def test_the_trip_unit_text_is_exact_and_rendered():
+    """The whole file, byte for byte: the three conflicts, one line each,
+    and no other line (no ordering, no dependency, no command)."""
+
+    assert render_trip_target() == TRIP_TEXT
+    assert (UNIT_DIR / DECOY_TRIP_UNIT).read_text(encoding="ascii") == TRIP_TEXT
+    assert dict(packaged_unit_files())[DECOY_TRIP_UNIT] == TRIP_TEXT
+    body = [line for line in TRIP_TEXT.splitlines() if line and not line.startswith("#")]
+    assert body == [
+        "[Unit]",
+        "Description=Azazel-Nexus Deception Lite trip",
+        "Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/"
+        "deception-exposure-grant.md",
+        "Conflicts=azazel-decoy-nsd.service",
+        "Conflicts=azazel-decoy-netd.service",
+        "Conflicts=azazel-decoyd.service",
+    ]
+    assert TRIP_TEXT.count("Conflicts=") == 3
+
+
+def test_the_trip_conflicts_are_the_three_exposure_units_in_start_order():
+    """Exactly the namespace unit, the helper and the decoy, in the order of
+    their `After=` chain; the stop jobs run in reverse, so the namespace
+    unit's `ExecStopPost=` runs last."""
+
+    assert DECOY_TRIP_CONFLICTS == (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT,
+                                    DECOY_UNIT)
+    by_unit = {profile.unit: profile for profile in ALL_PROFILES}
+    assert DECOY_NAMESPACE_UNIT in by_unit[DECOY_NETWORK_HELPER_UNIT].after
+    assert DECOY_NETWORK_HELPER_UNIT in by_unit[DECOY_UNIT].after
+    # The namespace unit is ordered after neither of the other two.
+    assert DECOY_NETWORK_HELPER_UNIT not in by_unit[DECOY_NAMESPACE_UNIT].after
+    assert DECOY_UNIT not in by_unit[DECOY_NAMESPACE_UNIT].after
+    # A start of the helper or the decoy pulls in the namespace unit, so the
+    # conflict holding both ways stops the target exactly when starting the
+    # namespace unit already did.
+    assert DECOY_NAMESPACE_UNIT in by_unit[DECOY_NETWORK_HELPER_UNIT].requires
+    assert DECOY_NETWORK_HELPER_UNIT in by_unit[DECOY_UNIT].requires
 
 
 def test_the_decoy_pulls_in_the_verify_unit_and_the_timer():
@@ -315,8 +380,8 @@ def test_the_verify_credential_path_is_the_units():
 
 
 def test_only_the_decoy_requires_the_watch():
-    """The decoy is the only unit that requires the watch, and the trip unit
-    conflicts with the namespace unit only."""
+    """The decoy is the only unit that requires the watch, and no unit
+    declares a dependency on the trip unit (its conflicts are its own)."""
 
     for profile in ALL_PROFILES:
         if profile.unit != DECOY_UNIT:
@@ -799,6 +864,19 @@ def _dir(root, relative):
 
 def test_the_watch_files_as_rendered_pass(root):
     unit_files.require_watch_unit_files()
+
+
+def test_the_watch_check_refuses_the_one_conflict_trip_unit(root):
+    """`require_watch_unit_files` compares against the rendering: the trip
+    unit as it was before #196 G4 (the namespace unit alone) is refused."""
+
+    path = root / "usr/lib/systemd/system" / DECOY_TRIP_UNIT
+    old = TRIP_TEXT.replace("Conflicts=azazel-decoy-netd.service\n", "").replace(
+        "Conflicts=azazel-decoyd.service\n", "")
+    assert old.count("Conflicts=") == 1
+    path.write_text(old)
+    with pytest.raises(unit_files.UnitContentRefused):
+        unit_files.require_watch_unit_files()
 
 
 @pytest.mark.parametrize("unit", WATCH)

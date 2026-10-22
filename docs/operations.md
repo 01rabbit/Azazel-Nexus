@@ -743,16 +743,21 @@ the package and are never masked, enabled or granted (they have no
   interface name, a prefix or an address.
 - When it fails (a departure, a table that is gone, a read it cannot make,
   or a scope it refuses), its `OnFailure=` starts
-  `azazel-decoy-trip.target`, whose only content is
-  `Conflicts=azazel-decoy-nsd.service`: systemd stops the decoy, the helper
-  and the namespace unit, in that order. Nothing in Nexus calls the service
-  manager for this.
+  `azazel-decoy-trip.target`, whose only content is `Conflicts=` on
+  `azazel-decoy-nsd.service`, `azazel-decoy-netd.service` and
+  `azazel-decoyd.service`: systemd stops the decoy, the helper and the
+  namespace unit, in that order (the reverse of their `After=`), each by
+  name, so the trip does not depend on the `Requires=` chain. Nothing in
+  Nexus calls the service manager for this. Starting any of the three again
+  stops the trip target.
 
 The window between a flush and the stop is at most one period (10 s) plus
 one verify run. It has been rehearsed on a Debian 13 VM (G4, grant §11: a
-`nft delete table inet azazel_decoy` tripped the three units in about 2 s;
-a mechanism check, not hardware evidence) and not yet observed on the real
-host; a firewall reload as the trigger was not part of that run. The trip
+`nft delete table inet azazel_decoy` tripped the three units in about 2 s,
+and `systemctl start nftables.service`, whose default `/etc/nftables.conf`
+flushes the ruleset, tripped them in about 6–7 s; a mechanism check, not
+hardware evidence) and not yet observed on the real host; a firewall
+reload as the trigger was not part of those runs. The trip
 leaves the units stopped, and `azazel-decoy-netd.service` ends
 **`failed`** after the trip (seen on the VM). The cause is inferred, not
 read from the journal in that run: its `ExecStop=` (`az-decoy-netd stop`)
@@ -766,9 +771,31 @@ reloaded, the forwarding or routing configuration of
 and start the decoy again: starting the namespace unit stops the trip target,
 so a later failure trips again. Do not load the table again by hand.
 
+**A masked exposure unit that is still running** (G4, grant §6.3 and §11; a
+VM observation, not hardware evidence). The controller masks an exposure
+unit it finds running without a grant, and does **not** stop it. After the
+next `daemon-reload` that unit's definition is `/dev/null`: its
+`Requires=`, `After=`, `ExecStop=` and `ExecStopPost=` are gone. On the VM a
+trip in that state stopped only the namespace unit, left its namespace and
+veth pair behind, and left the helper and the decoy running for more than
+20 s. The trip unit now names all three, so the job engine stops each of
+them directly; it cannot run the clean-up steps that are no longer
+defined, and it still waits for a verify to fail. If `systemctl status`
+shows one of the three as `masked` and `active`, stop it by hand
+(`sudo systemctl stop azazel-decoyd.service azazel-decoy-netd.service
+azazel-decoy-nsd.service`), then check for leftovers (`ip netns list`,
+`ip link show az-decoy-host0`, `nft list table inet azazel_decoy`) and
+report them. How this is closed without relying on the trip is a G6
+decision.
+
 **Rehearsing on a VM** (grant §11). A rehearsal places the grant markers by
 hand, uses a VM-only scope file, and runs copies of the units without
-`Requires=`/`After=azazel-activated.service`; the pass grants nothing. Such
+`Requires=`/`After=azazel-activated.service`; the pass grants nothing.
+**Make every copy, probe copies included, from a copy with
+`Requires=azazel-activated.service` already removed**, never from the
+packaged file: in G4 a probe copy that kept it started the controller,
+which masked the running rehearsal units (without stopping them) and
+failed with `activation.rollback_failed`. Such
 a run checks the mechanism only: never record it as `HG-06`, `HG-09` or
 `HG-10` evidence, and never do it on a node in service. Afterwards remove
 the copies, the markers and the scope file, and `systemctl daemon-reload`.
@@ -802,8 +829,9 @@ from the host's real `/` (grant design §7). The profiles' `deny` rules for
 the D-Bus and systemd sockets are defence in depth only: on Debian 13's
 kernel a connect to those sockets was not refused by them (G4 rehearsal),
 and keeping the units from the service manager is, by design, their
-sandbox's part (`RestrictAddressFamilies=` and `InaccessiblePaths=`; not
-yet observed under the units). The decoy's unit also has
+sandbox's part (`RestrictAddressFamilies=` and `InaccessiblePaths=`;
+observed refused on the VM under probe copies of the decoy and the verify
+unit, not yet for the namespace unit and the helper). The decoy's unit also has
 `ProtectProc=invisible`, because its profile's `/proc/<pid>/net/dev` rule
 cannot be `owner` and would otherwise match the host's processes. Do not remove those
 unit lines or add a drop-in that changes them. With

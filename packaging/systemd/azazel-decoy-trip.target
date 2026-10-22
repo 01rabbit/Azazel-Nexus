@@ -3,11 +3,14 @@
 # the declaration renders, and a hand edit is a difference.
 #
 # Started by azazel-decoy-verify.service on failure (OnFailure=); it runs nothing.
-# Conflicts= makes the job engine stop the namespace unit, and through Requires=
-# the network helper and the decoy first.
+# Conflicts= makes the job engine stop each of the three units directly, not
+# through Requires=; the decoy and the network helper stop before the namespace
+# unit, by the reverse of their After= order.
 # It has no grant marker and no [Install] section.
 
 [Unit]
 Description=Azazel-Nexus Deception Lite trip
 Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md
 Conflicts=azazel-decoy-nsd.service
+Conflicts=azazel-decoy-netd.service
+Conflicts=azazel-decoyd.service
