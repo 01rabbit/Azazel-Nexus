@@ -466,7 +466,26 @@ kernel). `build_exposure_section` refuses a hash in any other form (a
 `sha256:` prefix, upper case, another length) as
 `exposure_section_unverifiable`.
 
-**The installer records the compiled hash** (grant §7, "Left to G6"):
+**The installer records the compiled hash** (grant §7, "Left to G6").
+**Implemented (record only; the reader is G6's)** by #196 G6 preparation K:
+`packaging/install.sh` runs `tools/record_apparmor_compiled.py` (in the
+offline bundle), and `runtime/.../apparmor_compiled.py`
+(`decode_apparmor_compiled`) is the record's strict decoder, applying the
+section's rule to the hashes; it is called by nothing but the tool, which
+checks its own output with it before the rename. `generation-publish` and
+the pass do not read the record in this build
+(`tests/unit/test_apparmor_compiled_record.py`; its registration in the
+shared table of unwired parts is G6's). Two choices made in the
+implementation, against the proposal below: the record is compiled right
+after the profiles are placed, in the service-manager half, and the
+earlier `--skip-kernel-load` check before anything is written stays as it
+is (on the test container, parser 4.1.0, compiling the repository's file
+and the placed copy gave the same output); and the record is `0644`, not
+`0600`: it holds the hashes of compiled public policy, no secret, its
+directory is root's `0700` anyway, and what matters to its reader is that
+only root may write it. A run without the service manager, or one that
+fails, leaves an earlier record as it was; a stale record can only make
+the pass withhold as `lsm_policy_differs` (closed).
 
 1. After placing the four profiles in `/etc/apparmor.d` (root, `0644`),
    with the service manager only, for each profile:
@@ -487,9 +506,9 @@ kernel). `build_exposure_section` refuses a hash in any other form (a
    A record with another key set, another name set or a hash in another
    form refuses `generation-publish`. Written as a
    private temporary file in the same directory, fsynced, renamed, the
-   directory fsynced (root `0600` in the root `0700` directory the
-   installer already creates). A failed compilation refuses the install, as
-   today.
+   directory fsynced (root `0644`, as implemented, in the root `0700`
+   directory the installer already creates). A failed compilation refuses
+   the install, as today.
 3. A `DESTDIR` or `--without-service-manager` run writes no record; then
    `generation-publish` cannot build an exposure generation and says so.
 

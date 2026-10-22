@@ -435,6 +435,17 @@ install -m 0644 "$HERE"/apparmor/azazel-decoy-nsd "${DESTDIR:-}/etc/apparmor.d/a
 install -m 0644 "$HERE"/apparmor/azazel-decoy-netd "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-netd"
 install -m 0644 "$HERE"/apparmor/azazel-decoy-verify "${DESTDIR:-}/etc/apparmor.d/azazel-decoy-verify"
 install -m 0644 "$HERE"/apparmor/azazel-decoyd "${DESTDIR:-}/etc/apparmor.d/azazel-decoyd"
+# The policy hash of each placed profile as compiled (#196 G6 prep K;
+# docs/deception-exposure-wiring.md 5.2): each compiled with -Q -o into a
+# private temporary file (skip the kernel load, no other flag), its SHA-256
+# recorded in /etc/azazel/activation/apparmor-compiled.json (root, 0644,
+# written atomically). Nothing is loaded; apparmor.service loads the profiles
+# at the next boot. With the service manager only: a DESTDIR or
+# --without-service-manager run writes no record. Nothing reads it in this
+# build (G6's generation-publish will). A failure refuses the install.
+if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    python_fixed -IS "$REPO_ROOT/tools/record_apparmor_compiled.py" || exit 1
+fi
 
 if [ "$WITH_SERVICE_MANAGER" = no ]; then
     echo "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled."

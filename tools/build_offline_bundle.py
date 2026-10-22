@@ -100,6 +100,10 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             root / "tools" / "check_decoy_apparmor_wrappers.py",
             "tools/check_decoy_apparmor_wrappers.py",
         ),
+        (
+            root / "tools" / "record_apparmor_compiled.py",
+            "tools/record_apparmor_compiled.py",
+        ),
     )
     for source, archive_name in fixed:
         _regular_file(source)

@@ -849,13 +849,25 @@ reached until G6. Revised after the review of #285.
   checking that the cache file it loads equals its compilation). Both
   comparisons are
   **implemented, not wired** (§9, "G6 preparation C"); (b) withholds as
-  `lsm_policy_unverifiable` until G6 records the expected hash. The
+  `lsm_policy_unverifiable` until G6 carries the expected hash into the
+  generation. The
   receiving half exists: the exposure section carries
   `apparmor_policy_hashes`, and `exposure_generation.expected_policy_hashes`
   gives it in the form `decoy_apparmor.exposure_lsm_withholding` takes as
-  `expected`. How the installer makes the record (compiling under the
-  load's conditions and taking the SHA-256 of the output) is G6's; nothing
-  in this build writes the field or calls either function. **The record is
+  `expected`. **The installer's record is implemented (record only; the
+  reader is G6's)** (#196 G6 preparation K,
+  [wiring §5.2](deception-exposure-wiring.md#52-the-generations-exposure-section)):
+  with the service manager, after placing the four profiles,
+  `packaging/install.sh` runs `tools/record_apparmor_compiled.py`, which
+  compiles each placed file with `apparmor_parser -Q -o <private temporary
+  file>` (no other flag) and writes the SHA-256 of each output to
+  `/etc/azazel/activation/apparmor-compiled.json` (canonical JSON, contract
+  `azazel-nexus/apparmor-compiled/v1`, root `0644`, written atomically);
+  `apparmor_compiled.decode_apparmor_compiled` is its strict decoder, with
+  the section's rule for the hashes. Nothing is loaded, and nothing reads
+  the record but the tool checking its own output: `generation-publish`
+  copying it into the section is G6's, and nothing in this build writes
+  the section's field or calls either function. **The record is
   only as good as what covers it** (review of #303, finding 3): nothing at
   the pass re-derives the hashes, so they are trusted only because the
   exposure section is part of the generation document that
@@ -1114,8 +1126,10 @@ one that fails when called still withholds the tier, and calls none).
   `verify_exposure_section` checks its form and does not compare it with
   the files, and `expected_policy_hashes` hands it to the LSM judgement
   below as `expected` (G6 treats its `GenerationRefused` as
-  `exposure_section_unverifiable`, never as an expectation to skip). G6's
-  installer makes it (§7, "Left to G6"); this build makes none. The record
+  `exposure_section_unverifiable`, never as an expectation to skip). The
+  installer records the hashes it is to hold (§7, "Left to G6", G6
+  preparation K); no generation this build writes carries the section, and
+  `generation-publish` copying the record into it is G6's. The record
   is trusted only because the section is inside the generation document
   that `generation_digest` covers and the approval's context binds that
   digest, so the operator's signature covers the whole section (review of
