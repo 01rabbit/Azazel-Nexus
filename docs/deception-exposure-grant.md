@@ -518,8 +518,9 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     **The detection is implemented, not wired** (#196 G6 preparation A):
     `decoy_residue.exposure_residue_departures`, a pure function over
     values the caller read (each exposure unit's `LoadState`,
-    `UnitFileState` and `ActiveState` from the service manager's bus, and
-    the `(status, output)` of `ip -j netns list`, `ip -j link show` and
+    `UnitFileState` and `ActiveState` from the service manager's bus,
+    `decoy_residue.read_netns`'s `(error, mode)` for `/run/netns/azazel-decoy`,
+    and the `(status, output)` of `ip -j link show` and
     `nft -j list tables`), returns `exposure_unit_masked_running` (no
     definition: `LoadState` `masked` or `not-found`, or `UnitFileState`
     `masked` or `masked-runtime`, while `ActiveState` is neither `inactive`
@@ -537,6 +538,24 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     the module. Which bus call reads the three properties (the controller
     has `GetUnitFileState` and `GetActiveState` today, not `LoadState`) is
     part of wiring it, in G6.
+    **The namespace is read from `/run/netns`, not from `ip netns list`**
+    (#196 cross review L2, H1(c)). iproute2 prints nothing and exits 0
+    when it cannot open `/run/netns`, so an unreadable directory passed as
+    "no namespace"; and the pass that calls this in G6 runs in the
+    controller, which starts no process (only the network helper may
+    spawn one, `tests/unit/test_runtime_boundary.py`). `read_netns` opens
+    `/run/netns` with `O_DIRECTORY|O_NOFOLLOW` and `lstat`s the one name
+    `azazel-decoy` in it; the judgement stays pure over what it returns:
+    no `/run/netns` (`ENOENT`) or no such entry is no namespace, any other
+    error (`EACCES`, `ENOTDIR`, a link in the directory's place) is
+    `exposure_state_unreadable`, and the entry must be the regular file
+    `ip netns add` binds the nsfs file onto (a link or anything else under
+    that name is `exposure_state_unreadable`). Nothing calls `read_netns`
+    either. **How the controller reads the host's links and the nft tables
+    is decided in G6**, in a design document of its own: in the
+    controller's sandbox `nft` needs `CAP_NET_ADMIN` and cannot read the
+    tables, so the two `(status, output)` inputs above are the shape of
+    the judgement, not a settled way of reading them.
   - (b) **The controller masks but does not stop.** The controller's
     preflight masks an exposure unit that is running without a grant, and
     leaves it running (seen in the second G4 rehearsal). It has no
