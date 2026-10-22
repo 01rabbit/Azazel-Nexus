@@ -236,7 +236,8 @@ def test_the_trip_unit_text_is_exact_and_rendered():
         "Conflicts=azazel-decoy-netd.service",
         "Conflicts=azazel-decoyd.service",
     ]
-    assert TRIP_TEXT.count("Conflicts=") == 3
+    assert [line for line in TRIP_TEXT.splitlines() if line.startswith("Conflicts=")] == [
+        f"Conflicts={unit}" for unit in DECOY_TRIP_CONFLICTS]
 
 
 def test_the_trip_conflicts_are_the_three_exposure_units_in_start_order():
@@ -873,7 +874,7 @@ def test_the_watch_check_refuses_the_one_conflict_trip_unit(root):
     path = root / "usr/lib/systemd/system" / DECOY_TRIP_UNIT
     old = TRIP_TEXT.replace("Conflicts=azazel-decoy-netd.service\n", "").replace(
         "Conflicts=azazel-decoyd.service\n", "")
-    assert old.count("Conflicts=") == 1
+    assert sum(line.startswith("Conflicts=") for line in old.splitlines()) == 1
     path.write_text(old)
     with pytest.raises(unit_files.UnitContentRefused):
         unit_files.require_watch_unit_files()
