@@ -193,19 +193,32 @@ def _mask_and_confirm_inactive(manager: UnitManager, unit: str) -> None:
         raise UnitOperationFailed("masked unit has no confirmed inactive state")
 
 
+#: Bound on a reason recorded by `_unit_failure`; longer text is not a fixed reason.
+_UNIT_FAILURE_REASON_LIMIT = 120
+
+
 def _unit_failure(unit: str, exc: BaseException) -> str:
     """``"<unit>: <reason>"`` for the ledger: the unit and a fixed reason only.
 
     The reason is the message only of an exact ``UnitOperationFailed`` whose
-    one argument is a string; the D-Bus client translates every bus failure
-    into that class with a fixed (or method-name) message. Any other
-    exception is recorded by its class name, as ``_remask_all`` already does,
-    so no text an exception happens to carry (a path, a peer's error text)
-    reaches the activation ledger, and a ``__str__`` that itself raises
-    cannot leave this narrowing before its record (#251 M-5).
+    one argument is a string of printable ASCII, at most
+    ``_UNIT_FAILURE_REASON_LIMIT`` characters; the D-Bus client translates
+    every bus failure into that class with a fixed (or method-name) message.
+    Any other exception, or a message outside those bounds, is recorded by
+    its class name, as ``_remask_all`` already does, so no text an exception
+    happens to carry (a path, a peer's error text) reaches the activation
+    ledger, and a ``__str__`` that itself raises cannot leave this narrowing
+    before its record (#251 M-5).
+
+    Ledger lines written before #251 M-5 (``still_unreachable`` of
+    ``activation.rollback_failed``, ``could_not_mask`` of
+    ``activation.rolled_back``) recorded ``str(exc)`` and may hold free text.
     """
-    if type(exc) is UnitOperationFailed and len(exc.args) == 1 and type(exc.args[0]) is str:
-        return f"{unit}: {exc.args[0]}"
+    if type(exc) is UnitOperationFailed and len(exc.args) == 1:
+        reason = exc.args[0]
+        if (type(reason) is str and 0 < len(reason) <= _UNIT_FAILURE_REASON_LIMIT
+                and all(" " <= char <= "~" for char in reason)):
+            return f"{unit}: {reason}"
     return f"{unit}: {type(exc).__name__}"
 
 
