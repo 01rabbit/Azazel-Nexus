@@ -465,10 +465,12 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
     and removes the table), then the namespace unit, whose `ExecStopPost=`
     (the veth pair and the namespace) runs last. That is the order the G2
     trip had through `Requires=`, kept while the definitions are intact
-    (pinned by `tests/unit/test_decoy_watch.py`; to be re-observed on the VM).
+    (pinned by `tests/unit/test_decoy_watch.py`; observed on the VM, §11,
+    "Third G4 rehearsal").
   - *What it covers when the definitions are gone.* After a mask and a
     `daemon-reload`, the three are still stopped by the job engine: a mask
-    refuses a start, not a stop (*inferred*; VM item, §11). But with the
+    refuses a start, not a stop (VM-checked on this branch, §11, "Third
+    G4 rehearsal"). But with the
     definitions replaced by `/dev/null` there is no `After=` to order the
     stops, no `ExecStop=` for the helper and no `ExecStopPost=` for the
     namespace unit: the processes are killed, the decoy no longer listens,
@@ -479,19 +481,22 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
 - **For G6** (open, from the second G4 rehearsal):
   - (a) **Not resting on the trip alone after a mask.** When a mask and a
     `daemon-reload` remove the units' dependencies, the trip is the only
-    thing that stops them, and only after a verify fails. G6 decides how a
-    running exposure unit whose definition is gone is stopped and cleaned up
-    without waiting for a departure (for example by not leaving it running
-    at the mask; see (b)), and how the leftovers of a definition-less stop
-    (namespace, veth pair, table) are found and refused at the next grant.
-    The `Conflicts=` above covers stopping the three processes; the
-    clean-up and the stop order in that state are not covered by it.
+    thing that stops them, and only after a verify fails. G6 decides how
+    that state is handled **with no new authority**, for example: the pass
+    refuses the grant while an exposure unit is masked and still running,
+    or while a leftover of a definition-less stop (the namespace, the veth
+    pair, the table) is present; the operator stops such a unit by hand
+    (operations); the leftovers are detected and reported. The `Conflicts=`
+    above stops the three processes in that state (VM-checked, §11); the
+    clean-up and the stop order are not covered by it.
   - (b) **The controller masks but does not stop.** The controller's
     preflight masks an exposure unit that is running without a grant, and
-    leaves it running (seen in the second G4 rehearsal). Whether it should
-    also stop it is G6's decision, **without** adding a unit operation the
-    controller may perform today (no new verb, no new unit in its
-    allowlist, no override). This PR changes no controller code.- **The decoy** gains `Requires=azazel-decoy-verify.service
+    leaves it running (seen in the second G4 rehearsal). It has no
+    authority to stop a unit (`activated.py`: "no StopUnit authority").
+    Making it stop one would need a new unit operation, which is itself a
+    decision about authority. G6 treats whether to allow that as a design
+    decision that adds authority, not as a fix. This PR adds nothing.
+- **The decoy** gains `Requires=azazel-decoy-verify.service
   azazel-decoy-verify.timer` and `After=azazel-decoy-verify.service`
   (pinned in the listener check); **the helper** gains `After=` on
   `firewalld.service` and `netfilter-persistent.service`
@@ -1081,7 +1086,7 @@ evidence**; no record for `HG-06`, `HG-09` or `HG-10`.
 | trip by `systemctl start nftables.service`, definitions intact | Debian's default `/etc/nftables.conf` holds `flush ruleset`. The unit started at 21:19:58, the verify failed and the trip started at 21:20:04 (about 6–7 s, inside one period); all three units stopped; the helper ended `failed` as before | ok (closed) |
 | trip by `nft delete table` (first run, definitions intact) | the three units stopped about 2 s after the trip (first table above) | ok (closed) |
 | **rehearsal error**: a probe copy with `Requires=azazel-activated.service` left in | starting that copy started the controller. Its preflight found the three exposure units running without a grant and masked them again; the controller then recorded `activation.rollback_failed` and failed, with `still_unreachable` "masked unit has no confirmed inactive state". **It masked them and did not stop them** | a rehearsal fault; the controller's behaviour is G6 item (b), §6.3 |
-| **trip weakness**: the trip after that mask | the `daemon-reload` after the mask replaced the three running units' definitions with `/dev/null`, so their `Requires=` and `After=` were gone. Starting `nftables.service` flushed the table; the verify failed after about 7 s and `OnFailure=` started the trip target. Only the namespace unit stopped (its `Conflicts=`); its `ExecStopPost=` did not run (no definition), so the namespace and the veth pair were left. The helper and the decoy stayed `active` for more than 20 s: the `Requires=` chain the trip relied on was gone. The decoy's cgroup `IPAddressAllow=` (`10.255.196.0/30` only) still held, so with the masquerade gone nothing outside could reach it; but the design's "the trip stops all three" did not hold | **fixed in part** by the trip naming all three (§6.3, "The trip after G4"); the rest is G6 item (a) |
+| **trip weakness**: the trip after that mask | the `daemon-reload` after the mask replaced the three running units' definitions with `/dev/null`, so their `Requires=` and `After=` were gone. Starting `nftables.service` flushed the table; the verify failed after about 7 s and `OnFailure=` started the trip target. Only the namespace unit stopped (its `Conflicts=`); its `ExecStopPost=` did not run (no definition), so the namespace and the veth pair were left. The helper and the decoy stayed `active` for more than 20 s: the `Requires=` chain the trip relied on was gone. The decoy's cgroup `IPAddressAllow=` (`10.255.196.0/30` only) still held, so with the masquerade gone nothing outside could reach it (*inferred*, not observed); but the design's "the trip stops all three" did not hold | **fixed in part** by the trip naming all three (§6.3, "The trip after G4"); the rest is G6 item (a) |
 | decoy sandbox, probe copy | a copy of `azazel-decoyd.service` with only `ExecStart=` replaced by the test probe (§8's method; profile `azazel-decoyd`, `ProtectProc=invisible`, `PrivateUsers=`, uid 979): `/proc/self/net/dev` and the boot id readable; `/proc/1/net/dev` `FileNotFoundError`; listing `/proc` refused by AppArmor; connects to `/run/dbus/system_bus_socket` and `/run/systemd/private` refused (`PermissionError`, `InaccessiblePaths=`); writes to `/etc/azazel` and `/run/azazel-activation` refused | ok |
 | verify sandbox, probe copy | the same for `azazel-decoy-verify.service` (profile `azazel-decoy-verify`, `AF_NETLINK` only): both connects refused (`OSError`: no `AF_UNIX` socket); `/proc/*/net/dev`, the boot id and the `/proc` listing refused by AppArmor (the verify needs none of them); writes refused | ok |
 
@@ -1093,17 +1098,26 @@ the namespace unit and the helper it is still unchecked. The decoy's
 **What the trip change covers, and what it does not.** Naming the three
 units in the trip unit's `Conflicts=` makes the job engine stop each one
 directly, so the helper and the decoy stop even when the `Requires=` chain
-is gone (*inferred* for masked units: a mask refuses a start, not a stop;
-to be observed on the VM). It does not bring back the clean-up or the order
-in that state (no `ExecStop=`, no `ExecStopPost=`, no `After=`), and it
-still waits for a verify to fail. Both remain G6 items (§6.3, "For G6").
+is gone (checked in the third rehearsal below). It does not bring back the
+clean-up or the order in that state (no `ExecStop=`, no `ExecStopPost=`, no
+`After=`), and it still waits for a verify to fail. Both remain G6 items
+(§6.3, "For G6").
 
-**For the next rehearsal** (added to the items below): the trip with the
-three `Conflicts=` lines, definitions intact (the decoy, then the helper,
-then the namespace unit, its `ExecStopPost=` last) and after a mask and a
-`daemon-reload` (all three stop; record what is left behind); that starting
-the helper or the decoy stops the trip target; the namespace unit's and the
-helper's sandbox under probe copies.
+### Third G4 rehearsal (2026-10-22, VM; mechanism check, not hardware evidence)
+
+The same VM, with this change (#290, a6393f9) installed: the trip unit with
+the three `Conflicts=` lines. **A VM check of the mechanism, not hardware
+evidence.**
+
+| what | observed | result |
+| --- | --- | --- |
+| trip, definitions intact | `nft delete table inet azazel_decoy`: the trip within one period (about 9 s); the units stopped in the order decoy, helper (its `ExecStop=` ended `status=1`, `failed`, as before), namespace unit (its `ExecStopPost=` last); nothing left (links 0, namespaces 0, tables 0) | ok (closed) |
+| re-arm by the decoy | starting `azazel-decoyd.service` stopped the trip target (`Conflicts=`) and all three came back `active` | ok |
+| trip after a mask and a `daemon-reload` | the three masked while running, `daemon-reload`, the table deleted: the trip after about 11 s and **all three stopped** (before this change, only the namespace unit). With the definitions `/dev/null` no clean-up ran: two veth links and one namespace were left (the table was already gone) | the stop: ok; the leftovers: G6 item (a) |
+
+**Still open** (added to the items below): that starting the helper alone
+stops the trip target; the namespace unit's and the helper's sandbox under
+probe copies.
 
 **Rehearsal rule** (also in [operations](operations.md)): every unit copy,
 probe copies included, is made from a copy **with

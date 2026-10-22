@@ -779,7 +779,8 @@ next `daemon-reload` that unit's definition is `/dev/null`: its
 trip in that state stopped only the namespace unit, left its namespace and
 veth pair behind, and left the helper and the decoy running for more than
 20 s. The trip unit now names all three, so the job engine stops each of
-them directly; it cannot run the clean-up steps that are no longer
+them directly (VM-checked: all three stopped, and two veth links and the
+namespace were left); it cannot run the clean-up steps that are no longer
 defined, and it still waits for a verify to fail. If `systemctl status`
 shows one of the three as `masked` and `active`, stop it by hand
 (`sudo systemctl stop azazel-decoyd.service azazel-decoy-netd.service
