@@ -1022,6 +1022,11 @@ pass and the existing tests that pin it stay.
 P5 and P6 of the prerequisites document (decisions, redirect) are unchanged
 and come after G6.
 
+How G6 connects these parts (the order in the pass, approval v3, the
+generation's exposure section, the scope file, the tripwire, its tests and
+VM rehearsal) is proposed in
+[wiring the exposure grant](deception-exposure-wiring.md).
+
 ### G6 preparation C (implemented, not wired)
 
 Parts of G6 built ahead of it as pure functions and bounded readers.
