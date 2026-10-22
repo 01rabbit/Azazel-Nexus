@@ -16,6 +16,10 @@ reads the host's sysctls or talks to the service manager):
   them (Debian 13, kernel 6.12, iproute2 6.15, networkd 257);
 * `decoy_residue.exposure_residue_departures`: a masked unit still running,
   and the leftovers of a definition-less stop while no unit runs;
+* `decoy_residue.read_netns`: the namespace looked up in `/run/netns`
+  itself, not through `ip netns list` (#196 L2, H1(c)): no directory is no
+  namespace, any other error and a link under the name are unreadable
+  (read from a directory under `tmp_path`, never the host's);
 * that **nothing calls either**: no module of the product imports them but
   the verify (the shared reads), the tier is withheld as
   `isolation_evidence_absent` with both made to fail if called, and
@@ -27,8 +31,11 @@ None of this is VM or hardware evidence.
 from __future__ import annotations
 
 import ast
+import errno
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 import pytest
@@ -68,6 +75,7 @@ from azazel_nexus_runtime.decoy_residue import (
     RESIDUE_CODES,
     RESIDUE_PHRASES,
     exposure_residue_departures,
+    read_netns,
     residue_refusal,
 )
 
@@ -547,7 +555,10 @@ def _units(**changes):
     return units
 
 
-_NONE = (0, b"")
+#: `read_netns()`: `/run/netns` read, no `azazel-decoy` in it.
+_NONE = (0, None)
+#: `read_netns()`: the nsfs bind, a regular file as `lstat` gives it.
+_NAMESPACE = (0, stat.S_IFREG | 0o444)
 _NO_LINKS = (0, json.dumps([{"ifindex": 1, "ifname": "lo"},
                             {"ifindex": 2, "ifname": "eth9"}]).encode())
 _NO_TABLES = (0, json.dumps({"nftables": [{"metainfo": {"version": "1.1.3"}}]}).encode())
@@ -572,7 +583,8 @@ def test_a_clean_host_says_nothing():
     unmasked = {unit: {"UnitFileState": "enabled", "LoadState": "loaded"}
                 for unit in EXPOSURE_UNITS}
     assert _residue(_units(**unmasked)) == ()
-    assert _residue(netns=(0, b"[]")) == ()
+    # No `/run/netns` at all is no namespace.
+    assert _residue(netns=(errno.ENOENT, None)) == ()
     assert residue_refusal(()) is None
 
 
@@ -601,7 +613,7 @@ def test_a_running_unit_that_is_not_masked_is_not_this_check():
 
 
 @pytest.mark.parametrize("netns,links,tables", [
-    ((0, b'[{"name":"azazel-decoy"}]'), _NO_LINKS, _NO_TABLES),
+    (_NAMESPACE, _NO_LINKS, _NO_TABLES),
     (_NONE, (0, b'[{"ifname":"az-decoy-host0"}]'), _NO_TABLES),
     (_NONE, (0, b'[{"ifname":"lo"},{"ifname":"az-decoy0"}]'), _NO_TABLES),
     (_NONE, _NO_LINKS, (0, json.dumps({"nftables": [
@@ -618,7 +630,7 @@ def test_leftovers_while_no_unit_runs_are_refused(netns, links, tables, active):
 
 def test_leftovers_while_a_unit_runs_are_its_own_objects():
     running = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active"}
-    netns = (0, b'[{"name":"azazel-decoy"}]')
+    netns = _NAMESPACE
     assert _residue(_units(**{NSD: running}), netns) == ()
     # Masked and running with leftovers: the running unit is the reason.
     assert _residue(_units(**{NSD: {"ActiveState": "active"}}), netns) == (
@@ -628,7 +640,6 @@ def test_leftovers_while_a_unit_runs_are_its_own_objects():
 _RUNNING = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active"}
 _STOPPED_UNIT = {"LoadState": "loaded", "UnitFileState": "enabled",
                  "ActiveState": "inactive"}
-_NAMESPACE = (0, b'[{"name":"azazel-decoy"}]')
 _HOST_VETH = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy-host0"}]')
 _BRIDGE = (0, b'[{"ifname":"lo"},{"ifname":"az-decoy0"}]')
 _TABLE = (0, json.dumps({"nftables": [
@@ -675,8 +686,7 @@ def test_a_unit_whose_file_is_gone_counts_as_masked(active, expected):
 
 
 def test_other_namespaces_links_and_tables_are_not_leftovers():
-    assert _residue(netns=(0, b'[{"name":"other"}]'),
-                    links=(0, b'[{"ifname":"az-decoy-ns0"},{"ifname":"az-decoy1"}]'),
+    assert _residue(links=(0, b'[{"ifname":"az-decoy-ns0"},{"ifname":"az-decoy1"}]'),
                     tables=(0, json.dumps({"nftables": [
                         {"table": {"family": "ip", "name": "azazel_decoy"}},
                         {"table": {"family": "inet", "name": "filter"}}]}).encode())) == ()
@@ -698,14 +708,21 @@ def test_a_unit_state_not_in_its_closed_form_is_unreadable(units):
 
 
 @pytest.mark.parametrize("netns,links,tables", [
-    ((1, b""), _NO_LINKS, _NO_TABLES),
+    ((errno.EACCES, None), _NO_LINKS, _NO_TABLES),
+    ((errno.ENOTDIR, None), _NO_LINKS, _NO_TABLES),
+    ((errno.ELOOP, None), _NO_LINKS, _NO_TABLES),
+    ((0, stat.S_IFLNK | 0o777), _NO_LINKS, _NO_TABLES),
+    ((0, stat.S_IFDIR | 0o755), _NO_LINKS, _NO_TABLES),
+    ((errno.ENOENT, stat.S_IFREG | 0o444), _NO_LINKS, _NO_TABLES),
+    ((0, b""), _NO_LINKS, _NO_TABLES),
+    ((0, b'[{"name":"azazel-decoy"}]'), _NO_LINKS, _NO_TABLES),
+    ((True, None), _NO_LINKS, _NO_TABLES),
     (_NONE, (0, b""), _NO_TABLES),
     (_NONE, (0, b'[{"ifname": 3}]'), _NO_TABLES),
     (_NONE, _NO_LINKS, (0, b"")),
     (_NONE, _NO_LINKS, (0, b'{"nftables": [{"table": {"family": "inet"}}]}')),
     (_NONE, _NO_LINKS, (0, b'{"nftables": {}}')),
     (_NONE, _NO_LINKS, (2, b"")),
-    ((0, b"[{]"), _NO_LINKS, _NO_TABLES),
     ("", _NO_LINKS, _NO_TABLES),
 ])
 def test_an_object_read_that_cannot_be_read_is_unreadable(netns, links, tables):
@@ -714,6 +731,134 @@ def test_an_object_read_that_cannot_be_read_is_unreadable(netns, links, tables):
     masked = _units(**{NSD: {"ActiveState": "active"}})
     assert _residue(masked, netns, links, tables) == (
         EXPOSURE_UNIT_MASKED_RUNNING, EXPOSURE_STATE_UNREADABLE)
+
+
+# -- the namespace read from /run/netns, not `ip netns list` (#196 L2, H1(c)) ----
+
+def _stopped_units():
+    return _units(**{unit: _STOPPED_UNIT for unit in EXPOSURE_UNITS})
+
+
+@pytest.fixture
+def netns_dir(tmp_path, monkeypatch):
+    path = tmp_path / "netns"
+    monkeypatch.setattr(decoy_residue, "_NETNS", str(path))
+    return path
+
+
+def test_the_netns_directory_is_the_one_the_namespace_unit_writes():
+    from azazel_nexus_runtime.hardening import NETNS_DIRECTORY
+
+    assert decoy_residue._NETNS == NETNS_DIRECTORY == "/run/netns"
+    assert decoy_residue.NAMESPACE == "azazel-decoy"
+
+
+def test_no_netns_directory_is_no_namespace(netns_dir):
+    """`ENOENT` opening `/run/netns`: nothing was ever created (a clean boot
+    before the tmpfiles rule, or a host without it)."""
+
+    assert read_netns() == (errno.ENOENT, None)
+    assert _residue(_stopped_units(), read_netns()) == ()
+
+
+def test_an_empty_or_other_netns_directory_is_no_namespace(netns_dir):
+    netns_dir.mkdir()
+    assert read_netns() == (0, None)
+    (netns_dir / "other").touch()
+    (netns_dir / "azazel-decoy2").touch()
+    assert read_netns() == (0, None)
+    assert _residue(_stopped_units(), read_netns()) == ()
+
+
+def test_the_namespace_entry_is_a_leftover_while_its_unit_is_stopped(netns_dir):
+    """`ip netns add` leaves an empty regular file the nsfs file is bound onto;
+    `lstat` sees that regular file, bound or not."""
+
+    netns_dir.mkdir()
+    (netns_dir / "azazel-decoy").touch()
+    error, mode = read_netns()
+    assert error == 0 and stat.S_ISREG(mode)
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_LEFTOVERS_PRESENT,)
+    running = _units(**{unit: (_RUNNING if unit == NSD else _STOPPED_UNIT)
+                        for unit in EXPOSURE_UNITS})
+    assert _residue(running, read_netns()) == ()
+
+
+@pytest.mark.parametrize("target", ["file", "missing", "dir"])
+def test_a_namespace_entry_that_is_a_link_is_unreadable(netns_dir, target):
+    """Not followed: a link named `azazel-decoy` is not what `ip netns add`
+    makes, wherever it points."""
+
+    netns_dir.mkdir()
+    pointed = netns_dir.parent / "pointed"
+    if target == "file":
+        pointed.touch()
+    elif target == "dir":
+        pointed.mkdir()
+    (netns_dir / "azazel-decoy").symlink_to(pointed)
+    error, mode = read_netns()
+    assert error == 0 and stat.S_ISLNK(mode)
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_STATE_UNREADABLE,)
+
+
+def test_a_namespace_entry_that_is_a_directory_is_unreadable(netns_dir):
+    (netns_dir / "azazel-decoy").mkdir(parents=True)
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_STATE_UNREADABLE,)
+
+
+def test_a_netns_path_that_is_not_a_directory_is_unreadable(netns_dir):
+    netns_dir.touch()
+    assert read_netns() == (errno.ENOTDIR, None)
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_STATE_UNREADABLE,)
+
+
+def test_a_netns_path_that_is_a_link_is_not_followed(netns_dir):
+    real = netns_dir.parent / "real"
+    real.mkdir()
+    (real / "azazel-decoy").touch()
+    netns_dir.symlink_to(real)
+    error, mode = read_netns()
+    assert error in (errno.ELOOP, errno.ENOTDIR) and mode is None
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_STATE_UNREADABLE,)
+
+
+@pytest.mark.parametrize("where", ["directory", "entry"])
+@pytest.mark.parametrize("code", [errno.EACCES, errno.EPERM, errno.EIO])
+def test_a_netns_read_that_fails_otherwise_is_unreadable(netns_dir, monkeypatch,
+                                                         where, code):
+    """What `ip netns list` printed nothing for and exited 0 (#196 L2): the
+    error is carried, not taken as "no namespace". Raised by a stand-in, so
+    that the test does not depend on running as root or not."""
+
+    netns_dir.mkdir()
+    (netns_dir / "azazel-decoy").touch()
+    real_open, real_stat = os.open, os.stat
+
+    def failing_open(path, *args, **kwargs):
+        if where == "directory" and path == str(netns_dir):
+            raise OSError(code, os.strerror(code))
+        return real_open(path, *args, **kwargs)
+
+    def failing_stat(path, *args, **kwargs):
+        if where == "entry" and path == "azazel-decoy":
+            raise OSError(code, os.strerror(code))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(decoy_residue.os, "open", failing_open)
+    monkeypatch.setattr(decoy_residue.os, "stat", failing_stat)
+    assert read_netns() == (code, None)
+    assert _residue(_stopped_units(), read_netns()) == (EXPOSURE_STATE_UNREADABLE,)
+
+
+def test_the_namespace_is_not_read_through_ip_netns_list():
+    """No `ip -j netns list` input is left (its empty output was taken as
+    "no namespace"); the leaf test above keeps any process out."""
+
+    source = Path(decoy_residue.__file__).read_text(encoding="utf-8")
+    assert "empty_allowed" not in source and "_names(netns" not in source
+    assert 'os.open(_NETNS, _DIR_FLAGS)' in source
+    assert "os.O_DIRECTORY | os.O_NOFOLLOW" in source
+    assert "follow_symlinks=False" in source
 
 
 # -- not wired: nothing calls either ---------------------------------------------
@@ -755,6 +900,7 @@ def test_nothing_imports_the_residue_module():
 def test_the_pass_only_names_appear_nowhere_else_in_the_product():
     words = ("pass_reachability_departures", "reachability_refusal", "conf_entry_path",
              FORWARDING_ROLE_ON, "exposure_residue_departures", "residue_refusal",
+             "read_netns",
              *RESIDUE_CODES)
     for path in _python_modules():
         if path.name in ("decoy_reachability.py", "decoy_residue.py"):
@@ -785,7 +931,8 @@ def test_both_modules_are_leaves():
         "__future__", "ipaddress", "json", "os", "typing", "azazel_nexus.decoy_scope",
         ".decoy_addresses"}
     assert imports("decoy_residue.py") == {
-        "__future__", "json", "typing", ".decoy_addresses", ".decoy_reachability"}
+        "__future__", "errno", "json", "os", "stat", "typing", ".decoy_addresses",
+        ".decoy_reachability"}
     for name in ("decoy_reachability.py", "decoy_residue.py"):
         assert _helper_offences(RUNTIME / name) == [], name
 
@@ -804,6 +951,7 @@ def test_the_tier_is_withheld_with_both_made_to_fail_if_called(tmp_path, monkeyp
                          (decoy_reachability, "read_sysctls"),
                          (decoy_reachability, "reachability_refusal"),
                          (decoy_residue, "exposure_residue_departures"),
+                         (decoy_residue, "read_netns"),
                          (decoy_residue, "residue_refusal")):
         monkeypatch.setattr(module, name, called)
     controller, units, ledger, _ = _controller(tmp_path)
