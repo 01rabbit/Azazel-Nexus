@@ -679,7 +679,7 @@ style of `tests/unit/test_runtime_activation_pass.py`):
    code, grants the SUPPORTING units and edge-core as before, writes no
    scope file and no exposure marker, and does not call any later stage
    (each later part replaced by one that fails when called, as
-   `tests/unit/test_exposure_g6_parts.py` does today). Also: an exception in
+   `tests/unit/test_g6_unwired.py` does today). Also: an exception in
    any stage gives `exposure_stage_unreadable` and the other tiers
    unchanged; and **an exposure unit file changed by one byte withholds the
    tier alone** (P9 `exposure_generation_differs`), the SUPPORTING units and

@@ -12,14 +12,13 @@
 * the governed-set exclusion of the tier and an enforcing unit
   (`azazel_nexus.exposure_exclusivity`).
 
-And that none of them is reached: no product module imports or names them,
-the tier is still withheld as `isolation_evidence_absent`, and the schema,
-allowlist and grantable set are unchanged.
+And that the schema, allowlist and grantable set are unchanged. That none of
+them is reached (no product file imports or names them, the tier is still
+withheld as `isolation_evidence_absent`) is `test_g6_unwired.py`.
 """
 
 from __future__ import annotations
 
-import ast
 from dataclasses import replace
 import errno
 from hashlib import sha256
@@ -38,7 +37,6 @@ from azazel_nexus.activation import (
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 from azazel_nexus.decoy_scope import parse_scope_file
 from azazel_nexus.exposure_exclusivity import (
-    EXPOSURE_ENFORCEMENT_CODES,
     EXPOSURE_ENFORCEMENT_EXCLUSIVE,
     EXPOSURE_ENFORCEMENT_UNREADABLE,
     exposure_enforcement_conflict,
@@ -65,7 +63,6 @@ from azazel_nexus_runtime.decoy_apparmor import (
 )
 from azazel_nexus_runtime.exposure_generation import (
     APPARMOR_DIRECTORY,
-    EXPOSURE_SECTION_CODES,
     EXPOSURE_SECTION_DIFFERS,
     EXPOSURE_SECTION_KEYS,
     EXPOSURE_SECTION_PHRASES,
@@ -78,11 +75,9 @@ from azazel_nexus_runtime.exposure_generation import (
 )
 from azazel_nexus_runtime.exposure_withholding import (
     FB_TUNNELS_NOT_INIT_NET_ONLY,
-    FB_TUNNELS_REASON_CODES,
     FB_TUNNELS_UNREADABLE,
     HOST_FIREWALL_ACTIVE,
     HOST_FIREWALL_ENABLED,
-    HOST_FIREWALL_REASON_CODES,
     HOST_FIREWALL_UNITS,
     HOST_FIREWALL_UNREADABLE,
     fb_tunnels_refusal,
@@ -869,137 +864,11 @@ def test_anything_but_definitions_is_refused_as_unreadable(definitions):
 
 # -- not wired -------------------------------------------------------------------
 #
-# Two layers, on purpose (review of #294 F5). The static layer (the tests on
-# imports, names and reason codes below, and `_withholding_reason`'s branch)
-# says no product module can reach a part. The dynamic layer (a pass with
-# every part replaced by one that fails when called) says a real pass does
-# not, whatever path the static scan might miss (a `getattr`, an import made
-# at run time). Either alone could pass while the other fails.
-#
-# When G6 wires the parts in, these tests are replaced, not loosened, and the
-# importer lists that this PR widened go back to naming only real callers:
-# `test_decoy_apparmor.py` (`exposure_generation.py` added) and
-# `test_decoy_scope.py` (`exposure_generation.py` added).
-
-
-NEW_MODULES = ("exposure_withholding", "exposure_generation", "exposure_exclusivity")
-#: The only files that may name a part: where each is defined, and the new
-#: modules' cross-references. The pass, the controller and the library are
-#: not among them.
-PART_FILES = {"activation_unit_files.py", "decoy_apparmor.py", "exposure_withholding.py",
-              "exposure_generation.py", "exposure_exclusivity.py"}
-NEW_NAMES = (
-    "measure_exposure_unit_files", "exposure_lsm_withholding",
-    "loaded_unit_profile_refusal", "policy_hash_refusal", "read_policy_hashes",
-    "read_exposure_lsm_policy", "host_firewall_refusal", "fb_tunnels_refusal",
-    "read_fb_tunnels", "exposure_enforcement_conflict", "build_exposure_section",
-    "verify_exposure_section", "measure_exposure_section_inputs",
-    "measure_apparmor_profile_files", "expected_policy_hashes",
-)
-
-
-def _product_modules():
-    for base in (ROOT / "src", ROOT / "runtime" / "src"):
-        yield from sorted(base.rglob("*.py"))
-
-
-def _imported(path: Path) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.ImportFrom):
-            names.add((node.module or "").rsplit(".", 1)[-1])
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
-    return names
-
-
-def test_no_product_module_imports_the_new_parts():
-    for path in _product_modules():
-        assert not _imported(path) & set(NEW_MODULES), path
-
-
-def test_the_new_names_appear_only_where_they_are_defined():
-    for path in _product_modules():
-        text = path.read_text(encoding="utf-8")
-        for name in NEW_NAMES:
-            if re.search(rf"\b{name}\b", text):
-                assert path.name in PART_FILES, (path, name)
-
-
-def test_the_new_reason_codes_appear_only_where_they_are_defined():
-    codes = (LSM_LOADED_REASON_CODES + HOST_FIREWALL_REASON_CODES
-             + FB_TUNNELS_REASON_CODES + EXPOSURE_ENFORCEMENT_CODES
-             + EXPOSURE_SECTION_CODES)
-    for path in _product_modules():
-        text = path.read_text(encoding="utf-8")
-        for code in codes:
-            if code in text:
-                assert path.name in PART_FILES, (path, code)
-
-
-def test_the_tier_is_still_withheld_unconditionally():
-    from azazel_nexus import activation
-
-    source = Path(activation.__file__).read_text(encoding="utf-8")
-    method = next(node for node in ast.walk(ast.parse(source))
-                  if isinstance(node, ast.FunctionDef) and node.name == "_withholding_reason")
-    body = ast.get_source_segment(source, method)
-    branch = body[body.index("if definition.tier is UnitTier.DECEPTION_EXPOSURE:"):
-                  body.index("if definition.tier is UnitTier.EDGE_BASELINE:")]
-    assert re.findall(r'return \(\s*"([a-z_]+):', branch) == [
-        "exposure_tier_partial", "isolation_evidence_absent"]
-
-
-def test_a_pass_with_every_part_poisoned_still_withholds_the_tier(tmp_path, monkeypatch):
-    """None of the parts is called; the tier is `isolation_evidence_absent`."""
-
-    import test_activation as ta
-    from azazel_nexus import exposure_exclusivity
-    from azazel_nexus.activation import (
-        ARTIFACT_TRANSPORT,
-        LOCAL_MODEL_PROVIDER,
-        REMOTE_INFERENCE_TRANSPORT,
-        EdgeBaselineState,
-    )
-    from azazel_nexus_runtime import exposure_generation
-
-    calls = []
-
-    def poisoned(name):
-        def call(*args, **kwargs):
-            calls.append(name)
-            raise AssertionError(f"{name} was called")
-        return call
-
-    for module, names in (
-        (decoy_apparmor, ("exposure_lsm_withholding", "loaded_unit_profile_refusal",
-                          "policy_hash_refusal", "read_policy_hashes",
-                          "read_exposure_lsm_policy", "exposure_lsm_refusal",
-                          "read_exposure_lsm")),
-        (exposure_withholding, ("host_firewall_refusal", "fb_tunnels_refusal",
-                                "read_fb_tunnels")),
-        (exposure_generation, ("build_exposure_section", "verify_exposure_section",
-                               "measure_exposure_section_inputs",
-                               "measure_apparmor_profile_files",
-                               "expected_policy_hashes")),
-        (unit_files, ("measure_exposure_unit_files", "require_watch_unit_files")),
-        (exposure_exclusivity, ("exposure_enforcement_conflict",)),
-    ):
-        for name in names:
-            monkeypatch.setattr(module, name, poisoned(name))
-
-    controller, units, _, _ = ta._controller(tmp_path)
-    outcome = controller.activate(
-        now=ta.NOW, actor=ta.ACTOR, lease=ta._lease(),
-        edge=EdgeBaselineState(True, True, True, True, True), healthy=True,
-        record=ta._record(roles=(ta._confirmed_role(),)),
-        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
-    )
-    assert calls == []
-    for unit in DECEPTION_EXPOSURE_UNITS:
-        verdict = next(v for v in outcome.verdicts if v.unit == unit)
-        assert not verdict.granted
-        assert verdict.reason.startswith("isolation_evidence_absent")
-        assert ("unmask_and_enable", unit) not in units.calls
-    assert "azazel-edge-core.service" in outcome.granted
+# That no product file imports or names the parts, the reason codes included,
+# that `_withholding_reason` still withholds the tier as
+# `isolation_evidence_absent`, and that a pass with every part replaced by one
+# that fails when called reaches none of them, are `test_g6_unwired.py`
+# (#196 L1): one table for every G6 part, one scan of every tracked file. G6
+# edits that table; the importer list of `test_decoy_scope.py`
+# (`exposure_generation.py` added by preparation C) goes back to naming only
+# real callers then.

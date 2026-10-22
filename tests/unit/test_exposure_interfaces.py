@@ -8,8 +8,9 @@ proposal to this boot's kernel names by composite identity only; that an
 ambiguous, missing or changed identity, or a name outside §4.3, withholds
 with a fixed reason that carries no name or identity; that its output is
 what `decoy_scope.render_scope_file` and
-`decoy_reachability.pass_reachability_departures` take; and that nothing
-calls it, so the tier is still withheld as `isolation_evidence_absent`.
+`decoy_reachability.pass_reachability_departures` take; and that it reads,
+writes and runs nothing. That nothing calls it, so the tier is still withheld
+as `isolation_evidence_absent`, is `test_g6_unwired.py`.
 """
 
 from __future__ import annotations
@@ -403,37 +404,10 @@ def test_an_argument_of_any_shape_gives_a_reason_never_an_exception(bad):
 
 # -- not wired -------------------------------------------------------------------
 #
-# As preparation C (`test_exposure_g6_parts.py`): a static layer (no product
-# module imports or names the part; its own imports are pure) and a dynamic
-# one (a pass with the part replaced by one that fails when called still
-# withholds the tier and calls it not). G6 replaces these, not loosens them.
-
-
-def _product_modules():
-    for base in (REPO / "src", REPO / "runtime" / "src"):
-        yield from sorted(base.rglob("*.py"))
-
-
-def _imported(path: Path) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.ImportFrom):
-            names.add((node.module or "").rsplit(".", 1)[-1])
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
-    return names
-
-
-def test_no_product_module_imports_or_names_it():
-    for path in _product_modules():
-        if path.name == "exposure_interfaces.py":
-            continue
-        assert "exposure_interfaces" not in _imported(path), path
-        text = path.read_text(encoding="utf-8")
-        for name in ("exposure_interfaces", "resolve_role_interfaces", "RoleInterfaces",
-                     *ROLE_INTERFACE_CODES):
-            assert not re.search(rf"\b{name}\b", text), (path, name)
+# That no product file imports or names the part, that the tier is still
+# withheld, and that a pass with the part replaced by one that fails when
+# called reaches it not, are `test_g6_unwired.py` (#196 L1), with every other
+# G6 part. What stays here is this part's own: its imports are pure.
 
 
 def test_it_reads_writes_and_runs_nothing():
@@ -450,51 +424,3 @@ def test_it_reads_writes_and_runs_nothing():
     assert not calls & {"open", "exec", "eval", "__import__", "print"}
     code = source.replace(ast.get_docstring(tree, clean=False), "")
     assert "/run/" not in code and "environ" not in code and "getenv" not in code
-
-
-def test_the_tier_is_still_withheld_unconditionally():
-    from azazel_nexus import activation
-    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
-
-    source = Path(activation.__file__).read_text(encoding="utf-8")
-    method = next(node for node in ast.walk(ast.parse(source))
-                  if isinstance(node, ast.FunctionDef) and node.name == "_withholding_reason")
-    body = ast.get_source_segment(source, method)
-    branch = body[body.index("if definition.tier is UnitTier.DECEPTION_EXPOSURE:"):
-                  body.index("if definition.tier is UnitTier.EDGE_BASELINE:")]
-    assert re.findall(r'return \(\s*"([a-z_]+):', branch) == [
-        "exposure_tier_partial", "isolation_evidence_absent"]
-    for unit in activation.DECEPTION_EXPOSURE_UNITS:
-        assert unit not in ACTIVATION_UNIT_ALLOWLIST
-
-
-def test_a_pass_with_the_part_poisoned_still_withholds_the_tier(tmp_path, monkeypatch):
-    import test_activation as ta
-    from azazel_nexus.activation import (
-        ARTIFACT_TRANSPORT,
-        DECEPTION_EXPOSURE_UNITS,
-        LOCAL_MODEL_PROVIDER,
-        REMOTE_INFERENCE_TRANSPORT,
-        EdgeBaselineState,
-    )
-
-    calls = []
-
-    def poisoned(*args, **kwargs):
-        calls.append("resolve_role_interfaces")
-        raise AssertionError("resolve_role_interfaces was called")
-
-    monkeypatch.setattr(exposure_interfaces, "resolve_role_interfaces", poisoned)
-    monkeypatch.setattr(exposure_interfaces, "_resolve", poisoned)
-    controller, _, _, _ = ta._controller(tmp_path)
-    outcome = controller.activate(
-        now=ta.NOW, actor=ta.ACTOR, lease=ta._lease(),
-        edge=EdgeBaselineState(True, True, True, True, True), healthy=True,
-        record=ta._record(roles=(ta._confirmed_role(),)),
-        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
-    )
-    assert calls == []
-    for unit in DECEPTION_EXPOSURE_UNITS:
-        verdict = next(v for v in outcome.verdicts if v.unit == unit)
-        assert not verdict.granted
-        assert verdict.reason.startswith("isolation_evidence_absent")
