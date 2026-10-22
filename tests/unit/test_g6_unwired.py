@@ -92,8 +92,9 @@ IMPORTERS: dict[str, frozenset[str]] = {
     "azazel_nexus_runtime.exposure_withholding": frozenset(),
     "azazel_nexus_runtime.exposure_generation": frozenset(),
     "azazel_nexus_runtime.decoy_residue": frozenset(),
-    # The verify shares the reads and the R4 judgement (preparation A).
-    "azazel_nexus_runtime.decoy_reachability": frozenset({WATCH, RESIDUE}),
+    # The verify shares the reads and the R4 judgement (preparation A). The
+    # residue check no longer does: it takes link names, not `ip -j` (A1).
+    "azazel_nexus_runtime.decoy_reachability": frozenset({WATCH}),
     # The unit renderer, the install plan and the wrapper check use the
     # profile names; `exposure_generation` takes the four from here.
     "azazel_nexus_runtime.decoy_apparmor": frozenset({

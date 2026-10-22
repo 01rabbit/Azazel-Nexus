@@ -15,11 +15,14 @@ already read, whether the pass should refuse the grant because of that state:
   while the unit that creates and removes it is stopped. The namespace
   unit owns the namespace `azazel-decoy` and the host's veth end
   `az-decoy-host0` (its `ExecStart=` and `ExecStopPost=`); the helper owns
-  the bridge `az-decoy0` and the table `inet azazel_decoy` (its steps and
-  `ExecStop=`). So the decoy running alone with the namespace unit and
-  the helper stopped and their objects present is a leftover, and so is
-  the helper stopped with the bridge or the table present while the
-  namespace unit runs;
+  the bridge `az-decoy0` (its steps and `ExecStop=`). So the decoy running
+  alone with the namespace unit and the helper stopped and their objects
+  present is a leftover, and so is the helper stopped with the bridge
+  present while the namespace unit runs. The helper's table
+  `inet azazel_decoy` is not judged here (`docs/deception-exposure-wiring.md`
+  §4.4, A1): the controller cannot list nftables without `CAP_NET_ADMIN`,
+  and a leftover table alone is the helper's to refuse (`HELPER_ABSENT`
+  fails its start closed);
 * `exposure_state_unreadable`: a value absent or not in its closed form.
 
 **Implemented, not wired (#196 G6 preparation A).** Nothing calls
@@ -28,10 +31,10 @@ already read, whether the pass should refuse the grant because of that state:
 `isolation_evidence_absent` unconditionally, and wiring this in is G6
 (grant §9). The judgement reads nothing itself (the caller passes what it
 read from the service manager's bus, `/run/netns` through `read_netns`,
-and the link and table lists), stops nothing, removes nothing and adds no
-unit operation: the operator stops such a unit and clears what is left
-(operations). It says reason codes only, each a fixed word with a fixed
-phrase, never a name, an address or a value.
+and the host's link names from `netlink.read_links`), stops nothing,
+removes nothing and adds no unit operation: the operator stops such a unit
+and clears what is left (operations). It says reason codes only, each a
+fixed word with a fixed phrase, never a name, an address or a value.
 
 **The namespace is read from `/run/netns`, not from `ip netns list`**
 (#196 cross review L2, H1(c)). iproute2 prints nothing and exits 0 when it
@@ -39,27 +42,23 @@ cannot open `/run/netns`, so "unreadable" passed as "no namespace"; and the
 pass that will call this in G6 runs in the controller, which starts no
 process (only the network helper may spawn one, `test_runtime_boundary`).
 `read_netns` opens `/run/netns` itself (`O_DIRECTORY|O_NOFOLLOW`) and looks
-the one name `azazel-decoy` up in it without following a link. How the
-controller reads the host's links and the nft tables is not settled here:
-in the controller's sandbox `nft` needs `CAP_NET_ADMIN` and cannot read
-them. That is decided in G6, in a design document of its own.
+the one name `azazel-decoy` up in it without following a link. The host's
+links are the names of the existing route-netlink dump (`netlink.read_links`,
+no capability; wiring §4.4 (c)); no `ip -j` output is parsed here.
 
-A leaf apart from `decoy_addresses` (the fixed names) and
-`decoy_reachability.parse_json_list` (the one `ip -j` parser): no socket,
-no process, no environment; the one file read is `read_netns`'s, read-only
+A leaf apart from `decoy_addresses` (the fixed names): no socket, no
+process, no environment; the one file read is `read_netns`'s, read-only
 and with no link followed.
 """
 
 from __future__ import annotations
 
 import errno
-import json
 import os
 import stat
 from typing import Mapping, Optional
 
-from .decoy_addresses import BRIDGE, HOST_VETH, NAMESPACE, NFT_TABLE
-from .decoy_reachability import parse_json_list
+from .decoy_addresses import BRIDGE, HOST_VETH, NAMESPACE
 
 __all__ = [
     "EXPOSURE_LEFTOVERS_PRESENT",
@@ -98,7 +97,7 @@ RESIDUE_CODES: tuple[str, ...] = (
 RESIDUE_PHRASES: dict[str, str] = {
     EXPOSURE_UNIT_MASKED_RUNNING: ("a Deception Lite exposure unit is masked and "
                                    "still running; the operator stops it"),
-    EXPOSURE_LEFTOVERS_PRESENT: ("the decoy namespace, its links or its table are "
+    EXPOSURE_LEFTOVERS_PRESENT: ("the decoy namespace or its links are "
                                  "present while no exposure unit runs; the "
                                  "operator removes them"),
     EXPOSURE_STATE_UNREADABLE: ("the exposure units' state or the decoy network's "
@@ -196,65 +195,42 @@ def _namespace_present(read: object) -> Optional[bool]:
     return True if stat.S_ISREG(mode) else None
 
 
-def _names(read: object, key: str) -> Optional[frozenset[str]]:
-    """The names an `ip -j` list holds under `key`; None unreadable."""
+def _link_names(links: object) -> Optional[frozenset[str]]:
+    """The host's link names; None unreadable.
 
-    if type(read) is not tuple or len(read) != 2:
-        return None
-    status, output = read
-    if status != 0 or type(output) is not bytes:
-        return None
-    listed = parse_json_list(output)
-    if listed is None or not all(type(item.get(key)) is str for item in listed):
-        return None
-    return frozenset(item[key] for item in listed)
+    `links` is the names of `netlink.read_links()`'s records, in its order,
+    or None when the dump failed. A record without a name (`LinkRecord.name`
+    None) could be any link, so the list is unreadable rather than
+    shortened (wiring §4.4, "What B1's parser must hold"). An empty dump is
+    unreadable too: every host namespace has `lo`, so no link at all is not
+    a reading of it.
+    """
 
-
-def _table_present(read: object) -> Optional[bool]:
-    """Whether `nft -j list tables` lists `inet azazel_decoy`; None unreadable."""
-
-    if type(read) is not tuple or len(read) != 2:
+    if (type(links) is not tuple or not links
+            or not all(type(name) is str for name in links)):
         return None
-    status, output = read
-    if status != 0 or type(output) is not bytes:
-        return None
-    try:
-        document = json.loads(output.decode("ascii"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return None
-    if type(document) is not dict or type(document.get("nftables")) is not list:
-        return None
-    present = False
-    for item in document["nftables"]:
-        if type(item) is not dict:
-            return None
-        table = item.get("table")
-        if table is None:
-            continue
-        if (type(table) is not dict or type(table.get("family")) is not str
-                or type(table.get("name")) is not str):
-            return None
-        present = present or (table["family"], table["name"]) == ("inet", NFT_TABLE)
-    return present
+    return frozenset(links)
 
 
 def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
                                 netns: tuple[int, Optional[int]],
-                                links: tuple[int, bytes],
-                                tables: tuple[int, bytes]) -> tuple[str, ...]:
+                                links: Optional[tuple[Optional[str], ...]],
+                                ) -> tuple[str, ...]:
     """The reason codes of G6 item (a) that hold, in the order of `RESIDUE_CODES`.
 
     Pure. `units` maps each of `EXPOSURE_UNITS` to its `LoadState`,
     `UnitFileState` and `ActiveState` as the service manager's bus gave them
     (strings); `netns` is `read_netns()`'s `(error, mode)` (no `/run/netns`
     is no namespace, any other error unreadable, the entry a regular file or
-    unreadable); `links` and `tables` are `(status, output)` of
-    `ip -j link show` (host namespace) and `nft -j list tables` (how the
-    controller reads these two is decided in G6). Empty when neither state
-    holds. Any argument of
-    another shape is `exposure_state_unreadable`, never an exception. A unit state that
-    cannot be read leaves both judgements unmade (`exposure_state_unreadable`
-    alone); an unreadable object read leaves the leftovers unjudged.
+    unreadable); `links` is the host namespace's link names as
+    `netlink.read_links()` yields them (`tuple(r.name for r in records)`),
+    None when the dump failed; a None name anywhere, or no link at all (a
+    host always has `lo`), is unreadable. No table listing is taken (wiring
+    §4.4, A1). Empty when neither state holds. Any argument of another
+    shape is `exposure_state_unreadable`, never an exception. A unit state
+    that cannot be read leaves both judgements unmade
+    (`exposure_state_unreadable` alone); an unreadable object read leaves
+    the leftovers unjudged.
     """
 
     states = _unit_states(units)
@@ -266,15 +242,14 @@ def exposure_residue_departures(units: Mapping[str, Mapping[str, str]],
                 and active not in _STOPPED):
             found.add(EXPOSURE_UNIT_MASKED_RUNNING)
     namespace = _namespace_present(netns)
-    link_names = _names(links, "ifname")
-    table = _table_present(tables)
-    if namespace is None or link_names is None or table is None:
+    link_names = _link_names(links)
+    if namespace is None or link_names is None:
         found.add(EXPOSURE_STATE_UNREADABLE)
     else:
         namespace_unit, helper, _ = EXPOSURE_UNITS
         owned = (
             (namespace_unit, namespace or HOST_VETH in link_names),
-            (helper, BRIDGE in link_names or table),
+            (helper, BRIDGE in link_names),
         )
         if any(present and states[owner][2] in _STOPPED for owner, present in owned):
             found.add(EXPOSURE_LEFTOVERS_PRESENT)
