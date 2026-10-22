@@ -150,6 +150,14 @@ def test_wrong_purpose_signature_is_refused(approved):
             verify_observe_baseline_approval(**(args | {"signature": _sign(key, args["payload"], purpose)}))
 
 
+def test_the_exposure_purpose_is_not_v2s(approved):
+    """v3's purpose (#196, wiring §5.1 Q-C) never attributes a v2 approval."""
+    key, args = approved
+    signature = _sign(key, args["payload"], ApprovalPurpose.ACTIVATION_EXPOSURE)
+    with pytest.raises(ApprovalRefused, match="operator signature refused"):
+        verify_observe_baseline_approval(**(args | {"signature": signature}))
+
+
 def test_revoked_operator_is_refused(approved):
     key, args = approved
     trust = OperatorTrust({"operator-a": bytes(key.verify_key)}, frozenset({"operator-a"}))

@@ -102,9 +102,11 @@ def test_mismatch_writes_nothing(tmp_path, key, override):
     assert not (tmp_path / "out.sig").exists()
 
 
-@pytest.mark.parametrize("purpose", ["bootstrap", "local-model-admission", "activation-v1"])
+@pytest.mark.parametrize("purpose", ["bootstrap", "local-model-admission", "activation-v1",
+                                     "activation-exposure"])
 def test_other_purposes_are_not_offered(tmp_path, key, purpose):
-    # Bootstrap, v1 activation and model admission have their own ceremonies.
+    # Bootstrap, v1 activation and model admission have their own ceremonies;
+    # the exposure purpose (approval v3) is not offered before G6 (#196).
     with pytest.raises(SystemExit):
         run(tmp_path, key, **{"--purpose": purpose})
     assert not (tmp_path / "out.sig").exists()
@@ -114,6 +116,18 @@ def test_other_purposes_are_not_offered(tmp_path, key, purpose):
         "commissioning": ApprovalPurpose.COMMISSIONING,
         "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
     }
+
+
+def test_the_exposure_purpose_is_refused_before_anything_is_signed(key):
+    """The enum value exists (#196, wiring §5.1 Q-C); the signer still does
+    not take it, through `sign` as through the command line."""
+    signing, _, _ = key
+    assert ApprovalPurpose.ACTIVATION_EXPOSURE not in operator_sign.PURPOSES.values()
+    with pytest.raises(operator_sign.SignRefused, match="unsupported purpose"):
+        operator_sign.sign(
+            purpose=ApprovalPurpose.ACTIVATION_EXPOSURE.value, payload=PAYLOAD,
+            expect_payload_sha256=hashlib.sha256(PAYLOAD).hexdigest(),
+            seed=bytes(signing), expect_public=bytes(signing.verify_key).hex())
 
 
 def run_activation(tmp_path, key, payload_bytes, **overrides):

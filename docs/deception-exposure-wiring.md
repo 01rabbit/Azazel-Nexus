@@ -301,7 +301,7 @@ its judgement; only what it is handed changes:
 | `decoy_apparmor.loaded_unit_profile_refusal` | `LoadState`, `AppArmorProfile` | unchanged; fed by §4.5 |
 | `exposure_withholding.host_firewall_refusal` | file state and active state, None when neither exists | unchanged; fed by §4.5 |
 | `exposure_generation` | the section has `apparmor_policy_hashes` (implemented, #303), which nothing fills | `generation-publish` fills it from the installer's record (§5.2) |
-| `activation_approval_v3` | the v2 fields under `ACTIVATION` | V2's three fields, shape only; the purpose of §9 Q-C; its own policy type (§5.1) |
+| `activation_approval_v3` | the v2 fields and V2's three fields (shape only) under `ACTIVATION_EXPOSURE`, the purpose of §9 Q-C (implemented, this PR; not wired) | its own policy type (§5.1); the pass compares the three fields (P10) |
 | `activation_unit_files.measure_scoped_unit_files` | scope inside `ACTIVATION_UNIT_ALLOWLIST` | scope inside the observe scope, the allowlist without the exposure units (§5.2) |
 
 ### 4.5 The bus reads G6 adds (cross-review finding M3)
@@ -400,9 +400,14 @@ signing an ordinary activation cannot produce an exposure approval by the
 same command, the signer's refusal rules for exposure live in one place, and
 the trust store can later restrict which enrolled keys may sign exposure
 without a new schema. The cost is one enum value and one transcript label. The G6-prep
-verifier uses `ACTIVATION`, the purpose of v2; no v3 approval has been
-signed yet, so this is the cheapest moment to change it: afterwards every
-signed v3 would have to be signed again. Owner decision Q-C (§9).
+verifier used `ACTIVATION`, the purpose of v2; no v3 approval had been
+signed yet, so this was the cheapest moment to change it: afterwards every
+signed v3 would have had to be signed again. Owner decision Q-C (§9).
+**Done** (this PR, #196): `ApprovalPurpose.ACTIVATION_EXPOSURE` exists and
+is the only purpose `verify_activation_approval_v3` accepts; a v3 signed
+under `ACTIVATION` is refused, and v2's verifier refuses the new purpose.
+The signer does not offer it yet (`--purpose activation-exposure` is
+refused until G6 adds the rules below), and nothing is wired.
 
 **What the signer may do** (`tools/operator_sign.py`, `--purpose
 activation-exposure`): sign a payload only if it is a well-formed canonical
@@ -425,7 +430,13 @@ The v3 payload does not carry them (they are in the generation, bound by
 | V2 | v3 gains `exposure_scope_digest`, `exposure_prefix_count`, `exposure_ingress_count`; the verifier checks their shape only, and the pass compares them with the generation's section and P8's rendering in stage P10 (§4.3), so a difference withholds the tier and not the lease; the signer prints them | the operator signs exactly what they read; a change to the not yet wired v3 decoder |
 
 **Recommended: V2.** It only adds a binding, and the decoder is not wired
-yet, so no signed document exists to migrate.
+yet, so no signed document exists to migrate. **Done in the decoder** (this
+PR, #196; owner decision Q-V): the three fields are required in every v3,
+`exposure_scope_digest` in the section's `scope_digest` form (`sha256:` and
+64 lowercase hex digits), the counts integers from 1 to
+`decoy_scope.MAX_PREFIXES` and `decoy_scope.MAX_INGRESS`; the verifier
+checks their shape only and returns them for P10. The signer printing them
+is G6's.
 
 **`az-activation`.** `request --units` may name the three exposure units
 (all three or none, and only with the policy naming them); it then writes a

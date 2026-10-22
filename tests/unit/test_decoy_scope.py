@@ -522,8 +522,11 @@ def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
     (`test_exposure_g6_parts.py`). In the library,
     `exposure_interfaces` (G6 preparation D) checks role interface names
     with `interface_name_allowed` and is imported by nothing in the product
-    (`test_exposure_interfaces.py`). G6 puts these lists back to the real
-    callers when it wires the parts in."""
+    (`test_exposure_interfaces.py`). `activation_approval_v3` (G6 prep, the
+    decoder, wiring §5.1 V2) takes only the bounds `MAX_PREFIXES` and
+    `MAX_INGRESS` for its exposure counts and is imported by nothing
+    (`test_g6_unwired.py`). G6 puts these lists back to the real callers
+    when it wires the parts in."""
 
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
     assert _importers(runtime) == ["decoy_netd.py", "decoy_reachability.py",
@@ -536,8 +539,11 @@ def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
         if path.is_file():
             assert "decoy_scope" not in path.read_text(encoding="utf-8"), name
     library = REPO / "src" / "azazel_nexus"
-    assert _importers(library) == ["commissioning_approval.py", "exposure_interfaces.py",
-                                   "fabric_boundary.py"]
+    assert _importers(library) == ["activation_approval_v3.py", "commissioning_approval.py",
+                                   "exposure_interfaces.py", "fabric_boundary.py"]
+    v3 = (library / "activation_approval_v3.py").read_text(encoding="utf-8")
+    assert "from .decoy_scope import MAX_INGRESS, MAX_PREFIXES\n" in v3
+    assert v3.count("decoy_scope") == v3.count("decoy_scope.MAX_") + 1
     assert "decoy_scope" not in (library / "activation.py").read_text(encoding="utf-8")
     assert activation  # the withhold itself is pinned by test_decoy_isolation_evidence
 
