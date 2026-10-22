@@ -533,6 +533,38 @@ def test_expired_approval_refuses(world):
     _assert_refused(world, world.run(), ["activation_approval_loader"])
 
 
+def _sign_v3(world):
+    """A v3 approval (#196 G6 prep) for exactly this pass's context and units."""
+    from azazel_nexus.activation_approval_v3 import activation_approval_v3_payload
+
+    world.payload = activation_approval_v3_payload(
+        context=world.context(), approval_id="approval-1", operator="operator-a",
+        approval_seq=5, units=world.units, granted_at="2026-10-20T12:00:00Z",
+        expires_at="2026-10-22T00:00:00Z")
+    world.signature = world.key.sign(
+        approval_message(ApprovalPurpose.ACTIVATION, world.payload)).signature
+
+
+def test_a_v3_approval_is_not_accepted_by_the_pass(world):
+    """The v3 decoder is not wired: the pass's v2 verifier refuses v3 bytes."""
+    _sign_v3(world)
+    _assert_refused(world, world.run(), ["activation_approval_loader"])
+
+
+def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
+    """Wiring the v3 verifier in as the producer would still grant nothing:
+    the pass accepts only an `ObserveBaselineApproval`."""
+    from azazel_nexus.activation_approval_v3 import verify_activation_approval_v3
+
+    _sign_v3(world)
+
+    def approval(**kwargs):
+        return verify_activation_approval_v3(
+            trust=world.trust, payload=world.payload, signature=world.signature, **kwargs)
+
+    _assert_refused(world, world.run(approval=approval), ["activation_approval_loader"])
+
+
 def test_unit_file_changed_after_publish_refuses_the_generation(world):
     world.unit_files["azazel-mio-entryd.service"] += b"ExecStartPre=/bin/true\n"
     _assert_refused(world, world.run(), ["operational_generation_publisher"])
