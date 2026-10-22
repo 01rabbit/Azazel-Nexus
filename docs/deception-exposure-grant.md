@@ -1119,6 +1119,35 @@ evidence.**
 stops the trip target; the namespace unit's and the helper's sandbox under
 probe copies.
 
+### Fourth G4 rehearsal (2026-10-22, VM; mechanism check, not hardware evidence)
+
+The same VM with `main` 7492940 installed, to close items left open above.
+Probe and timeout copies were made from the rehearsal copies (no
+`Requires=azazel-activated.service`). **A VM check of the mechanism, not
+hardware evidence.**
+
+| what | how | observed | result |
+| --- | --- | --- | --- |
+| the helper's sandbox | probe copy of the helper (`ExecStart=` replaced, AppArmor kept) | `AF_UNIX` connects to `/run/dbus/system_bus_socket` and `/run/systemd/private` refused (`OSError`: no `AF_UNIX`); writes to `/etc/azazel` and `/run/azazel-activation` refused | ok (closed) |
+| the namespace unit's sandbox | probe copy of the namespace unit **with `AppArmorProfile=` dropped** (its profile executes nothing but `ip`, so a probe cannot run under it) | `socket(AF_UNIX)` and `socket(AF_INET)` refused with errno 97 (`EAFNOSUPPORT`); `AF_NETLINK` allowed. The address-family filter alone keeps it from the service manager's sockets | ok (closed); the profile's own part not probed |
+| starting the helper alone | `systemctl start azazel-decoy-netd.service` with the trip target active | the trip target stopped; the namespace unit and the helper came back `active`, the decoy stayed down | ok |
+| the start timeout | copy of the namespace unit with `ExecStart=/usr/bin/sleep 5` after step 2 and `TimeoutStartSec=2s`, **`AppArmorProfile=` dropped** (`sleep` is not `ip`) | "start operation timed out. Terminating."; `Failed with result 'timeout'`; the `ExecStopPost=` undo ran: no veth link, no namespace left | ok (closed); per-command `TimeoutStopSec=` still not measured |
+| the decoy's report to the intake (P2) | rehearsal copy of `azazel-edge-intaked.service` (marker by hand), the decoy under its profile, a connection from the approved source to port 2323 | one line appended to `edge-intake/decoy-evidence/<day>.jsonl` (`azintake:azintake 0640`): a closed `EnvironmentEvent` (`environment_id` `telnet-decoy`, `event_type` `interaction`, metadata `bytes_received`, `responder`, `truncated` only); no address and no payload in any line; no AppArmor denial | ok |
+
+A first attempt at the report recorded nothing: the script stopped the
+intake about three seconds after the connections, before the decoy reports
+(at the connection's close). Not a defect; noted so the next rehearsal waits
+for the close.
+
+**Still open after G4:** whether `TimeoutStopSec=` bounds each
+`ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
+probe (it cannot run one); a trip from `firewalld` or `systemctl reload
+nftables`; a failed `AssertSecurity=apparmor` on the verify unit and
+`OnFailure=`; a start with `apparmor=0`; the pass reading the profiles under
+the controller's sandbox; a kernel with fine-grained `AF_UNIX` mediation;
+the full §8 table and `systemd-analyze security` per unit. These are G5
+(`HG-09`, `HG-10`) or G6 work.
+
 **Rehearsal rule** (also in [operations](operations.md)): every unit copy,
 probe copies included, is made from a copy **with
 `Requires=azazel-activated.service` (and its `After=`) already removed**,
