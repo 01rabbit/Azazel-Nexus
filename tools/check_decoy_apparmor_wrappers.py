@@ -5,8 +5,9 @@ The Deception Lite AppArmor profiles (`packaging/apparmor/`) let the Python
 body execute only `decoy_apparmor.PROFILE_INTERPRETER` and read code only
 under `decoy_apparmor.PROFILE_PYTHON_ROOTS`. The interpreter and import
 paths are chosen at install (`tools/stage_runtime_entrypoints.py`), so this
-reads the three staged wrappers (`az-decoy-nsd`, `az-decoy-netd`,
-`az-decoyd`) with the canonical wrapper parser, resolves the interpreter and
+reads the two staged wrappers (`az-decoy-netd`, `az-decoyd`; the namespace
+unit runs `/usr/bin/ip` itself and has no wrapper, G4 follow-up) with the
+canonical wrapper parser, resolves the interpreter and
 every import path as the kernel would, and refuses (exit 1) when any falls
 outside the profiles. Fixed wrapper names and targets (equal to
 `runtime/pyproject.toml`'s, a test checks); nothing is executed, written or
@@ -31,10 +32,10 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 from azazel_nexus_runtime.decoy_apparmor import wrapper_profile_refusal  # noqa: E402
 from azazel_nexus_runtime.startup_wrapper import parse_wrapper  # noqa: E402
 
-#: The wrappers the three exposure units execute, and the targets they must
-#: call (`runtime/pyproject.toml`'s scripts; a test keeps them equal).
+#: The wrappers the Python exposure units execute (the helper's also runs the
+#: verify unit), and the targets they must call (`runtime/pyproject.toml`'s
+#: scripts; a test keeps them equal).
 TARGETS = {
-    "az-decoy-nsd": "azazel_nexus_runtime.decoy_nsd:main",
     "az-decoy-netd": "azazel_nexus_runtime.decoy_netd:main",
     "az-decoyd": "azazel_nexus_runtime.decoyd:main",
 }

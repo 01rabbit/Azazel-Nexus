@@ -13,6 +13,17 @@
 # record). The verify unit of §6 (G2) gets its own profile in G2; it runs
 # the same executable but writes nothing, so it does not take this one.
 #
+# `attach_disconnected` (G4, docs/deception-exposure-grant.md §11): under
+# systemd's sandbox (PrivateDevices=, PrivateTmp=, ProtectSystem=) a path can
+# be disconnected from the process's root; the verify unit's `/dev/null` was
+# refused as "Failed name lookup - disconnected path" (VM-checked on Debian
+# 13 with AppArmor 4.1; a mechanism check, not hardware evidence). With the
+# flag the path is named from its own mount's root, as if that were `/`. It
+# only names the object: every rule below, the denies included, still
+# applies to that name. What it could alias is a file reached through a
+# detached mount that names itself as something else; making such a mount
+# takes CAP_SYS_ADMIN and a `mount` rule, and this profile has neither.
+#
 # INFERRED marks a rule that was not confirmed on a kernel; the exact rules
 # are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
 
@@ -20,7 +31,7 @@ abi <abi/4.0>,
 
 include <tunables/global>
 
-profile azazel-decoy-netd {
+profile azazel-decoy-netd flags=(attach_disconnected) {
   include <abstractions/base>
 
   # --- What the gate claims (§7). Explicit denies; a deny outranks every

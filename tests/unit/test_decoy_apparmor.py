@@ -4,11 +4,13 @@
 `AppArmorProfile=` without `-`, the pass checking enforce mode, Landlock
 later. These tests pin:
 
-* the three packaged profiles (`packaging/apparmor/`): every claim of the
-  gate written as an explicit `deny` in every profile block, the namespace
-  unit's child profile included; what each may do kept to its unit's
-  capabilities, address families, programs and (for the namespace unit's
-  `ip` only) mounts;
+* the four packaged profiles (`packaging/apparmor/`): every claim of the
+  gate written as an explicit `deny` in every profile; what each may do kept
+  to its unit's capabilities, address families, programs and (for the
+  namespace unit, which runs only `ip`) mounts; no child profile (G4
+  follow-up: under `NoNewPrivileges=yes` the kernel refused the namespace
+  unit's `Cx` transition); `attach_disconnected` on every profile and no
+  other flag;
 * the units: each of the three names exactly its own profile, without `-`,
   rendered from `ServiceProfile` and nowhere else; no other unit names one;
 * the installer: the profiles placed in `/etc/apparmor.d/`, compiled but
@@ -123,7 +125,8 @@ def _blocks(name: str) -> dict[str, list[str]]:
     blocks: dict[str, list[str]] = {}
     stack: list[str] = []
     for line in _rules(name):
-        opened = re.fullmatch(r"profile ([A-Za-z0-9_.-]+) \{", line)
+        opened = re.fullmatch(r"profile ([A-Za-z0-9_.-]+)(?: flags=\(attach_disconnected\))? \{",
+                              line)
         if opened:
             child = opened.group(1)
             full = f"{stack[-1]}//{child}" if stack else child
@@ -178,17 +181,19 @@ def test_one_profile_file_per_exposure_unit_and_nothing_else():
 
 
 def test_every_profile_block_is_the_one_the_listing_check_requires():
-    """The kernel lists a child as `parent//child`; the check requires each."""
+    """One block per profile, no child (G4 follow-up), and the check requires each."""
 
     assert sorted(_all_blocks()) == sorted(REQUIRED_ENFORCED_PROFILES)
     assert REQUIRED_ENFORCED_PROFILES == (
-        "azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoy-verify", "azazel-decoyd",
-        "azazel-decoy-nsd//ip")
+        "azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoy-verify", "azazel-decoyd")
+    assert not any("//" in name for name in _all_blocks())
     for _, name in DECOY_APPARMOR_PROFILES:
         rules = _rules(name)
         # The profile is named, never attached by path: only the unit's
         # AppArmorProfile= puts a process in it.
-        assert f"profile {name} {{" in rules
+        assert f"profile {name} flags=(attach_disconnected) {{" in rules
+        assert [rule for rule in rules if rule.startswith("profile ")] == [
+            f"profile {name} flags=(attach_disconnected) {{"]
         assert rules[:2] == ["abi <abi/4.0>,", "include <tunables/global>"]
 
 
@@ -257,9 +262,22 @@ def test_no_profile_block_allows_what_the_gate_denies(block):
 
 
 def test_no_profile_file_sets_a_mode_flag():
+    """`attach_disconnected` is the one flag (G4: the verify unit's `/dev/null`
+    was refused as a disconnected path under systemd's sandbox). No mode flag
+    (complain, kill, unconfined, prompt), no other path flag."""
+
     for _, name in DECOY_APPARMOR_PROFILES:
-        for rule in _rules(name):
-            assert "flags=" not in rule, rule
+        flagged = [rule for rule in _rules(name) if "flags=" in rule]
+        assert flagged == [f"profile {name} flags=(attach_disconnected) {{"], name
+        text = (PROFILE_DIR / name).read_text(encoding="utf-8")
+        # (`kill` is not checked as a word: `signal set=(kill)` is a rule.)
+        for word in ("complain", "flags=(kill", "unconfined)", "prompt", "mediate_deleted",
+                     "chroot_relative", "attach_disconnected.path"):
+            assert word not in "\n".join(_rules(name)), (name, word)
+        # The flag is explained where it is set: it names a path, and every
+        # rule, the denies included, still applies to that name.
+        assert "attach_disconnected" in text.split("abi <abi/4.0>")[0]
+        assert "denies included" in text
 
 
 def _unit_of(block: str):
@@ -269,10 +287,8 @@ def _unit_of(block: str):
 
 
 @pytest.mark.parametrize(("block", "expected"), [
-    # The namespace unit's Python body only spawns ip (decoy_nsd ->
-    # decoy_network.run_fixed): it holds neither capability; its ip does.
-    ("azazel-decoy-nsd", set()),
-    ("azazel-decoy-nsd//ip", {"capability sys_admin,", "capability net_admin,"}),
+    # The namespace unit runs only ip (G4 follow-up), so only ip holds them.
+    ("azazel-decoy-nsd", {"capability sys_admin,", "capability net_admin,"}),
     ("azazel-decoy-netd", {"capability net_admin,"}),
     ("azazel-decoy-verify", {"capability net_admin,"}),
     ("azazel-decoyd", set()),
@@ -280,22 +296,30 @@ def _unit_of(block: str):
 def test_each_profile_allows_exactly_its_units_capabilities(block, expected):
     allows = _allows(_all_blocks()[block])
     assert {rule for rule in allows if rule.startswith("capability")} == expected
-    if block != "azazel-decoy-nsd":
-        assert expected == {f"capability {cap.removeprefix('CAP_').lower()},"
-                            for cap in _unit_of(block).capability_bounding_set}
+    assert expected == {f"capability {cap.removeprefix('CAP_').lower()},"
+                        for cap in _unit_of(block).capability_bounding_set}
 
 
-def test_the_namespace_units_body_never_calls_setns_unshare_or_mount():
-    """Why its parent profile holds no capability (finding 6 of #285)."""
+def test_the_namespace_unit_runs_no_python_and_only_ip():
+    """G4 follow-up: the Python body and its `Cx` child are gone; systemd runs
+    `ip` directly under the one profile, so the capabilities are ip's alone."""
 
-    from azazel_nexus_runtime import decoy_network, decoy_nsd
+    from azazel_nexus_runtime import decoy_network
 
-    for module in (decoy_nsd, decoy_network):
-        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-        called = {node.func.attr if isinstance(node.func, ast.Attribute) else
-                  getattr(node.func, "id", "") for node in ast.walk(tree)
-                  if isinstance(node, ast.Call)}
-        assert not called & {"setns", "unshare", "mount", "umount", "socket"}, module
+    profile = next(p for p in ALL_PROFILES if p.unit == DECOY_NAMESPACE_UNIT)
+    assert profile.executable == "/usr/bin/ip"
+    assert not (Path(decoy_network.__file__).parent / "decoy_nsd.py").exists()
+    rules = _all_blocks()["azazel-decoy-nsd"]
+    assert not any("python" in rule or "/opt/azazel-nexus" in rule
+                   or "/usr/libexec/azazel" in rule for rule in rules)
+    assert not any(" Cx" in rule or " Px" in rule or " ix" in rule for rule in rules)
+    assert "/usr/bin/ip mr," in rules
+    # The helper's body still never enters a namespace or mounts.
+    tree = ast.parse(Path(decoy_network.__file__).read_text(encoding="utf-8"))
+    called = {node.func.attr if isinstance(node.func, ast.Attribute) else
+              getattr(node.func, "id", "") for node in ast.walk(tree)
+              if isinstance(node, ast.Call)}
+    assert not called & {"setns", "unshare", "mount", "umount", "socket"}
 
 
 def test_the_decoy_profile_denies_every_capability():
@@ -303,8 +327,7 @@ def test_the_decoy_profile_denies_every_capability():
 
 
 @pytest.mark.parametrize(("block", "expected"), [
-    ("azazel-decoy-nsd", set()),
-    ("azazel-decoy-nsd//ip", {"network netlink raw,"}),
+    ("azazel-decoy-nsd", {"network netlink raw,"}),
     ("azazel-decoy-netd", {"network netlink raw,"}),
     ("azazel-decoy-verify", {"network netlink raw,"}),
     ("azazel-decoyd", {"network inet stream,"}),
@@ -316,8 +339,7 @@ def test_each_profile_allows_only_its_units_address_families(block, expected):
     families = {f"AF_{rule.split()[1].upper()}" for rule in found}
     if any(rule.startswith("unix") for rule in rules):
         families.add("AF_UNIX")
-    if block != "azazel-decoy-nsd":
-        assert families == set(_unit_of(block).address_families)
+    assert families == set(_unit_of(block).address_families)
 
 
 def _file_rules(rules: list[str]) -> list[tuple[str, str]]:
@@ -345,10 +367,8 @@ PYTHON = f"{PROFILE_INTERPRETER} mrix,"
 
 
 @pytest.mark.parametrize(("block", "expected"), [
-    # The Python body runs only ip, and only into the child profile.
-    ("azazel-decoy-nsd", {PYTHON, "/usr/bin/ip Cx -> ip,"}),
-    # The child runs nothing.
-    ("azazel-decoy-nsd//ip", set()),
+    # systemd starts ip under the profile; ip runs nothing (G4 follow-up).
+    ("azazel-decoy-nsd", set()),
     ("azazel-decoy-netd", {PYTHON, "/usr/bin/ip mrix,", "/usr/sbin/nft mrix,"}),
     ("azazel-decoy-verify", {PYTHON, "/usr/bin/ip mrix,", "/usr/sbin/nft mrix,"}),
     ("azazel-decoyd", {PYTHON}),
@@ -364,8 +384,8 @@ def test_the_profiles_python_is_the_one_the_installer_checks():
 
     assert PROFILE_INTERPRETER == "/" + BASE_INTERPRETER == "/usr/bin/python3.13"
     assert PROFILE_PYTHON_ROOTS == ("/usr/lib/python3.13", "/opt/azazel-nexus/venv")
-    for block in ("azazel-decoy-nsd", "azazel-decoy-netd", "azazel-decoy-verify",
-                  "azazel-decoyd"):
+    # The namespace unit runs no Python (G4 follow-up).
+    for block in ("azazel-decoy-netd", "azazel-decoy-verify", "azazel-decoyd"):
         reads = {rule for rule, _ in _file_rules(_all_blocks()[block])}
         assert {f"{root}/** mr," for root in PROFILE_PYTHON_ROOTS} <= reads
         assert not any("python3*" in rule or "python3{" in rule
@@ -373,8 +393,8 @@ def test_the_profiles_python_is_the_one_the_installer_checks():
 
 
 #: The only mounts any profile allows: those `ip netns add`, `ip netns
-#: delete` and `ip -n` make (prerequisites §13), in the namespace unit's `ip`
-#: child. The exact rules are VM work (G4); this pins what is claimed. The
+#: delete` and `ip -n` make (prerequisites §13), in the namespace unit's
+#: profile, under which only `ip` runs (G4 follow-up). The exact rules are VM work (G4); this pins what is claimed. The
 #: first bind of /run/netns onto itself is allowed as rbind (iproute2's
 #: MS_BIND|MS_REC) and as bind until the VM shows which.
 IP_MOUNTS = {
@@ -393,13 +413,13 @@ IP_MOUNTS = {
 def test_only_the_namespace_units_ip_mounts_and_only_what_ip_needs(block):
     mounts = {rule for rule in _allows(_all_blocks()[block])
               if rule.startswith(("mount", "umount", "remount", "pivot_root"))}
-    assert mounts == (IP_MOUNTS if block == "azazel-decoy-nsd//ip" else set())
+    assert mounts == (IP_MOUNTS if block == "azazel-decoy-nsd" else set())
     # /etc/netns/azazel-decoy is never bound over /etc.
     assert not any("/etc/netns" in rule for rule in mounts)
 
 
 def test_the_namespace_units_ip_maps_its_libraries():
-    assert "/usr/lib/@{multiarch}/** mr," in _all_blocks()["azazel-decoy-nsd//ip"]
+    assert "/usr/lib/@{multiarch}/** mr," in _all_blocks()["azazel-decoy-nsd"]
 
 
 def test_the_helper_writes_only_its_runtime_directory():
@@ -463,16 +483,12 @@ def test_the_verify_unit_writes_nothing_and_reads_only_forwarding_under_proc_sys
     }
 
 
-def test_the_namespace_units_body_writes_nothing():
-    assert _writes(_all_blocks()["azazel-decoy-nsd"]) == set()
-
-
 def test_the_decoy_writes_only_to_connect_to_the_intake_socket():
     assert _writes(_all_blocks()["azazel-decoyd"]) == {f"{INTAKE_SOCKET} rw,"}
 
 
 def test_the_namespace_units_ip_writes_only_the_namespace_handle():
-    assert _writes(_all_blocks()["azazel-decoy-nsd//ip"]) == {
+    assert _writes(_all_blocks()["azazel-decoy-nsd"]) == {
         "/run/netns/ rw,", "/run/netns/azazel-decoy rw,"}
 
 
@@ -684,8 +700,11 @@ def test_the_installer_compiles_the_profiles_before_writing_anything():
     for first_write in ("useradd", "make_dir 0755 root /etc/azazel",
                         'install -d -m 0755 "$UNIT_DIR"'):
         assert compile_at < INSTALLER.index(first_write), first_write
-    block = INSTALLER[INSTALLER.rindex("\n", 0, compile_at - 200):compile_at]
-    assert 'if [ "$WITH_SERVICE_MANAGER" = yes ]; then' in block
+    # Inside the service-manager block (which since the review of #288 also
+    # checks /usr/bin/ip first), with no `fi` between its start and here.
+    opened = INSTALLER.rindex('if [ "$WITH_SERVICE_MANAGER" = yes ]; then', 0, compile_at)
+    block = INSTALLER[opened:compile_at]
+    assert "\nfi\n" not in block and compile_at - opened < 1200
 
 
 def test_the_install_plan_places_the_profiles_and_requires_the_package_with_systemd():
@@ -798,7 +817,7 @@ def test_the_wrapper_check_resolves_links_before_judging(tmp_path):
     os.symlink(elsewhere, link)
     _stage(tmp_path / "libexec", PROFILE_INTERPRETER, (str(link),))
     found = tool.findings(tmp_path / "libexec")
-    assert len(found) == 3
+    assert len(found) == 2
     assert all("import paths resolve outside" in line for line in found)
 
 
@@ -806,9 +825,9 @@ def test_the_wrapper_check_refuses_and_warn_only_reports(tmp_path, capsys):
     tool = _tool()
     _stage(tmp_path / "libexec", "/nonexistent/bin/python3.13", (STDLIB,))
     assert tool.main([str(tmp_path / "libexec")]) == 1
-    assert capsys.readouterr().err.count("refusing to install: az-decoy") == 3
+    assert capsys.readouterr().err.count("refusing to install: az-decoy") == 2
     assert tool.main(["--warn-only", str(tmp_path / "libexec")]) == 0
-    assert capsys.readouterr().err.count("WARNING: az-decoy") == 3
+    assert capsys.readouterr().err.count("WARNING: az-decoy") == 2
 
 
 def test_the_wrapper_check_refuses_a_missing_or_foreign_wrapper(tmp_path):
@@ -817,20 +836,23 @@ def test_the_wrapper_check_refuses_a_missing_or_foreign_wrapper(tmp_path):
     libexec.mkdir()
     (libexec / "az-decoyd").write_bytes(b"#!/bin/sh\nexec python3 -m x\n")
     found = tool.findings(libexec)
-    assert len(found) == 3
+    assert len(found) == 2
     assert all("not a readable canonical wrapper" in line for line in found)
 
 
-def test_the_wrapper_check_names_exactly_the_three_decoy_wrappers():
+def test_the_wrapper_check_names_exactly_the_two_decoy_wrappers():
     import tomllib
 
     tool = _tool()
-    assert tool.WRAPPERS == ("az-decoy-nsd", "az-decoy-netd", "az-decoyd")
+    # The namespace unit has no wrapper: it runs /usr/bin/ip (G4 follow-up).
+    assert tool.WRAPPERS == ("az-decoy-netd", "az-decoyd")
     with (ROOT / "runtime" / "pyproject.toml").open("rb") as stream:
         scripts = tomllib.load(stream)["project"]["scripts"]
     assert tool.TARGETS == {name: scripts[name] for name in tool.WRAPPERS}
     assert {f"/usr/libexec/azazel/{name}" for name in tool.WRAPPERS} == {
-        p.executable for p in PROFILES if p.unit in DECEPTION_EXPOSURE_UNITS}
+        p.executable for p in PROFILES
+        if p.unit in DECEPTION_EXPOSURE_UNITS and p.unit != DECOY_NAMESPACE_UNIT}
+    assert "az-decoy-nsd" not in scripts
 
 
 # -- the enforce-mode check -----------------------------------------------------
@@ -839,7 +861,6 @@ LSM = b"lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm"
 ENFORCED = (
     b"/usr/bin/man (enforce)\n"
     b"azazel-decoyd (enforce)\n"
-    b"azazel-decoy-nsd//ip (enforce)\n"
     b"azazel-decoy-nsd (enforce)\n"
     b"azazel-decoy-netd (enforce)\n"
     b"azazel-decoy-verify (enforce)\n"
@@ -872,7 +893,7 @@ def test_a_profile_missing_from_the_listing_withholds(name):
 def test_an_empty_listing_withholds_as_absent():
     reason = exposure_lsm_refusal(LSM, b"")
     assert reason is not None and reason.startswith(LSM_PROFILES_ABSENT + ":")
-    assert "5 of the 5" in reason
+    assert "4 of the 4" in reason
 
 
 @pytest.mark.parametrize("mode", [b"complain", b"kill", b"unconfined", b"prompt", b"user"])
@@ -919,7 +940,7 @@ def test_apparmor_disabled_withholds(lsm, profiles):
     b"azazel-decoyd (en force)",
     b"azazel-decoyd (Enforce)",
     b"azazel-decoyd (enforce)\r",
-    b"azazel-decoy-nsd//ip (enforce) ",
+    b"azazel-decoy-nsd (enforce) ",
 ])
 def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
     """Finding 8 of #285: the required names' lines are read strictly."""
@@ -936,6 +957,8 @@ def test_a_required_profiles_line_not_in_the_kernels_form_withholds(line):
     b"azazel-decoyd-lookalike (complain)",
     b":ns:azazel-decoyd (complain)",
     b"garbage without a mode",
+    # The former child (G4 follow-up): a stale listing of it is not required.
+    b"azazel-decoy-nsd//ip (complain)",
 ])
 def test_other_lines_in_any_form_do_not_matter(line):
     """Finding 8 of #285: only the required names' lines are judged."""

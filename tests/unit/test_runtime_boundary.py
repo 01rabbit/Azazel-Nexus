@@ -888,10 +888,10 @@ def test_the_family_scan_allows_only_named_constants_and_af_unix(tmp_path):
     assert sorted(_family_violations(module)) == ["socket family 10", "socket family 2"]
 
 
-#: Everything `az-decoy-nsd` and `az-decoy-netd` load from the runtime
-#: (#276 F4), by full path. Both are root; a new import is a diff a reviewer
-#: sees, never a module that arrived through another one.
-NSD_PROCESS = {"decoy_nsd.py", "decoy_network.py", "decoy_addresses.py", "decoy_netns.py"}
+#: Everything `az-decoy-netd` loads from the runtime (#276 F4), by full
+#: path. It is root; a new import is a diff a reviewer sees, never a module
+#: that arrived through another one. The namespace unit loads nothing: it
+#: runs `/usr/bin/ip` from its unit file and no Python (G4 follow-up).
 #: #196 G2: `decoy_watch.py`, the verify unit's reads and judgement, runs in
 #: the helper's executable (`az-decoy-netd verify`) and under the same rules:
 #: no socket (it reads rules and routes through the fixed `ip -j` commands of
@@ -913,35 +913,32 @@ def _helper_offences(path: Path) -> list[str]:
 
 def _helper_offenders(root: Path) -> dict[str, list[str]]:
     offenders: dict[str, list[str]] = {}
-    for start, pinned in (("decoy_nsd.py", NSD_PROCESS), ("decoy_netd.py", NETD_PROCESS)):
-        closure = _closure(start, root)
-        if closure != pinned:
-            offenders[f"{start} closure"] = sorted(closure ^ pinned)
-        for name in sorted(closure):
-            if (root / name).is_file() and _helper_offences(root / name):
-                offenders[name] = _helper_offences(root / name)
+    start = "decoy_netd.py"
+    closure = _closure(start, root)
+    if closure != NETD_PROCESS:
+        offenders[f"{start} closure"] = sorted(closure ^ NETD_PROCESS)
+    for name in sorted(closure):
+        if (root / name).is_file() and _helper_offences(root / name):
+            offenders[name] = _helper_offences(root / name)
     return offenders
 
 
 def _helper_runtime(tmp_path: Path) -> Path:
     root = tmp_path / "azazel_nexus_runtime"
     root.mkdir(parents=True)
-    for name in NSD_PROCESS | NETD_PROCESS:
+    for name in NETD_PROCESS:
         (root / name).write_text((RUNTIME / name).read_text(encoding="utf-8"),
                                  encoding="utf-8")
     return root
 
 
 def test_the_decoy_helpers_import_exactly_their_pinned_runtime_modules():
-    assert _closure("decoy_nsd.py") == NSD_PROCESS
     assert _closure("decoy_netd.py") == NETD_PROCESS
+    assert not (RUNTIME / "decoy_nsd.py").exists()
     assert _helper_offenders(RUNTIME) == {}
 
 
 HELPER_MUTATIONS = [
-    ("nsd-new-import", "decoy_nsd.py",
-     ("from .decoy_network import", "from . import transport\nfrom .decoy_network import"),
-     "decoy_nsd.py closure"),
     ("netd-new-import", "decoy_netd.py",
      ("from .decoy_network import", "from .systemd_bus import connect\nfrom .decoy_network import"),
      "decoy_netd.py closure"),
@@ -1008,11 +1005,6 @@ DECOY_IMPORT_CLOSURES = {
         "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
         "azazel_nexus_runtime.decoy_watch",
     },
-    "decoy_nsd": {
-        "azazel_nexus_runtime", "azazel_nexus_runtime.decoy_addresses",
-        "azazel_nexus_runtime.decoy_netns", "azazel_nexus_runtime.decoy_network",
-        "azazel_nexus_runtime.decoy_nsd",
-    },
 }
 
 
@@ -1043,8 +1035,7 @@ def test_each_decoy_executable_loads_exactly_its_pinned_modules(module):
 def test_the_pinned_closures_agree_with_the_runtime_scans():
     """The runtime half of each closure is the set the AST rules cover."""
 
-    for module, pinned in (("decoyd", DECOY_PROCESS), ("decoy_netd", NETD_PROCESS),
-                           ("decoy_nsd", NSD_PROCESS)):
+    for module, pinned in (("decoyd", DECOY_PROCESS), ("decoy_netd", NETD_PROCESS)):
         runtime = {name.split(".", 1)[1] + ".py"
                    for name in DECOY_IMPORT_CLOSURES[module]
                    if name.startswith("azazel_nexus_runtime.")}
@@ -1057,8 +1048,7 @@ def test_the_pinned_closures_agree_with_the_runtime_scans():
 def test_the_library_modules_the_decoy_and_its_helpers_load_obey_their_rules():
     """The decoy's rules reach the library modules it loads, not only its own (§12)."""
 
-    for module, rule in (("decoyd", _decoy_rule_offences), ("decoy_netd", _helper_offences),
-                         ("decoy_nsd", _helper_offences)):
+    for module, rule in (("decoyd", _decoy_rule_offences), ("decoy_netd", _helper_offences)):
         for name in sorted(DECOY_IMPORT_CLOSURES[module]):
             # The runtime's own modules are scanned with their copies above;
             # its package `__init__` and the library's modules are checked here.
@@ -1151,7 +1141,7 @@ EXPECTED_SCRIPTS = (
     "az-watchdog",
     # The Deception Lite exposure units (#196 P1, #196 (a)). Their bodies
     # are implemented (§12, §13); the units are never granted in this build.
-    "az-decoy-nsd",
+    # The namespace unit has none: it runs /usr/bin/ip (G4 follow-up).
     "az-decoy-netd",
     "az-decoyd",
 )
@@ -1202,6 +1192,12 @@ def _declared_scripts() -> dict[str, str]:
     return scripts
 
 
+#: Governed units whose executable Nexus does not stage: Edge Core's own
+#: package binary, and the system's iproute2 `ip`, which the decoy namespace
+#: unit runs from its unit file with no Python body (#196 G4 follow-up).
+NOT_STAGED_UNITS = frozenset({"azazel-edge-core.service", "azazel-decoy-nsd.service"})
+
+
 def _governed_units() -> set:
     from azazel_nexus.activation import ACTIVATION_CONTROLLER_UNIT, CORE_UNITS
 
@@ -1241,7 +1237,7 @@ def test_every_governed_unit_has_an_executable_to_start():
     declared = _declared_scripts()
     missing = sorted(
         unit for unit in _governed_units()
-        if unit != "azazel-edge-core.service" and _script_for(unit) not in declared
+        if unit not in NOT_STAGED_UNITS and _script_for(unit) not in declared
     )
     assert missing == [], (
         f"{missing} are governed units whose executable nothing declares. "
@@ -1263,7 +1259,7 @@ def test_the_installer_requires_exactly_the_unit_backed_executables():
     assert match, "the installer no longer checks that the unit executables exist"
     required = set(match.group(1).split())
     assert required == {_script_for(unit) for unit in _governed_units()
-                        if unit != "azazel-edge-core.service"} | {"az-mio-identity"}, (
+                        if unit not in NOT_STAGED_UNITS} | {"az-mio-identity"}, (
         "the installer's required binaries and the governed units disagree"
     )
 
@@ -1373,13 +1369,13 @@ def test_the_decoy_network_module_is_scanned_like_every_other_runtime_module():
     path = RUNTIME / "decoy_network.py"
     assert not _exempt(path, EGRESS_EXEMPT) and not _exempt(path, LISTENER_EXEMPT)
     assert not _names_in(path) & (INTERNET_FORBIDDEN | {"socket", "subprocess"})
-    # Only the two one-shot decoy executables import it, and the helper's
-    # watch (#196 G2, `az-decoy-netd verify`), which runs in the helper's
-    # executable.
+    # Only the helper imports it, and the helper's watch (#196 G2,
+    # `az-decoy-netd verify`), which runs in the helper's executable. The
+    # namespace unit runs no Python (G4 follow-up).
     importers = sorted(
         source.name for source in RUNTIME.rglob("*.py")
         if any(isinstance(node, ast.ImportFrom) and node.module
                and node.module.split(".")[-1] == "decoy_network"
                for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))))
     )
-    assert importers == ["decoy_netd.py", "decoy_nsd.py", "decoy_watch.py"]
+    assert importers == ["decoy_netd.py", "decoy_watch.py"]

@@ -1,5 +1,5 @@
 # vim:syntax=apparmor
-# AppArmor profile for azazel-decoy-nsd.service (#196 G3,
+# AppArmor profile for azazel-decoy-nsd.service (#196 G3, G4 follow-up,
 # docs/deception-exposure-grant.md §7). Attached by the unit's
 # `AppArmorProfile=azazel-decoy-nsd` (no `-`) and `AssertSecurity=apparmor`: with
 # AppArmor enabled a start without this profile loaded fails, and with
@@ -8,12 +8,33 @@
 # loaded at boot by apparmor.service. The activation pass never grants this
 # unit in this build.
 #
-# The namespace unit is root with CAP_SYS_ADMIN, CAP_NET_ADMIN, `mount` and
-# no file-system sandbox (prerequisites §10). This profile is what keeps a
-# compromised body from writing the activation state, the grant markers, the
-# unit files and the ledgers, and from reaching the service manager. It
-# cannot narrow netlink to a protocol: a compromised body could still talk to
-# nftables (§7 "What it cannot do").
+# The namespace unit runs /usr/bin/ip and nothing else: six fixed
+# `ExecStart=` lines and two fixed `ExecStopPost=` lines
+# (hardening.DECOY_NAMESPACE_START and DECOY_NAMESPACE_UNDO), every one of
+# them `ip` under this one profile. There is no Python body and no child
+# profile any more: under the unit's NoNewPrivileges=yes the kernel refused
+# the former body's `Cx` transition into a wider child (VM-checked on
+# Debian 13 with AppArmor 4.1, G4: `info="no new privs"`; a mechanism check,
+# not hardware evidence), so the rules the child held are this profile's.
+#
+# It is root with CAP_SYS_ADMIN, CAP_NET_ADMIN, `mount` and no file-system
+# sandbox (prerequisites §10). This profile is what keeps a compromised `ip`
+# from writing the activation state, the grant markers, the unit files and
+# the ledgers, and from reaching the service manager. It cannot narrow
+# netlink to a protocol: `ip` could still talk to nftables (§7 "What it
+# cannot do").
+#
+# `attach_disconnected` (G4, §11): a path whose mount is not reachable from
+# the process's root (systemd's sandbox makes such mounts) is named from
+# its own mount's root, as if that were `/`, instead of failing the lookup.
+# It only names the object; every rule below, the denies included, still
+# applies to that name. What it could alias is a file reached through a
+# detached mount that names itself as something else; making such a mount
+# takes `mount`, and the only mounts allowed here are ip's fixed ones below.
+# That rests on an assumption: the rbind/bind of /run/netns/ onto itself
+# only carries what is under /run/netns/, and nothing here can place a
+# denied path there (no other mount rule, no write there but the directory
+# and the one handle).
 #
 # INFERRED marks a rule that was not confirmed on a kernel; the exact rules
 # are fixed on the VM (G4, §11 item 4). A VM run is not hardware evidence.
@@ -22,11 +43,11 @@ abi <abi/4.0>,
 
 include <tunables/global>
 
-profile azazel-decoy-nsd {
+profile azazel-decoy-nsd flags=(attach_disconnected) {
   include <abstractions/base>
 
   # --- What the gate claims (§7). Explicit denies; a deny outranks every
-  # --- allow, here and in any include. Repeated whole in the child profile.
+  # --- allow, here and in any include.
   deny /run/azazel-activation{,/**} wlk,
   deny /etc/systemd{,/**} wlk,
   deny /usr/lib/systemd{,/**} wlk,
@@ -44,99 +65,47 @@ profile azazel-decoy-nsd {
   deny change_profile,
   # --- end of the gate's claims.
 
-  # No capability and no network for the Python body itself: it only spawns
-  # the fixed ip commands (decoy_nsd -> decoy_network.run_fixed, posix_spawn;
-  # it never calls setns, unshare or mount and opens no socket). The unit's
-  # bounding set, CAP_SYS_ADMIN and CAP_NET_ADMIN, is used by ip alone, in
-  # the child profile below.
+  # Exactly the unit's bounding set, and netlink as its only family. Only
+  # ip runs here, so only ip holds them.
+  capability sys_admin,
+  capability net_admin,
+  network netlink raw,
 
-  # Its own body: the fixed wrapper, the interpreter and the installed
-  # package. The venv at /opt/azazel-nexus/venv (operations.md) and Debian
-  # 13's python3.13; INFERRED: that nothing else is read at startup.
-  /usr/libexec/azazel/az-decoy-nsd r,
-  # decoy_apparmor.PROFILE_INTERPRETER and PROFILE_PYTHON_ROOTS; the
-  # installer refuses wrappers that resolve elsewhere.
-  /usr/bin/python3.13 mrix,
-  /usr/lib/python3.13/** mr,
+  # The one program: systemd executes it directly under this profile. It
+  # executes nothing else (no `x` rule anywhere here).
+  /usr/bin/ip mr,
+  # ip's shared libraries (libbpf, libelf, libmnl, libcap, ...).
   /usr/lib/@{multiarch}/** mr,
-  /opt/azazel-nexus/venv/** mr,
-  @{PROC}/@{pid}/fd/ r,
-  # The interpreter would write bytecode next to the package; it never may.
-  deny /usr/** w,
-  deny /opt/** w,
+  /etc/iproute2/** r,
+  /usr/share/iproute2/** r,
+  @{PROC}/@{pid}/ns/net r,
+  @{PROC}/@{pid}/task/@{tid}/ns/net r,
 
-  # Every ip command runs in the child profile below, and nothing else runs.
-  # INFERRED, a required G4 check: under NoNewPrivileges=yes AppArmor allows
-  # a transition only to a profile it treats as no wider than the current
-  # one, and this child is wider than its parent. If the exec is refused the
-  # unit fails to start (fail closed); the fallback is `ix`, which gives the
-  # parent the child's rules and is recorded as a regression of #285 item 6.
-  /usr/bin/ip Cx -> ip,
-  # Its 2 s step deadline (decoy_network.STEP_SECONDS) kills a stuck ip.
-  signal (send) set=(kill) peer=azazel-decoy-nsd//ip,
-  # systemd's stop. INFERRED: the peer label of PID 1 on Debian 13.
+  # `ip netns add azazel-decoy` (prerequisites §13): /run/netns made a
+  # shared mount point (bound onto itself first when it is not one), the
+  # handle created and the new network namespace bound onto it. INFERRED:
+  # the source path AppArmor resolves for the nsfs bind, and whether the
+  # first bind is MS_BIND|MS_REC (iproute2's netns.c; rbind) or a plain
+  # bind: both are allowed until the VM shows which (G4).
+  /run/netns/ rw,
+  /run/netns/azazel-decoy rw,
+  mount options=(rw, rshared) -> /run/netns/,
+  mount options=(rw, rbind) /run/netns/ -> /run/netns/,
+  mount options=(rw, bind) /run/netns/ -> /run/netns/,
+  mount options=(rw, bind) @{PROC}/@{pid}/{,task/@{tid}/}ns/net -> /run/netns/azazel-decoy,
+  # `ip netns delete azazel-decoy` (ExecStopPost).
+  umount /run/netns/azazel-decoy,
+
+  # `ip -n azazel-decoy ...`: after setns it unshares a mount namespace,
+  # makes / a slave and mounts a fresh /sys for the decoy's namespace.
+  # INFERRED: the flags as AppArmor sees them. ip -n would also bind
+  # /etc/netns/azazel-decoy/* over /etc; that directory does not exist and
+  # no rule here allows it.
+  mount options=(rw, rslave) -> /,
+  umount /sys/,
+  mount fstype=sysfs -> /sys/,
+
+  # systemd's stop and its start/stop deadlines (TimeoutStartSec=,
+  # TimeoutStopSec=). INFERRED: the peer label of PID 1 on Debian 13.
   signal (receive) peer=unconfined,
-
-  profile ip {
-    include <abstractions/base>
-
-    # --- What the gate claims (§7), repeated: a child profile inherits
-    # --- nothing from its parent.
-    deny /run/azazel-activation{,/**} wlk,
-    deny /etc/systemd{,/**} wlk,
-    deny /usr/lib/systemd{,/**} wlk,
-    deny /lib/systemd{,/**} wlk,
-    deny /run/systemd/{system,system.control,transient}{,/**} wlk,
-    deny /etc/azazel{,/**} wlk,
-    deny /var/lib/azazel{,/**} wlk,
-    deny /run/dbus/system_bus_socket rw,
-    deny /run/systemd/private rw,
-    deny dbus,
-    deny ptrace,
-    deny capability mac_admin,
-    deny capability mac_override,
-    deny /sys/kernel/security{,/**} wlk,
-    deny change_profile,
-    # --- end of the gate's claims.
-
-    # Exactly the unit's bounding set, and netlink as its only family.
-    capability sys_admin,
-    capability net_admin,
-    network netlink raw,
-
-    /usr/bin/ip mr,
-    # ip's shared libraries (libbpf, libelf, libmnl, libcap, ...).
-    /usr/lib/@{multiarch}/** mr,
-    /etc/iproute2/** r,
-    /usr/share/iproute2/** r,
-    @{PROC}/@{pid}/ns/net r,
-    @{PROC}/@{pid}/task/@{tid}/ns/net r,
-
-    # `ip netns add azazel-decoy` (prerequisites §13): /run/netns made a
-    # shared mount point (bound onto itself first when it is not one), the
-    # handle created and the new network namespace bound onto it. INFERRED:
-    # the source path AppArmor resolves for the nsfs bind, and whether the
-    # first bind is MS_BIND|MS_REC (iproute2's netns.c; rbind) or a plain
-    # bind: both are allowed until the VM shows which (G4).
-    /run/netns/ rw,
-    /run/netns/azazel-decoy rw,
-    mount options=(rw, rshared) -> /run/netns/,
-    mount options=(rw, rbind) /run/netns/ -> /run/netns/,
-    mount options=(rw, bind) /run/netns/ -> /run/netns/,
-    mount options=(rw, bind) @{PROC}/@{pid}/{,task/@{tid}/}ns/net -> /run/netns/azazel-decoy,
-    # `ip netns delete azazel-decoy` (ExecStop).
-    umount /run/netns/azazel-decoy,
-
-    # `ip -n azazel-decoy ...`: after setns it unshares a mount namespace,
-    # makes / a slave and mounts a fresh /sys for the decoy's namespace.
-    # INFERRED: the flags as AppArmor sees them. ip -n would also bind
-    # /etc/netns/azazel-decoy/* over /etc; that directory does not exist and
-    # no rule here allows it.
-    mount options=(rw, rslave) -> /,
-    umount /sys/,
-    mount fstype=sysfs -> /sys/,
-
-    signal (receive) peer=azazel-decoy-nsd,
-    signal (receive) peer=unconfined,
-  }
 }

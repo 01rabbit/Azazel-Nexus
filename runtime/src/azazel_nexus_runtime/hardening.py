@@ -48,6 +48,7 @@ actually blocks a socket, whether an unprivileged account is refused
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
@@ -59,8 +60,16 @@ from azazel_nexus.activation import (
     DECOY_UNIT,
 )
 
-from .decoy_addresses import DECOY_SUBNET
+from .decoy_addresses import (
+    BRIDGE_ADDRESS,
+    DECOY_ADDRESS,
+    DECOY_SUBNET,
+    HOST_VETH,
+    NAMESPACE,
+    PREFIX_LENGTH,
+)
 from .decoy_apparmor import apparmor_profile_for
+from .decoy_netns import DECOY_VETH
 from azazel_nexus.layout import LAYOUT
 from azazel_nexus_runtime.launch_environment import BOOTSTRAP_UNSET_ENVIRONMENT
 from azazel_nexus_runtime.activation_markers import grant_marker_path
@@ -70,10 +79,13 @@ __all__ = [
     "DECOY_HELPER_SANDBOX",
     "DECOY_MANAGER_SOCKETS_INACCESSIBLE",
     "DECOY_NAMESPACE_CAPABILITIES",
+    "DECOY_NAMESPACE_IP",
     "DECOY_NAMESPACE_PATH",
     "DECOY_NAMESPACE_SANDBOX",
     "DECOY_NAMESPACE_SHARED_OMISSIONS",
     "DECOY_NAMESPACE_SHARED_OVERRIDES",
+    "DECOY_NAMESPACE_START",
+    "DECOY_NAMESPACE_UNDO",
     "DECOY_SCOPE_CREDENTIAL",
     "DECOY_TRIP_UNIT",
     "DECOY_VERIFY_SANDBOX",
@@ -140,7 +152,9 @@ _RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
     "RestrictAddressFamilies", "ReadWritePaths",
     "InaccessiblePaths", "BindPaths", "BindReadOnlyPaths",
     # A second program in a unit is a declaration too (#196 body): only the
-    # two one-shot decoy units name an `ExecStop=`, each in its pinned extra.
+    # helper names an `ExecStop=`, and only the namespace unit more
+    # `ExecStart=` lines and its `ExecStopPost=` lines (G4 follow-up), each
+    # in its pinned extra.
     "ExecStop", "ExecStopPost", "ExecStartPost", "ExecReload",
     # The LSM profile comes only from `apparmor_profile` (#196 G3), so no
     # unit can name one, or one with `-`, through `extra`.
@@ -264,9 +278,11 @@ class ServiceProfile:
     #: the assertion fails the start instead. Never unconfined.
     apparmor_profile: str = ""
     #: Fixed words after the executable in `ExecStart=`. Empty for every
-    #: unit but the Deception Lite verify unit, whose one word is exactly
-    #: `verify` (#196 G2, docs/deception-exposure-grant.md §6.1): the
-    #: helper's executable, with one more fixed word.
+    #: unit but two: the Deception Lite verify unit, whose one word is
+    #: exactly `verify` (#196 G2, docs/deception-exposure-grant.md §6.1): the
+    #: helper's executable, with one more fixed word; and the namespace unit,
+    #: whose first `ExecStart=` is exactly `DECOY_NAMESPACE_START[0]` (G4
+    #: follow-up: `ip` itself, no Python body).
     arguments: tuple[str, ...] = ()
     #: `OnFailure=` units. Empty for every unit but the verify unit, whose
     #: failure starts exactly `DECOY_TRIP_UNIT` (#196 G2).
@@ -286,14 +302,24 @@ class ServiceProfile:
             )
         # The verify unit's three own fields (#196 G2): its fixed word, its
         # trip and its missing [Install] belong to it and to no other unit.
+        # The namespace unit's first command line is its own (G4 follow-up).
         is_verify = self.unit == DECOY_VERIFY_UNIT
-        if (self.arguments != (("verify",) if is_verify else ())
-                or self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
-                or self.wanted_by != (() if is_verify else ("multi-user.target",))):
+        if self.unit == DECOY_NAMESPACE_UNIT:
+            if self.arguments != DECOY_NAMESPACE_START[0][1:]:
+                raise ValueError(
+                    f"{self.unit}: its first ExecStart= is exactly "
+                    "DECOY_NAMESPACE_START[0]")
+        elif self.arguments != (("verify",) if is_verify else ()):
             raise ValueError(
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} runs its executable with "
-                f"the word verify, has OnFailure={DECOY_TRIP_UNIT} and has no "
-                "[Install] section; every other unit has none of the three")
+                "the word verify; no other unit but the namespace unit names an "
+                "argument")
+        if (self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
+                or self.wanted_by != (() if is_verify else ("multi-user.target",))):
+            raise ValueError(
+                f"{self.unit}: only {DECOY_VERIFY_UNIT} has "
+                f"OnFailure={DECOY_TRIP_UNIT} and no [Install] section; every "
+                "other unit has neither")
         if not self.address_families:
             raise ValueError(
                 f"{self.unit} declares no address family. `AF_UNIX` at least "
@@ -660,9 +686,9 @@ class ServiceProfile:
                 or self.is_inference_transport or self.is_decoy_listener):
             raise ValueError(f"{self.unit} holds no network role")
         # Where it runs from and what it is ordered against, fixed as well:
-        # the fixed executable, only the controller to wait for, and only
+        # `ip` and nothing else, only the controller to wait for, and only
         # this boot's grant marker as a condition.
-        if (self.executable != "/usr/libexec/azazel/az-decoy-nsd"
+        if (self.executable != DECOY_NAMESPACE_IP
                 or self.after != (ACTIVATION_CONTROLLER_UNIT,)
                 or self.requires != (ACTIVATION_CONTROLLER_UNIT,)
                 or self.binds_to or self.before or self.conflicts
@@ -670,8 +696,8 @@ class ServiceProfile:
                 or self.conditions != (
                     ("ConditionPathExists", grant_marker_path(self.unit)),)):
             raise ValueError(
-                f"{self.unit} runs az-decoy-nsd, after and requiring only "
-                f"{ACTIVATION_CONTROLLER_UNIT}, on its grant marker alone"
+                f"{self.unit} runs {DECOY_NAMESPACE_IP}, after and requiring "
+                f"only {ACTIVATION_CONTROLLER_UNIT}, on its grant marker alone"
             )
 
 
@@ -804,7 +830,7 @@ NETNS_DIRECTORY = "/run/netns"
 #: CAP_NET_ADMIN helper does not hold and cannot under its sandbox, so per
 #: the design (option (a), docs/deception-redirect-prerequisites.md §5, §10)
 #: a third one-shot unit, `azazel-decoy-nsd.service`, creates it and
-#: configures its inside (`decoy_network.NAMESPACE_STEPS`, #196 body). The
+#: configures its inside (`DECOY_NAMESPACE_START`, #196 body). The
 #: unit is never granted in this build, so on a node nothing creates it, and
 #: a decoy unit started anyway fails at namespace setup before its
 #: executable runs.
@@ -864,9 +890,10 @@ HOST_FIREWALL_UNITS: tuple[str, ...] = (
 #: `RestrictNamespaces=net mnt`, netlink as its only family (every netlink
 #: protocol, so nftables as well as routes) and
 #: `NoNewPrivileges=` narrow what it is handed, but its containment rests on
-#: the body: fixed in code, taking no input (no argument, no file, no
-#: environment, no socket), statically reviewed, and later a mandatory
-#: access control (LSM) profile. The body phase is to weigh removing the
+#: what it runs: only `ip`, with the fixed command lines of
+#: `DECOY_NAMESPACE_START` and `DECOY_NAMESPACE_UNDO` in its own unit file
+#: (no argument, file, environment or socket from anyone), statically
+#: reviewed, under its AppArmor profile (#196 G3). The body phase is to weigh removing the
 #: privilege instead: let systemd hold the namespace (the helper and the
 #: decoy sharing one with `PrivateNetwork=yes` and `JoinsNamespaceOf=`, the
 #: helper moving one veth end to the host), so that no unit needs
@@ -906,6 +933,61 @@ DECOY_NAMESPACE_SHARED_OVERRIDES: tuple[tuple[str, str], ...] = (
      "~@aio @chown @ipc @keyring @memlock @setuid @timer capset"),
 )
 
+#: The one program the decoy namespace unit runs (G4 follow-up): iproute2's
+#: `ip`, by the absolute path Debian 13 installs (`decoy_network.IP`; a test
+#: keeps them equal). The unit used to run a Python body that started `ip` in
+#: a child AppArmor profile; under `NoNewPrivileges=yes` the kernel refused
+#: that transition (`info="no new privs"`, VM-checked on Debian 13 with
+#: AppArmor 4.1, a mechanism check and not hardware evidence;
+#: docs/deception-exposure-grant.md §11). Now systemd starts `ip` directly
+#: under the unit's one profile, and only `ip` holds the bounding set.
+DECOY_NAMESPACE_IP = "/usr/bin/ip"
+
+
+def _inside(*args: str) -> tuple[str, ...]:
+    return (DECOY_NAMESPACE_IP, "-n", NAMESPACE, *args)
+
+
+#: The namespace unit's six steps, in order, each one `ExecStart=` line
+#: (G4 follow-up; the former `decoy_network.NAMESPACE_STEPS`): the
+#: namespace, the veth pair with the decoy's end placed directly into it,
+#: then the inside (`lo` up, the decoy's fixed address, its link up, its
+#: default route via the bridge). Nothing is checked first: `ip netns add`
+#: and the veth pair each refuse to replace an existing one, and that
+#: refusal fails the start.
+DECOY_NAMESPACE_START: tuple[tuple[str, ...], ...] = (
+    (DECOY_NAMESPACE_IP, "netns", "add", NAMESPACE),
+    (DECOY_NAMESPACE_IP, "link", "add", "name", HOST_VETH, "type", "veth",
+     "peer", "name", DECOY_VETH, "netns", NAMESPACE),
+    _inside("link", "set", "dev", "lo", "up"),
+    _inside("address", "add", f"{DECOY_ADDRESS}/{PREFIX_LENGTH}", "dev", DECOY_VETH),
+    _inside("link", "set", "dev", DECOY_VETH, "up"),
+    _inside("route", "add", "default", "via", BRIDGE_ADDRESS, "dev", DECOY_VETH),
+)
+
+#: Its undo, in reverse: the veth pair (the host end; the decoy's end goes
+#: with it), then the namespace. An address, a link state and a route go
+#: with their link or namespace, so steps 3 to 6 need none of their own.
+DECOY_NAMESPACE_UNDO: tuple[tuple[str, ...], ...] = (
+    (DECOY_NAMESPACE_IP, "link", "delete", HOST_VETH),
+    (DECOY_NAMESPACE_IP, "netns", "delete", NAMESPACE),
+)
+
+#: What a word of those command lines may be: no space, quote, `%`
+#: (a systemd specifier), `$` (a variable), `;` or `\`, so that systemd's
+#: command-line parsing hands `ip` exactly these words and nothing else.
+_COMMAND_WORD = re.compile(r"-?[A-Za-z0-9][A-Za-z0-9./_-]*", re.ASCII)
+
+
+def _command_line(argv: tuple[str, ...]) -> str:
+    """One fixed `ip` command as a systemd command line, or `ValueError`."""
+
+    if (argv[0] != DECOY_NAMESPACE_IP
+            or not all(_COMMAND_WORD.fullmatch(word) for word in argv[1:])):
+        raise ValueError("the namespace unit runs only fixed ip words")
+    return " ".join(argv)
+
+
 #: The decoy namespace unit's own settings, on top of what it keeps of
 #: `SHARED_HARDENING` (#196 (a)). Pinned like the overrides. Nothing here
 #: may build a mount namespace: `ProtectProc=`, `ProcSubset=`,
@@ -913,14 +995,32 @@ DECOY_NAMESPACE_SHARED_OVERRIDES: tuple[tuple[str, str], ...] = (
 #: `ProtectHostname=` and `ProtectClock=` were in the first revision and are
 #: gone for that reason (n3).
 DECOY_NAMESPACE_SANDBOX: tuple[tuple[str, str], ...] = (
+    # The other five steps, in order, rendered right after the first
+    # `ExecStart=` (G4 follow-up). A one-shot unit runs them one after the
+    # other and stops at the first that fails: the rest never run and the
+    # start fails (fail closed).
+    *(("ExecStart", _command_line(argv)) for argv in DECOY_NAMESPACE_START[1:]),
     # Stays active after it ran, so that the helper's `Requires=` holds while
     # the namespace exists, and stopping it (and, through `Requires=`, the
     # helper and the decoy first) is the hook for removing it last.
     ("RemainAfterExit", "yes"),
+    # The deadlines that replace the former body's 2 s per step: 30 s for
+    # the whole start, and up to 30 s for each undo command (*inferred*:
+    # systemd may re-arm the stop timer per `ExecStopPost=` command; to be
+    # measured, grant §11 item 4). Past either, systemd kills the `ip` that
+    # is running; a start killed that way fails, and the undo below runs.
     ("TimeoutStartSec", "30s"),
-    # Removes the veth pair and the namespace, after the helper and the decoy
-    # have stopped (#196 body). The same fixed executable, one fixed word.
-    ("ExecStop", "/usr/libexec/azazel/az-decoy-nsd stop"),
+    ("TimeoutStopSec", "30s"),
+    # The undo, in reverse order: the veth pair, then the namespace. Not
+    # `ExecStop=`: systemd runs that only after a start that succeeded.
+    # `ExecStopPost=` runs after every stop and after every start that
+    # failed or timed out at any step (systemd.service(5), systemd 257), so
+    # one list is both the stop and the roll-back. `-` on the first only: a
+    # failing command would skip the ones after it, and the pair is absent
+    # whenever the start failed before step 2; the namespace's removal keeps
+    # its status, so a stop that leaves it behind fails the unit.
+    ("ExecStopPost", "-" + _command_line(DECOY_NAMESPACE_UNDO[0])),
+    ("ExecStopPost", _command_line(DECOY_NAMESPACE_UNDO[1])),
     ("RestrictRealtime", "yes"),
 )
 
@@ -1485,7 +1585,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
     ),
     ServiceProfile(
         unit=DECOY_NAMESPACE_UNIT,
-        executable="/usr/libexec/azazel/az-decoy-nsd",
+        # `ip` itself, no Python body (G4 follow-up): the first of its six
+        # steps; the other five and the undo are in its pinned extra.
+        executable=DECOY_NAMESPACE_IP,
+        arguments=DECOY_NAMESPACE_START[0][1:],
         account="root",
         description="Azazel-Nexus Deception Lite namespace",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-redirect-prerequisites.md",
@@ -1516,9 +1619,12 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "CAP_NET_ADMIN, as a bounding set and never as an ambient "
             "capability: it creates the decoy network namespace at "
             "/run/netns/azazel-decoy, the veth pair with the decoy's end inside "
-            "it, and the inside's fixed address and route, with fixed ip "
-            "commands and nothing else; ExecStop removes the pair and the "
-            "namespace. Netlink is its only address family, though that admits "
+            "it, and the inside's fixed address and route. It runs /usr/bin/ip "
+            "and nothing else: six fixed ExecStart lines, run in order until "
+            "one fails, and two fixed ExecStopPost lines, which remove the pair "
+            "and the namespace after every stop and after a start that failed "
+            "or timed out; no Python body, so only ip holds its two "
+            "capabilities. Netlink is its only address family, though that admits "
             "every netlink protocol, nftables included; it may create only a network "
             "namespace and the mount namespace ip -n makes for itself, and its "
             "syscall filter adds only mount, umount2, unshare and setns to the "
@@ -1526,9 +1632,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "one unit without the shared file-system sandbox: a mount namespace "
             "would keep the namespace handle from the host, and with "
             "CAP_SYS_ADMIN and mount that sandbox was never a wall for it. A "
-            "compromised body would be host root; its containment is a fixed "
-            "body that takes no input, static review and its AppArmor profile "
-            "azazel-decoy-nsd, which denies writes to the activation state, "
+            "compromised ip would be host root; its containment is fixed "
+            "command lines that take no input, static review and its AppArmor "
+            "profile azazel-decoy-nsd, which denies writes to the activation state, "
             "the unit files and the ledgers and any reach to the service "
             "manager; it starts only with AppArmor enabled and that profile "
             "loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor). "
@@ -1902,6 +2008,9 @@ def render_unit(profile: ServiceProfile) -> str:
     lines += [
         "ExecStart=" + " ".join((profile.executable, *profile.arguments)),
     ]
+    # Further `ExecStart=` lines (the namespace unit's alone, pinned in its
+    # extra) follow the first, so that the steps read in order.
+    lines += [f"ExecStart={value}" for key, value in profile.extra if key == "ExecStart"]
     if profile.apparmor_profile:
         lines.append(f"AppArmorProfile={profile.apparmor_profile}")
     if profile.runtime_directory:
@@ -1910,7 +2019,8 @@ def render_unit(profile: ServiceProfile) -> str:
             f"RuntimeDirectoryMode={profile.runtime_directory_mode}",
         ]
     for key, value in profile.extra:
-        lines.append(f"{key}={value}")
+        if key != "ExecStart":
+            lines.append(f"{key}={value}")
     lines.append(
         "RestrictAddressFamilies=" + " ".join(profile.address_families)
     )

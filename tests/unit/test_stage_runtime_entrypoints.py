@@ -29,9 +29,56 @@ def test_staged_set_is_derived_from_the_installed_units_and_runtime_scripts() ->
                 value = line.split("=", 1)[1].removeprefix("+").split(" ")[0]
                 unit_names.add(Path(value).name)
 
-    assert set(daemons) == unit_names - {"azazel-edge-core"}
-    assert "azazel-edge-core" not in daemons
+    # Edge Core's own binary, and the system's ip that the decoy namespace
+    # unit runs from its unit file (#196 G4 follow-up): neither is staged.
+    assert set(daemons) == unit_names - {"azazel-edge-core", "ip"}
+    assert "azazel-edge-core" not in daemons and "ip" not in daemons
+    assert "az-decoy-nsd" not in daemons
     assert "az-core-reserve-probe" not in daemons
+
+
+_NSD_FIRST = "ExecStart=/usr/bin/ip netns add azazel-decoy\n"
+_NSD_SECOND = ("ExecStart=/usr/bin/ip link add name az-decoy-host0 type veth peer name "
+               "az-decoy-ns0 netns azazel-decoy\n")
+_NSD_UNDO_1 = "ExecStopPost=-/usr/bin/ip link delete az-decoy-host0\n"
+_NSD_UNDO_2 = "ExecStopPost=/usr/bin/ip netns delete azazel-decoy\n"
+
+
+@pytest.mark.parametrize("change", [
+    ("[Service]\n", "[Service]\nExecStart=/usr/bin/ip netns add other\n"),
+    ("[Service]\n", "[Service]\nExecStart=/usr/libexec/azazel/az-decoy-nsd\n"),
+    ("[Service]\n", "[Service]\nExecStart=/bin/sh -c true\n"),
+    ("[Service]\n", "[Service]\nExecStartPre=/usr/bin/ip netns list\n"),
+    ("[Service]\n", "[Service]\nExecStop=/usr/bin/ip netns delete azazel-decoy\n"),
+    # Order, repetition and omission of the start lines.
+    (_NSD_FIRST + _NSD_SECOND, _NSD_SECOND + _NSD_FIRST),
+    (_NSD_FIRST, _NSD_FIRST + _NSD_FIRST),
+    (_NSD_SECOND, ""),
+    # The undo: dropped, reordered, its dash moved, or another added.
+    (_NSD_UNDO_2, ""),
+    (_NSD_UNDO_1 + _NSD_UNDO_2, _NSD_UNDO_2 + _NSD_UNDO_1),
+    (_NSD_UNDO_2, "ExecStopPost=-/usr/bin/ip netns delete azazel-decoy\n"),
+    (_NSD_UNDO_2, _NSD_UNDO_2 + "ExecStopPost=/usr/bin/ip link delete eth0\n"),
+], ids=["other-ns", "wrapper", "shell", "start-pre", "exec-stop", "reordered",
+        "repeated", "missing", "undo-missing", "undo-reordered", "undo-dash",
+        "undo-extra"])
+def test_the_namespace_units_lines_must_be_its_fixed_ip_commands(tmp_path, change):
+    """#196 G4 follow-up: nothing is staged for it, and nothing else may run there."""
+
+    root = tmp_path / "root"
+    shutil.copytree(ROOT / "packaging" / "systemd", root / "packaging" / "systemd")
+    (root / "runtime").mkdir()
+    shutil.copy(ROOT / "runtime" / "pyproject.toml", root / "runtime" / "pyproject.toml")
+    shutil.copytree(ROOT / "runtime" / "src", root / "runtime" / "src",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
+    assert declared_daemons(root) == declared_daemons()
+    unit = root / "packaging" / "systemd" / "azazel-decoy-nsd.service"
+    text = unit.read_text(encoding="utf-8")
+    old, new = change
+    assert text.count(old) == 1
+    unit.write_text(text.replace(old, new, 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="fixed ip commands"):
+        declared_daemons(root)
 
 
 def test_stager_refuses_an_unregistered_platform_profile_before_writing(tmp_path, monkeypatch):
@@ -383,7 +430,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     entrypoints = (
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
         "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
-        "az-mio-entryd", "az-knowledge-lited", "az-decoy-nsd", "az-decoy-netd", "az-decoyd",
+        "az-mio-entryd", "az-knowledge-lited", "az-decoy-netd", "az-decoyd",
     )
     stager = tools / "stage_runtime_entrypoints.py"
     stager.write_text(

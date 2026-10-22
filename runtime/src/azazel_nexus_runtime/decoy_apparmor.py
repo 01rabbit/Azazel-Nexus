@@ -62,20 +62,18 @@ DECOY_APPARMOR_PROFILES: tuple[tuple[str, str], ...] = (
     ("azazel-decoyd.service", "azazel-decoyd"),
 )
 
-#: The namespace unit's child profile, under which its `ip` commands run
-#: (only `ip` holds the capabilities and may mount; the Python body may not).
-NAMESPACE_IP_CHILD = "azazel-decoy-nsd//ip"
-
-#: Every profile the kernel must list in enforce mode: the four, and the
-#: namespace unit's child. A child is loaded with its parent, but it is
-#: checked on its own: a listing that held the parent and not the child was
-#: not made from the packaged file.
+#: Every profile the kernel must list in enforce mode: the four. None has a
+#: child profile (G4 follow-up): the namespace unit runs `/usr/bin/ip`
+#: directly under its one profile, because under `NoNewPrivileges=yes` the
+#: kernel refused a transition from a Python body into a wider child
+#: (`docs/deception-exposure-grant.md` §11).
 REQUIRED_ENFORCED_PROFILES: tuple[str, ...] = tuple(
-    name for _, name in DECOY_APPARMOR_PROFILES) + (NAMESPACE_IP_CHILD,)
+    name for _, name in DECOY_APPARMOR_PROFILES)
 
-#: The one interpreter the profiles let the Python body execute and map
-#: (`python_profile.BASE_INTERPRETER`, a test keeps them equal): the staged
-#: wrapper's interpreter must resolve to it.
+#: The one interpreter the profiles of the Python units (the helper, the
+#: verify unit and the decoy; the namespace unit runs no Python) let the body
+#: execute and map (`python_profile.BASE_INTERPRETER`, a test keeps them
+#: equal): the staged wrapper's interpreter must resolve to it.
 PROFILE_INTERPRETER = "/usr/bin/python3.13"
 
 #: The only places the profiles let the Python body read its code from:

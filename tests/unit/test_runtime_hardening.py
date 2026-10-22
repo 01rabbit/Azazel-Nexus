@@ -659,6 +659,12 @@ def test_the_installer_installs_every_declared_unit():
 
 def test_the_installer_checks_for_every_declared_executable():
     for profile in PROFILES:
+        if profile.unit == "azazel-decoy-nsd.service":
+            # #196 G4 follow-up: the system's iproute2 ip, which Nexus does
+            # not stage; a missing ip fails the unit's start (fail closed).
+            assert profile.executable == "/usr/bin/ip"
+            assert "az-decoy-nsd" not in INSTALLER
+            continue
         binary = Path(profile.executable).name
         assert binary in INSTALLER, (
             f"{profile.unit} execs {binary} and the preflight does not check "

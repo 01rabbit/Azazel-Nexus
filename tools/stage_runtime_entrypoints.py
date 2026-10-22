@@ -31,12 +31,43 @@ LIBEXEC_RELATIVE = Path("usr/libexec/azazel")
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
+from azazel_nexus.activation import DECOY_NAMESPACE_UNIT  # noqa: E402
 from azazel_nexus_runtime import startup_wrapper  # noqa: E402
+from azazel_nexus_runtime.hardening import (  # noqa: E402
+    DECOY_NAMESPACE_START,
+    DECOY_NAMESPACE_UNDO,
+)
 from azazel_nexus_runtime.install_platform import (  # noqa: E402
     CURRENT_INSTALL_PLATFORM_PROFILES,
     InstallPlatformProfile,
 )
 from azazel_nexus_runtime.launch_environment import staging_environment  # noqa: E402
+
+
+def _check_namespace_unit(unit: Path) -> None:
+    """The Deception Lite namespace unit (#196 G4 follow-up) runs the system's
+    iproute2 ip from its unit file and no runtime entrypoint, so nothing is
+    staged for it. Its command lines must be exactly the declared ones: every
+    `ExecStart=` in order equal to `DECOY_NAMESPACE_START` (no line added,
+    repeated, missing or moved), every `ExecStopPost=` equal to
+    `DECOY_NAMESPACE_UNDO` (the first with `-`), and no other command key."""
+
+    starts: list[tuple[str, ...]] = []
+    undos: list[str] = []
+    for line in unit.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key.startswith("Exec"):
+            continue
+        if key == "ExecStart":
+            starts.append(tuple(shlex.split(value)))
+        elif key == "ExecStopPost":
+            undos.append(value)
+        else:
+            raise ValueError("the decoy namespace unit runs only its fixed ip commands")
+    expected_undos = ["-" + " ".join(DECOY_NAMESPACE_UNDO[0]),
+                      *(" ".join(argv) for argv in DECOY_NAMESPACE_UNDO[1:])]
+    if starts != list(DECOY_NAMESPACE_START) or undos != expected_undos:
+        raise ValueError("the decoy namespace unit runs only its fixed ip commands")
 
 
 def declared_daemons(root: Path = ROOT) -> dict[str, str]:
@@ -48,6 +79,9 @@ def declared_daemons(root: Path = ROOT) -> dict[str, str]:
 
     executable_paths: set[str] = set()
     for unit in sorted((root / "packaging" / "systemd").glob("*.service")):
+        if unit.name == DECOY_NAMESPACE_UNIT:
+            _check_namespace_unit(unit)
+            continue
         for line in unit.read_text(encoding="utf-8").splitlines():
             if line.startswith("ExecStartPre=+"):
                 value = line.removeprefix("ExecStartPre=+")

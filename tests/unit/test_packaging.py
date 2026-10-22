@@ -278,6 +278,11 @@ def test_every_nexus_unit_names_an_executable_the_installer_checks_for():
             # Edge is installed separately and verified before baseline admission.
             assert exec_start.group(1) == "/opt/azazel/edge-core/bin/azazel-edge-core"
             continue
+        if name == "azazel-decoy-nsd.service":
+            # #196 G4 follow-up: the system's iproute2 ip, not a staged
+            # wrapper; a missing ip fails the unit's start (fail closed).
+            assert exec_start.group(1) == "/usr/bin/ip"
+            continue
         binary = Path(exec_start.group(1)).name
         assert binary in checked, (
             f"{name} execs {binary}, which the installer's preflight does not "

@@ -164,6 +164,13 @@ EOF
 # boot); with the service manager only, since apparmor_parser is required
 # only then. No unit is granted by this, and the pass never grants them yet.
 if [ "$WITH_SERVICE_MANAGER" = yes ]; then
+    # The decoy namespace unit runs the system's iproute2 ip by this fixed
+    # path from its unit file (#196 G4 follow-up; hardening.DECOY_NAMESPACE_IP,
+    # a test keeps them equal). Nexus does not stage it, so check it here.
+    if [ ! -x /usr/bin/ip ]; then
+        echo "refusing to install: /usr/bin/ip is missing (install the Debian package iproute2)." >&2
+        exit 1
+    fi
     for profile in azazel-decoy-nsd azazel-decoy-netd azazel-decoy-verify azazel-decoyd; do
         if ! apparmor_parser --skip-kernel-load --skip-cache --quiet "$HERE/apparmor/$profile"; then
             echo "refusing to install: AppArmor profile $profile does not compile." >&2
@@ -209,7 +216,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-knowledge-lited az-decoy-nsd az-decoy-netd az-decoyd; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-knowledge-lited az-decoy-netd az-decoyd; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2

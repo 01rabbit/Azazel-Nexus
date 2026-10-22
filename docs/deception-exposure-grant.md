@@ -500,7 +500,8 @@ below is unit-tested; nothing of it has run under systemd yet (§11 item 3).
   credential path and read-only rules for `forwarding` and `proxy_arp`
   under `/proc/sys/net/ipv{4,6}/conf/*/`; it is in
   `decoy_apparmor.DECOY_APPARMOR_PROFILES`, so the enforce-mode judgement
-  requires it (five blocks) and the installer compiles and places it.
+  requires it (five blocks; four since the G4 follow-up removed the
+  namespace unit's child, §7) and the installer compiles and places it.
 - **Import closure.** `az-decoy-netd` gains the runtime module `decoy_watch`
   and no library module; the namespace unit and the decoy load nothing new.
 
@@ -531,15 +532,15 @@ profile, and a hardware-gate record of it, a condition of any grant.
   `capability mac_admin` (also outside the bounding set) and writes under
   `/sys/kernel/security`; `change_profile`.
 - **What the namespace unit's profile allows**: `capability sys_admin
-  net_admin`, `network netlink raw`, execution of `/usr/bin/ip` in a child
-  profile, and only the mounts `ip` makes (the bind of
+  net_admin`, `network netlink raw`, `/usr/bin/ip` itself (systemd runs it
+  under the profile; since the G4 follow-up there is no Python body and no
+  child profile, below), and only the mounts `ip` makes (the bind of
   `/proc/*/ns/net` onto `/run/netns/azazel-decoy`, the slave remount of `/`
-  and the fresh `/sys` of `ip -n`), plus read access to the Python runtime
-  and the package. The exact mount rules are VM work.
+  and the fresh `/sys` of `ip -n`). The exact mount rules are VM work.
 - **What it cannot do.** AppArmor's network rules mediate the family and the
   type, not the netlink protocol, on Debian's kernel (*inferred*): it cannot
-  stop a compromised body from talking to nftables. That stays the body's
-  property (fixed, no input) and the watch's (§6). The gate claims only what
+  stop a compromised `ip` from talking to nftables. That stays the unit's
+  property (fixed command lines, no input) and the watch's (§6). The gate claims only what
   the profile denies.
 - **Fail closed twice.** `AppArmorProfile=` without `-` makes a start without
   the loaded profile fail (*inferred*; VM-check), and the pass withholds the
@@ -570,8 +571,9 @@ is granted by them**: `_withholding_reason` still withholds the tier as
 reached until G6. Revised after the review of #285.
 
 - **Profiles** (`packaging/apparmor/`): `azazel-decoy-nsd` (with a child
-  `azazel-decoy-nsd//ip`), `azazel-decoy-netd` and `azazel-decoyd`, named,
-  not attached by path. Every block, the child included, states each claim
+  `azazel-decoy-nsd//ip` in G3; **removed in the G4 follow-up**, below, where
+  the child's rules became the profile's), `azazel-decoy-netd` and
+  `azazel-decoyd`, named, not attached by path. Every block, the child included, states each claim
   above as an explicit `deny` (a child inherits nothing), plus
   `/lib/systemd` (the installer's unit directory) and the runtime unit paths
   under `/run/systemd`, with **one exception**: the decoy has no `deny` over
@@ -579,10 +581,11 @@ reached until G6. Revised after the review of #285.
   (`/usr/bin/python3.13`, code under `/usr/lib/python3.13` and
   `/opt/azazel-nexus/venv` only); `ip` (namespace unit, into the child), `ip`
   and `nft` (helper); the helper's runtime directory as its one writable
-  place. The namespace unit's Python body holds **no capability and no
-  network**: it only spawns the fixed `ip` commands (`decoy_nsd` never calls
-  `setns`, `unshare` or `mount`); its child `ip` holds `CAP_SYS_ADMIN`,
-  `CAP_NET_ADMIN` and netlink, maps its libraries, and alone may mount: only
+  place. In G3 the namespace unit's Python body held **no capability and no
+  network**: it only spawned the fixed `ip` commands (`decoy_nsd` never
+  called `setns`, `unshare` or `mount`); its child `ip` held `CAP_SYS_ADMIN`,
+  `CAP_NET_ADMIN` and netlink, mapped its libraries, and alone could mount
+  (since the G4 follow-up these are the one profile's rules, below): only
   what `ip netns add`, `ip netns delete` and `ip -n` make (§13 of the
   prerequisites document; the first bind of `/run/netns` onto itself is
   allowed both as `rbind`, iproute2's `MS_BIND|MS_REC`, and as `bind` until
@@ -635,8 +638,9 @@ reached until G6. Revised after the review of #285.
   profiles are compiled (`--skip-kernel-load`) before anything is written
   and placed in `/etc/apparmor.d/` 0644; nothing is loaded. With AppArmor
   not among the kernel's LSMs it warns (the units' assertion is the wall).
-  After staging, `tools/check_decoy_apparmor_wrappers.py` parses the three
-  decoy wrappers and refuses the install unless each interpreter resolves to
+  After staging, `tools/check_decoy_apparmor_wrappers.py` parses the decoy
+  wrappers (three in G3; two since the G4 follow-up, which removed
+  `az-decoy-nsd`) and refuses the install unless each interpreter resolves to
   `/usr/bin/python3.13` and each import path under `/usr/lib/python3.13` or
   `/opt/azazel-nexus/venv`; `/usr/local/lib/python3*` and
   `/usr/lib/python3/dist-packages` are not allowed (the wrappers replace
@@ -655,6 +659,85 @@ reached until G6. Revised after the review of #285.
   compares the kernel's per-profile policy hash
   (`/sys/kernel/security/apparmor/policy/profiles/*/sha256`, *inferred*) with
   the hash of the compiled placed files.
+
+### The namespace unit after G4 (G4 follow-up, as implemented)
+
+G4 (§11) found that the namespace unit could not start as G3 built it, and
+that the verify unit's profile refused `/dev/null`. The owner chose to
+change the structure rather than give the Python body `ip`'s rights (`ix`).
+Nothing is granted by this either: the tier stays withheld as
+`isolation_evidence_absent`, `GRANTABLE_UNITS` and
+`ACTIVATION_UNIT_ALLOWLIST` are unchanged, and the bounding set is still
+exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
+
+- **The unit runs `ip` and nothing else.** `azazel-decoy-nsd.service` has no
+  Python body: its six steps are six `ExecStart=` lines and its undo two
+  `ExecStopPost=` lines, every one `/usr/bin/ip` with fixed words
+  (`hardening.DECOY_NAMESPACE_START` and `DECOY_NAMESPACE_UNDO`, rendered and
+  compared byte for byte; `ServiceProfile` pins the executable, the first
+  line's words and the rest of the extra whole; a word outside
+  `[A-Za-z0-9./_-]`, with at most a leading `-`, is refused, so no `%`
+  specifier, `$` variable, quote or space reaches systemd's parser).
+  `az-decoy-nsd`, `decoy_nsd.py`, `decoy_network.NAMESPACE_STEPS` and its
+  plan are removed; the console script, the installer's required wrapper,
+  the wrapper check's target and the import-closure pins go with them.
+- **One profile.** `azazel-decoy-nsd` now holds exactly what the `ip` child
+  held: `capability sys_admin` and `net_admin`, `network netlink raw`, `ip`'s
+  libraries and data, the fixed mounts of `ip netns add`, `ip netns delete`
+  and `ip -n`, and the gate's denies. No Python, no interpreter, no `x`
+  rule, no child, so the enforce-mode judgement requires four profiles,
+  not five. systemd attaches it on exec (`AppArmorProfile=`), so there is no
+  transition for `NoNewPrivileges=yes` to refuse (*inferred*; VM item 4).
+- **What the body did, and where it is now:**
+
+  | property of the body | in the unit |
+  | --- | --- |
+  | fixed arguments, no input | the unit file's lines; no `Environment=`, no file, no socket, no argument from anyone |
+  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, *inferred* to apply to each `ExecStopPost=` command on its own (systemd may re-arm the timer per command), so up to 30 s per undo command; to be measured (§11 item 4). **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start |
+  | a failed step undoes the earlier ones | `ExecStopPost=`: a one-shot unit stops at the first `ExecStart=` that fails, and systemd runs `ExecStopPost=` after a start that failed or timed out, and after every stop; `ExecStop=` only after a start that succeeded (systemd.service(5), systemd 257) |
+  | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it, and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
+  | something already present | `ip netns add` fails (`File exists`), the start fails at step 1 and nothing else runs: **closed**. **Changed**: the undo then removes the namespace and pair of those names, which the body left alone ("not ours to remove") |
+  | empty environment, `SIGPIPE` at its default | systemd's environment for a system unit (none set here), signals reset on exec; *inferred* that `ip` reads nothing from it that changes these commands |
+
+  **Why the one change is accepted.** systemd cannot make an undo depend
+  on which `ExecStart=` failed without a shell or a program of ours, and
+  either would bring back a body. The names are the decoy's own
+  (`azazel-decoy`, `az-decoy-host0`; the scope decoder already refuses
+  interface names with the `az-decoy` prefix), so an object of that name is
+  a leftover of an earlier run or a conflicting use of a reserved name.
+  Removing it removes a path and opens none, and the start has already
+  failed, so nothing is built on top of it. A stale namespace is therefore
+  cleaned by the failed start, and the next start can succeed.
+- **`attach_disconnected` on all four profiles.** Under systemd's sandbox a
+  path can be disconnected from the process's root (the verify unit's
+  `/dev/null` under `PrivateDevices=`); without the flag its lookup fails and
+  the access is refused. With it the path is named from its own mount's root
+  as if that were `/`. **What it weakens:** nothing that the rules state,
+  every rule, the denies included, still applies to the name; what it could
+  alias is a file reached through a detached mount that names itself as
+  something else (a bind of `/etc/azazel` detached and named `/x`). Making
+  such a mount needs `CAP_SYS_ADMIN` and a `mount` rule: the helper, the
+  verify unit and the decoy have neither, and the namespace unit's mounts
+  are only `ip`'s fixed ones (none of them a bind from the denied paths).
+  This rests on an assumption, stated here: the namespace unit's `rbind`
+  and `bind` of `/run/netns/` onto itself only carry what is under
+  `/run/netns/`, and the profile gives no means of placing a denied path
+  there (no other mount or bind rule, and no write to `/run/netns` but the
+  directory and the one handle).
+  Not `attach_disconnected.path` and no other flag; a test pins it.
+- **Checked so far, without AppArmor** (a privileged Debian 13 container
+  with systemd 257.13 as PID 1 on colima's kernel; the rendered unit with
+  only its `AppArmorProfile=`, `AssertSecurity=`, grant-marker and controller
+  lines removed; a mechanism check of systemd's sequencing, **not VM or
+  hardware evidence**): `systemd-analyze verify` accepts the unit; a clean
+  start built the namespace, the pair, the address and the default route,
+  and a stop removed both; with `/run/netns/azazel-decoy` already present
+  the start failed at step 1 (`File exists`) and `ExecStopPost=` removed it;
+  with a link `az-decoy-host0` already present the start failed at step 2
+  (`RTNETLINK answers: File exists`) and `ExecStopPost=` removed it and the
+  namespace; a start after each failure succeeded. The four profiles
+  compile with `apparmor_parser` 4.1.0 (no kernel load). Everything under
+  AppArmor, and the timeout path, is §11 item 4.
 
 ## 8. The decoy-sandbox gate (Q10, F7)
 
@@ -758,6 +841,31 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
 
 ## 11. To check on the VM (G4; a mechanism check, not hardware evidence)
 
+**G4 findings (2026-10-22, Debian 13, AppArmor 4.1; a VM check of the
+mechanism, not hardware evidence).** Two of item 4's questions were
+answered, both against G3:
+
+- **The namespace unit could not start.** Its Python body, confined as
+  `azazel-decoy-nsd` under `NoNewPrivileges=yes`, executed `/usr/bin/ip` with
+  `Cx -> ip`, and the kernel refused the transition into the wider child:
+  `apparmor="DENIED" operation="exec" info="no new privs"
+  profile="azazel-decoy-nsd" name="/usr/bin/ip"
+  target="azazel-decoy-nsd//ip"`. The first step returned 127 (the body's
+  "could not start") and the start stopped there, so it failed closed. Under
+  `NoNewPrivileges=yes` a process may not move to a profile wider than its
+  own. Resolved by the G4 follow-up (§7, "The namespace unit after G4"): no
+  body, `ip` run by systemd under one profile; the `ix` fallback was not
+  taken.
+- **The verify unit's profile refused `/dev/null`:**
+  `operation="getattr" info="Failed name lookup - disconnected path"
+  profile="azazel-decoy-verify" name="dev/null"`, under systemd's sandbox
+  (`PrivateDevices=` and the like make mounts disconnected from the
+  process's root). Resolved by `flags=(attach_disconnected)` on all four
+  profiles (§7; what that does and does not weaken is stated there).
+
+The items below are what is still to check; item 4 is rewritten for the
+G4 follow-up.
+
 1. masquerade (A3): a connect from an approved source on the ingress reaches
    the decoy and the banner returns; the decoy's cgroup filter sees
    `10.255.196.1`; after `nft flush ruleset` the same connect gets no answer;
@@ -793,13 +901,23 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
    #287 F2);
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
    unloaded fails, and with AppArmor disabled (`apparmor=0`)
-   `AssertSecurity=apparmor` fails it; the namespace unit's `ip netns add`
-   and `ip -n` work under its profile, **including the `Cx` transition from
-   the namespace unit to its wider `ip` child under `NoNewPrivileges=yes`**
-   (required: if refused, the unit cannot start, and the fallback is `ix`)
-   (which of `rbind` and `bind` the first
-   bind is, the nsfs bind source, the propagation flags), and its writes to
-   the paths of §7 are denied; the decoy's connect to the intake's socket
+   `AssertSecurity=apparmor` fails it; the namespace unit as rebuilt after
+   G4 (§7): `ip` started by systemd directly under `azazel-decoy-nsd` with
+   `NoNewPrivileges=yes` (no transition, so no `no new privs` denial), its
+   six `ExecStart=` lines and `ip -n` working under the profile (which of
+   `rbind` and `bind` the first bind is, the nsfs bind source, the
+   propagation flags), `ip`'s output reaching the journal (an inherited
+   socket under the profile), and its writes to the paths of §7 denied; the
+   roll-back: a start failing at a later step (for example the veth name
+   taken by hand) running both `ExecStopPost=` lines and leaving no pair
+   and no namespace, a start with `/run/netns/azazel-decoy` already present
+   failing at step 1 and then removing it (the accepted change of §7), a
+   start timing out (`TimeoutStartSec=`) running the undo, whether
+   `TimeoutStopSec=` bounds each `ExecStopPost=` command on its own or the
+   two together (*inferred*: each on its own, up to 30 s per command), and
+   `systemctl stop` removing both; with `attach_disconnected` on the four
+   profiles, the verify unit's `/dev/null` access no longer denied and no
+   new denial in a passing run of any of the four; the decoy's connect to the intake's socket
    succeeds and a write anywhere else under `/var/lib/azazel` is refused;
    the pass, as root under the controller's sandbox, can read
    `/sys/kernel/security/apparmor/profiles`;
