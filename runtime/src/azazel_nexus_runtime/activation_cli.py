@@ -40,6 +40,22 @@ verifies does it form a lease and grant (§8 item 3). No key is created or
 read for signing, no environment variable or path override is accepted, and
 nothing here starts, enables or unmasks a unit. Refusals print fixed labels
 only: no file content, raw inventory, evidence binding or exception text.
+
+**The Deception Lite exposure tier** (#196 G6,
+`docs/deception-exposure-wiring.md` §5.1, §5.2). When the policy names the
+three exposure units, ``generation-publish`` resolves the roles and renders
+the scope file exactly as the pass does (`exposure_pass.
+resolve_exposure_scope`, `decoy_scope.render_scope_file`, in memory),
+measures the exposure unit, watch unit and profile files, reads the
+installer's compiled-policy record (`/etc/azazel/activation/
+apparmor-compiled.json`, root's, one link, no link followed, bounded) and
+publishes an `observe-baseline-generation/v2` tree with the exposure
+section, printing the scope digest, the counts and the four policy hashes
+before the typed confirmation. ``request`` writes a v3 payload when the
+requested units hold the three (all three or none), carrying the scope
+digest and counts it re-rendered, and ``install`` verifies a v2 or v3
+approval by its schema with the same steps; both re-measure and re-render,
+and refuse when the generation's section no longer describes the node.
 """
 
 from __future__ import annotations
@@ -59,7 +75,11 @@ from azazel_nexus.activation_approval_v2 import (
     ActivationApprovalPolicy,
     ObserveBaselineContext,
     observe_baseline_payload,
-    verify_observe_baseline_approval,
+)
+from azazel_nexus.activation_approval_v3 import (
+    ActivationApprovalPolicyV3,
+    ActivationApprovalV3,
+    activation_approval_v3_payload,
 )
 from azazel_nexus.activation_epoch import (
     EpochRaise,
@@ -67,7 +87,13 @@ from azazel_nexus.activation_epoch import (
     epoch_raise_request,
     verify_epoch_raise,
 )
-from azazel_nexus.activation_policy import ActivationPolicy, load_activation_policy
+from azazel_nexus.activation_policy import (
+    EXPOSURE_POLICY_UNITS,
+    ActivationPolicy,
+    load_activation_policy,
+)
+from azazel_nexus.activation_store import verify_activation_approval_v2_or_v3
+from azazel_nexus.decoy_scope import parse_scope_file, render_scope_file
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.bootstrap_deployment import declared_node_binding
@@ -85,8 +111,12 @@ from azazel_nexus.generation import (
 )
 from azazel_nexus.observe_baseline import (
     EDGE_CORE_UNIT,
+    OBSERVE_BASELINE_FILE,
+    OBSERVE_BASELINE_SCHEMA,
+    OBSERVE_BASELINE_SCHEMA_V2,
     build_observe_baseline,
     evidence_commissioning_digest,
+    exposure_section_of,
     verify_observe_baseline,
 )
 from azazel_nexus.operator_store import load_operator_trust
@@ -107,7 +137,10 @@ from .activation_unit_files import (
     UnitOverrideRefused,
     measure_scoped_unit_files,
 )
+from .apparmor_compiled import APPARMOR_COMPILED_PATH, decode_apparmor_compiled
 from .commissioning_input import load_commissioning_evidence
+from .exposure_generation import build_exposure_section, measure_exposure_section_inputs
+from .exposure_pass import ExposureStageRefused, resolve_exposure_scope
 from .node_config import load_declared_node
 
 __all__ = ["FLOOR_EVENTS", "main"]
@@ -298,6 +331,70 @@ def _pin_arguments(package) -> dict:
     return {"package_digest": digest, "package_components": components}
 
 
+def _compiled_record() -> bytes:
+    """The installer's compiled-policy record: root's, one link, bounded (§5.2).
+
+    Any refusal is the one record label (`_step` lets a `Refused` through)."""
+    try:
+        fd = _open_directory(_APPROVAL_DIRECTORY, private=True)
+        try:
+            return _read_protected_at(fd, APPARMOR_COMPILED_PATH.rsplit("/", 1)[1],
+                                      limit=4096)
+        finally:
+            os.close(fd)
+    except Exception:  # noqa: BLE001 - redacted: one label
+        raise RuntimeError("compiled-policy record unreadable") from None
+
+
+@dataclass(frozen=True)
+class _Exposure:
+    """What `generation-publish`, `request` and `install` rendered for the tier."""
+
+    section: dict = field(repr=False)
+    scope_digest: str
+    prefix_count: int
+    ingress_count: int
+
+
+def _measure_exposure(evidence) -> _Exposure:
+    """The exposure section, rendered and measured as the pass does (§5.2).
+
+    The roles are resolved and the scope file rendered by the pass's own
+    functions (P6, P8), in memory; nothing is written. A refusal prints the
+    stage's code only.
+    """
+    try:
+        scope, roles = resolve_exposure_scope(evidence)
+    except ExposureStageRefused as refused:
+        raise Refused("deception scope or role interfaces refused ("
+                      + refused.reason.split(":", 1)[0] + ")") from None
+    scope_file = _step("scope file could not be rendered", render_scope_file,
+                       scope, roles.ingress)
+    parsed = _step("scope file could not be rendered", parse_scope_file, scope_file)
+    unit_files, watch_unit_files, profiles = _step(
+        "exposure unit, watch unit or profile files unavailable or not protected",
+        measure_exposure_section_inputs)
+    record = _step("AppArmor compiled-policy record unavailable or refused (reinstall "
+                   "with the service manager)", lambda: decode_apparmor_compiled(
+                       _compiled_record()))
+    section = _step("exposure section refused", build_exposure_section,
+                    unit_files=unit_files, watch_unit_files=watch_unit_files,
+                    apparmor_profiles=profiles,
+                    apparmor_policy_hashes=dict(record.apparmor_policy_hashes),
+                    scope_file=scope_file)
+    return _Exposure(section, parsed.scope_digest, len(parsed.approved_v4),
+                     len(parsed.ingress))
+
+
+def _exposure_lines(exposure: _Exposure) -> list[str]:
+    lines = [f"exposure_scope_digest: {exposure.scope_digest}",
+             f"exposure_prefix_count: {exposure.prefix_count}",
+             f"exposure_ingress_count: {exposure.ingress_count}"]
+    for name, value in sorted(exposure.section["apparmor_policy_hashes"].items()):
+        lines.append(f"apparmor_policy_hash {name}: {value}")
+    return lines
+
+
 def _store() -> GenerationStore:
     return GenerationStore(_ROOT.joinpath(*_GENERATIONS))
 
@@ -322,6 +419,7 @@ class _Baseline:
     binding: str = field(repr=False)
     tree: dict = field(repr=False)
     package: tuple | None = None
+    exposure: _Exposure | None = None
 
     @property
     def package_digest(self) -> str | None:
@@ -331,43 +429,67 @@ class _Baseline:
 def _measure_baseline() -> _Baseline:
     policy = _step("activation policy unavailable or refused", _load_policy)
     evidence = _step("verified commissioning evidence unavailable", _load_evidence)
-    units = list(policy.units)
+    # The body measures the observe scope only (wiring §5.1, "Two scopes").
+    observe = list(policy.observe_units)
     unit_files = _step("installed unit files unavailable or not protected",
-                       _measure_unit_files, units)
-    package = _step("installed Edge package checks did not pass", _package_digest, units)
+                       _measure_unit_files, observe)
+    package = _step("installed Edge package checks did not pass", _package_digest, observe)
+    exposure = _measure_exposure(evidence) if policy.names_exposure else None
     tree = _step("observe-baseline tree refused", build_observe_baseline,
-                 units=units, unit_files=unit_files, **_pin_arguments(package))
+                 units=list(policy.units), unit_files=unit_files,
+                 exposure=None if exposure is None else exposure.section,
+                 **_pin_arguments(package))
     return _Baseline(policy, _step("verified commissioning evidence unavailable",
                                    evidence_commissioning_digest, evidence),
-                     evidence.binding, tree, package)
+                     evidence.binding, tree, package, exposure)
 
 
 @dataclass(frozen=True)
 class _Collected:
     policy: ActivationPolicy
     context: ObserveBaselineContext
+    exposure: _Exposure | None = None
 
     @property
     def approval_policy(self) -> ActivationApprovalPolicy:
+        """v2's policy: the observe scope (the pass builds the same)."""
         return ActivationApprovalPolicy(
+            authorized_operators=frozenset(self.policy.operators),
+            max_lease_seconds=self.policy.max_lease_seconds,
+            unit_scope=frozenset(self.policy.observe_units),
+        )
+
+    @property
+    def exposure_policy(self) -> ActivationApprovalPolicyV3 | None:
+        """v3's policy, all of the policy's units; None without the tier."""
+        if not self.policy.names_exposure:
+            return None
+        return ActivationApprovalPolicyV3(
             authorized_operators=frozenset(self.policy.operators),
             max_lease_seconds=self.policy.max_lease_seconds,
             unit_scope=frozenset(self.policy.units),
         )
 
 
-def _current_baseline(policy, unit_files, package, commissioning_digest, binding):
+def _current_baseline(policy, unit_files, package, commissioning_digest, binding,
+                      exposure=None):
     store = _store()
     current = store.current()
     if current is None:
         raise Refused("no generation is published")
     generation = store.verify(current.number)
-    verify_observe_baseline(generation=generation, files=store.read_tree(generation.number),
+    tree = store.read_tree(generation.number)
+    verify_observe_baseline(generation=generation, files=tree,
                             units=list(policy.units), unit_files=unit_files,
                             **_pin_arguments(package))
     if (generation.commissioning_digest != commissioning_digest
             or generation.commissioning_evidence_binding != binding):
         raise Refused("current generation is bound to other commissioning evidence")
+    # Re-rendered and re-measured as the pass will (§5.2): the generation's
+    # exposure section must still describe this node.
+    if exposure is not None and exposure_section_of(
+            dict(tree)[OBSERVE_BASELINE_FILE]) != exposure.section:
+        raise Refused("the generation's exposure section no longer describes this node")
     return generation
 
 
@@ -383,20 +505,21 @@ def _collect_context() -> _Collected:
     evidence = _step("verified commissioning evidence unavailable", _load_evidence)
     commissioning = _step("verified commissioning evidence unavailable",
                           evidence_commissioning_digest, evidence)
-    units = list(policy.units)
+    observe = list(policy.observe_units)
     unit_files = _step("installed unit files unavailable or not protected",
-                       _measure_unit_files, units)
-    package = _step("installed Edge package checks did not pass", _package_digest, units)
+                       _measure_unit_files, observe)
+    package = _step("installed Edge package checks did not pass", _package_digest, observe)
+    exposure = _measure_exposure(evidence) if policy.names_exposure else None
     generation = _step("current generation is not a verified observe baseline",
                        _current_baseline, policy, unit_files, package, commissioning,
-                       evidence.binding)
+                       evidence.binding, exposure)
     context = _step("activation context refused", ObserveBaselineContext,
                     node_digest=node_digest, generation=generation.number,
                     generation_digest=generation.digest, commissioning_digest=commissioning,
                     commissioning_evidence_binding=evidence.binding,
                     policy_digest=policy.policy_digest,
                     security_epoch=declaration.security_epoch)
-    return _Collected(policy, context)
+    return _Collected(policy, context, exposure)
 
 
 # -- terminal confirmation ---------------------------------------------------
@@ -448,9 +571,15 @@ def run_generation_publish(*, source, out) -> int:
                       f"({digest}); nothing published.", file=out)
                 return 0
         number = 1 if latest is None else latest.number + 1
-        print("Observe-baseline generation (azazel-nexus/observe-baseline-generation/v1)",
-              file=out)
+        schema = (OBSERVE_BASELINE_SCHEMA if measured.exposure is None
+                  else OBSERVE_BASELINE_SCHEMA_V2)
+        print(f"Observe-baseline generation ({schema})", file=out)
         print("Units: " + ",".join(measured.policy.units), file=out)
+        if measured.exposure is not None:
+            print("Deception Lite exposure tier: the section below binds the scope "
+                  "file this node renders and the compiled AppArmor policy.", file=out)
+            for line in _exposure_lines(measured.exposure):
+                print(line, file=out)
         if measured.package_digest is not None:
             print("Edge package digest: " + measured.package_digest, file=out)
             for name, component in measured.package[1].items():
@@ -502,9 +631,10 @@ def _after_publication(generation, measured: _Baseline, store, out) -> int:
         current = store.current()
         if current is None or current.number != generation.number:
             raise Refused("another generation became current")
-        _current_baseline(measured.policy, _measure_unit_files(list(measured.policy.units)),
+        _current_baseline(measured.policy,
+                          _measure_unit_files(list(measured.policy.observe_units)),
                           measured.package, measured.commissioning_digest,
-                          measured.binding)
+                          measured.binding, measured.exposure)
         verified = True
     except Exception:  # noqa: BLE001 - published but not verified; labels only
         verified = False
@@ -593,10 +723,13 @@ def _write_create_only(path: Path, data: bytes) -> None:
         os.close(parent)
 
 
-def _summary(payload: bytes, *, operator, approval_id, seq, units, context, granted, expires):
+def _summary(payload: bytes, *, operator, approval_id, seq, units, context, granted, expires,
+             exposure=None):
     # The evidence binding and the commissioning digest are not printed.
-    return [
-        "schema: azazel-nexus/activation-approval/v2",
+    schema = ("azazel-nexus/activation-approval/v2" if exposure is None
+              else "azazel-nexus/activation-approval/v3")
+    lines = [
+        f"schema: {schema}",
         f"approval_id: {approval_id}",
         f"operator: {operator}",
         "units: " + ",".join(units),
@@ -610,6 +743,15 @@ def _summary(payload: bytes, *, operator, approval_id, seq, units, context, gran
         f"expires_at: {expires}",
         f"payload_sha256: {sha256(payload).hexdigest()}",
     ]
+    if exposure is not None:
+        lines += [
+            f"exposure_scope_digest: {exposure.scope_digest}",
+            f"exposure_prefix_count: {exposure.prefix_count}",
+            f"exposure_ingress_count: {exposure.ingress_count}",
+            "This approval names the Deception Lite exposure tier: a decoy reachable "
+            "from the approved sources.",
+        ]
+    return lines
 
 
 def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stderr) -> int:
@@ -630,9 +772,27 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stder
         granted = _now()
         expires = (parse_bootstrap_time(granted) + timedelta(seconds=valid_for)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
-        payload = _step("approval payload refused", observe_baseline_payload,
-                        context=collected.context, approval_id=approval_id, operator=operator,
-                        approval_seq=seq, units=scope, granted_at=granted, expires_at=expires)
+        # The three exposure units, all or none (§5.1): then a v3 payload
+        # with what this node renders now.
+        named = set(scope) & EXPOSURE_POLICY_UNITS
+        if named and named != EXPOSURE_POLICY_UNITS:
+            raise Refused("requested units must name all three exposure units or none")
+        exposure = collected.exposure if named else None
+        if named and exposure is None:  # pragma: no cover - the policy names them
+            raise Refused("the activation policy does not name the exposure tier")
+        if exposure is None:
+            payload = _step("approval payload refused", observe_baseline_payload,
+                            context=collected.context, approval_id=approval_id,
+                            operator=operator, approval_seq=seq, units=scope,
+                            granted_at=granted, expires_at=expires)
+        else:
+            payload = _step("approval payload refused", activation_approval_v3_payload,
+                            context=collected.context, approval_id=approval_id,
+                            operator=operator, approval_seq=seq, units=scope,
+                            granted_at=granted, expires_at=expires,
+                            exposure_scope_digest=exposure.scope_digest,
+                            exposure_prefix_count=exposure.prefix_count,
+                            exposure_ingress_count=exposure.ingress_count)
         if out_path is not None:
             _step("output file refused (it must not exist)", _write_create_only,
                   Path(out_path), payload)
@@ -644,7 +804,7 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stder
         return 1
     for line in _summary(payload, operator=operator, approval_id=approval_id, seq=seq,
                          units=scope, context=collected.context, granted=granted,
-                         expires=expires):
+                         expires=expires, exposure=exposure):
         print(line, file=stderr)
     if out_path is None:
         # #251 L-4: the payload carries the commissioning evidence binding,
@@ -654,7 +814,8 @@ def run_request(*, operator, approval_id, seq, valid_for, units, out_path, stder
               "granted_at is taken again. Nothing was signed, placed or admitted.",
               file=stderr)
         return 1
-    print("Unsigned. Sign it off-host with tools/operator_sign.py --purpose activation and "
+    purpose = "activation" if exposure is None else "activation-exposure"
+    print(f"Unsigned. Sign it off-host with tools/operator_sign.py --purpose {purpose} and "
           "the payload_sha256 above; install it with az-activation install. Nothing was "
           "signed, placed or admitted.", file=stderr)
     return 0
@@ -879,13 +1040,18 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
                     retained.security_epoch, retained.approval_seq, retained.generation)))
                 mode = "recovered"
         try:
-            approved = verify_observe_baseline_approval(
+            # v2 or v3 by its schema, the way the pass reads it (§5.1).
+            approved = verify_activation_approval_v2_or_v3(
                 trust=trust, expected=collected.context, policy=collected.approval_policy,
+                exposure_policy=collected.exposure_policy,
                 payload=payload, signature=signature, now=now,
                 security_epoch_floor=floors[0], approval_seq_floor=floors[1])
         except ApprovalRefused as error:
             # The verifier's messages are fixed, redacted labels.
             raise Refused(str(error)) from None
+        if type(approved) is ActivationApprovalV3 and not (
+                EXPOSURE_POLICY_UNITS <= approved.lease.units):
+            raise Refused("a v3 approval must name the three exposure units")
         if collected.context.generation < floors[2]:
             raise Refused("approved generation below the high-water floor")
         # #251 L-3: once a floor exists, a sequence at the floor is already
@@ -916,6 +1082,10 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
         lease = approved.lease
         print("Verified observe-baseline approval (signature, policy, context, floors):",
               file=out)
+        if type(approved) is ActivationApprovalV3:
+            print("schema: azazel-nexus/activation-approval/v3 (names the Deception Lite "
+                  "exposure tier; the pass compares its exposure fields on every boot)",
+                  file=out)
         print(f"approval_id: {approved.approval_id}", file=out)
         print(f"operator: {lease.granted_by}", file=out)
         print("units: " + ",".join(sorted(lease.units)), file=out)
@@ -967,6 +1137,9 @@ def run_install(*, payload_path, signature_path, confirm_sha256, replace, recove
         stage = "approval placed; activation ledger record missing"
         _step("activation ledger refused the install record", _append, {
             "event_type": "activation.approval_installed",
+            "schema": ("azazel-nexus/activation-approval/v3"
+                       if type(approved) is ActivationApprovalV3
+                       else "azazel-nexus/activation-approval/v2"),
             "approval_id": approved.approval_id,
             "operator": lease.granted_by,
             "units": sorted(lease.units),
@@ -1198,7 +1371,9 @@ def main(argv=None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("generation-publish",
                         help="publish the observe-baseline generation (root, interactive)")
-    request = commands.add_parser("request", help="write the unsigned v2 approval payload")
+    request = commands.add_parser(
+        "request", help="write the unsigned approval payload (v2, or v3 naming the "
+                        "three exposure units)")
     request.add_argument("--operator", required=True)
     request.add_argument("--approval-id", required=True)
     request.add_argument("--seq", required=True, type=int)

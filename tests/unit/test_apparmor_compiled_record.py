@@ -609,7 +609,10 @@ def _imports_of(path: Path) -> set[str]:
     return names
 
 
-def test_nothing_but_the_installers_tool_uses_the_record():
+def test_only_the_installers_tool_and_generation_publish_use_the_record():
+    """#196 G6 (wiring §5.2): the record is an input of `generation-publish`
+    (and of `request` and `install`, which re-measure the same way), never
+    of the pass."""
     users = []
     for base in (ROOT / "src", ROOT / "runtime" / "src", ROOT / "tools"):
         for path in base.rglob("*.py"):
@@ -619,12 +622,13 @@ def test_nothing_but_the_installers_tool_uses_the_record():
             if (any("apparmor_compiled" in name for name in _imports_of(path))
                     or "apparmor-compiled.json" in text):
                 users.append(path.relative_to(ROOT).as_posix())
-    assert users == ["tools/record_apparmor_compiled.py"]
+    assert sorted(users) == ["runtime/src/azazel_nexus_runtime/activation_cli.py",
+                             "tools/record_apparmor_compiled.py"]
 
 
-@pytest.mark.parametrize("module", ["activation_cli.py", "activation_pass.py",
-                                    "activated.py"])
-def test_generation_publish_and_the_pass_do_not_read_the_record(module):
+@pytest.mark.parametrize("module", ["activation_pass.py", "activated.py", "exposure_pass.py"])
+def test_the_pass_does_not_read_the_record(module):
+    """The pass trusts only the section inside the signed generation."""
     path = ROOT / "runtime" / "src" / "azazel_nexus_runtime" / module
     text = path.read_text(encoding="utf-8")
     assert "apparmor_compiled" not in text and "apparmor-compiled" not in text

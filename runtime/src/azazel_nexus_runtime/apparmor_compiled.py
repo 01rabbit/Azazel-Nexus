@@ -35,12 +35,14 @@ exactly three keys:
 The record is mode 0644, root's, in the root 0700 directory: it holds
 hashes of compiled public policy, no secret, and only root may replace it.
 
-**Implemented, not wired.** The writer is the installer's tool
-(`tools/record_apparmor_compiled.py`), which checks its own output with
-`decode_apparmor_compiled`. Nothing else calls this module: neither
-`generation-publish` nor the pass reads the record in this build (G6). The
-record is an input of `generation-publish` only, never of the pass; the
-pass trusts only the section inside the signed generation.
+**Wired by G6** (`docs/deception-exposure-wiring.md` §5.2). The writer is
+the installer's tool (`tools/record_apparmor_compiled.py`), which checks its
+own output with `decode_apparmor_compiled`; the reader is
+`az-activation generation-publish` (and `request` and `install`, which
+re-measure the same way), which copies the hashes into the generation's
+exposure section. The record is an input of `generation-publish` only,
+never of the pass; the pass trusts only the section inside the signed
+generation.
 """
 
 from __future__ import annotations
@@ -158,8 +160,8 @@ def decode_apparmor_compiled(raw) -> ApparmorCompiled:
     keys, the contract above, exactly the four profile names each to 64
     lowercase hex digits, and a version line `normalize_parser_version`
     leaves unchanged. Pure; nothing read
-    appears in the refusal. **Called by nothing but the installer's tool in
-    this build**; G6's `generation-publish` is to call it.
+    appears in the refusal. Called by the installer's tool and by
+    `az-activation` (#196 G6).
     """
 
     if type(raw) is not bytes or not 0 < len(raw) <= _RECORD_LIMIT:
