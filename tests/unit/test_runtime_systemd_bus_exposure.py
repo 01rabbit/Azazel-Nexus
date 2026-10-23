@@ -108,6 +108,43 @@ def test_an_enabled_or_active_loader_is_read_as_it_is():
                                  ).startswith("host_firewall_active:")
 
 
+def test_an_uninstalled_loader_loaded_as_not_found_and_inactive_is_absent():
+    """VM, §8 boot 2 of #317: the decoy units' queued start jobs (`After=`
+    `firewalld.service`, `nftables.service`) make systemd load an object for
+    an uninstalled loader: no unit file (FileNotFound), `LoadState`
+    `not-found`, `ActiveState` `inactive`. That is the absent loader."""
+    objects = {unit: {"LoadState": "not-found", "ActiveState": "inactive"}
+               for unit in HOST_FIREWALL_UNITS}
+    states = SystemdUnitCalls(FakeManager(objects=objects)).host_firewall_states()
+    assert states == {unit: None for unit in HOST_FIREWALL_UNITS}
+    assert host_firewall_refusal(states) is None
+    # Beside an installed, disabled, unloaded nftables.service.
+    manager = FakeManager(files={"nftables.service": "disabled"},
+                          objects={"firewalld.service": {"LoadState": "not-found",
+                                                         "ActiveState": "inactive"}})
+    assert host_firewall_refusal(SystemdUnitCalls(manager).host_firewall_states()) is None
+
+
+@pytest.mark.parametrize("load,active", [
+    ("not-found", "active"), ("not-found", "activating"), ("not-found", "failed"),
+    ("not-found", "deactivating"), ("loaded", "inactive"), ("masked", "inactive"),
+    ("error", "inactive"), ("bad-setting", "inactive"),
+])
+def test_a_fileless_loader_object_in_any_other_state_still_withholds(load, active):
+    objects = {"firewalld.service": {"LoadState": load, "ActiveState": active}}
+    states = SystemdUnitCalls(FakeManager(objects=objects)).host_firewall_states()
+    assert states["firewalld.service"] == {"UnitFileState": None, "ActiveState": active}
+    assert host_firewall_refusal(states).startswith("host_firewall_unreadable:")
+
+
+def test_a_loader_with_a_file_is_judged_on_its_file_state_whatever_its_load_state():
+    manager = FakeManager(files={"nftables.service": "enabled"},
+                          objects={"nftables.service": {"LoadState": "not-found",
+                                                        "ActiveState": "inactive"}})
+    assert host_firewall_refusal(SystemdUnitCalls(manager).host_firewall_states()
+                                 ).startswith("host_firewall_enabled:")
+
+
 def test_the_firewall_units_are_the_parts():
     assert HOST_FIREWALL_UNITS == exposure_withholding.HOST_FIREWALL_UNITS
 

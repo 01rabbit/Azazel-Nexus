@@ -316,15 +316,28 @@ class SystemdUnitCalls:
     def host_firewall_states(self) -> dict:
         """`host_firewall_refusal`'s input: each loader's file and active state.
 
-        None for a loader with neither a unit file nor a unit object; a
-        loader with a file and no unit object reads `ActiveState` None (no
-        object holds a state, so nothing of it runs).
+        None for a loader with neither a unit file nor a unit object, and
+        for one with no unit file whose object (loaded because another unit
+        names it) reads exactly `LoadState` `not-found` and `ActiveState`
+        `inactive`; a loader with a file and no unit object reads
+        `ActiveState` None (no object holds a state, so nothing of it runs).
+        A file state None beside any other object state stays unreadable.
         """
         states: dict = {}
         for unit in HOST_FIREWALL_UNITS:
             file_state = self._unit_file_state_or_none(unit)
             path = self._object_or_none(unit)
             active = None if path is None else self._unit_state(path, "ActiveState")
+            if file_state is None and path is not None:
+                # No unit file, but an object: systemd loads one for a name
+                # another unit is ordered against (`After=firewalld.service`
+                # of the decoy units, with their start jobs queued). Exactly
+                # `not-found` and `inactive` is the absent loader (observed on
+                # the VM, §8); any other pair stays unreadable and withholds.
+                if (self._unit_state(path, "LoadState") == "not-found"
+                        and active == "inactive"):
+                    states[unit] = None
+                    continue
             states[unit] = (None if file_state is None and active is None
                             else {"UnitFileState": file_state, "ActiveState": active})
         return states

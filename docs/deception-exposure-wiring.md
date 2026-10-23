@@ -1027,7 +1027,14 @@ request, not a new authority.
    residue judgement. A file state None beside an object, or one of the two
    None alone, stays unreadable. Without this a disabled, unloaded
    `nftables.service` (Debian's default) would withhold the tier on every
-   boot.
+   boot. **Found in the VM rehearsal (§8, boot 2):** with the decoy units'
+   start jobs queued, their `After=` makes systemd load an object for an
+   uninstalled loader (`firewalld.service`): no unit file (`FileNotFound`),
+   `LoadState` `not-found`, `ActiveState` `inactive`. The reader therefore
+   also reads `LoadState` for a loader without a unit file and maps exactly
+   that pair to None (absent); any other state of such an object
+   (`active`, `activating`, `failed`, another load state) stays unreadable
+   and withholds. Nothing else is loosened.
 5. **`reset_grant_markers` removes the markers even when a scope file name
    refuses**, and raises after; the emergency narrowing removes the scope
    files again in a `finally`.
