@@ -26,11 +26,12 @@ labelled `rehearsal`.
 
 **What this run cannot show today.** Since #206 P4 the production pass has
 a regular path that can grant the SUPPORTING loop units (§5) from the inputs
-`az-activation` produces, but its reboot sequence is not yet confirmed on a
-VM (P6 of
-[#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)). The
-loop is therefore still started by the rehearsal-only procedure of §6, and the
-result says *activation admission: not exercised*. On real hardware that
+`az-activation` produces; its reboot sequence was rehearsed once on a VM
+on 2026-10-23 (P6 of
+[#206](https://github.com/01rabbit/Azazel-Nexus/issues/206), mechanics only:
+[activation rehearsal](activation-rehearsal.md)). This runbook requests no
+approval, so the loop is still started by the rehearsal-only procedure of
+§6, and the result says *activation admission: not exercised*. On real hardware that
 procedure is forbidden ([HG-07](hg-07.md) step 3).
 
 Text marked **要確認 (to confirm)** is a point this runbook could not settle

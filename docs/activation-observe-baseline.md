@@ -7,7 +7,9 @@ P0, P1 (library only), P2 (readers, §7), P3a (the off-host signer's
 `activation` purpose), P3b (the node's `az-activation` tool:
 `generation-publish`, `request`, `install`), P4 (SUPPORTING wired into the
 pass, §8) and P5 (§3.4: probe contract v2, the boot preflight and edge-core
-in the pass's scope, §8.1) implemented; the P6 VM confirmation pending**.
+in the pass's scope, §8.1) implemented; P6 rehearsed once on the VM on
+2026-10-23 (mechanics only, not evidence:
+[activation rehearsal §0.1](hil-runbooks/activation-rehearsal.md#01-run-of-2026-10-23-mechanics-only))**.
 Phases land as separate PRs (§4).
 
 Before P4 no regular path admitted the integrated loop's units: `az-activated`
@@ -15,10 +17,11 @@ composed its production pass with `lease=None` and `healthy=False`, granted
 nothing and recorded `activation.inputs_incomplete`
 (`runtime/src/azazel_nexus_runtime/activated.py`). Since P4 the pass can grant
 the five SUPPORTING loop units (§8) from the generation, approval and high
-water that `az-activation` (P3b) produces, but no VM has confirmed the boot
-sequence (P6). The VM rehearsal
-([#195](https://github.com/01rabbit/Azazel-Nexus/issues/195)) therefore starts
-the loop by the rehearsal-only procedure, and the result says *activation
+water that `az-activation` (P3b) produces. The boot sequence (P6) was
+rehearsed once on the VM on 2026-10-23, signed with a VM-only rehearsal key;
+that is mechanics only, never hardware evidence. The integrated loop rehearsal
+([#195](https://github.com/01rabbit/Azazel-Nexus/issues/195)) started the
+loop by the rehearsal-only procedure, and its result says *activation
 admission: not exercised*. This document proposes the smallest set of
 producers that lets the regular pass admit the loop's units, under the
 existing invariants, and the order in which to build them.
@@ -638,7 +641,10 @@ behaviour is unchanged. On the ordinary path, if either was left unmasked
 when the boot began, its start job is already queued, the preflight mask
 does not cancel it, and READY releases it: the unit then runs until the
 controller exits and `BindsTo=` stops it, which is at most the bounded
-barrier wait (about 5 s) after READY. P6 must observe this window on the VM.
+barrier wait (about 5 s) after READY. Observed on the VM in P6
+(2026-10-23, auditd left enabled, not hardware evidence): auditd began to
+start right after READY, never reached `active`, and `BindsTo=` stopped it
+about 25 ms after READY; the pass masked it again.
 
 **Edge-core was refused in P4.** A policy naming `azazel-edge-core.service`
 failed `activation_policy` as a whole. P5 lifts that refusal (§8.1); the
@@ -682,8 +688,10 @@ a unit file changed after publishing, an altered tree, other evidence,
 sequence below the floor and a revoked or unauthorized operator all refuse;
 the tripwire fires on an out-of-scope grant; stale markers are removed before
 any decision; the high water is raised after the decision and never lowered.
-None of this is VM or hardware evidence: P6 still has to show reboot →
-granted → reboot → started, and every negative run masked and not started.
+None of these tests is VM or hardware evidence. The VM rehearsal of P6
+(2026-10-23, mechanics only, not hardware evidence) showed reboot → granted →
+reboot → started, and the negative runs it could exercise left the units
+masked and not started.
 
 ### 8.1 P5: edge-core in the pass
 
@@ -1228,7 +1236,7 @@ units, and neither file is one of them.
   Replacing any of them after the operator signed is not detected by the
   pass; the unit files and the Edge package are. This is root-level local
   trust, like the *pass → launch* window of §8.1.
-- **M-5 (要 VM 確認): a second pass in the same boot.** The once-claim
+- **M-5 (VM-observed 2026-10-23): a second pass in the same boot.** The once-claim
   `/run/azazel-nexus-bootstrap/controller-used` is written only by the
   selected bootstrap path, so on the ordinary path the controller can be
   started again after its first pass exited (an operator's
@@ -1239,9 +1247,12 @@ units, and neither file is one of them.
   emergency narrowing or `RollbackFailed` and exit 1 rather than grant. That
   is fail-closed (nothing new starts; a granted unit that stops cannot
   restart this boot without a marker) but costs availability. The exact
-  outcome on systemd 257 has to be observed on the VM.
-  Status: the grant-bearing VM check awaits the operator's signature; the
-  unit tests are done. `tests/unit/test_runtime_activated_second_pass.py`
+  outcome on systemd 257 was observed on the VM (status below).
+  Status: observed on the VM on 2026-10-23 after a granting boot, signed
+  with a VM-only rehearsal key (not hardware evidence), and it matches: the
+  two records, `RollbackFailed` with exit 1, every marker removed, every
+  governed unit masked, and the two units that were running kept running.
+  The unit tests are done. `tests/unit/test_runtime_activated_second_pass.py`
   pins, through a fake system bus answered below `SystemdBusSession` (so the
   client's translation of error replies, calls that do not complete and a
   foreign reply owner is included), the preflight remask, the two records
