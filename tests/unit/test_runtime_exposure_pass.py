@@ -601,6 +601,22 @@ _TRIPS = {
     "no rendering": (EXPOSURE, lambda i: setattr(i, "exposure_scope_file", None)),
     "other rendering": (EXPOSURE, lambda i: setattr(
         i, "exposure_scope_file", i.exposure_scope_file.replace(b"lan0", b"lan1"))),
+    # Review of #317: each alone.
+    "approval not v3": (EXPOSURE, lambda i: setattr(i, "approval", ObserveBaselineApproval(
+        lease=i.approval.lease, approval_id=i.approval.approval_id,
+        approval_seq=i.approval.approval_seq, security_epoch=i.approval.security_epoch))),
+    "approval of another lease": (EXPOSURE, lambda i: setattr(
+        i, "approval", replace(i.approval, lease=replace(i.approval.lease)))),
+    # P10 again, in the tripwire (defence in depth).
+    "approval digest": (EXPOSURE, lambda i: setattr(i, "approval", replace(
+        i.approval, exposure_scope_digest="sha256:" + "0" * 64))),
+    "approval prefix count": (EXPOSURE, lambda i: setattr(i, "approval", replace(
+        i.approval, exposure_prefix_count=3))),
+    "approval ingress count": (EXPOSURE, lambda i: setattr(i, "approval", replace(
+        i.approval, exposure_ingress_count=2))),
+    "section digest": (EXPOSURE, lambda i: setattr(i, "exposure_section", {
+        **i.exposure_section, "scope_digest": "sha256:" + "0" * 64})),
+    "no section": (EXPOSURE, lambda i: setattr(i, "exposure_section", None)),
 }
 
 

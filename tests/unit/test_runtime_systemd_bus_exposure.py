@@ -272,3 +272,32 @@ def test_the_session_offers_the_three_reads_and_no_new_verb():
     text = open(source, encoding="utf-8").read()
     for verb in ("StartUnit", "StopUnit", "LoadUnit", "RestartUnit", "KillUnit"):
         assert f'"{verb}"' not in text, verb
+
+
+# -- the None cases at the parts (review of #317) ---------------------------------
+
+
+@pytest.mark.parametrize("load,active", [(None, "inactive"), ("masked", None)])
+def test_the_residue_judgement_refuses_one_of_load_and_active_none_alone(load, active):
+    units = {unit: {"LoadState": "masked", "UnitFileState": "masked", "ActiveState": "inactive"}
+             for unit in EXPOSURE}
+    units[EXPOSURE[1]] = {"LoadState": load, "UnitFileState": "masked", "ActiveState": active}
+    assert exposure_residue_departures(units, (0, None), ("lo",)) == (
+        "exposure_state_unreadable",)
+
+
+def test_the_residue_judgement_reads_both_none_as_no_unit_object():
+    units = {unit: {"LoadState": None, "UnitFileState": "masked", "ActiveState": None}
+             for unit in EXPOSURE}
+    assert exposure_residue_departures(units, (0, None), ("lo",)) == ()
+    # With no object at all, a present namespace is a leftover of a stopped unit.
+    assert exposure_residue_departures(units, (0, 0o100444), ("lo",)) == (
+        "exposure_leftovers_present",)
+
+
+def test_a_firewall_entry_with_both_values_none_is_unreadable():
+    """The bus maps that case to None as a whole; a dict of two Nones is
+    not a reading."""
+    states = {unit: None for unit in HOST_FIREWALL_UNITS}
+    states["nftables.service"] = {"UnitFileState": None, "ActiveState": None}
+    assert host_firewall_refusal(states).startswith("host_firewall_unreadable:")

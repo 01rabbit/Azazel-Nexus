@@ -857,7 +857,17 @@ it as the pass's stage P3 and compares the kernel's compiled hashes with
 the signed generation's at P11; after any change to the profiles, their
 includes or the parser, the tier then stays withheld until the exposure is
 installed again, a new generation published and a new v3 approval signed,
-[wiring §10 item 9](deception-exposure-wiring.md#10-open-points).)
+[wiring §10 item 9](deception-exposure-wiring.md#10-open-points).
+**While the policy names the three exposure units**, `az-activation
+generation-publish`, `request` and `install` need the exposure inputs for
+**every** tier, the SUPPORTING units and edge-core included: the
+installer's compiled-policy record (`/etc/azazel/activation/apparmor-compiled.json`),
+a v3 commissioning proposal whose `deception_bridge` roles resolve on this
+boot, and the exposure, watch and profile files as installed. If any of
+them is missing or refused, none of the three commands completes. The
+remedy is to remove the three exposure units from the policy (all three:
+the policy names them together or not at all), then publish, request and
+install again for the other units.)
 ([grant design §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)).
 To see their state, as root:
 

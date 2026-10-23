@@ -854,8 +854,17 @@ def _exposure_grant_holds(exposure_granted, lease, inputs, outcome, rolled_back)
         return False
     scope_file = inputs.exposure_scope_file
     try:
-        return (type(scope_file) is bytes
-                and parse_scope_file(scope_file).scope_digest == evidence.scope_digest)
+        parsed = parse_scope_file(scope_file) if type(scope_file) is bytes else None
+        section = inputs.exposure_section
+        approval = inputs.approval
+        # P10 again (defence in depth): the approval's exposure fields and the
+        # signed section's digest are this rendering's.
+        return (parsed is not None and parsed.scope_digest == evidence.scope_digest
+                and type(section) is dict
+                and section.get("scope_digest") == evidence.scope_digest
+                and approval.exposure_scope_digest == evidence.scope_digest
+                and approval.exposure_prefix_count == len(parsed.approved_v4)
+                and approval.exposure_ingress_count == len(parsed.ingress))
     except Exception:  # noqa: BLE001 - an unreadable rendering is not a grant
         return False
 
