@@ -366,7 +366,8 @@ releases at startup even when new enforcement is disabled.
 JSONL copy has no rotation and no ceiling, so the bounded record is the
 intake's; every event still reaches the journal through stdout, rate limited.
 The unit declares no `RuntimeDirectory` (it owns nothing under `/run`, and one
-would chown `/run/azazel` and remove it on stop; the intake socket
+would be chowned to it and removed on stop; no unit declares the bare
+`/run/azazel` any more, #206 P6; the intake socket
 follows the node's socket layout under `/var/lib/azazel/run`) and runs with
 `PrivateNetwork=yes`. Intake and its socket permissions belong to I1. No intake
 receiver ships in I0, and the unit adds no dependency on it.

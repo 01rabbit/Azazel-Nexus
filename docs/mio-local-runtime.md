@@ -358,8 +358,8 @@ via the unit's `ExecStartPre=+` directive. It observes the node identity again
 and writes only the host HMAC to `/run/azazel-mio-identity/node-identity`, root:azmio
 0640. locald opens this bounded file without following symlinks and checks its
 owner, group, mode and link count, and checks its parent is root:azmio 0750.
-Tmpfiles creates that separate directory; it is independent of `/run/azazel`,
-which entryd and other services declare as a RuntimeDirectory. The commissioning secret stays root-only;
+Tmpfiles creates that separate directory; it is independent of `/run/azazel/mio`,
+locald's own RuntimeDirectory (no unit declares the bare `/run/azazel`). The commissioning secret stays root-only;
 copying `/etc` cannot replay a prior machine's observation. Activation observes
 the same identity directly as root. The helper accepts no arguments or environment
 inputs. A failed identity observation removes the previous digest. With admission enabled,

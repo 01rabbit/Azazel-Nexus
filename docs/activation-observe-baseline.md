@@ -645,9 +645,15 @@ failed `activation_policy` as a whole. P5 lifts that refusal (§8.1); the
 edge-core unit already carried its marker condition.
 
 **Marker path.** The markers live under `/run/azazel-activation/granted/`, not
-`/run/azazel/activation/`: `/run/azazel` is the shared `RuntimeDirectory=` of
-several units, which systemd chowns to the starting unit's account and
-removes when that unit (including the controller itself) stops.
+`/run/azazel/activation/`: systemd chowns a runtime directory to the starting
+unit's account and removes it when that unit stops, so the markers stay out of
+every runtime-directory tree. `/run/azazel` itself is no unit's
+`RuntimeDirectory=` any more (P6 VM rehearsal: when the controller and several
+loop units shared it, the controller's exit right after READY removed it as
+the granted loop units set up their execution directories, and they failed
+with `233/RUNTIME_DIRECTORY`); only nested leaves such as `azazel/mio` remain,
+for which systemd creates `/run/azazel` root-owned `0755` and removes only the
+leaf (`test_no_unit_shares_the_bare_runtime_directory_with_the_controller`).
 `/run/azazel-activation` is a root `0755` directory created at boot by the
 packaged tmpfiles rule; the controller has it as an optional
 `ReadWritePaths=-`, so a node without it still narrows and simply cannot

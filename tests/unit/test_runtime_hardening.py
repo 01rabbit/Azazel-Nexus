@@ -649,6 +649,43 @@ def test_systemd_runtime_directory_is_separate_from_persistent_socket_tree():
         assert int(mode, 8) == 0o750
 
 
+def test_no_unit_shares_the_bare_runtime_directory_with_the_controller():
+    """No unit declares `RuntimeDirectory=azazel`, and no two share a leaf (#206 P6).
+
+    The controller is `Type=notify`, sends READY after its pass and exits
+    within milliseconds. When it and the governed loop units it grants
+    (ordered `After=` it) all declared the bare `azazel`, its exit removed
+    `/run/azazel` exactly as those units set up their execution directories:
+    the VM rehearsal saw edge-probed, mio-entryd and knowledge-lited fail with
+    233/RUNTIME_DIRECTORY, and a unit that won the race would have had the
+    directory removed under it all the same. The same holds for any two
+    units sharing a name, since systemd removes a runtime directory when any
+    unit declaring it stops. A unit that owns something under `/run` names its
+    own leaf; for a nested `azazel/<leaf>` systemd creates `/run/azazel`
+    root-owned and removes only the leaf.
+    """
+
+    owners: dict[str, str] = {}
+    for profile in ALL_PROFILES:
+        declared = [item for value in _settings(profile.unit).get("RuntimeDirectory", [])
+                    for item in value.split()]
+        assert declared == profile.runtime_directory.split(), profile.unit
+        for name in declared:
+            assert name.strip("/") != "azazel", profile.unit
+            assert name not in owners, (profile.unit, owners.get(name))
+            owners[name] = profile.unit
+    assert not _settings(ACTIVATION_CONTROLLER_UNIT).get("RuntimeDirectory")
+    # Every unit the controller grants starts after its exit; none may own a
+    # runtime directory the controller's stop could remove.
+    from azazel_nexus_runtime.activation_markers import GRANT_MARKER_DIRECTORY
+    gated = [profile for profile in ALL_PROFILES
+             if f"ConditionPathExists={GRANT_MARKER_DIRECTORY}/{profile.unit}"
+             in _unit(profile.unit)]
+    assert gated
+    for profile in gated:
+        assert "azazel" not in _settings(profile.unit).get("RuntimeDirectory", []), profile.unit
+
+
 # -- the installer agrees with all of it ----------------------------------
 
 
@@ -937,8 +974,8 @@ def test_edge_core_posture_matches_the_packaged_health_contract():
     assert environment["AZAZEL_EVE_PATH"] == "/var/log/suricata/eve.json"
     # Optional, so a host without Suricata yet still starts the unit.
     assert settings["ReadOnlyPaths"] == ["-/var/log/suricata"]
-    # It owns nothing under /run: a RuntimeDirectory would chown and, on
-    # stop, remove the /run/azazel the intake socket lives in.
+    # It owns nothing under /run: a RuntimeDirectory would be chowned to it
+    # and removed on stop; the intake socket lives under /var/lib/azazel/run.
     assert "RuntimeDirectory" not in settings
     assert settings["PrivateNetwork"] == ["yes"]
     # Edge's detection is weighted ahead of every other unit under load.
