@@ -1215,20 +1215,55 @@ def test_the_scope_credential_is_the_one_the_helper_reads():
                 if key != "LoadCredential" and "Credential" in key]
 
 
-@pytest.mark.parametrize("unit", ["azazel-decoyd.service", "azazel-mio-entryd.service",
-                                  "azazel-knowledge-lited.service"])
-@pytest.mark.parametrize("credential", [
+_OTHER_CREDENTIALS = [
     ("LoadCredential", "decoy-scope:/run/azazel-activation/decoy-scope.json"),
     ("LoadCredential", "x:/run/azazel-activation/decoy-scope.json"),
     ("LoadCredential", "grants:/run/azazel-activation/granted"),
     ("ImportCredential", "decoy-scope"),
-])
+    ("LoadCredential", "decoy-scope-digest:/run/azazel-activation/decoy-scope.digest"),
+]
+
+
+@pytest.mark.parametrize("unit", ["azazel-mio-entryd.service",
+                                  "azazel-knowledge-lited.service"])
+@pytest.mark.parametrize("credential", _OTHER_CREDENTIALS)
 def test_no_other_unit_may_load_the_scope(unit, credential):
     from dataclasses import replace
 
     profile = next(p for p in ALL_PROFILES if p.unit == unit)
     with pytest.raises(ValueError, match="credential alone"):
         replace(profile, extra=profile.extra + (credential,))
+
+
+@pytest.mark.parametrize("credential", _OTHER_CREDENTIALS)
+def test_the_decoy_loads_its_digest_and_nothing_else_of_the_scope(credential):
+    """#196 G6 (wiring §6, D2): the hardening check is widened for the decoy
+    alone, and only for exactly its digest credential, once."""
+    from dataclasses import replace
+
+    from azazel_nexus_runtime.hardening import DECOY_SCOPE_DIGEST_CREDENTIAL
+
+    profile = next(p for p in ALL_PROFILES if p.unit == "azazel-decoyd.service")
+    assert [item for item in profile.extra if item[0] == "LoadCredential"] == [
+        ("LoadCredential", DECOY_SCOPE_DIGEST_CREDENTIAL)]
+    with pytest.raises(ValueError, match="loads exactly"):
+        replace(profile, extra=profile.extra + (credential,))
+    without = tuple(item for item in profile.extra if item[0] != "LoadCredential")
+    with pytest.raises(ValueError, match="loads exactly"):
+        replace(profile, extra=without)
+
+
+@pytest.mark.parametrize("unit", ["azazel-decoy-netd.service",
+                                  "azazel-decoy-verify.service"])
+def test_the_helper_and_the_verify_unit_never_load_the_digest(unit):
+    from dataclasses import replace
+
+    from azazel_nexus_runtime.hardening import DECOY_SCOPE_DIGEST_CREDENTIAL
+
+    profile = next(p for p in ALL_PROFILES if p.unit == unit)
+    with pytest.raises(ValueError):
+        replace(profile, extra=profile.extra + (
+            ("LoadCredential", DECOY_SCOPE_DIGEST_CREDENTIAL),))
 
 
 def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
@@ -1255,10 +1290,13 @@ def test_the_decoy_has_no_capability_and_listens_only_in_its_namespace():
     # sockets are inaccessible to it, as to the helper.
     assert settings["InaccessiblePaths"] == ["-/run/dbus/system_bus_socket",
                                              "-/run/systemd/private"]
-    for key in ("SupplementaryGroups", "RuntimeDirectory", "LoadCredential",
+    for key in ("SupplementaryGroups", "RuntimeDirectory",
                 "Environment", "EnvironmentFile", "ExecStartPre", "ReadWritePaths",
                 "StateDirectory", "BindPaths"):
         assert key not in settings, key
+    # Its one credential (#196 G6, D2): the pass's scope digest, nothing else.
+    assert settings["LoadCredential"] == [
+        "decoy-scope-digest:/run/azazel-activation/decoy-scope.digest"]
     # After and Requires the helper as well as the controller: stopping the
     # helper stops the decoy first. And the watch (#196 G2): after a verify
     # that passed, requiring it and its timer.

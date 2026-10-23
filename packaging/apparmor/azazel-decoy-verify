@@ -5,8 +5,8 @@
 # with AppArmor enabled a start without this profile loaded fails, and with
 # AppArmor disabled the assertion fails it, so the unit never runs
 # unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
-# loaded at boot by apparmor.service. The activation pass never grants the
-# decoy units in this build, and nothing else starts this one.
+# loaded at boot by apparmor.service. The decoy pulls it in; the activation
+# pass grants the decoy units only with the whole exposure tier (#196 G6).
 #
 # The verify unit runs the network helper's executable with the one word
 # `verify`, root with CAP_NET_ADMIN in the host network namespace. It is the

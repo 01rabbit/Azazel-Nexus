@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from azazel_nexus import activation, decoy_scope
+from azazel_nexus import decoy_scope
 from azazel_nexus.decoy_scope import (
     BRIDGE_PREFIX,
     CONTRACT,
@@ -512,32 +512,27 @@ def _importers(root):
     return found
 
 
-def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
+def test_the_scopes_readers_and_renderers_are_exactly_these():
     """G1b wired the helper and G2 the verify unit (the helper's executable,
-    `decoy_watch`); the pass is G6. #196 G6 preparation A: the shared
-    reachability reads take only the interface-name rule from it
-    (`interface_name_allowed`), and nothing on the pass imports them.
-    `exposure_generation` (G6 preparation C) digests a scope file it is
-    given and is imported by nothing in the product
-    (`test_exposure_g6_parts.py`). In the library,
-    `exposure_interfaces` (G6 preparation D) checks role interface names
-    with `interface_name_allowed` and is imported by nothing in the product
-    (`test_exposure_interfaces.py`). `activation_approval_v3` (G6 prep, the
-    decoder, wiring §5.1 V2) takes only the bounds `MAX_PREFIXES` and
-    `MAX_INGRESS` for its exposure counts and is imported by nothing
-    (`test_g6_unwired.py`). G6 puts these lists back to the real callers
-    when it wires the parts in."""
+    `decoy_watch`). #196 G6 wires the pass: its step 10 (`exposure_pass`)
+    decodes the proposal's scope and renders the file, the controller
+    (`activated`) reads back what it wrote, and `az-activation` renders the
+    same file to publish and re-check the generation's section. The shared
+    reachability reads take only the interface-name rule from it, and
+    `exposure_generation` digests a scope file it is given. In the library,
+    `exposure_interfaces` checks role interface names with
+    `interface_name_allowed`, and `activation_approval_v3` takes only the
+    bounds of its exposure counts; `activation.py` never names it."""
 
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
-    assert _importers(runtime) == ["decoy_netd.py", "decoy_reachability.py",
-                                   "decoy_watch.py", "exposure_generation.py"]
+    assert _importers(runtime) == ["activated.py", "activation_cli.py", "decoy_netd.py",
+                                   "decoy_reachability.py", "decoy_watch.py",
+                                   "exposure_generation.py", "exposure_pass.py"]
     reachability = (runtime / "decoy_reachability.py").read_text(encoding="utf-8")
     assert ("from azazel_nexus.decoy_scope import MAX_INGRESS, interface_name_allowed"
             in reachability)
-    for name in ("activation_pass.py", "activation_markers.py", "activated.py"):
-        path = runtime / name
-        if path.is_file():
-            assert "decoy_scope" not in path.read_text(encoding="utf-8"), name
+    for name in ("activation_pass.py", "activation_markers.py"):
+        assert "decoy_scope" not in (runtime / name).read_text(encoding="utf-8"), name
     library = REPO / "src" / "azazel_nexus"
     assert _importers(library) == ["activation_approval_v3.py", "commissioning_approval.py",
                                    "exposure_interfaces.py", "fabric_boundary.py"]
@@ -545,7 +540,6 @@ def test_only_the_helper_reads_the_scope_and_the_pass_does_not_yet():
     assert "from .decoy_scope import MAX_INGRESS, MAX_PREFIXES\n" in v3
     assert v3.count("decoy_scope") == v3.count("decoy_scope.MAX_") + 1
     assert "decoy_scope" not in (library / "activation.py").read_text(encoding="utf-8")
-    assert activation  # the withhold itself is pinned by test_decoy_isolation_evidence
 
 
 # -- the boundary ---------------------------------------------------------------

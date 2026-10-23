@@ -42,8 +42,10 @@ discarded at the call; the observation has no field for it (§7 Q8); nothing
 here logs a peer, and the log lines carry only ports and counts.
 
 Takes no argument and reads no environment variable. The activation pass
-never grants the unit in this build (`DECEPTION_EXPOSURE` is withheld as
-`isolation_evidence_absent`), so on a node nothing starts it yet.
+grants the unit only with the whole exposure tier, on a verified v3
+approval and its exposure evidence (#196 G6); before any socket the decoy
+also requires the isolation record's scope digest to equal the pass's
+(`decoy_isolation.require_isolation_for_decoy`, D2).
 """
 
 from __future__ import annotations

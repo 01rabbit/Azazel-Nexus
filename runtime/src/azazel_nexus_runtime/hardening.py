@@ -87,6 +87,7 @@ __all__ = [
     "DECOY_NAMESPACE_START",
     "DECOY_NAMESPACE_UNDO",
     "DECOY_SCOPE_CREDENTIAL",
+    "DECOY_SCOPE_DIGEST_CREDENTIAL",
     "DECOY_TRIP_CONFLICTS",
     "DECOY_TRIP_UNIT",
     "DECOY_VERIFY_SANDBOX",
@@ -410,14 +411,27 @@ class ServiceProfile:
         # The exposure scope is the helper's input and the verify unit's
         # (#196 G1b, G2): another unit loading it, or the grant directory it
         # lives in, as a credential would read what only those two may act on
-        # or compare with.
-        if self.unit not in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT) and any(
-                key.startswith(("LoadCredential", "SetCredential", "ImportCredential"))
-                and ("decoy-scope" in value or "/run/azazel-activation" in value)
-                for key, value in self.extra):
+        # or compare with. The decoy (#196 G6, D2) loads the pass's scope
+        # **digest** and nothing else: exactly `DECOY_SCOPE_DIGEST_CREDENTIAL`,
+        # once, so it never holds the prefixes or the ingress names.
+        credentials = [(key, value) for key, value in self.extra
+                       if key.startswith(("LoadCredential", "SetCredential",
+                                          "ImportCredential"))
+                       and ("decoy-scope" in value or "/run/azazel-activation" in value)]
+        if self.unit == DECOY_UNIT:
+            if credentials != [("LoadCredential", DECOY_SCOPE_DIGEST_CREDENTIAL)]:
+                raise ValueError(
+                    f"{self.unit} loads exactly {DECOY_SCOPE_DIGEST_CREDENTIAL} and no "
+                    "other part of the decoy scope")
+        elif self.unit not in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT) and credentials:
             raise ValueError(
                 f"{self.unit}: the decoy scope is {DECOY_NETWORK_HELPER_UNIT}'s "
-                f"and {DECOY_VERIFY_UNIT}'s credential alone")
+                f"and {DECOY_VERIFY_UNIT}'s credential alone, and its digest "
+                f"{DECOY_UNIT}'s")
+        elif self.unit in (DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT) and any(
+                "decoy-scope-digest" in value or "decoy-scope.digest" in value
+                for _, value in credentials):
+            raise ValueError(f"{self.unit}: the scope digest credential is {DECOY_UNIT}'s")
         if self.unit == DECOY_NAMESPACE_UNIT:
             self._check_namespace_unit()
         elif self.shared_overrides or self.shared_omissions:
@@ -1080,6 +1094,18 @@ DECOY_MANAGER_SOCKETS_INACCESSIBLE: tuple[tuple[str, str], ...] = (
 #: closed). The helper's and no other unit's.
 DECOY_SCOPE_CREDENTIAL = "decoy-scope:/run/azazel-activation/decoy-scope.json"
 
+#: The decoy's one credential (#196 G6, `docs/deception-exposure-wiring.md`
+#: §6, owner decision Q-D = D2): the digest of the scope file the activation
+#: pass rendered for this grant, written beside it only when the tier is
+#: granted, which the decoy compares with the isolation record's
+#: `scope_digest`. It reads it from
+#: `/run/credentials/azazel-decoyd.service/decoy-scope-digest`
+#: (`azazel_nexus.decoy_isolation.SCOPE_DIGEST_CREDENTIAL_PATH`; a test keeps
+#: them equal). A missing source fails the start (closed); the decoy's and
+#: no other unit's.
+DECOY_SCOPE_DIGEST_CREDENTIAL = (
+    "decoy-scope-digest:/run/azazel-activation/decoy-scope.digest")
+
 #: The decoy network helper's own settings, pinned whole (#196 body, m2 of
 #: the review of #268). On top of the shared sandbox: the clock, the host
 #: name and the kernel log are out of reach, no realtime scheduling, and
@@ -1664,7 +1690,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "the unit files and the ledgers and any reach to the service "
             "manager; it starts only with AppArmor enabled and that profile "
             "loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor). "
-            "The activation pass never grants this unit in this build"
+            "The activation pass grants this unit only with the whole exposure "
+            "tier, on a verified v3 approval and its exposure evidence (#196 G6)"
         ),
     ),
     ServiceProfile(
@@ -1723,8 +1750,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "socket that could reach the service manager, whose private "
             "sockets are also inaccessible to it. It starts only with AppArmor "
             "enabled and its profile azazel-decoy-netd loaded (AppArmorProfile= "
-            "without a dash, AssertSecurity=apparmor). The activation "
-            "pass never grants this unit in this build"
+            "without a dash, AssertSecurity=apparmor). The activation pass "
+            "grants this unit only with the whole exposure tier, on a "
+            "verified v3 approval and its exposure evidence (#196 G6)"
         ),
     ),
     ServiceProfile(
@@ -1767,6 +1795,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             # decoy reads /proc/sys/kernel/random/boot_id (its isolation
             # check), which that would hide.
             ("ProtectProc", "invisible"),
+            # The pass's scope digest for this grant (#196 G6, D2): compared
+            # with the isolation record's before any socket is opened.
+            ("LoadCredential", DECOY_SCOPE_DIGEST_CREDENTIAL),
             ("TimeoutStartSec", "30s"),
             ("MemoryMax", "128M"),
             ("TasksMax", "16"),
@@ -1790,7 +1821,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "private sockets are inaccessible to it. It starts only with AppArmor "
             "enabled and its profile azazel-decoyd loaded (AppArmorProfile= "
             "without a dash, AssertSecurity=apparmor). The activation pass "
-            "never grants this unit in this build"
+            "grants this unit only with the whole exposure tier, on a "
+            "verified v3 approval and its exposure evidence (#196 G6)"
         ),
     ),
 )

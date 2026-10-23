@@ -5,8 +5,9 @@
 # AppArmor enabled a start without this profile loaded fails, and with
 # AppArmor disabled the assertion fails it, so the unit never runs
 # unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
-# loaded at boot by apparmor.service. The activation pass never grants this
-# unit in this build.
+# loaded at boot by apparmor.service. The activation pass grants this unit
+# only with the whole exposure tier, on a verified v3 approval and its
+# exposure evidence (#196 G6).
 #
 # The namespace unit runs /usr/bin/ip and nothing else: six fixed
 # `ExecStart=` lines and two fixed `ExecStopPost=` lines

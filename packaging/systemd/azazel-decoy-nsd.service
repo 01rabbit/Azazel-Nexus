@@ -8,7 +8,7 @@
 # Netlink is its only address family, though that admits every netlink protocol, nftables included; it may create only a network namespace and the mount namespace ip -n makes for itself, and its syscall filter adds only mount, umount2, unshare and setns to the shared set and takes back what that act never needs.
 # It is the one unit without the shared file-system sandbox: a mount namespace would keep the namespace handle from the host, and with CAP_SYS_ADMIN and mount that sandbox was never a wall for it.
 # A compromised ip would be host root; its containment is fixed command lines that take no input, static review and its AppArmor profile azazel-decoy-nsd, which denies writes to the activation state, the unit files and the ledgers and any reach to the service manager; it starts only with AppArmor enabled and that profile loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
-# The activation pass never grants this unit in this build.
+# The activation pass grants this unit only with the whole exposure tier, on a verified v3 approval and its exposure evidence (#196 G6).
 
 [Unit]
 Description=Azazel-Nexus Deception Lite namespace

@@ -455,9 +455,23 @@ def test_the_helper_reads_its_scope_credential_and_only_there():
     credential = {rule for rule in blocks["azazel-decoy-netd"] if "/run/credentials" in rule}
     assert credential == {f"{directory} r,", f"{SCOPE_CREDENTIAL_PATH} r,"}
     for name, rules in blocks.items():
-        if name not in ("azazel-decoy-netd", "azazel-decoy-verify"):
+        if name not in ("azazel-decoy-netd", "azazel-decoy-verify", "azazel-decoyd"):
             assert not any("/run/credentials" in rule or "decoy-scope" in rule
                            for rule in rules), name
+
+
+def test_the_decoy_reads_only_its_scope_digest_credential():
+    """#196 G6 (wiring §6, D2): the decoy's one credential is the pass's scope
+    digest, read only at its own path; never the scope file itself."""
+
+    from azazel_nexus.decoy_isolation import SCOPE_DIGEST_CREDENTIAL_PATH
+
+    directory = SCOPE_DIGEST_CREDENTIAL_PATH.rpartition("/")[0] + "/"
+    rules = _all_blocks()["azazel-decoyd"]
+    credential = {rule for rule in rules if "/run/credentials" in rule or "decoy-scope" in rule}
+    assert credential == {f"{directory} r,", f"{SCOPE_DIGEST_CREDENTIAL_PATH} r,"}
+    assert SCOPE_DIGEST_CREDENTIAL_PATH == (
+        "/run/credentials/azazel-decoyd.service/decoy-scope-digest")
 
 
 def test_the_verify_unit_reads_its_own_scope_credential_and_only_there():

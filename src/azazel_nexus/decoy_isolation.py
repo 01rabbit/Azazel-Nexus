@@ -38,11 +38,22 @@ of the denied paths: nothing here sends traffic, and `HG-06` stays the gate
 for that. It describes the network at the moment it was read; the helper
 runs once per boot and the decoy's unit requires it.
 
-**Activation.** `installed_isolation_reading` is the producer frame a later
-activation pass may consume. Nothing grants on it in this build:
-`ActivationController` still withholds `DECEPTION_EXPOSURE` as
-`isolation_evidence_absent` on every pass (§14 says why), and takes no
-argument through which a reading could be passed.
+**The decoy's gate and the pass's scope** (#196 G6,
+`docs/deception-exposure-wiring.md` §6, owner decision Q-D = D2). The decoy
+refuses a record whose `scope_digest` is `none`, and compares the record's
+digest with the one the activation pass rendered: the pass writes
+`/run/azazel-activation/decoy-scope.digest` beside the scope file only when
+it granted the tier, and the decoy's unit loads it as the credential
+`decoy-scope-digest` (`LoadCredential=`), read here from
+`SCOPE_DIGEST_CREDENTIAL_PATH` only. A missing source fails the decoy's
+start (closed); the decoy reads an immutable snapshot for its whole run,
+and never the approved prefixes or the ingress names.
+
+**Activation.** `installed_isolation_reading` is a producer frame the pass
+does not consume: the pass runs before the three units start, so this
+boot's record cannot exist when it runs (§14). The pass grants the tier on
+its own evidence (`exposure_admission`), and the record gates the decoy's
+listen within the boot.
 """
 
 from __future__ import annotations
@@ -72,6 +83,7 @@ __all__ = [
     "MAX_BYTES",
     "NO_SCOPE",
     "RESULTS",
+    "SCOPE_DIGEST_CREDENTIAL_PATH",
     "admission_refusal",
     "installed_isolation_reading",
     "load_evidence",
@@ -83,8 +95,16 @@ __all__ = [
 #: The contract every record names.
 CONTRACT = "azazel-nexus/decoy-isolation/v2"
 
-#: `scope_digest` when the helper ran without a scope.
+#: `scope_digest` when the helper ran without a scope. The decoy refuses it.
 NO_SCOPE = "none"
+
+#: Where the decoy's unit receives the pass's scope digest
+#: (`LoadCredential=decoy-scope-digest:/run/azazel-activation/decoy-scope.digest`,
+#: `hardening.DECOY_SCOPE_DIGEST_CREDENTIAL`; a test keeps them equal). The
+#: only path the decoy's digest reader opens.
+SCOPE_DIGEST_CREDENTIAL_PATH = "/run/credentials/azazel-decoyd.service/decoy-scope-digest"
+#: `sha256:` and 64 lowercase hex digits and a newline.
+_DIGEST_FILE_BYTES = 72
 
 #: The helper's runtime directory (`RuntimeDirectory=azazel-decoy-isolation`,
 #: `hardening.DECOY_ISOLATION_DIRECTORY`; a test keeps them equal).
@@ -341,11 +361,67 @@ def _boot_id() -> str:
     return read_current_boot_id(_BOOT_ID_PATH, owner_uid=os.getuid())
 
 
+#: Private test seam: the digest credential's path. Production is exactly
+#: `SCOPE_DIGEST_CREDENTIAL_PATH`.
+_DIGEST_PATH = SCOPE_DIGEST_CREDENTIAL_PATH
+
+
+def read_scope_digest_credential() -> str:
+    """The pass's scope digest, from the decoy's credential, or refused.
+
+    Neither the credential directory nor the file may be a link; the file
+    must be a regular one with one link, owned by root or by the decoy's own
+    account (systemd hands a credential to an unprivileged unit either with
+    an access list on a root-owned file or by changing its owner), writable
+    by nobody else, and exactly `sha256:<64 hex>` and a newline. An absent
+    credential refuses: under its unit a missing source fails the start, and
+    outside it the decoy has no scope to compare with.
+    """
+
+    directory_path, _, name = _DIGEST_PATH.rpartition("/")
+    owners = {_OWNER, os.geteuid()}
+    try:
+        directory = os.open(directory_path, _DIR_FLAGS)
+    except OSError:
+        raise IsolationEvidenceRefused("the scope digest credential is absent") from None
+    try:
+        try:
+            fd = os.open(name, _FILE_FLAGS, dir_fd=directory)
+        except OSError:
+            raise IsolationEvidenceRefused("the scope digest credential is absent") from None
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid not in owners or info.st_mode & 0o022
+                    or info.st_size != _DIGEST_FILE_BYTES):
+                raise IsolationEvidenceRefused(
+                    "the scope digest credential has unsafe ownership, mode or size")
+            data = os.read(fd, _DIGEST_FILE_BYTES + 1)
+        except OSError:
+            raise IsolationEvidenceRefused(
+                "the scope digest credential could not be read") from None
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        raise IsolationEvidenceRefused("the scope digest credential is not a digest") from None
+    if not text.endswith("\n") or not _SCOPE_DIGEST.match(text[:-1]):
+        raise IsolationEvidenceRefused("the scope digest credential is not a digest")
+    return text[:-1]
+
+
 def require_isolation_for_decoy(*, now: str) -> IsolationEvidence:
     """The decoy's gate: this boot's passing record, or `IsolationEvidenceRefused`.
 
     Called by `az-decoyd` before it opens any socket. No argument, file,
-    environment variable or flag skips it; an absent record refuses.
+    environment variable or flag skips it; an absent record refuses. Since
+    #196 G6 (D2) the record must also name a scope (`scope_digest` not
+    `none`), and that digest must equal the one the activation pass rendered
+    for this grant, read from the decoy's own credential
+    (`read_scope_digest_credential`).
     """
 
     try:
@@ -359,6 +435,12 @@ def require_isolation_for_decoy(*, now: str) -> IsolationEvidence:
     refusal = admission_refusal(evidence, boot_id=boot_id, now=now)
     if refusal is not None:
         raise IsolationEvidenceRefused(refusal)
+    if evidence.scope_digest == NO_SCOPE:
+        raise IsolationEvidenceRefused(
+            "the isolation evidence names no scope: the helper ran without one")
+    if evidence.scope_digest != read_scope_digest_credential():
+        raise IsolationEvidenceRefused(
+            "the isolation evidence's scope is not the one the activation pass rendered")
     return evidence
 
 

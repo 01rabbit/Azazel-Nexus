@@ -365,10 +365,21 @@ def test_no_other_unit_takes_the_verify_units_own_fields(unit, change):
 
 
 def test_the_scope_credential_is_the_helpers_and_the_verify_units_alone():
+    """The scope file is the helper's and the verify unit's credential; the
+    decoy loads only the pass's digest of it (#196 G6, D2)."""
+    from azazel_nexus_runtime.hardening import DECOY_SCOPE_DIGEST_CREDENTIAL
+
     loaders = [p.unit for p in ALL_PROFILES
-               if any(key == "LoadCredential" and "decoy-scope" in value
+               if any(key == "LoadCredential" and value == DECOY_SCOPE_CREDENTIAL
                       for key, value in p.extra)]
     assert loaders == [DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT]
+    digest_loaders = [p.unit for p in ALL_PROFILES
+                      if any(key == "LoadCredential" and "decoy-scope" in value
+                             and value != DECOY_SCOPE_CREDENTIAL for key, value in p.extra)]
+    assert digest_loaders == [DECOY_UNIT]
+    decoy = next(p for p in ALL_PROFILES if p.unit == DECOY_UNIT)
+    assert [value for key, value in decoy.extra if key == "LoadCredential"] == [
+        DECOY_SCOPE_DIGEST_CREDENTIAL]
     mio = next(p for p in ALL_PROFILES if p.unit == "azazel-mio-entryd.service")
     with pytest.raises(ValueError, match="credential alone"):
         replace(mio, extra=mio.extra + (("LoadCredential", DECOY_SCOPE_CREDENTIAL),))

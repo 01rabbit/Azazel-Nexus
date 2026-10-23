@@ -253,7 +253,30 @@ def install_evidence(tmp_path: Path, monkeypatch, *, data: bytes | None = None,
     monkeypatch.setattr(decoy_isolation, "_DIRECTORY", str(directory))
     monkeypatch.setattr(decoy_isolation, "_OWNER", os.getuid())
     monkeypatch.setattr(decoy_isolation, "_BOOT_ID_PATH", boot_file)
+    # The decoy's credential (#196 G6, D2): the digest the activation pass
+    # rendered for this grant, the record's own unless a test says otherwise.
+    try:
+        digest = parse_evidence(data).scope_digest
+    except IsolationEvidenceRefused:
+        digest = NO_SCOPE
+    install_scope_digest(tmp_path, monkeypatch,
+                         None if digest == NO_SCOPE else digest)
     return record
+
+
+def install_scope_digest(tmp_path, monkeypatch, digest, *, mode=0o400, content=None):
+    """The decoy's `decoy-scope-digest` credential under a temporary path."""
+
+    directory = tmp_path / "credentials"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    path = directory / "decoy-scope-digest"
+    if path.exists():
+        path.unlink()
+    if digest is not None or content is not None:
+        path.write_bytes(content if content is not None else (digest + "\n").encode())
+        os.chmod(path, mode)
+    monkeypatch.setattr(decoy_isolation, "_DIGEST_PATH", str(path))
+    return path
 
 
 # -- the record's shape --------------------------------------------------------
@@ -977,7 +1000,9 @@ def test_the_producer_frames_each_reading(tmp_path, monkeypatch):
 
 
 def test_a_passing_record_still_grants_no_exposure_unit(tmp_path, monkeypatch):
-    """The tier stays withheld as `isolation_evidence_absent` (§14)."""
+    """The record is not the tier's evidence: the controller takes no reading
+    (§14), and without the pass's exposure evidence the tier is withheld
+    (`exposure_evidence_absent`, #196 G6)."""
 
     import inspect
 
@@ -1003,9 +1028,75 @@ def test_a_passing_record_still_grants_no_exposure_unit(tmp_path, monkeypatch):
                                   lease=_lease(frozenset(d.name for d in CORE_UNITS)))
     verdicts = [v for v in outcome.verdicts if v.unit in DECEPTION_EXPOSURE_UNITS]
     assert sorted(v.unit for v in verdicts) == sorted(DECEPTION_EXPOSURE_UNITS)
-    assert all(not v.granted and v.reason.startswith("isolation_evidence_absent")
+    assert all(not v.granted and v.reason.startswith("exposure_evidence_absent")
                for v in verdicts)
     assert not set(outcome.granted) & set(DECEPTION_EXPOSURE_UNITS)
+
+
+# -- the decoy and the pass's scope digest (#196 G6, wiring §6, D2) --------------
+
+
+def test_the_decoy_refuses_a_record_that_names_no_scope(tmp_path, monkeypatch):
+    install_evidence(tmp_path, monkeypatch,
+                     data=render_evidence(BOOT, WHEN, dict(ALL_PASS), NO_SCOPE))
+    install_scope_digest(tmp_path, monkeypatch, SCOPE_DIGEST)
+    with pytest.raises(IsolationEvidenceRefused, match="names no scope"):
+        require_isolation_for_decoy(now=NOW)
+
+
+def test_the_decoy_refuses_a_record_for_another_scope(tmp_path, monkeypatch):
+    install_evidence(tmp_path, monkeypatch)
+    install_scope_digest(tmp_path, monkeypatch, "sha256:" + "0" * 64)
+    with pytest.raises(IsolationEvidenceRefused, match="not the one the activation pass"):
+        require_isolation_for_decoy(now=NOW)
+
+
+def test_the_decoy_refuses_without_its_credential(tmp_path, monkeypatch):
+    install_evidence(tmp_path, monkeypatch)
+    install_scope_digest(tmp_path, monkeypatch, None)
+    with pytest.raises(IsolationEvidenceRefused, match="credential is absent"):
+        require_isolation_for_decoy(now=NOW)
+    monkeypatch.setattr(decoy_isolation, "_DIGEST_PATH", str(tmp_path / "none" / "x"))
+    with pytest.raises(IsolationEvidenceRefused, match="credential is absent"):
+        require_isolation_for_decoy(now=NOW)
+
+
+@pytest.mark.parametrize("content,mode", [
+    (SCOPE_DIGEST.encode(), 0o400),                     # no newline
+    (SCOPE_DIGEST.encode() + b"\n\n", 0o400),          # one byte more
+    (SCOPE_DIGEST.upper().encode() + b"\n", 0o400),     # not the closed form
+    (b"none" + b" " * 67 + b"\n", 0o400),
+    (SCOPE_DIGEST.encode() + b"\n", 0o622),             # writable by others
+    (SCOPE_DIGEST.encode() + b"\n", 0o460),             # writable by the group
+])
+def test_the_decoy_refuses_a_credential_out_of_its_closed_form(tmp_path, monkeypatch,
+                                                              content, mode):
+    install_evidence(tmp_path, monkeypatch)
+    install_scope_digest(tmp_path, monkeypatch, None, content=content, mode=mode)
+    with pytest.raises(IsolationEvidenceRefused):
+        require_isolation_for_decoy(now=NOW)
+
+
+def test_the_decoy_refuses_a_credential_that_is_a_link(tmp_path, monkeypatch):
+    install_evidence(tmp_path, monkeypatch)
+    path = install_scope_digest(tmp_path, monkeypatch, SCOPE_DIGEST)
+    target = tmp_path / "elsewhere"
+    target.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(target)
+    with pytest.raises(IsolationEvidenceRefused):
+        require_isolation_for_decoy(now=NOW)
+
+
+def test_the_credential_path_is_the_units(tmp_path, monkeypatch):
+    """The path the reader opens is the one the unit's `LoadCredential=` fills."""
+
+    from azazel_nexus_runtime.hardening import DECOY_SCOPE_DIGEST_CREDENTIAL
+
+    name, _, source = DECOY_SCOPE_DIGEST_CREDENTIAL.partition(":")
+    assert decoy_isolation.SCOPE_DIGEST_CREDENTIAL_PATH == (
+        f"/run/credentials/azazel-decoyd.service/{name}")
+    assert source == "/run/azazel-activation/decoy-scope.digest"
 
 
 def test_nothing_in_the_runtime_feeds_a_reading_to_activation():

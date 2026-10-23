@@ -5,8 +5,9 @@
 # AppArmor enabled a start without this profile loaded fails, and with
 # AppArmor disabled the assertion fails it, so the unit never runs
 # unconfined. Installed to /etc/apparmor.d/ by packaging/install.sh and
-# loaded at boot by apparmor.service. The activation pass never grants this
-# unit in this build.
+# loaded at boot by apparmor.service. The activation pass grants this unit
+# only with the whole exposure tier, on a verified v3 approval and its
+# exposure evidence (#196 G6).
 #
 # The decoy runs as azdecoy with no capability, inside the decoy network
 # namespace. It listens (IPv4, TCP), reads this boot's isolation record and
@@ -107,6 +108,15 @@ profile azazel-decoyd flags=(attach_disconnected) {
   @{PROC}/sys/kernel/random/boot_id r,
   /run/azazel-decoy-isolation/ r,
   /run/azazel-decoy-isolation/isolation.json r,
+
+  # The activation pass's scope digest for this grant (#196 G6,
+  # docs/deception-exposure-wiring.md §6, D2), its one credential
+  # `decoy-scope-digest` (`LoadCredential=`), read only, from the fixed path
+  # `decoy_isolation.SCOPE_DIGEST_CREDENTIAL_PATH`; the directory is opened
+  # first (no link). Not the scope file: the decoy never reads the prefixes
+  # or the ingress names. INFERRED: the path under the unit's sandbox (§8).
+  /run/credentials/azazel-decoyd.service/ r,
+  /run/credentials/azazel-decoyd.service/decoy-scope-digest r,
 
   # Its own namespace check (decoy_netns): its namespace and its links.
   # PID 1's namespace stays unreadable (ptrace is denied above), which the

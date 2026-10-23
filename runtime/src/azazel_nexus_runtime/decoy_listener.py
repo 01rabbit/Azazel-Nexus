@@ -25,8 +25,8 @@ refuses before a socket exists. The one socket option it sets is
 `SO_REUSEADDR`, so that a restart is not refused for the minute a closed
 connection spends in `TIME_WAIT`.
 
-The unit it runs in is never granted in this build (`DECEPTION_EXPOSURE` is
-withheld as `isolation_evidence_absent`).
+The unit it runs in is granted only with the whole exposure tier, on a
+verified v3 approval and the pass's exposure evidence (#196 G6).
 """
 
 from __future__ import annotations

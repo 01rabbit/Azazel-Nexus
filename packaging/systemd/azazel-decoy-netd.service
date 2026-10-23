@@ -9,7 +9,7 @@
 # It reads no decoy observation and no Edge decision.
 # It is root, so netlink is its only address family (any netlink protocol, not only route and nftables) and it has no AF_UNIX socket that could reach the service manager, whose private sockets are also inaccessible to it.
 # It starts only with AppArmor enabled and its profile azazel-decoy-netd loaded (AppArmorProfile= without a dash, AssertSecurity=apparmor).
-# The activation pass never grants this unit in this build.
+# The activation pass grants this unit only with the whole exposure tier, on a verified v3 approval and its exposure evidence (#196 G6).
 
 [Unit]
 Description=Azazel-Nexus Deception Lite network helper
