@@ -348,8 +348,11 @@ without all of the above, or of only part of the tier, narrows".
 ### Current state
 
 The helper reads the table back once. A `flush ruleset` from
-`nftables.service` (start, reload, stop), a `firewalld` reload, or a future
-Edge enforce posture would remove it while the helper stays `active` and the
+`nftables.service` (start, reload, stop), a firewall manager that flushes
+the ruleset, or a future
+Edge enforce posture would remove it (firewalld 2.3.1 with the nftables
+backend did not: its start and reloads rebuilt only `inet firewalld`; VM,
+2026-10-24, §11) while the helper stays `active` and the
 decoy listens. A decoy restarted later in the boot accepts the old record.
 
 ### 6.1 Detection and stop
@@ -1381,7 +1384,8 @@ AppArmor; the decoy's report to the intake (P2's send; the intake was not
 run, so its connect under the profile is not shown either); a trip from
 a `firewalld` reload (`nft delete table`, in the second rehearsal
 `systemctl start nftables.service` and in the fifth `systemctl reload
-nftables.service` were used); whether a failed `AssertSecurity=apparmor`
+nftables.service` were used; firewalld 2.3.1 did not trip, as it left
+the table alone, 2026-10-24, below); whether a failed `AssertSecurity=apparmor`
 on the verify unit makes it failed so that `OnFailure=` trips (it does
 not; observed 2026-10-24, below); a verify
 already running during an ordinary stop; a name taken over by something
@@ -1508,10 +1512,10 @@ comparison itself stays unwired and withholds until G6 records the
 expected hash. One VM, one run, four profiles: none of this is hardware
 evidence.
 
-### Two open items checked (2026-10-24, VM; mechanism check, not hardware evidence)
+### Open items checked (2026-10-24, VM; mechanism check, not hardware evidence)
 
-Debian 13, kernel 6.12, systemd 257.13. Throwaway units and rehearsal
-copies (no `Requires=azazel-activated.service`). **A VM check of the
+Debian 13, kernel 6.12, systemd 257.13. Throwaway units, rehearsal
+copies and, for the last row, the three decoy units as installed (no `Requires=azazel-activated.service`). **A VM check of the
 mechanism, not hardware evidence**; no record for `HG-06`, `HG-09` or
 `HG-10`, and nothing granted by the pass.
 
@@ -1524,9 +1528,10 @@ mechanism, not hardware evidence**; no record for `HG-06`, `HG-09` or
 | `apparmor=0`: the verify unit and `OnFailure=` | start of a rehearsal copy | `Assertion failed`, not started; the unit kept `Result=success` and **its `OnFailure=` did not run**: an assertion failure is a job result, not a unit failure | as *inferred* in item 3: a failed assertion never trips (§6.3) |
 | `apparmor=0`: the pass's reading | the unwired `decoy_apparmor.exposure_lsm_refusal` over the live reads | `lsm_apparmor_disabled` (withhold) | ok |
 | restore | GRUB put back, reboot | AppArmor enabled, the four profiles loaded | ok |
+| firewalld 2.3.1 (nftables backend) with the three units active | `systemctl start firewalld`, then `firewall-cmd --reload`, then `firewall-cmd --complete-reload` | no trip within 25 s after any of the three: firewalld recreated only its own `inet firewalld` table, `inet azazel_decoy` stayed, and the verify reported "the table, the host's links, forwarding, the routing rules and the routes match". Contrast `systemctl reload nftables.service`, whose `flush ruleset` removes the table and trips (fifth rehearsal) | nothing to trip on: this firewalld left the table alone. **Coexistence is unchanged**: `host_firewall_refusal` still withholds the tier while `firewalld.service` is enabled or active (§6.2, §9). The VM was then reverted to a snapshot without firewalld |
 
 **Still open after G4:** the namespace unit's AppArmor profile on a
-probe (it cannot run one); a trip from a `firewalld` reload; a kernel with fine-grained `AF_UNIX` mediation; what
+probe (it cannot run one); a kernel with fine-grained `AF_UNIX` mediation; what
 besides the files changes the compiled output (features, `parser.conf`,
 the parser's version, load flags, several profiles in one file; §7,
 "Left to G6");
@@ -1551,7 +1556,9 @@ G4 follow-up, and the table above records which of them G4 answered.
    `nft -j list table` compares equal; a hand-added element fails the check;
 3. the watch (G2, §6.3): `systemctl reload nftables` (with the service
    started by hand) and a `firewalld` reload stop the three units within one
-   period; a decoy restart re-runs the verify; a verify that fails before
+   period (firewalld 2.3.1, nftables backend, 2026-10-24: its start, reload
+   and complete reload left `inet azazel_decoy` alone, so no trip and none
+   needed; firewalld stays refused by `host_firewall_refusal`); a decoy restart re-runs the verify; a verify that fails before
    the decoy start keeps it down; a successful one-shot verify does not stop
    the decoy through `Requires=`; the verify's `OnFailure=` starts
    `azazel-decoy-trip.target` and its `Conflicts=` stops the three units
