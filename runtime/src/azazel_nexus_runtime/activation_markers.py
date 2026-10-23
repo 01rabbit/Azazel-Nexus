@@ -30,6 +30,19 @@ at every kernel boot (a soft-reboot keeps it, so the selected bootstrap path
 removes the markers too: #251 L-7), and the controller still never starts a
 unit.
 
+**The scope files** (#196 G6, `docs/deception-exposure-wiring.md` §5.3).
+Beside `granted/`, a pass that granted the Deception Lite exposure tier
+writes `decoy-scope.json` (the rendered scope file, the network helper's and
+the verify unit's credential) and `decoy-scope.digest` (`sha256:<hex>` and a
+newline, the decoy's credential, owner decision Q-D = D2), each root `0600`,
+written to a temporary name, fsynced, renamed, the directory fsynced, then
+read back. `reset_grant_markers` removes both (and their temporary names)
+**before** it removes `granted/`, so a failure while removing the markers
+never leaves a scope file behind; a directory or other non-regular object at
+any of those names refuses. A pass that withholds the tier therefore leaves
+no scope file, and a unit started later in the boot fails at its
+`LoadCredential=` (closed).
+
 This module uses the standard library only, so importing it cannot keep
 the controller from its mandatory narrowing.
 """
@@ -42,13 +55,18 @@ import stat
 from typing import Iterable
 
 __all__ = [
+    "DECOY_SCOPE_DIGEST_NAME",
+    "DECOY_SCOPE_NAME",
     "EXPOSURE_UNITS",
     "GRANTABLE_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
     "grant_marker_path",
+    "read_scope_files",
     "reset_grant_markers",
+    "reset_scope_files",
     "write_grant_markers",
+    "write_scope_files",
 ]
 
 #: The only units a pass may grant and mark: the five SUPPORTING loop units
@@ -58,12 +76,10 @@ __all__ = [
 #: #196). The single source for the pass's scope check, its tripwire, this
 #: writer and the unit-content and loaded-unit checks (#253).
 #:
-#: The three exposure units are here so that #253 checks their files and
-#: loaded definitions on every pass (a queued start must wait for its
-#: marker), not so that a pass can grant them: no activation policy may name
-#: them (`activation_policy.ACTIVATION_UNIT_ALLOWLIST`), the library withholds
-#: their tier in this build (`isolation_evidence_absent`), and the pass's
-#: tripwire narrows everything if any of them is ever granted.
+#: The three exposure units are granted only together, on a verified v3
+#: approval and the pass's exposure evidence with every stage held (#196 G6);
+#: the pass's tripwire narrows everything for any other exposure grant. #253
+#: checks their files and loaded definitions on every pass, granted or not.
 GRANTABLE_UNITS = frozenset({
     "azazel-decoy-netd.service",
     "azazel-decoy-nsd.service",
@@ -98,6 +114,13 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _UNIT_LIMIT = 255
 #: The owner of the marker directories and files. Private test seam only.
 _OWNER = 0
+
+#: The scope files (wiring §5.3), beside `granted/`; `hardening.py` renders
+#: `/run/azazel-activation/<name>` into the `LoadCredential=` lines.
+DECOY_SCOPE_NAME = "decoy-scope.json"
+DECOY_SCOPE_DIGEST_NAME = "decoy-scope.digest"
+_SCOPE_NAMES = (DECOY_SCOPE_NAME, DECOY_SCOPE_DIGEST_NAME)
+_SCOPE_LIMIT = 4096
 
 
 class GrantMarkerRefused(Exception):
@@ -147,35 +170,84 @@ def _open_parent(root: Path) -> int | None:
             os.close(fd)
 
 
-def reset_grant_markers(root: Path = Path("/")) -> None:
-    """Remove every marker and the `granted/` directory; called before any decision.
+def _remove_scope_files_at(parent: int) -> None:
+    """Remove the scope files and their temporary names; refuse a non-regular one."""
+    failure = None
+    for name in _SCOPE_NAMES:
+        for entry in (name, f"{name}.tmp"):
+            try:
+                info = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                # Left as it is, and refused after the others are removed.
+                failure = GrantMarkerRefused("unexpected object at a decoy scope file name")
+                continue
+            os.unlink(entry, dir_fd=parent)
+    if failure is not None:
+        raise failure
 
-    A missing parent means no marker can exist. Anything unexpected inside
-    `granted/` (a directory) refuses rather than being guessed at; the
-    caller treats a refusal as a pass that must not proceed.
+
+def reset_scope_files(root: Path = Path("/")) -> None:
+    """Remove the scope files (and temporary names) only (wiring §5.3).
+
+    A missing parent means none can exist. A non-regular object at any of
+    the names refuses, after every regular one has been removed.
     """
     parent = _open_parent(root)
     if parent is None:
         return
     try:
-        try:
-            info = os.stat(_LEAF, dir_fd=parent, follow_symlinks=False)
-        except FileNotFoundError:
-            return
-        if not stat.S_ISDIR(info.st_mode):
-            os.unlink(_LEAF, dir_fd=parent)
-            return
-        leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
-        try:
-            for entry in os.scandir(leaf):
-                if entry.is_dir(follow_symlinks=False):
-                    raise GrantMarkerRefused("unexpected directory among grant markers")
-                os.unlink(entry.name, dir_fd=leaf)
-        finally:
-            os.close(leaf)
-        os.rmdir(_LEAF, dir_fd=parent)
+        _remove_scope_files_at(parent)
     finally:
         os.close(parent)
+
+
+def reset_grant_markers(root: Path = Path("/")) -> None:
+    """Remove the scope files, then every marker and the `granted/` directory.
+
+    Called before any decision. The scope files go first (wiring §5.3), so a
+    failure while removing the markers never leaves one behind. A missing
+    parent means no marker can exist. Anything unexpected inside `granted/`
+    (a directory), or a non-regular object at a scope file's name, refuses
+    rather than being guessed at; the caller treats a refusal as a pass that
+    must not proceed.
+    """
+    parent = _open_parent(root)
+    if parent is None:
+        return
+    try:
+        # The scope files first; a refusal there still lets the markers go,
+        # and is raised after them.
+        try:
+            _remove_scope_files_at(parent)
+            scope_failure = None
+        except GrantMarkerRefused as exc:
+            scope_failure = exc
+        _remove_markers_at(parent)
+        if scope_failure is not None:
+            raise scope_failure
+    finally:
+        os.close(parent)
+
+
+def _remove_markers_at(parent: int) -> None:
+    try:
+        info = os.stat(_LEAF, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        os.unlink(_LEAF, dir_fd=parent)
+        return
+    leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+    try:
+        for entry in os.scandir(leaf):
+            if entry.is_dir(follow_symlinks=False):
+                raise GrantMarkerRefused("unexpected directory among grant markers")
+            os.unlink(entry.name, dir_fd=leaf)
+    finally:
+        os.close(leaf)
+    os.rmdir(_LEAF, dir_fd=parent)
 
 
 def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[str, ...]:
@@ -217,3 +289,76 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
     finally:
         os.close(parent)
     return tuple(names)
+
+
+def write_scope_files(scope_file: bytes, scope_digest: str,
+                      root: Path = Path("/")) -> None:
+    """Write `decoy-scope.json` then `decoy-scope.digest`, root `0600` (wiring §5.3).
+
+    The parent must exist, be root's and not group or other writable. Each
+    file is created as `<name>.tmp` (`O_EXCL`, no link followed), set to
+    `0600` whatever the umask, written, fsynced and renamed; then the
+    directory is fsynced. The digest file holds `scope_digest` and a newline.
+    Raises on any failure; the caller narrows.
+    """
+    if (type(scope_file) is not bytes or not 0 < len(scope_file) <= _SCOPE_LIMIT
+            or type(scope_digest) is not str or len(scope_digest) != 71
+            or not scope_digest.startswith("sha256:")
+            or not all(char in "0123456789abcdef" for char in scope_digest[7:])):
+        raise GrantMarkerRefused("decoy scope files refused")
+    parent = _open_parent(root)
+    if parent is None:
+        raise GrantMarkerRefused("grant marker directory unavailable")
+    try:
+        for name, data in ((DECOY_SCOPE_NAME, scope_file),
+                           (DECOY_SCOPE_DIGEST_NAME, (scope_digest + "\n").encode("ascii"))):
+            temporary = f"{name}.tmp"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                         | os.O_CLOEXEC, 0o600, dir_fd=parent)
+            try:
+                os.fchmod(fd, 0o600)
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
+def _read_scope_at(parent: int, name: str) -> bytes:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                 dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != _OWNER
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or not 0 < info.st_size <= _SCOPE_LIMIT):
+            raise GrantMarkerRefused("decoy scope file protection refused")
+        data = b""
+        while len(data) <= _SCOPE_LIMIT:
+            chunk = os.read(fd, _SCOPE_LIMIT + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) != info.st_size:
+            raise GrantMarkerRefused("decoy scope file changed while reading")
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_scope_files(root: Path = Path("/")) -> tuple[bytes, bytes]:
+    """`(decoy-scope.json, decoy-scope.digest)` as written: regular, one link,
+    root's, `0600`, bounded, no link followed. Raises otherwise."""
+    parent = _open_parent(root)
+    if parent is None:
+        raise GrantMarkerRefused("grant marker directory unavailable")
+    try:
+        return (_read_scope_at(parent, DECOY_SCOPE_NAME),
+                _read_scope_at(parent, DECOY_SCOPE_DIGEST_NAME))
+    finally:
+        os.close(parent)

@@ -51,6 +51,7 @@ from azazel_nexus_runtime.activation_high_water import HighWater, HighWaterRefus
 from azazel_nexus_runtime.activation_pass import (
     ALWAYS_MISSING,
     EDGE_EVIDENCE,
+    EXPOSURE_EVIDENCE,
     PassProducers,
 )
 from azazel_nexus_runtime.node_config import DeclaredNode
@@ -68,8 +69,9 @@ SCOPE = (
 )
 EDGE = "azazel-edge-core.service"
 EDGE_SCOPE = tuple(sorted(SCOPE + (EDGE,)))
-#: The Deception Lite exposure units (#196 P1, (a)): grantable for the #253
-#: checks, never nameable by a policy, always withheld by the library.
+#: The Deception Lite exposure units (#196 P1, (a), G6): grantable, nameable
+#: by a policy only all three together, granted only on exposure evidence
+#: (`test_runtime_exposure_pass.py`).
 DECOY_UNITS = ("azazel-decoy-nsd.service", "azazel-decoy-netd.service",
                "azazel-decoyd.service")
 NODE = "private-node-a"
@@ -222,7 +224,10 @@ class World:
 
     def producers(self, **replaced) -> PassProducers:
         def approval(**kwargs):
-            return verify_observe_baseline_approval(
+            # The production dispatcher (#196 G6): v2 or v3 by the schema.
+            from azazel_nexus.activation_store import verify_activation_approval_v2_or_v3
+            kwargs.setdefault("exposure_policy", None)
+            return verify_activation_approval_v2_or_v3(
                 trust=self.trust, payload=self.payload, signature=self.signature, **kwargs)
 
         def raise_high_water(value, *, now, skew_seconds):
@@ -306,7 +311,9 @@ def _assert_refused(world, outcome, missing):
     assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert world.markers() is None
     event = world.inputs_event()
-    assert event["missing_producers"] == list(ALWAYS_MISSING) + [EDGE_EVIDENCE] + list(missing)
+    # No lease: neither Edge nor exposure evidence was collected (§4.6).
+    assert event["missing_producers"] == (list(ALWAYS_MISSING) + [EDGE_EVIDENCE, EXPOSURE_EVIDENCE]
+                                          + list(missing))
     assert event["grant_markers"] == []
     assert world.raised == []
     text = world.ledger_path.read_text()
@@ -331,6 +338,8 @@ def test_complete_inputs_grant_only_the_scoped_units_and_only_they_get_markers(w
     assert event["missing_producers"] == list(ALWAYS_MISSING) + [EDGE_EVIDENCE]
     assert event["grant_markers"] == list(SCOPE)
     assert event["observed_inputs"]["edge_evidence"] == "not_in_scope"
+    # A lease without the exposure tier collects nothing for it (§4.6).
+    assert event["observed_inputs"]["exposure_evidence"] == "not_in_scope"
     assert event["observed_inputs"]["edge_package_binding"] == "not_in_scope"
     assert set(event["observed_inputs"]["producers"].values()) == {"verified"}
     assert event["observed_inputs"]["high_water"] == "raised"
@@ -402,12 +411,10 @@ def test_a_declared_node_differing_from_the_deployment_refuses(world):
 
 
 def test_a_policy_naming_a_unit_outside_the_grantable_set_is_refused(world):
-    """The policy's allowlist is the grantable set minus the Deception Lite
-    exposure units (#196 P1), which no policy may name; nothing wider decodes."""
-    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
+    """The policy's allowlist is the grantable set (#196 G6: the Deception Lite
+    exposure units included, three or none); nothing wider decodes."""
     from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
-    assert frozenset(ACTIVATION_UNIT_ALLOWLIST) == (
-        activation_pass.UNIT_SCOPE - frozenset(DECEPTION_EXPOSURE_UNITS))
+    assert frozenset(ACTIVATION_UNIT_ALLOWLIST) == activation_pass.UNIT_SCOPE
     with pytest.raises(ApprovalRefused):
         make_policy(units=SCOPE + ("azazel-watchdog.service",))
     world.policy = SimpleNamespace(units=SCOPE + ("azazel-watchdog.service",))
@@ -534,13 +541,13 @@ def test_expired_approval_refuses(world):
     _assert_refused(world, world.run(), ["activation_approval_loader"])
 
 
-def _sign_v3(world):
-    """A v3 approval (#196 G6 prep) for exactly this pass's context and units."""
+def _sign_v3(world, units=None):
+    """A v3 approval (#196 G6) for exactly this pass's context and units."""
     from azazel_nexus.activation_approval_v3 import activation_approval_v3_payload
 
     world.payload = activation_approval_v3_payload(
         context=world.context(), approval_id="approval-1", operator="operator-a",
-        approval_seq=5, units=world.units, granted_at="2026-10-20T12:00:00Z",
+        approval_seq=5, units=units or world.units, granted_at="2026-10-20T12:00:00Z",
         expires_at="2026-10-22T00:00:00Z", exposure_scope_digest="sha256:" + "e" * 64,
         exposure_prefix_count=1, exposure_ingress_count=1)
     # v3's own purpose (wiring §5.1, Q-C), the only one its verifier accepts.
@@ -553,20 +560,22 @@ def _assert_granted(world, outcome):
     assert world.markers() == list(SCOPE)
 
 
-def test_a_v3_approval_is_not_accepted_by_the_pass(world):
-    """The v3 decoder is not wired: the pass's v2 verifier refuses v3 bytes,
-    while the same world with the same fields signed as v2 grants."""
+def test_a_v3_approval_is_refused_under_a_policy_without_the_exposure_tier(world):
+    """#196 G6 (wiring §5.1): the pass hands the loader a v3 policy only when
+    the policy names the three exposure units; without one a v3 approval is
+    refused, while the same world with the same fields signed as v2 grants."""
     _sign_v3(world)
     _assert_refused(world, world.run(), ["activation_approval_loader"])
     world.sign()
     _assert_granted(world, world.run())
 
 
-def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
-    """Wiring the v3 verifier in as the producer would still grant nothing:
-    the v3 verifier accepts (asserted on the very call the pass made), and
-    the pass refuses its result because it is not an `ObserveBaselineApproval`."""
+def test_the_pass_refuses_a_v3_result_that_does_not_name_the_exposure_tier(world):
+    """A v3 result is accepted only naming the three exposure units: the v3
+    verifier accepts (asserted on the very call the pass made), and the pass
+    refuses its result because it names none of them."""
     from azazel_nexus.activation_approval_v3 import (
+        ActivationApprovalPolicyV3,
         ActivationApprovalV3,
         verify_activation_approval_v3,
     )
@@ -575,6 +584,11 @@ def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
     calls = []
 
     def approval(**kwargs):
+        policy = kwargs.pop("policy")
+        kwargs.pop("exposure_policy", None)
+        kwargs["policy"] = ActivationApprovalPolicyV3(
+            authorized_operators=policy.authorized_operators,
+            max_lease_seconds=policy.max_lease_seconds, unit_scope=policy.unit_scope)
         result = verify_activation_approval_v3(
             trust=world.trust, payload=world.payload, signature=world.signature, **kwargs)
         calls.append((kwargs, result))
@@ -586,15 +600,17 @@ def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
     assert type(result) is ActivationApprovalV3
     assert result.lease.units == frozenset(SCOPE)
     # The same arguments, called again directly, give the same accepted result.
-    assert type(approval(**kwargs)) is ActivationApprovalV3
-    # Every other check the pass makes on the result holds, so the type is
-    # what refused it ("approval result refused"): the same lease handed
-    # over as an `ObserveBaselineApproval` grants.
+    assert type(verify_activation_approval_v3(
+        trust=world.trust, payload=world.payload, signature=world.signature,
+        **kwargs)) is ActivationApprovalV3
+    # Every other check the pass makes on the result holds, so the missing
+    # exposure tier is what refused it: the same lease handed over as an
+    # `ObserveBaselineApproval` grants.
     assert result.lease.generation_digest == world.generation.digest
     assert result.lease.generation_number == world.generation.number
 
     def as_v2(**kwargs):
-        verified = approval(**kwargs)
+        verified = approval(**dict(kwargs))
         return ObserveBaselineApproval(
             lease=verified.lease, approval_id=verified.approval_id,
             approval_seq=verified.approval_seq, security_epoch=verified.security_epoch)
@@ -1335,12 +1351,13 @@ def test_the_storage_label_never_changes_the_decision(tmp_path, monkeypatch, rep
 
 
 
-# -- Deception Lite exposure units (#196 P1) ---------------------------------
+# -- Deception Lite exposure units (#196 P1, G6) -----------------------------
 
 
 @pytest.mark.parametrize("unit", DECOY_UNITS)
 def test_a_policy_naming_an_exposure_unit_is_refused_as_a_whole(world, unit):
-    """Not in `ACTIVATION_UNIT_ALLOWLIST`: no lease can ever hold one."""
+    """A policy names the three or none (#196 G6, wiring §5.1): one alone is
+    refused by the decoder, so no lease can hold part of the tier."""
     with pytest.raises(ApprovalRefused):
         make_policy(units=tuple(sorted(SCOPE + (unit,))))
     world.policy = SimpleNamespace(units=tuple(sorted(SCOPE + (unit,))))
@@ -1391,17 +1408,17 @@ def test_an_exposure_unit_granted_trips_the_wire(world, monkeypatch, forged_unit
             UnitVerdict(unit, True, "granted") for unit in forged_units), edge=outcome.edge)
 
     monkeypatch.setattr(activated.ActivationDaemon, "activate", forged)
-    with pytest.raises(RuntimeError, match="Deception Lite exposure unit"):
+    with pytest.raises(RuntimeError, match="Deception Lite exposure tier"):
         world.run()
     assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert world.markers() is None
 
 
-def test_the_pass_checks_a_decoded_policy_against_the_narrower_scope(world):
-    """Second layer (review m5): even a policy object that names an exposure
-    unit -- forged past the decoder -- is refused by the pass itself."""
-    assert activation_pass.POLICY_UNIT_SCOPE == (
-        activation_pass.UNIT_SCOPE - frozenset(DECOY_UNITS))
+def test_the_pass_checks_a_decoded_policy_against_the_three_or_none_rule(world):
+    """Second layer (review m5, #196 G6): even a policy object that names part
+    of the exposure tier -- forged past the decoder -- is refused by the pass
+    itself."""
+    assert activation_pass.POLICY_UNIT_SCOPE == activation_pass.UNIT_SCOPE
     from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
     assert activation_pass.POLICY_UNIT_SCOPE == frozenset(ACTIVATION_UNIT_ALLOWLIST)
     forged = make_policy()

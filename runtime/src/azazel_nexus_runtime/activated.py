@@ -70,6 +70,7 @@ from azazel_nexus.edge_package import (
     installed_baseline_state,
     nothing_established,
 )
+from azazel_nexus.exposure_admission import EXPOSURE_STAGES, ExposureEvidence
 from azazel_nexus.generation import GenerationStore
 from azazel_nexus.hil_preflight import COMMISSIONING_DIR, luks_backing, read_boot_id
 from azazel_nexus.operator_store import load_operator_trust
@@ -78,7 +79,14 @@ from .commissioning_input import load_commissioning_evidence
 from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
-from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
+from .activation_markers import (
+    GRANTABLE_UNITS,
+    read_scope_files,
+    reset_grant_markers,
+    reset_scope_files,
+    write_grant_markers,
+    write_scope_files,
+)
 from .units import DbusUnitManager, UnitManager, UnitOperationFailed
 
 __all__ = [
@@ -270,6 +278,7 @@ class ActivationDaemon:
         wired: Optional[Sequence[str]] = None,
         commissioning_evidence: Optional[CommissioningEvidence] = None,
         require_commissioning_evidence: bool = False,
+        exposure: Optional[ExposureEvidence] = None,
     ) -> ActivationOutcome:
         """Apply one pass; a lease-bearing pass loads missing Edge evidence.
 
@@ -299,6 +308,8 @@ class ActivationDaemon:
                 healthy=healthy,
                 commissioning_evidence=commissioning_evidence,
                 require_commissioning_evidence=require_commissioning_evidence,
+                # The pass's exposure evidence (#196 G6); None withholds the tier.
+                exposure=exposure,
                 # `None` means "ask the distribution", which is what a node
                 # does. A caller may pass a set to exercise a build other than
                 # this one; it may not pass one to widen this one, because the
@@ -525,6 +536,7 @@ def _commissioning_storage() -> Optional[str]:
 #: Every producer, for a pass whose input collection itself failed.
 _ALL_PRODUCERS = (
     "authoritative_commissioning_admission", "renderer_measurement", "edge_evidence",
+    "exposure_evidence",
     "authenticated_commissioning", "inventory_binding", "node_identity",
     "activation_policy", "epoch_high_water", "trusted_clock",
     "operational_generation_publisher", "systemd_loaded_units",
@@ -532,7 +544,12 @@ _ALL_PRODUCERS = (
 )
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
-    """Remove every grant marker, mask every governed unit, then raise."""
+    """Remove the scope files and every grant marker, mask every governed unit, then raise.
+
+    The scope files are removed in every case (#196 G6, wiring §5.3): first
+    by `reset_grant_markers`, and again in a `finally`, so an exception while
+    the markers are removed does not leave them.
+    """
     failures: list[str] = []
     try:
         reset_grant_markers(root)
@@ -540,6 +557,11 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
         failures.append(f"grant_markers: {type(exc).__name__}")
         print("az-activated could not remove grant markers during emergency narrowing",
               file=sys.stderr)
+    finally:
+        try:
+            reset_scope_files(root)
+        except Exception as exc:  # noqa: BLE001 - recorded, and the remask still runs
+            failures.append(f"decoy_scope_files: {type(exc).__name__}")
     for definition in CORE_UNITS:
         try:
             _mask_and_confirm_inactive(manager, definition.name)
@@ -569,12 +591,22 @@ def _run_once(
     library withholds edge-core (``edge_not_ready``) and decides the
     SUPPORTING units without it.
 
+    The Deception Lite exposure tier (#196 G6): the pass's step 10 hands the
+    library exposure evidence; an exposure grant is accepted only with all
+    three granted, a lease naming them from a verified v3 approval, evidence
+    with every stage held for this generation and a scope digest, and nothing
+    rolled back. Then, after the high water, the scope files are written and
+    read back before the markers (``docs/deception-exposure-wiring.md`` §5.3,
+    §6).
+
     After the decision is recorded: a grant outside the lease, any grant
-    without lease and health, or edge-core granted without launchable bound
-    evidence remasks everything and raises; otherwise the
-    high-water floors are raised and the per-boot grant markers written for
-    exactly the granted units. ``producers`` is a test seam; ``main`` never
-    passes it, and a relocated root reads no host producer.
+    without lease and health, edge-core granted without launchable bound
+    evidence, or an exposure grant without all of the above remasks
+    everything and raises; otherwise the high-water floors are raised, the
+    scope files written when the tier was granted, and the per-boot grant
+    markers written for exactly the granted units. ``producers`` is a test
+    seam; ``main`` never passes it, and a relocated root reads no host
+    producer.
     """
 
     daemon = ActivationDaemon(
@@ -636,6 +668,7 @@ def _run_once(
         wired=wired_capabilities(),
         commissioning_evidence=inputs.evidence if inputs is not None else None,
         require_commissioning_evidence=True,
+        exposure=inputs.exposure if inputs is not None and lease is not None else None,
     )
     granted = set(outcome.granted)
     if granted and (lease is None or not healthy or lease.units is None
@@ -656,16 +689,18 @@ def _run_once(
             "production activation granted edge-core without launchable Edge "
             "evidence bound to the signed package",
         )
-    if granted & set(DECEPTION_EXPOSURE_UNITS):
-        # #196 P1: this build has no isolation evidence, so a Deception Lite
-        # exposure unit is never granted; one that was means a change
-        # supplied authority the design does not have.
+    rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
+    exposure_granted = granted & set(DECEPTION_EXPOSURE_UNITS)
+    if exposure_granted and not _exposure_grant_holds(
+            exposure_granted, lease, inputs, outcome, rolled_back):
+        # #196 G6 (wiring §6): an exposure grant without every condition the
+        # pass established means a change supplied authority the design
+        # does not have.
         _emergency_narrow(
             manager, root,
-            "production activation granted a Deception Lite exposure unit "
-            "without isolation evidence",
+            "production activation granted the Deception Lite exposure tier "
+            "without a verified v3 approval and exposure evidence for every stage",
         )
-    rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"
     if lease is not None and inputs.approval is not None:
         # After the decision is recorded; raise-only, bounded by now + skew.
@@ -698,10 +733,24 @@ def _run_once(
                 pass
             _emergency_narrow(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
-    # From the first marker to the final record, any failure (writing a
-    # marker, assembling the diagnostic record, appending it) withdraws:
-    # markers removed, every governed unit remasked, then it raises (#251 L-2).
+    # From the scope files and the first marker to the final record, any
+    # failure (writing or reading back a scope file, writing a marker,
+    # assembling the diagnostic record, appending it) withdraws: scope files
+    # and markers removed, every governed unit remasked, then it raises
+    # (#251 L-2, #196 G6 wiring §5.3).
     try:
+        if exposure_granted and not rolled_back:
+            try:
+                _write_and_read_back_scope_files(inputs, root)
+            except Exception:  # noqa: BLE001 - a unit without its scope never starts
+                try:
+                    daemon._record({
+                        "event_type": "activation.decoy_scope_unwritten",
+                        "occurred_at": now, "actor": actor,
+                    })
+                except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                    pass
+                raise _ScopeUnwritten() from None
         if granted and not rolled_back:
             try:
                 markers = write_grant_markers(sorted(granted), root)
@@ -740,6 +789,13 @@ def _run_once(
                 observed["clock_synchronization"] = inputs.clock_synchronization
             if inputs.edge_missing:
                 observed["edge_missing_for_launch"] = list(inputs.edge_missing)
+            # Fixed labels, a stage name and a code only (wiring §4.6).
+            observed["exposure_evidence"] = inputs.exposure_evidence
+            exposure = inputs.exposure
+            if (inputs.exposure_evidence == "withheld"
+                    and type(exposure) is ExposureEvidence and exposure.refusal is not None):
+                observed["exposure_stage"] = exposure.failed_stage
+                observed["exposure_code"] = exposure.code
         daemon.ledger.append({
             "event_type": "activation.inputs_incomplete",
             "observed_inputs": observed,
@@ -749,6 +805,8 @@ def _run_once(
             "occurred_at": now,
             "actor": actor,
         })
+    except _ScopeUnwritten:
+        _emergency_narrow(manager, root, "decoy scope files could not be written")
     except _MarkersUnwritten:
         _emergency_narrow(manager, root, "activation grant markers could not be written")
     except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
@@ -760,6 +818,64 @@ def _run_once(
 
 class _MarkersUnwritten(Exception):
     """Private: a grant marker could not be written (already recorded)."""
+
+
+class _ScopeUnwritten(Exception):
+    """Private: a decoy scope file could not be written or read back (recorded)."""
+
+
+def _exposure_grant_holds(exposure_granted, lease, inputs, outcome, rolled_back) -> bool:
+    """The tripwire's conditions for an exposure grant (wiring §6), all of them.
+
+    All three granted; the lease names all three and came from exactly an
+    `ActivationApprovalV3`; the evidence holds every stage with no refusal,
+    for this outcome's generation, with a scope digest and P8's bytes; and
+    nothing was rolled back. The scope files' read-back is checked after
+    they are written (`_write_and_read_back_scope_files`).
+    """
+    from azazel_nexus.activation_approval_v3 import ActivationApprovalV3
+    from azazel_nexus.decoy_scope import parse_scope_file
+
+    exposure = set(DECEPTION_EXPOSURE_UNITS)
+    if exposure_granted != exposure or rolled_back:
+        return False
+    if (lease is None or lease.units is None or not exposure <= lease.units
+            or inputs is None or type(inputs.approval) is not ActivationApprovalV3
+            or inputs.approval.lease is not lease):
+        return False
+    evidence = inputs.exposure
+    if (type(evidence) is not ExposureEvidence or evidence.refusal is not None
+            or evidence.stages != EXPOSURE_STAGES or evidence.scope_digest is None
+            or inputs.exposure_evidence != "established"):
+        return False
+    if (outcome.generation is None or outcome.generation != inputs.generation
+            or evidence.generation_digest != inputs.generation_digest
+            or evidence.generation_digest != lease.generation_digest):
+        return False
+    scope_file = inputs.exposure_scope_file
+    try:
+        return (type(scope_file) is bytes
+                and parse_scope_file(scope_file).scope_digest == evidence.scope_digest)
+    except Exception:  # noqa: BLE001 - an unreadable rendering is not a grant
+        return False
+
+
+def _write_and_read_back_scope_files(inputs, root: Path) -> None:
+    """Write the two scope files (§5.3 step 3), then read them back (step 4).
+
+    The scope file must parse to the evidence's digest and be P8's bytes;
+    the digest file must hold that digest and a newline, byte for byte.
+    Raises on any departure.
+    """
+    from azazel_nexus.decoy_scope import parse_scope_file
+
+    digest = inputs.exposure.scope_digest
+    write_scope_files(inputs.exposure_scope_file, digest, root)
+    scope_file, digest_file = read_scope_files(root)
+    if (scope_file != inputs.exposure_scope_file
+            or parse_scope_file(scope_file).scope_digest != digest
+            or digest_file != (digest + "\n").encode("ascii")):
+        raise RuntimeError("decoy scope files differ on read back")
 
 
 def _activation_ledger(root: Path) -> AuditLedger:
