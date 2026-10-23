@@ -27,6 +27,10 @@ import re
 import pytest
 
 from azazel_nexus import activation_approval_v3 as v3
+from azazel_nexus.exposure_admission import (
+    EXPOSURE_ADMISSION_CODES,
+    EXPOSURE_ADMISSION_PHRASES,
+)
 from azazel_nexus.exposure_exclusivity import (
     EXPOSURE_ENFORCEMENT_CODES,
     EXPOSURE_ENFORCEMENT_PHRASES,
@@ -61,6 +65,8 @@ PARTS = {
     "exposure_generation.py": (exposure_generation.EXPOSURE_SECTION_CODES,
                                exposure_generation.EXPOSURE_SECTION_PHRASES),
     "activation_approval_v3.py": (v3.APPROVAL_V3_CODES, v3.APPROVAL_V3_PHRASES),
+    # #196 G6: the library's checks L3 to L5 and the pass's new stage codes.
+    "exposure_admission.py": (EXPOSURE_ADMISSION_CODES, EXPOSURE_ADMISSION_PHRASES),
 }
 ALL_CODES = [code for codes, _ in PARTS.values() for code in codes]
 REFUSALS = {f"{code}: {phrase}" for _, phrases in PARTS.values()
@@ -108,7 +114,7 @@ def test_the_codes_of_all_parts_are_distinct_and_new_to_the_product():
                         and id(node) not in prose):
                     for found in word.findall(node.value):
                         elsewhere.setdefault(found, path)
-    for known in ("exposure_tier_partial", "isolation_evidence_absent", "lease_absent",
+    for known in ("exposure_tier_partial", "lease_absent",
                   "outside_lease_scope", "wiring_absent", "edge_not_ready"):
         assert known in elsewhere, known
     for code in ALL_CODES:
@@ -219,6 +225,8 @@ _V3_WORDING = {
 _V3_EXPOSURE_FIELD_WORDING = {
     "invalid approval exposure scope digest", "invalid approval exposure prefix count",
     "invalid approval exposure ingress count",
+    # #196 G6: `ActivationApprovalPolicyV3`'s one refusal.
+    "invalid activation policy",
 }
 
 
@@ -285,5 +293,5 @@ def test_approval_v3_codes_every_phrase_the_helpers_it_calls_raise():
                 if isinstance(node, ast.ImportFrom) for alias in node.names}
     assert {name for module, name in imported if module in (
         "activation_approval", "activation_approval_v2", "operator_trust")} == {
-        "_utc", "ActivationApprovalPolicy", "ObserveBaselineContext", "MAX_APPROVAL_BYTES",
+        "_utc", "MAX_LEASE_CEILING_SECONDS", "ObserveBaselineContext", "MAX_APPROVAL_BYTES",
         "ApprovalPurpose", "ApprovalRefused", "OperatorTrust"}

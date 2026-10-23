@@ -1024,77 +1024,176 @@ def test_the_exposure_tier_holds_exactly_the_namespace_unit_the_helper_and_the_d
         UnitTier.SUPPORTING, UnitTier.EDGE_BASELINE, UnitTier.ENFORCEMENT)
 
 
-def test_the_exposure_tier_is_withheld_with_every_other_gate_satisfied(tmp_path):
-    """Health, a valid lease naming it, Edge ready and a complete record: still withheld.
+# -- the exposure tier's library half (#196 G6, wiring §4.2, L1 to L5) ---------
 
-    `activate` takes no isolation evidence, so nothing a caller passes can
-    satisfy the tier in this build (fail closed, #196 P1).
-    """
 
-    definitions = _exposure_definitions()
-    controller, units, ledger, store = _controller(tmp_path)
-    lease = _lease()
+_STAGES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11")
+_SCOPE_DIGEST = "sha256:" + "5" * 64
+
+
+def _evidence(digest=None, **changes):
+    from azazel_nexus.exposure_admission import ExposureEvidence
+
+    values = dict(generation_digest=digest or _lease().generation_digest,
+                  scope_digest=_SCOPE_DIGEST, refusal=None, stages=_STAGES) | changes
+    return ExposureEvidence(**values)
+
+
+def _exposure_activate(controller, *, exposure=None, lease=None, **kwargs):
+    candidate = lease or _lease()
     scoped = ActivationLease(
-        granted_by=lease.granted_by, granted_at=lease.granted_at,
-        expires_at=lease.expires_at, generation_digest=lease.generation_digest,
+        granted_by=candidate.granted_by, granted_at=candidate.granted_at,
+        expires_at=candidate.expires_at, generation_digest=candidate.generation_digest,
         units=frozenset(d.name for d in CORE_UNITS),
     )
-    ready = EdgeBaselineState(True, True, True, True, True)
-    for candidate in (lease, scoped):
-        outcome = controller.activate(
-            now=NOW, actor=ACTOR, lease=candidate, edge=ready, healthy=True,
-            record=_record(roles=(_confirmed_role(),)),
-            wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
-        )
+    return controller.activate(
+        now=NOW, actor=ACTOR, lease=scoped, edge=EdgeBaselineState(True, True, True, True, True),
+        healthy=True, record=_record(roles=(_confirmed_role(),)),
+        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
+        exposure=exposure, **kwargs)
+
+
+def _exposure_reasons(outcome):
+    names = {d.name for d in _exposure_definitions()}
+    return {v.unit: v.reason for v in outcome.verdicts if v.unit in names}
+
+
+def test_without_exposure_evidence_the_tier_is_withheld_with_every_other_gate_satisfied(
+        tmp_path):
+    """L3: health, a lease naming the tier, Edge ready and a complete record,
+    and no evidence (the default, as every caller before G6): withheld as
+    `exposure_evidence_absent`, the rest of the pass unaffected."""
+
+    definitions = _exposure_definitions()
+    controller, units, ledger, _ = _controller(tmp_path)
+    for exposure in (None, object(), "established", True):
+        outcome = _exposure_activate(controller, exposure=exposure)
         for definition in definitions:
             verdict = next(v for v in outcome.verdicts if v.unit == definition.name)
             assert not verdict.granted
-            assert verdict.reason.startswith("isolation_evidence_absent")
+            assert verdict.reason.startswith("exposure_evidence_absent: ")
             assert units.state(definition.name) is UnitState.MASKED
-        # The rest of the pass is unaffected: the exposure tier withholds only itself.
         assert "azazel-edge-core.service" in outcome.granted
     for definition in definitions:
         assert ("unmask_and_enable", definition.name) not in units.calls
     withheld = [entry.event for entry in ledger
                 if entry.event["event_type"] == "activation.unit_withheld"
                 and entry.event.get("unit") in {d.name for d in definitions}]
-    assert withheld and all(e["reason"].startswith("isolation_evidence_absent")
+    assert withheld and all(e["reason"].startswith("exposure_evidence_absent")
                             for e in withheld)
 
 
-def test_the_lsm_withholding_reasons_are_not_reached_yet(tmp_path):
-    """#196 G3: the AppArmor enforce-mode reasons exist and are never given.
+def test_activate_without_the_keyword_withholds_the_tier(tmp_path):
+    """The shipped default: a caller written before G6 keeps withholding."""
 
-    `decoy_apparmor.exposure_lsm_refusal` defines them for G6; until then the
-    tier is withheld as `isolation_evidence_absent` whatever the host's LSM.
-    """
-
-    from azazel_nexus_runtime.decoy_apparmor import LSM_REASON_CODES
-
-    controller, _, ledger, _ = _controller(tmp_path)
+    controller, _, _, _ = _controller(tmp_path)
     outcome = controller.activate(
         now=NOW, actor=ACTOR, lease=_lease(),
         edge=EdgeBaselineState(True, True, True, True, True), healthy=True,
         record=_record(roles=(_confirmed_role(),)),
+        wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT))
+    assert all(reason.startswith("exposure_evidence_absent")
+               for reason in _exposure_reasons(outcome).values())
+
+
+def test_established_evidence_for_this_generation_grants_the_three_together(tmp_path):
+    controller, units, _, store = _controller(tmp_path)
+    digest = store.verify(store.current().number).digest
+    outcome = _exposure_activate(controller, exposure=_evidence(digest))
+    names = [d.name for d in _exposure_definitions()]
+    assert all(name in outcome.granted for name in names)
+    assert all(units.state(name) is UnitState.ENABLED for name in names)
+
+
+def test_evidence_for_another_generation_is_a_mismatch(tmp_path):
+    """L4: measured against another generation than the verified one."""
+
+    controller, _, _, _ = _controller(tmp_path)
+    outcome = _exposure_activate(controller, exposure=_evidence("sha256:" + "9" * 64))
+    assert all(reason.startswith("exposure_evidence_mismatch: ")
+               for reason in _exposure_reasons(outcome).values())
+
+
+def test_a_stage_refusal_is_the_tiers_reason_and_the_same_for_the_three(tmp_path):
+    """L5: the first stage's code, the same verdict for each of the three."""
+
+    controller, _, _, store = _controller(tmp_path)
+    digest = store.verify(store.current().number).digest
+    refusal = "host_firewall_enabled: a host firewall loader is not disabled or masked"
+    outcome = _exposure_activate(controller, exposure=_evidence(
+        digest, refusal=refusal, stages=_STAGES[:3], scope_digest=None))
+    reasons = _exposure_reasons(outcome)
+    assert set(reasons.values()) == {refusal}
+    assert "azazel-edge-core.service" in outcome.granted
+
+
+def test_a_partial_lease_is_partial_before_the_evidence_is_read(tmp_path):
+    """L1 first: a lease naming one or two withholds the whole tier."""
+
+    controller, _, _, store = _controller(tmp_path)
+    digest = store.verify(store.current().number).digest
+    lease = _lease()
+    names = [d.name for d in _exposure_definitions()]
+    partial = ActivationLease(
+        granted_by=lease.granted_by, granted_at=lease.granted_at,
+        expires_at=lease.expires_at, generation_digest=lease.generation_digest,
+        units=frozenset(d.name for d in CORE_UNITS) - {names[2]})
+    outcome = controller.activate(
+        now=NOW, actor=ACTOR, lease=partial, edge=EdgeBaselineState(True, True, True, True, True),
+        healthy=True, record=_record(roles=(_confirmed_role(),)),
         wired=(ARTIFACT_TRANSPORT, LOCAL_MODEL_PROVIDER, REMOTE_INFERENCE_TRANSPORT),
-    )
-    reasons = [v.reason for v in outcome.verdicts if v.reason] + [
-        entry.event.get("reason", "") for entry in ledger]
-    assert reasons
-    assert not any(reason.startswith(code) for reason in reasons
-                   for code in LSM_REASON_CODES)
-    for definition in _exposure_definitions():
-        verdict = next(v for v in outcome.verdicts if v.unit == definition.name)
-        assert verdict.reason.startswith("isolation_evidence_absent")
+        exposure=_evidence(digest))
+    reasons = _exposure_reasons(outcome)
+    assert reasons[names[0]].startswith("exposure_tier_partial")
+    assert reasons[names[1]].startswith("exposure_tier_partial")
+    assert reasons[names[2]].startswith("outside_lease_scope")
 
 
-def test_activate_accepts_no_isolation_evidence_argument(tmp_path):
-    """No flag, boolean or keyword can supply the tier's evidence."""
+def test_an_enforcement_unit_in_the_governed_set_withholds_the_tier_only(tmp_path):
+    """L2 (Q-E): exclusivity is a withhold, before the evidence; the
+    enforcement unit keeps its own verdict."""
+
+    definitions = tuple(CORE_UNITS) + (ENFORCING,)
+    controller, _, _, store = _controller(tmp_path, definitions=definitions)
+    digest = store.verify(store.current().number).digest
+    outcome = _exposure_activate(controller, exposure=_evidence(digest))
+    assert all(reason.startswith("exposure_enforcement_exclusive: ")
+               for reason in _exposure_reasons(outcome).values())
+    verdict = next(v for v in outcome.verdicts if v.unit == ENFORCING.name)
+    assert not verdict.reason.startswith("exposure_")
+
+
+@pytest.mark.parametrize("changes", [
+    dict(scope_digest=None),
+    dict(stages=_STAGES[:10]),
+    dict(stages=("P1", "P3")),
+    dict(stages=_STAGES + ("P12",)),
+    dict(refusal="no code here", stages=_STAGES[:2]),
+    dict(refusal="host_firewall_enabled: x", stages=_STAGES),
+    dict(generation_digest="sha256:short"),
+    dict(scope_digest="sha256:" + "A" * 64),
+])
+def test_exposure_evidence_refuses_an_inconsistent_value(changes):
+    with pytest.raises(ValueError):
+        _evidence(**changes)
+
+
+def test_exposure_evidence_names_the_failed_stage_and_its_code():
+    value = _evidence(refusal="lsm_policy_differs: the kernel differs", stages=_STAGES[:10],
+                      scope_digest=None)
+    assert value.failed_stage == "P11" and value.code == "lsm_policy_differs"
+    assert not value.established
+    assert _evidence().established and _evidence().failed_stage is None
+
+
+def test_activate_takes_the_exposure_evidence_by_one_keyword_and_no_flag(tmp_path):
+    """No flag, boolean or other keyword supplies the tier."""
     import inspect
 
     parameters = inspect.signature(ActivationController.activate).parameters
-    assert not any("isolation" in name or "decoy" in name or "exposure" in name
-                   for name in parameters)
+    named = [name for name in parameters
+             if "isolation" in name or "decoy" in name or "exposure" in name]
+    assert named == ["exposure"] and parameters["exposure"].default is None
     controller, _, _, _ = _controller(tmp_path)
     with pytest.raises(TypeError):
         controller.activate(now=NOW, actor=ACTOR, lease=_lease(), isolation=True)

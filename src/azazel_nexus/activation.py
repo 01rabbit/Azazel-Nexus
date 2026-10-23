@@ -51,6 +51,14 @@ from typing import Callable, Iterable, Optional, Sequence
 from .audit import AuditLedger, AuditUnavailable
 from .commissioning import CommissioningRecord
 from .commissioning_evidence import CommissioningEvidence
+from .exposure_admission import (
+    EXPOSURE_EVIDENCE_ABSENT,
+    EXPOSURE_EVIDENCE_MISMATCH,
+    EXPOSURE_STAGE_UNREADABLE,
+    EXPOSURE_STAGES,
+    ExposureEvidence,
+    admission_refusal,
+)
 from .generation import GenerationRefused, GenerationStore
 
 __all__ = [
@@ -123,13 +131,15 @@ class UnitTier(str, Enum):
     `DECEPTION_EXPOSURE` makes a Deception Lite decoy reachable from outside
     the host (#196, `docs/deception-redirect-prerequisites.md` §5 D1). It is
     neither of the others: exposure is not enforcement, and the one feature
-    reachable from outside is not a supporting service. It needs this boot's
-    passing isolation evidence on top of everything `SUPPORTING` needs. That
-    evidence is produced only after the three units have started (the
-    network helper's record, `decoy_isolation`, #196 §14), so the pass, which
-    runs before them, never holds it: the tier is always withheld
-    (`isolation_evidence_absent`), and nothing a caller passes changes that.
-    The record gates the decoy's listen within the boot instead.
+    reachable from outside is not a supporting service. On top of everything
+    `SUPPORTING` needs, it needs no enforcement unit in the governed set and
+    the pass's exposure evidence for the verified generation with every
+    runtime stage held (`exposure_admission.ExposureEvidence`,
+    `docs/deception-exposure-wiring.md` §4.2): the conditions of grant §5 C1
+    that can be judged before the three units start. Without that evidence
+    the tier is withheld (`exposure_evidence_absent`). This boot's isolation
+    record (`decoy_isolation`, #196 §14) still gates the decoy's listen
+    within the boot; the pass, which runs before the units, never holds it.
     """
 
     SUPPORTING = "supporting"
@@ -247,8 +257,8 @@ DECOY_UNIT = "azazel-decoyd.service"
 #: (`ActivationController.__init__`); a lease that names some but not all of
 #: them withholds the whole tier (`exposure_tier_partial`); and the marker
 #: writer refuses a set holding some but not all of them
-#: (`activation_markers.write_grant_markers`). The tier is still withheld on
-#: every pass in this build (`isolation_evidence_absent`).
+#: (`activation_markers.write_grant_markers`). The tier is granted only on
+#: the pass's exposure evidence (#196 G6, `_withholding_reason`).
 DECEPTION_EXPOSURE_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_UNIT)
 
 
@@ -260,7 +270,8 @@ DECEPTION_EXPOSURE_UNITS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DEC
 #:
 #: M.I.O. entry and Knowledge Lite status are SUPPORTING services; provider
 #: units remain separately wiring-gated. The three Deception Lite exposure
-#: units are declared (#196) and always withheld in this build. Enforcement and
+#: units are declared (#196) and granted only on the pass's exposure evidence
+#: (G6). Enforcement and
 #: module-manager units belong to slices that are not built yet. `docs/roadmap.md` holds
 #: what is still owed; this tuple holds what exists.
 #:
@@ -844,6 +855,9 @@ class ActivationController:
         self._healthy = False
         self._commissioning_evidence: Optional[CommissioningEvidence] = None
         self._require_commissioning_evidence = False
+        #: The pass's exposure evidence (#196 G6). None is the refusing value
+        #: and the default: the tier is withheld without it.
+        self._exposure: Optional[ExposureEvidence] = None
         #: What this build has wired. Empty is the refusing value and the
         #: shipped one: a controller asked to decide without being told what
         #: exists withholds every unit that needs something.
@@ -861,6 +875,7 @@ class ActivationController:
         wired: Iterable[str] = (),
         commissioning_evidence: Optional[CommissioningEvidence] = None,
         require_commissioning_evidence: bool = False,
+        exposure: Optional[ExposureEvidence] = None,
     ) -> ActivationOutcome:
         """Run one activation pass. Called on every boot.
 
@@ -886,6 +901,9 @@ class ActivationController:
             raise ActivationRefused("explicit commissioning evidence policy required")
         self._commissioning_evidence = commissioning_evidence
         self._require_commissioning_evidence = require_commissioning_evidence
+        # The exposure evidence can only narrow: without it, or with any
+        # other type, the tier is withheld (`_withholding_reason`, L3).
+        self._exposure = exposure
         # Default empty, and the library cannot discover this for itself: what
         # is wired is a fact about the installed distribution, which is the
         # half the library is forbidden to import. It arrives as evidence, and
@@ -1080,21 +1098,31 @@ class ActivationController:
                     "only part of the Deception Lite exposure tier, which is "
                     "granted together or not at all"
                 )
-            # Fail closed by construction: `activate` takes no isolation
-            # evidence, so there is nothing a caller could pass to satisfy
-            # this tier. The evidence now has a producer (the network
-            # helper's record, `decoy_isolation`, #196 §14), and it still
-            # cannot satisfy this: the pass runs before the three units
-            # start, so this boot's record cannot exist yet, and a previous
-            # boot's says nothing about this one. The record gates the
-            # decoy's own listen instead. Making the tier grantable is a
-            # deliberate change here with its own condition, never a flag.
-            return (
-                "isolation_evidence_absent: this boot's isolation evidence "
-                "exists only after the exposure units have started, and this "
-                "pass consumes none, so nothing reachable from outside is "
-                "admitted"
-            )
+            # L2 (wiring §4.2, owner decision Q-E): no enforcement unit is
+            # governed with the tier. A property of the build, as wiring is,
+            # so it comes first among the tier's own checks; it withholds the
+            # tier rather than refusing the controller's construction, so
+            # the other tiers keep their verdicts.
+            from .exposure_exclusivity import exposure_enforcement_conflict
+
+            conflict = exposure_enforcement_conflict(self.definitions)
+            if conflict is not None:
+                return conflict
+            # L3: the pass handed exposure evidence. The default (None) and
+            # any other type withhold, so every caller written before G6
+            # keeps withholding.
+            evidence = self._exposure
+            if type(evidence) is not ExposureEvidence:
+                return admission_refusal(EXPOSURE_EVIDENCE_ABSENT)
+            # L4: measured against this verified generation.
+            if evidence.generation_digest != generation_digest:
+                return admission_refusal(EXPOSURE_EVIDENCE_MISMATCH)
+            # L5: every runtime stage held; otherwise the first stage's code.
+            if evidence.refusal is not None:
+                return evidence.refusal
+            if evidence.stages != EXPOSURE_STAGES or evidence.scope_digest is None:
+                return admission_refusal(EXPOSURE_STAGE_UNREADABLE)
+            return None
 
         if definition.tier is UnitTier.EDGE_BASELINE:
             if self._edge is None:

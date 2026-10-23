@@ -19,11 +19,12 @@ name. `azazel-edge-core.service` as this build declares it is
 manifest that declares enforcement) and does not conflict. No governed set
 in this build holds an enforcement unit (`CORE_UNITS`).
 
-**Implemented, not wired.** `ActivationController.__init__` does not call
-it, the activation pass does not import this module, and
-`_withholding_reason` still withholds the tier as `isolation_evidence_absent`
-unconditionally (`tests/unit/test_exposure_g6_parts.py`). G6 makes the
-controller refuse such a set. Nothing here grants, starts or changes a unit.
+**Wired by G6** as a withhold (`docs/deception-exposure-wiring.md` §4.2,
+L2; owner decision Q-E): `ActivationController._withholding_reason` asks it
+first among the exposure tier's own checks, so a governed set holding both
+withholds the tier and the enforcement unit keeps its own verdict; the
+controller's construction does not refuse. Nothing here grants, starts or
+changes a unit.
 """
 
 from __future__ import annotations
