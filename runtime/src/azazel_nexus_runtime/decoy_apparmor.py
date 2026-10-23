@@ -13,15 +13,17 @@ with, the paths the profiles let the Python body read (the installer checks
 the staged wrappers against them), and the pure judgement of the kernel's
 listing.
 
-**Not reached in this build.** `exposure_lsm_refusal` defines the reason
-codes the pass will give, but nothing on the pass calls it:
-`ActivationController._withholding_reason` still withholds the tier as
-`isolation_evidence_absent` unconditionally, and wiring this in is part of
-G6 (§9). `tests/unit/test_decoy_apparmor.py` fails the day the activation
-pass, the controller or the library imports this module.
+**Wired by G6** (`docs/deception-exposure-wiring.md` §4.3): the pass's
+stage P3 is `exposure_lsm_refusal(*read_exposure_lsm())` and its stage P11
+`loaded_unit_profile_refusal` over the bus reads of §4.5, then
+`policy_hash_refusal(read_policy_hashes(), expected)` with the signed
+generation section's hashes. `exposure_lsm_withholding` and
+`read_exposure_lsm_policy`, which compose the same judgements and reads in
+one call, are not used by the pass (it asks them at two stages) and stay
+unreached (`tests/unit/test_g6_unwired.py`).
 
-**G6 preparation (implemented, not wired).** The two items §7 leaves to G6
-are here as pure judgements and a bounded reader, called by nothing:
+**The two items §7 leaves to G6** are here as pure judgements and a bounded
+reader:
 `loaded_unit_profile_refusal` compares each unit's loaded `AppArmorProfile`
 with its declared profile (the value the bus gives; this module reads no
 bus), and `policy_hash_refusal` compares the kernel's per-profile policy
@@ -32,8 +34,9 @@ AppArmor 4.1; a mechanism check, not hardware evidence) it equalled the
 SHA-256 of `apparmor_parser -Q -o` output for each decoy profile (§7). The
 expected hashes take the form of the generation's exposure section field
 `apparmor_policy_hashes` (`exposure_generation.expected_policy_hashes` gives
-that field as `expected`). G6's installer records them; this build records
-and derives none, so the comparison withholds as `lsm_policy_unverifiable`
+that field as `expected`). The installer records them
+(`apparmor_compiled`) and `generation-publish` copies them into the section;
+without a section the comparison withholds as `lsm_policy_unverifiable`
 (fail closed). `exposure_lsm_withholding` puts the three judgements in one
 order and `read_exposure_lsm_policy` makes the three securityfs reads in one
 call.
@@ -590,8 +593,8 @@ def exposure_lsm_withholding(lsm, profiles, loaded, policy, expected) -> str | N
     `policy_hash_refusal(policy, expected)`. Pure. `expected` is the
     exposure section's `apparmor_policy_hashes` as
     `exposure_generation.expected_policy_hashes` gives it, or None.
-    **Called by nothing in this build**; with `expected` None, as this build
-    has it (nothing records the field yet), it never returns None.
+    **Not used by the pass** (#196 G6 asks the three at P3 and P11 apart);
+    with `expected` None it never returns None.
     """
 
     return (exposure_lsm_refusal(lsm, profiles)

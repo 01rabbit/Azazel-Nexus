@@ -26,11 +26,10 @@ The LSM condition (§5 item 4) is `decoy_apparmor.exposure_lsm_withholding`
 and the governed-set exclusion of an enforcing Edge (§6.2) is the library's
 `azazel_nexus.exposure_exclusivity`.
 
-**Implemented, not wired.** Nothing calls this module: the pass, the
-controller and the library do not import it, and
-`ActivationController._withholding_reason` still withholds the tier as
-`isolation_evidence_absent` unconditionally (`tests/unit/test_exposure_g6_parts.py`
-pins both). Wiring these in, in an order, is G6. Nothing here grants,
+**Wired by G6** (`docs/deception-exposure-wiring.md` §4.3): the pass's
+stage P2 is `fb_tunnels_refusal(read_fb_tunnels())`, its stage P4
+`host_firewall_refusal` over the bus reads of §4.5
+(`systemd_bus.SystemdUnitCalls.host_firewall_states`). Nothing here grants,
 enables, masks or starts anything, takes an argument that loosens a
 judgement, or reads the environment.
 """
@@ -141,7 +140,12 @@ def host_firewall_refusal(states) -> str | None:
     `states` maps exactly the three `HOST_FIREWALL_UNITS` to what the bus
     gave for each: None when systemd has neither a unit file nor a unit
     object for it, or `{"UnitFileState": str, "ActiveState": str}` (either
-    value may be `UNREADABLE`). Pure. In order:
+    value may be `UNREADABLE`). `ActiveState` None, beside a unit-file state,
+    means systemd holds no unit object for it (`GetUnit` answered
+    `NoSuchUnit`, wiring §4.5): no object holds a state, so nothing of it
+    runs, and it is judged as `inactive`. A unit-file state None beside an
+    `ActiveState` (a unit object with no file) is not that and is
+    unreadable. Pure. In order:
 
     * `host_firewall_unreadable`: a mapping that is not exactly the three, a
       value of another shape, a value not read, or a state systemd does not
@@ -178,6 +182,8 @@ def host_firewall_refusal(states) -> str | None:
         if type(value) is not dict or set(value) != {"UnitFileState", "ActiveState"}:
             return _host_firewall(HOST_FIREWALL_UNREADABLE)
         file_state, active_state = value["UnitFileState"], value["ActiveState"]
+        if active_state is None and type(file_state) is str:
+            active_state = "inactive"  # no unit object (NoSuchUnit): nothing runs
         if (type(file_state) is not str or file_state not in _OFF_STATES | _ON_STATES
                 or type(active_state) is not str or active_state not in _ACTIVE_STATES):
             return _host_firewall(HOST_FIREWALL_UNREADABLE)

@@ -66,6 +66,7 @@ evidence is exported through Fabric.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Sequence
 
 from azazel_nexus.capability import CapabilityState
@@ -816,6 +817,30 @@ def deception_scope_assignments(inventory: Any, topology_profile: Any) -> tuple[
 
     return tuple((identify_interface(inventory.interfaces, assignment.selector).interface_key,
                   assignment.role) for assignment in topology_profile.commissioned_assignments)
+
+
+def restore_current_inventory(raw: bytes) -> Any:
+    """This boot's `HardwareInventory`, from the verified evidence's bytes (#196 G6).
+
+    `CommissioningEvidence.current_inventory` holds the canonical JSON the
+    evidence verifier made of the inventory it compared with the retained
+    one. This restores it, re-validated and with its content digest checked,
+    for the pass's role resolution (stage P6). No filesystem, no signature,
+    no decision.
+    """
+    fabric, _ = _import_fabric()
+    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        raise CommissioningRecordUnavailable("pinned Fabric is required")
+    try:
+        from azazel_fabric.provisioning_contracts import HardwareInventory, assert_content_digest
+
+        if type(raw) is not bytes or not raw:
+            raise ValueError
+        inventory = HardwareInventory.model_validate(json.loads(raw.decode("utf-8")))
+        assert_content_digest(inventory, digest_field="inventory_digest")
+        return inventory
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        raise CommissioningRecordUnavailable("current hardware inventory unavailable") from None
 
 
 def restore_commissioning_inputs(document: dict) -> dict:

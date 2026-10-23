@@ -25,11 +25,10 @@ already read, whether the pass should refuse the grant because of that state:
   fails its start closed);
 * `exposure_state_unreadable`: a value absent or not in its closed form.
 
-**Implemented, not wired (#196 G6 preparation A).** Nothing calls
-`exposure_residue_departures` or `read_netns`:
-`ActivationController._withholding_reason` still withholds the tier as
-`isolation_evidence_absent` unconditionally, and wiring this in is G6
-(grant §9). The judgement reads nothing itself (the caller passes what it
+**Wired by G6** (`docs/deception-exposure-wiring.md` §4.3, stage P5): the
+pass calls `exposure_residue_departures` with the bus reads of §4.5
+(`systemd_bus.SystemdUnitCalls.exposure_unit_states`), `read_netns()` and
+the names of `netlink.read_links()`. The judgement reads nothing itself (the caller passes what it
 read from the service manager's bus, `/run/netns` through `read_netns`,
 and the host's link names from `netlink.read_links`), stops nothing,
 removes nothing and adds no unit operation: the operator stops such a unit
@@ -119,6 +118,10 @@ _MASKED_FILE_STATES = frozenset({"masked", "masked-runtime"})
 _DEFINITIONLESS = frozenset({"masked", "not-found"})
 #: A unit in one of these runs nothing (`ExecStop=`'s clean-up aside).
 _STOPPED = frozenset({"inactive", "failed"})
+#: What a unit with no unit object is read as: a load state with no
+#: definition behind it that is not `masked` or `not-found` (those mean a
+#: definition was replaced or removed while an object exists).
+_NO_OBJECT_LOAD = "stub"
 
 #: Private test seam: where the named network namespaces are. Production is
 #: exactly this (`hardening.NETNS_DIRECTORY`, a test keeps them equal).
@@ -127,16 +130,25 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def _unit_states(units: object) -> Optional[dict[str, tuple[str, str, str]]]:
-    """`unit -> (LoadState, UnitFileState, ActiveState)`, or None when not closed."""
+    """`unit -> (LoadState, UnitFileState, ActiveState)`, or None when not closed.
+
+    `LoadState` and `ActiveState` both None mean systemd holds no unit
+    object for the unit (`GetUnit` answered `NoSuchUnit`, wiring §4.5): it
+    has no definition loaded and nothing of it runs, so it is read as
+    `stub` and `inactive`. One of the two None without the other is not
+    that, and is not closed.
+    """
 
     if not isinstance(units, Mapping) or set(units) != set(EXPOSURE_UNITS):
         return None
     states = {}
     for unit in EXPOSURE_UNITS:
         properties = units[unit]
-        if not isinstance(properties, Mapping):
+        if not isinstance(properties, Mapping) or set(properties) != set(UNIT_PROPERTIES):
             return None
         values = tuple(properties.get(name) for name in UNIT_PROPERTIES)
+        if values[0] is None and values[2] is None:
+            values = (_NO_OBJECT_LOAD, values[1], "inactive")
         load, file_state, active = values
         if (not all(type(value) is str for value in values) or load not in _LOAD_STATES
                 or file_state not in _UNIT_FILE_STATES or active not in _ACTIVE_STATES):

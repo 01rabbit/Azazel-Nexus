@@ -61,11 +61,13 @@ def test_activated_reaches_the_readers_only_through_the_pass_module():
 def test_production_producers_are_the_fixed_protected_readers():
     source = PASS.read_text(encoding="utf-8")
     body = source[source.index("def production_producers("):]
-    for reader in ("load_activation_policy", "load_observe_baseline_approval",
+    for reader in ("load_activation_policy", "load_activation_approval_v2_or_v3",
                    "load_bootstrap_deployment", "collect_node_health",
                    "raise_high_water", "require_high_water_for_pass",
                    "load_declared_node", "measure_scoped_unit_files",
-                   "verify_grantable_units", "require_clock_synchronized"):
+                   "verify_grantable_units", "require_clock_synchronized",
+                   # #196 G6: step 10's fixed host readers, the same bus session.
+                   "production_exposure_readers(systemd)"):
         assert reader in body, reader
     # No producer is taken from the environment or a command line.
     assert "environ" not in source and "argv" not in source

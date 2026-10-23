@@ -1,4 +1,4 @@
-"""#196 G6 preparation D: this boot's names of the role interfaces, not wired.
+"""#196 G6 preparation D: this boot's names of the role interfaces (stage P6).
 
 `docs/deception-exposure-grant.md` §4.3, `docs/commissioning.md` §3 and §8,
 `docs/deception-exposure-reachability.md` §6 "Interfaces". Pins that
@@ -9,8 +9,9 @@ ambiguous, missing or changed identity, or a name outside §4.3, withholds
 with a fixed reason that carries no name or identity; that its output is
 what `decoy_scope.render_scope_file` and
 `decoy_reachability.pass_reachability_departures` take; and that it reads,
-writes and runs nothing. That nothing calls it, so the tier is still withheld
-as `isolation_evidence_absent`, is `test_g6_unwired.py`.
+writes and runs nothing. Who calls it (the pass's stage P6 and
+`az-activation`) is `test_g6_unwired.py`; the order of the stages is
+`test_runtime_exposure_pass.py`.
 """
 
 from __future__ import annotations
@@ -217,7 +218,8 @@ def test_the_roles_are_what_the_pass_judgement_takes():
     args = dict(ingress=resolved.ingress, management=resolved.management,
                 observation=resolved.observation)
     ipv4, ipv6 = reach._ipv4(eth9=None), reach._ipv6()
-    rules, routes = reach._rules(ingress=resolved.ingress), reach._routes()
+    rules = reach._as_listing(reach._rules(ingress=resolved.ingress))
+    routes = reach._as_listing(reach._routes())
     assert pass_reachability_departures(ipv4, ipv6, rules, routes, **args) == ()
     ipv4["mgmt0"] = {"forwarding": 1}
     assert pass_reachability_departures(ipv4, ipv6, rules, routes, **args) == (

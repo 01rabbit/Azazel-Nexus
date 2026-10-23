@@ -52,12 +52,11 @@ the chained cause.
 policy, not these digests. That is the kernel-hash comparison's to catch
 (`decoy_apparmor.policy_hash_refusal`, *inferred*, G6).
 
-**Implemented, not wired.** The current generation schema
-(`observe_baseline.OBSERVE_BASELINE_SCHEMA`), `ACTIVATION_UNIT_ALLOWLIST`,
-`GRANTABLE_UNITS` and the policy scope are unchanged; this section is not in
-any generation this build writes or reads, and nothing calls this module
-(`tests/unit/test_exposure_g6_parts.py`). **The generation schema version
-that carries the section is introduced in G6**; its name is G6's choice.
+**Wired by G6** (`docs/deception-exposure-wiring.md` §5.2): the section is
+the `exposure` key of `observe-baseline-generation/v2`
+(`observe_baseline.OBSERVE_BASELINE_SCHEMA_V2`), built by
+`az-activation generation-publish` and verified by the pass's stage P9
+(`exposure_pass`), whose stage P11 takes `expected_policy_hashes` from it.
 """
 
 from __future__ import annotations
@@ -246,7 +245,8 @@ def expected_policy_hashes(section) -> dict[str, str]:
     (`exposure_section_unverifiable`) a section not in its closed form.
     G6 treats that `GenerationRefused` as the tier's
     `exposure_section_unverifiable` (withheld), never as a missing
-    expectation to skip. **Called by nothing in this build** (G6).
+    expectation to skip. Called by the pass's stage P11 (#196 G6), where
+    that refusal is `lsm_policy_unverifiable`.
 
     **Why a recorded hash can be trusted** (finding 3 of the review of
     #303). Nothing here re-derives the hashes; they are believed only
@@ -288,7 +288,8 @@ def measure_exposure_section_inputs() -> tuple[dict[str, bytes], dict[str, bytes
     Read-only; refuses as each reader does, keeping its exception type
     (`UnitFilesRefused` and its subclasses) with the message
     `exposure_section_unverifiable: <phrase>`; the reader's own fixed label
-    stays on the chained cause. **Not called by the pass in this build** (G6).
+    stays on the chained cause. Called by `az-activation` and the pass's
+    stage P9 (#196 G6), where a refusal is `exposure_files_unreadable`.
     """
 
     try:

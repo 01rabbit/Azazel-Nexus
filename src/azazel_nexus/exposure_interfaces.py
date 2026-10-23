@@ -68,12 +68,10 @@ which requires it not to forward either (reachability §6,
 serial or a bus path. An argument of any shape gives a reason, never an
 exception.
 
-**Implemented, not wired.** Nothing calls this module: the pass, the
-controller and the library do not import it, nothing writes
-`/run/azazel-activation/decoy-scope.json`, and
-`ActivationController._withholding_reason` still withholds the tier as
-`isolation_evidence_absent` (`tests/unit/test_exposure_interfaces.py`).
-Wiring it in is G6. It grants, writes and reads nothing.
+**Wired by G6** (`docs/deception-exposure-wiring.md` §4.3, stage P6): the
+pass's step 10 (`azazel_nexus_runtime.exposure_pass`) and `az-activation`
+call it with the verified evidence's proposal and current inventory. It
+grants, writes and reads nothing.
 """
 
 from __future__ import annotations

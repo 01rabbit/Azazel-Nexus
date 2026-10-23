@@ -9,8 +9,8 @@ the replies into **the dictionaries `ip -j` prints**, so that
 `decoy_reachability._rules_exact` and `_routes_clear` stay the one
 comparison of the pass and the verify.
 
-**Implemented, not wired**: nothing imports it. The pass will
-(`tests/unit/test_g6_unwired.py` lists it with no importer).
+**Wired by G6**: the pass's stage P7 (`exposure_pass`) is its only importer
+(`tests/unit/test_g6_unwired.py`).
 
 ## Why a module of its own
 

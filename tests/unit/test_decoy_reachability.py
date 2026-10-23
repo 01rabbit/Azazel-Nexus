@@ -1,4 +1,4 @@
-"""#196 G6 preparation A: the pass's reading of reachability §6, and G6 item (a).
+"""#196 G6: the pass's reading of reachability §6 (stage P7), and G6 item (a) (P5).
 
 `docs/deception-exposure-reachability.md` §6 and §9 (R1, R2, R5), and
 `docs/deception-exposure-grant.md` §5 condition 6 and §6.3 "For G6" (a).
@@ -8,7 +8,10 @@ reads the host's sysctls or talks to the service manager):
 * `decoy_reachability.pass_reachability_departures`: each reason code of
   §6, in its fixed order; what the pass adds to the verify (the roles,
   `az-decoy0` not exempt, the rules compared whole, no route in the /24 at
-  all); the interface-name rules and `conf_entry_path`;
+  all); the interface-name rules and `conf_entry_path`. The pass is handed
+  the route-netlink dumps' dictionaries (`exposure_route_dump`, wiring §4.4
+  B1), None for a dump not read whole; here the verify's `ip -j` output is
+  turned into that form by `parse_json_list`, so both judge one listing;
 * that the verify's judgement is the one G2 had but for the rules (its own
   tests are `test_decoy_watch.py`; here, that the two share the reads and
   the one rule comparison, `_rules_exact`, and differ only where §6 says),
@@ -23,10 +26,9 @@ reads the host's sysctls or talks to the service manager):
   itself, not through `ip netns list` (#196 L2, H1(c)): no directory is no
   namespace, any other error and a link under the name are unreadable
   (read from a directory under `tmp_path`, never the host's);
-* that both are leaves. That **nothing calls either** (no module of the
-  product imports them but the verify, the tier is withheld as
-  `isolation_evidence_absent` with both made to fail if called, and
-  `_withholding_reason` is unchanged) is `test_g6_unwired.py`.
+* that both are leaves. Who imports them (the pass's step 10, the verify)
+  is pinned by `test_g6_unwired.py`; the order of the stages is
+  `test_runtime_exposure_pass.py`.
 
 None of this is VM or hardware evidence.
 """
@@ -150,11 +152,20 @@ def _routes(*extra):
     return (0, json.dumps(routes + list(extra)).encode())
 
 
+def _as_listing(dump):
+    """`(status, ip -j output)` to what the pass's dumps give: the list of
+    dictionaries, or None for a dump not read whole (wiring §4.4 B1)."""
+
+    status, output = dump
+    return decoy_reachability.parse_json_list(output) if status == 0 else None
+
+
 def _pass(ipv4=None, ipv6=None, rules=None, routes=None, ingress=INGRESS,
           management=MANAGEMENT, observation=OBSERVATION):
     return pass_reachability_departures(
         _ipv4() if ipv4 is None else ipv4, _ipv6() if ipv6 is None else ipv6,
-        _rules() if rules is None else rules, _routes() if routes is None else routes,
+        _as_listing(_rules() if rules is None else rules),
+        _as_listing(_routes() if routes is None else routes),
         ingress=ingress, management=management, observation=observation)
 
 
@@ -454,10 +465,11 @@ _BAD_SHAPES = [
     {"ingress": 7}, {"ingress": "eth9"}, {"ingress": ["eth9"]}, {"ingress": (7,)},
     {"ingress": (None,)}, {"management": None}, {"observation": "mon0"},
     {"management": (b"mgmt0",)},
-    {"rules": None}, {"rules": [0, b"[]"]}, {"rules": (0,)}, {"rules": (0, b"[]", 1)},
+    {"rules": [0, b"[]"]}, {"rules": (0,)}, {"rules": (0, b"[]", 1)},
     {"rules": (0, "[]")}, {"rules": ("0", b"[]")}, {"rules": (None, b"[]")},
-    {"routes": None}, {"routes": (0, None)}, {"routes": (0, bytearray(b"[]"))},
-    {"routes": b"[]"},
+    {"rules": [7]}, {"rules": [[]]}, {"rules": ({},)},
+    {"routes": (0, None)}, {"routes": (0, bytearray(b"[]"))},
+    {"routes": b"[]"}, {"routes": [None]}, {"routes": "[]"},
     {"ipv4": []}, {"ipv4": {"all": None}}, {"ipv4": {"all": {"forwarding": "1"}}},
     {"ipv4": {7: {"forwarding": 0}}}, {"ipv4": {"all": {"forwarding": True}}},
     {"ipv6": []}, {"ipv6": {"all": [0]}}, {"ipv6": "absent"},
@@ -468,7 +480,8 @@ _BAD_SHAPES = [
 def test_an_argument_of_another_shape_is_unreadable_never_an_exception(bad):
     """Review of #293 item 3."""
 
-    arguments = {"ipv4": _ipv4(), "ipv6": _ipv6(), "rules": _rules(), "routes": _routes(),
+    arguments = {"ipv4": _ipv4(), "ipv6": _ipv6(), "rules": _as_listing(_rules()),
+                 "routes": _as_listing(_routes()),
                  "ingress": INGRESS, "management": MANAGEMENT, "observation": OBSERVATION}
     arguments.update(bad)
     assert pass_reachability_departures(
@@ -479,8 +492,24 @@ def test_an_argument_of_another_shape_is_unreadable_never_an_exception(bad):
 def test_absent_trees_are_still_judged_as_reads():
     for ipv4, ipv6 in ((_ipv4(), None), (None, IPV6_ABSENT)):
         assert pass_reachability_departures(
-            ipv4, ipv6, _rules(), _routes(), ingress=INGRESS, management=MANAGEMENT,
-            observation=OBSERVATION) == (FORWARDING_UNREADABLE,)
+            ipv4, ipv6, _as_listing(_rules()), _as_listing(_routes()), ingress=INGRESS,
+            management=MANAGEMENT, observation=OBSERVATION) == (FORWARDING_UNREADABLE,)
+
+
+@pytest.mark.parametrize("which", ["rules", "routes"])
+def test_a_dump_not_read_whole_is_unreadable_and_the_rest_is_still_judged(which):
+    """None is a dump the route-netlink reader could not read whole (B1):
+    `forwarding_unreadable`, beside every other code that holds."""
+
+    arguments = {"rules": _as_listing(_rules()), "routes": _as_listing(_routes())}
+    arguments[which] = None
+    assert pass_reachability_departures(
+        _ipv4(), _ipv6(), arguments["rules"], arguments["routes"], ingress=INGRESS,
+        management=MANAGEMENT, observation=OBSERVATION) == (FORWARDING_UNREADABLE,)
+    assert pass_reachability_departures(
+        _ipv4(all={"forwarding": 1, "proxy_arp": 0}), _ipv6(), arguments["rules"],
+        arguments["routes"], ingress=INGRESS, management=MANAGEMENT,
+        observation=OBSERVATION) == (FORWARDING_HOST_WIDE, FORWARDING_UNREADABLE)
 
 
 def test_conf_entry_path_fixes_the_parent_and_refuses_the_reserved_names():

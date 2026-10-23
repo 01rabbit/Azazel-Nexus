@@ -8,11 +8,9 @@ Two callers share this module, each with its own judgement:
   `decoy_watch` (#196 G6 preparation A), but for the rules: since #196 R4's
   remainder they are compared by the pass's one comparison (`_rules_exact`).
 * **the activation pass** (G6): `pass_reachability_departures`, the reading
-  of condition 6 of grant §5. **Implemented, not wired**: nothing calls it.
-  `ActivationController._withholding_reason` still withholds the tier as
-  `isolation_evidence_absent` unconditionally, and wiring this in is G6
-  (grant §9). `tests/unit/test_decoy_reachability.py` fails the day the
-  activation pass, the controller or the library imports this module.
+  of condition 6 of grant §5, wired as the pass's stage P7
+  (`docs/deception-exposure-wiring.md` §4.3) over the route-netlink dumps
+  of `exposure_route_dump` (§4.4 B1).
 
 What the pass adds to the verify's judgement, as §6 states it:
 
@@ -125,7 +123,7 @@ REACHABILITY_CODES: tuple[str, ...] = (
     FORWARDING_UNREADABLE,
 )
 
-#: The codes the pass gives (G6, not wired), in the fixed order of §6's table.
+#: The codes the pass gives (G6, stage P7), in the fixed order of §6's table.
 PASS_REACHABILITY_CODES: tuple[str, ...] = (
     FORWARDING_INGRESS_OFF,
     FORWARDING_ROLE_ON,
@@ -542,13 +540,6 @@ def _names_closed(ingress: object, management: object, observation: object) -> b
                     for name in names for family in _FAMILIES))
 
 
-def _dump_closed(read: object) -> bool:
-    """`(status, output)`: an `int` status and `bytes` output."""
-
-    return (type(read) is tuple and len(read) == 2 and type(read[0]) is int
-            and type(read[1]) is bytes)
-
-
 def _tree_closed(tree: object) -> bool:
     """None, or `{str: {str: int | None}}` as `read_sysctls` gives it."""
 
@@ -563,18 +554,19 @@ def _trees_closed(ipv4: object, ipv6: object) -> bool:
     return _tree_closed(ipv4) and (ipv6 is IPV6_ABSENT or _tree_closed(ipv6))
 
 
-def pass_reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
-                                 routes: tuple[int, bytes], *,
+def pass_reachability_departures(ipv4: Tree, ipv6, rules: Optional[list],
+                                 routes: Optional[list], *,
                                  ingress: tuple[str, ...],
                                  management: tuple[str, ...],
                                  observation: tuple[str, ...]) -> tuple[str, ...]:
     """The pass's reason codes of reachability §6 that hold, in fixed order.
 
-    **Implemented, not wired (#196 G6 preparation A):** nothing calls this,
-    and the tier is withheld as `isolation_evidence_absent` whatever it
-    would say. Pure. `ipv4` and `ipv6` are `read_sysctls(ingress)`'s;
-    `rules` and `routes` are `(status, output)` of `ip -j -4 rule show` and
-    `ip -j -4 route show table main`; `ingress`, `management` and
+    **Wired by G6** (wiring §4.3, stage P7). Pure. `ipv4` and `ipv6` are
+    `read_sysctls(ingress)`'s; `rules` and `routes` are what the pass's
+    route-netlink dumps give (`exposure_route_dump.dump_ipv4_rules` and
+    `dump_main_routes`, wiring §4.4 B1): the lists of dictionaries
+    `ip -j -4 rule show` and `ip -j -4 route show table main` print, or None
+    for a dump that could not be read whole; `ingress`, `management` and
     `observation` are the interface names already resolved from their roles
     (grant §4.3; an ambiguous or missing identity has withheld before this).
     Empty when condition 6's forwarding part holds; otherwise the codes of
@@ -596,20 +588,46 @@ def pass_reachability_departures(ipv4: Tree, ipv6, rules: tuple[int, bytes],
       dump that failed, or a name that is not 1 to 4 ingress names, each
       allowed by grant §4.3 and the rules of §6, in no two places; in that
       case, and for any argument of another shape (a name that is not a
-      string, a dump that is not `(int, bytes)`, a tree that is not
-      `{str: {str: int | None}}`), nothing else is judged and it is the only
-      code: an argument never raises.
+      string, a dump that is neither None nor a list of dictionaries, a tree
+      that is not `{str: {str: int | None}}`), nothing else is judged and it
+      is the only code: an argument never raises.
     """
 
     if not (_names_closed(ingress, management, observation)
-            and _dump_closed(rules) and _dump_closed(routes)
+            and _listing_closed(rules) and _listing_closed(routes)
             and _trees_closed(ipv4, ipv6)):
         return (FORWARDING_UNREADABLE,)
     found = _sysctl_departures(ipv4, ipv6, ingress, (*management, *observation), ())
-    found |= _dump_departures(rules, routes,
-                              lambda listed: _rules_exact(listed, ingress),
-                              lambda listed: _routes_clear(listed, connected=False))
+    found |= _listing_departures(rules, routes,
+                                 lambda listed: _rules_exact(listed, ingress),
+                                 lambda listed: _routes_clear(listed, connected=False))
     return tuple(code for code in PASS_REACHABILITY_CODES if code in found)
+
+
+def _listing_closed(listed: object) -> bool:
+    """None (a dump not read whole), or a list of dictionaries."""
+
+    return listed is None or (type(listed) is list
+                              and all(type(item) is dict for item in listed))
+
+
+def _listing_departures(rules: Optional[list], routes: Optional[list],
+                        contained: Callable[[list[dict]], Optional[bool]],
+                        clear: Callable[[list[dict]], Optional[bool]]) -> set[str]:
+    """`_dump_departures` over the pass's parsed dumps (wiring §4.4 B1)."""
+
+    found: set[str] = set()
+    result = None if rules is None else contained(rules)
+    if result is None:
+        found.add(FORWARDING_UNREADABLE)
+    elif not result:
+        found.add(INGRESS_CONTAINMENT_ABSENT)
+    result = None if routes is None else clear(routes)
+    if result is None:
+        found.add(FORWARDING_UNREADABLE)
+    elif not result:
+        found.add(DECOY_PREFIX_ROUTED)
+    return found
 
 
 def reachability_refusal(codes: tuple[str, ...]) -> Optional[str]:

@@ -8,6 +8,20 @@ particular, it never exposes ``StartUnit``.
 ``EdgeUnitStateReader`` is the narrower, read-only view handed to
 ``az-edge-probed``: one verb, one unit, three properties, and no route to the
 mask/unmask/enable calls the controller uses.
+
+**The exposure tier's reads** (#196 G6, `docs/deception-exposure-wiring.md`
+§4.5): ``host_firewall_states``, ``exposure_unit_states`` and
+``decoy_profile_states`` read, through the controller's existing session,
+``GetUnitFileState`` and, after ``GetUnit``, the Unit interface's
+``LoadState``/``ActiveState`` and the Service interface's
+``AppArmorProfile`` of fixed units: the three host firewall loaders (which
+no write verb accepts; they are added to the reader's units for these reads
+only), the three exposure units and the verify unit. ``LoadUnit`` is never
+called. Exactly two errors map to None, each from the one call named:
+``org.freedesktop.DBus.Error.FileNotFound`` from ``GetUnitFileState`` and
+``org.freedesktop.systemd1.NoSuchUnit`` from ``GetUnit``. Every other error,
+a reply of another type or a value outside the closed sets raises
+``UnitOperationFailed``, which the pass turns into the stage's refusal.
 """
 
 from __future__ import annotations
@@ -31,6 +45,7 @@ MANAGER_PATH = "/org/freedesktop/systemd1"
 MANAGER_INTERFACE = "org.freedesktop.systemd1.Manager"
 PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 UNIT_INTERFACE = "org.freedesktop.systemd1.Unit"
+SERVICE_INTERFACE = "org.freedesktop.systemd1.Service"
 
 # Transport bounds, not node-health measurements or bootstrap lease duration.
 # An unanswered D-Bus call must not keep the refusing controller stuck forever.
@@ -103,9 +118,25 @@ class _Reply:
     body: list
     #: True only for an opted-in call that got exactly systemd's NoSuchUnit.
     no_such_unit: bool = False
+    #: True only for an opted-in `GetUnitFileState` that got exactly FileNotFound.
+    file_not_found: bool = False
 
 
 _NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
+_FILE_NOT_FOUND = "org.freedesktop.DBus.Error.FileNotFound"
+
+#: The host firewall loaders (`exposure_withholding.HOST_FIREWALL_UNITS`; a
+#: test keeps them equal). Read here, never governed: no write verb names them.
+HOST_FIREWALL_UNITS = ("nftables.service", "firewalld.service",
+                       "netfilter-persistent.service")
+#: The three exposure units (`activation.DECEPTION_EXPOSURE_UNITS`).
+_EXPOSURE_UNITS = ("azazel-decoy-nsd.service", "azazel-decoy-netd.service",
+                   "azazel-decoyd.service")
+#: The four units of `decoy_apparmor.DECOY_APPARMOR_PROFILES`, in its order.
+_PROFILE_UNITS = ("azazel-decoy-nsd.service", "azazel-decoy-netd.service",
+                  "azazel-decoy-verify.service", "azazel-decoyd.service")
+#: Whose `LoadState`/`ActiveState` the exposure reads may ask for.
+_EXPOSURE_READ_UNITS = frozenset(HOST_FIREWALL_UNITS + _PROFILE_UNITS)
 
 
 class SystemdUnitCalls:
@@ -242,6 +273,102 @@ class SystemdUnitCalls:
                 getattr(variant, "signature", None), getattr(variant, "value", None), signature
             )
         return loaded
+
+    # -- the exposure tier's reads (#196 G6, wiring §4.5) ---------------------
+
+    def _unit_file_state_or_none(self, unit: str) -> Optional[str]:
+        """`GetUnitFileState`, None only for FileNotFound (no unit file)."""
+        if unit not in _EXPOSURE_READ_UNITS:
+            raise UnitOperationFailed("the systemd client refused a unit outside the exposure reads")
+        reply = self._exchange(MANAGER_INTERFACE, "GetUnitFileState", "s", [unit],
+                               allow_file_not_found=True)
+        if getattr(reply, "file_not_found", False) is True:
+            return None
+        value = self._one(reply, "s", "GetUnitFileState")
+        if type(value) is not str or value not in _UNIT_FILE_STATES:
+            raise UnitOperationFailed("systemd returned an unknown unit-file state")
+        return value
+
+    def _object_or_none(self, unit: str) -> Optional[str]:
+        """`GetUnit`'s object path, None only for NoSuchUnit (no unit object)."""
+        if unit not in _EXPOSURE_READ_UNITS:
+            raise UnitOperationFailed("the systemd client refused a unit outside the exposure reads")
+        reply = self._exchange(MANAGER_INTERFACE, "GetUnit", "s", [unit],
+                               allow_no_such_unit=True)
+        if getattr(reply, "no_such_unit", False) is True:
+            return None
+        path = _unit_object_path(unit)
+        if self._one(reply, "o", "GetUnit") != path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        return path
+
+    def _unit_state(self, path: str, name: str) -> str:
+        reply = self._exchange(PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, name],
+                               path=path)
+        variant = self._one(reply, "v", f"Unit.{name}")
+        value = getattr(variant, "value", None)
+        allowed = _LOAD_STATES if name == "LoadState" else _ACTIVE_STATES
+        if (getattr(variant, "signature", None) != "s" or type(value) is not str
+                or value not in allowed):
+            raise UnitOperationFailed(f"systemd returned an unknown {name}")
+        return value
+
+    def host_firewall_states(self) -> dict:
+        """`host_firewall_refusal`'s input: each loader's file and active state.
+
+        None for a loader with neither a unit file nor a unit object; a
+        loader with a file and no unit object reads `ActiveState` None (no
+        object holds a state, so nothing of it runs).
+        """
+        states: dict = {}
+        for unit in HOST_FIREWALL_UNITS:
+            file_state = self._unit_file_state_or_none(unit)
+            path = self._object_or_none(unit)
+            active = None if path is None else self._unit_state(path, "ActiveState")
+            states[unit] = (None if file_state is None and active is None
+                            else {"UnitFileState": file_state, "ActiveState": active})
+        return states
+
+    def exposure_unit_states(self) -> dict:
+        """`exposure_residue_departures`'s `units`: each exposure unit's three states.
+
+        `LoadState` and `ActiveState` are None together, only when systemd
+        holds no unit object for it (`GetUnit` never loads one).
+        """
+        states: dict = {}
+        for unit in _EXPOSURE_UNITS:
+            file_state = self._unit_file_state_or_none(unit)
+            path = self._object_or_none(unit)
+            load = None if path is None else self._unit_state(path, "LoadState")
+            active = None if path is None else self._unit_state(path, "ActiveState")
+            states[unit] = {"LoadState": load, "UnitFileState": file_state,
+                            "ActiveState": active}
+        return states
+
+    def decoy_profile_states(self) -> dict:
+        """`loaded_unit_profile_refusal`'s input: `LoadState` and `AppArmorProfile`.
+
+        None for a unit with no unit object; otherwise `AppArmorProfile` as
+        the `(bs)` pair it is (a masked unit reads `(False, "")`).
+        """
+        states: dict = {}
+        for unit in _PROFILE_UNITS:
+            path = self._object_or_none(unit)
+            if path is None:
+                states[unit] = None
+                continue
+            load = self._unit_state(path, "LoadState")
+            reply = self._exchange(PROPERTIES_INTERFACE, "Get", "ss",
+                                   [SERVICE_INTERFACE, "AppArmorProfile"], path=path)
+            variant = self._one(reply, "v", "Service.AppArmorProfile")
+            value = getattr(variant, "value", None)
+            if (getattr(variant, "signature", None) != "(bs)"
+                    or type(value) not in (list, tuple) or len(value) != 2
+                    or type(value[0]) is not bool or type(value[1]) is not str
+                    or len(value[1]) > _TEXT_LIMIT):
+                raise UnitOperationFailed("systemd returned an invalid AppArmorProfile")
+            states[unit] = {"LoadState": load, "AppArmorProfile": (value[0], value[1])}
+        return states
 
     def bootstrap_profile(self):
         """Observe fixed Manager properties and classify the reviewed profile.
@@ -418,6 +545,7 @@ class SystemdBusSession:
         *,
         path: str = MANAGER_PATH,
         allow_no_such_unit: bool = False,
+        allow_file_not_found: bool = False,
     ) -> _Reply:
         if interface not in {MANAGER_INTERFACE, PROPERTIES_INTERFACE}:
             raise UnitOperationFailed("the systemd client refused an interface")
@@ -448,6 +576,13 @@ class SystemdBusSession:
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
             pass  # The probe's three reads, on the Edge unit's object only.
+        elif (path in {_unit_object_path(unit) for unit in _EXPOSURE_READ_UNITS}
+                and list(body) in ([UNIT_INTERFACE, "LoadState"],
+                                   [UNIT_INTERFACE, "ActiveState"])):
+            pass  # The exposure reads (wiring §4.5): two states, fixed units.
+        elif (path in {_unit_object_path(unit) for unit in _PROFILE_UNITS}
+                and list(body) == [SERVICE_INTERFACE, "AppArmorProfile"]):
+            pass  # The exposure reads: the profile the manager attaches.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -476,6 +611,12 @@ class SystemdBusSession:
                         and getattr(reply, "sender", None) != self._admitted_owner):
                     raise UnitOperationFailed("systemd D-Bus reply owner refused")
                 return _Reply("", [], no_such_unit=True)
+            if (allow_file_not_found and member == "GetUnitFileState"
+                    and type(name) is str and name == _FILE_NOT_FOUND):
+                if (self._admitted_owner is not None
+                        and getattr(reply, "sender", None) != self._admitted_owner):
+                    raise UnitOperationFailed("systemd D-Bus reply owner refused")
+                return _Reply("", [], file_not_found=True)
             raise UnitOperationFailed(f"systemd D-Bus call {member} returned an error")
         if reply.message_type != self._message_type.METHOD_RETURN:
             raise UnitOperationFailed(
@@ -495,6 +636,18 @@ class SystemdBusSession:
     def loaded_unit(self, unit: str):
         """Read one grantable unit's loaded definition; performs no control operation."""
         return self.calls.loaded_unit(unit)
+
+    def host_firewall_states(self) -> dict:
+        """The host firewall loaders' states (#196 G6); performs no control operation."""
+        return self.calls.host_firewall_states()
+
+    def exposure_unit_states(self) -> dict:
+        """The exposure units' three states (#196 G6); performs no control operation."""
+        return self.calls.exposure_unit_states()
+
+    def decoy_profile_states(self) -> dict:
+        """The four decoy units' profiles (#196 G6); performs no control operation."""
+        return self.calls.decoy_profile_states()
 
     def close(self) -> None:
         try:

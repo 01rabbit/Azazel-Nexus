@@ -44,6 +44,21 @@ SUPPORTING units to the rest of the decision. Two things bind it:
 
 Neither half adds an authority: the lease, the policy scope and node health
 still decide every grant; Edge evidence can only narrow it.
+
+**The Deception Lite exposure tier** (#196 G6,
+`docs/deception-exposure-wiring.md` §4 and §5). A policy may name the three
+exposure units (all three or none). Two scopes keep the tier from
+withholding the rest: step 6 measures only the **observe scope** (the
+policy's units without the three) and the generation's body lists only it;
+the exposure unit files are measured by step 10's stage P9 alone, inside
+the generation's exposure section. Step 7 reads the one approval pair under
+its own schema: v2 against a policy of the observe scope, v3 against one of
+all the policy's units, and a v3 result is accepted only naming the three.
+Step 10 (`exposure_pass`) runs only when the lease names the three: it asks
+the parts in a fixed order, P1 to P11, and hands the library
+`ExposureEvidence`. Like Edge evidence it is **outside `complete`**: a
+refusal withholds the three exposure units and nothing else, and step 10
+never raises.
 """
 
 from __future__ import annotations
@@ -62,17 +77,20 @@ from azazel_nexus.activation_approval_v2 import (
     ObserveBaselineApproval,
     ObserveBaselineContext,
 )
+from azazel_nexus.activation_approval_v3 import ActivationApprovalPolicyV3, ActivationApprovalV3
 from azazel_nexus.activation_policy import ActivationPolicy
 from azazel_nexus.bootstrap_approval import parse_bootstrap_time
 from azazel_nexus.bootstrap_deployment import BootstrapDeployment, declared_node_binding
 from azazel_nexus.commissioning_evidence import CommissioningEvidence
 from azazel_nexus.edge_package import bound_to_signed_package, nothing_established
+from azazel_nexus.exposure_admission import ExposureEvidence
 from azazel_nexus.generation import Generation
 from azazel_nexus.observe_baseline import (
     EDGE_CORE_UNIT,
     OBSERVE_BASELINE_FILE,
     decode_observe_baseline,
     evidence_commissioning_digest,
+    exposure_section_of,
     verify_observe_baseline,
 )
 
@@ -83,6 +101,7 @@ from .node_config import DeclaredNode
 __all__ = [
     "ALWAYS_MISSING",
     "EDGE_EVIDENCE",
+    "EXPOSURE_EVIDENCE",
     "PRODUCERS",
     "POLICY_UNIT_SCOPE",
     "UNIT_SCOPE",
@@ -96,16 +115,15 @@ __all__ = [
 
 #: The units a pass may grant: the five SUPPORTING loop units (§6.2, P4),
 #: edge-core (P5) and the three Deception Lite exposure units (#196). The
-#: same object as the tripwire's and the marker writer's. The policy is
-#: narrower: `ACTIVATION_UNIT_ALLOWLIST` cannot name the exposure units, so a
-#: lease never holds them, and the library withholds their tier anyway.
+#: same object as the tripwire's and the marker writer's.
 UNIT_SCOPE = GRANTABLE_UNITS
 
-#: The units a policy may name: the grantable set without the Deception Lite
-#: exposure units. The pass's own second check of a decoded policy, so that
-#: adding the exposure units to `GRANTABLE_UNITS` (for the #253 checks) did
-#: not widen what a policy may scope even if the decoder's allowlist did.
-POLICY_UNIT_SCOPE = GRANTABLE_UNITS - frozenset(DECEPTION_EXPOSURE_UNITS)
+#: The units a policy may name: the grantable set (#196 G6, wiring §6). The
+#: pass's own second check of a decoded policy; the decoder's allowlist and
+#: its three-or-none rule for the exposure units are the first.
+POLICY_UNIT_SCOPE = GRANTABLE_UNITS
+
+_EXPOSURE = frozenset(DECEPTION_EXPOSURE_UNITS)
 
 #: The producers this pass runs, as named in `missing_producers`.
 PRODUCERS = (
@@ -129,6 +147,10 @@ ALWAYS_MISSING = (
 #: launchable and bound to the signed package. Never part of `complete`:
 #: Edge evidence withholds edge-core only, never the SUPPORTING units.
 EDGE_EVIDENCE = "edge_evidence"
+#: Named unless the exposure evidence is `established` or `not_in_scope`
+#: (wiring §4.6). Never part of `complete`: it withholds the three exposure
+#: units only.
+EXPOSURE_EVIDENCE = "exposure_evidence"
 
 _TIME = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -151,8 +173,11 @@ class PassProducers:
     #: marker, the manager is a reviewed profile and each unit is not loaded,
     #: masked, or loaded as declared; raises otherwise.
     loaded_units: Callable[[list], None]
-    #: `load_observe_baseline_approval` (keyword arguments).
-    approval: Callable[..., ObserveBaselineApproval]
+    #: `load_activation_approval_v2_or_v3` (keyword arguments): an
+    #: `ObserveBaselineApproval` or an `ActivationApprovalV3`.
+    #: `exposure_policy` is passed only when the policy names the exposure
+    #: tier.
+    approval: Callable[..., object]
     #: `(policy, ledger) -> (healthy, findings)`.
     health: Callable
     #: `raise_high_water` (value, keyword `now` and `skew_seconds`).
@@ -171,6 +196,10 @@ class PassProducers:
     #: boot's clock synchronization is proven; raises otherwise. Called only
     #: when the policy requires it (#251 M-1); None then refuses.
     clock_synchronized: Optional[Callable[[], bool]] = None
+    #: Step 10's host readers (`exposure_pass.production_exposure_readers`),
+    #: used only when the lease names the exposure tier. None: every stage
+    #: that needs a reader withholds the tier (`exposure_stage_unreadable`).
+    exposure: Optional[object] = None
 
 
 @dataclass
@@ -182,9 +211,13 @@ class PassInputs:
     healthy: bool = False
     status: dict = field(default_factory=dict)
     health_findings: tuple = ()
-    approval: Optional[ObserveBaselineApproval] = None
+    approval: Optional[object] = None
     high_water: Optional[HighWater] = None
     generation: Optional[int] = None
+    #: The verified generation's digest and its recorded exposure section
+    #: (None for a generation without one); step 10's inputs.
+    generation_digest: Optional[str] = None
+    exposure_section: Optional[dict] = field(default=None, repr=False)
     skew_seconds: Optional[int] = None
     #: The Edge state handed to the library (None: no lease was formed).
     edge: Optional[EdgeBaselineState] = None
@@ -199,6 +232,13 @@ class PassInputs:
     #: omits `require_clock_synchronized` or sets it false), `synchronized`
     #: or `not_proven`.
     clock_synchronization: str = "not_attempted"
+    #: Step 10 (#196 G6): the evidence handed to the library (None: not
+    #: collected) and its fixed label, `not_attempted`, `not_in_scope`,
+    #: `established` or `withheld`.
+    exposure: Optional[ExposureEvidence] = None
+    exposure_evidence: str = "not_attempted"
+    #: P8's rendered scope file, only with established evidence (§5.3).
+    exposure_scope_file: Optional[bytes] = field(default=None, repr=False)
 
     @property
     def complete(self) -> bool:
@@ -208,12 +248,15 @@ class PassInputs:
         """Only the producers that failed (or were not collected), plus the unbuilt.
 
         `edge_evidence` is named unless edge-core is in scope with launchable,
-        bound evidence; it never makes the pass incomplete.
+        bound evidence, and `exposure_evidence` unless it is `established` or
+        `not_in_scope`; neither makes the pass incomplete.
         """
         failed = [name for name in PRODUCERS
                   if self.status.get(name) in ("failed", "not_collected_staged_root")]
         edge = [] if self.edge_evidence == "launchable" else [EDGE_EVIDENCE]
-        return list(ALWAYS_MISSING) + edge + failed
+        exposure = ([] if self.exposure_evidence in ("established", "not_in_scope")
+                    else [EXPOSURE_EVIDENCE])
+        return list(ALWAYS_MISSING) + edge + exposure + failed
 
 
 def staged_inputs() -> PassInputs:
@@ -236,7 +279,9 @@ def raised_high_water(inputs: PassInputs, *, now: str) -> HighWater:
     the pass checked, it is at most `now + skew` by construction.
     """
     current, approval = inputs.high_water, inputs.approval
-    if (type(current) is not HighWater or type(approval) is not ObserveBaselineApproval
+    # v2 and v3 share the floors: one sequence, one epoch (wiring §5.1).
+    if (type(current) is not HighWater
+            or type(approval) not in (ObserveBaselineApproval, ActivationApprovalV3)
             or type(inputs.generation) is not int):
         raise _Refused("verified approval and floors required")
     floor = max(parse_bootstrap_time(current.time_floor), parse_bootstrap_time(now))
@@ -285,13 +330,18 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         return declared_node_binding(deployment, declared.node_id), deployment.security_epoch
     identity = attempt(("node_identity",), node)
 
-    # 3. Activation policy: the five SUPPORTING units and edge-core at most.
+    # 3. Activation policy: the five SUPPORTING units, edge-core and the
+    #    three exposure units (all three or none) at most.
     def policy():
         value = producers.policy()
         if type(value) is not ActivationPolicy:
             raise _Refused("activation policy required")
         if not set(value.units) <= POLICY_UNIT_SCOPE:
             raise _Refused("policy scope outside the grantable units")
+        # The decoder's three-or-none rule, checked again (wiring §5.1).
+        named = set(value.units) & _EXPOSURE
+        if named and named != _EXPOSURE:
+            raise _Refused("policy names part of the exposure tier")
         return value
     active_policy = attempt(("activation_policy",), policy)
     if active_policy is not None:
@@ -331,7 +381,9 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
     # 6. The current generation, as an observe-baseline tree over the unit
     #    files installed now (edge-core's, with its observe-only Environment=
     #    lines, among them when in scope), bound to this evidence and -- when
-    #    edge-core is in scope -- to the Edge package installed now.
+    #    edge-core is in scope -- to the Edge package installed now. Only the
+    #    observe scope is measured: an exposure unit file is step 10's (P9),
+    #    so a change to one withholds the exposure tier alone.
     generation: Optional[Generation] = None
     edge_in_scope = active_policy is not None and EDGE_CORE_UNIT in active_policy.units
     pinned: list = []
@@ -342,7 +394,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
                 raise _Refused("no generation")
             verified = generations.verify(current.number)
             tree = generations.read_tree(verified.number)
-            scope = list(active_policy.units)
+            scope = list(active_policy.observe_units)
             measured = producers.unit_files(scope)
             package_digest, components, binding = None, None, "not_in_scope"
             if edge_in_scope:
@@ -366,7 +418,8 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
                     raise _Refused("extracted Edge components differ from the generation")
                 binding = ("bound" if installed is not None and extracted is not None
                            else "package_refused")
-            verify_observe_baseline(generation=verified, files=tree, units=scope,
+            verify_observe_baseline(generation=verified, files=tree,
+                                    units=list(active_policy.units),
                                     unit_files=measured, package_digest=package_digest,
                                     package_components=components)
             if (verified.commissioning_evidence_binding != result.evidence.binding
@@ -378,10 +431,12 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
                 raise _Refused("installed unit files changed during measurement")
             pinned[:] = [package_digest]
             result.edge_package_binding = binding
+            result.exposure_section = exposure_section_of(dict(tree)[OBSERVE_BASELINE_FILE])
             return verified
         generation = attempt(("operational_generation_publisher",), current_generation)
     if generation is not None:
         result.generation = generation.number
+        result.generation_digest = generation.digest
         if floors is not None and generation.number < floors.generation:
             fail("epoch_high_water")
 
@@ -396,7 +451,10 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         producers.loaded_units(sorted(UNIT_SCOPE))
     attempt(("systemd_loaded_units",), loaded_units)
 
-    # 7. The v2 approval, verified against the context above and the floors.
+    # 7. The approval (v2 or v3, by its schema), verified against the context
+    #    above and the floors. v2 against a policy of the observe scope; v3,
+    #    only when the policy names the exposure tier, against one of all the
+    #    policy's units, and accepted only naming the three (wiring §5.1).
     upstream = ("authenticated_commissioning", "node_identity", "activation_policy",
                 "epoch_high_water", "trusted_clock", "operational_generation_publisher")
     if all(status[name] == "verified" for name in upstream):
@@ -408,17 +466,30 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
                 commissioning_evidence_binding=result.evidence.binding,
                 policy_digest=active_policy.policy_digest, security_epoch=identity[1],
             )
+            exposure_policy = {}
+            if active_policy.names_exposure:
+                exposure_policy["exposure_policy"] = ActivationApprovalPolicyV3(
+                    authorized_operators=frozenset(active_policy.operators),
+                    max_lease_seconds=active_policy.max_lease_seconds,
+                    unit_scope=frozenset(active_policy.units),
+                )
             approved = producers.approval(
                 expected=context,
                 policy=ActivationApprovalPolicy(
                     authorized_operators=frozenset(active_policy.operators),
                     max_lease_seconds=active_policy.max_lease_seconds,
-                    unit_scope=frozenset(active_policy.units),
+                    unit_scope=frozenset(active_policy.observe_units),
                 ),
+                **exposure_policy,
                 now=now, security_epoch_floor=floors.security_epoch,
                 approval_seq_floor=floors.approval_seq,
             )
-            if (type(approved) is not ObserveBaselineApproval
+            if type(approved) is ActivationApprovalV3 and (
+                    not active_policy.names_exposure
+                    or approved.lease.units is None
+                    or not _EXPOSURE <= approved.lease.units):
+                raise _Refused("a v3 approval must name the exposure tier")
+            if (type(approved) not in (ObserveBaselineApproval, ActivationApprovalV3)
                     or type(approved.lease) is not ActivationLease
                     or approved.lease.units is None
                     or not approved.lease.units <= set(active_policy.units)
@@ -466,6 +537,26 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             result.edge_evidence = "launchable" if state.launchable else "not_launchable"
             result.edge_missing = state.missing_for_launch()
         result.edge = state
+
+    # 10. The exposure tier's runtime stages (#196 G6, wiring §4.3), only
+    #     when the lease names the three exposure units. Never part of
+    #     `complete` and never raises: a refusal withholds those three only.
+    if result.lease is not None:
+        result.exposure_evidence = "not_in_scope"
+        units = result.lease.units
+        if units is not None and _EXPOSURE <= units:
+            try:
+                from .exposure_pass import collect_exposure_evidence
+
+                result.exposure, result.exposure_scope_file = collect_exposure_evidence(
+                    approval=result.approval, evidence=result.evidence,
+                    generation_digest=result.generation_digest,
+                    section=result.exposure_section, readers=producers.exposure)
+            except Exception:  # noqa: BLE001 - no evidence: the library withholds
+                result.exposure, result.exposure_scope_file = None, None
+            result.exposure_evidence = (
+                "established" if type(result.exposure) is ExposureEvidence
+                and result.exposure.established else "withheld")
     return result
 
 
@@ -477,7 +568,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
     `call`); without one the loaded-unit check refuses, so nothing is granted.
     """
     from azazel_nexus.activation_policy import load_activation_policy
-    from azazel_nexus.activation_store import load_observe_baseline_approval
+    from azazel_nexus.activation_store import load_activation_approval_v2_or_v3
     from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
     from azazel_nexus.edge_package import (
         installed_baseline_state,
@@ -490,6 +581,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
     from .activation_high_water import raise_high_water, require_high_water_for_pass
     from .activation_loaded_units import verify_grantable_units
     from .activation_unit_files import measure_scoped_unit_files
+    from .exposure_pass import production_exposure_readers
     from .node_config import load_declared_node
 
     return PassProducers(
@@ -500,7 +592,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         high_water=require_high_water_for_pass,
         unit_files=measure_scoped_unit_files,
         loaded_units=lambda units: verify_grantable_units(systemd, units),
-        approval=load_observe_baseline_approval,
+        approval=load_activation_approval_v2_or_v3,
         health=lambda policy, ledger: collect_node_health(policy=policy, ledger=ledger),
         raise_high_water=raise_high_water,
         # The fixed installed paths. The boot preflight wrote the probe result
@@ -510,4 +602,6 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         edge_components=measure_extracted_components,
         # Read only when the policy requires it: the fixed timesyncd marker.
         clock_synchronized=require_clock_synchronized,
+        # Step 10's readers (#196 G6): read-only, through the same session.
+        exposure=production_exposure_readers(systemd),
     )
