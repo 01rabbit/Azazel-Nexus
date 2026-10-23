@@ -332,7 +332,8 @@ def publish_mio_profile_signature(expected: bytes, payload: bytes, signature: by
 
 def retain_proposal_context(*, inventory, resource_profile, topology_profile,
                             record_id: str, operator: str, confirmed_at: str,
-                            mio_profile: str | None = None) -> None:
+                            mio_profile: str | None = None,
+                            deception_scope: dict | None = None) -> None:
     """Retain validated local model inputs, never imported payload bytes.
 
     Two copies separate local expectations from the signing view. Their common
@@ -345,7 +346,7 @@ def retain_proposal_context(*, inventory, resource_profile, topology_profile,
     payload = commissioning_proposal_payload(inventory=inventory,
         resource_profile=resource_profile, topology_profile=topology_profile,
         record_id=record_id, operator=operator, confirmed_at=confirmed_at,
-        mio_profile=mio_profile)
+        mio_profile=mio_profile, deception_scope=deception_scope)
     directory_fd = None
     try:
         directory_fd = os.open(COMMISSIONING_DIR, os.O_RDONLY | os.O_DIRECTORY |

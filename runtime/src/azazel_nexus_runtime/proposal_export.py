@@ -1,16 +1,38 @@
-"""Interactive protected full-proposal export; no signing or service admission."""
+"""Interactive protected full-proposal export; no signing or service admission.
+
+**The Deception Lite exposure scope** (#196, `docs/deception-exposure-grant.md`
+§4.1, S1). Only when the signed draft assigns at least one interface the
+role `deception_bridge`, the export asks, after the M.I.O. ceiling, for the
+approved IPv4 source prefixes. Empty keeps the v2 proposal exactly as
+before. Otherwise the section (the fixed bridge prefix, confirmed and
+printed, the prefixes as typed, the ingress role) is decoded whole by
+`decoy_scope.decode_deception_scope` against this proposal's own roles and
+refused whole on any departure; the prefixes and the number of ingress
+interfaces are printed, and the operator types `EXPOSE` before `EXPORT`.
+The proposal is then `commissioning-proposal/v3`, signed with the same
+purpose by the same separate full-proposal signature. Nothing is granted:
+the activation pass reads the scope only with a v3 approval naming the
+exposure tier (G6).
+"""
 
 from datetime import datetime, timezone
 import sys
 from uuid import uuid4
 
 from azazel_nexus.commissioning_approval import commissioning_proposal_payload
+from azazel_nexus.decoy_scope import (
+    BRIDGE_PREFIX,
+    INGRESS_ROLE,
+    DecoyScopeRefused,
+    decode_deception_scope,
+    render_deception_scope,
+)
 from azazel_nexus.commissioning_draft import (
     DraftInputRefused, DraftRefused, retain_proposal_context, read_draft_review_inputs,
 )
 from azazel_nexus.fabric_boundary import (
-    CommissioningRecordUnavailable, project_hardware_inventory,
-    project_resource_profile, project_reviewed_topology,
+    CommissioningRecordUnavailable, IdentityUnavailable, deception_scope_assignments,
+    project_hardware_inventory, project_resource_profile, project_reviewed_topology,
 )
 from azazel_nexus.operator_store import load_operator_trust
 from azazel_nexus.operator_trust import ApprovalRefused
@@ -24,6 +46,37 @@ from .resource_assessment import assess_resources
 def _now():
     # An assembly timestamp, not a trusted-clock or freshness attestation.
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: The prompts of the exposure scope, fixed (the rehearsal drives them).
+SCOPE_PROMPT = ("Deception Lite exposure: approved IPv4 source prefixes "
+                "(comma-separated), or empty for none: ")
+EXPOSE_PROMPT = ("Make a Deception Lite decoy reachable from these sources on the "
+                 "deception_bridge interfaces once activation approves it? Type EXPOSE: ")
+
+
+def _deception_scope(inventory, topology):
+    """The operator's scope section, or None for none; refused whole otherwise."""
+    if not any(assignment.role == INGRESS_ROLE
+               for assignment in topology.commissioned_assignments):
+        return None
+    text = input(SCOPE_PROMPT).strip()
+    if not text:
+        return None
+    section = {"approved_v4": [part.strip() for part in text.split(",")],
+               "bridge_prefix": BRIDGE_PREFIX, "ingress_role": INGRESS_ROLE}
+    try:
+        scope = decode_deception_scope(section, assignments=deception_scope_assignments(
+            inventory, topology))
+    except (DecoyScopeRefused, IdentityUnavailable, ValueError, TypeError, AttributeError):
+        raise DraftRefused("deception scope refused") from None
+    print(f"Decoy bridge prefix (fixed, confirmed): {BRIDGE_PREFIX}")
+    print("Approved IPv4 source prefixes: "
+          + ", ".join(str(network) for network in scope.approved_v4))
+    print(f"Ingress interfaces (role {INGRESS_ROLE}): {len(scope.ingress_keys)}")
+    if input(EXPOSE_PROMPT) != "EXPOSE":
+        raise DraftRefused("exposure declined")
+    return render_deception_scope(scope)
 
 
 def run(operator: str, addresses) -> int:
@@ -69,8 +122,15 @@ def run(operator: str, addresses) -> int:
             record_id="record-" + uuid4().hex, operator=operator, confirmed_at=_now(),
             mio_profile=profile,
         )
+        reason = ("Deception Lite exposure scope refused (canonical, sorted, "
+                  "non-overlapping RFC 1918 IPv4 prefixes) or declined")
+        scope = _deception_scope(inventory, topology)
+        if scope is not None:
+            context["deception_scope"] = scope
+        reason = "M.I.O. ceiling selection invalid or export incomplete"
         commissioning_proposal_payload(**context)  # Validate before asking for consent.
-        if input(f"Create a protected unsigned full proposal with M.I.O. {profile} for separate review/signing? Type EXPORT: ") != "EXPORT":
+        what = "and the Deception Lite exposure scope " if scope is not None else ""
+        if input(f"Create a protected unsigned full proposal with M.I.O. {profile} {what}for separate review/signing? Type EXPORT: ") != "EXPORT":
             raise DraftRefused("export declined")
         reason = "hardware or protected inputs changed during export"
         if not addresses.unchanged():
