@@ -8,7 +8,11 @@ the **要確認** points are recorded in
 [#195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6277975662).
 It found that the installed probe never read `running`, so `verified-ready`
 was unreachable; [#221](https://github.com/01rabbit/Azazel-Nexus/pull/221)
-fixed that.
+fixed that. On 2026-10-24 the loop also ran on a VM through the **regular
+activation path** (Variant B of the [activation rehearsal](activation-rehearsal.md),
+Edge Core included; mechanics only, signed with a VM-only rehearsal key, not
+hardware evidence and not owner approval); see §5 and the
+[record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6369911973).
 
 This runbook runs the [integrated defensive loop](../integration-loop.md) on
 the rehearsal VM with the installed units instead of the harness: a real
@@ -24,15 +28,17 @@ and the [commissioning rehearsal](commissioning-rehearsal.md), a VM rehearses
 campaign, it is not an [HG-07](hg-07.md) record, and every artefact is
 labelled `rehearsal`.
 
-**What this run cannot show today.** Since #206 P4 the production pass has
-a regular path that can grant the SUPPORTING loop units (§5) from the inputs
-`az-activation` produces; its reboot sequence was rehearsed once on a VM
-on 2026-10-23 (P6 of
+**How the units get started.** Since #206 P4 and P5 the production pass has
+a regular path that grants the loop units (§5) from the inputs
+`az-activation` produces; its reboot sequence was rehearsed on a VM on
+2026-10-23 (P6 of
 [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206), mechanics only:
-[activation rehearsal](activation-rehearsal.md)). This runbook requests no
-approval, so the loop is still started by the rehearsal-only procedure of
-§6, and the result says *activation admission: not exercised*. On real hardware that
-procedure is forbidden ([HG-07](hg-07.md) step 3).
+[activation rehearsal](activation-rehearsal.md)), and the loop ran through it
+on 2026-10-24 (§5). That path is now the preferred way to start the loop for
+this runbook. The rehearsal-only hand start of §6 remains as a fallback for a
+VM where no approval is installed; a run that uses it says *activation
+admission: not exercised*. On real hardware the hand start is forbidden
+([HG-07](hg-07.md) step 3).
 
 Text marked **要確認 (to confirm)** is a point this runbook could not settle
 from the code or existing documents; resolve it on the VM and record the
@@ -58,12 +64,15 @@ answer with the run.
    `/root/azn-rehearsal/backup-<time>.tgz`, directory `0700`), never to a
    shared or user directory and never off the VM, and delete it at the end of
    the run (§10) once the VM is back in its intended state.
-3. **No keys, no approvals.** Do not create, copy or edit an operator seed,
-   an activation approval, a lease or a bootstrap selection for this run, and
-   do not bring a real one onto the VM. Signing stays on the operator's own
+3. **Keys and approvals.** On the regular path (§5), keys, signing and the
+   activation approval follow the [activation rehearsal](activation-rehearsal.md#1-roles-and-secrets)
+   (on a VM, a VM-only rehearsal key); this runbook adds no key or approval
+   of its own. For the §6 fallback: do not create, copy or edit an operator
+   seed, an activation approval, a lease or a bootstrap selection, and do
+   not bring a real one onto the VM; signing stays on the operator's own
    workstation with `tools/operator_sign.py` as in the
-   [commissioning rehearsal](commissioning-rehearsal.md#1-keys-and-who-does-what);
-   this runbook needs no signature at all.
+   [commissioning rehearsal](commissioning-rehearsal.md#1-keys-and-who-does-what),
+   and the §6 run needs no signature at all.
 4. **No lab marker interference.** If `/etc/azazel-lab/LAB-HOST` exists the
    VM ran lab code; follow the commissioning rehearsal's precondition 4 before
    continuing, or stop.
@@ -209,7 +218,9 @@ keep a rotated file at `0640` with group `azedge`. Edge does not read rotated
 files, and a file it cannot read is silently not read.
 
 **Without Suricata.** Create the directory and an empty file for the
-rehearsal; synthetic alerts are appended in §8.
+rehearsal; synthetic alerts are appended in §8. A VM snapshot taken before
+Suricata was ever installed has no `/var/log/suricata` at all: the S0
+snapshot used on 2026-10-24 had none, and these commands were needed there.
 
 ```sh
 sudo install -d -m 2710 -o root -g azedge /var/log/suricata
@@ -244,7 +255,7 @@ is admitted. The result must also be from **this boot** (probe contract v2,
 ungoverned `azazel-edge-probe-preflight.service` runs the same probe before
 the controller at every boot, so the boot pass sees health from this boot.
 
-**The regular path exists, but is not yet confirmed here.** Since #206 P4
+**The regular path, confirmed on a VM on 2026-10-24.** Since #206 P4
 `az-activated` verifies the observe-baseline inputs (activation policy, high
 water and clock, an observe-baseline generation over the installed unit
 files, a signed v2 approval, node health) and, only when every one verifies,
@@ -258,9 +269,55 @@ installed package digest) and the approval name it and this boot's probe
 preflight reported it healthy
 ([§8.1](../activation-observe-baseline.md#81-p5-edge-core-in-the-pass));
 otherwise it is withheld with `edge_not_ready` while the SUPPORTING units
-are still granted. The reboot sequence (grant → reboot → started) is
-P6's VM confirmation, which this runbook does not perform: no approval may be
-requested, installed or hand-written for this run.
+are still granted.
+
+On 2026-10-24 the integrated loop ran on a Debian 13 aarch64 VM through this
+path, following the [activation rehearsal](activation-rehearsal.md) with
+Variant B (Edge Core included) and the §4 "Without Suricata" setup. It was
+mechanics only: the approval was signed with a VM-only rehearsal key that
+was destroyed afterwards, the VM was reverted to its snapshot, and the run is
+neither hardware evidence nor owner approval
+([record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6369911973)).
+Observed:
+
+- **Boot A** (the granting pass): `granted=6`, Edge Core included; the
+  ledger showed `edge_evidence: launchable` and every producer verified.
+- **Boot B:** all six units started after the controller's READY. Edge Core,
+  intake, the explainer, Knowledge Lite and mio-entryd stayed active and the
+  probe succeeded; Edge Core's startup line showed `defense_enforce=false`,
+  `defense_dry_run=true`. The checks of §9 gave the expected results (dry-run
+  `notify` then `isolate`, intake `accepted` 2, both ledgers verified, route
+  `deterministic handoff`, status `verified-ready`, no address in Nexus
+  output), except that the audit chain did not receive the incident (see
+  below).
+- **N5** (probe preflight masked): `granted=5` with `edge_not_ready`; Edge
+  Core got no marker, stayed masked and did not start (its queued start was
+  skipped on the unmet condition), the other five were granted and started,
+  and the ledger showed `edge_evidence: not_launchable`.
+
+**From now on use the regular path** ([activation rehearsal](activation-rehearsal.md),
+Variant B) to start the loop for this runbook, then run §7 to §9 against the
+units it started. §6 stays as the fallback for a VM where no approval is
+installed; the run record must say which path was used.
+
+**Never `systemctl start` or `restart` a unit the regular path granted.**
+Every loop unit carries `Requires=azazel-activated.service`, so starting it
+by hand also starts the controller again in the same boot. That second pass
+(#251 M-5) re-masks every governed unit, removes every grant marker and ends
+with `RollbackFailed`; units already running keep running but are no longer
+granted. This includes the one-shot `azazel-edge-probed.service`. To start a
+granted unit again, reboot and let the next pass decide.
+
+**auditd is outside the loop policy.** `azazel-auditd.service` is not in the
+activation policy's allowlist (`ACTIVATION_UNIT_ALLOWLIST`; a policy cannot
+name it), so the regular path never grants or starts it. It runs only under
+the supporting-only bootstrap (`BOOTSTRAP_UNITS`) or the rehearsal copy of
+§6.1. In a regular-path run the audit chain therefore receives no
+`edge.incident.*` record unless auditd happens to be running; the explainer's
+audit forwarding is best effort, so the loop itself is unaffected and the
+miss shows in the `audit_forward_*` counters (§9). On 2026-10-24 auditd was
+not running and the audit chain, which still verified, did not receive the
+incident.
 
 Record what the last boot's pass did:
 
@@ -269,12 +326,14 @@ sudo journalctl -b -u azazel-activated.service -o cat
 sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
 ```
 
-Expect `az-activated completed safely: granted=0, ...` and, as the last
+For the §6 fallback, on a VM where no approval is installed, expect
+`az-activated completed safely: granted=0, ...` and, as the last
 ledger entry, `activation.inputs_incomplete` whose `missing_producers` name
 the inputs that failed (typically `activation_policy` and `epoch_high_water`
 while nothing installs them), with `observed_inputs.producers` showing
 `failed` or `not_attempted` for the rest. If `granted` is not 0, the regular
-path admitted units: stop and use it (P6) instead of §6
+path admitted units: do not use §6; continue with the regular path
+([activation rehearsal](activation-rehearsal.md)) instead
 (**要確認** on every new build).
 
 The supporting-only bootstrap covers only `azazel-auditd.service` and
@@ -285,7 +344,8 @@ left from an earlier boot makes every pass fail closed
 
 ## 6. Rehearsal-only start (alternative to activation)
 
-This section substitutes for the activation grant that §5 cannot produce.
+This section is the fallback for a VM where no approval is installed, so the
+§5 pass grants nothing.
 It is **only** for a disposable VM, and the run record must say it was used.
 §17 of the admission runbook governs it:
 
@@ -518,9 +578,10 @@ for name in ("/var/lib/azazel/edge-incidents", "/var/lib/azazel/state/audit"):
 Both must print `verified`. The incident ledger ends with
 `edge.incident.reset` (intake start), `edge.incident.opened`,
 `edge.incident.updated`; the audit chain ends with `edge.incident.opened`,
-`edge.incident.escalated`. Forwarding is best effort: a missing audit record
-is read together with `audit_forward_dropped` and `audit_forward_refused` in
-status, not as a broken loop.
+`edge.incident.escalated` when an auditd runs (§6.1); in a regular-path run
+without auditd it holds no record of this incident (§5). Forwarding is best
+effort: a missing audit record is read together with `audit_forward_dropped`
+and `audit_forward_refused` in status, not as a broken loop.
 
 **Explanation records** (private `0700`; printed fields carry no address):
 
@@ -634,8 +695,10 @@ from its cursor next time. Never edit a ledger to remove the rehearsal.
 
 Record in issue #195, labelled `rehearsal`:
 
-- `activation admission: not exercised (#206)`, and the `missing_producers`
-  list from the activation ledger at the time of the run.
+- Which path started the units. Regular path: the activation outcome line
+  (`granted=`), `edge_evidence` and the variant used. §6: `activation
+  admission: not exercised (#206)`, and the `missing_producers` list from the
+  activation ledger at the time of the run.
 - Nexus commit installed, Edge commit, the build host class (architecture,
   distribution, toolchain versions), and the `sha256sum` of the archive, the
   manifest and the unpacked binary.
@@ -665,11 +728,11 @@ activation admission, hardware behaviour or package authenticity.
 
 ## 12. Not covered on a VM
 
-- Activation admitting the loop's units: the lease is produced since #206 P4
-  and P5 (the regular path of §5), but this runbook requests, installs and
-  signs no approval, so its pass grants nothing and §6 substitutes for the
-  grant. Activation admitting the units on the VM is the
-  [activation rehearsal](activation-rehearsal.md) (#206 P6).
+- Activation admitting the loop's units with an owner's approval: the
+  2026-10-24 regular-path run (§5) used a VM-only rehearsal key. The approval,
+  request and install steps are those of the
+  [activation rehearsal](activation-rehearsal.md) (#206 P6); this runbook adds
+  none of its own.
 - HG-07 on real hardware with the real deployment path ([HG-07](hg-07.md)).
 - Enforcement by the shipped Edge Core (Azazel-Edge#412) and I4 decoys.
 - Real M.I.O. advice: admission is closed, so every frame is a deterministic
