@@ -15,9 +15,11 @@ pin the order, the two ledger records with exactly their
 fields (unit names and fixed reasons, nothing else), that the controller never
 asks for anything beyond mask and read (no StopUnit, no start, no unmask), and
 what a second pass in the same boot does with the first pass's grant markers
-and the bootstrap once-marker. The grant-bearing behaviour on systemd 257 is
-still for the VM, with the operator's signature (``docs/activation-observe-baseline.md``
-§10.2, M-5).
+and the bootstrap once-marker. The grant-bearing case was observed on the VM
+on 2026-10-23 after a granting boot, signed with a VM-only rehearsal key (not
+hardware evidence): the same two records, ``RollbackFailed``, every marker
+removed and the two running loop units left running
+(``docs/activation-observe-baseline.md`` §10.2, M-5).
 """
 
 from __future__ import annotations
