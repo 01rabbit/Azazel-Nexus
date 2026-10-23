@@ -294,12 +294,17 @@ def test_the_profile_directory_is_the_installers():
     assert APPARMOR_DIRECTORY == installed == "/etc/apparmor.d"
 
 
-def test_the_current_generation_allowlist_and_grantable_set_are_unchanged():
-    """The section is in no generation of this build (the schema that carries
-    it is introduced in G6)."""
+def test_the_generation_schemas_allowlist_and_grantable_set():
+    """#196 G6 (wiring §5.2, §6): v1 is the generation without the tier and
+    v2 carries the section; the allowlist holds the exposure units (three or
+    none), never the watch's."""
+
+    from azazel_nexus.observe_baseline import OBSERVE_BASELINE_SCHEMA_V2
 
     assert OBSERVE_BASELINE_SCHEMA == "azazel-nexus/observe-baseline-generation/v1"
-    assert not set(ACTIVATION_UNIT_ALLOWLIST) & (EXPOSURE_UNITS | set(WATCH))
+    assert OBSERVE_BASELINE_SCHEMA_V2 == "azazel-nexus/observe-baseline-generation/v2"
+    assert EXPOSURE_UNITS <= set(ACTIVATION_UNIT_ALLOWLIST)
+    assert not set(ACTIVATION_UNIT_ALLOWLIST) & set(WATCH)
     assert GRANTABLE_UNITS == frozenset({
         "azazel-decoy-netd.service", "azazel-decoy-nsd.service", "azazel-decoyd.service",
         "azazel-edge-core.service", "azazel-edge-intaked.service",
@@ -309,7 +314,7 @@ def test_the_current_generation_allowlist_and_grantable_set_are_unchanged():
     assert not GRANTABLE_UNITS & set(WATCH)
     from azazel_nexus_runtime.activation_pass import POLICY_UNIT_SCOPE
 
-    assert not POLICY_UNIT_SCOPE & EXPOSURE_UNITS
+    assert POLICY_UNIT_SCOPE == GRANTABLE_UNITS
 
 
 # -- coexistence (§6.2) -----------------------------------------------------------
@@ -375,6 +380,16 @@ def test_every_state_the_bus_accepts_is_judged():
             assert reason.startswith(HOST_FIREWALL_ACTIVE + ":"), state
 
 
+def test_a_loader_with_a_file_and_no_unit_object_is_judged_inactive():
+    """#196 G6 (wiring §4.5): `GetUnit` answered `NoSuchUnit` (ActiveState
+    None) beside a unit-file state: no object holds a state, nothing runs."""
+
+    for state in ("disabled", "masked"):
+        assert host_firewall_refusal({**_NONE, "nftables.service": _unit(state, None)}) is None
+    assert host_firewall_refusal({**_NONE, "nftables.service": _unit("enabled", None)}
+                                 ).startswith(HOST_FIREWALL_ENABLED + ":")
+
+
 def test_enabled_is_reported_before_active():
     states = {u: _unit() for u in HOST_FIREWALL_UNITS}
     states["nftables.service"] = _unit("enabled", "active")
@@ -398,7 +413,6 @@ _NONE = {u: None for u in HOST_FIREWALL_UNITS}
     {**_NONE, "nftables.service": _unit(b"enabled")},
     {**_NONE, "nftables.service": _unit(exposure_withholding.UNREADABLE)},
     {**_NONE, "nftables.service": _unit("disabled", exposure_withholding.UNREADABLE)},
-    {**_NONE, "nftables.service": _unit("disabled", None)},
     {**_NONE, "nftables.service": _unit("disabled", "Inactive")},
     {**_NONE, "nftables.service": _unit(None, "inactive")},
 ])

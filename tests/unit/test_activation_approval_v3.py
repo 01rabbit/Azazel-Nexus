@@ -1,7 +1,9 @@
-"""Activation approval v3, decoder and verifier only, not wired (#196 G6 prep).
+"""Activation approval v3: the decoder, the verifier and its own policy (#196 G6).
 
-`docs/deception-exposure-grant.md` §5 C1 condition 1 and §9. Keys are
-generated in memory for each test; nothing is read from the host or kept.
+`docs/deception-exposure-grant.md` §5 C1 condition 1 and §9, and
+`docs/deception-exposure-wiring.md` §5.1. Keys are generated in memory for
+each test; nothing is read from the host or kept. How the pass reads it is
+`test_runtime_activation_pass.py` and `test_runtime_exposure_pass.py`.
 """
 
 import ast
@@ -29,6 +31,7 @@ from azazel_nexus.activation_approval_v2 import (
 )
 from azazel_nexus.activation_approval_v3 import (
     SCHEMA_V3,
+    ActivationApprovalPolicyV3,
     ActivationApprovalV3,
     activation_approval_v3_payload,
     decode_activation_approval_v3,
@@ -53,7 +56,18 @@ LOOP = ("azazel-edge-intaked.service", "azazel-incident-explaind.service",
         "azazel-edge-probed.service", "azazel-mio-entryd.service",
         "azazel-knowledge-lited.service")
 EXPOSURE = tuple(DECEPTION_EXPOSURE_UNITS)
-POLICY = ActivationApprovalPolicy(
+#: v3's own policy (wiring §5.1): the policy's units, the tier not named here.
+POLICY = ActivationApprovalPolicyV3(
+    authorized_operators=frozenset({"operator-a"}), max_lease_seconds=72 * 3600,
+    unit_scope=frozenset(LOOP),
+)
+#: The same policy naming the exposure tier.
+EXPOSURE_POLICY = ActivationApprovalPolicyV3(
+    authorized_operators=frozenset({"operator-a"}), max_lease_seconds=72 * 3600,
+    unit_scope=frozenset(LOOP + EXPOSURE),
+)
+#: v2's policy, for v2's verifier.
+V2_POLICY = ActivationApprovalPolicy(
     authorized_operators=frozenset({"operator-a"}), max_lease_seconds=72 * 3600,
     unit_scope=frozenset(LOOP),
 )
@@ -165,7 +179,7 @@ def test_v3_does_not_borrow_v2_private_names():
     for node in ast.walk(ast.parse(Path(activation_approval_v3.__file__).read_text())):
         if isinstance(node, ast.ImportFrom) and node.module == "activation_approval_v2":
             imported.update(alias.name for alias in node.names)
-    assert imported == {"ActivationApprovalPolicy", "ObserveBaselineContext"}
+    assert imported == {"MAX_LEASE_CEILING_SECONDS", "ObserveBaselineContext"}
 
 
 def test_the_whole_exposure_tier_can_be_named_and_decodes():
@@ -394,14 +408,20 @@ def test_a_v3_approval_within_the_v2_tiers_produces_the_bound_lease(approved):
             result.exposure_ingress_count) == (SCOPE, 2, 1)
 
 
-def test_a_validly_signed_exposure_approval_is_refused_by_the_policy_scope(approved):
-    """Every check before the scope passes; the scope, which cannot name the
-    tier until G6, is what refuses it."""
+def test_a_validly_signed_exposure_approval_needs_a_policy_naming_the_tier(approved):
+    """Every check before the scope passes; a policy that does not name the
+    tier refuses it at the scope, one that names it accepts it (#196 G6)."""
     key, args = approved
     payload = activation_approval_v3_payload(
         context=CONTEXT, **V3_FIELDS | dict(units=LOOP + EXPOSURE))
     with pytest.raises(ApprovalRefused, match="outside the policy scope"):
         verify_activation_approval_v3(**_resigned(key, args, payload))
+    result = verify_activation_approval_v3(
+        **_resigned(key, args, payload) | dict(policy=EXPOSURE_POLICY))
+    assert type(result) is ActivationApprovalV3
+    assert result.lease.units == frozenset(LOOP + EXPOSURE)
+    assert (result.exposure_scope_digest, result.exposure_prefix_count,
+            result.exposure_ingress_count) == (SCOPE, 2, 1)
 
 
 @pytest.mark.parametrize("part", PARTIAL)
@@ -413,12 +433,34 @@ def test_a_validly_signed_partial_exposure_approval_is_refused(approved, part):
         verify_activation_approval_v3(**_resigned(key, args, _encode(document)))
 
 
-def test_the_policy_cannot_scope_the_exposure_tier():
+def test_v2s_policy_cannot_scope_the_exposure_tier_and_v3s_scopes_it_whole():
+    """v2's policy keeps v2's unit rule; v3's takes the tier, three or none."""
     for units in (EXPOSURE, LOOP + EXPOSURE):
         with pytest.raises(ApprovalRefused):
             ActivationApprovalPolicy(
                 authorized_operators=frozenset({"operator-a"}),
                 max_lease_seconds=3600, unit_scope=frozenset(units))
+        assert ActivationApprovalPolicyV3(
+            authorized_operators=frozenset({"operator-a"}),
+            max_lease_seconds=3600, unit_scope=frozenset(units)).unit_scope == frozenset(units)
+    for part in PARTIAL:
+        with pytest.raises(ApprovalRefused, match="approval_v3_policy_invalid"):
+            ActivationApprovalPolicyV3(
+                authorized_operators=frozenset({"operator-a"}),
+                max_lease_seconds=3600, unit_scope=frozenset(LOOP + part))
+    for bad in (dict(max_lease_seconds=72 * 3600 + 1), dict(unit_scope=set(LOOP)),
+                dict(authorized_operators={"operator-a"}),
+                dict(unit_scope=frozenset({"azazel-watchdog.service", "x"}))):
+        values = dict(authorized_operators=frozenset({"operator-a"}),
+                      max_lease_seconds=3600, unit_scope=frozenset(LOOP)) | bad
+        with pytest.raises(ApprovalRefused, match="approval_v3_policy_invalid"):
+            ActivationApprovalPolicyV3(**values)
+
+
+def test_the_v3_verifier_takes_only_v3s_policy(approved):
+    _, args = approved
+    with pytest.raises(ApprovalRefused, match="approval_v3_policy_required"):
+        verify_activation_approval_v3(**args | dict(policy=V2_POLICY))
 
 
 @pytest.mark.parametrize("name,value", [
@@ -468,7 +510,8 @@ def test_v2_under_the_exposure_purpose_is_refused_by_both_verifiers(approved):
     v2 = observe_baseline_payload(context=CONTEXT, **FIELDS)
     signature = _sign(key, v2, ApprovalPurpose.ACTIVATION_EXPOSURE)
     with pytest.raises(ApprovalRefused):
-        verify_observe_baseline_approval(**args | dict(payload=v2, signature=signature))
+        verify_observe_baseline_approval(**args | dict(payload=v2, signature=signature,
+                                                       policy=V2_POLICY))
     with pytest.raises(ApprovalRefused):
         verify_activation_approval_v3(**args | dict(payload=v2, signature=signature))
 
@@ -478,7 +521,7 @@ def test_another_key_or_an_unauthorized_operator_is_refused(approved):
     with pytest.raises(ApprovalRefused):
         verify_activation_approval_v3(
             **args | dict(signature=_sign(SigningKey.generate(), args["payload"])))
-    other = ActivationApprovalPolicy(
+    other = ActivationApprovalPolicyV3(
         authorized_operators=frozenset({"operator-b"}), max_lease_seconds=72 * 3600,
         unit_scope=frozenset(LOOP))
     with pytest.raises(ApprovalRefused, match="not authorized"):
@@ -494,7 +537,7 @@ def test_floors_and_time_are_the_callers(approved):
     for now in (END, "2026-10-19T23:59:59Z"):
         with pytest.raises(ApprovalRefused, match="time policy"):
             verify_activation_approval_v3(**args | dict(now=now))
-    short = ActivationApprovalPolicy(
+    short = ActivationApprovalPolicyV3(
         authorized_operators=frozenset({"operator-a"}), max_lease_seconds=3600,
         unit_scope=frozenset(LOOP))
     with pytest.raises(ApprovalRefused, match="time policy"):
@@ -520,12 +563,12 @@ def test_typed_trust_context_and_policy_are_required(approved):
         verify_activation_approval_v3(**args | dict(policy=None))
 
 
-# -- not wired -----------------------------------------------------------------
+# -- wired (#196 G6) -----------------------------------------------------------
 #
-# That nothing outside the tests imports or names v3, statically or through
-# importlib, `__import__` or runpy, is `test_g6_unwired.py` (#196 L1): one
-# table for every G6 part. What stays here is v3's own: the verifier the pass
-# uses and the signing tool refuse it, and no scope was widened.
+# Who may import or name v3 is `test_g6_unwired.py` (#196 L1): one table for
+# every G6 part. What stays here is v3's own: v2's verifier and the signer's
+# `activation` purpose still refuse it, the dispatcher sends each schema to
+# its own verifier, and the scopes are exactly what G6 widened them to.
 
 
 @pytest.mark.parametrize("units", [LOOP, LOOP + EXPOSURE])
@@ -535,7 +578,7 @@ def test_the_v2_verifier_the_pass_uses_refuses_v3(approved, units):
     for purpose in (ApprovalPurpose.ACTIVATION_EXPOSURE, ApprovalPurpose.ACTIVATION):
         with pytest.raises(ApprovalRefused):
             verify_observe_baseline_approval(**args | dict(
-                payload=payload, signature=_sign(key, payload, purpose)))
+                payload=payload, signature=_sign(key, payload, purpose), policy=V2_POLICY))
 
 
 def test_the_signing_tool_refuses_v3():
@@ -549,19 +592,55 @@ def test_the_signing_tool_refuses_v3():
         payload = activation_approval_v3_payload(context=CONTEXT, **V3_FIELDS | dict(units=units))
         with pytest.raises(operator_sign.SignRefused):
             operator_sign.activation_summary(payload)
-    # Nor does it offer v3's purpose (Q-C): not before G6.
-    assert "activation-exposure" not in operator_sign.PURPOSES
-    assert ApprovalPurpose.ACTIVATION_EXPOSURE not in operator_sign.PURPOSES.values()
+    # v3's own purpose signs only a v3 naming the three (Q-C, wiring §5.1).
+    assert operator_sign.PURPOSES["activation-exposure"] is ApprovalPurpose.ACTIVATION_EXPOSURE
+    with pytest.raises(operator_sign.SignRefused, match="three exposure units"):
+        operator_sign.activation_exposure_summary(
+            activation_approval_v3_payload(context=CONTEXT, **V3_FIELDS))
+    summary = operator_sign.activation_exposure_summary(activation_approval_v3_payload(
+        context=CONTEXT, **V3_FIELDS | dict(units=LOOP + EXPOSURE)))
+    assert summary["exposure_scope_digest"] == SCOPE
 
 
-def test_no_scope_was_widened():
+def test_the_dispatcher_sends_each_schema_to_its_own_verifier(approved):
+    """`activation_store.verify_activation_approval_v2_or_v3` (wiring §5.1):
+    v2 under v2's policy, v3 under v3's, and a v3 without a v3 policy refused."""
+    from azazel_nexus.activation_store import approval_schema, verify_activation_approval_v2_or_v3
+
+    key, args = approved
+    common = {name: value for name, value in args.items() if name != "policy"}
+    v3 = activation_approval_v3_payload(context=CONTEXT, **V3_FIELDS | dict(units=LOOP + EXPOSURE))
+    v3_args = common | dict(payload=v3, signature=_sign(key, v3))
+    result = verify_activation_approval_v2_or_v3(
+        policy=V2_POLICY, exposure_policy=EXPOSURE_POLICY, **v3_args)
+    assert type(result) is ActivationApprovalV3
+    with pytest.raises(ApprovalRefused, match="exposure tier"):
+        verify_activation_approval_v2_or_v3(policy=V2_POLICY, exposure_policy=None, **v3_args)
+    v2 = observe_baseline_payload(context=CONTEXT, **FIELDS)
+    v2_args = common | dict(payload=v2, signature=_sign(key, v2, ApprovalPurpose.ACTIVATION))
+    assert type(verify_activation_approval_v2_or_v3(
+        policy=V2_POLICY, exposure_policy=EXPOSURE_POLICY, **v2_args)) is ObserveBaselineApproval
+    # A v2 signature never verifies as v3 and the reverse (purpose and schema).
+    with pytest.raises(ApprovalRefused):
+        verify_activation_approval_v2_or_v3(
+            policy=V2_POLICY, exposure_policy=EXPOSURE_POLICY,
+            **common | dict(payload=v3, signature=_sign(key, v3, ApprovalPurpose.ACTIVATION)))
+    assert approval_schema(v2) == "azazel-nexus/activation-approval/v2"
+    assert approval_schema(v3) == SCHEMA_V3
+    for bad in (b"", b"[]", b'{"schema":"azazel-nexus/activation-approval/v1"}', b"x" * 9,
+                b'{"schema":7}'):
+        with pytest.raises(ApprovalRefused, match="schema refused"):
+            approval_schema(bad)
+
+
+def test_the_scopes_g6_widened():
+    from azazel_nexus.activation_policy import OBSERVE_UNIT_ALLOWLIST
     from azazel_nexus_runtime import activation_markers
     from azazel_nexus_runtime.activation_pass import POLICY_UNIT_SCOPE
 
     edge = "azazel-edge-core.service"
-    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge}
-    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge}
-    # The exposure units are grantable only so #253 checks their files; no
-    # policy names them and the library withholds their tier (unchanged).
+    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP + EXPOSURE) | {edge}
+    assert set(OBSERVE_UNIT_ALLOWLIST) == set(LOOP) | {edge}
+    assert POLICY_UNIT_SCOPE == frozenset(LOOP + EXPOSURE) | {edge}
     assert activation_markers.GRANTABLE_UNITS == frozenset(LOOP + EXPOSURE) | {edge}
     assert activation_markers.EXPOSURE_UNITS == set(EXPOSURE)

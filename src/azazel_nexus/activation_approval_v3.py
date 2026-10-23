@@ -1,4 +1,4 @@
-"""Activation approval v3: the strict decoder and verifier, not wired (#196, G6 prep).
+"""Activation approval v3: the strict decoder and verifier (#196 G6).
 
 `docs/deception-exposure-grant.md` §5 C1, condition 1. A v3 approval carries
 everything a v2 approval does (`activation_approval_v2.py`, unchanged) and
@@ -21,21 +21,24 @@ A v3 approval is attributed only under `ApprovalPurpose.ACTIVATION_EXPOSURE`
 (owner decision Q-C): a v3 document signed under `ACTIVATION`, the purpose
 of v2, is refused, and v2's verifier refuses the new purpose.
 
-**Nothing calls this module.** It is a part for G6 (§9) and grants nothing
+**Wired by G6** (`docs/deception-exposure-wiring.md` §5.1). It grants nothing
 on its own:
 
-- the activation pass reads v2 only (`activation_store.
-  load_observe_baseline_approval`, `verify_observe_baseline_approval`) and
-  requires an `ObserveBaselineApproval`, which this module never returns;
-- `tools/operator_sign.py` cannot produce a v3 approval and does not offer
-  the `ACTIVATION_EXPOSURE` purpose;
-- the policy scope cannot name an exposure unit: `ActivationApprovalPolicy`
-  refuses one, so a v3 approval naming the tier is refused by this verifier
-  at the scope check until G6 changes the policy, the allowlist and
-  `_withholding_reason` deliberately and with tests.
+- the activation pass reads the one approval pair through
+  `activation_store.load_activation_approval_v2_or_v3`, which reads
+  `schema` and hands the same bytes to that schema's verifier; the pass
+  accepts a v3 result only naming the three exposure units, and the
+  library then withholds the tier unless every runtime stage held
+  (`ActivationController._withholding_reason`, L1 to L5);
+- v3 has its own policy value, `ActivationApprovalPolicyV3` (v3's unit
+  rule), built by the pass from all of the policy's units; v2's
+  `ActivationApprovalPolicy` keeps refusing an exposure unit and is built
+  from the policy's units without them;
+- `tools/operator_sign.py --purpose activation-exposure` signs only a
+  canonical v3 document naming the three.
 
-Tests pin all three (`tests/unit/test_activation_approval_v3.py`). Neither
-schema is accepted as the other. The context, the policy, both floors and the
+Tests: `tests/unit/test_activation_approval_v3.py`. Neither schema is
+accepted as the other. The context, the policy, both floors and the
 current time are supplied by the caller from independent readers, never from
 the approval. This module reads no file, holds no key, signs nothing and
 contacts no service manager.
@@ -58,7 +61,10 @@ from dataclasses import dataclass, field
 
 from .activation import CORE_UNITS, DECEPTION_EXPOSURE_UNITS, ActivationLease, UnitTier
 from .activation_approval import _utc
-from .activation_approval_v2 import ActivationApprovalPolicy, ObserveBaselineContext
+from .activation_approval_v2 import (
+    MAX_LEASE_CEILING_SECONDS,
+    ObserveBaselineContext,
+)
 from .decoy_scope import MAX_INGRESS, MAX_PREFIXES
 from .operator_trust import (
     MAX_APPROVAL_BYTES,
@@ -71,6 +77,7 @@ __all__ = [
     "APPROVAL_V3_CODES",
     "APPROVAL_V3_PHRASES",
     "SCHEMA_V3",
+    "ActivationApprovalPolicyV3",
     "ActivationApprovalV3",
     "DecodedApprovalV3",
     "activation_approval_v3_payload",
@@ -87,6 +94,7 @@ APPROVAL_V3_PHRASES: dict[str, str] = {
     "approval_v3_trust_required": "operator trust required",
     "approval_v3_context_required": "activation context required",
     "approval_v3_policy_required": "activation policy required",
+    "approval_v3_policy_invalid": "invalid activation policy",
     "approval_v3_epoch_floor_required": "local security epoch floor required",
     "approval_v3_sequence_floor_required": "local approval sequence floor required",
     "approval_v3_payload_unbounded": "approval payload must be bounded nonempty bytes",
@@ -217,6 +225,37 @@ def _unit_list(units) -> list[str]:
     if exposure and exposure != _EXPOSURE:
         raise _refused("approval_v3_exposure_partial")
     return sorted(names)
+
+
+@dataclass(frozen=True)
+class ActivationApprovalPolicyV3:
+    """The parts of the protected activation policy the v3 verifier consumes.
+
+    v2's `ActivationApprovalPolicy` with v3's unit rule: the scope may name
+    the three Deception Lite exposure units, all three or none. Built by the
+    pass (and `az-activation`) from all of the policy's units; v2's policy is
+    built from the same units without the exposure tier (wiring §5.1).
+    """
+
+    authorized_operators: frozenset[str]
+    max_lease_seconds: int
+    unit_scope: frozenset[str]
+
+    def __post_init__(self):
+        if type(self.authorized_operators) is not frozenset or any(
+            type(name) is not str or not _OPERATOR.fullmatch(name)
+            for name in self.authorized_operators
+        ):
+            raise _refused("approval_v3_policy_invalid")
+        if (type(self.max_lease_seconds) is not int
+                or not 0 < self.max_lease_seconds <= MAX_LEASE_CEILING_SECONDS):
+            raise _refused("approval_v3_policy_invalid")
+        if type(self.unit_scope) is not frozenset:
+            raise _refused("approval_v3_policy_invalid")
+        try:
+            _unit_list(self.unit_scope)
+        except ApprovalRefused:
+            raise _refused("approval_v3_policy_invalid") from None
 
 
 def activation_approval_v3_payload(
@@ -350,7 +389,7 @@ class ActivationApprovalV3:
 
 def verify_activation_approval_v3(
     *, trust: OperatorTrust, expected: ObserveBaselineContext,
-    policy: ActivationApprovalPolicy, payload: bytes, signature: bytes, now: str,
+    policy: ActivationApprovalPolicyV3, payload: bytes, signature: bytes, now: str,
     security_epoch_floor: int, approval_seq_floor: int,
 ) -> ActivationApprovalV3:
     """Verify a v3 approval the way v2 is verified, with the v3 unit rule.
@@ -358,16 +397,16 @@ def verify_activation_approval_v3(
     Attribution through the existing operator trust and the
     `ACTIVATION_EXPOSURE` purpose (never `ACTIVATION`, v2's), the policy's
     operator set, exact context, canonical bytes (the exposure fields' shape
-    included, not their values), both floors, the policy's unit scope and the
-    time window. While the policy
-    scope cannot name an exposure unit, a v3 approval naming the tier is
-    refused here at the scope check.
+    included, not their values), both floors, the policy's unit scope (an
+    `ActivationApprovalPolicyV3`, v3's unit rule) and the time window. The
+    exposure fields are compared with this pass's rendering by the pass
+    (stage P10), where a difference withholds the tier and not the lease.
     """
     if type(trust) is not OperatorTrust:
         raise _refused("approval_v3_trust_required")
     if type(expected) is not ObserveBaselineContext:
         raise _refused("approval_v3_context_required")
-    if type(policy) is not ActivationApprovalPolicy:
+    if type(policy) is not ActivationApprovalPolicyV3:
         raise _refused("approval_v3_policy_required")
     _nonnegative(security_epoch_floor, "approval_v3_epoch_floor_required")
     _nonnegative(approval_seq_floor, "approval_v3_sequence_floor_required")

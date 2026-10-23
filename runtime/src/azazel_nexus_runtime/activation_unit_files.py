@@ -42,7 +42,7 @@ import os
 from pathlib import Path
 import stat
 
-from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+from azazel_nexus.activation_policy import OBSERVE_UNIT_ALLOWLIST
 
 from .activation_markers import EXPOSURE_UNITS, GRANTABLE_UNITS, grant_marker_path
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
@@ -206,10 +206,11 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
 def _scope(units, allowed=GRANTABLE_UNITS) -> tuple[str, ...]:
     """The named units, each within `allowed`.
 
-    Measurement takes the policy's scope (`ACTIVATION_UNIT_ALLOWLIST`); the
-    content and override checks take every grantable unit, which since #196
-    also holds the three Deception Lite exposure units that no policy may
-    name but whose files must still wait for their marker.
+    Measurement takes the policy's observe scope (`OBSERVE_UNIT_ALLOWLIST`:
+    the allowlist without the Deception Lite exposure units, #196 G6, wiring
+    §5.1 "Two scopes"); the content and override checks take every grantable
+    unit, the three exposure units included, whose files must wait for
+    their marker whether or not a policy names them.
     """
     names = tuple(units)
     if (not names or any(type(name) is not str for name in names)
@@ -351,17 +352,18 @@ def measure_scoped_unit_files(units) -> dict[str, bytes]:
     (`UnitFilesRefused`) when a file is missing, linked, not root-owned,
     group/other writable, multiply linked or changing.
     """
-    return _measure(_scope(units, ACTIVATION_UNIT_ALLOWLIST))
+    return _measure(_scope(units, OBSERVE_UNIT_ALLOWLIST))
 
 
 def measure_exposure_unit_files() -> dict[str, bytes]:
-    """The three Deception Lite exposure units' vendor files, measured (#196 G6 prep).
+    """The three Deception Lite exposure units' vendor files, measured (#196 G6).
 
     The same reading and refusals as `measure_scoped_unit_files`, over
-    exactly `activation_markers.EXPOSURE_UNITS`, which no activation policy
-    may name (`ACTIVATION_UNIT_ALLOWLIST` is unchanged): the input of the
-    generation's exposure section (docs/deception-exposure-grant.md §4.4
-    item 5, `exposure_generation`). **Not called by the pass in this build.**
+    exactly `activation_markers.EXPOSURE_UNITS`, which `measure_scoped_unit_files`
+    refuses (its bound is the observe scope): the input of the generation's
+    exposure section (docs/deception-exposure-grant.md §4.4 item 5,
+    `exposure_generation`), read by `generation-publish` and by the pass's
+    stage P9, where a departure withholds the exposure tier alone.
     """
     return _measure(_scope(sorted(EXPOSURE_UNITS)))
 
@@ -425,10 +427,9 @@ def require_watch_unit_files() -> dict[str, bytes]:
     exposure section (§4.4 item 5, `exposure_generation`) digests exactly
     what this check accepted, without a second read.
 
-    Not called by the pass in this build: the exposure tier is withheld
-    unconditionally, so refusing here would only withhold other tiers. G6
-    wires it in with the generation's exposure section, which also digests
-    these files (§4.4 item 5).
+    Called through `exposure_generation.measure_exposure_section_inputs`
+    by `az-activation` and the pass's stage P9 (#196 G6), where a refusal
+    withholds the exposure tier alone.
     """
     expected = _watch_rendered()
 

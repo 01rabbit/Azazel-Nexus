@@ -372,17 +372,21 @@ def test_the_installer_masks_and_never_enables_the_namespace_unit():
 # -- the tier: together or not at all (review n1) -----------------------------
 
 
-def test_the_three_are_grantable_for_the_253_checks_and_nameable_by_nothing():
+def test_the_three_are_grantable_and_nameable_only_by_v3_and_only_together():
+    """#196 G6 (wiring §5.1, §6): the policy may name the three (all or
+    none), a v3 approval may, v2 may not."""
     from azazel_nexus.activation_approval_v2 import _V2_UNITS
+    from azazel_nexus.activation_approval_v3 import _V3_UNITS
     from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
     from azazel_nexus_runtime.activation_pass import POLICY_UNIT_SCOPE
 
     exposure = set(DECEPTION_EXPOSURE_UNITS)
     assert activation_markers.EXPOSURE_UNITS == exposure
     assert exposure <= activation_markers.GRANTABLE_UNITS
-    assert not exposure & set(ACTIVATION_UNIT_ALLOWLIST)
+    assert exposure <= set(ACTIVATION_UNIT_ALLOWLIST)
     assert not exposure & set(_V2_UNITS)
-    assert not exposure & POLICY_UNIT_SCOPE
+    assert exposure <= _V3_UNITS
+    assert exposure <= POLICY_UNIT_SCOPE
     tiers = {d.name: d.tier for d in CORE_UNITS if d.name in exposure}
     assert tiers == {unit: UnitTier.DECEPTION_EXPOSURE for unit in exposure}
 
@@ -479,7 +483,8 @@ def test_the_three_always_get_the_same_verdict_and_it_is_withheld(tmp_path, scop
     assert len(verdicts) == 3
     assert {(v.granted, v.reason) for v in verdicts} == {
         (False, verdicts[0].reason)}
-    assert verdicts[0].reason.startswith("isolation_evidence_absent")
+    # Without the pass's exposure evidence (#196 G6, L3).
+    assert verdicts[0].reason.startswith("exposure_evidence_absent")
     assert not set(outcome.granted) & set(DECEPTION_EXPOSURE_UNITS)
 
 

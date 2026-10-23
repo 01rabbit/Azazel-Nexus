@@ -12,6 +12,13 @@ Every value can only narrow what a pass may grant:
 *Scope is a subset of a code-fixed allowlist.* A policy naming any unit outside
 `ACTIVATION_UNIT_ALLOWLIST` is refused as a whole; a file cannot add
 enforcement, commissioning, watchdog, fetch or model-host units to the loop.
+Since #196 G6 (`docs/deception-exposure-wiring.md` §5.1) the allowlist holds
+the three Deception Lite exposure units, and a policy names **all three or
+none** of them: one naming one or two is refused as a whole. The schema stays
+v1, so an older package (whose allowlist omits them) refuses a policy naming
+them, which withholds everything: the closed side. `observe_units` is the
+policy's units without the three, the **observe scope** the generation's
+body measures (§5.1 "Two scopes").
 
 *The lease cap is capped in code.* `max_lease_seconds` above 72 hours is
 refused, whatever the administrator wrote.
@@ -46,6 +53,8 @@ from .operator_trust import _OPERATOR, ApprovalRefused
 __all__ = [
     "ACTIVATION_POLICY_SCHEMA",
     "ACTIVATION_UNIT_ALLOWLIST",
+    "EXPOSURE_POLICY_UNITS",
+    "OBSERVE_UNIT_ALLOWLIST",
     "MAX_CLOCK_SKEW_SECONDS",
     "MAX_LEASE_SECONDS_CAP",
     "ActivationPolicy",
@@ -56,10 +65,14 @@ __all__ = [
 
 ACTIVATION_POLICY_SCHEMA = "azazel-nexus/activation-policy/v1"
 
-#: The integrated loop's units (§2). The SUPPORTING five, and edge-core for
-#: phase P5. auditd, commissiond, watchdog, fetchd, locald and remoted are
+#: The integrated loop's units (§2). The SUPPORTING five, edge-core for
+#: phase P5, and the three Deception Lite exposure units (#196 G6, three or
+#: none). auditd, commissiond, watchdog, fetchd, locald and remoted are
 #: excluded by the owner's decision (§6.2) and cannot be named by a policy.
 ACTIVATION_UNIT_ALLOWLIST = (
+    "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
+    "azazel-decoyd.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
@@ -67,6 +80,21 @@ ACTIVATION_UNIT_ALLOWLIST = (
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
 )
+
+#: The Deception Lite exposure units a policy may name, all three or none
+#: (`activation.DECEPTION_EXPOSURE_UNITS`; a test keeps them equal).
+EXPOSURE_POLICY_UNITS = frozenset({
+    "azazel-decoy-netd.service",
+    "azazel-decoy-nsd.service",
+    "azazel-decoyd.service",
+})
+
+#: The observe scope's bound (wiring §5.1, "Two scopes"): the allowlist
+#: without the exposure units. What step 6 of the pass measures and what a
+#: generation's body lists; the exposure unit files are measured only inside
+#: the generation's exposure section (pass stage P9).
+OBSERVE_UNIT_ALLOWLIST = tuple(
+    unit for unit in ACTIVATION_UNIT_ALLOWLIST if unit not in EXPOSURE_POLICY_UNITS)
 
 #: §6.1: a boot-free approval lives at most 72 hours.
 MAX_LEASE_SECONDS_CAP = 72 * 3600
@@ -130,7 +158,9 @@ class ActivationPolicy:
         if (type(units) is not tuple or not units
                 or any(type(unit) is not str for unit in units)
                 or list(units) != sorted(set(units))
-                or not set(units) <= set(ACTIVATION_UNIT_ALLOWLIST)):
+                or not set(units) <= set(ACTIVATION_UNIT_ALLOWLIST)
+                or (set(units) & EXPOSURE_POLICY_UNITS
+                    and not EXPOSURE_POLICY_UNITS <= set(units))):
             raise ApprovalRefused("activation policy unit scope refused")
         if (type(self.max_lease_seconds) is not int
                 or not 0 < self.max_lease_seconds <= MAX_LEASE_SECONDS_CAP):
@@ -152,6 +182,16 @@ class ActivationPolicy:
         if (type(self.policy_digest) is not str
                 or self.policy_digest != "sha256:" + sha256(encode_activation_policy(self)).hexdigest()):
             raise ApprovalRefused("activation policy digest refused")
+
+    @property
+    def names_exposure(self) -> bool:
+        """Whether the policy names the Deception Lite exposure tier (all three)."""
+        return EXPOSURE_POLICY_UNITS <= set(self.units)
+
+    @property
+    def observe_units(self) -> tuple[str, ...]:
+        """The policy's units without the exposure tier: the observe scope."""
+        return tuple(unit for unit in self.units if unit not in EXPOSURE_POLICY_UNITS)
 
     @property
     def clock_synchronization_required(self) -> bool:

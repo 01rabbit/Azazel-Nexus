@@ -102,32 +102,95 @@ def test_mismatch_writes_nothing(tmp_path, key, override):
     assert not (tmp_path / "out.sig").exists()
 
 
-@pytest.mark.parametrize("purpose", ["bootstrap", "local-model-admission", "activation-v1",
-                                     "activation-exposure"])
+@pytest.mark.parametrize("purpose", ["bootstrap", "local-model-admission", "activation-v1"])
 def test_other_purposes_are_not_offered(tmp_path, key, purpose):
-    # Bootstrap, v1 activation and model admission have their own ceremonies;
-    # the exposure purpose (approval v3) is not offered before G6 (#196).
+    # Bootstrap, v1 activation and model admission have their own ceremonies.
     with pytest.raises(SystemExit):
         run(tmp_path, key, **{"--purpose": purpose})
     assert not (tmp_path / "out.sig").exists()
     assert operator_sign.PURPOSES == {
         "activation": ApprovalPurpose.ACTIVATION,
+        # #196 G6 (wiring §5.1, Q-C): the v3 approval naming the exposure tier.
+        "activation-exposure": ApprovalPurpose.ACTIVATION_EXPOSURE,
         "activation-epoch-raise": ApprovalPurpose.ACTIVATION_EPOCH_RAISE,
         "commissioning": ApprovalPurpose.COMMISSIONING,
         "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
     }
 
 
-def test_the_exposure_purpose_is_refused_before_anything_is_signed(key):
-    """The enum value exists (#196, wiring §5.1 Q-C); the signer still does
-    not take it, through `sign` as through the command line."""
-    signing, _, _ = key
-    assert ApprovalPurpose.ACTIVATION_EXPOSURE not in operator_sign.PURPOSES.values()
-    with pytest.raises(operator_sign.SignRefused, match="unsupported purpose"):
-        operator_sign.sign(
-            purpose=ApprovalPurpose.ACTIVATION_EXPOSURE.value, payload=PAYLOAD,
-            expect_payload_sha256=hashlib.sha256(PAYLOAD).hexdigest(),
-            seed=bytes(signing), expect_public=bytes(signing.verify_key).hex())
+# -- activation-exposure (#196 G6, wiring §5.1 "What the signer may do") ------
+
+EXPOSURE_UNITS = ("azazel-decoy-netd.service", "azazel-decoy-nsd.service",
+                  "azazel-decoyd.service")
+SCOPE_DIGEST = "sha256:" + "5" * 64
+
+
+def _v3(units=UNITS + EXPOSURE_UNITS, *, expires_at=END, **changes):
+    from azazel_nexus.activation_approval_v3 import activation_approval_v3_payload
+
+    values = dict(context=CONTEXT, approval_id="approval-1", operator="operator-a",
+                  approval_seq=5, units=units, granted_at=START, expires_at=expires_at,
+                  exposure_scope_digest=SCOPE_DIGEST, exposure_prefix_count=2,
+                  exposure_ingress_count=1) | changes
+    return activation_approval_v3_payload(**values)
+
+
+def run_exposure(tmp_path, key, payload_bytes, purpose="activation-exposure"):
+    key[2].write_bytes(payload_bytes)
+    return run(tmp_path, key, **{
+        "--purpose": purpose,
+        "--expect-payload-sha256": hashlib.sha256(payload_bytes).hexdigest(),
+    })
+
+
+def test_exposure_signs_a_canonical_v3_naming_the_three_and_the_node_verifies_it(
+        tmp_path, key, capsys):
+    from azazel_nexus.activation_approval_v3 import (
+        ActivationApprovalPolicyV3,
+        verify_activation_approval_v3,
+    )
+
+    payload_bytes = _v3()
+    assert run_exposure(tmp_path, key, payload_bytes) == 0
+    signature = (tmp_path / "out.sig").read_bytes()
+    key[0].verify_key.verify(
+        approval_message(ApprovalPurpose.ACTIVATION_EXPOSURE, payload_bytes), signature)
+    out = capsys.readouterr().out
+    assert "schema: azazel-nexus/activation-approval/v3" in out
+    assert f"exposure_scope_digest: {SCOPE_DIGEST}" in out
+    assert "exposure_prefix_count: 2" in out and "exposure_ingress_count: 1" in out
+    assert operator_sign.EXPOSURE_NOTICE in out
+    assert BINDING not in out
+    approved = verify_activation_approval_v3(
+        trust=OperatorTrust({"operator-a": bytes(key[0].verify_key)}), expected=CONTEXT,
+        policy=ActivationApprovalPolicyV3(
+            authorized_operators=frozenset({"operator-a"}), max_lease_seconds=24 * 3600,
+            unit_scope=frozenset(UNITS + EXPOSURE_UNITS)),
+        payload=payload_bytes, signature=signature, now=START,
+        security_epoch_floor=2, approval_seq_floor=5)
+    assert set(EXPOSURE_UNITS) <= approved.lease.units
+
+
+@pytest.mark.parametrize("payload_bytes,message", [
+    (lambda: _v3(units=UNITS), "must name the three exposure units"),
+    (lambda: _v3(expires_at="2026-10-23T00:00:01Z"), "72-hour ceiling"),
+    (lambda: V2, "well-formed canonical v3"),
+    (lambda: _v3().replace(b'"units"', b'"units" '), "well-formed canonical v3"),
+    (lambda: PAYLOAD, "well-formed canonical v3"),
+])
+def test_exposure_refuses_anything_else_before_signing(tmp_path, key, capsys, payload_bytes,
+                                                        message):
+    assert run_exposure(tmp_path, key, payload_bytes()) == 1
+    assert not (tmp_path / "out.sig").exists()
+    captured = capsys.readouterr()
+    assert message in captured.err and captured.out == ""
+
+
+def test_activation_keeps_refusing_v3(tmp_path, key, capsys):
+    """`--purpose activation` signs v2 only (wiring §5.1)."""
+    assert run_exposure(tmp_path, key, _v3(), purpose="activation") == 1
+    assert not (tmp_path / "out.sig").exists()
+    assert "v2 activation approval" in capsys.readouterr().err
 
 
 def run_activation(tmp_path, key, payload_bytes, **overrides):
@@ -226,11 +289,12 @@ def test_activation_refuses_a_unit_outside_the_node_allowlist(tmp_path, key, uni
     assert captured.out == ""
 
 
-def test_activation_signs_every_allowlisted_unit(tmp_path, key):
-    from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+def test_activation_signs_every_allowlisted_observe_unit(tmp_path, key):
+    """v2 names every allowlisted unit but the exposure tier, which is v3's."""
+    from azazel_nexus.activation_policy import OBSERVE_UNIT_ALLOWLIST
     payload_bytes = observe_baseline_payload(
         context=CONTEXT, approval_id="approval-1", operator="operator-a", approval_seq=5,
-        units=sorted(ACTIVATION_UNIT_ALLOWLIST), granted_at=START, expires_at=END)
+        units=sorted(OBSERVE_UNIT_ALLOWLIST), granted_at=START, expires_at=END)
     assert run_activation(tmp_path, key, payload_bytes) == 0
 
 

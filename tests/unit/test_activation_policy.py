@@ -59,16 +59,34 @@ def test_canonical_policy_decodes_with_digest_over_exact_bytes():
 
 
 def test_allowlist_is_code_fixed_to_the_loop_units():
-    assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(SUPPORTING + ["azazel-edge-core.service"]))
-    # #196 P1: the Deception Lite exposure units are grantable for the #253
-    # checks but no policy may name them, so no lease ever holds one.
+    # #196 G6 (wiring §5.1): the Deception Lite exposure units join the
+    # allowlist, and a policy names all three or none of them.
     from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
-    assert not set(DECEPTION_EXPOSURE_UNITS) & set(ACTIVATION_UNIT_ALLOWLIST)
-    for unit in DECEPTION_EXPOSURE_UNITS:
-        with pytest.raises(ApprovalRefused):
-            decode_activation_policy(_raw(_document(units=sorted(SUPPORTING + [unit]))))
+    from azazel_nexus.activation_policy import EXPOSURE_POLICY_UNITS, OBSERVE_UNIT_ALLOWLIST
+    assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(
+        SUPPORTING + ["azazel-edge-core.service"] + list(DECEPTION_EXPOSURE_UNITS)))
+    assert EXPOSURE_POLICY_UNITS == frozenset(DECEPTION_EXPOSURE_UNITS)
+    assert OBSERVE_UNIT_ALLOWLIST == tuple(sorted(SUPPORTING + ["azazel-edge-core.service"]))
     full = decode_activation_policy(_raw(_document(units=list(ACTIVATION_UNIT_ALLOWLIST))))
     assert full.units == ACTIVATION_UNIT_ALLOWLIST
+    assert full.names_exposure
+    assert full.observe_units == OBSERVE_UNIT_ALLOWLIST
+
+
+def test_a_policy_names_the_exposure_tier_whole_or_not_at_all():
+    """One or two of the three refuse the policy as a whole; three decode."""
+    from itertools import combinations
+
+    from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS
+    for size in (1, 2):
+        for part in combinations(DECEPTION_EXPOSURE_UNITS, size):
+            with pytest.raises(ApprovalRefused):
+                decode_activation_policy(_raw(_document(units=sorted(SUPPORTING + list(part)))))
+    three = decode_activation_policy(_raw(_document(
+        units=sorted(SUPPORTING + list(DECEPTION_EXPOSURE_UNITS)))))
+    assert three.names_exposure and three.observe_units == tuple(sorted(SUPPORTING))
+    none = decode_activation_policy(_raw(_document(units=sorted(SUPPORTING))))
+    assert not none.names_exposure and none.observe_units == none.units
 
 
 def test_lease_cap_is_72_hours_in_code():

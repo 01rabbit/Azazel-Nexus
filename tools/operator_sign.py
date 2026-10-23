@@ -13,10 +13,16 @@ Before signing, the payload SHA-256 must equal the value printed on the node,
 and the derived public key must equal the enrolled one, so a wrong file or a
 wrong key stops here instead of producing a signature.
 
-Four purposes are offered: the commissioning draft, the full commissioning
+Five purposes are offered: the commissioning draft, the full commissioning
 proposal, the boot-free v2 activation approval
 (``azazel-nexus/activation-approval/v2``, docs/activation-observe-baseline.md
-§3.1) and the security epoch raise (``azazel-nexus/activation-epoch-raise/v1``,
+§3.1), the v3 activation approval naming the Deception Lite exposure tier
+(``activation-exposure``, ``azazel-nexus/activation-approval/v3``,
+docs/deception-exposure-wiring.md §5.1: only a well-formed canonical v3
+document naming the three exposure units, every unit inside the activation
+allowlist, valid at most 72 hours; its summary carries the exposure scope
+digest and counts and a fixed line naming the tier; ``activation`` keeps
+refusing v3) and the security epoch raise (``azazel-nexus/activation-epoch-raise/v1``,
 §11; it must be canonical and raise the epoch, and its summary is printed). For ``activation`` the payload must also be a well-formed canonical v2
 document (it must re-encode to exactly the same bytes, with a validity window
 inside the 72-hour ceiling) before anything is signed, so neither v1 bytes nor
@@ -48,12 +54,14 @@ from azazel_nexus.activation_approval_v2 import (
     _parse,
     observe_baseline_payload,
 )
+from azazel_nexus.activation_approval_v3 import decode_activation_approval_v3
 from azazel_nexus.activation_epoch import decode_epoch_raise
-from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
+from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST, EXPOSURE_POLICY_UNITS
 from azazel_nexus.operator_trust import MAX_APPROVAL_BYTES, ApprovalPurpose, approval_message
 
 PURPOSES = {
     "activation": ApprovalPurpose.ACTIVATION,
+    "activation-exposure": ApprovalPurpose.ACTIVATION_EXPOSURE,
     "activation-epoch-raise": ApprovalPurpose.ACTIVATION_EPOCH_RAISE,
     "commissioning": ApprovalPurpose.COMMISSIONING,
     "commissioning-proposal": ApprovalPurpose.COMMISSIONING_PROPOSAL,
@@ -148,6 +156,55 @@ def activation_summary(payload: bytes) -> dict:
     }
 
 
+#: The fixed line printed with every exposure approval summary.
+EXPOSURE_NOTICE = ("This approval names the Deception Lite exposure tier: a decoy "
+                   "reachable from the approved sources.")
+
+
+def activation_exposure_summary(payload: bytes) -> dict:
+    """What a v3 activation payload approves, or `SignRefused` (wiring §5.1).
+
+    A well-formed canonical v3 document (`decode_activation_approval_v3`:
+    it must re-encode to exactly these bytes, the exposure fields' shape
+    included) that names the three exposure units, every unit inside the
+    activation allowlist, valid at most 72 hours. Shape only: the node still
+    verifies it against its own context, policy, floors and this boot's
+    rendering. The commissioning evidence binding is checked but not printed.
+    """
+
+    try:
+        decoded = decode_activation_approval_v3(payload)
+        seconds = int((_utc(decoded.expires_at) - _utc(decoded.granted_at)).total_seconds())
+    except Exception:  # never echo payload content in a refusal
+        raise SignRefused("payload is not a well-formed canonical v3 activation approval; "
+                          "not signed") from None
+    if not EXPOSURE_POLICY_UNITS <= decoded.units:
+        raise SignRefused("a v3 approval must name the three exposure units (v2 approves "
+                          "the others); not signed")
+    if seconds > MAX_LEASE_CEILING_SECONDS:
+        raise SignRefused("approval validity exceeds the 72-hour ceiling; not signed")
+    if not decoded.units <= set(ACTIVATION_UNIT_ALLOWLIST):
+        raise SignRefused("approval names a unit outside the activation allowlist; not signed")
+    return {
+        "schema": "azazel-nexus/activation-approval/v3",
+        "approval_id": decoded.approval_id,
+        "operator": decoded.operator,
+        "units": ",".join(sorted(decoded.units)),
+        "generation": decoded.context.generation,
+        "generation_digest": decoded.context.generation_digest,
+        "node_digest": decoded.context.node_digest,
+        "security_epoch": decoded.context.security_epoch,
+        "approval_seq": decoded.approval_seq,
+        "granted_at": decoded.granted_at,
+        "expires_at": decoded.expires_at,
+        "validity_seconds": seconds,
+        "exposure_scope_digest": decoded.exposure_scope_digest,
+        "exposure_prefix_count": decoded.exposure_prefix_count,
+        "exposure_ingress_count": decoded.exposure_ingress_count,
+        "exposure": EXPOSURE_NOTICE,
+    }
+
+
 def epoch_raise_summary(payload: bytes) -> dict:
     """What an epoch-raise payload raises, or `SignRefused`.
 
@@ -167,7 +224,9 @@ def epoch_raise_summary(payload: bytes) -> dict:
     }
 
 
-_SUMMARIES = {"activation": activation_summary, "activation-epoch-raise": epoch_raise_summary}
+_SUMMARIES = {"activation": activation_summary,
+              "activation-exposure": activation_exposure_summary,
+              "activation-epoch-raise": epoch_raise_summary}
 
 
 def sign(*, purpose: str, payload: bytes, expect_payload_sha256: str, seed: bytes,
