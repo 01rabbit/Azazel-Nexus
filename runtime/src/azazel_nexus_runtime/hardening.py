@@ -183,10 +183,17 @@ class ServiceProfile:
     requires: tuple[str, ...] = ()
     binds_to: tuple[str, ...] = ()
     unit_type: str = "notify"
-    #: Empty for a unit that owns nothing under /run. systemd chowns a
-    #: runtime directory to the unit's user and removes it on stop, which a
-    #: unit that owns nothing there has no business doing.
-    runtime_directory: str = "azazel"
+    #: Empty (the default) for a unit that owns nothing under /run. systemd
+    #: chowns a runtime directory to the unit's user and removes it on stop,
+    #: which a unit that owns nothing there has no business doing. A unit that
+    #: does own something there names its own leaf (`azazel/mio`,
+    #: `azazel/remote`, ...), never the bare `azazel` (#206 P6): when that
+    #: name was shared, the controller -- which sends READY and exits within
+    #: milliseconds -- removed `/run/azazel` exactly as the granted loop units
+    #: ordered after it set up their execution directories, and they failed
+    #: with 233/RUNTIME_DIRECTORY. For a nested name systemd creates the
+    #: parents root-owned 0755 and removes only the leaf on stop.
+    runtime_directory: str = ""
     runtime_directory_mode: str = "0750"
     extra: tuple[tuple[str, str], ...] = ()
     rationale: str = ""
@@ -1801,8 +1808,8 @@ def _edge_probe_preflight() -> ServiceProfile:
     cannot drift apart: a change to one is a change to both. Only what makes
     it a boot preflight differs -- no `After=`/`Requires=` on the controller,
     `Before=` it instead, a start deadline so a hung probe cannot hold the
-    boot, and no `RuntimeDirectory=` (it owns nothing under `/run`, and the
-    controller's `/run/azazel` is not its to create or remove).
+    boot, and no `RuntimeDirectory=` (it owns nothing under `/run`; no unit
+    declares the bare `/run/azazel` any more, #206 P6).
     """
 
     probed = next(item for item in PROFILES if item.unit == "azazel-edge-probed.service")

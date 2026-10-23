@@ -87,7 +87,11 @@ def relocate(properties: Properties, scratch: Path, name: str, *, prefix="azazel
             raise ValueError("unreviewed path or environment directive")
         result.append((key, value))
     if not dict(result).get("RuntimeDirectory"):
-        raise ValueError("RuntimeDirectory required")
+        # A unit that owns nothing under /run declares no runtime directory
+        # (#206 P6); the transient still gets a private one, so that the
+        # write-isolation and leftover checks see the same shape for every
+        # unit. The daemon runs under AZAZEL_ROOT and never uses it.
+        result.append(("RuntimeDirectory", prefix + name))
     result.append(("Environment", "AZAZEL_ROOT=" + str(scratch)))
     return result
 

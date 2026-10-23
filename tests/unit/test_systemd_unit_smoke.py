@@ -92,8 +92,11 @@ def test_path_relocation_flags_and_resets():
     props = smoke.parse_service(source() + "\n[Service]\nReadWritePaths=\n"
                                 "ReadWritePaths=-+/var/lib/azazel/state/mio\n")
     relocated = smoke.relocate(props, Path("/run/azsm-test"), NAME)
-    assert relocated[-3:] == [("ReadWritePaths", ""),
+    # The unit declares no runtime directory (#206 P6); the transient's
+    # private one is appended after the carried directives.
+    assert relocated[-4:] == [("ReadWritePaths", ""),
                              ("ReadWritePaths", "-+/run/azsm-test/var/lib/azazel/state/mio"),
+                             ("RuntimeDirectory", "azazel-smoke-" + NAME),
                              ("Environment", "AZAZEL_ROOT=/run/azsm-test")]
 
 

@@ -8,11 +8,16 @@ creates that file only for the units **this** pass granted, after recording
 the decision; a unit without its marker is skipped by PID 1
 (``unmet condition check``) instead of started.
 
-Why not ``/run/azazel/activation``: ``/run/azazel`` is the shared
-``RuntimeDirectory=`` of several units. systemd chowns a runtime directory to
-the starting unit's account (recursively) and removes it when that unit
-stops, so a loop daemon would come to own the markers, and the controller's
-own exit would delete them. ``/run/azazel-activation`` is a separate
+Why not ``/run/azazel/activation``: ``/run/azazel`` is where units' nested
+``RuntimeDirectory=`` leaves (``azazel/mio``, ``azazel/remote``,
+``azazel/fetch``) live, and systemd chowns a runtime directory to the
+starting unit's account (recursively) and removes it when that unit stops.
+When ``/run/azazel`` itself was the shared ``RuntimeDirectory=`` of the
+controller and several loop units, a loop daemon would have come to own the
+markers and the controller's own exit would have deleted them (that exit
+also removed the directory under the loop units' feet: #206 P6, so no unit
+declares the bare name any more). Markers stay out of any runtime-directory
+tree regardless. ``/run/azazel-activation`` is a separate
 root-owned ``0755`` directory created by ``systemd-tmpfiles``
 (``packaging/tmpfiles.d/azazel-nexus-bootstrap.conf``), like the M.I.O.
 identity handoff, and no unit names it as a runtime directory.
