@@ -941,9 +941,9 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   | property of the body | in the unit |
   | --- | --- |
   | fixed arguments, no input | the unit file's lines; no `Environment=`, no file, no socket, no argument from anyone |
-  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, which systemd re-arms for each `ExecStopPost=` command (observed on the VM, 2026-10-24, systemd 257.13; §11), so up to 30 s per undo command. **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start. **And an undo command that exceeds `TimeoutStopSec=` ends the undo** (observed the same day): systemd terminates the stop-post state with `Result=timeout` and does not run the `ExecStopPost=` lines after it, `-` or not. If `ip link delete az-decoy-host0` hangs, `ip netns delete azazel-decoy` never runs: the namespace stays, and with it the decoy's end of the pair, so `az-decoy-host0` too unless the hung command removed it first; the unit ends `failed`. That is a leftover for the residue judgement (`exposure_leftovers_present`, §6.3 "For G6" (a); implemented, wired in G6), which then withholds the tier: closed, but cleaned by hand ([operations](operations.md#deception-lite-decoy-network-196)) |
+  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, which systemd re-arms for each `ExecStopPost=` command (observed on the VM, 2026-10-24, systemd 257.13; §11), so up to 30 s per undo command. **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start. **An undo command that exceeds `TimeoutStopSec=`** (observed the same day): systemd logs `State 'stop-post' timed out. Terminating.`, kills it and the unit ends with `Result=timeout`. What follows depends on `-`: after a line **with** `-` the timeout is ignored like a failure and the next `ExecStopPost=` line still runs; after a line **without** `-` the remaining lines are skipped. Here the first line is `-/usr/bin/ip link delete az-decoy-host0`, so if it hangs `ip netns delete azazel-decoy` still runs (and removing the namespace removes the decoy's end of the pair, and with it `az-decoy-host0`). The second line is the last, so its timeout skips nothing; but if `ip netns delete` itself hangs, the namespace (and so the pair) is left and the unit ends `failed`. That is a leftover for the residue judgement (P5, `exposure_leftovers_present`, §6.3 "For G6" (a); implemented, wired in G6), which then withholds the tier: closed, but cleaned by hand ([operations](operations.md#deception-lite-decoy-network-196)) |
   | a failed step undoes the earlier ones | `ExecStopPost=`: a one-shot unit stops at the first `ExecStart=` that fails, and systemd runs `ExecStopPost=` after a start that failed or timed out, and after every stop; `ExecStop=` only after a start that succeeded (systemd.service(5), systemd 257) |
-  | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it (so does one that times out, `-` or not; the row above), and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
+  | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it (so does one that times out without `-`; a `-` line's timeout is ignored and the next line runs; the row above), and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
   | something already present | `ip netns add` fails (`File exists`), the start fails at step 1 and nothing else runs: **closed**. **Changed**: the undo then removes the namespace and pair of those names, which the body left alone ("not ours to remove") |
   | empty environment, `SIGPIPE` at its default | systemd's environment for a system unit (none set here), signals reset on exec; *inferred* that `ip` reads nothing from it that changes these commands |
 
@@ -1514,15 +1514,18 @@ evidence.
 
 ### Open items checked (2026-10-24, VM; mechanism check, not hardware evidence)
 
-Debian 13, kernel 6.12, systemd 257.13. Throwaway units, rehearsal
-copies and, for the last row, the three decoy units as installed (no `Requires=azazel-activated.service`). **A VM check of the
+Debian 13, kernel 6.12, systemd 257.13. Throwaway units and rehearsal
+copies (made with `Requires=azazel-activated.service` and its `After=`
+removed, the rehearsal rule below), for the firewalld row copies of the
+three decoy units. **A VM check of the
 mechanism, not hardware evidence**; no record for `HG-06`, `HG-09` or
 `HG-10`, and nothing granted by the pass.
 
 | what | how | observed | result |
 | --- | --- | --- | --- |
 | `TimeoutStopSec=` per `ExecStopPost=` command | a throwaway unit with two `ExecStopPost=` lines and `TimeoutStopSec=12s`; each line a command of 8 s | the stop took about 16 s and both commands ran to the end (`Result=success`): the timer is re-armed for each command | ok; §7's *inferred* reading confirmed |
-| one command over `TimeoutStopSec=` | the same unit with the first command at 20 s | after about 12 s `State 'stop-post' timed out. Terminating.`, `Result=timeout`; **the second `ExecStopPost=` command did not run** | **new**: a hung undo command skips the rest of the undo (§7 timing row); for the namespace unit, a hung `ip link delete az-decoy-host0` leaves the namespace (and the pair with it), a leftover the residue judgement withholds on (`exposure_leftovers_present`, wired in G6): closed, cleaned by hand |
+| one command over `TimeoutStopSec=`, without `-` | the same unit with the first command at 20 s | after about 12 s `State 'stop-post' timed out. Terminating.`, `Result=timeout`; **the second `ExecStopPost=` command did not run** | **new**: a timeout of a line without `-` skips the rest of the undo (§7 timing row) |
+| the same, with `-` | the first line `ExecStopPost=-/bin/sh -c '…sleep 20…'`, the second 8 s, `TimeoutStopSec=12s` | after 12 s `State 'stop-post' timed out. Terminating.`, then **the second line ran** (start and end logged); about 20 s in all, `Result=timeout` | a `-` line's timeout is ignored and the next line runs. For the namespace unit (first line `-ip link delete az-decoy-host0`) a hang there still lets `ip netns delete` run; a hang of `ip netns delete` itself (the last line) leaves the namespace and the pair, a leftover the residue judgement (P5, `exposure_leftovers_present`, wired in G6) withholds on: closed, cleaned by hand |
 | `apparmor=0`: the LSMs | boot with `apparmor=0` | `apparmor` not in `/sys/kernel/security/lsm`; `/sys/module/apparmor/parameters/enabled` is `N` | as expected |
 | `apparmor=0`: the namespace unit | start of a rehearsal copy | `AssertResult=no`, not started; no namespace created | ok (fails closed) |
 | `apparmor=0`: the verify unit and `OnFailure=` | start of a rehearsal copy | `Assertion failed`, not started; the unit kept `Result=success` and **its `OnFailure=` did not run**: an assertion failure is a job result, not a unit failure | as *inferred* in item 3: a failed assertion never trips (§6.3) |
@@ -1604,7 +1607,8 @@ G4 follow-up, and the table above records which of them G4 answered.
    start timing out (`TimeoutStartSec=`) running the undo, whether
    `TimeoutStopSec=` bounds each `ExecStopPost=` command on its own or the
    two together (observed 2026-10-24, above: each on its own, up to 30 s per
-   command, and a command over it ends the undo without the rest), and
+   command; a timeout of a line without `-` skips the lines after it, one
+   with `-` does not), and
    `systemctl stop` removing both; with `attach_disconnected` on the four
    profiles, the verify unit's `/dev/null` access no longer denied and no
    new denial in a passing run of any of the four; the decoy's connect to the intake's socket
