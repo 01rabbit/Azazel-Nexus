@@ -348,8 +348,11 @@ without all of the above, or of only part of the tier, narrows".
 ### Current state
 
 The helper reads the table back once. A `flush ruleset` from
-`nftables.service` (start, reload, stop), a `firewalld` reload, or a future
-Edge enforce posture would remove it while the helper stays `active` and the
+`nftables.service` (start, reload, stop), a firewall manager that flushes
+the ruleset, or a future
+Edge enforce posture would remove it (firewalld 2.3.1 with the nftables
+backend did not: its start and reloads rebuilt only `inet firewalld`; VM,
+2026-10-24, §11) while the helper stays `active` and the
 decoy listens. A decoy restarted later in the boot accepts the old record.
 
 ### 6.1 Detection and stop
@@ -706,7 +709,10 @@ profile, and a hardware-gate record of it, a condition of any grant.
 - **Fail closed twice.** `AppArmorProfile=` without `-` makes a start without
   the loaded profile fail (VM-checked in G4: `231/APPARMOR`; not hardware evidence), and the pass withholds the
   tier unless the profiles are listed in enforce mode (§5 item 4). Booting
-  with `apparmor=0` or an `lsm=` list without AppArmor therefore withholds.
+  with `apparmor=0` or an `lsm=` list without AppArmor therefore withholds,
+  and the units' `AssertSecurity=apparmor` refuses their start (both seen
+  on the VM with `apparmor=0`, 2026-10-24, §11; the reading is not yet
+  wired into the pass; not hardware evidence).
 - **Measured.** The profile files are digested into the generation (§4.4
   item 5). They live in `/etc/apparmor.d/`, which an administrator can edit;
   an edit then fails the generation.
@@ -775,7 +781,11 @@ reached until G6. Revised after the review of #285.
   `AssertSecurity=apparmor`** in `[Unit]`. With AppArmor enabled, a start
   without the profile loaded fails; with AppArmor disabled systemd ignores
   `AppArmorProfile=`, and the assertion fails the start instead, so none of
-  the three runs unconfined. Every other unit names no profile and asserts
+  the three runs unconfined (seen on the VM with `apparmor=0`, 2026-10-24,
+  for copies of the namespace and verify units: `AssertResult=no`, nothing
+  started, no namespace created; §11). A failed assertion fails the start
+  job and leaves the unit's `Result=success`, so it never starts
+  `OnFailure=` (observed the same day; §6.3, §11 item 3). Every other unit names no profile and asserts
   nothing; `AppArmorProfile` is a reserved key of `extra`.
 - **The unit-content check** (`activation_unit_files`): an exposure unit's
   `AppArmorProfile=` lines must be exactly the rendered unit's (one line,
@@ -931,9 +941,9 @@ exactly `CAP_SYS_ADMIN CAP_NET_ADMIN`.
   | property of the body | in the unit |
   | --- | --- |
   | fixed arguments, no input | the unit file's lines; no `Environment=`, no file, no socket, no argument from anyone |
-  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, *inferred* to apply to each `ExecStopPost=` command on its own (systemd may re-arm the timer per command), so up to 30 s per undo command; to be measured (§11 item 4). **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start |
+  | 2 s per step (`STEP_SECONDS`) | `TimeoutStartSec=30s` for the six together, and `TimeoutStopSec=30s` for the undo, which systemd re-arms for each `ExecStopPost=` command (observed on the VM, 2026-10-24, systemd 257.13; §11), so up to 30 s per undo command. **Weaker**: one stuck `ip` may now take the whole 30 s before systemd kills it; the start then fails and the undo runs. systemd has no per-command deadline for the start. **An undo command that exceeds `TimeoutStopSec=`** (observed the same day): systemd logs `State 'stop-post' timed out. Terminating.`, kills it and the unit ends with `Result=timeout`. What follows depends on `-`: after a line **with** `-` the timeout is ignored like a failure and the next `ExecStopPost=` line still runs; after a line **without** `-` the remaining lines are skipped. Here the first line is `-/usr/bin/ip link delete az-decoy-host0`, so if it hangs `ip netns delete azazel-decoy` still runs (and removing the namespace removes the decoy's end of the pair, and with it `az-decoy-host0`). The second line is the last, so its timeout skips nothing; but if `ip netns delete` itself hangs, the namespace (and so the pair) is left and the unit ends `failed`. That is a leftover for the residue judgement (P5, `exposure_leftovers_present`, §6.3 "For G6" (a); implemented, wired in G6), which then withholds the tier: closed, but cleaned by hand ([operations](operations.md#deception-lite-decoy-network-196)) |
   | a failed step undoes the earlier ones | `ExecStopPost=`: a one-shot unit stops at the first `ExecStart=` that fails, and systemd runs `ExecStopPost=` after a start that failed or timed out, and after every stop; `ExecStop=` only after a start that succeeded (systemd.service(5), systemd 257) |
-  | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it, and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
+  | stop runs every undo in reverse | the same two `ExecStopPost=` lines: the pair, then the namespace. `-` on the first only: a failing command skips the ones after it (so does one that times out without `-`; a `-` line's timeout is ignored and the next line runs; the row above), and the pair is absent whenever the start failed before step 2; the namespace's removal keeps its status |
   | something already present | `ip netns add` fails (`File exists`), the start fails at step 1 and nothing else runs: **closed**. **Changed**: the undo then removes the namespace and pair of those names, which the body left alone ("not ours to remove") |
   | empty environment, `SIGPIPE` at its default | systemd's environment for a system unit (none set here), signals reset on exec; *inferred* that `ip` reads nothing from it that changes these commands |
 
@@ -1367,17 +1377,21 @@ and it is no record for `HG-06`, `HG-09` or `HG-10`.
 
 **Not checked in G4** (still open, listed in the items below): the
 namespace unit's `TimeoutStartSec=` path and whether `TimeoutStopSec=`
-bounds each `ExecStopPost=` command on its own (timings not measured); the
+bounds each `ExecStopPost=` command on its own (timings not measured;
+measured 2026-10-24, below); the
 roll-back at a later step and with the handle already present, under
 AppArmor; the decoy's report to the intake (P2's send; the intake was not
 run, so its connect under the profile is not shown either); a trip from
 a `firewalld` reload (`nft delete table`, in the second rehearsal
 `systemctl start nftables.service` and in the fifth `systemctl reload
-nftables.service` were used); whether a failed `AssertSecurity=apparmor`
-on the verify unit makes it failed so that `OnFailure=` trips; a verify
+nftables.service` were used; firewalld 2.3.1 did not trip, as it left
+the table alone, 2026-10-24, below); whether a failed `AssertSecurity=apparmor`
+on the verify unit makes it failed so that `OnFailure=` trips (it does
+not; observed 2026-10-24, below); a verify
 already running during an ordinary stop; a name taken over by something
 else between runs (item 2's hand-added element and the names of §7's
-table); a start with AppArmor disabled (`apparmor=0`); the full §8 table
+table); a start with AppArmor disabled (`apparmor=0`; observed
+2026-10-24, below); the full §8 table
 for every unit, and `systemd-analyze security`. Added by the
 review of #289:
 
@@ -1498,11 +1512,29 @@ comparison itself stays unwired and withholds until G6 records the
 expected hash. One VM, one run, four profiles: none of this is hardware
 evidence.
 
-**Still open after G4:** whether `TimeoutStopSec=` bounds each
-`ExecStopPost=` command or both; the namespace unit's AppArmor profile on a
-probe (it cannot run one); a trip from a `firewalld` reload; a failed
-`AssertSecurity=apparmor` on the verify unit and `OnFailure=`; a start with
-`apparmor=0`; a kernel with fine-grained `AF_UNIX` mediation; what
+### Open items checked (2026-10-24, VM; mechanism check, not hardware evidence)
+
+Debian 13, kernel 6.12, systemd 257.13. Throwaway units and rehearsal
+copies (made with `Requires=azazel-activated.service` and its `After=`
+removed, the rehearsal rule below), for the firewalld row copies of the
+three decoy units. **A VM check of the
+mechanism, not hardware evidence**; no record for `HG-06`, `HG-09` or
+`HG-10`, and nothing granted by the pass.
+
+| what | how | observed | result |
+| --- | --- | --- | --- |
+| `TimeoutStopSec=` per `ExecStopPost=` command | a throwaway unit with two `ExecStopPost=` lines and `TimeoutStopSec=12s`; each line a command of 8 s | the stop took about 16 s and both commands ran to the end (`Result=success`): the timer is re-armed for each command | ok; §7's *inferred* reading confirmed |
+| one command over `TimeoutStopSec=`, without `-` | the same unit with the first command at 20 s | after about 12 s `State 'stop-post' timed out. Terminating.`, `Result=timeout`; **the second `ExecStopPost=` command did not run** | **new**: a timeout of a line without `-` skips the rest of the undo (§7 timing row) |
+| the same, with `-` | the first line `ExecStopPost=-/bin/sh -c '…sleep 20…'`, the second 8 s, `TimeoutStopSec=12s` | after 12 s `State 'stop-post' timed out. Terminating.`, then **the second line ran** (start and end logged); about 20 s in all, `Result=timeout` | a `-` line's timeout is ignored and the next line runs. For the namespace unit (first line `-ip link delete az-decoy-host0`) a hang there still lets `ip netns delete` run; a hang of `ip netns delete` itself (the last line) leaves the namespace and the pair, a leftover the residue judgement (P5, `exposure_leftovers_present`, wired in G6) withholds on: closed, cleaned by hand |
+| `apparmor=0`: the LSMs | boot with `apparmor=0` | `apparmor` not in `/sys/kernel/security/lsm`; `/sys/module/apparmor/parameters/enabled` is `N` | as expected |
+| `apparmor=0`: the namespace unit | start of a rehearsal copy | `AssertResult=no`, not started; no namespace created | ok (fails closed) |
+| `apparmor=0`: the verify unit and `OnFailure=` | start of a rehearsal copy | `Assertion failed`, not started; the unit kept `Result=success` and **its `OnFailure=` did not run**: an assertion failure is a job result, not a unit failure | as *inferred* in item 3: a failed assertion never trips (§6.3) |
+| `apparmor=0`: the pass's reading | the unwired `decoy_apparmor.exposure_lsm_refusal` over the live reads | `lsm_apparmor_disabled` (withhold) | ok |
+| restore | GRUB put back, reboot | AppArmor enabled, the four profiles loaded | ok |
+| firewalld 2.3.1 (nftables backend) with the three units active | `systemctl start firewalld`, then `firewall-cmd --reload`, then `firewall-cmd --complete-reload` | no trip within 25 s after any of the three: firewalld recreated only its own `inet firewalld` table, `inet azazel_decoy` stayed, and the verify reported "the table, the host's links, forwarding, the routing rules and the routes match". Contrast `systemctl reload nftables.service`, whose `flush ruleset` removes the table and trips (fifth rehearsal) | nothing to trip on: this firewalld left the table alone. **Coexistence is unchanged**: `host_firewall_refusal` still withholds the tier while `firewalld.service` is enabled or active (§6.2, §9). The VM was then reverted to a snapshot without firewalld |
+
+**Still open after G4:** the namespace unit's AppArmor profile on a
+probe (it cannot run one); a kernel with fine-grained `AF_UNIX` mediation; what
 besides the files changes the compiled output (features, `parser.conf`,
 the parser's version, load flags, several profiles in one file; §7,
 "Left to G6");
@@ -1527,7 +1559,9 @@ G4 follow-up, and the table above records which of them G4 answered.
    `nft -j list table` compares equal; a hand-added element fails the check;
 3. the watch (G2, §6.3): `systemctl reload nftables` (with the service
    started by hand) and a `firewalld` reload stop the three units within one
-   period; a decoy restart re-runs the verify; a verify that fails before
+   period (firewalld 2.3.1, nftables backend, 2026-10-24: its start, reload
+   and complete reload left `inet azazel_decoy` alone, so no trip and none
+   needed; firewalld stays refused by `host_firewall_refusal`); a decoy restart re-runs the verify; a verify that fails before
    the decoy start keeps it down; a successful one-shot verify does not stop
    the decoy through `Requires=`; the verify's `OnFailure=` starts
    `azazel-decoy-trip.target` and its `Conflicts=` stops the three units
@@ -1552,13 +1586,14 @@ G4 follow-up, and the table above records which of them G4 answered.
    `AssertSecurity=apparmor` on the verify unit (AppArmor disabled, or a
    profile not loaded) leaves the unit **failed**, so that `OnFailure=`
    starts the trip unit, or only fails the start job, in which case it does
-   not (an assertion failure is a job result, *inferred* not a unit failure;
-   the decoy's own start still fails through `Requires=`, but a verify
+   not (an assertion failure is a job result, not a unit failure; *inferred*,
+   **observed 2026-10-24** with `apparmor=0`: `Result=success`, `OnFailure=`
+   not run, above; the decoy's own start still fails through `Requires=`, but a verify
    started by the timer while the decoy runs would stop nothing; review of
    #287 F2);
 4. AppArmor: the four profiles load on Debian 13; a start with a profile
    unloaded fails, and with AppArmor disabled (`apparmor=0`)
-   `AssertSecurity=apparmor` fails it; the namespace unit as rebuilt after
+   `AssertSecurity=apparmor` fails it (observed 2026-10-24, above); the namespace unit as rebuilt after
    G4 (§7): `ip` started by systemd directly under `azazel-decoy-nsd` with
    `NoNewPrivileges=yes` (no transition, so no `no new privs` denial), its
    six `ExecStart=` lines and `ip -n` working under the profile (which of
@@ -1571,7 +1606,9 @@ G4 follow-up, and the table above records which of them G4 answered.
    failing at step 1 and then removing it (the accepted change of §7), a
    start timing out (`TimeoutStartSec=`) running the undo, whether
    `TimeoutStopSec=` bounds each `ExecStopPost=` command on its own or the
-   two together (*inferred*: each on its own, up to 30 s per command), and
+   two together (observed 2026-10-24, above: each on its own, up to 30 s per
+   command; a timeout of a line without `-` skips the lines after it, one
+   with `-` does not), and
    `systemctl stop` removing both; with `attach_disconnected` on the four
    profiles, the verify unit's `/dev/null` access no longer denied and no
    new denial in a passing run of any of the four; the decoy's connect to the intake's socket
