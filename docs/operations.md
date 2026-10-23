@@ -849,9 +849,15 @@ also refuses to install when the decoy wrappers' (`az-decoy-netd`,
 install the runtime into that venv. The package's `apparmor.service` loads them at the next boot. Do not
 edit them, switch them to complain mode or remove them: the activation pass
 is to withhold the tier unless AppArmor is enabled and all of them are in
-enforce mode. That check exists, but in this build it is not reached: the
+enforce mode. That check exists, but on `main` it is not reached: the
 tier is withheld as `isolation_evidence_absent` on every pass whatever the
-profiles' state, so nothing is granted by them
+profiles' state, so nothing is granted by them. (G6, implemented on the
+draft branch `feat/196-g6-wiring` and not merged before G5 and R6, reaches
+it as the pass's stage P3 and compares the kernel's compiled hashes with
+the signed generation's at P11; after any change to the profiles, their
+includes or the parser, the tier then stays withheld until the exposure is
+installed again, a new generation published and a new v3 approval signed,
+[wiring §10 item 9](deception-exposure-wiring.md#10-open-points).)
 ([grant design §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)).
 To see their state, as root:
 

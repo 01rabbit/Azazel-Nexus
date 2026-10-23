@@ -2,13 +2,15 @@
 
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase G6).
-Status: **proposed; revised after the cross review of the G6 parts and the
-independent review of #301. Not to be merged as code before G5 (`HG-06`, `HG-09`,
-`HG-10` accepted on the real host). R6
+Status: **implemented on the G6 branch (`feat/196-g6-wiring`, draft pull
+request); the VM rehearsal of §8 is pending; not merged before G5 (`HG-06`,
+`HG-09`, `HG-10` accepted on the real host). R6
 ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design))
-was answered on 2026-10-24 as proposed
-(the other questions of §9 below were answered on 2026-10-23, each as
-recommended).** This document changes no code.
+was answered on 2026-10-24 as proposed.**
+The other questions of §9 below were answered on 2026-10-23, each as
+recommended, and the implementation follows them; §11 lists the choices the
+implementation made where this design left something open. Until the
+branch is merged, `main` withholds the tier on every pass as before.
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §5, §6.3, §7, §9, §10, §11) ·
 [how outside peers reach the decoy](deception-exposure-reachability.md) (§6,
@@ -19,8 +21,11 @@ Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 ## 1. Problem
 
 G6 is the step that makes the `DECEPTION_EXPOSURE` tier grantable
-([grant §9](deception-exposure-grant.md#9-phases)). Its parts are built and
-called by nothing (G6 preparations A, C and D, and the v3 decoder):
+([grant §9](deception-exposure-grant.md#9-phases)). Before G6 its parts were
+built and called by nothing (G6 preparations A, C and D, and the v3
+decoder); on the G6 branch the pass's step 10
+(`runtime/.../exposure_pass.py`) asks them in the order of §4.3, and
+`tests/unit/test_g6_unwired.py` pins exactly who reaches each:
 
 | part | module | judges |
 | --- | --- | --- |
@@ -35,11 +40,12 @@ called by nothing (G6 preparations A, C and D, and the v3 decoder):
 | enforcement exclusivity | `src/azazel_nexus/exposure_exclusivity.py` | §6.2 |
 | scope file | `src/azazel_nexus/decoy_scope.py` (`render_scope_file`) | grant §4.3 |
 
-`ActivationController._withholding_reason` still returns
+Before G6, `ActivationController._withholding_reason` returned
 `isolation_evidence_absent` for the tier on every pass
-(`src/azazel_nexus/activation.py`), and the runtime's tripwire narrows
-everything if an exposure unit is ever granted
-(`runtime/src/azazel_nexus_runtime/activated.py`, `_run_once`).
+(`src/azazel_nexus/activation.py`), and the runtime's tripwire narrowed
+everything if an exposure unit was ever granted
+(`runtime/src/azazel_nexus_runtime/activated.py`, `_run_once`). On the G6
+branch the first is L1 to L5 (§4.2) and the second the conditions of §6.
 
 This document says how the parts are connected: in which order the pass asks
 them, how the v3 approval is accepted, what the generation records, how the
@@ -188,7 +194,7 @@ written before G6 keeps withholding.
 | --- | --- | --- | --- | --- |
 | P1 | §5 C1 1: the lease came from a verified v3 approval | `inputs.approval` | type check: exactly `ActivationApprovalV3` naming the three | `exposure_approval_not_v3` (new) |
 | P2 | §5 C1 6, static half | `/proc/sys/net/core/fb_tunnels_only_for_init_net` | `exposure_withholding.read_fb_tunnels`, `fb_tunnels_refusal` | `fb_tunnels_unreadable`, `fb_tunnels_not_init_net_only` |
-| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced`, `lsm_profile_child_present` |
+| P3 | §5 C1 4, first half: AppArmor on, the four profiles in enforce mode | `/sys/kernel/security/lsm`, `.../apparmor/profiles` | `decoy_apparmor.read_exposure_lsm`, `exposure_lsm_refusal` | `lsm_apparmor_disabled`, `lsm_profiles_unreadable`, `lsm_profiles_absent`, `lsm_profiles_not_enforced`, `lsm_profile_child_present` (VM, 2026-10-24, before wiring: `exposure_lsm_refusal` over the live reads of an `apparmor=0` boot gave `lsm_apparmor_disabled`, [grant §11 "Open items checked"](deception-exposure-grant.md#open-items-checked-2026-10-24-vm-mechanism-check-not-hardware-evidence); the wired pass's ledger is §8's to see) |
 | P4 | §5 C1 5: no ruleset loader enabled or active | `UnitFileState`, `ActiveState` of `nftables.service`, `firewalld.service`, `netfilter-persistent.service` (bus) | the bus reads of §4.5, `host_firewall_refusal` | `host_firewall_unreadable`, `host_firewall_enabled`, `host_firewall_active` |
 | P5 | §6.3 G6 item (a): no definition-less running unit, no leftovers | `LoadState`, `UnitFileState`, `ActiveState` of the three units (bus); the entries of `/run/netns`; the links (`RTM_GETLINK`) | the bus reads of §4.5, `decoy_residue.read_netns`, `netlink.read_links` (names only), `decoy_residue.exposure_residue_departures` without the table (§4.4) | `exposure_state_unreadable`, `exposure_unit_masked_running`, `exposure_leftovers_present` |
 | P6 | §5 C1 3: a v3 proposal with a valid scope, its roles resolved to this boot's names | `inputs.evidence` (payload, current inventory) | `fabric_boundary.restore_commissioning_inputs`, `deception_scope_assignments`, `decoy_scope.decode_deception_scope`, `exposure_interfaces.resolve_role_interfaces` | `deception_scope_absent` (new: a v2 proposal), `deception_scope_refused` (new), then `role_evidence_unavailable`, `role_scope_mismatch`, `role_inventory_changed`, `role_interface_unresolved`, `role_interface_ambiguous`, `role_interface_name_refused` |
@@ -620,6 +626,13 @@ the source: with the source gone the start fails (`243/CREDENTIALS`), its
 period (grant §11 item 3). That is the intended, closed outcome; the
 operator re-grants by rebooting. A second pass that grants the tier again
 writes the files again before the next verify start, and nothing trips.
+This relies on the trip only for a **start that fails**. An
+`AssertSecurity=` that fails is a job result, not a unit failure: the unit
+keeps `Result=success` and its `OnFailure=` does **not** run (observed on
+the VM with `apparmor=0`, 2026-10-24, grant §11 "Open items checked"). No
+part of this design relies on the trip for a failed assertion: with
+AppArmor off the units do not start at all, and the pass withholds the tier
+at P3.
 
 **`rolled_back` and the tier.** A pass rolls back when any unit's
 `unmask_and_enable` fails: it masks again **everything** it widened,
@@ -829,7 +842,7 @@ a reboot.
    | change | expected |
    | --- | --- |
    | `net.core.fb_tunnels_only_for_init_net` not `2` | `fb_tunnels_not_init_net_only` (P2) |
-   | boot with `apparmor=0` | `lsm_apparmor_disabled` (P3) |
+   | boot with `apparmor=0` | `lsm_apparmor_disabled` (P3); the unwired reader already gave it over the live reads (VM, 2026-10-24, grant §11 "Open items checked"); the wired pass's ledger is what this step records |
    | one profile loaded in complain mode | `lsm_profiles_not_enforced` (P3) |
    | `nftables.service` enabled; then disabled but started by a `Wants=` | `host_firewall_enabled`; `host_firewall_active` (P4) |
    | a rehearsal unit `Before=azazel-activated.service` that runs `ip netns add azazel-decoy` | `exposure_leftovers_present` (P5) |
@@ -961,7 +974,14 @@ Also for the owner, with recommended defaults that only narrow:
    with no leftover bridge therefore passes P5, the tier is granted, and the
    helper's start later in the same boot fails on it: closed, but noticed at
    the helper and not at the pass. The operator's procedure for a crash
-   already removes it (reachability §8 item 4).
+   already removes it (reachability §8 item 4). A leftover **namespace**
+   can also come from the namespace unit's own undo: the first undo line
+   is `-`-prefixed, so its timeout does not skip `ip netns delete`, but if
+   `ip netns delete` itself hangs past `TimeoutStopSec=` it is killed, the
+   namespace is left and the unit ends `failed` (observed on the VM,
+   2026-10-24, grant §8 table and §11).
+   P5 sees that namespace (`/run/netns/azazel-decoy` present while the
+   namespace unit is stopped) and withholds as `exposure_leftovers_present`.
 6. **The decoy and the pass's scope** are decided in §6 (cross-review finding M4); what stays
    open is only the VM check that the credential reaches the decoy under
    its profile.
@@ -980,3 +1000,59 @@ Also for the owner, with recommended defaults that only narrow:
    v3 signature, as a changed unit file does for the observe baseline.
    Intended; [operations](operations.md#deception-lite-decoy-network-196)
    gains the procedure when G6 lands.
+
+## 11. What the implementation chose (G6 branch)
+
+Where this document left a detail open, the implementation took the
+narrower or closed option. Each is a reviewable line of the draft pull
+request, not a new authority.
+
+1. **A v3 approval must name the three.** The pass (step 7) and
+   `az-activation install` refuse a verified v3 whose lease does not hold
+   all three exposure units; the signer already refuses to sign one. The
+   loader hands a v3 to its verifier only when the policy names the tier
+   (otherwise a v3 is refused outright).
+2. **The policy's three-or-none rule is checked twice**: by the decoder and
+   again by the pass (step 3), as `POLICY_UNIT_SCOPE` became the grantable
+   set.
+3. **v1 under a policy naming the tier refuses the generation** (everything
+   withheld), as §5.2's "required exactly when" says; P9's
+   `exposure_generation_absent` stays as a defence that the pass does not
+   reach in this build.
+4. **No unit object reads as nothing running.** §4.5 maps `NoSuchUnit` from
+   `GetUnit` to None; the parts were built to take strings. A host firewall
+   loader with a unit file and no unit object (`ActiveState` None) is judged
+   `inactive` by `host_firewall_refusal`, and an exposure unit with no unit
+   object (`LoadState` and `ActiveState` both None) is judged stopped by the
+   residue judgement. A file state None beside an object, or one of the two
+   None alone, stays unreadable. Without this a disabled, unloaded
+   `nftables.service` (Debian's default) would withhold the tier on every
+   boot.
+5. **`reset_grant_markers` removes the markers even when a scope file name
+   refuses**, and raises after; the emergency narrowing removes the scope
+   files again in a `finally`.
+6. **The scope files' read-back** requires exactly root (the marker
+   owner), mode `0600`, one link, at most 4 KiB, the scope file equal to
+   P8's bytes and parsing to the evidence's digest, and the digest file
+   equal to the digest and a newline.
+7. **The decoy's credential reader** (`decoy_isolation.read_scope_digest_credential`)
+   accepts a file owned by root or by the decoy's own account (systemd
+   gives an unprivileged unit its credential with an access list on a
+   root-owned file, or by changing the owner where access lists are not
+   available), not group or other writable, one link, exactly
+   `sha256:<64 hex>` and a newline; an absent credential refuses. Which of
+   the two owners the VM shows is §8 step 4's to record (§10 item 6).
+8. **The bus reads** use one `Properties.Get` per value (no `GetAll`), only
+   on the object paths of the seven fixed units, and the reply owner check
+   of the existing `NoSuchUnit` case applies to `FileNotFound` too.
+9. **The ledger** records `exposure_evidence` (`not_attempted`,
+   `not_in_scope`, `established`, `withheld`), and on `withheld` the stage
+   and the code in two fields, `exposure_stage` and `exposure_code`; never
+   the phrase, a name, a prefix or a digest. A failed scope write is
+   `activation.decoy_scope_unwritten`.
+10. **P7 when a dump is not read whole**: the forwarding part reports
+    `forwarding_unreadable` beside every other code that holds (its order
+    puts it last), so the recorded code may be another forwarding code; it
+    withholds either way.
+11. **Q-R6 is unanswered.** Nothing in the implementation depends on its
+    answer; the pull request stays a draft until it and G5 are settled.

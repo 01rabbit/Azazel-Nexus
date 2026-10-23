@@ -281,6 +281,10 @@ units as a table departure does. Read once, at the pass, K1 could be lost
 afterwards (a networkd reload, a link flap that re-configures the link) with
 nothing noticing.
 
+**G6 status:** implemented on the G6 branch (`feat/196-g6-wiring`, draft pull request; [wiring](deception-exposure-wiring.md), §11 there lists the implementation's choices); the VM rehearsal (wiring §8) is pending, and it is not merged before G5 (`HG-06`, `HG-09`, `HG-10`) and the owner's answer to R6. Statements below that the parts are not wired, or that the tier is withheld as `isolation_evidence_absent`, describe `main` until that merge. On the branch the pass's stage P7 hands this judgement the
+route-netlink dumps' dictionaries (or None for a dump not read whole)
+instead of `(status, output)`.
+
 **Implemented, not wired (#196 G6 preparation A).** The pass's judgement of
 this section is `decoy_reachability.pass_reachability_departures`, a pure
 function over the values read (the sysctl trees of `read_sysctls`, the
