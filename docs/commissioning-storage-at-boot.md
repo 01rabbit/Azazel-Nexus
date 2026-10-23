@@ -2,7 +2,7 @@
 
 Owner: [#242](https://github.com/01rabbit/Azazel-Nexus/issues/242) (blocks P6 of
 [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206)).
-Status: **accepted** — the owner merged this proposal with the §5 defaults ([#245](https://github.com/01rabbit/Azazel-Nexus/pull/245), 2026-10-21). P0 is in [#246](https://github.com/01rabbit/Azazel-Nexus/pull/246); P1 and P2 are pending.
+Status: **accepted** — the owner merged this proposal with the §5 defaults ([#245](https://github.com/01rabbit/Azazel-Nexus/pull/245), 2026-10-21). P0 is in [#246](https://github.com/01rabbit/Azazel-Nexus/pull/246); P1 was rehearsed on the VM on 2026-10-23 (mechanics only, not evidence: [activation rehearsal §0.1](hil-runbooks/activation-rehearsal.md#01-run-of-2026-10-23-mechanics-only)); P2 (TPM2, HG-08) is still owner-gated and pending.
 
 ## 1. Problem
 
@@ -64,7 +64,9 @@ the fallback.
   the mapped device only for the default start timeout (90 s) and may fail
   before the prompt ends and not be retried after a later unlock. That an
   untyped passphrase leaves the volume locked and the boot continuing after
-  `<T>` is to be verified in P1. Key files and `systemd-creds` with the host key
+  `<T>` was seen in the P1 VM rehearsal (2026-10-23, `<T>` = 300 s: `Timer
+  expired`, the mount `Dependency failed`, the controller ran and granted
+  nothing). Key files and `systemd-creds` with the host key
   are forbidden.
 - **Diagnostic only.** The pass may record a fixed label
   `commissioning_storage: luks_backed | not_luks_backed` in its observed inputs;
@@ -111,6 +113,9 @@ Recommended defaults in brackets.
 8. A vTPM on the VM? **[not needed for P1; a swtpm run is a mechanics
    rehearsal only]**
 
-To verify on the VM: that systemd 257 sets up a loop device for a regular-file
-crypttab source, and how a `nofail` entry is ordered; the explicit `After=` on
-the mount makes the design independent of the latter.
+Verified on the VM in P1 (2026-10-23, mechanics only): systemd 257 sets up a
+loop device for a regular-file crypttab source by itself
+(`RequiresMountsFor=` the image, `Wants=`/`After=` `modprobe@loop.service`),
+and with `nofail` the cryptsetup unit is only `WantedBy=cryptsetup.target`
+and the mount has no `RequiredBy=`; the explicit `After=` on the mount makes
+the design independent of the latter.

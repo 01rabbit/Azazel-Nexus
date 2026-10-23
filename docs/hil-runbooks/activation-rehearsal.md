@@ -2,8 +2,12 @@
 
 Owner: [#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (P6) and
 [#242](https://github.com/01rabbit/Azazel-Nexus/issues/242) (P1).
-Status: **not yet run** as one sequence (written against main `c1a1117`);
-hardware-unverified. Partial VM checks that shaped this runbook are in §0.
+Status: **run once as one sequence on the VM on 2026-10-23** (installed main
+`965f539`, then `cffcd6f` after #312); mechanics only, **not evidence** and
+hardware-unverified. The record is on
+[#206](https://github.com/01rabbit/Azazel-Nexus/issues/206) (also #242 and
+#251); its findings are in §0.1. Earlier partial VM checks that shaped this
+runbook are in §0.
 
 This runbook takes the rehearsal VM from encrypted commissioning storage
 opened at boot to the regular activation path admitting the integrated loop's
@@ -64,6 +68,50 @@ hardware evidence**, and it does not replace the full sequence below.
    controller ended with `az-activated completed safely: granted=0,
    withheld=12, reasons=no_generation`. §2 precondition 7 covers this.
 
+### 0.1 Run of 2026-10-23 (mechanics only)
+
+One pass through §2–§9 on the VM (Debian 13, kernel 6.12, arm64, systemd
+257.13, VMware Fusion), storage Option A, Edge Variant A, with the
+substitutions of §11 (loop-file LUKS, secrets on the root filesystem,
+unencrypted `/data`, the old `commissioning-proposal.sig` moved aside). It
+was signed with a VM-only rehearsal operator key, **not** an owner approval,
+and it is **not** hardware or HG-08 evidence.
+
+- **§3.4:** the cryptsetup unit has `RequiresMountsFor=` the image and
+  `Wants=`/`After=` `modprobe@loop.service`, and is only
+  `WantedBy=cryptsetup.target`; the mount has no `RequiredBy=`.
+  **§3.5:** systemd set up the loop device by itself; the mount had
+  `nosuid,nodev,noexec` and `root:azcommission 750`.
+- **N1** and **N6** as expected (N1: `Timer expired` about 300 s in, the
+  mount `Dependency failed`, `granted=0`, `not_luks_backed`, `degraded` from
+  the cryptsetup unit only; N6: the five queued starts skipped with `unmet
+  condition`).
+- **Boot A** as §7.2 expects except the count: `granted=5, withheld=10`
+  (see §7.2), five markers, the units `enabled` and `inactive`.
+- **Boot B** first **failed** on `965f539`: three granted units ended with
+  `status=233/RUNTIME_DIRECTORY`, because they shared `RuntimeDirectory=azazel`
+  with the controller, which removed it on exiting right after READY. Fixed by
+  #312; on `cffcd6f` boots A and B were repeated and passed: every granted
+  daemon `active`, the probe ran once with `success`, all after READY, no
+  pending job, `running`.
+- **O1:** about 23 ms from READY to the controller's exit. **O2:** auditd
+  began to start right after READY, never reached `active`, and `BindsTo=`
+  stopped it about 25 ms after READY; the pass masked it again. **O3:** after
+  10 minutes the four daemons were still `active`, no restart. **O4:**
+  cryptsetup took about 7.4 s (answered at once), the controller was
+  `active` about 9.4 s after boot.
+- **N2** needed a new signed approval to restore (see §8). **N3b** also
+  failed `systemd_loaded_units`, beyond the row's expectation. **N4** is not
+  exercisable on VMware: the host synchronizes the guest's RTC at boot, so the
+  moved-back clock is reset. **N5** not run (Variant A). N3, N7 and N8 as
+  expected; in N8 `node_health` stayed `verified` because the owner's key was
+  still active.
+- **M-5** ([design §10](../activation-observe-baseline.md)) was observed on a
+  granting boot: a second pass in the same boot recorded
+  `activation.evidence_preflight_masked` and `activation.rollback_failed`,
+  exited 1 with `RollbackFailed`, removed every marker and masked every
+  governed unit, and the two units already running kept running.
+
 ## 1. Roles and secrets
 
 Each step below names who performs it.
@@ -72,6 +120,14 @@ Each step below names who performs it.
 | --- | --- |
 | **Operator** (the owner, in person) | sets the LUKS passphrase and types it at every boot (console, or `sudo systemd-tty-ask-password-agent` in **their own** SSH session); signs three payloads on **their own workstation** with [`tools/operator_sign.py`](../../tools/operator_sign.py): the role draft (`commissioning`), the full proposal (`commissioning-proposal`) and the activation approval (`activation`); makes the interactive commissioning choices (roles and `CONFIRM`, ceiling and `EXPORT`); decides whether to go on at each stop point |
 | **Assistant** (the worker) | deployment and file placement, `generation-publish`, `request`, `install`, reboots on the operator's go-ahead, and every status check |
+
+For the VM-only run of 2026-10-23 the owner delegated the passphrase and the
+signing to the assistant: a throwaway passphrase and a VM-only rehearsal key,
+both destroyed afterwards, with the VM reverted to snapshot S0. The owner
+delegated so that the run could finish without asking the owner for input;
+the rehearsal signatures are not an owner approval. That delegation never
+applies to a real node, where every rule below holds as
+written.
 
 Rules that hold throughout:
 
@@ -152,7 +208,8 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
    (and `selection.pending` likewise). `deployment.json` **stays**: the pass's
    `node_identity` producer needs the administrator deployment declaration.
    **要確認:** whether any other file in that directory belongs to a stale
-   bootstrap run; move only what §0 item 4 showed blocking.
+   bootstrap run; move only what §0 item 4 showed blocking. (On the
+   2026-10-23 run that VM had no stale selection.)
 8. **Mission storage at boot.** `node_health` checks `resources`, which reads
    `mission_available_mib` from a separate, writable `/data` filesystem. The
    commissioning rehearsal mounted it by hand; for a boot pass it must be
@@ -457,10 +514,18 @@ sudo ls -l /etc/azazel/activation/ /var/lib/azazel/state/activation/
 sudo grep -oE '"event_type": ?"[^"]*"' /var/lib/azazel/state/activation.jsonl | tail -n 3
 ```
 
+If an approval is already installed, `install` refuses with `an approval is
+already installed; use --replace`; with `--replace` it shows the verified
+approval, says the installed one would be REPLACED and asks to type
+`REPLACE` (`run_install` in
+`runtime/src/azazel_nexus_runtime/activation_cli.py`). A replacement still
+needs a sequence above the high-water floor unless it is byte-identical to
+the installed pair.
+
 `policy.json`, `approval.json`, `approval.sig` root `0600`; `high-water.json`
 present; the last events include `activation.generation_published` and
 `activation.approval_installed`. `request.json` and `approval.sig` stay in
-`/root/azn-activation` until §10 (§8 N2 re-installs them). Run `install` and
+`/root/azn-activation` until §10. Run `install` and
 `generation-publish` only while no pass runs (shared ledger, design §3.5).
 
 ## 7. Grant, then start (#206 P6)
@@ -496,15 +561,17 @@ sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
 Expected:
 
 - `Result=success`, `ExecMainStatus=0`; the journal line
-  `az-activated completed safely: granted=5, withheld=7, reasons=...`
-  (Variant B with launchable Edge: `granted=6`), and no
+  `az-activated completed safely: granted=5, withheld=N, reasons=...`
+  (Variant B with launchable Edge: `granted=6`), where `withheld` counts the
+  other governed units and so depends on the installed set (the 2026-10-23 run
+  read `withheld=10`), and no
   `readiness notification unavailable`. `reasons` names only refusals of units
   outside the approval (for example `outside_lease_scope`, `wiring_absent`).
 - `/run/azazel-activation/granted/` (root `0755`) holds exactly the granted
   units, each an empty root `0644` file.
 - The granted units are `enabled` but `inactive`: they were masked when the
   boot began, so no start job was queued, and a grant never starts a unit.
-  **要確認** that none started.
+  None started on the 2026-10-23 run (confirmed).
 - The last ledger entry is `activation.inputs_incomplete` with every
   producer in `observed_inputs.producers` `verified`, `missing_producers`
   only `authoritative_commissioning_admission`, `renderer_measurement` and
@@ -576,10 +643,10 @@ verified. For example N1 reads `authenticated_commissioning` and
 | case | operation (who) | expected beyond the common one | restore |
 | --- | --- | --- | --- |
 | **N1 locked** (#242 P1) | at the reboot nobody types the passphrase or answers the agent for more than 300 s (operator) | about 300 s in, `Failed to query password: Timer expired`; the mount `Dependency failed`; the controller starts right after (§0 item 3) and completes; `authenticated_commissioning` and `inventory_binding` `failed`, `full_commissioning: unavailable`; `observed_inputs.commissioning_storage: not_luks_backed` (see below the table); `systemctl is-system-running` `degraded` (the cryptsetup unit only) | reboot and unlock |
-| **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | §6.4's `install` again with the kept, byte-identical files (no `--replace`); `high water (raised)`. If the window ended, a new request and signature with `--seq 2` (a different approval must use a sequence above the floor) |
+| **N2 approval removed** | `sudo rm /etc/azazel/activation/approval.json /etc/azazel/activation/approval.sig` (assistant) | `activation_approval_loader` `failed`, all earlier producers `verified` | re-installing the kept, byte-identical files is **refused** (`approval sequence not above the high-water floor; only the installed approval may be installed again`): the floor already equals their sequence, and only a pair that is still installed may be placed again. Restore with a new `request` with a sequence above the high-water floor (§6.2 with `--seq` floor + 1), a new signature (§6.3) and `install` (§6.4) without `--replace` (nothing is installed); `high water (raised)` |
 | **N3 tree altered** | keep a copy, then append one byte to `/var/lib/azazel/generations/<N>/tree/baseline.json` (assistant: `sudo cp -a … /root/azn-activation/baseline.json.orig`, `printf ' ' \| sudo tee -a … >/dev/null`) | the controller's own check withholds everything (`reasons=generation_unverified`); `operational_generation_publisher` `failed` | `sudo cp -a /root/azn-activation/baseline.json.orig …/baseline.json`, or revert to S2 |
-| **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused) | remove the directory, `daemon-reload` |
-| **N4 clock moved back** | `sudo timedatectl set-ntp false`; `sudo timedatectl set-time '<last pass time − 1 h>'`; reboot (assistant) | `trusted_clock` `failed` (clock below `time_floor − 300 s`); approval `not_attempted`. **要確認:** that the VM's RTC keeps the earlier time across a guest reboot and that nothing advances the clock before the pass (`journalctl -b \| grep -i 'time'`); if it is advanced, record N4 as *not exercisable on this VM* and do not touch systemd's own clock floor | `sudo timedatectl set-ntp true`, wait for `NTPSynchronized=yes` (`timedatectl show`), reboot. A VM that cannot sync by NTP: set the real time back with `sudo timedatectl set-time` from an independent source, or revert to S2 |
+| **N3b drop-in** (design §3.2) | `sudo install -d -m 0755 /etc/systemd/system/azazel-edge-intaked.service.d` and a one-line `[Service]` file `azn-rehearsal.conf` in it; `daemon-reload` (assistant) | `operational_generation_publisher` `failed` (override refused); on the 2026-10-23 run the `systemd_loaded_units` producer failed as well | remove the directory, `daemon-reload` |
+| **N4 clock moved back** | `sudo timedatectl set-ntp false`; `sudo timedatectl set-time '<last pass time − 1 h>'`; reboot (assistant) | `trusted_clock` `failed` (clock below `time_floor − 300 s`); approval `not_attempted`. **要確認:** that the VM's RTC keeps the earlier time across a guest reboot and that nothing advances the clock before the pass (`journalctl -b \| grep -i 'time'`); if it is advanced, record N4 as *not exercisable on this VM* and do not touch systemd's own clock floor. On VMware Fusion (2026-10-23) it was not exercisable: the host synchronizes the guest's RTC at boot | `sudo timedatectl set-ntp true`, wait for `NTPSynchronized=yes` (`timedatectl show`), reboot. A VM that cannot sync by NTP: set the real time back with `sudo timedatectl set-time` from an independent source, or revert to S2 |
 | **N5 probe stale** (Variant B only) | `sudo systemctl mask azazel-edge-probe-preflight.service` (assistant); this boot has no probe result, the last one names another boot | **differs from the common one:** the five SUPPORTING units are granted (and start, if enabled); edge-core withheld `edge_not_ready: digest_matches,health_endpoint_healthy`, no marker for it, `masked` and not started; `observed_inputs.edge_evidence: not_launchable` | `sudo systemctl unmask azazel-edge-probe-preflight.service` |
 | **N6 locked after a grant** | as N1, run on the boot after a granting boot if N1 was not | queued starts skipped (`unmet condition`) | reboot and unlock |
 | **N7 epoch raised** | see below (assistant, operator agrees) | `node_identity` and `epoch_high_water` `verified`, `activation_approval_loader` `failed` (the approval names the old epoch) | revert to S2 |
