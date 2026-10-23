@@ -12,7 +12,7 @@ fixed that. On 2026-10-24 the loop also ran on a VM through the **regular
 activation path** (Variant B of the [activation rehearsal](activation-rehearsal.md),
 Edge Core included; mechanics only, signed with a VM-only rehearsal key, not
 hardware evidence and not owner approval); see §5 and the
-[record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195).
+[record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6369911973).
 
 This runbook runs the [integrated defensive loop](../integration-loop.md) on
 the rehearsal VM with the installed units instead of the harness: a real
@@ -64,12 +64,15 @@ answer with the run.
    `/root/azn-rehearsal/backup-<time>.tgz`, directory `0700`), never to a
    shared or user directory and never off the VM, and delete it at the end of
    the run (§10) once the VM is back in its intended state.
-3. **No keys, no approvals.** Do not create, copy or edit an operator seed,
-   an activation approval, a lease or a bootstrap selection for this run, and
-   do not bring a real one onto the VM. Signing stays on the operator's own
+3. **Keys and approvals.** On the regular path (§5), keys, signing and the
+   activation approval follow the [activation rehearsal](activation-rehearsal.md#1-roles-and-secrets)
+   (on a VM, a VM-only rehearsal key); this runbook adds no key or approval
+   of its own. For the §6 fallback: do not create, copy or edit an operator
+   seed, an activation approval, a lease or a bootstrap selection, and do
+   not bring a real one onto the VM; signing stays on the operator's own
    workstation with `tools/operator_sign.py` as in the
-   [commissioning rehearsal](commissioning-rehearsal.md#1-keys-and-who-does-what);
-   this runbook needs no signature at all.
+   [commissioning rehearsal](commissioning-rehearsal.md#1-keys-and-who-does-what),
+   and the §6 run needs no signature at all.
 4. **No lab marker interference.** If `/etc/azazel-lab/LAB-HOST` exists the
    VM ran lab code; follow the commissioning rehearsal's precondition 4 before
    continuing, or stop.
@@ -274,7 +277,7 @@ Variant B (Edge Core included) and the §4 "Without Suricata" setup. It was
 mechanics only: the approval was signed with a VM-only rehearsal key that
 was destroyed afterwards, the VM was reverted to its snapshot, and the run is
 neither hardware evidence nor owner approval
-([record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195)).
+([record in #195](https://github.com/01rabbit/Azazel-Nexus/issues/195#issuecomment-6369911973)).
 Observed:
 
 - **Boot A** (the granting pass): `granted=6`, Edge Core included; the
@@ -323,12 +326,14 @@ sudo journalctl -b -u azazel-activated.service -o cat
 sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
 ```
 
-Expect `az-activated completed safely: granted=0, ...` and, as the last
+For the §6 fallback, on a VM where no approval is installed, expect
+`az-activated completed safely: granted=0, ...` and, as the last
 ledger entry, `activation.inputs_incomplete` whose `missing_producers` name
 the inputs that failed (typically `activation_policy` and `epoch_high_water`
 while nothing installs them), with `observed_inputs.producers` showing
 `failed` or `not_attempted` for the rest. If `granted` is not 0, the regular
-path admitted units: stop and use it (P6) instead of §6
+path admitted units: do not use §6; continue with the regular path
+([activation rehearsal](activation-rehearsal.md)) instead
 (**要確認** on every new build).
 
 The supporting-only bootstrap covers only `azazel-auditd.service` and
@@ -339,7 +344,8 @@ left from an earlier boot makes every pass fail closed
 
 ## 6. Rehearsal-only start (alternative to activation)
 
-This section substitutes for the activation grant that §5 cannot produce.
+This section is the fallback for a VM where no approval is installed, so the
+§5 pass grants nothing.
 It is **only** for a disposable VM, and the run record must say it was used.
 §17 of the admission runbook governs it:
 
@@ -573,9 +579,9 @@ Both must print `verified`. The incident ledger ends with
 `edge.incident.reset` (intake start), `edge.incident.opened`,
 `edge.incident.updated`; the audit chain ends with `edge.incident.opened`,
 `edge.incident.escalated` when an auditd runs (§6.1); in a regular-path run
-without auditd it holds no record of this incident (§5). Forwarding is best effort: a missing audit record
-is read together with `audit_forward_dropped` and `audit_forward_refused` in
-status, not as a broken loop.
+without auditd it holds no record of this incident (§5). Forwarding is best
+effort: a missing audit record is read together with `audit_forward_dropped`
+and `audit_forward_refused` in status, not as a broken loop.
 
 **Explanation records** (private `0700`; printed fields carry no address):
 
