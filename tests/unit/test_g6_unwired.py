@@ -145,8 +145,9 @@ NAME_FILES: dict[str, frozenset[str]] = {
     **_only({V3, SIGNER}, "decode_activation_approval_v3"),
     **_only({V3, STORE}, "verify_activation_approval_v3"),
     **_only({V3, CLI}, "activation_approval_v3_payload"),
-    # v3's fields (V2): requested, printed by the signer, compared at P10.
-    **_only({V3, CLI, EXPOSURE_PASS, SIGNER}, "exposure_scope_digest",
+    # v3's fields (V2): requested, printed by the signer, compared at P10
+    # and again by the tripwire.
+    **_only({V3, CLI, EXPOSURE_PASS, ACTIVATED, SIGNER}, "exposure_scope_digest",
             "exposure_prefix_count", "exposure_ingress_count"),
     # Its purpose (Q-C): the trust defines it, v3 verifies under it, the
     # signer offers it; `az-activation request` names it in its hint.
