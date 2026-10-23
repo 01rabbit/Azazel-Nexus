@@ -517,7 +517,8 @@ def test_the_scopes_readers_and_renderers_are_exactly_these():
     `decoy_watch`). #196 G6 wires the pass: its step 10 (`exposure_pass`)
     decodes the proposal's scope and renders the file, the controller
     (`activated`) reads back what it wrote, and `az-activation` renders the
-    same file to publish and re-check the generation's section. The shared
+    same file to publish and re-check the generation's section, and
+    `proposal-export` decodes the operator's scope (S1). The shared
     reachability reads take only the interface-name rule from it, and
     `exposure_generation` digests a scope file it is given. In the library,
     `exposure_interfaces` checks role interface names with
@@ -527,7 +528,8 @@ def test_the_scopes_readers_and_renderers_are_exactly_these():
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
     assert _importers(runtime) == ["activated.py", "activation_cli.py", "decoy_netd.py",
                                    "decoy_reachability.py", "decoy_watch.py",
-                                   "exposure_generation.py", "exposure_pass.py"]
+                                   "exposure_generation.py", "exposure_pass.py",
+                                   "proposal_export.py"]
     reachability = (runtime / "decoy_reachability.py").read_text(encoding="utf-8")
     assert ("from azazel_nexus.decoy_scope import MAX_INGRESS, interface_name_allowed"
             in reachability)
