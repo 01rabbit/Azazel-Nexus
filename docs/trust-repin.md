@@ -31,15 +31,21 @@ account as well as `azcommission`. The consumer group has read/search access,
 with no directory or file write access. No bundle, content cache or operational
 generation directory belongs in this trust-only leaf.
 
-Initial commissioning still uses `TrustStore.pin` once. The provisioning root
-operator must assign the resulting `trust.json` to `azcommission:azknowledge`
-mode `0640` before repin is enabled; pin's API and behavior are unchanged. The
-installer creates directories, never a trust root or keys. For an existing
+Initial commissioning uses `TrustStore.pin` once. No shipped command calls it:
+the provisioning root operator runs that library call by hand, then assigns the
+resulting `trust.json` to `azcommission:azknowledge` mode `0640` before repin
+is used. `pin` writes it as root with mode `0600`. Repin runs as
+`azcommission` and copies that file's owner to every file it writes, which a
+non-root process can do only when the owner is its own. Pin's API and
+behavior are unchanged. The first revocation policy is then introduced by a
+repin whose anchor document keeps the pinned keys and adds `revocation_policy`
+(below). The installer creates directories, never a trust root or keys. For an existing
 caller-selected store, root must provision its public trust records into this
 leaf with that ownership and mode before starting the daemon; there is no
 automatic discovery or migration. Consumers must open `TrustStore` at the same
-fixed root and supply their commissioned digest to `keys()`. There is currently
-no shipped Knowledge Lite daemon unit to reconfigure.
+fixed root and supply their commissioned digest to `keys()`. The whole first
+enrollment, with the exact calls and the anchor files repin also reads, is
+[Knowledge Lite consumer §11](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
 
 `az-commissiond` runs as non-root `azcommission`, with supplementary group
 `azknowledge` so it can preserve that GID on new files. Repin preserves the
@@ -118,6 +124,10 @@ The fixed anchor JSON may also include `revocation_policy`, using the explicit
   }
 }
 ```
+
+This is also how a policy is first introduced on a store that `pin` created
+without one: keep the pinned `keys` and add the section. Unchanged bundle keys
+with a changed policy are a change, so the repin is accepted.
 
 The threshold has no default. Policy generations must increase on replacement;
 they are independent of the trust-store generation reservation. Omitting the

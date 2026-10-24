@@ -167,12 +167,15 @@ new_fingerprint, reason_code)`, with `promoted=True` and `reason_code="promoted"
 
 The proposed anchor is a JSON object with a non-empty `keys` array of
 lower-case Ed25519 public-key hex strings, for example `{"keys": ["<test public
-key hex>"]}`. Other input metadata is not adopted: repin retains the existing
+key hex>"]}`. Apart from an optional `revocation_policy`, other input metadata
+is not adopted: repin retains the existing
 commissioning digest and derives provenance from the request. The daemon reads
 the file path, never a CLI argument containing keys. Reads use `O_NOFOLLOW`
 and require a regular file of at most 64 KiB, including a bounded read in case
 the file grows. Parsing and key validation operate on the staged copy. The
-canonical sorted, deduplicated key set must differ from the current set.
+canonical sorted, deduplicated key set must differ from the current set, unless
+the document's `revocation_policy` changes the policy
+([trust repin](trust-repin.md), "Combined authority replacement").
 
 The commissioning pin remains `trust.json` (generation zero). Repin writes a
 private copy in `trust-staging/`, validates it, writes
@@ -341,4 +344,7 @@ and commissioner-owned trust at `/var/lib/azazel/lite-trust`. It reuses the
 revocation reader here, not this module's content-generation storage format.
 See [daemon status and root reconciliation](knowledge-lite-consumer.md#milestone-1-daemon-status)
 for the anchor/pin intersection, commissioning binding, reply vocabulary and
-read-only boundary. Import and repin remain separate existing operator routes.
+read-only boundary. Import and repin are separate: repin goes through the
+commissioning CLI and daemon, while the initial pin and the import have no
+shipped command and are run as library calls. See
+[first enrollment](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
