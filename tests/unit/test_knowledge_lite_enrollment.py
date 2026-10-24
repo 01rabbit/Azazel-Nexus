@@ -476,3 +476,49 @@ def test_no_sudo_command_relies_on_path_for_a_venv_script() -> None:
 
     for command in _shell_commands(_section()):
         assert not re.match(r"sudo (?:runuser -u \S+ -- )?az", command), command
+
+
+def _modules_run_with_m() -> list[str]:
+    return sorted({m for c in _shell_commands(_section())
+                   for m in re.findall(r" -I -m (\S+)", c)})
+
+
+def _module_file(module: str) -> Path:
+    relative = Path(*module.split(".")).with_suffix(".py")
+    for base in (ROOT / "src", ROOT / "runtime" / "src"):
+        if (base / relative).is_file():
+            return base / relative
+    raise AssertionError(f"no source for {module}")
+
+
+def _calls_main_under_guard(tree: ast.Module) -> bool:
+    for node in tree.body:
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name) and node.test.left.id == "__name__"
+                and [type(op) for op in node.test.ops] == [ast.Eq]
+                and [getattr(c, "value", None) for c in node.test.comparators] == ["__main__"]):
+            return any(isinstance(n, ast.Call) and getattr(n.func, "id", None) == "main"
+                       for n in ast.walk(node))
+    return False
+
+
+def test_every_module_the_procedure_runs_with_m_has_a_main_guard() -> None:
+    """`python -I -m pkg.mod` without a `__main__` guard imports and exits 0
+    silently, so a step would look done without running (#93, PR #323)."""
+
+    modules = _modules_run_with_m()
+    assert modules == ["azazel_nexus.cli", "azazel_nexus_runtime.commission_cli"]
+    for module in modules:
+        tree = ast.parse(_module_file(module).read_text(encoding="utf-8"))
+        assert _calls_main_under_guard(tree), module
+
+
+def test_the_status_module_prints_when_run_with_m(tmp_path) -> None:
+    import os
+    import subprocess
+
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    result = subprocess.run([sys.executable, "-m", "azazel_nexus.cli", "--help"],
+                            capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "status" in result.stdout and "setup" in result.stdout
