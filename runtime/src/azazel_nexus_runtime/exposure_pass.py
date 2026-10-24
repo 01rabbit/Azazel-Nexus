@@ -84,6 +84,7 @@ from azazel_nexus.fabric_boundary import (
 )
 from azazel_nexus.generation import GenerationRefused
 
+from .activation_unit_files import UnitContentRefused
 from .decoy_apparmor import (
     LSM_PHRASES,
     LSM_POLICY_UNVERIFIABLE,
@@ -257,6 +258,12 @@ def collect_exposure_evidence(*, approval, evidence, generation_digest: str,
             raise ExposureStageRefused(admission_refusal(EXPOSURE_GENERATION_ABSENT))
         try:
             unit_files, watch_unit_files, apparmor_profiles = readers.section_inputs()
+        except UnitContentRefused:
+            # Read, and not the declaration (a watch file is compared byte
+            # for byte with its rendering, a governed unit file's guards line
+            # by line): a file changed after publishing, as the section would
+            # say (§8 VM rehearsal, 2026-10-24).
+            raise ExposureStageRefused(admission_refusal(EXPOSURE_GENERATION_DIFFERS)) from None
         except Exception:  # noqa: BLE001 - a reader's refusal is the stage's code
             raise ExposureStageRefused(admission_refusal(EXPOSURE_FILES_UNREADABLE)) from None
         try:

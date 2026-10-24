@@ -3,8 +3,10 @@
 Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase G6).
 Status: **implemented on the G6 branch (`feat/196-g6-wiring`, draft pull
-request); the VM rehearsal of §8 is pending; not merged before G5 (`HG-06`,
-`HG-09`, `HG-10` accepted on the real host). R6
+request #317); the VM rehearsal of §8 was run on 2026-10-24 at 534a527 and
+e33041c, and again at 13d8420 with the `.link` name pin placed first (a
+mechanism check, not hardware evidence; §8 "Observed"); not merged before G5
+(`HG-06`, `HG-09`, `HG-10` accepted on the real host). R6
 ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design))
 was answered on 2026-10-24 as proposed.**
 The other questions of §9 below were answered on 2026-10-23, each as
@@ -846,14 +848,14 @@ a reboot.
    | one profile loaded in complain mode | `lsm_profiles_not_enforced` (P3) |
    | `nftables.service` enabled; then disabled but started by a `Wants=` | `host_firewall_enabled`; `host_firewall_active` (P4) |
    | a rehearsal unit `Before=azazel-activated.service` that runs `ip netns add azazel-decoy` | `exposure_leftovers_present` (P5) |
-   | the v2 proposal (no scope) | `deception_scope_absent` (P6) |
-   | the ingress's `.link` changed so its kernel name differs | `role_inventory_changed` (P6) |
+   | the v2 proposal (no scope) | `generation-publish` refuses (`deception_scope_absent`); the pass withholds **every** tier, the generation being bound to the earlier commissioning. P6 `deception_scope_absent` is not reachable at the pass (observed) |
+   | the ingress's `.link` changed so its kernel name differs | **every** tier withheld: `authenticated_commissioning` and `inventory_binding` fail on the changed `kernel_name_observed`, so step 10 never runs (observed for a `.link` pin added after commissioning; reachability §8, R6) |
    | the ingress's `.network` without `IPv4Forwarding=yes` | `forwarding_ingress_off` (P7) |
-   | `net.ipv4.ip_forward=1` | `forwarding_host_wide` (P7) |
+   | `net.ipv4.ip_forward=1` | `forwarding_role_on` (P7): it turns forwarding on for every interface, the management role's included, and §4.3's order reports `forwarding_role_on` before `forwarding_host_wide` (observed; the table said `forwarding_host_wide`, the code is right) |
    | one extra rule before `main`; a K1 rule removed | `ingress_containment_absent` (P7) |
    | a route `10.255.196.2/32` via the management side | `decoy_prefix_routed` (P7) |
    | IPv6 forwarding on one interface | `forwarding_ipv6_on` (P7) |
-   | a watch unit, an exposure unit or a profile file edited after publishing (no `daemon-reload`) | `exposure_generation_differs` (P9); the other tiers granted |
+   | a watch unit, an exposure unit or a profile file edited after publishing (no `daemon-reload`) | `exposure_generation_differs` (P9); the other tiers granted. At 534a527 an edited watch timer gave `exposure_files_unreadable`: the watch reader refuses a file that is not its rendering (`UnitContentRefused`) before the section is compared. Since then P9 maps a file read and refused as content to `exposure_generation_differs`, and keeps `exposure_files_unreadable` for a file that could not be read (missing, linked, unprotected, overridden) |
    | a v3 whose exposure fields name another scope digest (signed by the test-only script) | `exposure_approval_binding_differs` (P10); the other tiers granted |
    | a policy without the tier, with the v3 approval | the approval refused at the scope; nothing granted (all-or-nothing producers) |
    | a v3 signed under `activation` by the test-only script (Q-C adopted) | the approval refused; nothing granted |
@@ -874,6 +876,65 @@ a reboot.
 9. **Clean up**: destroy the rehearsal seed, remove its enrolment, discard
    the VM image.
 
+### Observed (2026-10-24, Debian 13 VM, kernel 6.12 arm64, systemd 257.13; a mechanism check, not hardware evidence)
+
+At 534a527, then e33041c. Two NICs: management (bridged, role
+`management`) and ingress (host-only, role `deception_bridge`); a v3
+proposal with one approved source prefix and one ingress; the operator's
+`.network` (`IPv4Forwarding=yes`, the two K1 rules, a static address), the
+`az-decoy0` sysctl and `fb_tunnels_only_for_init_net = 2`. The full record
+is on #196 and #317.
+
+**Deviations from this section's rules**: the rehearsal key
+(`rehearsal-g6`, generated for the run and enrolled on the VM only) was
+used by the assistant under the owner's delegation, not by the operator;
+the VM was returned to a snapshot instead of discarding the image (the
+seed and its passphrase were destroyed); the ingress was configured by its
+kernel name, not pinned with a `.link` (see the `.link` row above);
+reachability from an approved external source, and its refusal from an
+unapproved one, was not exercised (a route on the workstation needed
+privileges; the dummy-ingress check of G4 stands); no other `apparmor`
+version was available; the flow label stays `HG-06`'s.
+
+- **Publish and approve:** v2 generation published with the scope digest,
+  the counts (1, 1) and the four policy hashes; the v3 approval signed
+  under `activation-exposure` and installed, recorded as v3.
+- **Boot 1 (grant):** `granted=8`, `exposure_evidence: established`; both
+  scope files root `0600`, the file's SHA-256 the digest; the three units
+  enabled, not started.
+- **Boot 2 (start):** at 534a527 the pass withheld at P4
+  (`host_firewall_unreadable`): the decoy units' queued start jobs made
+  systemd load an object for the uninstalled `firewalld.service`
+  (`not-found`, `inactive`); fixed in e33041c (§11 item 4). At e33041c the
+  pass granted again; `nsd`, `netd`, `decoyd` started in that order; the
+  helper's nine isolation checks passed, the verify matched, the decoy
+  listened on 2222, 2323 and 8080 in its namespace, about 0.57 s after the
+  controller's READY. The decoy's `decoy-scope-digest` credential was
+  root's with an access list (`r--r-----+`) and readable under its profile
+  (no AppArmor denial): §10 item 6 and §11 item 7.
+- **Each refusal** of step 5: every row gave its stage and code with the
+  SUPPORTING units granted, the decoy units masked and no scope file, but
+  for the rows corrected above (v2 proposal, `.link`, `ip_forward`, the
+  watch file). A v3 signed under `activation` was refused by `install`
+  (`approval_v3_signature_refused`) and, placed by hand, by the pass's
+  approval loader: nothing granted; so was a policy without the tier.
+  Adding an unused variable to an include did not change the compiled
+  policy and P11 held (the tier granted); a rule added to
+  `abstractions/base` gave `lsm_policy_differs`.
+- **Restore:** grant (boot 1) and start (boot 2) passed again. A profile
+  restored with `cp -a` (its old mtime) kept the modified policy from the
+  boot cache: restoring needs `touch` and `apparmor_parser -r -W`
+  ([operations](operations.md#deception-lite-decoy-network-196)).
+- **Step 7:** the route-netlink dumps, `/run/netns` and the bus reads all
+  worked under the controller's sandbox (the pass reached a grant); P11
+  matched the record after a reboot through `apparmor.service`'s cache;
+  the ingress had carrier at about 1.9 s, the controller started at about
+  8.9 s (a LUKS unlock wait included).
+- **Step 8 (second pass in the same boot):** it ended in `RollbackFailed`
+  and removed the scope files; the verify's next start failed with
+  `243/CREDENTIALS` and the trip stopped the three units within 5 s; the
+  namespace went and the units were masked again.
+
 ## 9. Owner decisions before G6
 
 **Answered 2026-10-23** for Q-B to Q-E below, each as recommended: **B0**
@@ -890,7 +951,14 @@ kept below as they were asked.
   is forwarding switched on for the ingress before activation compatible
   with commissioning §2, given K1 and the name pin? G6 is not merged before
   the answer. If §2 forbids the switch itself, Q11 is revisited and this
-  design waits.
+  design waits. **A fact for the answer (VM rehearsal, 2026-10-24, §8
+  "Observed"):** a `.link` name pin added after commissioning changes the
+  inventory's `kernel_name_observed`, so `authenticated_commissioning` and
+  `inventory_binding` fail and every tier is withheld; the rehearsal
+  configured the ingress by its kernel name instead. Whether the pin is
+  placed before commissioning, the ingress configured by its kernel name,
+  or commissioning repeated after the pin, is the owner's to decide with
+  R6 ([reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)).
 - **Q-B. G6(b), the controller masks but does not stop** (grant §6.3). The
   options:
 
@@ -954,7 +1022,10 @@ Also for the owner, with recommended defaults that only narrow:
    should also compare its compilation with the cache file
    `apparmor.service` loads (grant §7, "A G6 requirement") is measured in
    §8 step 5.
-3. **The controller's `After=` and networkd.** The pass does not wait for
+3. **The controller's `After=` and networkd.** *Observed on the VM
+   (2026-10-24):* the ingress had carrier at about 1.9 s and the controller
+   started at about 8.9 s, a LUKS unlock wait included; the order on a boot
+   without that wait is still to be seen. The pass does not wait for
    networkd; early in a boot it may read the ingress not yet forwarding or
    K1 not yet installed and withhold for that boot. Options:
    `After=systemd-networkd-wait-online.service` (a no-op where that unit is
@@ -982,20 +1053,24 @@ Also for the owner, with recommended defaults that only narrow:
    2026-10-24, grant §8 table and §11).
    P5 sees that namespace (`/run/netns/azazel-decoy` present while the
    namespace unit is stopped) and withholds as `exposure_leftovers_present`.
-6. **The decoy and the pass's scope** are decided in §6 (cross-review finding M4); what stays
-   open is only the VM check that the credential reaches the decoy under
-   its profile.
-7. **Evidence is a statement, not a proof.** `ExposureEvidence`, like
+6. **The decoy and the pass's scope** are decided in §6 (cross-review finding M4).
+   **Answered on the VM (2026-10-24):** the credential reached the decoy
+   as a root-owned file with an access list (`r--r-----+`) and was readable
+   under its profile, with no AppArmor denial.
+7. **The `.link` name pin and commissioning** (VM, 2026-10-24): a pin added
+   after commissioning withholds every tier (§9 Q-R6). Part of R6.
+8. **Evidence is a statement, not a proof.** `ExposureEvidence`, like
    `EdgeBaselineState`, could be constructed by any caller of `activate`.
    The production caller is the pass, and the tripwire re-checks the
    evidence and the scope file after the decision. A mint like
    `ActivationAuthorization`'s is not proposed: it would protect against
    code in the same process, which can already call the unit manager.
-8. **The bus answers** were read on a VM (§2): `(bs)` for
+9. **The bus answers** were read on a VM (§2): `(bs)` for
    `AppArmorProfile`, `FileNotFound` and `NoSuchUnit` as the two None cases
-   (§4.5). Still to see on the G6 branch: the same answers through the
-   controller's own session and allowlist (§8 step 7).
-9. **What a refusal costs the operator.** Every change to the exposure
+   (§4.5). Seen on the G6 branch through the controller's own session
+   (§8 "Observed", step 7), and the `not-found` object of an uninstalled
+   loader with it (§11 item 4).
+10. **What a refusal costs the operator.** Every change to the exposure
    files, profiles, includes or the parser needs a new generation and a new
    v3 signature, as a changed unit file does for the observe baseline.
    Intended; [operations](operations.md#deception-lite-decoy-network-196)
@@ -1047,8 +1122,8 @@ request, not a new authority.
    gives an unprivileged unit its credential with an access list on a
    root-owned file, or by changing the owner where access lists are not
    available), not group or other writable, one link, exactly
-   `sha256:<64 hex>` and a newline; an absent credential refuses. Which of
-   the two owners the VM shows is §8 step 4's to record (§10 item 6).
+   `sha256:<64 hex>` and a newline; an absent credential refuses. On the VM it was
+   root with an access list (`r--r-----+`; §8 "Observed").
 8. **The bus reads** use one `Properties.Get` per value (no `GetAll`), only
    on the object paths of the seven fixed units, and the reply owner check
    of the existing `NoSuchUnit` case applies to `FileNotFound` too.
@@ -1063,3 +1138,10 @@ request, not a new authority.
     withholds either way.
 11. **Q-R6 is unanswered.** Nothing in the implementation depends on its
     answer; the pull request stays a draft until it and G5 are settled.
+12. **The §8 table was corrected by the rehearsal** (§8 "Observed"): the
+    code was right for `ip_forward` (`forwarding_role_on` precedes
+    `forwarding_host_wide` in §4.3's order) and the table was changed; for an
+    edited watch file the table was right and the code was changed (a file
+    read and refused as content is `exposure_generation_differs` at P9, a
+    file that cannot be read stays `exposure_files_unreadable`); the v2
+    proposal and the `.link` rows now say what the pass actually does.

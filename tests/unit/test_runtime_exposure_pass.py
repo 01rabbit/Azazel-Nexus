@@ -397,6 +397,33 @@ def test_an_exception_in_any_stage_is_unreadable_and_the_other_tiers_are_unchang
     assert world.inputs_event()["observed_inputs"]["exposure_code"] == code
 
 
+def test_ip_forward_on_reports_the_role_interface_first(world):
+    """§8 VM rehearsal (2026-10-24): `net.ipv4.ip_forward=1` turns forwarding
+    on for every interface, the management role's included, and §4.3's order
+    puts `forwarding_role_on` before `forwarding_host_wide`: the code and the
+    order agree; the §8 table was corrected."""
+    ipv4, ipv6 = world.host["sysctls"]
+    world.host["sysctls"] = ({name: {**values, "forwarding": 1}
+                              for name, values in ipv4.items()}, ipv6)
+    _assert_tier_withheld(world, world.run(), "P7", "forwarding_role_on")
+
+
+def test_a_file_read_and_not_the_declaration_is_a_difference_at_p9(world):
+    """§8 VM rehearsal (2026-10-24): the verify timer edited after
+    publishing is refused by the watch reader as not its rendering
+    (`UnitContentRefused`), which is the generation differing, not an
+    unreadable file; any other refusal of the readers stays unreadable."""
+    from azazel_nexus_runtime.activation_unit_files import (
+        UnitContentRefused,
+        UnitOverrideRefused,
+    )
+
+    world.host["section_inputs"] = UnitContentRefused("exposure_section_unverifiable: x")
+    _assert_tier_withheld(world, world.run(), "P9", "exposure_generation_differs")
+    world.host["section_inputs"] = UnitOverrideRefused("exposure_section_unverifiable: x")
+    _assert_tier_withheld(world, world.run(), "P9", "exposure_files_unreadable")
+
+
 def test_without_readers_the_tier_is_withheld_and_the_rest_granted(world):
     outcome = world.run(exposure=None)
     assert sorted(outcome.granted) == list(SUPPORTING)

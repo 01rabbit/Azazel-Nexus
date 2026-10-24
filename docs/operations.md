@@ -857,7 +857,7 @@ it as the pass's stage P3 and compares the kernel's compiled hashes with
 the signed generation's at P11; after any change to the profiles, their
 includes or the parser, the tier then stays withheld until the exposure is
 installed again, a new generation published and a new v3 approval signed,
-[wiring §10 item 9](deception-exposure-wiring.md#10-open-points).
+[wiring §10 item 10](deception-exposure-wiring.md#10-open-points).
 **While the policy names the three exposure units**, `az-activation
 generation-publish`, `request` and `install` need the exposure inputs for
 **every** tier, the SUPPORTING units and edge-core included: the
@@ -867,7 +867,12 @@ boot, and the exposure, watch and profile files as installed. If any of
 them is missing or refused, none of the three commands completes. The
 remedy is to remove the three exposure units from the policy (all three:
 the policy names them together or not at all), then publish, request and
-install again for the other units.)
+install again for the other units. **After restoring an AppArmor
+profile** (for instance one changed for a test), `touch` it and reload it
+with `apparmor_parser -r -W /etc/apparmor.d/<name>`: a copy that keeps the
+old modification time (`cp -a`) leaves the boot cache's compiled policy in
+place, which is the modified one (observed on the G6 VM rehearsal,
+2026-10-24), and the pass then withholds as `lsm_policy_differs`.)
 ([grant design §7](deception-exposure-grant.md#7-lsm-apparmor-as-a-gate-f6)).
 To see their state, as root:
 

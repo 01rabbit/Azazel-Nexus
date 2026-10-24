@@ -156,6 +156,9 @@ def test_request_refuses_after_an_exposure_file_changes(exposure_node):
     path.write_bytes(path.read_bytes() + b"#\n")
     code, _, err = exposure_node.request()
     assert code == 1
+    # The reader the pass's P9 uses refuses it as content, not as unreadable.
+    with pytest.raises(scoped_unit_files.UnitContentRefused):
+        exposure_generation.measure_exposure_section_inputs()
 
 
 def test_publish_request_sign_install_then_one_pass_grants_the_tier(exposure_node,

@@ -495,6 +495,8 @@ Consequences:
 
 ## 8. The operator's part (outline)
 
+**Finding of the G6 VM rehearsal (2026-10-24; a mechanism check, not hardware evidence), material to R6:** pinning the ingress's name with a `.link` file **after** commissioning, as this section's item 2 shows, changes the kernel name the inventory observes (`kernel_name_observed`). The inventory is compared whole with the commissioned one, so the activation pass's `authenticated_commissioning` and `inventory_binding` producers fail and **every tier is withheld**, not only the exposure tier (and not as P6 `role_inventory_changed`, which the wiring's §8 table expected: the pass never reaches step 10). The rehearsal configured the ingress by its kernel name instead. Whether the name is pinned before commissioning, the ingress configured by its kernel name, or commissioning repeated after the pin, is part of the owner's question R6 (§9); this document does not decide it.
+
 For [operations](operations.md#deception-lite-decoy-network-196), written
 when G6 lands. Nexus installs none of these files and edits none of them,
 and none of them is in the signed generation (§3). Installed only after

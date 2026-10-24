@@ -9,7 +9,7 @@ one value of it: `ExposureEvidence`. The library half,
 position (checks L3 to L5) and decides.
 
 `ExposureEvidence` is a **statement the runtime makes**, as
-`EdgeBaselineState` is: nothing here proves it (§10 item 7). The production
+`EdgeBaselineState` is: nothing here proves it (§10 item 8). The production
 caller is the pass, and the pass's tripwire re-checks the value after the
 decision, every stage included. Its constructor refuses an inconsistent
 value:
