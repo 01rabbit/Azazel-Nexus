@@ -197,10 +197,11 @@ def test_each_broken_fixture_is_refused_at_the_code_the_producer_declares(
 def test_the_truncated_fixture_is_refused_although_no_known_type_was_caught(
     anchors,
 ) -> None:
-    """The tar decoder raises before the verifier has an opinion.
+    """The tar decoder's error is wrapped, not leaked.
 
-    A reader that caught only a known error type would let this through as an
-    unhandled error, which is why the archive gate catches everything.
+    The decoder raises its own error type; a reader that caught only a known
+    error type would let that through as an unhandled error, which is why the
+    archive gate catches everything and names `BUNDLE_ARCHIVE_UNREADABLE`.
     """
 
     entry = _fixture("corrupt-truncated")

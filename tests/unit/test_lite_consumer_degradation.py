@@ -133,10 +133,12 @@ def test_a_truncated_archive_is_a_refusal_even_though_no_code_is_produced(
 ):
     """Knowledge's index warns about exactly this.
 
-    "a reader that catches only the verifier's own exception type will let this
-    through as an unhandled error, so treat ANY exception from verification as
-    a refusal." The tar decoder raises during extraction, below any BUNDLE_*
-    code, so nothing here can be keyed on an error code.
+    "a reader that catches only the verifier's own exception type is one
+    decoder change away from letting a truncated artifact through as an
+    unhandled error, so treat ANY exception from verification as a refusal."
+    Knowledge's verifier wraps this one as BUNDLE_ARCHIVE_UNREADABLE, but here
+    the tar decoder raises during extraction, before the verifier is reached,
+    so no verifier code exists and nothing here can be keyed on an error code.
     """
 
     case = negative_cases["corrupt-truncated"]

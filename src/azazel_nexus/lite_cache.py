@@ -19,12 +19,12 @@ owns the reader, not the verifier. The verifier is injected; the default
 forgets to supply one gets a node that runs with no Lite data -- never a node
 that admits unverified data.
 
-**Any exception from verification is a refusal.** Knowledge's own
-`negative.json` warns that the truncated fixture does not produce a `BUNDLE_*`
-code at all, because the tar decoder raises first: "a reader that catches only
-the verifier's own exception type will let this through as an unhandled error".
-So this reader catches `Exception`, deliberately and narrowly around the
-verifier call alone.
+**Any exception from verification is a refusal.** Knowledge's verifier wraps
+the tar decoder's error on the truncated fixture as `BUNDLE_ARCHIVE_UNREADABLE`,
+and its own `negative.json` still warns not to rely on that: "a reader that
+catches only the verifier's own exception type is one decoder change away from
+letting a truncated artifact through as an unhandled error". So this reader
+catches `Exception`, deliberately and narrowly around the verifier call alone.
 
 **Staging is not admission.** Two of Knowledge's negative fixtures write bytes
 into staging *before* failing. Promotion therefore happens only after a verdict
@@ -99,8 +99,9 @@ class Verdict:
 
     admitted: bool
     reason: str
-    #: Knowledge's error code where one exists. `None` is normal: the truncated
-    #: fixture fails in the tar decoder, below any code.
+    #: Knowledge's error code where one exists. `None` is normal: an artifact
+    #: that fails to extract here (the truncated fixture does) never reaches
+    #: the verifier, so no verifier code exists for it.
     error_code: str | None = None
 
 

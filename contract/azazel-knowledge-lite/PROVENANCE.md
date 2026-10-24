@@ -1,7 +1,8 @@
 # Where these files come from
 
 Emitted by [01rabbit/Azazel-Knowledge](https://github.com/01rabbit/Azazel-Knowledge)
-at revision `f29c29d1002881b416286e18aae65455c3623348`, with:
+at revision `2445c1b125ab1210b826b40f027d6eec4c5de125` (the merge of
+Azazel-Knowledge#109), with:
 
 ```sh
 python tools/lite_fixture.py emit --out DIR
@@ -39,7 +40,7 @@ taken on trust from one run.
 | `expected.json` | profile block, per-file SHA-256, row counts |
 | `negative/corrupt-signature.tar.gz` | refused at the signature gate, nothing staged |
 | `negative/corrupt-payload.tar.gz` | refused at the per-member digest gate, after staging |
-| `negative/corrupt-truncated.tar.gz` | refused at the archive-decode gate, **with no `BUNDLE_*` code** |
+| `negative/corrupt-truncated.tar.gz` | refused at the archive-decode gate as `BUNDLE_ARCHIVE_UNREADABLE` (the decoder error, wrapped) |
 | `negative/expired.tar.gz` | verifies completely; every indicator in it is expired |
 | `negative.json` | what each negative fixture is and where it must fail |
 
@@ -48,10 +49,15 @@ to exist. Nothing is committed for it, by definition.
 
 ## Three things the producer tells consumers, which are easy to get wrong
 
-1. **The truncated fixture produces no `BUNDLE_*` code.** The tar decoder
-   raises first. A reader that catches only the verifier's own exception type
-   lets it through as an unhandled error, so **any** exception from
-   verification is a refusal.
+1. **The truncated fixture fails in the tar decoder, and the verifier wraps
+   that.** The decoder error surfaces as `BundleVerifyError` with code
+   `BUNDLE_ARCHIVE_UNREADABLE`, the decoder error kept as its cause. Do not
+   rely on the wrapping alone: a reader that catches only the verifier's own
+   exception type is one decoder change away from letting a truncated artifact
+   through as an unhandled error, so **any** exception from verification is a
+   refusal. (Revisions before Azazel-Knowledge#109 described this fixture as
+   producing no `BUNDLE_*` code; that description was stale, the code was
+   already real.)
 2. **"Expired" is not a corruption.** It is correctly signed and passes every
    gate. Expiry has no manifest field: ADR-0015 D4 puts it per claim,
    evaluated by the consumer against its own `query_as_of`. A conforming
