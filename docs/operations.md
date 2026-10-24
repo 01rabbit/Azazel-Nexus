@@ -852,7 +852,7 @@ is to withhold the tier unless AppArmor is enabled and all of them are in
 enforce mode. That check exists, but on `main` it is not reached: the
 tier is withheld as `isolation_evidence_absent` on every pass whatever the
 profiles' state, so nothing is granted by them. (G6, implemented on the
-draft branch `feat/196-g6-wiring` and not merged before G5 and R6, reaches
+draft branch `feat/196-g6-wiring` and not merged before G5, reaches
 it as the pass's stage P3 and compares the kernel's compiled hashes with
 the signed generation's at P11; after any change to the profiles, their
 includes or the parser, the tier then stays withheld until the exposure is

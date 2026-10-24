@@ -815,11 +815,13 @@ re-runs it in the same boot, and every refusal below is a change followed by
 a reboot.
 
 1. **Prepare.** Install; check that `/etc/azazel/activation/apparmor-compiled.json`
-   exists (`0600` root). Commission with a v3 proposal whose
-   `deception_scope` confirms one test ingress (operator signs). Place the
-   operator's host configuration of
+   exists (`0600` root). Place the ingress's `.link` name pin first
+   (reachability §8 item 2; the default derived after R6's answer), then
+   commission with a v3 proposal whose `deception_scope` confirms one test
+   ingress (operator signs). After commissioning closes, place the rest of
+   the operator's host configuration of
    [reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)
-   (`.link`, `.network`, the `az-decoy0` sysctl). Reboot.
+   (`.network`, the `az-decoy0` sysctl). Reboot.
 2. **Publish and approve.** Policy naming the three plus the SUPPORTING
    units; `az-activation generation-publish` (record the printed scope
    digest and counts); `az-activation request --units ...` (v3);
@@ -878,7 +880,7 @@ a reboot.
 
 ### Observed (2026-10-24, Debian 13 VM, kernel 6.12 arm64, systemd 257.13; a mechanism check, not hardware evidence)
 
-At 534a527, then e33041c. Two NICs: management (bridged, role
+**First run**, at 534a527, then e33041c. Two NICs: management (bridged, role
 `management`) and ingress (host-only, role `deception_bridge`); a v3
 proposal with one approved source prefix and one ingress; the operator's
 `.network` (`IPv4Forwarding=yes`, the two K1 rules, a static address), the
@@ -890,7 +892,9 @@ is on #196 and #317.
 used by the assistant under the owner's delegation, not by the operator;
 the VM was returned to a snapshot instead of discarding the image (the
 seed and its passphrase were destroyed); the ingress was configured by its
-kernel name, not pinned with a `.link` (see the `.link` row above);
+kernel name, not pinned with a `.link` (see the `.link` row above; since
+R6's answer this is one of the alternatives the owner may choose instead of
+the default, see the second run below);
 reachability from an approved external source, and its refusal from an
 unapproved one, was not exercised (a route on the workstation needed
 privileges; the dummy-ingress check of G4 stands); no other `apparmor`
@@ -935,6 +939,20 @@ version was available; the flow label stays `HG-06`'s.
   `243/CREDENTIALS` and the trip stopped the three units within 5 s; the
   namespace went and the units were masked again.
 
+**Second run** (2026-10-24, at 13d8420; mechanics only, not hardware
+evidence), following the default derived after R6's answer
+([reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)):
+the operator's `.link` file pinned the ingress's name **before** inventory
+and commissioning; commissioning closed with the pinned name recorded,
+forwarding `0` and no K1 rule; the `.network` file (`IPv4Forwarding=yes`,
+the two K1 rules) and the sysctls were placed after it closed. Boot 1
+granted the tier (`exposure_evidence: established`); boot 2 started `nsd`,
+`netd` and `decoyd` in that order, the helper's nine isolation checks
+passed, the verify matched, and the decoy listened on 2222, 2323 and 8080
+in its namespace. The deviations above about the rehearsal key, the
+snapshot, outside reachability and the flow label apply to this run as
+well; the rehearsal key's use is not an approval by the owner.
+
 ## 9. Owner decisions before G6
 
 **Answered 2026-10-23** for Q-B to Q-E below, each as recommended: **B0**
@@ -951,14 +969,19 @@ kept below as they were asked.
   is forwarding switched on for the ingress before activation compatible
   with commissioning §2, given K1 and the name pin? G6 is not merged before
   the answer. If §2 forbids the switch itself, Q11 is revisited and this
-  design waits. **A fact for the answer (VM rehearsal, 2026-10-24, §8
-  "Observed"):** a `.link` name pin added after commissioning changes the
-  inventory's `kernel_name_observed`, so `authenticated_commissioning` and
-  `inventory_binding` fail and every tier is withheld; the rehearsal
-  configured the ingress by its kernel name instead. Whether the pin is
-  placed before commissioning, the ingress configured by its kernel name,
-  or commissioning repeated after the pin, is the owner's to decide with
-  R6 ([reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)).
+  design waits. **Answered on 2026-10-24: as proposed.** *A fact from the
+  VM rehearsal (2026-10-24, §8 "Observed", mechanics only):* a `.link` name
+  pin added after commissioning changes the inventory's
+  `kernel_name_observed`, so `authenticated_commissioning` and
+  `inventory_binding` fail and every tier is withheld. **A default derived
+  after the answer, not part of it** (the owner may overturn it): the
+  `.link` pin is placed before inventory and commissioning, the `.network`
+  file and the sysctls after; re-commissioning keeps the pin; the operator
+  picks the ingress NIC beforehand
+  ([reachability §8](deception-exposure-reachability.md#8-the-operators-part-outline)).
+  The second run of §8 followed it. Configuring the ingress by its kernel
+  name without a pin (the first run), or commissioning again after the
+  pin, are the alternatives the owner may choose instead.
 - **Q-B. G6(b), the controller masks but does not stop** (grant §6.3). The
   options:
 
@@ -1058,7 +1081,9 @@ Also for the owner, with recommended defaults that only narrow:
    as a root-owned file with an access list (`r--r-----+`) and was readable
    under its profile, with no AppArmor denial.
 7. **The `.link` name pin and commissioning** (VM, 2026-10-24): a pin added
-   after commissioning withholds every tier (§9 Q-R6). Part of R6.
+   after commissioning withholds every tier (§9 Q-R6). After R6's answer
+   the default places the pin before inventory and commissioning; the
+   second run of §8 showed it works mechanically (not hardware evidence).
 8. **Evidence is a statement, not a proof.** `ExposureEvidence`, like
    `EdgeBaselineState`, could be constructed by any caller of `activate`.
    The production caller is the pass, and the tripwire re-checks the
@@ -1136,8 +1161,9 @@ request, not a new authority.
     `forwarding_unreadable` beside every other code that holds (its order
     puts it last), so the recorded code may be another forwarding code; it
     withholds either way.
-11. **Q-R6 is unanswered.** Nothing in the implementation depends on its
-    answer; the pull request stays a draft until it and G5 are settled.
+11. **Q-R6 was answered on 2026-10-24 as proposed.** Nothing in the
+    implementation depends on its answer or on where the `.link` pin is
+    placed; the pull request stays a draft until G5 is settled.
 12. **The §8 table was corrected by the rehearsal** (§8 "Observed"): the
     code was right for `ip_forward` (`forwarding_role_on` precedes
     `forwarding_host_wide` in §4.3's order) and the table was changed; for an

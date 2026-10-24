@@ -14,7 +14,7 @@ Related: [Deception Lite prerequisites](deception-redirect-prerequisites.md)
 [commissioning storage at boot](commissioning-storage-at-boot.md) ·
 [hardware gates](hardware-gates.md)
 
-**G6 status:** implemented on the G6 branch (`feat/196-g6-wiring`, draft pull request; [wiring](deception-exposure-wiring.md), §11 there lists the implementation's choices); the VM rehearsal (wiring §8) is pending, and it is not merged before G5 (`HG-06`, `HG-09`, `HG-10`) and the owner's answer to R6. Statements below that the parts are not wired, or that the tier is withheld as `isolation_evidence_absent`, describe `main` until that merge.
+**G6 status:** implemented on the G6 branch (`feat/196-g6-wiring`, draft pull request; [wiring](deception-exposure-wiring.md), §11 there lists the implementation's choices); the VM rehearsal (wiring §8) was run on 2026-10-24 (a mechanism check, not hardware evidence), and it is not merged before G5 (`HG-06`, `HG-09`, `HG-10`); R6 was answered by the owner on 2026-10-24 as proposed ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design) item 6). Statements below that the parts are not wired, or that the tier is withheld as `isolation_evidence_absent`, describe `main` until that merge.
 
 ## 1. Problem
 

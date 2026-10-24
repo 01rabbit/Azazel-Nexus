@@ -281,7 +281,7 @@ units as a table departure does. Read once, at the pass, K1 could be lost
 afterwards (a networkd reload, a link flap that re-configures the link) with
 nothing noticing.
 
-**G6 status:** implemented on the G6 branch (`feat/196-g6-wiring`, draft pull request; [wiring](deception-exposure-wiring.md), §11 there lists the implementation's choices); the VM rehearsal (wiring §8) is pending, and it is not merged before G5 (`HG-06`, `HG-09`, `HG-10`) and the owner's answer to R6. Statements below that the parts are not wired, or that the tier is withheld as `isolation_evidence_absent`, describe `main` until that merge. On the branch the pass's stage P7 hands this judgement the
+**G6 status:** implemented on the G6 branch (`feat/196-g6-wiring`, draft pull request; [wiring](deception-exposure-wiring.md), §11 there lists the implementation's choices); the VM rehearsal (wiring §8) was run on 2026-10-24 (a mechanism check, not hardware evidence), and it is not merged before G5 (`HG-06`, `HG-09`, `HG-10`); R6 was answered by the owner on 2026-10-24 as proposed (§9 item 6). Statements below that the parts are not wired, or that the tier is withheld as `isolation_evidence_absent`, describe `main` until that merge. On the branch the pass's stage P7 hands this judgement the
 route-netlink dumps' dictionaries (or None for a dump not read whole)
 instead of `(status, output)`.
 
@@ -495,7 +495,7 @@ Consequences:
 
 ## 8. The operator's part (outline)
 
-**Finding of the G6 VM rehearsal (2026-10-24; a mechanism check, not hardware evidence), material to R6:** pinning the ingress's name with a `.link` file **after** commissioning, as this section's item 2 shows, changes the kernel name the inventory observes (`kernel_name_observed`). The inventory is compared whole with the commissioned one, so the activation pass's `authenticated_commissioning` and `inventory_binding` producers fail and **every tier is withheld**, not only the exposure tier (and not as P6 `role_inventory_changed`, which the wiring's §8 table expected: the pass never reaches step 10). The rehearsal configured the ingress by its kernel name instead. Whether the name is pinned before commissioning, the ingress configured by its kernel name, or commissioning repeated after the pin, is part of the owner's question R6 (§9); this document does not decide it.
+**Finding of the G6 VM rehearsal (2026-10-24; a mechanism check, not hardware evidence), material to R6:** pinning the ingress's name with the `.link` file of item 2 **after** commissioning changes the kernel name the inventory observes (`kernel_name_observed`). The inventory is compared whole with the commissioned one, so the activation pass's `authenticated_commissioning` and `inventory_binding` producers fail and **every tier is withheld**, not only the exposure tier (and not as P6 `role_inventory_changed`, which the wiring's §8 table expected: the pass never reaches step 10). That first run configured the ingress by its kernel name instead. Since R6's answer the default is the pin placed before inventory and commissioning (below; §9 item 6), which a second run on the VM (2026-10-24, mechanics only) followed; configuring the ingress by its kernel name without a pin, or commissioning again after the pin, are the alternatives the owner may choose instead.
 
 For [operations](operations.md#deception-lite-decoy-network-196), written
 when G6 lands. Nexus installs none of these files and edits none of them,
