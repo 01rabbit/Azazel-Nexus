@@ -218,7 +218,9 @@ def _service_properties(unit):
         "PassEnvironment": [],
         "UnsetEnvironment": list(BOOTSTRAP_UNSET_ENVIRONMENT),
         "PAMName": "",
-        "SupplementaryGroups": [],
+        # What systemd reports for the shipped unit: commissiond carries
+        # azknowledge (#86), auditd none (#93).
+        "SupplementaryGroups": list(profile.supplementary_groups),
         "RootDirectory": "",
         "RootImage": "",
         **SERVICE_TIMER_FIXTURE,
@@ -836,6 +838,50 @@ def test_service_properties_must_match_the_fixed_generated_profile(
             call.member == "GetAll" and call.body == [SERVICE_INTERFACE]
             for call in bus.calls
         )
+
+    asyncio.run(run())
+
+@pytest.mark.parametrize(
+    ("unit", "groups"),
+    [
+        # commissiond is pinned to exactly the shipped azknowledge (#86, #93).
+        (UnitKey.COMMISSIOND, []),
+        (UnitKey.COMMISSIOND, ["wheel"]),
+        (UnitKey.COMMISSIOND, ["azknowledge", "wheel"]),
+        (UnitKey.COMMISSIOND, ["wheel", "azknowledge"]),
+        (UnitKey.COMMISSIOND, ["azknowledge", "azknowledge"]),
+        (UnitKey.COMMISSIOND, ["azknowledge-read"]),
+        # auditd stays without supplementary groups.
+        (UnitKey.AUDITD, ["azknowledge"]),
+        (UnitKey.AUDITD, ["wheel"]),
+    ],
+)
+def test_supplementary_groups_must_equal_the_shipped_unit_exactly(unit, groups):
+    async def run():
+        def mutate(_snapshot, interface, props):
+            if interface == SERVICE_INTERFACE:
+                props["SupplementaryGroups"] = Variant("as", list(groups))
+            return props
+
+        bus = FakeBus(unit, mutate=mutate)
+        with pytest.raises(UnitOperationFailed):
+            await _inspector(bus).inspect(
+                unit, expected_dependencies=_dependencies(unit)
+            )
+
+    asyncio.run(run())
+
+
+def test_commissiond_shipped_supplementary_group_is_accepted():
+    """The VM refusal of #93: the shipped commissiond reports azknowledge."""
+
+    async def run():
+        bus = FakeBus(UnitKey.COMMISSIOND)
+        result = await _inspector(bus).inspect(
+            UnitKey.COMMISSIOND,
+            expected_dependencies=_dependencies(UnitKey.COMMISSIOND),
+        )
+        assert result.unit is UnitKey.COMMISSIOND
 
     asyncio.run(run())
 
