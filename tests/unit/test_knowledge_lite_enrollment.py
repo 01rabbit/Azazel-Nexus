@@ -6,7 +6,11 @@ have no shipped entrypoint. These tests take the calls, the anchor documents
 and the paths from the document itself and run them, in order, on a temporary
 root. A document that drifts from the code fails here rather than on a node.
 
-Owners and modes are not checked: these tests run as one user. The repin step
+Owners and modes are not applied, because these tests run as one user. Every
+`install`, `chown` and `chmod` the procedure prints is instead parsed and
+compared exactly with the owner and mode derived from layout.py (cross-checked
+against install.sh), and no step may grant group or other write or place key
+or secret material. The repin step
 goes through the production `RepinConfirmation` and `production_repin` with the
 runtime root relocated, as `test_runtime_repin_integration.py` does; the
 socket, the CLI's terminal and systemd are not exercised.
@@ -261,3 +265,131 @@ def test_the_fixture_key_is_not_the_documented_anchor() -> None:
     fixture = (CONTRACT / "anchors.toml").read_text(encoding="utf-8")
     key = re.search(r'= "([0-9a-f]{64})"', fixture).group(1)
     assert key not in _section()
+
+
+# Owners and modes ---------------------------------------------------------
+#
+# Every owner and mode §11 sets, compared exactly with what it must be. The
+# roots the installer declares come from layout.py, and install.sh must say the
+# same. What the procedure adds is derived from those: a directory below a
+# declared root keeps the root's mode, and a file is that mode without setgid
+# or search bits (2750 -> 0640). Owners follow the document's rules: the trust
+# record belongs to the repin daemon, root writes the anchors, and the store
+# owner owns what the import reads.
+
+SHELL_COMMAND = re.compile(r"^sudo (install|chown|chmod) (.*)$", re.M)
+ALLOWED_SOURCES = {"anchors.toml", "repin-anchor.json", "site-lite.tar.gz"}
+
+
+def _file_mode(directory_mode: int) -> int:
+    return directory_mode & 0o666
+
+
+def _expected() -> dict[str, tuple[str, str, str, int]]:
+    """path -> (kind, owner, group, mode)."""
+
+    trust, store = spec_for(LITE_TRUST), spec_for(KNOWLEDGE)
+    commissioning = spec_for("/etc/azazel/commissioning")
+    return {
+        f"{LITE_TRUST}/trust": ("dir", "root", trust.group, trust.mode),
+        f"{LITE_TRUST}/trust/anchors.toml": ("file", "root", trust.group, _file_mode(trust.mode)),
+        f"{KNOWLEDGE}/trust": ("dir", "root", trust.group, store.mode),
+        f"{KNOWLEDGE}/trust/anchors.toml": ("file", "root", trust.group, _file_mode(store.mode)),
+        f"{LITE_TRUST}/trust.json": ("file", trust.owner, trust.group, _file_mode(trust.mode)),
+        f"/etc/azazel/commissioning/{ANCHOR_FILENAME}": (
+            "file", commissioning.owner, commissioning.group, _file_mode(commissioning.mode)),
+        f"{KNOWLEDGE}/inbox": ("dir", store.owner, store.group, store.mode),
+        f"{KNOWLEDGE}/inbox/site-lite.tar.gz": (
+            "file", store.owner, store.group, _file_mode(store.mode)),
+    }
+
+
+def _documented() -> tuple[dict[str, list], list[str]]:
+    """Every owner/mode the procedure sets, by path, and the sources it copies."""
+
+    found: dict[str, list] = {}
+    sources = []
+    for verb, rest in SHELL_COMMAND.findall(_section()):
+        words = rest.split()
+        if verb == "chmod":
+            mode, path = words
+            found.setdefault(path, []).append(("mode", int(mode, 8)))
+        elif verb == "chown":
+            owner_group, path = words
+            owner, group = owner_group.split(":")
+            found.setdefault(path, []).append(("owner", owner, group))
+        else:
+            directory = words[0] == "-d"
+            words = words[1:] if directory else words
+            options = {}
+            while words and words[0].startswith("-"):
+                options[words[0]] = words[1]
+                words = words[2:]
+            assert set(options) == {"-m", "-o", "-g"}, f"install without explicit owner/mode: {rest}"
+            if directory:
+                (path,) = words
+            else:
+                source, path = words
+                sources.append(source)
+            found.setdefault(path, []).append(
+                ("dir" if directory else "file", options["-o"], options["-g"], int(options["-m"], 8)))
+    return found, sources
+
+
+def _settled(entries: list) -> tuple:
+    """Combine an install, or a chown plus a chmod, into one result."""
+
+    kind, owner, group, mode = "file", None, None, None
+    for entry in entries:
+        if entry[0] == "mode":
+            mode = entry[1]
+        elif entry[0] == "owner":
+            owner, group = entry[1], entry[2]
+        else:
+            kind, owner, group, mode = entry
+    return (kind, owner, group, mode)
+
+
+def test_the_declared_roots_agree_between_layout_and_installer() -> None:
+    installer = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+    for path in (LITE_TRUST, KNOWLEDGE):
+        spec = spec_for(path)
+        assert f"make_owned_dir {spec.mode:o} {spec.owner} {spec.group} {path}\n" in installer
+    spec = spec_for("/etc/azazel/commissioning")
+    assert spec.owner == "root"
+    assert f"make_dir {spec.mode:04o} {spec.group} /etc/azazel/commissioning\n" in installer
+
+
+def test_every_owner_and_mode_the_procedure_sets_is_the_expected_one() -> None:
+    found, _ = _documented()
+    expected = _expected()
+    assert set(found) == set(expected), "a path gained or lost an owner/mode step"
+    for path, entries in found.items():
+        assert _settled(entries) == expected[path], path
+
+
+def test_no_step_grants_group_or_other_write() -> None:
+    found, _ = _documented()
+    for path, entries in found.items():
+        assert _settled(entries)[3] & 0o022 == 0, path
+    modes = re.findall(r"(?:chmod|-m) (\d{3,4})\b", _section())
+    assert modes
+    for mode in modes:
+        assert int(mode, 8) & 0o022 == 0, mode
+
+
+def test_no_step_places_private_key_or_secret_material() -> None:
+    """#186 guard: only public anchors, the repin document and the bundle are written."""
+
+    _, sources = _documented()
+    assert set(sources) <= ALLOWED_SOURCES
+    section = _section()
+    placeholders = re.findall(r"<([^<>]*key[^<>]*)>", section)
+    assert placeholders
+    for placeholder in placeholders:
+        assert placeholder.endswith("public key hex"), placeholder
+    for word in ("PRIVATE KEY", "private_key", "secret", "seed", "passphrase", "password",
+                 "SigningKey", ".key ", "/var/lib/azazel/secrets"):
+        assert word not in section, word
+    for document in _blocks(section, "json") + _blocks(section, "toml"):
+        assert not re.search(r"[0-9a-f]{32,}", document), "literal key material in the document"
