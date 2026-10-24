@@ -26,7 +26,11 @@ from azazel_nexus.bootstrap_prestart_policy import BootstrapPrestartPolicy
 from azazel_nexus.bootstrap_generation import VerifiedBootstrapGeneration
 from azazel_nexus.bootstrap_generation_store import load_bootstrap_generation
 from azazel_nexus.installed_files import (
-    SelectedInstalledFiles, measure_installed_files, read_pinned_installed_files,
+    InstalledFilesObservation,
+    SelectedInstalledFiles,
+    measure_installed_files,
+    observe_installed_files_once,
+    read_pinned_installed_files,
 )
 from azazel_nexus.installed_manifest import (
     decode_installed_manifest,
@@ -75,8 +79,47 @@ def measure_bootstrap_installed_files(context: BootstrapContext) -> SelectedInst
     also be covered by pinned regular files or exact directory membership.
     This checks only explicitly listed paths;
     it does not prove package authenticity, absence outside declared roots, Python
-    import closure, or loaded systemd configuration.
+    import closure, or loaded systemd configuration. The closure is walked twice
+    (``measure_installed_files``); this stays the default for every caller that
+    does not bracket its own critical section.
     """
+    return _bootstrap_installed_files(
+        context,
+        lambda raw, digest: measure_installed_files(raw, expected_digest=digest),
+        SelectedInstalledFiles,
+    )
+
+
+def observe_bootstrap_installed_files_once(
+    context: BootstrapContext,
+) -> InstalledFilesObservation:
+    """Same checks as ``measure_bootstrap_installed_files``, one closure walk.
+
+    Only for callers that take one of these before and one after the whole
+    section they protect, in the same call, and refuse unless the two are
+    equal (``_require_installed_files_unchanged``). The result is never a
+    ``SelectedInstalledFiles``, so a reader expecting a full measurement
+    refuses it; it is never retained across calls or checkpoints.
+    """
+    return _bootstrap_installed_files(
+        context,
+        lambda raw, digest: observe_installed_files_once(raw, expected_digest=digest),
+        InstalledFilesObservation,
+    )
+
+
+def _require_installed_files_unchanged(before, after, context):
+    """Compare two single-walk observations taken around one critical section."""
+    if (type(before) is not InstalledFilesObservation
+            or type(after) is not InstalledFilesObservation
+            or type(context) is not BootstrapContext
+            or type(before.selected) is not SelectedInstalledFiles
+            or before.selected.manifest_digest != context.unit_closure_digest
+            or after != before):
+        raise ApprovalRefused("selected installed files changed during observation")
+
+
+def _bootstrap_installed_files(context, measure, result_type):
     try:
         with decode_scope():
             if type(context) is not BootstrapContext:
@@ -159,11 +202,12 @@ def measure_bootstrap_installed_files(context: BootstrapContext) -> SelectedInst
             modules_before = observe_loaded_modules(manifest, import_paths, main_path)
             if type(modules_before) is not LoadedModules or modules_before.import_paths != import_paths:
                 raise ApprovalRefused("fixed loaded module profile required")
-            measured = measure_installed_files(
-                raw, expected_digest=context.unit_closure_digest
-            )
-            if (type(measured) is not SelectedInstalledFiles
-                    or measured.manifest_digest != context.unit_closure_digest
+            measured = measure(raw, context.unit_closure_digest)
+            selected_files = (measured.selected if type(measured) is InstalledFilesObservation
+                              else measured)
+            if (type(measured) is not result_type
+                    or type(selected_files) is not SelectedInstalledFiles
+                    or selected_files.manifest_digest != context.unit_closure_digest
                     or read_bootstrap_installed_manifest() != raw):
                 raise ApprovalRefused("bootstrap installed file measurement differs")
             running_after = observe_running_python()
@@ -223,40 +267,83 @@ class ProtectedBootstrapContextObservation:
         return checked
 
     def __call__(self) -> BootstrapContext:
-        try:
-            declaration = self.declared()
-            if (type(declaration) is not DeclaredBootstrapContext
-                    or type(declaration.context) is not BootstrapContext):
-                raise ApprovalRefused("protected bootstrap declaration required")
-            context = declaration.context
+        return _observe_bootstrap_context(
+            self.declared, self.observe_packages, self.observe_systemd_profile,
+            self.measure_files,
+        )
 
-            packages_before = self.observe_packages()
-            validate_package_snapshot(packages_before)
-            if packages_before.digest != context.package_digest:
-                raise ApprovalRefused("installed package context differs")
-            files_before = self.measure_files(context)
+
+def _observe_bootstrap_context(declared, observe_packages, observe_systemd_profile,
+                               measure_files):
+    """Shared body; ``measure_files`` is None only for the bracketed variant."""
+    try:
+        declaration = declared()
+        if (type(declaration) is not DeclaredBootstrapContext
+                or type(declaration.context) is not BootstrapContext):
+            raise ApprovalRefused("protected bootstrap declaration required")
+        context = declaration.context
+
+        packages_before = observe_packages()
+        validate_package_snapshot(packages_before)
+        if packages_before.digest != context.package_digest:
+            raise ApprovalRefused("installed package context differs")
+        files_before = None
+        if measure_files is not None:
+            files_before = measure_files(context)
             if (type(files_before) is not SelectedInstalledFiles
                     or files_before.manifest_digest != context.unit_closure_digest):
                 raise ApprovalRefused("selected installed files differ")
-            profile_before = self._profile(self.observe_systemd_profile())
-            if (bootstrap_systemd_profile_digest(profile_before)
-                    != declaration.systemd_profile_digest):
-                raise ApprovalRefused("systemd profile differs from approved policy")
+        profile_before = ProtectedBootstrapContextObservation._profile(
+            observe_systemd_profile()
+        )
+        if (bootstrap_systemd_profile_digest(profile_before)
+                != declaration.systemd_profile_digest):
+            raise ApprovalRefused("systemd profile differs from approved policy")
 
-            packages_after = self.observe_packages()
-            validate_package_snapshot(packages_after)
-            files_after = self.measure_files(context)
-            profile_after = self._profile(self.observe_systemd_profile())
-            declaration_after = self.declared()
-            if (packages_after != packages_before or files_after != files_before
-                    or profile_after != profile_before
-                    or bootstrap_systemd_profile_digest(profile_after)
-                    != declaration_after.systemd_profile_digest
-                    or declaration_after != declaration):
-                raise ApprovalRefused("protected bootstrap context changed during observation")
-            return context
-        except Exception:
-            raise ApprovalRefused("protected bootstrap context observation refused") from None
+        packages_after = observe_packages()
+        validate_package_snapshot(packages_after)
+        files_after = None if measure_files is None else measure_files(context)
+        profile_after = ProtectedBootstrapContextObservation._profile(
+            observe_systemd_profile()
+        )
+        declaration_after = declared()
+        if (packages_after != packages_before or files_after != files_before
+                or profile_after != profile_before
+                or bootstrap_systemd_profile_digest(profile_after)
+                != declaration_after.systemd_profile_digest
+                or declaration_after != declaration):
+            raise ApprovalRefused("protected bootstrap context changed during observation")
+        return context
+    except Exception:
+        raise ApprovalRefused("protected bootstrap context observation refused") from None
+
+
+@dataclass(frozen=True)
+class _BracketedBootstrapContextObservation:
+    """Context observation whose installed-file evidence is taken outside it.
+
+    Identical to ``ProtectedBootstrapContextObservation`` except that it does
+    not walk the installed closure itself. It is composed only by the fixed
+    production factories, inside an adapter whose ``observe_installed_files``
+    brackets the whole verified observation with two single-walk observations
+    and refuses unless they are equal (Nexus#324). Used anywhere else it would
+    leave the closure unmeasured, so it is private and not exported.
+    """
+
+    declared: Callable[[], DeclaredBootstrapContext]
+    observe_packages: Callable[[], object]
+    observe_systemd_profile: Callable[[], SystemdBootstrapProfile]
+
+    def __post_init__(self):
+        if not all(callable(value) for value in (
+            self.declared, self.observe_packages, self.observe_systemd_profile,
+        )):
+            raise ValueError("fixed bootstrap context observation readers required")
+
+    def __call__(self) -> BootstrapContext:
+        return _observe_bootstrap_context(
+            self.declared, self.observe_packages, self.observe_systemd_profile, None,
+        )
 
 
 def _observe_systemd_profile() -> SystemdBootstrapProfile:
@@ -404,12 +491,17 @@ class ProtectedAdministratorClockObservation:
         return AdministratorBootstrapObservation(fresh)()
 
 
-def _verified_observation(observe):
+def _verified_observation(observe, observe_installed_files=None):
     """Fresh double observation and verification; persists nothing.
 
     Returns ``(approval, current_observation, elapsed_boottime_ns)``. Shared by
     the refresh adapter and the initial-admission adapter so both apply the
     identical fresh trust/context/time/boot checks.
+
+    With ``observe_installed_files`` (the production composition), the closure
+    is observed once right after the first observation and once after the last
+    verification, and the two must be equal; nothing is carried to a later
+    call. Without it, ``observe`` itself must measure the closure.
     """
     before = observe()
     if (
@@ -417,6 +509,8 @@ def _verified_observation(observe):
         or read_boot_id() != before.context.boot_id
     ):
         raise ApprovalRefused("current bootstrap boot observation required")
+    files_before = (None if observe_installed_files is None
+                    else observe_installed_files(before.context))
     approval = _verify_observation(before)
     current = observe()
     if (
@@ -433,6 +527,10 @@ def _verified_observation(observe):
     if fresh != approval or read_boot_id() != current.context.boot_id:
         raise ApprovalRefused(
             "bootstrap trust or boot changed during verification"
+        )
+    if observe_installed_files is not None:
+        _require_installed_files_unchanged(
+            files_before, observe_installed_files(current.context), current.context,
         )
     elapsed = read_boottime_ns()
     current.require_current_window(elapsed)
@@ -459,10 +557,18 @@ class ProtectedBootstrapInputs:
     """
 
     observe: Callable[[], BootstrapObservation]
+    observe_installed_files: Callable[[BootstrapContext], InstalledFilesObservation] | None = None
+
+    def __post_init__(self):
+        if (self.observe_installed_files is not None
+                and not callable(self.observe_installed_files)):
+            raise ValueError("installed file observation producer required")
 
     def __call__(self) -> BootstrapDeadline:
         try:
-            fresh, current, elapsed = _verified_observation(self.observe)
+            fresh, current, elapsed = _verified_observation(
+                self.observe, self.observe_installed_files,
+            )
             retained = advance_deadline(
                 approval=fresh,
                 boot_id=current.context.boot_id,
@@ -491,10 +597,16 @@ class ProtectedBootstrapInitialAdmission:
     """
 
     observe: Callable[[], BootstrapObservation]
+    observe_installed_files: Callable[[BootstrapContext], InstalledFilesObservation] | None = None
+
+    def __post_init__(self):
+        if (self.observe_installed_files is not None
+                and not callable(self.observe_installed_files)):
+            raise ValueError("installed file observation producer required")
 
     def verify(self) -> VerifiedBootstrapApproval:
         try:
-            return _verified_observation(self.observe)[0]
+            return _verified_observation(self.observe, self.observe_installed_files)[0]
         except Exception:
             raise ApprovalRefused(
                 "protected bootstrap runtime inputs refused"
@@ -504,7 +616,9 @@ class ProtectedBootstrapInitialAdmission:
         try:
             if type(expected) is not VerifiedBootstrapApproval:
                 raise ApprovalRefused("verified bootstrap approval required")
-            fresh, current, elapsed = _verified_observation(self.observe)
+            fresh, current, elapsed = _verified_observation(
+                self.observe, self.observe_installed_files,
+            )
             if fresh != expected:
                 raise ApprovalRefused("bootstrap approval changed before retention")
             state = begin_deadline(
@@ -523,6 +637,15 @@ class ProtectedBootstrapInitialAdmission:
             ) from None
 
 
+def _bracketed_context_observation() -> _BracketedBootstrapContextObservation:
+    """Production context readers; the adapter brackets the closure (#324)."""
+    return _BracketedBootstrapContextObservation(
+        declared=load_declared_bootstrap_context,
+        observe_packages=observe_installed_packages,
+        observe_systemd_profile=_observe_systemd_profile,
+    )
+
+
 def protected_bootstrap_inputs() -> ProtectedBootstrapInputs:
     """Compose fixed protected context and administrator-time observations.
 
@@ -533,9 +656,10 @@ def protected_bootstrap_inputs() -> ProtectedBootstrapInputs:
     require explicit reviewed readers/profiles rather than path or environment
     overrides.
     """
-    context = protected_bootstrap_context_observation()
-    observation = ProtectedAdministratorClockObservation(context)
-    return ProtectedBootstrapInputs(observation)
+    observation = ProtectedAdministratorClockObservation(_bracketed_context_observation())
+    return ProtectedBootstrapInputs(
+        observation, observe_installed_files=observe_bootstrap_installed_files_once,
+    )
 
 
 def protected_bootstrap_initial_admission() -> ProtectedBootstrapInitialAdmission:
@@ -545,9 +669,10 @@ def protected_bootstrap_initial_admission() -> ProtectedBootstrapInitialAdmissio
     ``protected_bootstrap_inputs``. Initialization still requires fresh
     verification, successful prestart and the create-only store.
     """
-    context = protected_bootstrap_context_observation()
-    observation = ProtectedAdministratorClockObservation(context)
-    return ProtectedBootstrapInitialAdmission(observation)
+    observation = ProtectedAdministratorClockObservation(_bracketed_context_observation())
+    return ProtectedBootstrapInitialAdmission(
+        observation, observe_installed_files=observe_bootstrap_installed_files_once,
+    )
 
 
 @dataclass(frozen=True)
@@ -600,7 +725,8 @@ class ProtectedBootstrapGenerationAdmission:
             validate_package_snapshot(packages_before)
             if packages_before.digest != context.package_digest:
                 raise ApprovalRefused("installed package context differs")
-            files_before = measure_bootstrap_installed_files(context)
+            # One walk each; this method brackets the admission itself (#324).
+            files_before = observe_bootstrap_installed_files_once(context)
             before = load_bootstrap_generation(expected=context)
             if type(before) is not VerifiedBootstrapGeneration or (
                 before.number, before.digest
@@ -612,9 +738,9 @@ class ProtectedBootstrapGenerationAdmission:
             validate_package_snapshot(packages_after)
             if packages_after != packages_before:
                 raise ApprovalRefused("installed package observation changed during admission")
-            files_after = measure_bootstrap_installed_files(context)
-            if files_after != files_before:
-                raise ApprovalRefused("selected installed files changed during admission")
+            _require_installed_files_unchanged(
+                files_before, observe_bootstrap_installed_files_once(context), context,
+            )
             after = load_bootstrap_generation(expected=context)
             if type(after) is not VerifiedBootstrapGeneration or after != before:
                 raise ApprovalRefused("bootstrap generation changed during admission")

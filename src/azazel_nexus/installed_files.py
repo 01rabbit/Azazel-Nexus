@@ -201,15 +201,44 @@ def _snapshot_at(root_fd, manifest, *, owner, contents=None):
     return identities
 
 
+@dataclass(frozen=True)
+class InstalledFilesObservation:
+    """One single-walk observation of the pinned selection; NOT a measurement.
+
+    A single walk proves each entry matched the pin while it was read, but it
+    cannot see an entry replaced (even with identical bytes) after it was read.
+    It is only meaningful when the caller takes a second, independent
+    observation after the work it brackets and refuses unless the two are
+    equal: ``identities`` carries the named identity of every pinned file,
+    directory and link so that comparison sees replacement, not only content.
+    It is never a ``SelectedInstalledFiles`` and is never retained by callers.
+    """
+
+    selected: SelectedInstalledFiles
+    identities: tuple
+
+
+def _selected(manifest, expected_digest):
+    return SelectedInstalledFiles(expected_digest, len(manifest.files),
+                                  sum(entry.size for entry in manifest.files),
+                                  len(manifest.directories), len(manifest.links))
+
+
 def _measure_at(root_fd, raw, *, expected_digest, owner):
     """Ordinary-file test seam; no arbitrary root exposed to production runtime."""
     manifest = decode_installed_manifest(raw, expected_digest=expected_digest)
     first = _snapshot_at(root_fd, manifest, owner=owner)
     if _snapshot_at(root_fd, manifest, owner=owner) != first:
         raise ApprovalRefused("installed selection changed between observations")
-    return SelectedInstalledFiles(expected_digest, len(manifest.files),
-                                  sum(entry.size for entry in manifest.files),
-                                  len(manifest.directories), len(manifest.links))
+    return _selected(manifest, expected_digest)
+
+
+def _observe_once_at(root_fd, raw, *, expected_digest, owner):
+    """Single-walk test seam; the caller must bracket and compare (see type)."""
+    manifest = decode_installed_manifest(raw, expected_digest=expected_digest)
+    snapshot = _snapshot_at(root_fd, manifest, owner=owner)
+    return InstalledFilesObservation(_selected(manifest, expected_digest),
+                                     tuple(sorted(snapshot.items())))
 
 
 def _read_pinned_at(root_fd, raw, *, expected_digest, paths, owner):
@@ -278,6 +307,28 @@ def measure_installed_files(raw: bytes, *, expected_digest: str) -> SelectedInst
             fd = os.open("/", _DIR)
             try:
                 return _measure_at(fd, raw, expected_digest=expected_digest, owner=0)
+            finally:
+                os.close(fd)
+    except Exception:
+        raise ApprovalRefused("selected installed files refused") from None
+
+
+def observe_installed_files_once(
+    raw: bytes, *, expected_digest: str,
+) -> InstalledFilesObservation:
+    """Walk the pinned selection under the fixed root exactly once.
+
+    Same per-entry checks as ``measure_installed_files`` but without its second
+    walk. Use it only where the caller already brackets its whole critical
+    section with two of these observations and refuses unless they are equal;
+    everywhere else ``measure_installed_files`` (two walks) stays the default.
+    """
+    try:
+        with decode_scope():
+            decode_installed_manifest(raw, expected_digest=expected_digest)
+            fd = os.open("/", _DIR)
+            try:
+                return _observe_once_at(fd, raw, expected_digest=expected_digest, owner=0)
             finally:
                 os.close(fd)
     except Exception:
