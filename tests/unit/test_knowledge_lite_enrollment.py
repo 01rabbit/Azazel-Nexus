@@ -155,7 +155,7 @@ def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> Non
     assert Path(target).name == ANCHOR_FILENAME
     anchor = tmp_path / target.lstrip("/")
     anchor.write_text(document)
-    (reason,) = re.findall(r"az-nexus-commission trust-repin --reason (\w+)", steps[5])
+    (reason,) = re.findall(r"commission_cli trust-repin --reason (\w+)", steps[5])
     assert reason in REASONS
     confirmation = RepinConfirmation(commissioning_dir=anchor.parent,
                                      snapshot_dir=runtime_paths.state_dir() / "commission",
@@ -404,9 +404,9 @@ ALLOWED_COMMANDS = (
     "sudo chmod ",
     "sudo /opt/azazel-nexus/venv/bin/python -I -c '",
     "sudo runuser -u azknowledge -- /opt/azazel-nexus/venv/bin/python -I -c '",
-    "sudo az-nexus-commission trust-repin ",
-    "sudo azazel-nexus status",
-    "sudo azazel-nexus setup",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin ",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup",
     "sha256sum ",
 )
 
@@ -468,3 +468,11 @@ def test_the_documented_programs_change_no_permissions(step) -> None:
     program = _python(_steps()[step])
     for word in ("chmod", "chown", "umask", "subprocess", "os.system", "shutil"):
         assert word not in program, word
+
+
+def test_no_sudo_command_relies_on_path_for_a_venv_script() -> None:
+    """sudo's secure_path does not contain the venv, so a bare console script
+    such as `azazel-nexus` or `az-nexus-commission` is not found (#93, VM)."""
+
+    for command in _shell_commands(_section()):
+        assert not re.match(r"sudo (?:runuser -u \S+ -- )?az", command), command

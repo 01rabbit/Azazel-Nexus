@@ -290,6 +290,10 @@ Status reports reason `trust_unreadable` on a fresh install, `unverified`
 after step 4, `no_bundle` after step 5 and `available` after step 7.
 `tests/unit/test_knowledge_lite_enrollment.py` runs the calls and documents
 below against the library in that order and checks those four reasons.
+These are the reasons `azknowledge`, the account `knowledge-lited` runs as,
+reads. Run as root, status and setup can read the `0600` `trust.json` that
+step 3 writes, so they already report `unverified` and `knowledge-trust: done`
+after step 3, while `azknowledge` still reads `trust_unreadable` until step 4.
 
 ### Step 1: directories
 
@@ -352,7 +356,9 @@ key. The commissioning digest is a binding label: status reads it back from the
 trust record and requires the revocation policy record to carry the same value,
 and repin copies it forward. Nothing on the Knowledge Lite path compares it
 with a commissioning record, and the code does not say which record supplies
-it. Use the digest of the commissioning this node runs under.
+it. Use the digest of the commissioning this node runs under. A node that
+has only run the supporting-only bootstrap (variant `bootstrap/uncommissioned`)
+has no commissioning record to take it from.
 
 ### Step 4: owner and mode of `trust.json`
 
@@ -364,8 +370,10 @@ sudo chmod 0640 /var/lib/azazel/lite-trust/trust.json
 `pin` writes `trust.json` as root with mode `0600`. Repin runs as the
 non-root `azcommission` and gives every file it writes `trust.json`'s owner,
 group and mode, so `trust.json` must already be `azcommission`'s. After this
-step setup reports `knowledge-trust: done`. Status still reports `unverified`,
-because no revocation policy exists yet and a missing policy fails closed.
+step `azknowledge` can read it too, and its reader moves from `trust_unreadable`
+to `unverified`. Root-run setup already reports `knowledge-trust: done` after
+step 3. Status reports `unverified` for both, because no revocation policy
+exists yet and a missing policy fails closed.
 
 ### Step 5: revocation policy, through repin
 
@@ -393,8 +401,14 @@ unmask it.
 
 ```sh
 sudo install -m 0640 -o root -g azcommission repin-anchor.json /etc/azazel/commissioning/repin-anchor.json
-sudo az-nexus-commission trust-repin --reason rotation
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin --reason rotation
 ```
+
+`sudo` replaces `PATH` with its `secure_path`, which does not contain the venv,
+so a bare `az-nexus-commission` or `azazel-nexus` is not found under `sudo`.
+This line and step 8 run the console scripts' modules with the venv's
+interpreter instead, as the [activation rehearsal](hil-runbooks/activation-rehearsal.md)
+does.
 
 The CLI needs a local terminal and asks you to type fresh confirmation words
 ([trust repin](trust-repin.md)). The reason must be `rotation`, `recovery` or
@@ -448,8 +462,8 @@ is quarantined and the command exits 1.
 ### Step 8: status
 
 ```sh
-sudo azazel-nexus status
-sudo azazel-nexus setup
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup
 ```
 
 Status shows `state: available` and `reason: available`. Setup shows
@@ -468,6 +482,17 @@ argument replaced only the systemd notification. Its real socket served the
 real `az-nexus-commission trust-repin`, driven through a pseudo-terminal. The
 systemd sandbox, the bootstrap start of commissiond and `knowledge-lited` were
 not exercised. **This is container evidence, not hardware evidence.**
+
+On 2026-10-24 the same order was taken on the Debian 13 test VM (arm64,
+systemd 257, VMware) under real systemd, with a VM-only rehearsal operator and
+VM-only keys, all destroyed afterwards. Steps 1 to 4 ran as written and gave
+`trust_unreadable` then `unverified` (for root already after step 3, see
+above). Step 5 could not be reached: the supporting-only bootstrap stopped
+before controller READY. The controller was killed at its `TimeoutStartSec`
+twice, auditd and commissiond stayed masked and never started, so the
+commissiond sandbox, the repin under it, steps 6 to 8 and `knowledge-lited`
+were not exercised there. That stop is recorded on #93; it is not a fault of
+this procedure. **VM software rehearsal, not hardware evidence.**
 
 ## Milestone 1 daemon status
 
