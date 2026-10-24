@@ -868,8 +868,9 @@ a reboot.
 dump module), **V2**, **D2**, **A1**, and exclusivity **as a withhold**
 (Q-E). **Q-R6 was answered on 2026-10-24 as proposed**
 ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design)
-item 6), with the `.link` name pin placed before commissioning
-(reachability §5, §8). G6 is still not merged before G5. The questions are
+item 6). Placing the `.link` name pin before commissioning (reachability
+§5, §8) is a default derived from the VM rehearsal after that answer, which
+the owner may overturn. G6 is still not merged before G5. The questions are
 kept below as they were asked.
 
 - **Q-R6. R6** ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design)):

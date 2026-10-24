@@ -6,8 +6,10 @@ Status: **proposal. The default of Q11 was decided by the owner on
 2026-10-22 (§4). The further conditions this design adds (§9, R1–R5) only
 withhold or stop, and are adopted as defaults the owner may overturn; R1, R2,
 R4 and R5 are required before G6. R6, the reading of commissioning §2, was
-**answered by the owner on 2026-10-24 as this design proposes** (§9 item 6),
-with the name pin placed before commissioning. The pass's part lands in G6; the
+**answered by the owner on 2026-10-24 as this design proposes** (§9 item 6).
+Placing the name pin before commissioning (§5, §8) is not part of that
+answer: it is a default derived from a VM check, which the owner may
+overturn. The pass's part lands in G6; the
 re-reading (R4) is implemented in G2 as far as
 [grant §6.3](deception-exposure-grant.md#63-g2-as-implemented) says, its
 rules compared whole by the pass's comparison, fixed from networkd's dump on
@@ -204,8 +206,8 @@ networkd removes rules it did not create. *Inferred:* both selectors and
 **Ordering, and commissioning §2.** Commissioning §2 forbids the node to
 forward or route until activation completes, and §3 and §8 forbid binding to
 a kernel name. Under P1 the forwarding switch of the ingress is on from boot,
-before the pass. The reading this design proposes, **not decided** (R6,
-returned to the owner): §2 is about what the node **does**, and with K1 installed **before** forwarding comes on, every
+before the pass. The reading this design proposes, **adopted by the owner on 2026-10-24**
+(R6): §2 is about what the node **does**, and with K1 installed **before** forwarding comes on, every
 packet the ingress receives before a grant is either local or discarded,
 because the only path K1 leaves is the connected route of `az-decoy0`, which
 exists only after the tier is granted and the helper has run. So:
@@ -216,7 +218,7 @@ exists only after the tier is granted and the helper has run. So:
   measured window goes back to the owner; no workaround is proposed blind;
 - the §8 configuration is installed only after commissioning has closed with
   a v3 scope, never during inventory or commissioning — **except the name
-  pin** (the `.link` file of §8 item 2), which is placed **before** inventory
+  pin** (a default derived after R6's answer, §9 item 6) (the `.link` file of §8 item 2), which is placed **before** inventory
   and commissioning: the commissioned inventory records each interface's
   kernel name (`kernel_name_observed`), so a pin added afterwards changes it
   and commissioning evidence no longer verifies, which withholds every tier
@@ -493,8 +495,9 @@ For [operations](operations.md#deception-lite-decoy-network-196), written
 when G6 lands. Nexus installs none of these files and edits none of them,
 and none of them is in the signed generation (§3). Installed only after
 commissioning has closed with a v3 scope, **except the `.link` name pin of
-item 2, which is placed before inventory and commissioning** (§5; R6 as
-answered on 2026-10-24). **When the node returns to
+item 2, which is placed before inventory and commissioning** (§5; a default
+derived after R6's answer, §9 item 6; the operator picks the ingress NIC
+beforehand). **When the node returns to
 `COMMISSIONING_REQUIRED` or is re-commissioned**, the operator removes the
 other node-side files of items 2 and 3 (the `.network` file and the sysctl)
 before inventory runs (commissioning §2 applies again), keeps the `.link`
@@ -606,7 +609,8 @@ following. Each only withholds the tier or stops the units, so each is
 **adopted as a default the owner may overturn**, as the owner directed for
 narrowing conditions; R1, R2 and R5 are required before G6 is merged, R4 in
 G2 (and wired in G6), R3 in G1. R6 is different: it is a reading of a
-commissioning rule, not a narrowing, and stays **open** for the owner.
+commissioning rule, not a narrowing; the owner answered it on 2026-10-24
+(item 6).
 
 1. **R1.** IPv4 `conf.all` and `conf.default` at `0`, every interface other
    than the ingress at `0` (`asset_acquisition`, unassigned interfaces,
@@ -642,10 +646,21 @@ commissioning rule, not a narrowing, and stays **open** for the owner.
    §5: forwarding switched on for the ingress before activation is
    compatible with "must not forward" only because K1 discards everything
    the ingress receives until a grant, and only while the name pin holds
-   (§5, the remaining window). The pin is placed before inventory and
-   commissioning, the rest of §8 after (§5, §8). The question as it was asked: if §2
+   (§5, the remaining window). The question as it was asked: if §2
    forbade the switch itself, P1 would conflict with it and Q11 would be
    revisited. G6 is still not merged before G5.
+
+   **A default derived after the answer, not part of it** (the owner may
+   overturn it): the `.link` name pin is placed **before** inventory and
+   commissioning, the rest of §8 after (§5, §8). Reason: the commissioned
+   inventory records each interface's kernel name, and a VM run on
+   2026-10-24 (mechanics only) showed that a pin added after commissioning
+   changes it, so commissioning evidence no longer verifies and every tier
+   is withheld. The operator therefore picks the ingress NIC (its bus path
+   and permanent MAC) before commissioning and confirms it as
+   `deception_bridge` there. The other ways out, configuring the ingress by
+   its kernel name without a pin, or commissioning again after the pin, are
+   the owner's to choose instead.
 
 ## 10. `HG-06`
 
