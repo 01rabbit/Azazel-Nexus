@@ -31,20 +31,22 @@ dependency for an attack surface.
 ## Any exception is a refusal
 
 Knowledge says so explicitly, and its `corrupt-truncated` fixture is the case:
-the tar decoder raises before the verifier has an opinion, so that artifact
-produces **no `BUNDLE_*` code at all**. A reader that caught only the
-producer's own error type would let it through as an unhandled error. Every
+the tar stream ends part-way through a member, the tar decoder raises, and the
+producer's verifier wraps that decoder error as `BundleVerifyError` with code
+`BUNDLE_ARCHIVE_UNREADABLE`. A reader that caught only the producer's own error
+type would be one decoder change away from letting such an artifact through as
+an unhandled error, so this reader does not rely on the wrapping. Every
 refusal here carries a gate and, where the producer names one, its code --
 The code names are the producer's own, so a refusal here and a refusal
 there are the same word.
 
-Measured rather than assumed: the producer's `negative.json` *description*
-for the truncated fixture says it produces no `BUNDLE_*` code, while its
-`expected_error_code` says `BUNDLE_ARCHIVE_UNREADABLE`. Running the
-producer's verifier over that fixture shows the code is real -- the
-description is the stale half. The defensive advice is kept anyway, because
-catching a known type only is wrong whether or not the producer currently
-wraps.
+Measured rather than assumed: running the producer's verifier over that
+fixture produces `BUNDLE_ARCHIVE_UNREADABLE`, matching the
+`expected_error_code` in `negative.json`. An earlier revision of the
+producer's *description* said it produced no `BUNDLE_*` code; that stale text
+was corrected in Azazel-Knowledge#109 (pinned here since then). The defensive
+advice is kept anyway, because catching a known type only is wrong whether or
+not the producer currently wraps.
 
 ## Expiry is not a gate
 
@@ -342,8 +344,9 @@ def verify_bundle(
 
     Every refusal is a `BundleRefused` carrying its gate. Callers are expected
     to treat **any** exception as a refusal anyway -- the producer's truncated
-    fixture raises from the tar decoder and carries no producer code -- and
-    this function converts those itself so that the gate is still named.
+    fixture fails in the tar decoder, and only a wrapper turns that into
+    `BUNDLE_ARCHIVE_UNREADABLE` -- and this function does that wrapping itself
+    so that the gate is still named.
     """
 
     if len(raw) > MAX_BUNDLE_BYTES:
@@ -471,9 +474,9 @@ def _read_members(raw: bytes) -> dict[str, bytes]:
             "BUNDLE_ARCHIVE_UNREADABLE",
             f"the archive could not be read ({type(exc).__name__}: {exc}). "
             "Caught as any exception rather than as a known type: the tar "
-            "decoder raises before the verifier has an opinion, and a reader "
-            "that caught only a known error type would let this through as an "
-            "unhandled error",
+            "decoder raises its own error types, and a reader that caught "
+            "only a known error type would let this through as an unhandled "
+            "error",
         ) from exc
     return found
 

@@ -53,12 +53,13 @@ admits nothing, so a caller that forgets to supply one gets a node running on
 `CORE` with no Lite data. The opposite default — admitting what it cannot check
 — is the one failure this module must not be able to have.
 
-**Any exception from verification is a refusal.** Knowledge's own
-`negative.json` warns that the truncated fixture produces no `BUNDLE_*` code at
-all, because the tar decoder raises first: *"a reader that catches only the
-verifier's own exception type will let this through as an unhandled error"*. So
-the reader catches `Exception`, deliberately, narrowly around the verifier call
-and the extraction call.
+**Any exception from verification is a refusal.** Knowledge's verifier wraps
+the tar decoder's error on the truncated fixture as `BundleVerifyError` with
+code `BUNDLE_ARCHIVE_UNREADABLE`, and its own `negative.json` still warns not to
+rely on that: *"a reader that catches only the verifier's own exception type is
+one decoder change away from letting a truncated artifact through as an
+unhandled error"*. So the reader catches `Exception`, deliberately, narrowly
+around the verifier call and the extraction call.
 
 **Staging is not admission.** Two of Knowledge's negative fixtures write bytes
 into staging *before* failing — the truncated one leaves four complete,
@@ -241,7 +242,7 @@ pinned. `contract/azazel-knowledge-lite/FIXTURE.json` is the source manifest:
 | field | value |
 | --- | --- |
 | `source_repository` | `01rabbit/Azazel-Knowledge` |
-| `source_revision` | `f29c29d1002881b416286e18aae65455c3623348` |
+| `source_revision` | `2445c1b125ab1210b826b40f027d6eec4c5de125` |
 | `fixture_generator_command` | `python tools/lite_fixture.py emit --out DIR` |
 | `artifact_digest` | SHA-256 of every file here |
 | `knowledge_contract` | format version, kind, signature scheme, what the anchor decides |

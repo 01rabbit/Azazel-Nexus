@@ -1,10 +1,10 @@
 {
   "artifact_digest": {
-    "PROVENANCE.md": "15d0b32b44706a68745fc9281b99d8d32d031e1cd1caecd0899dc3500aee4bd4",
+    "PROVENANCE.md": "5a4906b87d88fef485896635dab7e3deb3fe5f923d39082a470914af8b342942",
     "anchors.toml": "ab9273b3194895dc159e05aed127a533cc5b0fda042ff3ed1e1c5afca6821bd3",
     "expected.json": "fc98956c2830008964a0405b63351104cc886b3658b8a4767e8aa6bd47313da8",
     "lite.tar.gz": "94a1f77030a7c9b3b962c45f425d17dd74cb8e61ca015a7658ae1110a22d2102",
-    "negative.json": "739780e1bd0b6d88b170dcbd997f705b2b38d940d495966f134b0181fe1b81fb",
+    "negative.json": "5b23909a6e252b422acdd64a97eaa3b592a6247f422d11f1820b4556b72a6564",
     "negative/corrupt-payload.tar.gz": "27ec584f28e7b3c882595e61b457f939dcb3c1553b7a7c2708b8b8c295de17b0",
     "negative/corrupt-signature.tar.gz": "371a1dc07b582798fcb2b467da118e4cfedcc26bd6c78842d88dec1aae869911",
     "negative/corrupt-truncated.tar.gz": "84a8d7a8ab51d44ef7c3b83f37e38ab51f2f9fabce6839184f600d3107f625cd",
@@ -38,5 +38,5 @@
   },
   "purpose": "the canonical input Azazel-Nexus#67 verifies against. Nexus implements a read-only reader for what Knowledge publishes and invents no bundle format and no signature format of its own. These artifacts are what Nexus CI runs the six cases over -- valid, corrupt-signature, corrupt-payload, corrupt-truncated, expired, absent -- so that the reader is tested against what the producer actually emits rather than against a forgery written in the consumer's own tests",
   "source_repository": "01rabbit/Azazel-Knowledge",
-  "source_revision": "f29c29d1002881b416286e18aae65455c3623348"
+  "source_revision": "2445c1b125ab1210b826b40f027d6eec4c5de125"
 }

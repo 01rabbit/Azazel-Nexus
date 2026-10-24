@@ -26,7 +26,7 @@
       "verifies": false
     },
     {
-      "description": "The tar stream ends part-way through tables/kev.jsonl; the gzip container itself is intact, so the cut shows up at the tar layer. manifest.json and manifest.sig are complete and verify, and every earlier content member is complete, staged, and digest-checked before the decoder gives up -- a reader can be holding fully verified content and must still promote none of it. NOTE FOR READERS: this one does NOT produce a BUNDLE_* error code; the tar decoder raises first. A reader that catches only the verifier's own exception type will let this through as an unhandled error, so treat ANY exception from verification as a refusal.",
+      "description": "The tar stream ends part-way through tables/kev.jsonl; the gzip container itself is intact, so the cut shows up at the tar layer. manifest.json and manifest.sig are complete and verify, and every earlier content member is complete, staged, and digest-checked before the decoder gives up -- a reader can be holding fully verified content and must still promote none of it. The verifier wraps the tar decoder's error as BundleVerifyError with code BUNDLE_ARCHIVE_UNREADABLE (the decoder error is kept as the cause). NOTE FOR READERS: do not rely on that wrapping alone. A reader that catches only the verifier's own exception type is one decoder change away from letting a truncated artifact through as an unhandled error, so treat ANY exception from verification as a refusal.",
       "exists": true,
       "expected_error_code": "BUNDLE_ARCHIVE_UNREADABLE",
       "expected_exception": "BundleVerifyError",
