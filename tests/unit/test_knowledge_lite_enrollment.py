@@ -23,6 +23,7 @@ import hashlib
 import io
 import json
 import re
+import stat
 import sys
 import tarfile
 from pathlib import Path
@@ -172,6 +173,22 @@ def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> Non
         "trust-staging", "trust.json"]
     for name in ("trust-reserved", "trust-staging"):
         assert f"`{name}`" in steps[5]
+    # What repin leaves takes trust.json's owner, group and mode (files) and the
+    # directory mode the document states, and none of it is group/other-writable.
+    pinned = trust_json.stat()
+    (directory_mode,) = re.findall(r"the directories are `(0\d{3})`", _flat(steps[5]))
+    directory_mode = int(directory_mode, 8)
+    assert directory_mode & 0o022 == 0
+    for name in ("trust-current", "trust-reserved", "trust-generations/1.json",
+                 "trust-generations/1.revocation.json"):
+        observed = (trust_root / name).stat()
+        assert (observed.st_uid, observed.st_gid) == (pinned.st_uid, pinned.st_gid), name
+        assert stat.S_IMODE(observed.st_mode) == stat.S_IMODE(pinned.st_mode), name
+    for name in ("trust-generations", "trust-staging"):
+        observed = (trust_root / name).stat()
+        assert (observed.st_uid, observed.st_gid) == (pinned.st_uid, pinned.st_gid), name
+        assert stat.S_IMODE(observed.st_mode) == directory_mode, name
+    assert list((trust_root / "trust-staging").iterdir()) == []
     reasons.append(_reason(tmp_path))
 
     # Step 6: the inbox the document names, and the entry id is the file's SHA-256.

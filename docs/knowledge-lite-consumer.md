@@ -478,7 +478,9 @@ Status shows `state: available` and `reason: available`. Setup shows
 this procedure does not start it. The regular start is an activation grant. A
 disposable VM may check it with the rehearsal-only start of the
 [integrated loop rehearsal §6](hil-runbooks/integration-loop-rehearsal.md#6-rehearsal-only-start-alternative-to-activation),
-which needs the controller `inactive`.
+which needs the controller `inactive`; that start is not a substitute for an
+activation grant, and the run record must say the rehearsal-only start was
+used.
 
 ### What was rehearsed
 
@@ -506,7 +508,13 @@ this procedure. **VM software rehearsal, not hardware evidence.**
 
 On 2026-10-25 the order was taken twice more on the same VM, each time with
 new VM-only keys, destroyed afterwards. Both runs gave the same
-steps 1 to 4 as above.
+steps 1 to 4 as above. Pinning those keys to reach `available` exercised this
+enrollment procedure on a disposable VM only: the keys were made for that VM
+alone and destroyed, the VM was reverted to its snapshot, and the result is
+neither an owner approval nor hardware evidence. It is not the integrated
+loop run for which
+[integrated loop rehearsal §7](hil-runbooks/integration-loop-rehearsal.md#7-knowledge-lite)
+forbids pinning run-generated keys.
 
 - After #328 (main `64ff89e`) the controller published the auditd/commissiond
   overlay about 6.6 s after it started, inside `TimeoutStartSec`, but the
