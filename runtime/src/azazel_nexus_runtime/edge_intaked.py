@@ -66,6 +66,16 @@ RECV_ROUNDS = 8
 # stays a few MiB under MemoryMax. A load test lost 83% of that burst at 256.
 QUEUE_SIZE = 2048
 READ_DEADLINE_S = 2
+# Edge observations are processed in the order their connections were
+# accepted (#327), which is Edge's send order: one forwarding thread opens
+# one connection per line, in observation order, and the kernel hands
+# connections over first in, first out. A line read sooner from a later
+# connection waits for every earlier connection to finish, at most this long
+# for each, and never past REORDER_HELD lines held behind one. Edge's clock is
+# not used for this. A connection still unfinished after the wait no longer
+# holds the others; its line, if one comes, is processed when it is read.
+REORDER_WAIT_S = 0.25
+REORDER_HELD = 1024
 LISTEN_BACKLOG = 512
 STATUS_INTERVAL_S = 5
 RETENTION_BYTES = 256 * 1024 * 1024
@@ -599,6 +609,16 @@ class IncidentLedger(DailySegments):
             os.close(fd)
 
 
+class _Arrival:
+    """One accepted Edge connection, in accept order (#327)."""
+
+    __slots__ = ("since", "received_at", "record", "done", "gating")
+
+    def __init__(self, since, received_at):
+        self.since, self.received_at = since, received_at
+        self.record, self.done, self.gating = None, False, True
+
+
 class IntakeServer:
     """Accept independently of disk, bounded readers and a single ledger writer."""
 
@@ -622,8 +642,10 @@ class IntakeServer:
         decoy_refusals=None,
         decoy_per_minute=DECOY_PER_MINUTE,
         monotonic=time.monotonic,
+        reorder_wait=REORDER_WAIT_S,
     ):
         self.path, self.state, self.status_path = path, state, status_path
+        self.reorder_wait = reorder_wait
         # The decoy socket is opened only with both its path and the decoy
         # account; a node without either runs the Edge intake as before.
         self.decoy_enabled = decoy_path is not None and decoy_uid is not None
@@ -922,9 +944,42 @@ class IntakeServer:
         self.decoy_listening = decoy_listener is not None
         selector = selectors.DefaultSelector()
         clients = {}
+        # Accepted Edge connections whose line is not yet queued, in accept
+        # order, and the arrival of each registered reader (#327).
+        order = deque()
+        arrivals = {}
         # Decoy readers, apart from Edge's: they never take an Edge slot.
         decoy_clients = {}
         worker = threading.Thread(target=self._writer, daemon=True)
+
+        def enqueue(record):
+            try:
+                self.pending.put_nowait(record)
+            except queue.Full:
+                self.refuse("queue_full")
+
+        def release(everything=False):
+            """Queue finished lines in accept order, never waiting unbounded."""
+            instant = time.monotonic()
+            while order:
+                arrival = order[0]
+                if not arrival.done:
+                    if not (everything or len(order) > REORDER_HELD
+                            or instant >= arrival.since + self.reorder_wait):
+                        return
+                    # Unfinished past the wait: it stops holding later lines,
+                    # and its own line is queued whenever it is read.
+                    arrival.gating = False
+                order.popleft()
+                if arrival.done and arrival.record is not None:
+                    enqueue(arrival.record)
+
+        def finished(arrival):
+            arrival.done = True
+            if arrival.gating:
+                release()
+            elif arrival.record is not None:
+                enqueue(arrival.record)
 
         def close(connection, code=None):
             if connection in decoy_clients:
@@ -939,6 +994,7 @@ class IntakeServer:
             selector.unregister(connection)
             clients.pop(connection)
             connection.close()
+            finished(arrivals.pop(connection))
 
         def receive_decoy(connection, buffer):
             """One interaction line, as `receive` reads Edge's; never answered."""
@@ -1012,8 +1068,12 @@ class IntakeServer:
                 decoy_clients[incoming] = (buffer, time.monotonic() + self.read_deadline, uid)
                 selector.register(incoming, selectors.EVENT_READ)
 
-        def receive(connection, buffer):
-            """Read what is available; None while unfinished, else a code ("" = done)."""
+        def receive(connection, buffer, arrival):
+            """Read what is available; None while unfinished, else a code ("" = done).
+
+            A parsed observation is left on `arrival`, to be queued in accept
+            order; it carries the time its connection was accepted.
+            """
             # Bounded rounds: an unfinished connection is read again on the
             # next select rather than holding the loop.
             for _ in range(RECV_ROUNDS):
@@ -1036,12 +1096,10 @@ class IntakeServer:
                             if type(event) is ForwardStats:
                                 self.forward_stats(event)
                                 return ""
-                            record = EvidenceRecord.receive(event, self.clock)
-                            self.pending.put_nowait(record)
+                            arrival.record = EvidenceRecord.receive(
+                                event, lambda: arrival.received_at)
                         except EdgeEventRefused as exc:
                             return exc.code
-                        except queue.Full:
-                            return "queue_full"
                         return ""
                 elif not data:
                     return "EDGE_SHAPE"
@@ -1083,6 +1141,7 @@ class IntakeServer:
                                 incoming.close()
                                 continue
                             incoming.setblocking(False)
+                            arrival = _Arrival(time.monotonic(), self.clock())
                             # Edge sends each line on its own connection and closes
                             # at once; finishing complete ones here keeps a burst
                             # from exhausting reader slots before the next select.
@@ -1095,11 +1154,13 @@ class IntakeServer:
                             # backlog is never left for Edge to wait on.
                             if inline < MAX_INLINE or len(clients) >= self.max_connections:
                                 inline += 1
-                                code = receive(incoming, buffer)
+                                code = receive(incoming, buffer, arrival)
                             if code is not None:
                                 if code:
                                     self.refuse(code)
                                 incoming.close()
+                                order.append(arrival)
+                                finished(arrival)
                                 continue
                             if len(clients) >= self.max_connections:
                                 self.refuse("overloaded")
@@ -1109,14 +1170,17 @@ class IntakeServer:
                                 buffer,
                                 time.monotonic() + self.read_deadline,
                             )
+                            arrivals[incoming] = arrival
+                            order.append(arrival)
                             selector.register(incoming, selectors.EVENT_READ)
                         continue
-                    code = receive(connection, clients[connection][0])
+                    code = receive(connection, clients[connection][0], arrivals[connection])
                     if code is not None:
                         close(connection, code)
                 for connection, (_, deadline) in list(clients.items()):
                     if time.monotonic() >= deadline:
                         close(connection, "read_deadline")
+                release()
                 for connection, (_, deadline, _) in list(decoy_clients.items()):
                     if time.monotonic() >= deadline:
                         close(connection, "decoy_read_deadline")
@@ -1127,6 +1191,9 @@ class IntakeServer:
         finally:
             for connection in list(clients) + list(decoy_clients):
                 close(connection)
+            # Lines already read are queued, in accept order, before the
+            # writer is told to finish.
+            release(everything=True)
             selector.close()
             listener.close()
             self.path.unlink(missing_ok=True)

@@ -1355,3 +1355,96 @@ def test_malformed_forward_stats_are_refused_and_keep_the_last_report(running):
     send(server, forward_stats(sent=77) + b"\n")
     wait_for(lambda: server.refused["peer_refused"] == 1)
     assert server.edge_forward["sent"] == 40
+
+
+def observation(action, severity):
+    """One line of the same incident; both carry the same Edge time."""
+    value = edge_event()
+    value["normalized"]["severity"] = severity
+    value["defense"]["action"] = value["enforcement"]["selected_action"] = action
+    return json.dumps(value).encode() + b"\n"
+
+
+def connect(server):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(1)
+    client.connect(str(server.path))
+    return client
+
+
+def transitions(server):
+    ledger = AuditLedger(next((server.state / "incidents").glob("*.jsonl")))
+    return [(e.event["event_type"], e.event.get("most_severe"), e.event.get("edge_would"))
+            for e in ledger if e.event["event_type"] != "edge.incident.reset"]
+
+
+def test_later_connection_read_first_is_processed_in_accept_order(running):
+    # #327: notify is accepted before its line arrives, isolate is complete
+    # at once and read first. The escalation must still be recorded.
+    server = running(read_deadline=3, reorder_wait=3)
+    with connect(server) as earlier:
+        send(server, observation("isolate", 1))
+        time.sleep(0.3)
+        assert server.processed == 0, "the later line waits for the earlier connection"
+        earlier.sendall(observation("notify", 4))
+    wait_for(lambda: server.processed == 2)
+    assert server.accepted == 2 and not any(server.refused.values())
+    assert transitions(server) == [("edge.incident.opened", 4, "notify"),
+                                   ("edge.incident.updated", 1, "isolate")]
+    stored = [json.loads(line)["event"]["defense"]["action"]
+              for line in next((server.state / "evidence").glob("*.jsonl")).read_text().splitlines()]
+    assert stored == ["notify", "isolate"]
+
+
+@pytest.mark.parametrize("finish", [True, False])
+def test_unfinished_earlier_connection_holds_later_lines_only_briefly(running, finish):
+    # Past the reorder wait (or the read deadline) a stalled connection no
+    # longer holds the line behind it, and nothing is dropped.
+    server = running(read_deadline=0.6 if not finish else 3, reorder_wait=0.2)
+    with connect(server) as earlier:
+        send(server, observation("isolate", 1))
+        wait_for(lambda: server.processed == 1, timeout=2)
+        if finish:
+            earlier.sendall(observation("notify", 4))
+            earlier.shutdown(socket.SHUT_WR)
+            wait_for(lambda: server.processed == 2)
+        else:
+            wait_for(lambda: server.refused["read_deadline"] == 1)
+    assert server.accepted == server.processed == (2 if finish else 1)
+    assert transitions(server)[0] == ("edge.incident.opened", 1, "isolate")
+
+
+def test_deadline_of_earlier_connection_releases_the_later_line(running):
+    server = running(read_deadline=0.3, reorder_wait=30)
+    with connect(server) as earlier:
+        earlier.sendall(b"{")
+        send(server, observation("isolate", 1))
+        wait_for(lambda: server.refused["read_deadline"] == 1)
+        wait_for(lambda: server.processed == 1)
+    assert server.accepted == 1
+
+
+def test_lines_held_behind_an_unfinished_connection_are_kept_at_shutdown(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    server = daemon.IntakeServer(path=tmp_path / "in.sock", state=state,
+                                 status_path=tmp_path / "status.json", edge_uid=123,
+                                 peer_uid=lambda _: 123, read_deadline=30, reorder_wait=30)
+    stop, ready = threading.Event(), threading.Event()
+    thread = threading.Thread(target=server.serve,
+                              kwargs={"stop": stop.is_set, "ready": ready.set})
+    thread.start()
+    try:
+        assert ready.wait(3)
+        with connect(server):
+            send(server, observation("isolate", 1))
+            time.sleep(0.3)
+            assert server.processed == 0
+            stop.set()
+            thread.join(5)
+    finally:
+        stop.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert server.accepted == server.processed == 1
+    assert transitions(server)[0] == ("edge.incident.opened", 1, "isolate")

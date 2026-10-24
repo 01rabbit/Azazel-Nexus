@@ -212,6 +212,27 @@ def test_timestamps_excluded_from_stream_identity(captured):
     assert [s["paths"] for s in a["samples"]] == [s["paths"] for s in b["samples"]]
 
 
+@pytest.mark.parametrize("case", ["healthy", "knowledge_node_absent/hanging"])
+def test_unpaced_crossed_lines_keep_the_escalation(case):
+    # #327: both lines sent without waiting for processing, the later one read
+    # first by the intake. Accept order still yields opened then escalated,
+    # and every record is the same as in the paced run.
+    def run(paced):
+        events = []
+        loop = so06_loop.run_loop(case, audit=events.append, paced=paced)
+        return loop, events
+
+    (paced, paced_audit), (crossed, crossed_audit) = run(True), run(False)
+    assert [e["event_type"] for e in crossed_audit] == [
+        "edge.incident.opened", "edge.incident.escalated", "edge.incident.closed"]
+    assert crossed["expected_behaviour"]
+    assert [r["transition"] for r in crossed["observed"]["explanations"]] == [
+        "opened", "updated"]
+    assert crossed_audit == paced_audit
+    assert crossed["evidence_records"] == paced["evidence_records"]
+    assert crossed["observed"] == paced["observed"]
+
+
 def test_separate_captures_produce_identical_streams(captured):
     again = so06_replay.capture_replays(scenarios())
     assert [s["paths"] for s in emit(fresh(captured))["samples"]] == [

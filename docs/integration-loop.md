@@ -229,6 +229,38 @@ Concrete I1 limits and paths:
   incomplete connections beyond the reader slots: a completed connection is
   not refused when the slots are full, and sustained load shows as
   `queue_full` instead.
+- **Order across connections (#327).** Edge observations are processed in
+  the order the intake accepted their connections, not the order their lines
+  happen to be read. Edge sends from one thread, one connection per line, in
+  observation order, and the kernel hands connections over first in, first
+  out, so accept order is Edge's send order. A line read sooner from a later
+  connection (one accepted with its data already there, while an earlier one
+  was accepted before its line arrived) waits for every earlier connection
+  to finish, so notify then isolate is recorded as `opened` then the
+  escalation, however the reads interleave. The contract:
+  - The order key is the intake's own accept sequence. Edge's clock
+    (`normalized.ts`, `ingest_epoch`) is not used for ordering or for any
+    decision: it is Edge's claim, two observations may carry the same time
+    (the SO-06 golden pair does), and #17 leaves Edge's clock unfixed. With
+    no time involved there are no ties and no missing values.
+  - The wait is bounded: a line waits at most 250 ms (`REORDER_WAIT_S`) for
+    each earlier unfinished connection, never past that connection's read
+    deadline, and never with more than 1024 lines held behind one
+    (`REORDER_HELD`). Normally the earlier line is already in the kernel and
+    nothing waits beyond the same poll.
+  - A connection still unfinished after that wait no longer holds the lines
+    behind it. Its line, if it completes before the read deadline, is
+    processed when read, so it may come after later ones, as before #327.
+    Nothing is dropped for ordering: accepted equals processed.
+  - At shutdown, lines already read are queued in accept order before the
+    writer finishes.
+  - Each record's `received_at` is the intake time its connection was
+    accepted, so it follows the processing order too.
+  - Order between two different senders (two Edge processes, or a restart
+    overlapping its predecessor) is the order their connections reached the
+    kernel; nothing beyond that is promised. Consumers still treat an
+    incident without an escalation as possible (a late line as above, a rate
+    limited severe opening, a full ledger), and never rely on one alone.
 - Closed parsing preserves `defense` and `enforcement_status` verbatim.
   Enforcement plans and metadata are validated, then reduced to observation
   fields (mode, trace id, selected action, target, policy reason, result and

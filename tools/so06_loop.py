@@ -41,6 +41,10 @@ EDGE_UID, DECOY_UID = 61001, 61002
 #: The intake's own read deadline for Edge and decoy connections.
 READ_DEADLINE_S = 0.3
 WAIT_S = 5
+#: How long a crossed run leaves the later line alone before the earlier one
+#: is written: the intake reads the later connection first, well inside its
+#: reorder wait (`edge_intaked.REORDER_WAIT_S`).
+CROSS_S = 0.05
 DEPENDENCY_BOUNDARY = {
     "knowledge_node_absent": "knowledge-read",
     "remote_path_unreachable": "mio-advise",
@@ -202,8 +206,26 @@ def _records(directory: Path) -> list[dict]:
             for line in path.read_bytes().splitlines()]
 
 
-def run_loop(case: str, audit) -> dict:
-    """Run intake then the explainer once; `audit` receives forwarded events."""
+def _send_crossed(path: Path, lines: list[bytes], stack: ExitStack) -> None:
+    """Send without waiting, so the later connection is read first (#327).
+
+    The earlier line's connection is accepted before its line is written;
+    the later one is complete at once. Nothing waits for processing.
+    """
+    first, later = lines
+    early = stack.enter_context(_connect(path))
+    _send(path, later + b"\n")
+    time.sleep(CROSS_S)
+    early.sendall(first + b"\n")
+    early.shutdown(socket.SHUT_WR)
+
+
+def run_loop(case: str, audit, *, paced: bool = True) -> dict:
+    """Run intake then the explainer once; `audit` receives forwarded events.
+
+    `paced` sends each line after the one before is processed; otherwise the
+    two lines go without waiting, the later one read first by the intake.
+    """
     from azazel_nexus_runtime import edge_intaked, incident_explaind, knowledge_client
 
     dependency, mode = case.split("/") if case != "healthy" else (None, None)
@@ -245,14 +267,19 @@ def run_loop(case: str, audit) -> dict:
                 _decoy_fault(server, decoy_mode, held)
                 lines = golden_lines()
                 # Each fixture line is a later observation than the one before
-                # (notify, then isolate). Every line has its own connection,
-                # and the intake reads ready connections in whatever order its
-                # selector reports them, so back-to-back sends may be
-                # processed in reverse. The next line goes only after this
-                # one is processed, as Edge's observations are apart in time.
-                for sent, line in enumerate(lines, start=1):
-                    _send(server.path, line + b"\n")
-                    _wait(lambda n=sent: server.processed == n, "Edge observations processed")
+                # (notify, then isolate), each on its own connection. The
+                # intake processes them in accept order (#327) even when it
+                # reads the later one first; a paced run still sends the next
+                # line only after this one is processed, as Edge's
+                # observations are apart in time.
+                if paced:
+                    for sent, line in enumerate(lines, start=1):
+                        _send(server.path, line + b"\n")
+                        _wait(lambda n=sent: server.processed == n,
+                              "Edge observations processed")
+                else:
+                    _send_crossed(server.path, lines, held)
+                    _wait(lambda: server.processed == len(lines), "Edge observations processed")
                 _wait(_decoy_settled(server, decoy_mode), "decoy outcome")
                 # Read while serving: the listener closes at shutdown.
                 decoy = {"listening": server.decoy_listening,
