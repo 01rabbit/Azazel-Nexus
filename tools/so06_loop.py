@@ -244,9 +244,15 @@ def run_loop(case: str, audit) -> dict:
             with ExitStack() as held:
                 _decoy_fault(server, decoy_mode, held)
                 lines = golden_lines()
-                for line in lines:
+                # Each fixture line is a later observation than the one before
+                # (notify, then isolate). Every line has its own connection,
+                # and the intake reads ready connections in whatever order its
+                # selector reports them, so back-to-back sends may be
+                # processed in reverse. The next line goes only after this
+                # one is processed, as Edge's observations are apart in time.
+                for sent, line in enumerate(lines, start=1):
                     _send(server.path, line + b"\n")
-                _wait(lambda: server.processed == len(lines), "Edge observations processed")
+                    _wait(lambda n=sent: server.processed == n, "Edge observations processed")
                 _wait(_decoy_settled(server, decoy_mode), "decoy outcome")
                 # Read while serving: the listener closes at shutdown.
                 decoy = {"listening": server.decoy_listening,
