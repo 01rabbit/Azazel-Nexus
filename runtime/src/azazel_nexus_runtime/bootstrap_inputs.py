@@ -5,6 +5,7 @@ not values loaded from approval.json. No enrollment, genesis, deadline reset,
 generation admission or service operation happens here.
 """
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Callable
 
@@ -318,6 +319,22 @@ def _observe_bootstrap_context(declared, observe_packages, observe_systemd_profi
         raise ApprovalRefused("protected bootstrap context observation refused") from None
 
 
+# Open only while ``_verified_observation`` runs with an installed-file bracket.
+# It records no result and grants nothing: it only lets the bracketed context
+# observation refuse when no enclosing adapter will observe the closure.
+_INSTALLED_FILES_BRACKET: ContextVar[bool] = ContextVar(
+    "azazel_bootstrap_installed_files_bracket", default=False,
+)
+
+
+def _require_bracket_for(observe, observe_installed_files):
+    """Refuse composing the closure-less context reader without a bracket."""
+    if (observe_installed_files is None
+            and type(getattr(observe, "observe_context", None))
+            is _BracketedBootstrapContextObservation):
+        raise ValueError("bracketed context observation requires installed file observation")
+
+
 @dataclass(frozen=True)
 class _BracketedBootstrapContextObservation:
     """Context observation whose installed-file evidence is taken outside it.
@@ -341,6 +358,8 @@ class _BracketedBootstrapContextObservation:
             raise ValueError("fixed bootstrap context observation readers required")
 
     def __call__(self) -> BootstrapContext:
+        if _INSTALLED_FILES_BRACKET.get() is not True:
+            raise ApprovalRefused("protected bootstrap context observation refused")
         return _observe_bootstrap_context(
             self.declared, self.observe_packages, self.observe_systemd_profile, None,
         )
@@ -501,8 +520,19 @@ def _verified_observation(observe, observe_installed_files=None):
     With ``observe_installed_files`` (the production composition), the closure
     is observed once right after the first observation and once after the last
     verification, and the two must be equal; nothing is carried to a later
-    call. Without it, ``observe`` itself must measure the closure.
+    call. Without it, ``observe`` itself must measure the closure, and the
+    closure-less ``_BracketedBootstrapContextObservation`` refuses.
     """
+    if observe_installed_files is None:
+        return _verified_observation_inner(observe, None)
+    token = _INSTALLED_FILES_BRACKET.set(True)
+    try:
+        return _verified_observation_inner(observe, observe_installed_files)
+    finally:
+        _INSTALLED_FILES_BRACKET.reset(token)
+
+
+def _verified_observation_inner(observe, observe_installed_files):
     before = observe()
     if (
         type(before) is not BootstrapObservation
@@ -563,6 +593,7 @@ class ProtectedBootstrapInputs:
         if (self.observe_installed_files is not None
                 and not callable(self.observe_installed_files)):
             raise ValueError("installed file observation producer required")
+        _require_bracket_for(self.observe, self.observe_installed_files)
 
     def __call__(self) -> BootstrapDeadline:
         try:
@@ -603,6 +634,7 @@ class ProtectedBootstrapInitialAdmission:
         if (self.observe_installed_files is not None
                 and not callable(self.observe_installed_files)):
             raise ValueError("installed file observation producer required")
+        _require_bracket_for(self.observe, self.observe_installed_files)
 
     def verify(self) -> VerifiedBootstrapApproval:
         try:

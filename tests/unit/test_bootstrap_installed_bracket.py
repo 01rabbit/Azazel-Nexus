@@ -305,3 +305,84 @@ def test_generation_admission_refuses_when_closure_changes_during_admission(comp
     with pytest.raises(ApprovalRefused):
         bi.protected_bootstrap_generation_admission()(composed.ctx)
     assert composed.events.count("files") == 2
+
+
+# --- review follow-ups: in-place changes and fail-closed composition ---------
+
+def _after_a_tick():
+    # Coarse kernel timestamps: make sure the change lands in a later tick.
+    import time
+    time.sleep(0.05)
+
+
+def test_in_place_rewrite_restored_between_observations_refuses(selection):
+    """Same inode, bytes changed and restored: only mtime/ctime differ."""
+    leaf, _raw, pin, _fd = selection
+    before = _once(selection)
+    original = leaf.read_bytes()
+    inode = leaf.stat().st_ino
+    _after_a_tick()
+    with open(leaf, "r+b") as handle:
+        handle.write(b"X" * len(original))
+        handle.seek(0)
+        handle.write(original)
+    assert leaf.stat().st_ino == inode
+    after = _once(selection)  # matches the pin on its own
+    assert after.selected == before.selected
+    with pytest.raises(ApprovalRefused):
+        bi._require_installed_files_unchanged(before, after, _context(pin))
+
+
+def test_mode_change_restored_between_observations_refuses(selection):
+    """chmod and back: only ctime differs."""
+    leaf, _raw, pin, _fd = selection
+    before = _once(selection)
+    stamp = leaf.stat()
+    _after_a_tick()
+    leaf.chmod(0o700)
+    leaf.chmod(0o755)
+    now = leaf.stat()
+    assert (now.st_ino, now.st_mtime_ns) == (stamp.st_ino, stamp.st_mtime_ns)
+    after = _once(selection)
+    with pytest.raises(ApprovalRefused):
+        bi._require_installed_files_unchanged(before, after, _context(pin))
+
+
+def _clock_observation():
+    reader = bi._bracketed_context_observation()
+    return bi.ProtectedAdministratorClockObservation(reader)
+
+
+@pytest.mark.parametrize("adapter", [bi.ProtectedBootstrapInputs,
+                                     bi.ProtectedBootstrapInitialAdmission])
+def test_bracketed_context_reader_without_bracket_is_refused_at_composition(adapter):
+    with pytest.raises(ValueError):
+        adapter(_clock_observation())
+    with pytest.raises(ValueError):
+        adapter(_clock_observation(), observe_installed_files=None)
+
+
+def test_bracketed_context_reader_refuses_outside_a_bracket(composed):
+    reader = bi._bracketed_context_observation()
+    with pytest.raises(ApprovalRefused):
+        reader()
+    # Hidden behind a wrapper, composition cannot see it; the call still refuses.
+    wrapped = bi.ProtectedAdministratorClockObservation(lambda: reader())
+    with pytest.raises(ApprovalRefused):
+        bi.ProtectedBootstrapInputs(wrapped)()
+    with pytest.raises(ApprovalRefused):
+        bi.ProtectedBootstrapInitialAdmission(wrapped).verify()
+    assert "files" not in composed.events
+    assert "advance_deadline" not in composed.events
+    assert "declared" not in composed.events
+
+
+def test_bracket_is_closed_after_each_adapter_call(composed):
+    bi.protected_bootstrap_inputs()()
+    with pytest.raises(ApprovalRefused):
+        bi._bracketed_context_observation()()
+    composed.state.change_at = 4  # the second refresh's "after" observation
+    with pytest.raises(ApprovalRefused):
+        bi.protected_bootstrap_inputs()()
+    with pytest.raises(ApprovalRefused):
+        bi._bracketed_context_observation()()
