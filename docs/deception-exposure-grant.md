@@ -1314,8 +1314,8 @@ A3 fails) remain fallbacks, taken only on a recorded VM result.
     ingress interfaces and off for management and observation]** Written
     out in [how outside peers reach the decoy](deception-exposure-reachability.md),
     which adds five narrowing conditions (its §9, R1–R5), adopted as
-    defaults the owner may overturn, and one open question for the owner
-    (R6, its reading of commissioning §2).
+    defaults the owner may overturn, and one question for the owner (R6, its
+    reading of commissioning §2), answered on 2026-10-24 as proposed.
 12. Firewall coexistence? **[the tier is withheld while `nftables.service`,
     `firewalld.service` or `netfilter-persistent.service` is enabled; Edge
     enforce posture and the tier mutually exclusive until Edge agrees on
