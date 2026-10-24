@@ -178,7 +178,7 @@ and `absent`, `refusing`, `hanging`, `corrupt`, `expired`.
 These are injected dependency responses at the consumer boundary: not
 configured, declined, pending beyond deadline, invalid JSON and expired data.
 A harness-owned virtual clock advances the pending response beyond the 10 ms
-budget; the production deadline helper must reject it. There is no real sleep
+budget; the production deadline helper must reject it. In this check there is no real sleep
 or blocking callee. This tests synchronous deadline consumption, not network
 cancellation or a preemptive timeout of arbitrary code.
 
@@ -190,13 +190,67 @@ continuation is detected and recorded as `expected_behaviour: false` and
 `execution_result: FAIL`. Arbitrary injected runners and supplied output traces
 are no longer accepted by the CLI as execution evidence.
 
-**The Edge evidence, evaluation and enforcement-lease execution ports are not
-implemented here.** Those three paths are empty and listed individually in
-`not_driven` with a reason, for every run. They can never contribute a pass.
-The actual Nexus audit ledger is exercised with each input event, including
-hash chaining, durable file writes and verification. All current in-repo
-records therefore say `execution_result: FAIL`; this is partial consumer
-execution coverage, not a completed SO-06 gate. A failed run is retained.
+Each run also drives the consumer loop in `tools/so06_loop.py` with fresh
+state. The two golden Edge observations of the integrated loop (lines 4 and 6
+of `tests/fixtures/edge/rust_event_engine_v1.jsonl`, notify then isolate) go
+over a Unix socket into the real `IntakeServer`: closed parsing, the evidence
+store and the incident ledger. The real `Explainer` then reads that incident
+chain, calls the production M.I.O. and Knowledge clients, and forwards the
+incident transitions (opened, escalated, shutdown close) into the same durable
+`AuditLedger` as the input events. Intake and explainer share one fixed clock,
+so two runs can be compared byte for byte.
+
+The fault is injected where this loop actually meets each dependency:
+
+| Dependency | Boundary the loop calls | absent / refusing / hanging / corrupt / expired |
+| --- | --- | --- |
+| Deception | the decoy socket of the same `IntakeServer` | not configured / connects and closes without a line / partial line held past the intake's own read deadline / invalid JSON / interaction an hour old (`DECOY_CLOCK`) |
+| Knowledge | `knowledge.lookup` under `lookup_context` | no socket / declared refusal / reply pending past the caller's deadline / malformed refs / no rows served, as for expired claims (`no_context`) |
+| Remote cognition | `mio.advise`, the only way the loop reaches cognition | no socket / declared refusal / reply pending past the caller's deadline / reply the consumer refuses / deterministic handoff that `fell back` |
+
+For Knowledge and M.I.O. only the socket transport under the production
+clients is replaced, because the real one verifies service accounts. The
+clients' deadline argument, error classification and reply validation run
+unchanged; `hanging` uses harness-owned virtual time, as above. The shipped
+M.I.O. entry never admits the remote route (it passes no remote request and no
+opt-in), so a remote loss could reach this loop only through `mio.advise`.
+Faulting that boundary covers more than remote loss does. The decoy's
+`hanging` uses the intake's real read deadline.
+
+The adapter checks each fault against an independent table of where it must be
+consumed: the decoy refusal code or acceptance, each explanation's Knowledge
+state, M.I.O. route and failure codes, and one call per explanation at each
+boundary. A fault that did not arrive, or a changed client mapping, makes
+`expected_behaviour: false`.
+
+Two paths are now driven: **`evidence_records`** (the intake's evidence
+store) and **`audit_chain`** (input events, then the forwarded incident
+transitions). Every fault run is compared with the healthy run, and a driven
+path must have records in the healthy run. Tests show a decoy interaction
+stored as Edge evidence, or an audit record that depends on Knowledge, being
+reported as dropped or divergent. The bundle records this as `evidence_source`:
+the evidence comes from the golden fixture, and Edge itself is not executed.
+
+**Two paths remain `not_driven`, with a reason in every run.** A `not_driven`
+path must be empty and the same in every run, and `audit_chain` can never be
+`not_driven`.
+
+- `evaluation_outcomes`: no Edge evaluator runs here. Nexus records Edge's
+  decision verbatim and does not evaluate. The real observe-only Edge Core
+  binary (as used by the I5 harness) stamps wall-clock
+  `normalized.ingest_epoch` and `enforcement.metadata.release_due_epoch` into
+  every observation. Two runs on the same `eve.json` therefore differ in
+  exactly those fields. Byte identity across runs would need a pinned Edge
+  clock or a declared exclusion, and neither is decided.
+- `enforcement_lease_records`: the shipped Edge Core is observe-only
+  (`ENFORCE=false`, `DRY_RUN=true`), and intake refuses any other posture
+  (`EDGE_NOT_OBSERVE_ONLY`). Nothing issues an enforcement lease until
+  Azazel-Edge#412 declares the single enforcement path.
+
+So every sample still fails, and all current in-repo records say
+`execution_result: FAIL`. This is partial consumer execution coverage, not a
+completed SO-06 gate. A failed run is retained. Container runs are not
+hardware evidence.
 
 Input JSON contains a nonempty `scenarios` array; each entry has a unique `id`
 and nonempty `inputs` array of event objects. For example:
@@ -206,14 +260,14 @@ and nonempty `inputs` array of event objects. For example:
 ```
 
 ```sh
-PYTHONPATH=src python3 -m tools.so06_replay inputs.json record.json \
+PYTHONPATH=src:runtime/src python3 -m tools.so06_replay inputs.json record.json \
   --commit FULL_MEASURED_COMMIT --configuration 'exact scenario/product declaration'
 PYTHONPATH=src python3 -m tools.service_objectives record.json
 ```
 
 The CLI executes the adapter and exits 1 for FAIL (0 for PASS, 2 for invalid
 input). The record retains captured runs under `configuration.replay_inputs`
-with schema `azazel-nexus/so06-input/v2`; validation recomputes the observations'
+with schema `azazel-nexus/so06-input/v3`; validation recomputes the observations'
 comparisons and execution result. This structural recomputation returns
 `shape_only`, not an attested gate verdict. Operator attestation may be added
 outside the harness using the same canonical signing contract above.
