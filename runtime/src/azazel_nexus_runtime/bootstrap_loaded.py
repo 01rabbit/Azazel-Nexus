@@ -44,9 +44,28 @@ _SERVICE_EXPECTED = {
     "Group": ("s", ""), "Environment": ("as", []),
     "EnvironmentFiles": ("a(sb)", []), "PassEnvironment": ("as", []),
     "UnsetEnvironment": ("as", list(BOOTSTRAP_UNSET_ENVIRONMENT)),
-    "PAMName": ("s", ""), "SupplementaryGroups": ("as", []),
+    "PAMName": ("s", ""),
     "RootDirectory": ("s", ""), "RootImage": ("s", ""),
 }
+#: Per-unit pins, each exactly the value of the shipped unit and overlay
+#: profile, never a subset or a wildcard (#93). commissiond carries
+#: `SupplementaryGroups=azknowledge` (#86: it reads the Knowledge Lite trust
+#: anchor through that group); auditd carries none.
+#: tests/unit/test_runtime_bootstrap_loaded_drift.py compares every pin
+#: with the shipped unit files and the rendered overlay.
+_SERVICE_EXPECTED_BY_UNIT = {
+    UnitKey.AUDITD: {"SupplementaryGroups": ("as", [])},
+    UnitKey.COMMISSIOND: {"SupplementaryGroups": ("as", ["azknowledge"])},
+}
+
+
+def _service_expected(unit):
+    """The fixed service pins for one unit of the pair (fresh copies)."""
+
+    # The two tables are disjoint (the drift test checks it).
+    merged = {**_SERVICE_EXPECTED, **_SERVICE_EXPECTED_BY_UNIT[unit]}
+    return {key: (signature, list(value) if type(value) is list else value)
+            for key, (signature, value) in merged.items()}
 
 
 @dataclass(frozen=True)
@@ -178,7 +197,7 @@ def _projection(unit, unit_properties, service_properties, dependencies, service
             values[key] = observed
     except Exception:
         raise _Stage("dependencies") from None
-    service_expected = dict(_SERVICE_EXPECTED)
+    service_expected = _service_expected(unit)
     service_expected.update(service_settings)
     service_expected["User"] = ("s", profile.account)
     service_expected.update({key: (_EXEC_SIGNATURE, []) for key in _COMMANDS})
