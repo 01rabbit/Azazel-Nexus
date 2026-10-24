@@ -393,3 +393,41 @@ def test_no_step_places_private_key_or_secret_material() -> None:
         assert word not in section, word
     for document in _blocks(section, "json") + _blocks(section, "toml"):
         assert not re.search(r"[0-9a-f]{32,}", document), "literal key material in the document"
+
+
+# Only these commands may appear in the procedure's shell blocks. Anything else
+# (a `cp` of a .pem, a `umask 000`, a `mkdir -m`) escapes the owner/mode parsing
+# above, so it fails here instead.
+ALLOWED_COMMANDS = (
+    "sudo install ",
+    "sudo chown ",
+    "sudo chmod ",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -c '",
+    "sudo runuser -u azknowledge -- /opt/azazel-nexus/venv/bin/python -I -c '",
+    "sudo az-nexus-commission trust-repin ",
+    "sudo azazel-nexus status",
+    "sudo azazel-nexus setup",
+    "sha256sum ",
+)
+
+
+def _shell_commands(section: str) -> list[str]:
+    """Each command line of the shell blocks, skipping the quoted programs."""
+
+    commands = []
+    for block in _blocks(section, "sh"):
+        quoted = False
+        for line in block.splitlines():
+            if not quoted and line.strip():
+                commands.append(line)
+            if line.count("'") % 2:
+                quoted = not quoted
+    return commands
+
+
+def test_the_procedure_runs_only_the_allowed_commands() -> None:
+    commands = _shell_commands(_section())
+    assert len(commands) >= 9
+    for command in commands:
+        assert command.startswith(ALLOWED_COMMANDS), command
+        assert ".pem" not in command and "umask" not in command, command
