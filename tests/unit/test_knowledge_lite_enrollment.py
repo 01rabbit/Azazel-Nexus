@@ -167,6 +167,11 @@ def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> Non
     for name in ("trust-current", "trust-generations/1.json", "trust-generations/1.revocation.json"):
         assert f"`{name}`" in steps[5]
         assert (trust_root / name).is_file()
+    assert sorted(entry.name for entry in trust_root.iterdir()) == [
+        "trust", "trust-current", "trust-generations", "trust-reserved",
+        "trust-staging", "trust.json"]
+    for name in ("trust-reserved", "trust-staging"):
+        assert f"`{name}`" in steps[5]
     reasons.append(_reason(tmp_path))
 
     # Step 6: the inbox the document names, and the entry id is the file's SHA-256.
@@ -407,7 +412,7 @@ ALLOWED_COMMANDS = (
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin ",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup",
-    "sha256sum ",
+    "sudo sha256sum ",
 )
 
 
@@ -522,3 +527,13 @@ def test_the_status_module_prints_when_run_with_m(tmp_path) -> None:
                             capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60)
     assert result.returncode == 0, result.stderr
     assert "status" in result.stdout and "setup" in result.stdout
+
+
+def test_every_command_of_the_procedure_runs_as_root() -> None:
+    """The store and trust roots are 2750 and their files 0640 or tighter, so
+    an operator outside their groups cannot even read them: on the VM a bare
+    `sha256sum` of the inbox bundle was refused (#93, 2026-10-25)."""
+
+    for command in _shell_commands(_section()):
+        if not command.startswith("' "):
+            assert command.startswith("sudo "), command
