@@ -393,3 +393,78 @@ def test_no_step_places_private_key_or_secret_material() -> None:
         assert word not in section, word
     for document in _blocks(section, "json") + _blocks(section, "toml"):
         assert not re.search(r"[0-9a-f]{32,}", document), "literal key material in the document"
+
+
+# Only these commands may appear in the procedure's shell blocks. Anything else
+# (a `cp` of a .pem, a `umask 000`, a `mkdir -m`) escapes the owner/mode parsing
+# above, so it fails here instead.
+ALLOWED_COMMANDS = (
+    "sudo install ",
+    "sudo chown ",
+    "sudo chmod ",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -c '",
+    "sudo runuser -u azknowledge -- /opt/azazel-nexus/venv/bin/python -I -c '",
+    "sudo az-nexus-commission trust-repin ",
+    "sudo azazel-nexus status",
+    "sudo azazel-nexus setup",
+    "sha256sum ",
+)
+
+
+# The one substitution a command line may carry is the timestamp argument, and
+# its only angle brackets are quoted placeholders such as "<entry id>".
+TIMESTAMP = '"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+SHELL_METACHARACTERS = (";", "&", "|", "$(", "`", ">", "<")
+
+
+def _shell_commands(section: str) -> list[str]:
+    """Each command line of the shell blocks, skipping the quoted programs.
+
+    A program opens on a line ending in `-c '` and closes on the next line that
+    starts with `' `; its arguments follow on that closing line, which is
+    checked as a command too.
+    """
+
+    commands = []
+    for block in _blocks(section, "sh"):
+        lines = iter(block.splitlines())
+        for line in lines:
+            if not line.strip():
+                continue
+            commands.append(line)
+            if line.endswith(" -c '"):
+                for inner in lines:
+                    if inner.startswith("' "):
+                        commands.append(inner)
+                        break
+                else:
+                    raise AssertionError(f"unclosed program after: {line}")
+    return commands
+
+
+def test_the_procedure_uses_only_sh_json_and_toml_blocks() -> None:
+    fences = re.findall(r"^```(\S*)$", _section(), flags=re.M)
+    openings = fences[0::2]
+    assert all(fence == "" for fence in fences[1::2]), fences
+    assert set(openings) <= {"sh", "json", "toml"}, openings
+
+
+def test_the_procedure_runs_only_the_allowed_commands() -> None:
+    commands = _shell_commands(_section())
+    assert len(commands) >= 11
+    for command in commands:
+        if command.startswith("' "):
+            command = command[2:]
+        else:
+            assert command.startswith(ALLOWED_COMMANDS), command
+        plain = re.sub(r'"<[^<>"]*>"', "", command.replace(TIMESTAMP, ""))
+        for metacharacter in SHELL_METACHARACTERS:
+            assert metacharacter not in plain, command
+        assert ".pem" not in command and "umask" not in command, command
+
+
+@pytest.mark.parametrize("step", (3, 7))
+def test_the_documented_programs_change_no_permissions(step) -> None:
+    program = _python(_steps()[step])
+    for word in ("chmod", "chown", "umask", "subprocess", "os.system", "shutil"):
+        assert word not in program, word
