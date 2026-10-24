@@ -49,12 +49,15 @@ payloads. A changed separator byte is also refused.
 
 ## Continuity and local repin recovery
 
-`commission_policy(root, new_policy, commissioning_digest=..., anchors_key_roles=...,
-anchors_keys=...)` is the local commissioning/repin integration seam. Its caller
-must supply the independently read anchor roles and keys. It must run under the
-local authorization, confirmation and audit ceremony implemented by the repin
-lane; this library function does not authenticate a principal or expose a remote
-operation. The protected policy record must be retained across commissioning.
+`prepare_policy_record(root, new_policy, commissioning_digest=..., anchors_key_roles=...,
+anchors_keys=...)` performs the continuity checks below without publishing.
+`TrustStore.repin` calls it under the local authorization, confirmation and
+audit ceremony, and that is the only production caller. `commission_policy`
+takes the same arguments and also writes the record. No production code calls
+it: the lab provisioning and the end-to-end fixture use it to provision test
+roots. Neither function authenticates a principal or exposes a remote
+operation. Their caller must supply the independently read anchor roles and
+keys. The protected policy record must be retained across commissioning.
 
 Each accepted list first persists its cumulative payload as a floor, together
 with the SHA-256 of that exact signed blob, in the protected policy record.
@@ -105,5 +108,8 @@ operations. Retained store instances refuse a superseded policy. Repin audit
 adds old/new revocation-policy fingerprints to the original six provenance
 fields; absent policy is `null`. See [trust repin](trust-repin.md) for the exact
 fingerprint encoding and failure semantics. The low-level `commission_policy`
-helper remains a trusted provisioning primitive, with no runtime exposure;
-production introduction and recovery use repin exclusively.
+helper remains a trusted provisioning primitive for test roots, with no runtime
+exposure; production introduction and recovery use repin exclusively. On a
+fresh node the initial `TrustStore.pin` writes no policy, so the first repin
+introduces it (keeping the pinned bundle keys is allowed). The full order is
+[Knowledge Lite consumer §11](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
