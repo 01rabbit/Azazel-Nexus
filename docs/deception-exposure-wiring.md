@@ -4,9 +4,10 @@ Owner: [#196](https://github.com/01rabbit/Azazel-Nexus/issues/196) (the grant
 phase G6).
 Status: **proposed; revised after the cross review of the G6 parts and the
 independent review of #301. Not to be merged as code before G5 (`HG-06`, `HG-09`,
-`HG-10` accepted on the real host) and before the owner answers R6
+`HG-10` accepted on the real host). R6
 ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design))
-(the questions of §9 below were answered on 2026-10-23, each as
+was answered on 2026-10-24 as proposed
+(the other questions of §9 below were answered on 2026-10-23, each as
 recommended).** This document changes no code.
 Related: [granting the exposure tier](deception-exposure-grant.md) (§4.3,
 §4.4, §5, §6.3, §7, §9, §10, §11) ·
@@ -865,8 +866,11 @@ a reboot.
 **Answered 2026-10-23** for Q-B to Q-E below, each as recommended: **B0**
 (no stop), **Q-C yes** (`ACTIVATION_EXPOSURE`), **Q-N B1** (the route
 dump module), **V2**, **D2**, **A1**, and exclusivity **as a withhold**
-(Q-E). Q-R6 is still open, and G6 is still not merged before it and G5.
-The questions are kept below as they were asked.
+(Q-E). **Q-R6 was answered on 2026-10-24 as proposed**
+([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design)
+item 6), with the `.link` name pin placed before commissioning
+(reachability §5, §8). G6 is still not merged before G5. The questions are
+kept below as they were asked.
 
 - **Q-R6. R6** ([reachability §9](deception-exposure-reachability.md#9-conditions-added-by-this-design)):
   is forwarding switched on for the ingress before activation compatible
