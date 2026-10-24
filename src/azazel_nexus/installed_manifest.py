@@ -286,11 +286,15 @@ def _document(manifest):
     return document
 
 
+def _canonical_bytes(manifest):
+    return json.dumps(_document(manifest), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def encode_installed_manifest(manifest: InstalledManifest) -> bytes:
     """Return canonical bytes for a nonempty, bounded selected-file manifest."""
     try:
         _validate_manifest(manifest)
-        raw = json.dumps(_document(manifest), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        raw = _canonical_bytes(manifest)
         if len(raw) > _MAX_RAW_BYTES:
             raise ApprovalRefused("installed manifest encoding exceeds bound")
         return raw
@@ -309,7 +313,9 @@ def decode_scope():
     the ``with`` block, is emptied and discarded on exit, and nested use joins the outer
     scope. Callers still read and hash every file afresh; a hit requires the
     freshly supplied bytes to equal the previously decoded bytes exactly, and
-    refusals are never memoized.
+    refusals are never memoized. ``installed_link_resolver`` skips only the
+    repeated validation of the very manifest object this scope decoded (and
+    validated) from those bytes; any other object is validated as before.
     """
     if _DECODE_SCOPE.get() is not None:
         yield
@@ -336,6 +342,12 @@ def decode_installed_manifest(raw: bytes, *, expected_digest: str) -> InstalledM
     manifest = _decode_installed_manifest(raw, expected_digest)
     scope[expected_digest] = (raw, manifest)
     return manifest
+
+
+def _decoded_in_scope(manifest):
+    """True only for the exact object a successful decode returned in this scope."""
+    scope = _DECODE_SCOPE.get()
+    return scope is not None and any(hit[1] is manifest for hit in scope.values())
 
 
 def _decode_installed_manifest(raw, expected_digest):
@@ -396,9 +408,11 @@ def _decode_installed_manifest(raw, expected_digest):
                 if type(item) is not dict or set(item) != {"path", "target"}:
                     raise ApprovalRefused("installed manifest link fields refused")
                 links.append(InstalledLink(**item, v4=version == 4))
+        # __post_init__ validates this new frozen object; the canonical
+        # comparison below encodes the same object without validating it again.
         manifest = InstalledManifest(tuple(entries), tuple(directories), version,
                                      tuple(links))
-        if encode_installed_manifest(manifest) != raw:
+        if _canonical_bytes(manifest) != raw:
             raise ApprovalRefused("installed manifest is not canonical")
         return manifest
     except Exception:
@@ -411,10 +425,13 @@ def installed_link_resolver(manifest: InstalledManifest):
     The returned function validates each path and resolves it exactly like
     resolve_installed_link, with the same refusals. It holds no state beyond
     maps derived from this one validation; callers must not keep it across
-    observations.
+    observations. Inside one ``decode_scope`` the frozen object that scope
+    decoded from byte-identical, pinned input was already validated by that
+    decode, so it is not validated again; every other object is.
     """
     try:
-        _validate_manifest(manifest)
+        if not _decoded_in_scope(manifest):
+            _validate_manifest(manifest)
         version = manifest.version
         roots = _ROOTS_V4 if version == 4 else _ROOTS_V3
         file_paths = frozenset(entry.path for entry in manifest.files)

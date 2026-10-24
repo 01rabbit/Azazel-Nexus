@@ -129,7 +129,9 @@ def _project_modules(registry, manifest, roots, main_path):
 
     files, absent, modules = set(), {"etc/ld.so.preload"}, []
     attribute_count = 0
-    # One manifest validation per projection; never reused across projections.
+    # One resolver per projection; never reused across projections. The
+    # resolver validates the manifest unless it is the object decoded inside
+    # the current measurement's decode_scope (validated there, same bytes).
     resolve = installed_link_resolver(manifest)
     resolved = {}
 
