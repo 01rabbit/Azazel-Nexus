@@ -1,6 +1,8 @@
 """Drive Nexus consumer policy, integration reporting and durable audit for SO-06.
 
-Missing Edge execution paths are explicitly not_driven and cannot pass.
+Evidence records and the audit chain come from the real consumer loop in
+`tools.so06_loop`. Paths that need Edge execution are explicitly not_driven
+and cannot pass.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from azazel_nexus import degradation, integration
 from azazel_nexus.audit import AuditLedger, canonical_event_bytes
 from azazel_nexus.capability import CORE_CAPABILITIES
 from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
+from tools import so06_loop
 from tools.service_objectives import (
     CASES,
     PATHS,
@@ -36,6 +39,25 @@ EXPECTED = {
     "expired": "stale",
 }
 BUDGET_MS = 10
+INPUT_SCHEMA = "azazel-nexus/so06-input/v3"
+EVIDENCE_SOURCE = (
+    "golden fixture replay: tests/fixtures/edge/rust_event_engine_v1.jsonl lines 4 and 6, "
+    "hand-derived Edge observations; Edge is not executed"
+)
+NOT_DRIVEN = {
+    "evaluation_outcomes": (
+        "Edge's evaluator is not executed here: the observations are the hand-derived "
+        "golden fixture and Nexus records Edge's decision without evaluating. The real "
+        "observe-only Edge binary stamps wall-clock normalized.ingest_epoch and "
+        "enforcement.metadata.release_due_epoch into every observation, so two separate "
+        "runs are not byte-identical without a pinned Edge clock or a declared exclusion"
+    ),
+    "enforcement_lease_records": (
+        "the shipped Edge Core is observe-only (ENFORCE=false, DRY_RUN=true) and intake "
+        "refuses any other posture (EDGE_NOT_OBSERVE_ONLY); nothing issues an enforcement "
+        "lease until Azazel-Edge#412 declares the single enforcement path"
+    ),
+}
 
 
 class FaultClock:
@@ -126,7 +148,10 @@ def nexus_adapter(events: list, case: str) -> dict:
         ledger = AuditLedger(Path(temporary) / "audit.jsonl")
         for event in events:
             ledger.append(event)
+        # The explainer forwards incident transitions into the same ledger.
+        loop = so06_loop.run_loop(case, audit=ledger.append)
         ledger.verify()
+        paths["evidence_records"] = loop["evidence_records"]
         paths["audit_chain"] = [
             {
                 "sequence": e.sequence,
@@ -148,6 +173,7 @@ def nexus_adapter(events: list, case: str) -> dict:
         == ("extended_knowledge" in outcome.retained)
         and (view.row("deception_supplier").value == "AZ-06 peer")
         == ("full_host_redirect" in outcome.retained)
+        and loop["expected_behaviour"]
     )
     return {
         "paths": paths,
@@ -157,12 +183,9 @@ def nexus_adapter(events: list, case: str) -> dict:
             "continues": continues,
             "expected_behaviour": expected,
             "integration_rows": [row.as_event() for row in view.rows],
+            "consumer_loop": loop["observed"],
         },
-        "not_driven": {
-            path: "Edge execution port is not implemented in this repository; no supplied trace counts as execution"
-            for path in PATHS
-            if path != "audit_chain"
-        },
+        "not_driven": dict(NOT_DRIVEN),
     }
 
 
@@ -190,7 +213,8 @@ def capture_replays(
                 **observation,
             }
         captured.append({"id": scenario["id"], "inputs": inputs, "runs": runs})
-    bundle = {"schema": "azazel-nexus/so06-input/v2", "scenarios": captured}
+    bundle = {"schema": INPUT_SCHEMA, "evidence_source": EVIDENCE_SOURCE,
+              "scenarios": captured}
     replay_samples(bundle)
     return bundle
 
@@ -235,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
             product_configuration=args.configuration,
         )
         args.output.write_bytes(canonical_event_bytes(record) + b"\n")
-    except (ValueError, KeyError, TypeError, OSError) as exc:
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
         parser.exit(2, f"replay refused: {exc}\n")
     return 0 if record["execution_result"] == "PASS" else 1
 

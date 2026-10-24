@@ -142,9 +142,10 @@ def referenced_artifacts(record: dict):
 def replay_samples(bundle: dict) -> list[dict]:
     """Evaluate captured observations; acquisition is in the in-repo adapter."""
     require(
-        bundle.get("schema") == "azazel-nexus/so06-input/v2",
+        bundle.get("schema") == "azazel-nexus/so06-input/v3",
         "unsupported replay schema",
     )
+    require(nonempty(bundle.get("evidence_source")), "evidence source required")
     scenarios = bundle["scenarios"]
     require(isinstance(scenarios, list) and bool(scenarios), "scenarios required")
     samples = []
@@ -158,11 +159,27 @@ def replay_samples(bundle: dict) -> list[dict]:
         require(bool(scenario["inputs"]), "fixed inputs required")
         runs = scenario["runs"]
         require(set(runs) == set(CASES), "healthy plus all 15 fault runs required")
+        undriven = runs["healthy"]["not_driven"]
+        require(
+            isinstance(undriven, dict)
+            and set(undriven) <= set(PATHS) - {"audit_chain"},
+            "only Edge-dependent paths may be not_driven; audit is always driven",
+        )
+        for name in PATHS:
+            if name not in undriven:
+                require(
+                    bool(runs["healthy"]["paths"][name]),
+                    "a driven path must carry records in the healthy run",
+                )
         for run in runs.values():
             require(
-                set(run["not_driven"]) == set(PATHS) - {"audit_chain"}
+                run["not_driven"] == undriven
                 and all(nonempty(reason) for reason in run["not_driven"].values()),
-                "unimplemented Edge paths must be not_driven with reasons",
+                "every run must declare the same not_driven paths, with reasons",
+            )
+            require(
+                all(run["paths"][name] == [] for name in undriven),
+                "a not_driven path carries no records",
             )
             require(
                 run["inputs_sha256"] == digest(scenario["inputs"]),
