@@ -415,7 +415,10 @@ The CLI needs a local terminal and asks you to type fresh confirmation words
 `compromise`. None of the three names a first introduction; this procedure
 uses `rotation`. On success it prints
 `Trust anchors replaced; generation 1.` and writes `trust-current`,
-`trust-generations/1.json` and `trust-generations/1.revocation.json`. The
+`trust-generations/1.json` and `trust-generations/1.revocation.json`. It also
+leaves its reservation file `trust-reserved` and an empty `trust-staging`
+directory beside them; every file has `trust.json`'s owner, group and mode,
+and the directories are `0750`. The
 commissioning ledger records `trust.repin.authorized` and
 `trust.repin.promoted`. Status now reports `no_bundle`.
 
@@ -430,10 +433,13 @@ The installer creates no inbox.
 ```sh
 sudo install -d -m 2750 -o azknowledge -g azazel-operator /var/lib/azazel/knowledge/inbox
 sudo install -m 0640 -o azknowledge -g azazel-operator site-lite.tar.gz /var/lib/azazel/knowledge/inbox/site-lite.tar.gz
-sha256sum /var/lib/azazel/knowledge/inbox/site-lite.tar.gz
+sudo sha256sum /var/lib/azazel/knowledge/inbox/site-lite.tar.gz
 ```
 
-The SHA-256 hex is the entry id (§7).
+The SHA-256 hex is the entry id (§7). The store is `2750` and the bundle
+`0640`, both `azknowledge:azazel-operator`, so an account outside
+`azazel-operator` cannot read it; the checksum runs as root like every other
+line of this procedure.
 
 ### Step 7: first import (no shipped entrypoint)
 
@@ -468,7 +474,13 @@ sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup
 
 Status shows `state: available` and `reason: available`. Setup shows
 `knowledge-store: done` and `knowledge-trust: done`. `knowledge.status` from
-`knowledge-lited` uses the same reader. That unit is also masked at install.
+`knowledge-lited` uses the same reader. That unit is also masked at install;
+this procedure does not start it. The regular start is an activation grant. A
+disposable VM may check it with the rehearsal-only start of the
+[integrated loop rehearsal §6](hil-runbooks/integration-loop-rehearsal.md#6-rehearsal-only-start-alternative-to-activation),
+which needs the controller `inactive`; that start is not a substitute for an
+activation grant, and the run record must say the rehearsal-only start was
+used.
 
 ### What was rehearsed
 
@@ -493,6 +505,46 @@ twice, auditd and commissiond stayed masked and never started, so the
 commissiond sandbox, the repin under it, steps 6 to 8 and `knowledge-lited`
 were not exercised there. That stop is recorded on #93; it is not a fault of
 this procedure. **VM software rehearsal, not hardware evidence.**
+
+On 2026-10-25 the order was taken twice more on the same VM, each time with
+new VM-only keys, destroyed afterwards. Both runs gave the same
+steps 1 to 4 as above. Pinning those keys to reach `available` exercised this
+enrollment procedure on a disposable VM only: the keys were made for that VM
+alone and destroyed, the VM was reverted to its snapshot, and the result is
+neither an owner approval nor hardware evidence. It is not the integrated
+loop run for which
+[integrated loop rehearsal §7](hil-runbooks/integration-loop-rehearsal.md#7-knowledge-lite)
+forbids pinning run-generated keys.
+
+- After #328 (main `64ff89e`) the controller published the auditd/commissiond
+  overlay about 6.6 s after it started, inside `TimeoutStartSec`, but the
+  loaded-unit inspection then refused commissiond (`loaded bootstrap
+  observation refused: service property`): it pinned `SupplementaryGroups` to
+  none, while commissiond's profile carries `azknowledge`. The controller
+  withdrew the overlay and exited before READY; both units stayed masked and
+  the audit ledger did not change. #330 fixed the pin.
+- After #330 (main `387ea0d`) the controller reached READY about 8.9 s after
+  it started, auditd was active at about 15.9 s and commissiond at about
+  26.4 s. Commissiond ran from the bootstrap overlay as `azcommission` with
+  the supplementary group `azknowledge`, umask `0027`, `ProtectSystem=strict`
+  and `ReadWritePaths=` its run and state leaves and
+  `/var/lib/azazel/lite-trust`. Step 5's repin, through the real CLI on a
+  pseudo-terminal, printed `Trust anchors replaced; generation 1.` and the
+  ledger recorded both events. Steps 6 to 8 then gave `no_bundle` and
+  `available`, so the four reasons were observed in order under real systemd.
+  No file under the trust root, the store or `/etc/azazel/commissioning`
+  was group- or other-writable. Stopping the controller ended the bootstrap
+  cleanly (both units stopped, overlay withdrawn). `knowledge-lited`, started
+  with the rehearsal-only start above and masked again afterwards, answered
+  `knowledge.status` with `state: available`, `reason_code: available`,
+  generation 1, and served one reference to a lookup; a query from root was
+  refused. A first attempt on that build was killed by the controller's
+  `WatchdogSec=30s` between the auditd and commissiond starts, at the moment
+  the VM's virtual disk logged a lost I/O completion; after a reboot the run
+  above passed. Step 6's checksum without `sudo` was refused for an account
+  outside `azazel-operator`, which is why it now runs as root.
+
+**VM software rehearsal, not hardware evidence.**
 
 ## Milestone 1 daemon status
 
