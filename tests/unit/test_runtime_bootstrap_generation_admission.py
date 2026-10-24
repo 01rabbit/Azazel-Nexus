@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from azazel_nexus.bootstrap_generation import VerifiedBootstrapGeneration
-from azazel_nexus.installed_files import SelectedInstalledFiles
+from azazel_nexus.installed_files import InstalledFilesObservation, SelectedInstalledFiles
 from azazel_nexus.operator_trust import ApprovalRefused
 from azazel_nexus_runtime.debian_packages import parse_package_output
 from azazel_nexus_runtime import bootstrap_inputs as inputs
@@ -12,10 +12,12 @@ from test_bootstrap_generation import NOW, _context
 
 @pytest.fixture(autouse=True)
 def installed_file_measurement(monkeypatch):
+    # The admission brackets itself with two single-walk observations (#324).
     monkeypatch.setattr(
         inputs,
-        "measure_bootstrap_installed_files",
-        lambda context: SelectedInstalledFiles(context.unit_closure_digest, 2, 128),
+        "observe_bootstrap_installed_files_once",
+        lambda context: InstalledFilesObservation(
+            SelectedInstalledFiles(context.unit_closure_digest, 2, 128), ()),
     )
 
 

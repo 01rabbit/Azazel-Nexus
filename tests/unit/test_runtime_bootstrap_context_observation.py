@@ -207,9 +207,11 @@ def test_malformed_source_types_are_redacted_as_approval_refused(source, values)
 def test_production_refresh_factory_composes_fixed_context_and_clock(monkeypatch):
     context_reader = object()
     clock_reader = object()
+    # Nexus#324: the refresh brackets the closure itself, so its context
+    # reader is the variant that does not walk the closure four times.
     monkeypatch.setattr(
         bootstrap_inputs,
-        "protected_bootstrap_context_observation",
+        "_bracketed_context_observation",
         lambda: context_reader,
     )
 
@@ -224,3 +226,24 @@ def test_production_refresh_factory_composes_fixed_context_and_clock(monkeypatch
 
     assert type(refresh) is bootstrap_inputs.ProtectedBootstrapInputs
     assert refresh.observe is clock_reader
+    assert (refresh.observe_installed_files
+            is bootstrap_inputs.observe_bootstrap_installed_files_once)
+
+
+def test_bracketed_context_reader_uses_the_fixed_production_readers():
+    reader = bootstrap_inputs._bracketed_context_observation()
+
+    assert type(reader) is bootstrap_inputs._BracketedBootstrapContextObservation
+    assert reader.declared is bootstrap_inputs.load_declared_bootstrap_context
+    assert reader.observe_packages is bootstrap_inputs.observe_installed_packages
+    assert reader.observe_systemd_profile is bootstrap_inputs._observe_systemd_profile
+    assert not hasattr(reader, "measure_files")
+
+
+def test_unbracketed_context_observation_still_measures_twice_by_default():
+    """The public context observation keeps its own before/after measurement."""
+    observer, _expected, calls = _observation()
+
+    observer()
+
+    assert len(calls["measure_files"]) == 2

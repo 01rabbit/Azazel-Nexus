@@ -339,7 +339,9 @@ def test_real_factory_composition_is_exact_and_accepted_by_real_supervisor(evide
     observation = admission.observe
     assert type(observation) is bootstrap_inputs.ProtectedAdministratorClockObservation
     assert (type(observation.observe_context)
-            is bootstrap_inputs.ProtectedBootstrapContextObservation)
+            is bootstrap_inputs._BracketedBootstrapContextObservation)
+    assert (admission.observe_installed_files
+            is bootstrap_inputs.observe_bootstrap_installed_files_once)
     # Real supervisor construction with the real (unmocked) composition.
     h = Harness(evidence, initial_admission=admission)
     assert h.supervisor.initial_admission is admission

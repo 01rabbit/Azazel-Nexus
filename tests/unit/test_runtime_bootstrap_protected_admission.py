@@ -10,7 +10,9 @@ import pytest
 
 from azazel_nexus.bootstrap_generation import VerifiedBootstrapGeneration
 from azazel_nexus.bootstrap_prestart_policy import encode_prestart_policy
-from azazel_nexus.installed_files import SelectedInstalledFiles, _measure_at
+from azazel_nexus.installed_files import (
+    InstalledFilesObservation, SelectedInstalledFiles, _measure_at, _observe_once_at,
+)
 from azazel_nexus.installed_manifest import (
     InstalledDirectory, InstalledFile, InstalledManifest, encode_installed_manifest,
 )
@@ -87,7 +89,8 @@ def _wire(monkeypatch, *, profile=None, profiles=None, generations=None, policie
     )
     monkeypatch.setattr(inputs, "observe_installed_packages", lambda: package)
     monkeypatch.setattr(inputs, "validate_package_snapshot", lambda value: None)
-    monkeypatch.setattr(inputs, "measure_bootstrap_installed_files", lambda context: files)
+    monkeypatch.setattr(inputs, "observe_bootstrap_installed_files_once",
+                        lambda context: InstalledFilesObservation(files, ()))
     capacity_calls = []
     monkeypatch.setattr(
         inputs, "check_bootstrap_capacity",
@@ -418,6 +421,12 @@ def test_fixed_factory_uses_real_policy_codec_manifest_and_generation_reader(
         lambda raw, *, expected_digest: _measure_selected(raw, expected_digest,
                                                           installed_root),
     )
+    monkeypatch.setattr(
+        inputs,
+        "observe_installed_files_once",
+        lambda raw, *, expected_digest: _observe_selected_once(raw, expected_digest,
+                                                               installed_root),
+    )
 
     def read_pinned(raw, *, expected_digest, paths):
         fd = os.open(installed_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -494,6 +503,14 @@ def test_fixed_factory_uses_real_policy_codec_manifest_and_generation_reader(
         context.generation, context.generation_digest, "2026-10-13T00:00:00Z"
     )
     assert capacity_calls == [context]
+
+
+def _observe_selected_once(raw, expected_digest, root):
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        return _observe_once_at(fd, raw, expected_digest=expected_digest, owner=os.getuid())
+    finally:
+        os.close(fd)
 
 
 def _measure_selected(raw, expected_digest, root):
