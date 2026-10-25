@@ -11,6 +11,7 @@ import asyncio
 from contextlib import contextmanager
 import math
 import os
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -150,6 +151,46 @@ def _append_retirement_record(event):
     return True
 
 
+def _append_grant_archive_record(summary):
+    """Activation-ledger record before earlier boots' grant records move.
+
+    Same ledger and contract as `_append_retirement_record`: True only after a
+    confirmed append; anything else raises and nothing is renamed.
+    """
+    from azazel_nexus.audit import AuditEntry
+    from .activated import _activation_ledger  # lazy: activated composes bootstrap
+
+    event = {
+        "event_type": "activation.bootstrap_grants_archiving",
+        "grants": [dict(row) for row in summary["grants"]],
+        "current_boot_id": summary["current_boot_id"],
+        "occurred_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds").replace("+00:00", "Z"),
+        "actor": "azazel-activated",
+    }
+    if type(_activation_ledger(Path("/")).append(event)) is not AuditEntry:
+        raise UnitOperationFailed("prior boot grant archive record unconfirmed")
+    return True
+
+
+def _append_grant_archive_failure(current_boot_id, reason):
+    """Best-effort ledger note that the grant archive was skipped this boot.
+
+    `reason` is the activated failure label (class name plus only reviewed
+    static literals), never a path or an id from the exception text.
+    """
+    from .activated import _activation_ledger  # lazy: activated composes bootstrap
+
+    _activation_ledger(Path("/")).append({
+        "event_type": "activation.bootstrap_grants_archive_failed",
+        "current_boot_id": current_boot_id,
+        "reason": reason,
+        "occurred_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds").replace("+00:00", "Z"),
+        "actor": "azazel-activated",
+    })
+
+
 class BootstrapNarrowingManager:
     """Trusted composition dependency, not a CLI/RPC or general unit API.
 
@@ -197,6 +238,8 @@ class BootstrapNarrowingManager:
         self._boot_id_reader = read_boot_id
         self._grant_store_opener = grant_transaction_store_in_transaction
         self._retirement_record = _append_retirement_record
+        self._grant_archive_record = _append_grant_archive_record
+        self._grant_archive_failure = _append_grant_archive_failure
         self._controller_binding = None
         self._controller_grant = None
         self._controller_notification_sent = False
@@ -1203,6 +1246,67 @@ class BootstrapNarrowingManager:
         # No trailing checkpoint(): covered by the checkpoint() before break and
         # by bootstrap's check_ready() right after return.
         self._controller_ready_confirmed = True
+        # After READY, so its ledger append and fsyncs are outside the
+        # controller's start timeout (Nexus#324). Best effort: never raises
+        # an Exception (see _archive_prior_boot_grants).
+        self._archive_prior_boot_grants(grant)
+
+    def _archive_prior_boot_grants(self, grant):
+        """Best-effort cleanup after READY; never a gate, never a failure.
+
+        Earlier boots' grant records are moot evidence: nothing reads them
+        except the overlay-journal retirement, which only reads the boot the
+        retained journal names, and that boot is never moved. A failure here
+        therefore must not turn a READY controller into full containment or
+        recovery_required (a persistent fault would otherwise refuse every
+        boot). Any Exception is reported on stderr, noted in the activation
+        ledger when possible, and left for the next boot to retry; the store
+        is idempotent (moved records are gone, the rest stay in place).
+        BaseException (cancellation, exit) still propagates. The invariant
+        inside the store is unchanged: a confirmed ledger record before any
+        rename, otherwise nothing moves.
+        """
+        try:
+            self._archive_prior_boot_grants_once(grant)
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup, reported
+            from .activated import _failure_label  # lazy: activated composes bootstrap
+
+            reason = _failure_label(exc)
+            print("az-activated left prior boot grant records in place; "
+                  "the next boot retries: " + reason, file=sys.stderr)
+            try:
+                self._grant_archive_failure(getattr(grant, "boot_id", None), reason)
+            except Exception:  # noqa: BLE001 - the stderr line above remains
+                print("az-activated could not record the skipped grant archive",
+                      file=sys.stderr)
+
+    def _archive_prior_boot_grants_once(self, grant):
+        """Move earlier boots' grant records into the archive, or change nothing.
+
+        Runs after the prior-boot journal retirement (open_pair) and READY.
+        Never this boot's record (the controller grant's boot id; when it does
+        not equal the kernel boot id nothing is moved) and never the boot the
+        retained overlay journal still names; the store skips anything
+        unfinished or unprovable and records the identities in the activation
+        ledger before any rename. Not a grant, selection or authority; deletes
+        nothing. Without the factory's publication composition there is
+        nothing to archive against, so it does nothing.
+        """
+        if self._publication_inputs is None:
+            return
+        _directories, store, guard = self._publication_inputs
+        if type(guard) is not BootstrapTransactionGuard or type(grant) is not GrantTransaction:
+            raise UnitOperationFailed("prior boot grant archive composition unavailable")
+        if self._boot_id_reader() != grant.boot_id:
+            print("az-activated left prior boot grant records in place: "
+                  "kernel boot differs from this boot's grant", file=sys.stderr)
+            return
+        journal = store.load_optional()
+        referenced = None if journal is None else journal.intent.boot_id
+        with self._grant_store_opener(guard) as grants:
+            grants.archive_prior(current_boot_id=grant.boot_id,
+                                 referenced_boot_id=referenced,
+                                 record=self._grant_archive_record)
 
     def open_pair(self, transaction: GrantTransaction, *, approval, check_publish) -> None:
         # Base class refuses; the factory builds `_PrototypeBootstrapManager`,

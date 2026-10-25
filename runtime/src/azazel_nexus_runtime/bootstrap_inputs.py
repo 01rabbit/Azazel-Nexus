@@ -7,6 +7,8 @@ generation admission or service operation happens here.
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from azazel_nexus.bootstrap_approval import (
@@ -615,6 +617,31 @@ class ProtectedBootstrapInputs:
             ) from None
 
 
+def _record_deadline_retirement(summary) -> bool:
+    """Durable activation-ledger record before an earlier boot's deadline moves.
+
+    Same ledger and contract as the prior-boot overlay journal retirement
+    (bootstrap_manager._append_retirement_record, Nexus#324): True only for a
+    confirmed, fsynced append; any failure raises or returns False, and the
+    store then changes nothing. The record names the archived identity only.
+    """
+    from azazel_nexus.audit import AuditEntry
+    from .activated import _activation_ledger  # lazy: activated composes bootstrap
+
+    event = {
+        "event_type": "activation.bootstrap_deadline_retiring",
+        "boot_id": summary["boot_id"],
+        "approval_digest": summary["approval_digest"],
+        "initial_sha256": summary["initial_sha256"],
+        "checkpoint_sha256": summary["checkpoint_sha256"],
+        "current_boot_id": summary["current_boot_id"],
+        "occurred_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds").replace("+00:00", "Z"),
+        "actor": "azazel-activated",
+    }
+    return type(_activation_ledger(Path("/")).append(event)) is AuditEntry
+
+
 @dataclass(frozen=True)
 class ProtectedBootstrapInitialAdmission:
     """The only initializer of the retained bootstrap deadline.
@@ -625,6 +652,9 @@ class ProtectedBootstrapInitialAdmission:
     prestart. ``retain`` re-verifies, requires the same approval, and then
     uses the create-only store; it never advances or overwrites existing
     state, and refusal must never fall back to ``ProtectedBootstrapInputs``.
+    A record proven to be an earlier boot's (other boot id, other approval)
+    is archived after a confirmed activation-ledger record, then the new
+    record is created as before; the same boot still refuses.
     """
 
     observe: Callable[[], BootstrapObservation]
@@ -660,7 +690,9 @@ class ProtectedBootstrapInitialAdmission:
                 boottime_ns=elapsed,
                 clock_trusted=current.clock_trusted,
             )
-            retained = retain_initial_deadline(state)
+            retained = retain_initial_deadline(
+                state, record_deadline_retirement=_record_deadline_retirement,
+            )
             _require_stable_after_retention(current, elapsed)
             return retained
         except Exception:

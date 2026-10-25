@@ -134,7 +134,13 @@ def test_startup_reader_refuses_prior_boot_selection_without_moving_it(protected
 
 
 def test_startup_modules_cannot_reach_retirement():
-    """Boot-time execution only reads; retirement is wired only by the owner CLI."""
+    """Boot-time execution never retires selection, time or approval records.
+
+    Those are wired only by the owner CLI. The one boot-time retirement is the
+    deadline store's own (#337): the first admission's `retain` archives an
+    earlier boot's initial/checkpoint pair through its separate
+    `record_deadline_retirement` seam, asserted below to be the only one.
+    """
     runtime = REPO / "runtime" / "src" / "azazel_nexus_runtime"
     library = REPO / "src" / "azazel_nexus"
     for path in (runtime / "activated.py", runtime / "bootstrap_entrypoint.py",
@@ -148,6 +154,11 @@ def test_startup_modules_cannot_reach_retirement():
     users = sorted(path.name for path in (*runtime.glob("*.py"), *library.glob("*.py"))
                    if "record_prior_boot=_record_prior_boot" in path.read_text(encoding="utf-8"))
     assert users == ["bootstrap_cli.py"]
+    deadline_users = sorted(
+        path.name for path in (*runtime.glob("*.py"), *library.glob("*.py"))
+        if "record_deadline_retirement=_record_deadline_retirement" in path.read_text(
+            encoding="utf-8"))
+    assert deadline_users == ["bootstrap_inputs.py"]
 
 
 # -- time --------------------------------------------------------------------

@@ -315,12 +315,26 @@ canonical form. The move is recorded first as
 record cannot be confirmed nothing is moved. The file is then renamed in place
 to `retired-<boot id>-<name>` (same owner and mode). A record of the current
 boot, expired or not, is never replaced and still refuses. The controller at
-boot time never moves anything: a stale selection still makes the boot-time run
-narrow and fail as before. Review and remove `retired-*` files yourself.
-Records moved aside by Nexus are under `/etc/azazel/bootstrap/retired-*` (these
-commands) or in an `archive/` directory (the controller's retirement of
-`initial.json`, `checkpoint.json` and grants proposed in #337, not merged at the
-time of writing).
+boot time never moves a selection, time record or approval: a stale selection
+still makes the boot-time run narrow and fail as before. Review and remove
+`retired-*` files yourself. Records moved aside by Nexus are in one of two
+places. These commands leave them under `/etc/azazel/bootstrap/retired-*`.
+The bootstrap controller (#337) puts them in
+`/var/lib/azazel/state/bootstrap/archive/`, never deleting them, in two cases:
+
+- In the first admission of a boot, after this boot's approval is verified and
+  prestart has passed, it moves an earlier boot's `initial.json`/`checkpoint.json`
+  there as `initial-<boot id>.json`/`checkpoint-<boot id>.json`. It records
+  `activation.bootstrap_deadline_retiring` first. It does this only when both
+  records name another boot and another approval, and no transaction is
+  unfinished. Otherwise it refuses as before.
+- After READY, as best effort, it moves earlier boots' `grant-<boot id>.json`
+  records there. It records `activation.bootstrap_grants_archiving` first. It
+  never moves the record of the boot that the retained overlay journal still
+  names. A failure is reported, noted as
+  `activation.bootstrap_grants_archive_failed`, and retried at the next boot.
+
+Review the archive yourself as well.
 
 Ordering with observe-baseline activation: these events (like the bootstrap
 controller's own records) create `/var/lib/azazel/state/activation.jsonl`. On a
@@ -349,8 +363,10 @@ removes the temporary files but leaves the prior pair under `retired-*` with no
 new pair placed; the output says so and exits 2. Exit 2 always means a step
 after the first change did not complete; inspect `/etc/azazel/bootstrap` before
 retrying. Placement is not admission.
-`initial.json` and `checkpoint.json` from a previous run, and admission pins
-that a longer audit ledger has outdated, are not handled by these commands.
+`initial.json` and `checkpoint.json` from a previous run are not handled by
+these commands. The controller's first admission archives them, as described
+above. These commands do not handle admission pins that a longer audit ledger
+has outdated.
 
 The installer does **not** create the Python environment, install packages,
 download inputs, or configure Live persistence. Provision the venv separately
