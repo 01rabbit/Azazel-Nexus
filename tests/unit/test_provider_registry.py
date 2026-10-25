@@ -334,3 +334,29 @@ def test_the_module_reaches_nothing():
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             imported.add(node.module.split(".")[0])
     assert imported & {"ssl", "socket", "subprocess", "http", "urllib"} == set()
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize(
+    "field, valid",
+    [
+        ("provider_id", "vendor-advisory"),
+        ("host", "advisory.example.test"),
+        ("certificate_pin", DIGEST),
+        ("client_identity", "node-advisory-client"),
+        ("model_id", "advisor"),
+    ],
+)
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_a_provider_field_with_a_trailing_line_ending_is_refused(
+    field: str, valid: str, suffix: str
+) -> None:
+    _record(**{field: valid})
+    with pytest.raises(ProviderRefused) as caught:
+        _record(**{field: valid + suffix})
+    assert caught.value.refusal is ProviderRefusal.REGISTRY_INVALID

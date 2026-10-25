@@ -111,18 +111,18 @@ MAX_SOURCES = 16
 #: that renews its certificate keeps its key, and a pin over the whole
 #: certificate would turn every ordinary renewal into an outage that looks
 #: like an attack.
-_PIN = re.compile(r"^sha256:[0-9a-f]{64}$")
-_SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PIN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SOURCE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 #: A hostname, and nothing that could carry a scheme, a port, a path, a query
 #: or credentials. Those are separate fields or they do not exist.
-_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+_HOST = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z")
 #: An address literal in the host field would let one document both name a
 #: source and pick its address, skipping the commissioned address allowlist
 #: that exists because a right name is not a right address.
 _LOOKS_NUMERIC = re.compile(r"^[0-9.]+$")
 #: A client identity is a **name** the node presents, resolved to material by
 #: the commissioned key store. The registry never carries key material.
-_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_IDENTITY = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 
 
 class ArtifactClass(str, Enum):
@@ -176,12 +176,12 @@ class SourceRecord:
     allowed_artifact_classes: tuple
 
     def __post_init__(self) -> None:
-        if not _SOURCE_ID.match(self.source_id):
+        if not _SOURCE_ID.fullmatch(self.source_id):
             raise RegistryRefused(
                 Refusal.REGISTRY_INVALID,
                 f"{self.source_id!r} is not a source symbol",
             )
-        if not _HOST.match(self.host) or _LOOKS_NUMERIC.match(self.host):
+        if not _HOST.fullmatch(self.host) or _LOOKS_NUMERIC.match(self.host):
             raise RegistryRefused(
                 Refusal.REGISTRY_INVALID,
                 f"{self.host!r} is not a hostname. A scheme, a port, a path, "
@@ -208,12 +208,12 @@ class SourceRecord:
                 Refusal.REGISTRY_INVALID,
                 f"{self.path_template!r} is not an absolute path without traversal",
             )
-        if not _PIN.match(self.certificate_pin):
+        if not _PIN.fullmatch(self.certificate_pin):
             raise RegistryRefused(
                 Refusal.REGISTRY_INVALID,
                 f"{self.certificate_pin!r} is not a sha256 public-key pin",
             )
-        if not _IDENTITY.match(self.client_identity):
+        if not _IDENTITY.fullmatch(self.client_identity):
             raise RegistryRefused(
                 Refusal.REGISTRY_INVALID,
                 f"{self.client_identity!r} is not an identity name. The registry "

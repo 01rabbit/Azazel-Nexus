@@ -482,3 +482,17 @@ def test_nexus_now_names_roles_and_they_are_exactly_fabrics():
     from azazel_nexus.commissioning import INTERFACE_ROLES as LOCAL
 
     assert LOCAL == INTERFACE_ROLES
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). None may survive into an identity.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_a_permanent_mac_never_keeps_a_trailing_line_ending(suffix: str) -> None:
+    """Whitespace is stripped before the grammar; anything else is refused."""
+
+    assert normalize_permanent_mac("aa:bb:cc:dd:ee:ff" + suffix) in (None, "aa:bb:cc:dd:ee:ff")
+    assert normalize_permanent_mac("aa:bb:cc:dd:ee:ff\x00") is None

@@ -192,12 +192,12 @@ _EXECUTABLE_OR_ARCHIVE_MAGIC = (
 
 #: A model id names an entry, never a location. Lower-case, no separators a
 #: filesystem would read, and bounded.
-_MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_MODEL_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 #: A source symbol. No dot, no slash, no colon -- nothing a URL or a
 #: path could be built from, so a symbol cannot be mistaken for a location.
-_SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SOURCE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 class CatalogRefused(Exception):
@@ -296,7 +296,7 @@ class ModelEntry:
     def __post_init__(self) -> None:
         if self.role not in ("embedding", "generative"):
             raise CatalogRefused("model role must be embedding or generative")
-        if not _MODEL_ID.match(self.model_id):
+        if not _MODEL_ID.fullmatch(self.model_id):
             raise CatalogRefused(
                 f"{self.model_id!r} is not a model id. An id names an entry, "
                 "never a location, so separators a filesystem would read are "
@@ -313,7 +313,7 @@ class ModelEntry:
                 f"{self.model_id}: runtime ABI {self.runtime_abi!r} is not one "
                 f"of {KNOWN_RUNTIME_ABIS}"
             )
-        if not _DIGEST.match(self.digest):
+        if not _DIGEST.fullmatch(self.digest):
             raise CatalogRefused(f"{self.model_id}: {self.digest!r} is not a sha256 digest")
         for name, value in (
             ("size_bytes", self.size_bytes),
@@ -323,7 +323,7 @@ class ModelEntry:
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise CatalogRefused(f"{self.model_id}: {name} is a positive whole number")
-        if self.source_id is not None and not _SOURCE_ID.match(self.source_id):
+        if self.source_id is not None and not _SOURCE_ID.fullmatch(self.source_id):
             raise CatalogRefused(
                 f"{self.model_id}: {self.source_id!r} is not a source symbol. "
                 "A source is named, never located: a catalog that could spell "

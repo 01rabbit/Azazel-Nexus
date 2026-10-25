@@ -316,3 +316,19 @@ def test_the_record_carries_every_field_the_contract_names() -> None:
         "security_epoch",
         "max_rollback_version",
     }
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize(
+    "field", ["component_digest", "adapter_digest", "renderer_digest", "toolchain_digest"]
+)
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_a_digest_with_a_trailing_line_ending_is_refused(field: str, suffix: str) -> None:
+    with pytest.raises(CompatibilityRefused) as caught:
+        a_tuple(**{field: COMPONENT + suffix})
+    assert "immutable digest" in str(caught.value)

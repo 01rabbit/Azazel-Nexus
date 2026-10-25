@@ -456,3 +456,48 @@ def test_the_redaction_event_names_what_went_and_not_what_it_was(policy) -> None
     assert event["bucketed"] == ["count"]
     assert "hunter2" not in json.dumps(event)
     assert "workstation-7" not in json.dumps(event)
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize("instant", ["2026-09-20T23:47:13Z", "2026-09-21T01:30:00+02:00"])
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_an_instant_with_a_trailing_line_ending_is_refused_as_such(
+    instant: str, suffix: str
+) -> None:
+    """Refused by the grammar, as `SanitizerRefused` -- not by a parser later."""
+
+    with pytest.raises(SanitizerRefused):
+        time_bucket(instant + suffix)
+
+
+#: Each passes the grammar's shape and fails as a calendar, or is spelt in
+#: digits that are not ASCII. `sanitize` catches only `SanitizerRefused`, so
+#: any other exception from `time_bucket` would escape a function that must
+#: never raise.
+NOT_AN_INSTANT = (
+    "2026-13-45T00:00:00Z",
+    "２０２６-09-20T12:00:00Z",
+    "2026-09-20T12:00:00+24:00",
+    "0001-01-01T00:00:00+01:00",
+)
+
+
+@pytest.mark.parametrize("instant", NOT_AN_INSTANT)
+def test_an_instant_that_is_not_one_is_refused_as_such(instant: str) -> None:
+    with pytest.raises(SanitizerRefused):
+        time_bucket(instant)
+
+
+@pytest.mark.parametrize("instant", NOT_AN_INSTANT)
+def test_an_instant_that_is_not_one_denies_the_frame_rather_than_raising(
+    instant: str, policy
+) -> None:
+    decision = run({"time_bucket": instant}, policy)
+    assert decision.allowed is False
+    assert decision.frame is None
+    assert "could not be coarsened" in decision.reason

@@ -944,3 +944,41 @@ def test_a_complete_request_binds():
 def test_a_registry_refuses_a_duplicate_verb():
     with pytest.raises(ValueError):
         VerbRegistry([PING, PING])
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize(
+    "kind, valid",
+    [
+        (ArgumentKind.DIGEST, DIGEST),
+        (ArgumentKind.TIMESTAMP, "2026-09-20T12:00:00Z"),
+        (ArgumentKind.IDENTIFIER, "operator@console"),
+    ],
+)
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_an_argument_with_a_trailing_line_ending_is_refused(kind, valid, suffix):
+    argument = Argument("value", kind)
+    assert argument.coerce(valid) == valid
+    with pytest.raises(RequestRefused) as refused:
+        argument.coerce(valid + suffix)
+    assert refused.value.refusal is Refusal.ARGUMENT_RANGE
+
+
+@pytest.mark.parametrize(
+    "kind, rejected",
+    [
+        (ArgumentKind.TIMESTAMP, "２０２６-09-20T12:00:00Z"),
+        (ArgumentKind.TIMESTAMP, "2026-09-20T12:00:0٠Z"),
+        (ArgumentKind.IDENTIFIER, "operator１"),
+        (ArgumentKind.DIGEST, "sha256:" + "ab" * 31 + "ａｂ"),
+    ],
+)
+def test_an_argument_in_digits_or_letters_that_are_not_ascii_is_refused(kind, rejected):
+    with pytest.raises(RequestRefused) as refused:
+        Argument("value", kind).coerce(rejected)
+    assert refused.value.refusal is Refusal.ARGUMENT_RANGE

@@ -46,10 +46,11 @@ __all__ = [
 ]
 
 #: A digest as this protocol accepts one. Compared, never dereferenced.
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 #: An RFC3339 instant in UTC. A fixed grammar, not a date parser.
-_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
+#: `re.ASCII`, because `\d` would otherwise also match full-width digits.
+_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\Z", re.ASCII)
 
 #: A name: an operator, a service account, a host-local identity.
 #:
@@ -58,7 +59,7 @@ _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
 #: characters and no shell metacharacters. An actor has to be recordable for
 #: an audit entry to mean anything; the bound and the alphabet are what keep
 #: the field from being a channel into the ledger.
-_IDENTIFIER = re.compile(r"^[A-Za-z0-9._@:+-]{1,64}$")
+_IDENTIFIER = re.compile(r"[A-Za-z0-9._@:+-]{1,64}\Z")
 
 #: Keys a caller might use to assert who they are.
 #:
@@ -191,7 +192,7 @@ class Argument:
             ArgumentKind.TIMESTAMP: _TIMESTAMP,
             ArgumentKind.IDENTIFIER: _IDENTIFIER,
         }[self.kind]
-        if not grammar.match(value):
+        if not grammar.fullmatch(value):
             raise RequestRefused(Refusal.ARGUMENT_RANGE, self.name)
         return value
 
