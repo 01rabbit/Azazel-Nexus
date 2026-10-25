@@ -179,7 +179,32 @@ def test_unconfirmed_ledger_record_changes_nothing(deadline_dir, result):
     with pytest.raises((ApprovalRefused, OSError)):
         _retain(deadline_dir, _state(CURRENT), record)
     assert len(record.calls) == 1
-    assert _snapshot(deadline_dir) == before
+    # Only the empty private archive, prepared before any record or marker.
+    assert _snapshot(deadline_dir) == {**before, "archive": None}
+    assert not any((deadline_dir / "archive").iterdir())
+    assert not (deadline_dir / "transaction.pending").exists()
+
+
+def test_archive_mkdir_failure_leaves_no_marker_and_no_record(deadline_dir, monkeypatch):
+    _place(deadline_dir, store._encode(_state(PRIOR)))
+    before = _snapshot(deadline_dir)
+    real_mkdir = os.mkdir
+
+    def mkdir(*_a, **_kw):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(store.os, "mkdir", mkdir)
+    record = Recorder()
+    with pytest.raises(OSError):
+        _retain(deadline_dir, _state(CURRENT), record)
+    assert record.calls == [] and _snapshot(deadline_dir) == before
+    assert not (deadline_dir / "transaction.pending").exists()
+    # The failure was preventable, not an unfinished transaction: once the
+    # archive can be created, the same next-boot admission proceeds.
+    monkeypatch.setattr(store.os, "mkdir", real_mkdir)
+    current = _state(CURRENT)
+    assert _retain(deadline_dir, current, record) == current
+    assert len(record.calls) == 1
 
 
 def test_without_a_record_seam_existing_state_refuses_as_before(deadline_dir):
@@ -246,7 +271,7 @@ def test_records_of_different_identities_refuse(deadline_dir, checkpoint):
     assert record.calls == [] and _snapshot(deadline_dir) == before
 
 
-@pytest.mark.parametrize("which", ["initial.json", "checkpoint.json"])
+@pytest.mark.parametrize("which", ["initial.json", "checkpoint.json", "both"])
 @pytest.mark.parametrize("corrupt", [
     lambda raw: raw + b"\n",
     lambda raw: raw.replace(b",", b", ", 1),
@@ -264,7 +289,8 @@ def test_records_of_different_identities_refuse(deadline_dir, checkpoint):
 def test_non_canonical_prior_record_refuses(deadline_dir, which, corrupt):
     raw = store._encode(_state(PRIOR))
     _place(deadline_dir, raw)
-    (deadline_dir / which).write_bytes(corrupt(raw))
+    for name in (("initial.json", "checkpoint.json") if which == "both" else (which,)):
+        (deadline_dir / name).write_bytes(corrupt(raw))
     before = _snapshot(deadline_dir)
     record = Recorder()
     with pytest.raises(ApprovalRefused):
@@ -572,14 +598,65 @@ def test_manager_moves_only_grants_no_journal_names(grant_dir, journal_boot):
     assert left == expected
 
 
-def test_manager_refuses_when_kernel_boot_differs_from_grant(grant_dir):
+def test_manager_moves_nothing_when_kernel_boot_differs_from_grant(grant_dir, capsys):
     _write_grant(grant_dir, PRIOR)
     before = _snapshot(grant_dir)
     manager = _archiving_manager(grant_dir, journal_boot=None, kernel_boot=THIRD)
-    from azazel_nexus_runtime.units import UnitOperationFailed
-    with pytest.raises(UnitOperationFailed, match="boot changed"):
-        manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
+    manager._grant_archive_failure = lambda *_a: pytest.fail("not a failure")
+    manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
     assert manager._grant_archive_record.calls == [] and _snapshot(grant_dir) == before
+    assert "kernel boot differs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure", ["record", "store", "journal"])
+def test_manager_archive_failure_is_reported_and_never_raised(grant_dir, capsys, failure):
+    _write_grant(grant_dir, PRIOR)
+    before = _snapshot(grant_dir)
+    manager = _archiving_manager(grant_dir, journal_boot=None)
+    notes = []
+    manager._grant_archive_failure = lambda boot, reason: notes.append((boot, reason))
+    if failure == "record":
+        manager._grant_archive_record = Recorder(OSError("ledger disk"))
+    elif failure == "store":
+        manager._grant_store_opener = lambda _g: (_ for _ in ()).throw(
+            ApprovalRefused("bootstrap transaction store busy"))
+    else:
+        manager._publication_inputs[1].load_optional = lambda: (_ for _ in ()).throw(
+            ApprovalRefused("bootstrap optional journal observation refused"))
+    manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
+    assert _snapshot(grant_dir) == before
+    assert len(notes) == 1 and notes[0][0] == CURRENT
+    assert notes[0][1].startswith("ApprovalRefused")
+    err = capsys.readouterr().err
+    assert "left prior boot grant records in place" in err and "ledger disk" not in err
+    # Idempotent: the next attempt (the next boot) moves what is left.
+    retry = _archiving_manager(grant_dir, journal_boot=None)
+    retry._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
+    assert len(retry._grant_archive_record.calls) == 1
+    assert not (grant_dir / f"grant-{PRIOR}.json").exists()
+    assert (grant_dir / "archive" / f"grant-{PRIOR}.json").exists()
+
+
+def test_manager_failure_note_failure_is_still_not_raised(grant_dir, capsys):
+    _write_grant(grant_dir, PRIOR)
+    manager = _archiving_manager(grant_dir, journal_boot=None)
+    manager._grant_archive_record = Recorder(False)
+    manager._grant_archive_failure = lambda *_a: (_ for _ in ()).throw(OSError("x"))
+    manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
+    assert "could not record the skipped grant archive" in capsys.readouterr().err
+    assert (grant_dir / f"grant-{PRIOR}.json").exists()
+
+
+def test_manager_archive_lets_base_exceptions_through(grant_dir):
+    manager = _archiving_manager(grant_dir, journal_boot=None)
+    manager._grant_archive_failure = lambda *_a: pytest.fail("not an Exception")
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    manager._boot_id_reader = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
 
 
 def test_manager_without_publication_composition_does_nothing(grant_dir):
@@ -632,3 +709,102 @@ def test_grant_archive_runs_after_ready_notification(monkeypatch):
         notify=lambda: order.append(("notify",)),
     )
     assert order == [("notify",), ("archive", "pair_grant_intent", True)]
+
+
+def test_grant_archive_failure_never_leaves_confirm_controller_ready(monkeypatch, capsys):
+    from test_runtime_bootstrap_controller_ready import (
+        DelayedReadyBus, _manager, _transaction)
+
+    bus = DelayedReadyBus(ready_after=1)
+    manager, _sessions = _manager(bus, monkeypatch)
+    notes = []
+
+    def broken(_grant):
+        raise OSError("archive disk")
+
+    monkeypatch.setattr(manager, "_archive_prior_boot_grants_once", broken)
+    manager._grant_archive_failure = lambda boot, reason: notes.append((boot, reason))
+    assert manager.confirm_controller_ready(
+        _transaction("pair_grant_opened"), check_ready=lambda: None,
+        notify=lambda: None,
+    ) is None
+    assert manager._controller_ready_confirmed
+    assert notes == [(_transaction().boot_id, "OSError")]
+    assert "left prior boot grant records in place" in capsys.readouterr().err
+
+
+def test_real_grant_and_journal_stores_move_only_unreferenced_prior_grants(
+        tmp_path, seams, monkeypatch):
+    """The production store composition, over private tmp directories."""
+    from azazel_nexus import bootstrap_lock
+    from azazel_nexus import bootstrap_overlay_journal as overlay_journal
+    from azazel_nexus.bootstrap_overlay_journal import OverlayIntent, new_overlay_journal
+    from azazel_nexus_runtime.bootstrap_manager import BootstrapNarrowingManager
+
+    uid = os.getuid()
+    dirs = {}
+    for name in ("lock", "journal", "bootstrap"):
+        dirs[name] = tmp_path / name
+        dirs[name].mkdir(mode=0o700)
+        dirs[name].chmod(0o700)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    for boot in (PRIOR, THIRD, CURRENT):
+        _write_grant(dirs["bootstrap"], boot)
+
+    @contextmanager
+    def state_directory():
+        fd = os.open(dirs["bootstrap"], flags)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    real_open = grant_store.os.open
+
+    def fixed_open(path, *args, **kw):
+        if path == "/var/lib/azazel/state/bootstrap":
+            path = dirs["bootstrap"]
+        return real_open(path, *args, **kw)
+
+    monkeypatch.setattr(grant_store, "_state_directory", state_directory)
+    monkeypatch.setattr(grant_store, "_OWNER", uid)
+    monkeypatch.setattr(grant_store.os, "open", fixed_open)
+    lock_fd, journal_fd = os.open(dirs["lock"], flags), os.open(dirs["journal"], flags)
+    try:
+        with bootstrap_lock._transaction_at(
+            lock_fd, owner=uid, reopen=lambda: os.open(dirs["lock"], flags),
+        ) as guard, overlay_journal._overlay_store_under_guard(
+            guard, journal_fd, owner_uid=uid,
+            reopen=lambda: os.open(dirs["journal"], flags),
+        ) as journal_store:
+            # The retained journal still names PRIOR: its grant must stay.
+            journal_store.create(new_overlay_journal(OverlayIntent(
+                boot_id=PRIOR, context_digest="c" * 64, grant_id="d" * 32,
+                payload_digests=tuple((unit, "e" * 64) for unit in PAIR))))
+            manager = BootstrapNarrowingManager(job_timeout_seconds=5.0)
+            manager._publication_inputs = (object(), journal_store, guard)
+            manager._boot_id_reader = lambda: CURRENT
+            manager._grant_archive_record = Recorder()
+            assert manager._grant_store_opener is grant_store.grant_transaction_store_in_transaction
+            manager._archive_prior_boot_grants(_grant(CURRENT, "pair_grant_intent"))
+    finally:
+        os.close(lock_fd)
+        os.close(journal_fd)
+    assert [row["boot_id"] for row in manager._grant_archive_record.calls[0]["grants"]] == [THIRD]
+    assert sorted(p.name for p in dirs["bootstrap"].iterdir() if p.is_file()) == [
+        f"grant-{CURRENT}.json", f"grant-{PRIOR}.json"]
+    assert [p.name for p in (dirs["bootstrap"] / "archive").iterdir()] == [f"grant-{THIRD}.json"]
+
+
+def test_runtime_grant_archive_failure_note_is_a_ledger_entry(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import activated, bootstrap_manager
+
+    ledger = AuditLedger(tmp_path / "activation.jsonl")
+    monkeypatch.setattr(activated, "_activation_ledger", lambda _root: ledger)
+    bootstrap_manager._append_grant_archive_failure(CURRENT, "ApprovalRefused")
+    (entry,) = list(ledger)
+    event = dict(entry.event)
+    assert event.pop("occurred_at").endswith("Z")
+    assert event == {"event_type": "activation.bootstrap_grants_archive_failed",
+                     "current_boot_id": CURRENT, "reason": "ApprovalRefused",
+                     "actor": "azazel-activated"}

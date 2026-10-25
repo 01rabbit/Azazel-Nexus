@@ -6068,7 +6068,20 @@ After READY, the controller also moves earlier boots' `grant-<boot>.json`
 records into the same `archive/`. It skips this boot's record, the boot the
 retained overlay journal still names, any record with a `.pending`/`.next`
 marker, and any record whose decoded boot id differs from its name. It first
-appends `activation.bootstrap_grants_archiving` to the same ledger. Selection,
+appends `activation.bootstrap_grants_archiving` to the same ledger, and nothing
+moves unless that append is confirmed. This grant archive is best effort, by
+design. It gates nothing: it only moves evidence of a boot that is already
+over. A failure that turned a READY controller into full containment and
+`recovery_required` would be out of proportion, and a persistent fault would
+refuse every boot. So any `Exception` from it is printed on stderr, and when
+possible noted as `activation.bootstrap_grants_archive_failed` (with the
+static failure label only). The controller then continues, and the next boot
+retries what is left; the step is idempotent. `BaseException` still
+propagates. A kernel boot id that differs from this boot's grant moves
+nothing. The archive directory for the deadline records is created and checked
+(mkdir, privacy, same filesystem, no name collision) before the ledger record
+and before `transaction.pending`. A preventable failure there therefore
+refuses without leaving the marker. Selection,
 time anchor and approval remain owner-renewed per boot; none of this creates or
 renews them.
 

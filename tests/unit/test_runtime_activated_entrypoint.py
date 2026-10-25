@@ -360,6 +360,26 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
     found.add("bootstrap helper readiness lost")  # bootstrap._READINESS_LOST
     # ProtectedBootstrapInitialAdmission.retain's wrapper (bootstrap_inputs).
     found.add("protected bootstrap runtime inputs refused")
+    # The shared protected-file helpers the deadline store reads through; only
+    # these raises, which must still be literal raises in those modules.
+    helpers = {
+        "activation_store": {"activation approval directory is not private",
+                             "activation approval file permissions or size refused",
+                             "activation approval file changed while reading"},
+        "operator_store": {"operator trust storage is not protected",
+                           "operator trust file must have one link"},
+    }
+    for module, messages in helpers.items():
+        literals = {
+            node.exc.args[0].value
+            for node in ast.walk(ast.parse((library / f"{module}.py").read_text()))
+            if (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+                and isinstance(node.exc.func, ast.Name)
+                and node.exc.func.id == "ApprovalRefused" and len(node.exc.args) == 1
+                and isinstance(node.exc.args[0], ast.Constant))
+        }
+        assert messages <= literals
+        found |= messages
     found = {m for m in found if "/" not in m and "{" not in m}
     assert activated._STATIC_FAILURE_MESSAGES == found
     assert all("/" not in m and "{" not in m and m.isascii() and m.isprintable()

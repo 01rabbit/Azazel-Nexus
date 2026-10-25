@@ -1066,6 +1066,13 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'withdrawal requires explicit grant selection',
     'withdrawal transaction not bound',
     'withdrawn masks still present',
+    # Shared protected-file helpers the deadline store reads through
+    # (activation_store._private_directory/_read_file_at, operator_store._protected).
+    'activation approval directory is not private',
+    'activation approval file permissions or size refused',
+    'activation approval file changed while reading',
+    'operator trust storage is not protected',
+    'operator trust file must have one link',
     # Retained deadline and grant stores, and the first-admission wrapper
     # (Nexus#324): the reason a prior-boot record was not archived is visible.
     'archived prior boot deadline changed',
@@ -1110,7 +1117,6 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'prior boot deadline is not canonical',
     'prior boot deadline records differ',
     'prior boot deadline retirement record unconfirmed',
-    'prior boot grant archive boot changed',
     'prior boot grant archive composition unavailable',
     'prior boot grant archive record required',
     'prior boot grant archive record unconfirmed',

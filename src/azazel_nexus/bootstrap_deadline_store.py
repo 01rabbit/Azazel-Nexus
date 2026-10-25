@@ -183,10 +183,15 @@ def _open_archive(fd: int, *, owner: int, create: bool) -> int | None:
     return archive
 
 
-def _archive_targets_absent(fd: int, names, *, owner: int) -> None:
-    archive = _open_archive(fd, owner=owner, create=False)
-    if archive is None:
-        return
+def _prepare_archive(fd: int, names, *, owner: int) -> None:
+    """Create and validate the archive before any record or marker.
+
+    mkdir, privacy, filesystem and name collisions are checked here, outside
+    the transaction, so a preventable failure never leaves
+    `transaction.pending` behind (which would refuse until reviewed). The only
+    change it can make is an empty private directory.
+    """
+    archive = _open_archive(fd, owner=owner, create=True)
     try:
         if any(_exists(archive, name) for name in names):
             raise ApprovalRefused("prior boot record already archived")
@@ -212,7 +217,7 @@ def _prior_boot_deadline(fd: int, state: BootstrapDeadline, *, owner: int) -> di
         raise ApprovalRefused("bootstrap deadline was already initialized")
     if digest == state.approval.payload_digest:
         raise ApprovalRefused("prior boot deadline has the same approval")
-    _archive_targets_absent(fd, _archive_names(boot_id), owner=owner)
+    _prepare_archive(fd, _archive_names(boot_id), owner=owner)
     return {
         "boot_id": boot_id,
         "approval_digest": digest,
@@ -228,7 +233,9 @@ def _archive_prior_deadline(fd: int, prior: dict, *, owner: int) -> None:
     raws = prior["_raw"]
     if (_read_state(fd, _INITIAL, owner=owner), _read_state(fd, _CURRENT, owner=owner)) != raws:
         raise ApprovalRefused("prior boot deadline changed before archive")
-    archive = _open_archive(fd, owner=owner, create=True)
+    archive = _open_archive(fd, owner=owner, create=False)
+    if archive is None:
+        raise ApprovalRefused("bootstrap archive unavailable")
     try:
         targets = _archive_names(prior["boot_id"])
         if any(_exists(archive, name) for name in targets):

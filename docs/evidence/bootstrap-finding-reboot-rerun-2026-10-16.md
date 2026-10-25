@@ -38,6 +38,14 @@ boot, and nothing below creates or renews them.
   retained overlay journal still names, and any record with a
   `.pending`/`.next` marker or a decoded boot id that differs from its name.
   An `activation.bootstrap_grants_archiving` ledger record comes first.
+  The step is best effort and never stops a READY controller. It gates
+  nothing, and a persistent fault must not refuse every boot. A failure is
+  printed on stderr and noted as `activation.bootstrap_grants_archive_failed`
+  when possible. The next boot retries what is left; `BaseException` still
+  propagates.
+- The deadline's `archive/` is created and checked before the ledger record
+  and before `transaction.pending`. A preventable archive failure therefore
+  refuses without leaving the marker.
 - The prior-boot overlay journal retirement (b1a99d7, extended by #335) now
   appends `activation.overlay_journal_retiring` to the same ledger. It also
   handles a journal abandoned in `published`/`closing`/`withdrawing`. Owner
