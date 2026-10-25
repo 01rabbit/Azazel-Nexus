@@ -6059,6 +6059,22 @@ consistent with the documented separation: signing stays in the operator's own
 tool, never in Nexus. An independent review found no critical or high issue; its
 wording and private-import findings are addressed.
 
+Re-running bootstrap on a later boot (#324) needed the owner to move the
+previous boot's selection, time record and approval aside by hand and to place
+the signed pair by hand. `az-nexus-bootstrap boot-initialize` now runs the
+selection, time and approval-request steps in one terminal session with each
+step's own confirmations, skips steps already valid for this boot and reports
+where it stopped; `approval-install` verifies a signed pair with the same
+`verify_bootstrap_approval` over both bounds of the boot's administrator time
+window before placing it. Inside these confirmed operations only, a canonical
+record of another boot with no pending marker is recorded in the activation
+ledger (`bootstrap.prior_boot_record_retiring`) and renamed to
+`retired-<boot id>-<name>`; a record of the current boot still refuses, and the
+boot-time controller never moves anything (procedure:
+[Debian Live install](debian-live-install.md#per-boot-records-after-a-reboot)).
+This is software-only (unit tests); `initial.json`, `checkpoint.json` and an
+outdated admission audit pin still need the owner.
+
 Building a real installed-files candidate on the Debian ARM64 VM exposed a gap
 that synthetic declarations had hidden: Debian's `libpython3.13-minimal` ships
 `/usr/lib/python3.13/sitecustomize.py -> /etc/python3.13/sitecustomize.py` and

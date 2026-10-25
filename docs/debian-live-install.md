@@ -241,13 +241,14 @@ choose identifiers. Enter the reviewed canonical `azazel-nexus/bootstrap-selecti
 re-enter its SHA-256, then separately type `INITIALIZE` or `RECOVER`. Do not put
 secrets in this record. It binds the exact deployment, current boot, chosen
 approval ID and generation; it is not a signed approval or runtime admission.
-Initialization never overwrites existing or pending state. Recovery completes
+This library command never overwrites existing or pending state. Recovery completes
 only exact complete pending bytes valid for the same current deployment/boot;
 it never repairs bytes or resets a deadline. Exit 2 means publication may be
-visible but final durability is unconfirmed—inspect before retrying. Stale-boot
-replacement and renewal remain separate unfinished workflows; do not delete a
-marker or reuse an old selection as a shortcut. No live record has been created
-by the software-only tests documented here.
+visible but final durability is unconfirmed—inspect before retrying. To replace
+a selection left by a previous boot, use `az-nexus-bootstrap boot-initialize`
+(below) instead of moving files by hand; renewal within the same boot remains
+unfinished, so do not delete a marker or reuse an old selection as a shortcut.
+No live record has been created by the software-only tests documented here.
 
 Once the protected declaration, selection and pinned admission policy exist,
 `az-nexus-bootstrap generation-preview` reads exactly two newline-terminated
@@ -276,7 +277,61 @@ specific operation. Selection is reread during publication; policy, boot and
 time-window checks remain enforced. The commands do not change the system clock,
 renew an existing anchor, reset an approval deadline or start a service. Exit 2
 is uncertainty about final persistence, not success. No live anchor or trusted
-UTC calibration was created by the tests; cross-boot replacement remains open.
+UTC calibration was created by the tests.
+
+### Per-boot records after a reboot
+
+Selection, time record and approval are bound to one boot. After a reboot
+(a new boot id), prepare them for the new boot with two commands instead of
+moving the previous boot's files aside and placing the approval by hand:
+
+```sh
+sudo az-nexus-bootstrap boot-initialize
+# sign the printed message off-host with the enrolled operator key
+sudo az-nexus-bootstrap approval-install --payload approval.json --signature approval.sig --confirm-sha256 PAYLOAD_SHA256
+```
+
+`boot-initialize` runs in a terminal and goes through three steps in order:
+the selection (enter the JSON, re-enter its SHA-256, type `INITIALIZE`), the
+administrator time record (enter the anchor, re-enter the selected time digest,
+type `INITIALIZE`), and the approval request (enter the
+`{"expires_at":...,"granted_at":...}` validity line; the payload, its SHA-256
+and the exact `approval-install` line are printed, as `approval-request` does).
+No confirmation is skipped and nothing is signed. A step whose record is
+already valid for this boot is detected through the protected readers and
+skipped, so after a refusal the output names the step that stopped and the
+steps already completed, and running `boot-initialize` again continues from
+there. Exit 2 means durability is unconfirmed: inspect, do not retry
+automatically.
+
+Only inside these confirmed operations (`boot-initialize`, `time-initialize`
+and `approval-install`), an existing `selection.json`, `time.json` or
+`approval.json`/`approval.sig` pair is moved aside when **all** of these hold:
+its boot id differs from the current boot, no `*.pending` marker (or
+interrupted `.approval.*.partial` file) is present, and it decodes in its
+canonical form. The move is recorded first as
+`bootstrap.prior_boot_record_retiring` in `/var/lib/azazel/state/activation.jsonl`
+(record kind, both boot ids, SHA-256 of each file and its new name); if the
+record cannot be confirmed nothing is moved. The file is then renamed in place
+to `retired-<boot id>-<name>` (same owner and mode). A record of the current
+boot, expired or not, is never replaced and still refuses. The controller at
+boot time never moves anything: a stale selection still makes the boot-time run
+narrow and fail as before. Review and remove `retired-*` files yourself.
+
+`approval-install` (root) reads the payload and the 64-byte signature
+(regular, single-link, not followed links), requires `--confirm-sha256` to
+equal the payload SHA-256, and verifies the pair with the same
+`verify_bootstrap_approval` the bootstrap admission uses: the protected declared
+context and operator, the approval policy, the enrolled operator trust, and both
+bounds of this boot's administrator time window. Any refusal changes nothing.
+It then refuses if a pair for this boot is already installed, moves a prior
+boot's pair aside as above, verifies again, writes private `0600` temporary
+files, renames them into place, reads them back and records
+`bootstrap.approval_installed`. Exit 2 means a step after the first change did
+not complete; inspect `/etc/azazel/bootstrap` before retrying. Placement is not
+admission: the bootstrap entrypoint verifies the pair again on every attempt.
+`initial.json` and `checkpoint.json` from a previous run, and admission pins
+that a longer audit ledger has outdated, are not handled by these commands.
 
 The installer does **not** create the Python environment, install packages,
 download inputs, or configure Live persistence. Provision the venv separately
