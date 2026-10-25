@@ -1,4 +1,4 @@
-"""Prior-boot journal retirement call site in publication (read-only identity proof)."""
+"""Prior-boot journal retirement call site in publication (identity proof + record)."""
 
 from contextlib import contextmanager
 from dataclasses import replace
@@ -51,6 +51,13 @@ def _manager(env, grants, boot=NEW_BOOT, monkeypatch=None):
         job_timeout_seconds=0.05, withdrawal_files=_withdrawal(env),
     )
     manager._boot_id_reader = lambda: boot
+    manager.records = []
+
+    def record(event):
+        manager.records.append(event)
+        return True  # confirmed append
+
+    manager._retirement_record = record
     store = GrantStore(grants)
 
     @contextmanager
@@ -92,15 +99,174 @@ def test_foreign_closed_journal_with_matching_prior_grant_is_retired(tmp_path):
         assert grants.loads == [OLD_BOOT]
 
 
-def test_published_foreign_journal_without_files_is_reset_and_retired(tmp_path):
+def _abandoned_grant(journal, phase="commissiond_ready"):
+    extra = {}
+    if phase in {"audit_intent_recorded", "commissiond_start_intent", "commissiond_ready"}:
+        extra["audit_receipt_digest"] = "sha256:" + "b" * 64
+    if phase == "closing":
+        extra["close_intent_digest"] = "sha256:" + "c" * 64
+    if phase == "recovery_required":
+        extra["recovery_evidence_digest"] = "sha256:" + "a" * 64
+    return replace(_transaction(journal.intent), phase=phase, **extra)
+
+
+def _fenced(manager):
+    """What this boot's close_starts/confirm_empty_pair leave behind."""
+    files = manager._withdrawal_files
+    assert files.resume_closure(boot_id_reader=manager._boot_id_reader) is True
+    manager._containment_files = files
+    manager._closed_observation = MaskedBootstrapPair(
+        owner=":1.5", fragments=(), fingerprint="f")
+
+
+def test_closed_retirement_appends_ledger_record_before_unlink(tmp_path):
     with _withdraw_environment(tmp_path) as env:
-        journal = _stage(env, "published")
-        assert journal.phase == "published"
-        manager, _ = _manager(env, {OLD_BOOT: _grant_for(journal)})
+        closed = _stage(env, "closed")
+        manager, _ = _manager(env, {OLD_BOOT: _grant_for(closed)})
+        seen = []
+        manager._retirement_record = lambda event: seen.append(
+            (event, env["store"].load_optional())) or True
+        manager._retire_prior_boot_journal(env["store"], env["guard"])
+        (event, still_there), = seen
+        assert still_there == closed
+        assert event["event_type"] == "activation.overlay_journal_retiring"
+        assert (event["phase"], event["boot_id"], event["grant_id"]) == (
+            "closed", OLD_BOOT, closed.intent.grant_id)
+        assert event["current_boot_id"] == NEW_BOOT and event["grant_phase"] == "closed"
+        assert set(event) == {"event_type", "phase", "boot_id", "grant_id", "context_digest",
+                              "journal_sha256", "grant_phase", "current_boot_id",
+                              "occurred_at", "actor"}
+        assert env["store"].load_optional() is None
+
+
+@pytest.mark.parametrize("phase", ["published", "closing", "withdrawing"])
+@pytest.mark.parametrize("grant_phase", ["pair_grant_intent", "commissiond_ready",
+                                         "closing", "recovery_required"])
+def test_abandoned_foreign_journal_without_files_is_reset_and_retired(
+        tmp_path, phase, grant_phase):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, phase)
+        assert journal.phase == phase
+        manager, _ = _manager(env, {OLD_BOOT: _abandoned_grant(journal, grant_phase)})
+        _fenced(manager)
         calls = _spy_writes(env)
         manager._retire_prior_boot_journal(env["store"], env["guard"])
         assert calls == ["replace", "remove"]
         assert env["store"].load_optional() is None
+        (event,) = manager.records
+        assert (event["phase"], event["grant_phase"]) == (phase, grant_phase)
+
+
+@pytest.mark.parametrize("phase", ["published", "closing", "withdrawing"])
+def test_abandoned_journal_not_fenced_by_this_boot_refuses(tmp_path, phase):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, phase)
+        manager, _ = _manager(env, {OLD_BOOT: _abandoned_grant(journal)})
+        calls = _spy_writes(env)
+        with pytest.raises(UnitOperationFailed, match="not this boot's fence"):
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+        _fenced(manager)
+        manager._closed_observation = None  # containment not confirmed
+        with pytest.raises(UnitOperationFailed, match="not this boot's fence"):
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+        assert calls == [] and manager.records == []
+        assert env["store"].load() == journal
+
+
+@pytest.mark.parametrize("grant_phase", ["closed", "prepared"])
+def test_abandoned_journal_with_inconsistent_prior_grant_refuses(tmp_path, grant_phase):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, "published")
+        grant = (_grant_for(journal) if grant_phase == "closed"
+                 else _transaction(journal.intent))
+        manager, _ = _manager(env, {OLD_BOOT: grant})
+        _fenced(manager)
+        calls = _spy_writes(env)
+        with pytest.raises(ApprovalRefused, match="audit record refused"):
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+        assert calls == [] and manager.records == []
+        assert env["store"].load() == journal
+
+
+@pytest.mark.parametrize("phase", ["closed", "published"])
+@pytest.mark.parametrize("failure", ["raise", "returns", "none", "entry"])
+def test_retirement_record_failure_leaves_journal(tmp_path, phase, failure):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, phase)
+        grant = _grant_for(journal) if phase == "closed" else _abandoned_grant(journal)
+        manager, _ = _manager(env, {OLD_BOOT: grant})
+        if phase != "closed":
+            _fenced(manager)
+
+        def record(_event):
+            if failure == "raise":
+                raise OSError("ledger unwritable")
+            # Only `True` is a confirmed append; a raw entry, None or any
+            # other value refuses.
+            return {"returns": object(), "none": None, "entry": 1}[failure]
+
+        manager._retirement_record = record
+        calls = _spy_writes(env)
+        with pytest.raises(ApprovalRefused, match="audit record refused"):
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+        assert calls == []
+        assert env["store"].load() == journal
+        assert _entries(env) == ["overlay-journal.json"]
+
+
+def test_default_retirement_record_appends_to_activation_ledger(tmp_path, monkeypatch):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime import activated
+
+    ledger = AuditLedger(tmp_path / "activation.jsonl")
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: ledger)
+    event = {"event_type": "activation.overlay_journal_retiring", "phase": "closed"}
+    assert module._append_retirement_record(event) is True
+    (entry,) = list(ledger)
+    assert dict(entry.event) == event
+
+
+def test_default_record_unconfirmed_append_raises(monkeypatch):
+    from azazel_nexus_runtime import activated
+
+    class Ledger:
+        def append(self, event):
+            return None  # not an AuditEntry
+
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: Ledger())
+    with pytest.raises(UnitOperationFailed, match="record unconfirmed"):
+        module._append_retirement_record({"event_type": "x"})
+
+
+@pytest.mark.parametrize("ledger_ok", [True, False])
+def test_retirement_through_default_ledger_record(tmp_path, monkeypatch, ledger_ok):
+    """The production record seam end to end: a confirmed append proceeds,
+    an unwritable ledger refuses before any journal write."""
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime import activated
+
+    path = tmp_path / "activation.jsonl"
+    if not ledger_ok:
+        path.mkdir()  # a directory where the ledger file should be: append fails
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: AuditLedger(path))
+    (tmp_path / "env").mkdir()
+    with _withdraw_environment(tmp_path / "env") as env:
+        journal = _stage(env, "published")
+        manager, _ = _manager(env, {OLD_BOOT: _abandoned_grant(journal)})
+        manager._retirement_record = module._append_retirement_record
+        _fenced(manager)
+        calls = _spy_writes(env)
+        if ledger_ok:
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+            assert calls == ["replace", "remove"]
+            assert env["store"].load_optional() is None
+            (entry,) = list(AuditLedger(path))
+            assert entry.event["event_type"] == "activation.overlay_journal_retiring"
+            assert entry.event["phase"] == "published"
+        else:
+            with pytest.raises(ApprovalRefused, match="audit record refused"):
+                manager._retire_prior_boot_journal(env["store"], env["guard"])
+            assert calls == [] and env["store"].load() == journal
 
 
 @pytest.mark.parametrize(
@@ -294,3 +460,33 @@ def test_after_retirement_resume_closure_is_false_and_baseline_close_passes(tmp_
         )
         files.close()
         assert files.initial_baseline() is True
+
+
+@pytest.mark.parametrize("phase", ["published", "closing", "withdrawing"])
+def test_publication_resets_and_retires_abandoned_journal_before_publishing(
+        tmp_path, monkeypatch, phase):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, phase)
+        manager, tx, approval, seen = _publication_manager(
+            env, monkeypatch, {OLD_BOOT: _abandoned_grant(journal)})
+        _fenced(manager)
+        calls = _spy_writes(env)
+        with pytest.raises(Reached):
+            manager._publish_and_inspect_pair(
+                tx, approval=approval, check_publish=lambda: None)
+        assert calls == ["replace", "remove"]
+        assert seen["journal"] is None and seen["observation"] is None
+        assert [event["phase"] for event in manager.records] == [phase]
+
+
+def test_publication_refuses_abandoned_journal_without_this_boot_fence(tmp_path, monkeypatch):
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, "published")
+        manager, tx, approval, seen = _publication_manager(
+            env, monkeypatch, {OLD_BOOT: _abandoned_grant(journal)})
+        calls = _spy_writes(env)
+        with pytest.raises(UnitOperationFailed, match="not this boot's fence"):
+            manager._publish_and_inspect_pair(
+                tx, approval=approval, check_publish=lambda: None)
+        assert calls == [] and seen == {} and manager.records == []
+        assert env["store"].load() == journal

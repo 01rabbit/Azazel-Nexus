@@ -963,6 +963,8 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'pinned system bus client unavailable',
     'prior boot grant identity differs from journal',
     'prior boot journal retirement unavailable',
+    'prior boot journal retirement record unconfirmed',
+    "prior boot journal was not this boot's fence",
     'protected bootstrap grant store required',
     'protected bootstrap selection refused',
     'publication admission unconfirmed',

@@ -13,6 +13,8 @@ import math
 import os
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from azazel_nexus.bootstrap_grant_transaction import GrantTransaction, advance_transaction
 from azazel_nexus.bootstrap_grant_store import grant_transaction_store_in_transaction
@@ -119,6 +121,33 @@ def _require_profile(session):
 # Grant phases before any pair publication can have been attempted. A closing
 # grant qualifies only through the fresh unjournaled-baseline observation.
 _UNPUBLISHED_PHASES = frozenset({"prepared", "pair_grant_intent", "closing"})
+# Prior-boot grant phases consistent with an overlay journal abandoned in
+# published/closing/withdrawing: the journal is created only after
+# pair_grant_intent, and a closed grant implies a closed journal.
+_ABANDONED_GRANT_PHASES = frozenset({
+    "pair_grant_intent", "pair_grant_opened", "auditd_start_intent", "auditd_ready",
+    "audit_intent_recorded", "commissiond_start_intent", "commissiond_ready",
+    "closing", "recovery_required",
+})
+
+
+def _append_retirement_record(event):
+    """Durable, hash-chained record in the controller's own activation ledger.
+
+    az-auditd is stopped and masked at this point (stopped-writer rule), so
+    its shared chain cannot take the record before the unlink. The
+    controller's local ledger can; any failure raises and nothing is removed.
+
+    Contract: returns True only after a confirmed append (an AuditEntry back
+    from the durable, fsynced append); anything else raises. The caller
+    proceeds on `is True` alone.
+    """
+    from azazel_nexus.audit import AuditEntry
+    from .activated import _activation_ledger  # lazy: activated composes bootstrap
+
+    if type(_activation_ledger(Path("/")).append(event)) is not AuditEntry:
+        raise UnitOperationFailed("prior boot journal retirement record unconfirmed")
+    return True
 
 
 class BootstrapNarrowingManager:
@@ -167,6 +196,7 @@ class BootstrapNarrowingManager:
         # Private composition seams; never caller, env or config input.
         self._boot_id_reader = read_boot_id
         self._grant_store_opener = grant_transaction_store_in_transaction
+        self._retirement_record = _append_retirement_record
         self._controller_binding = None
         self._controller_grant = None
         self._controller_notification_sent = False
@@ -227,7 +257,8 @@ class BootstrapNarrowingManager:
         self._controller_grant = None
         self._controller_ready_confirmed = False
         self._containment_files = self._closed_overlay_files
-        if self._withdrawal_files is not None and self._withdrawal_files.resume_closure():
+        if (self._withdrawal_files is not None
+                and self._withdrawal_files.resume_closure(boot_id_reader=self._boot_id_reader)):
             self._containment_files = self._withdrawal_files
         # Refusing our own Start calls does not fence jobs submitted elsewhere
         # or before this process. Do not report a deployment guarantee from a
@@ -806,18 +837,21 @@ class BootstrapNarrowingManager:
         """Retire an overlay journal left by an earlier boot, or change nothing.
 
         Only a journal whose intent boot id differs from the current kernel boot
-        id is touched. The retirement "record" is a read-only verification that
-        the prior boot's preserved grant transaction exists and carries the same
-        grant id, context digest and payload digests, and reached phase
-        "closed" (recovery_required or any unfinished phase keeps manual
-        review); nothing is written for it. Any failure raises, which refuses
+        id is touched. Before any mutation the prior boot's preserved grant
+        transaction must exist with the same grant id, context digest and
+        payload digests: phase "closed" for a closed journal; for a journal
+        abandoned in published/closing/withdrawing (Nexus#324 owner decision)
+        a phase from _ABANDONED_GRANT_PHASES, and this boot's containment must
+        have used exactly that journal as its fence (the withdrawal files
+        bound it in close_starts and confirm_empty_pair just passed at the
+        call site). Then the retirement identity (phase, boot id, grant id,
+        context digest, journal sha256; no payload) is appended to the
+        controller's activation ledger. Any failure raises, which refuses
         publication with the journal left in place.
 
-        Stale published/closing journals normally fail earlier, in
-        close_starts (design Case B), so the reboot-reset branch here is
-        reached only by direct calls today. After a retirement the base
-        withdrawal object forgets the journal, so a later containment in this
-        process takes the unpublished-baseline path.
+        After a retirement the base withdrawal object forgets the journal, so
+        a later containment in this process takes the unpublished-baseline
+        path.
         """
         journal = store.load_optional()
         if journal is None:
@@ -834,19 +868,40 @@ class BootstrapNarrowingManager:
         files = self._withdrawal_files
         if files is None:
             raise UnitOperationFailed("prior boot journal retirement unavailable")
+        if journal.phase != "closed" and (
+                self._containment_files is not files
+                or type(self._closed_observation) is not MaskedBootstrapPair):
+            raise UnitOperationFailed("prior boot journal was not this boot's fence")
+        allowed = {"closed"} if journal.phase == "closed" else _ABANDONED_GRANT_PHASES
 
-        def verify_preserved_identity(summary):
+        def record_retirement(summary):
             with self._grant_store_opener(guard) as grants:
                 prior = grants.load(boot_id=summary["boot_id"])
             if (type(prior) is not GrantTransaction
                     or prior.boot_id != summary["boot_id"]
-                    or prior.phase != "closed"
+                    or prior.phase not in allowed
                     or prior.grant_id != summary["grant_id"]
                     or prior.unit_payload_digests != journal.intent.payload_digests
                     or prior.context_digest != "sha256:" + summary["context_digest"]):
                 raise ApprovalRefused("prior boot grant identity differs from journal")
+            event = {
+                "event_type": "activation.overlay_journal_retiring",
+                "phase": summary["phase"],
+                "boot_id": summary["boot_id"],
+                "grant_id": summary["grant_id"],
+                "context_digest": summary["context_digest"],
+                "journal_sha256": summary["journal_sha256"],
+                "grant_phase": prior.phase,
+                "current_boot_id": current_boot,
+                "occurred_at": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds").replace("+00:00", "Z"),
+                "actor": "azazel-activated",
+            }
+            if self._retirement_record(event) is True:
+                return
+            raise ApprovalRefused("prior boot journal retirement record unconfirmed")
 
-        files.retire_prior_boot(journal, current_boot, verify_preserved_identity)
+        files.retire_prior_boot(journal, current_boot, record_retirement)
 
     def _publish_and_inspect_pair(self, transaction, *, approval, check_publish):
         """Integrated preparation only; not complete closure/lifetime admission.
