@@ -6111,10 +6111,13 @@ before placing it. Inside these confirmed operations only, a canonical
 record of another boot with no pending marker is recorded in the activation
 ledger (`activation.bootstrap_prior_boot_record_retiring`) and renamed to
 `retired-<boot id>-<name>`; a record of the current boot still refuses, and the
-boot-time controller never moves anything (procedure:
+boot-time controller never moves a selection, time record or approval
+(procedure:
 [Debian Live install](debian-live-install.md#per-boot-records-after-a-reboot)).
-This is software-only (unit tests); `initial.json`, `checkpoint.json` and an
-outdated admission audit pin still need the owner.
+This is software-only (unit tests). `initial.json` and `checkpoint.json` of an
+earlier boot are archived by the controller's first admission (#337, described
+with the deadline admission below). An outdated admission audit pin still needs
+the owner.
 
 Building a real installed-files candidate on the Debian ARM64 VM exposed a gap
 that synthetic declarations had hidden: Debian's `libpython3.13-minimal` ships
