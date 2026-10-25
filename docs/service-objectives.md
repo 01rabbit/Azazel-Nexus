@@ -198,7 +198,11 @@ store and the incident ledger. The real `Explainer` then reads that incident
 chain, calls the production M.I.O. and Knowledge clients, and forwards the
 incident transitions (opened, escalated, shutdown close) into the same durable
 `AuditLedger` as the input events. Intake and explainer share one fixed clock,
-so two runs can be compared byte for byte.
+so two runs can be compared byte for byte. The loop sends the second line only
+after the first is processed. The intake no longer needs that: it processes
+lines in accept order across connections ([integration loop](integration-loop.md),
+#327), and a unit test sends both lines without waiting, the later one read
+first, and gets the same records, escalation included.
 
 The fault is injected where this loop actually meets each dependency:
 
