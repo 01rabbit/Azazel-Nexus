@@ -735,6 +735,8 @@ class BootstrapSupervisor:
                 or self._grant_store.load_optional(boot_id=transaction.boot_id) != transaction):
             raise ApprovalRefused("retained start intent changed")
         if unit is UnitKey.COMMISSIOND:
+            # Renew after the passed check, before the separate readiness read.
+            self._renew_after_step()
             self._ready((UnitKey.AUDITD,))
         # Neither a matching store read nor readiness extends the deadline.
         if self._cancelled():
@@ -895,7 +897,8 @@ class BootstrapSupervisor:
         # first helper start's checkpoints. Heartbeat conditions still apply.
         if not self._cancelled():
             self._heartbeat()
-        # After READY, every blocking step (full _check, grant fsync, audit
+        # After READY, every blocking step in this sequence (full _check,
+        # helper readiness read, live audit head read, grant fsync, audit
         # append) is followed by a renewal once it has succeeded, so a single
         # slow step, not the sum of a section, is what the watchdog bounds.
         self._check()
@@ -912,6 +915,7 @@ class BootstrapSupervisor:
             return
         self._start_helper(UnitKey.AUDITD)
         self._ready((UnitKey.AUDITD,))
+        self._renew_after_step()
 
         if self._stopped_audit_head is None:
             raise ApprovalRefused("stopped audit head unavailable")
@@ -920,6 +924,7 @@ class BootstrapSupervisor:
         )
         self._audit_head = live_audit.verify_startup()
         self._live_audit = live_audit
+        self._renew_after_step()
         self._advance_grant("auditd_ready")
         self._renew_after_step()
 
@@ -929,6 +934,7 @@ class BootstrapSupervisor:
         receipt = self._record("bootstrap.grant_intent", occurred_at=grant_intent_at)
         if type(receipt) is not AuditAppendReceipt:
             raise ApprovalRefused("auditd grant-intent receipt required")
+        self._renew_after_step()
         live_head = self._live_audit.observe()
         if (live_head.sequence, live_head.digest) != (
             receipt.sequence, receipt.event_hash
@@ -937,7 +943,6 @@ class BootstrapSupervisor:
                 "auditd grant-intent receipt differs from live writer head"
             )
         self._audit_head = live_head
-        # Renew only once the receipt matches the live writer head.
         self._renew_after_step()
         self._advance_grant(
             "audit_intent_recorded",
@@ -955,6 +960,7 @@ class BootstrapSupervisor:
         if self._cancelled():
             return
         self._check()
+        self._renew_after_step()
         self._ready((UnitKey.AUDITD,))
         self._renew_after_step()
         commissiond_start_at = self._previous.last_utc
@@ -969,12 +975,14 @@ class BootstrapSupervisor:
         # Durable storage can take time. Revalidate after it, not only before
         # it; persistence does not extend admission or suppress cancellation.
         self._check()
+        self._renew_after_step()
         self._ready((UnitKey.AUDITD,))
         self._renew_after_step()
         if self._cancelled():
             return
         self._start_helper(UnitKey.COMMISSIOND)
         self._check()
+        self._renew_after_step()
         self._ready(_ORDER)
         self._renew_after_step()
         self._advance_grant("commissiond_ready")
@@ -982,6 +990,7 @@ class BootstrapSupervisor:
         self._record_and_renew("bootstrap.ready", UnitKey.COMMISSIOND)
         while not self._cancelled():
             current = self._check()
+            self._renew_after_step()
             self._ready(_ORDER)
             elapsed = self.boottime_ns()
             if type(elapsed) is not int or elapsed < self._last_elapsed:
