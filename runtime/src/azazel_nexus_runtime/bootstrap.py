@@ -735,6 +735,8 @@ class BootstrapSupervisor:
                 or self._grant_store.load_optional(boot_id=transaction.boot_id) != transaction):
             raise ApprovalRefused("retained start intent changed")
         if unit is UnitKey.COMMISSIOND:
+            # Renew after the passed check, before the separate readiness read.
+            self._renew_after_step()
             self._ready((UnitKey.AUDITD,))
         # Neither a matching store read nor readiness extends the deadline.
         if self._cancelled():
@@ -895,17 +897,25 @@ class BootstrapSupervisor:
         # first helper start's checkpoints. Heartbeat conditions still apply.
         if not self._cancelled():
             self._heartbeat()
+        # After READY, every blocking step in this sequence (full _check,
+        # helper readiness read, live audit head read, grant fsync, audit
+        # append) is followed by a renewal once it has succeeded, so a single
+        # slow step, not the sum of a section, is what the watchdog bounds.
         self._check()
+        self._renew_after_step()
         if self._cancelled():
             return
 
         auditd_start_at = self._previous.last_utc
         self._advance_grant("auditd_start_intent")
+        self._renew_after_step()
         self._check()
+        self._renew_after_step()
         if self._cancelled():
             return
         self._start_helper(UnitKey.AUDITD)
         self._ready((UnitKey.AUDITD,))
+        self._renew_after_step()
 
         if self._stopped_audit_head is None:
             raise ApprovalRefused("stopped audit head unavailable")
@@ -914,7 +924,9 @@ class BootstrapSupervisor:
         )
         self._audit_head = live_audit.verify_startup()
         self._live_audit = live_audit
+        self._renew_after_step()
         self._advance_grant("auditd_ready")
+        self._renew_after_step()
 
         # Replay historical intents in occurrence order. Audit segments are
         # date-ordered, so emitting READY before the earlier grant can otherwise
@@ -922,6 +934,7 @@ class BootstrapSupervisor:
         receipt = self._record("bootstrap.grant_intent", occurred_at=grant_intent_at)
         if type(receipt) is not AuditAppendReceipt:
             raise ApprovalRefused("auditd grant-intent receipt required")
+        self._renew_after_step()
         live_head = self._live_audit.observe()
         if (live_head.sequence, live_head.digest) != (
             receipt.sequence, receipt.event_hash
@@ -930,42 +943,54 @@ class BootstrapSupervisor:
                 "auditd grant-intent receipt differs from live writer head"
             )
         self._audit_head = live_head
+        self._renew_after_step()
         self._advance_grant(
             "audit_intent_recorded",
             evidence_digest=_receipt_digest(receipt),
         )
-        self._record(
+        self._renew_after_step()
+        self._record_and_renew(
             "bootstrap.controller_ready_intent", occurred_at=controller_ready_at
         )
-        self._record(
+        self._record_and_renew(
             "bootstrap.start_intent", UnitKey.AUDITD, occurred_at=auditd_start_at
         )
-        self._record("bootstrap.ready", UnitKey.AUDITD)
+        self._record_and_renew("bootstrap.ready", UnitKey.AUDITD)
 
         if self._cancelled():
             return
         self._check()
+        self._renew_after_step()
         self._ready((UnitKey.AUDITD,))
+        self._renew_after_step()
         commissiond_start_at = self._previous.last_utc
-        self._record("bootstrap.start_intent", UnitKey.COMMISSIOND,
-                     occurred_at=commissiond_start_at)
+        self._record_and_renew("bootstrap.start_intent", UnitKey.COMMISSIOND,
+                               occurred_at=commissiond_start_at)
         self._check()
+        self._renew_after_step()
         if self._cancelled():
             return
         self._advance_grant("commissiond_start_intent")
+        self._renew_after_step()
         # Durable storage can take time. Revalidate after it, not only before
         # it; persistence does not extend admission or suppress cancellation.
         self._check()
+        self._renew_after_step()
         self._ready((UnitKey.AUDITD,))
+        self._renew_after_step()
         if self._cancelled():
             return
         self._start_helper(UnitKey.COMMISSIOND)
         self._check()
+        self._renew_after_step()
         self._ready(_ORDER)
+        self._renew_after_step()
         self._advance_grant("commissiond_ready")
-        self._record("bootstrap.ready", UnitKey.COMMISSIOND)
+        self._renew_after_step()
+        self._record_and_renew("bootstrap.ready", UnitKey.COMMISSIOND)
         while not self._cancelled():
             current = self._check()
+            self._renew_after_step()
             self._ready(_ORDER)
             elapsed = self.boottime_ns()
             if type(elapsed) is not int or elapsed < self._last_elapsed:
@@ -980,6 +1005,27 @@ class BootstrapSupervisor:
             # polling below the fixed 30-second system-manager watchdog.
             remaining = (self._previous.deadline_boottime_ns - self._last_elapsed) / 1_000_000_000
             self.wait(min(self.poll_seconds, 10.0, remaining))
+
+    def _renew_after_step(self) -> None:
+        """Renew after one post-READY step has just completed and been checked.
+
+        Callers place this only on the success path, directly after a full
+        ``_check()``, a confirmed grant advance or a confirmed audit receipt;
+        a refused step raises before reaching it. A cancelled session is not
+        renewed (the caller returns at its next cancellation check), and
+        ``_heartbeat`` still revalidates READY, transaction and deadline.
+        """
+        if not self._cancelled():
+            self._heartbeat()
+
+    def _record_and_renew(
+        self, event: str, unit: UnitKey | None = None, *, occurred_at: str | None = None
+    ):
+        receipt = self._record(event, unit, occurred_at=occurred_at)
+        # Only a confirmed receipt is progress; anything else is not renewed.
+        if type(receipt) is AuditAppendReceipt:
+            self._renew_after_step()
+        return receipt
 
     def _heartbeat(self):
         """Renew only from validated main-loop progress, never a background task."""
