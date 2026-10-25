@@ -117,18 +117,24 @@ def observe_fault(mode: str, clock: FaultClock) -> degradation.FailureMode:
     raise ValueError("fault injection unexpectedly returned a healthy response")
 
 
-def edge_observations(edge: tuple[Path, Path | None]) -> list[bytes]:
-    """One fresh run of the real Edge Core; `edge` is (binary, pinned-clock shim)."""
+def edge_observations(edge: tuple[Path, Path]) -> list[bytes]:
+    """One fresh run of the real Edge Core; `edge` is (binary, pinned-clock shim).
+
+    The shim is required: a wall-clock Edge run is for the mutation check only
+    and is never captured as SO-06 evidence.
+    """
     from tools.e2e_loop import eve_events
 
-    events = eve_events()
     binary, shim = edge
+    if not isinstance(shim, Path):
+        raise so06_edge.EdgeUnavailable("SO-06 runs Edge only on the pinned clock")
+    events = eve_events()
     return so06_edge.run_edge(binary, events, shim=shim,
                               expected=sum(e["event_type"] == "alert" for e in events))
 
 
 def nexus_adapter(events: list, case: str,
-                  edge: tuple[Path, Path | None] | None = None) -> dict:
+                  edge: tuple[Path, Path] | None = None) -> dict:
     """Execute real Nexus modules afresh, without fabricating Edge outputs."""
     failures = {}
     mode = None

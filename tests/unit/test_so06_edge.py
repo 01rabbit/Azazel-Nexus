@@ -134,6 +134,42 @@ def test_a_pin_that_did_not_take_effect_is_refused(producer):
         so06_edge.require_pinned([json.dumps(line).encode()])
 
 
+def pinned_line(index: int, *, ingest=None, due="pinned") -> bytes:
+    """A golden observation with its clock fields set to the pinned instant."""
+    record = json.loads(so06_loop.golden_lines()[index])
+    record["normalized"]["ingest_epoch"] = so06_edge.PINNED_EPOCH if ingest is None else ingest
+    metadata = record["enforcement"]["metadata"]
+    if due == "pinned":
+        due = (None if metadata["release_due_epoch"] is None
+               else so06_edge.PINNED_EPOCH + so06_edge.EDGE_ACTION_TTL_S)
+    metadata["release_due_epoch"] = due
+    return json.dumps(record).encode()
+
+
+def test_require_pinned_checks_each_field_of_every_line():
+    notify, isolate = pinned_line(0), pinned_line(1)
+    # Both shapes pass: a release lease, and none (`release_due_epoch` null).
+    assert json.loads(notify)["enforcement"]["metadata"]["release_due_epoch"] is None
+    so06_edge.require_pinned([notify, isolate])
+    so06_edge.require_pinned([pinned_line(1, due=None)])
+    # Only ingest_epoch off, with a correct release lease.
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
+        so06_edge.require_pinned([pinned_line(1, ingest=so06_edge.PINNED_EPOCH + 1)])
+    # Only the second line off.
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
+        so06_edge.require_pinned([notify, pinned_line(1, ingest=so06_edge.PINNED_EPOCH - 1)])
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
+        so06_edge.require_pinned([notify, pinned_line(1, due=so06_edge.PINNED_EPOCH)])
+
+
+def test_no_observation_proves_nothing(producer, shim):
+    with pytest.raises(so06_edge.EdgeUnavailable, match="no Edge observation"):
+        so06_edge.require_pinned([])
+    events, _ = alerts()
+    with pytest.raises(so06_edge.EdgeUnavailable, match="at least one observation"):
+        so06_edge.run_edge(producer, events, expected=0, shim=shim)
+
+
 def test_the_clock_is_recorded_not_decided(producer, shim):
     events, expected = alerts()
     pinned = so06_edge.run_edge(producer, events, expected=expected, shim=shim)
@@ -172,8 +208,17 @@ def test_pinned_edge_drives_evaluation_outcomes_in_every_run(captured):
     assert record["execution_result"] == "FAIL"
 
 
-def test_mutation_unpinned_capture_diverges(producer, monkeypatch):
+def test_replay_refuses_an_unpinned_edge(producer, monkeypatch):
     monkeypatch.setattr(so06_edge, "build_shim", lambda directory: None)
+    with pytest.raises(so06_edge.EdgeUnavailable, match="only on the pinned clock"):
+        so06_replay.capture_replays(scenarios(), edge_core=producer)
+
+
+def test_mutation_unpinned_capture_diverges(producer, monkeypatch):
+    events, expected = alerts()
+    # The mutation bypasses the replay's refusal on purpose: wall-clock runs.
+    monkeypatch.setattr(so06_replay, "edge_observations", lambda edge: so06_edge.run_edge(
+        edge[0], events, expected=expected, shim=None))
     record = emit(so06_replay.capture_replays(scenarios(), edge_core=producer))
     diverged = [s for s in record["samples"] if not s["paths"][OUTCOMES]["byte_identical"]]
     assert len(diverged) == 15

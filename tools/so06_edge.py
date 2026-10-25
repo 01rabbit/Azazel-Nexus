@@ -166,7 +166,12 @@ def field(record: dict, path: tuple) -> object:
 
 
 def require_pinned(lines: list[bytes]) -> None:
-    """Refuse a run whose clock fields are not the pinned instant."""
+    """Refuse a run whose clock fields are not the pinned instant.
+
+    Every line is checked, and a run with no observation proves nothing.
+    """
+    if not lines:
+        raise EdgeUnavailable("no Edge observation to check the pinned clock against")
     for line in lines:
         record = json.loads(line)
         due = field(record, CLOCK_FIELDS[1])
@@ -179,8 +184,11 @@ def run_edge(binary: Path, events: list[dict], *, expected: int,
              shim: Path | None) -> list[bytes]:
     """Run Edge once on fresh state; return its observation lines in order.
 
-    `shim=None` runs on the real wall clock, which only the mutation check uses.
+    `shim=None` runs on the real wall clock. It exists only for the mutation
+    check (`main`, tests); the SO-06 replay refuses it (`so06_replay`).
     """
+    if expected < 1:
+        raise EdgeUnavailable("an Edge run must expect at least one observation")
     with tempfile.TemporaryDirectory(prefix="azso06e-", dir="/tmp") as temporary:
         directory = Path(temporary)
         (directory / "eve.json").write_text("".join(json.dumps(e) + "\n" for e in events))

@@ -272,9 +272,11 @@ compare times, and neither is reached here: a release task is not built at all
 for a negative or non-finite instant (the pinned one is valid), and release
 reconciliation acts on ledger tasks whose `due_epoch` has passed. An
 observe-only Edge only plans (`planned_only`) and writes no ledger, so there is
-nothing to release. Under a pinned clock a release would never fall due; that
-matters only once Edge enforces (Azazel-Edge#412), and intake refuses that
-posture.
+nothing to release. Two cautions for when Edge enforces (Azazel-Edge#412),
+which intake refuses today: under a pinned clock a release would never fall
+due, and the release ledger's temporary file name in Edge's `release.rs`
+(`temp_path`, process id plus wall-clock nanoseconds) would repeat within one
+process. Neither is reached by an observe-only Edge, which writes no ledger.
 
 Unit tests in CI run a stand-in producer with the same wire shape, because CI
 has no Edge binary: two pinned runs are byte-identical, two unpinned runs differ
