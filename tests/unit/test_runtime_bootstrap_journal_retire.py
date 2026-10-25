@@ -59,6 +59,13 @@ class Audit:
             raise self.fail
 
 
+def _bound(env, boot=NEW_BOOT):
+    """This boot's containment fence over the abandoned journal (close_starts)."""
+    files = _withdrawal(env)
+    assert files.resume_closure(boot_id_reader=lambda: boot) is True
+    return files
+
+
 def _entries(env):
     return sorted(path.name for path in env["journal_path"].iterdir())
 
@@ -105,8 +112,9 @@ def test_abandoned_phase_is_reset_then_retired_when_files_absent(tmp_path, phase
             replaced.append((expected, next_journal))
             return real_replace(expected, next_journal)
 
+        files = _bound(env)
         env["store"].replace = spy
-        _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, audit)
+        files.retire_prior_boot(journal, NEW_BOOT, audit)
 
         assert replaced == [(journal, OverlayJournal(journal.intent, "closed"))]
         assert audit.calls[0]["phase"] == phase
@@ -121,9 +129,15 @@ def test_pair_files_present_refuse_without_unlink_or_audit(tmp_path, phase):
         audit = Audit()
         before = {unit: (env["overlay_path"] / unit).read_bytes() for unit in PAIR
                   if (env["overlay_path"] / unit).exists()}
+        files = _withdrawal(env)
+        try:
+            # No fence over a journal whose files are still in the overlay.
+            assert files.resume_closure(boot_id_reader=lambda: NEW_BOOT) is False
+        except ApprovalRefused:
+            pass  # withdrawing with non-empty owned files refuses at binding
 
-        with pytest.raises(ApprovalRefused, match="pair entry present"):
-            _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, audit)
+        with pytest.raises(ApprovalRefused, match="not bound|pair entry present"):
+            files.retire_prior_boot(journal, NEW_BOOT, audit)
 
         assert audit.calls == []
         assert {unit: (env["overlay_path"] / unit).read_bytes() for unit in PAIR
@@ -214,8 +228,9 @@ def test_mask_changed_during_audit_refuses_before_any_mutation(tmp_path):
             mask.unlink()
             mask.symlink_to("/dev/null")
 
+        files = _bound(env)
         with pytest.raises(ApprovalRefused, match="masks changed"):
-            _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, Audit(before=swap_mask))
+            files.retire_prior_boot(journal, NEW_BOOT, Audit(before=swap_mask))
 
         _assert_untouched(env, journal)
 
@@ -226,13 +241,14 @@ def test_audit_failure_leaves_journal_untouched(tmp_path, failure):
     with _withdraw_environment(tmp_path) as env:
         journal = _stage(env, "withdrawing")
         audit = Audit(fail=failure)
+        files = _bound(env)
 
         if failure is KeyboardInterrupt:
             with pytest.raises(KeyboardInterrupt):
-                _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, audit)
+                files.retire_prior_boot(journal, NEW_BOOT, audit)
         else:
             with pytest.raises(ApprovalRefused, match="audit record refused"):
-                _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, audit)
+                files.retire_prior_boot(journal, NEW_BOOT, audit)
 
         assert len(audit.calls) == 1
         _assert_untouched(env, journal)
@@ -268,6 +284,7 @@ def test_reset_replace_failure_keeps_old_phase_and_no_removal(tmp_path):
     with _withdraw_environment(tmp_path) as env:
         journal = _stage(env, "closing")
         removed = []
+        files = _bound(env)
 
         def fail_replace(_expected, _next):
             raise OverlayJournalDurabilityUncertain("injected")
@@ -276,7 +293,7 @@ def test_reset_replace_failure_keeps_old_phase_and_no_removal(tmp_path):
         env["store"].remove = lambda expected: removed.append(expected)
 
         with pytest.raises(OverlayJournalDurabilityUncertain, match="injected"):
-            _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, Audit())
+            files.retire_prior_boot(journal, NEW_BOOT, Audit())
 
         assert removed == []
         del env["store"].replace
@@ -292,8 +309,8 @@ def test_unlink_failure_surfaces_and_is_retired_on_rerun(tmp_path):
         def uncertain(_expected):
             raise OverlayJournalDurabilityUncertain("injected")
 
+        files = _bound(env)
         env["store"].remove = uncertain
-        files = _withdrawal(env)
         with pytest.raises(OverlayJournalDurabilityUncertain, match="injected"):
             files.retire_prior_boot(journal, NEW_BOOT, Audit())
 
@@ -326,8 +343,9 @@ def test_journal_changed_during_audit_refuses(tmp_path):
         def change():
             env["store"].replace(journal, closed)
 
+        files = _bound(env)
         with pytest.raises(ApprovalRefused, match="changed during retirement"):
-            _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, Audit(before=change))
+            files.retire_prior_boot(journal, NEW_BOOT, Audit(before=change))
 
         assert env["store"].load() == closed
 
@@ -339,8 +357,9 @@ def test_pair_file_appearing_during_audit_refuses(tmp_path):
         def appear():
             (env["overlay_path"] / PAIR[1]).write_bytes(b"")
 
+        files = _bound(env)
         with pytest.raises(ApprovalRefused, match="pair entry present"):
-            _withdrawal(env).retire_prior_boot(journal, NEW_BOOT, Audit(before=appear))
+            files.retire_prior_boot(journal, NEW_BOOT, Audit(before=appear))
 
         _assert_untouched(env, journal)
 

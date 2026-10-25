@@ -1,5 +1,7 @@
 # Overlay journal lifecycle: design (read-only study, HEAD 58dfde1)
 
+*Status 2026-10-25: Option 2, including reboot-reset, is implemented (owner decision on Nexus#324). §8 records what was built and where it differs from §5. Sections 1-7 are the original study and are left as written.*
+
 Notation: `OJ` = src/azazel_nexus/bootstrap_overlay_journal.py, `R` = runtime/src/azazel_nexus_runtime/, `BS` = R/bootstrap.py, `MG` = R/bootstrap_manager.py. All behaviour below is from static reading; nothing was executed. Items marked [infer] are chains I traced by hand and the tests below must pin them.
 
 ## 1. Confirmed lifecycle
@@ -97,6 +99,8 @@ Why not Option 1: cannot be placed inside restore without breaking the same `_co
 
 ## 6. Decisions for the maintainer
 
+*Decided 2026-10-25 (Nexus#324): auto-recover with reboot-reset under the predicate of Option 2, and the retirement record is mandatory before the unlink. See §8.*
+
 - Whether a reboot after a crash in `published/closing/withdrawing` should auto-recover (reboot-reset) or stay a manual-review event as Q9 U13 / Q3 describe. Ship the `closed`-only retire first if unsure; the reset is a separate, small step.
 - Whether the audit ledger record of the retired journal is mandatory before unlink.
 
@@ -117,3 +121,39 @@ Runtime (R tests, same style as test_runtime_bootstrap_withdrawal_binding.py / _
 - Regression: `finalize` still never deletes (existing restore_files test), and no code path calls `remove` in the same boot as `finalize` (grep-style test or call spy).
 - Run directory contents check: only `overlay-journal.json` (and allowed temp) after each case (`_check_entries`).
 - Q9 doc updates: U13 resolved; E3.b "next boot" paragraph rewritten.
+
+## 8. Implementation (Nexus#324, 2026-10-25)
+
+Unit tests in a Linux container only (synthetic system bus and cgroup tree). This is not VM or hardware evidence.
+
+What already existed: the `reboot-reset` action in `advance_overlay` (published|closing|withdrawing -> closed, no owned files), `BootstrapWithdrawalFiles.retire_prior_boot` and the call site `_retire_prior_boot_journal` in `_publish_and_inspect_pair`, between `confirm_empty_pair`/mask stamps/`checkpoint()` and `_publish_verified_approval_at`. Until now only a `closed` journal whose prior grant was `closed` could reach them, because Case B failed earlier in `close_starts`. They were extended, not duplicated.
+
+Changes:
+1. Containment fence for Case B (`R/bootstrap_withdrawal.py`). `resume_closure(boot_id_reader=...)` (the manager passes its private `_boot_id_reader`) accepts a `published`/`closing` journal as this boot's fence when all of these hold:
+   - its intent boot id differs from the canonical current boot id;
+   - no pair entry exists in the overlay.
+
+   It writes nothing. `check()` for that fence requires the exact same journal, no overlay entry and unchanged `_withdraw_paths` stamps, and reports the persistent-mask fragments. The close sequence still has to see systemd's loaded state match them, and `confirm_empty_pair` still runs. When the boot id is the same or cannot be read or proved, or an entry is present, the result is False and the existing close path decides, so it still refuses on missing owned files. `withdraw()` refuses while only this fence is bound. A `withdrawing` journal already used the existing path (`check()` tolerates absent files).
+2. Retirement predicate.
+   - For a non-`closed` journal, `retire_prior_boot` requires that this object bound exactly that journal in this boot's containment.
+   - `_retire_prior_boot_journal` additionally requires `_containment_files is` the withdrawal files and a current `MaskedBootstrapPair` observation.
+   - The prior boot's grant must match grant id, context and payload digests:
+     - phase `closed` for a `closed` journal (unchanged);
+     - a phase in `_ABANDONED_GRANT_PHASES` (pair_grant_intent ... commissiond_ready, closing, recovery_required) for an abandoned journal. A `closed` or `prepared` prior grant is inconsistent with an abandoned journal and refuses.
+   - Same boot is a no-op, and later the O_EXCL create refuses. Pair entries present, changed stamps, or a journal changed during the steps all refuse.
+3. Record before unlink. az-auditd is stopped and masked at this point: the stopped-writer rule starts it only after READY. Its shared chain cannot take a record before the unlink. The record is therefore appended, through the existing `AuditLedger` of `_activation_ledger`, to the controller's own local ledger `/var/lib/azazel/state/activation.jsonl`, which is hash-chained and fsynced:
+   - event `activation.overlay_journal_retiring`: phase, boot_id, grant_id, context_digest, journal_sha256, grant_phase, current_boot_id, occurred_at, actor; no payload.
+   - The append runs before the reset and before the unlink. If it raises or returns anything other than a confirmed append, nothing is changed.
+   - The ledger is local, neither signed nor anchored (runtime/README.md). The event is not a floor event. If the ledger did not exist, this creates it, and `activation_high_water` then treats the node as having history. That only narrows.
+   - A record on the az-auditd chain would need a new bootstrap event schema, replayed after auditd starts. That was not added.
+4. Order inside `retire_prior_boot` (unchanged): guard, exact journal, boot id, stamps, phase, binding, stability, record, stability, `replace(current, closed)` with read-back (only if not `closed`), stability, `remove`. In `finally`, the bound intent, owned files, stamps and prior-boot fence are cleared, so a later `_contain` in this process takes the initial-baseline path.
+
+Crash table as built (tests in `tests/unit/test_runtime_bootstrap_journal_reboot_reset.py`):
+- Record fails: nothing changes, and publication is refused.
+- `replace` (reset) raises: the old phase remains. The next containment re-fences, and `withdraw_pair` for this boot's grant refuses, so the supervisor ends at `recovery_required` (as in Case A).
+- `remove` raises before the unlink: the journal is `closed`, and the next containment and withdrawal behave as in the `closed` Case A.
+- The unlink happened but the directory fsync was uncertain: no journal remains, and the initial-baseline branch plus `_confirm_unpublished_withdrawal` close this boot's grant.
+- Deviation from the §4 table: a journal that reboot-reset turned `closed`, whose unlink did not complete before a crash, is retired at a later boot only if its prior grant is `closed`. The `closed` rule was not widened beyond the owner's decision. With the usual unfinished prior grant it stays manual review (fail closed).
+
+Mutation-checked guards: the same-boot fence, overlay entry at the fence and in `check()`, stamp and journal comparison in `check()`, binding in `retire_prior_boot`, the manager's fence and observation guard, the grant phase sets, the record confirmation, the boot id reader at `close_starts`, the `withdraw()` guard, and the reset of bound state.
+

@@ -45,6 +45,9 @@ class BootstrapWithdrawalFiles:
         self._intent = None
         self._owned = None
         self._stamps = None
+        # The exact prior-boot journal accepted as a fence by resume_closure;
+        # never a grant selection and never set for this boot's journal.
+        self._prior_boot = None
         self._selected_transaction = None
 
     def bind(self, transaction):
@@ -64,16 +67,28 @@ class BootstrapWithdrawalFiles:
         if (type(current) is not OverlayJournal or current.intent != expected
                 or current.phase not in {"closing", "withdrawing", "closed"}):
             raise ApprovalRefused("withdrawal does not own retained overlay intent")
+        self._prior_boot = None
         self._intent = expected
         self._owned = current.owned_files
         self._stamps = _withdraw_paths(**self._args)
         self.check()
 
-    def resume_closure(self):
+    def _pair_present(self):
+        return any(_present(self._args["overlay_fd"], UNIT_NAMES[key])
+                   for key in (UnitKey.AUDITD, UnitKey.COMMISSIOND))
+
+    def resume_closure(self, boot_id_reader=None):
         """Select retained narrowing state, not authority to remove a grant.
 
         A fresh controller may re-establish a masked fence from the protected
         journal. Actual unlink still requires bind(transaction) and its match.
+
+        `boot_id_reader` is the manager's private kernel boot id seam. With it,
+        a `published`/`closing` journal whose intent boot id differs from the
+        current boot and whose pair has no overlay entry at all (a reboot
+        emptied /run) is accepted as a persistent-mask fence without any
+        mutation (owner decision, Nexus#324). Same boot, an unreadable boot id
+        or any overlay entry keep the existing refusal path.
         """
         self._selected_transaction = None
         self._guard()
@@ -84,15 +99,51 @@ class BootstrapWithdrawalFiles:
             return False
         if type(current) is not OverlayJournal:
             raise ApprovalRefused("retained closure journal required")
+        if current.phase in {"published", "closing"} and boot_id_reader is not None:
+            return self._bind_prior_boot(current, boot_id_reader)
         if current.phase not in {"withdrawing", "closed"}:
             return False
         self._bind_intent(current.intent)
         return True
 
+    def _bind_prior_boot(self, current, boot_id_reader):
+        try:
+            boot = boot_id_reader()
+            if type(boot) is not str or str(uuid.UUID(boot)) != boot:
+                raise ValueError
+        except Exception:
+            return False  # Not proven: the existing close path decides (refuses).
+        if current.intent.boot_id == boot or self._pair_present():
+            return False
+        self._intent = current.intent
+        self._owned = current.owned_files
+        self._stamps = _withdraw_paths(**self._args)
+        self._prior_boot = current
+        self.check()
+        return True
+
+    def _check_prior_boot(self, current):
+        """Fence of an abandoned prior-boot journal: nothing in the overlay."""
+        if current != self._prior_boot or _withdraw_paths(**self._args) != self._stamps:
+            raise ApprovalRefused("prior boot journal or paths changed")
+        if self._pair_present():
+            raise ApprovalRefused("prior boot overlay entry present")
+        fragments = tuple((key, str(Path(self._path_args["masks_path"]) / UNIT_NAMES[key]))
+                          for key in (UnitKey.AUDITD, UnitKey.COMMISSIOND))
+        self._guard()
+        if (self._store.load() != current or self._pair_present()
+                or _withdraw_paths(**self._args) != self._stamps):
+            raise ApprovalRefused("withdrawal observation changed")
+        return fragments
+
     def retire_prior_boot(self, expected, current_boot_id, record_retirement):
         """Remove a journal that provably belongs to a finished earlier boot.
 
-        Grants no authority: it only deletes a moot record. The caller must
+        Grants no authority: it only deletes a moot record. A `published`,
+        `closing` or `withdrawing` journal (abandoned by a reboot, Nexus#324)
+        is first reset to `closed` with the narrowing-only "reboot-reset"
+        transition, and only when this object bound exactly that journal as
+        this boot's containment fence (resume_closure). The caller must
         pass the kernel boot id (canonical lowercase UUID); injection is for
         tests. `record_retirement` is a required audit step called with one
         summary mapping (event "retiring", phase, boot_id, grant_id,
@@ -120,10 +171,13 @@ class BootstrapWithdrawalFiles:
             raise ApprovalRefused("prior boot journal retirement masks changed")
         if current.phase not in {"closed", "published", "closing", "withdrawing"}:
             raise ApprovalRefused("prior boot journal phase refused")
+        if current.phase != "closed" and (
+                self._intent != current.intent or self._stamps is None
+                or (current.phase != "withdrawing" and self._prior_boot != current)):
+            raise ApprovalRefused("prior boot journal not bound by this boot's containment")
 
         def pair_absent():
-            if any(_present(self._args["overlay_fd"], UNIT_NAMES[key])
-                   for key in (UnitKey.AUDITD, UnitKey.COMMISSIOND)):
+            if self._pair_present():
                 raise ApprovalRefused("prior boot journal retirement pair entry present")
 
         def stable(journal):
@@ -162,12 +216,15 @@ class BootstrapWithdrawalFiles:
             self._intent = None
             self._owned = None
             self._stamps = None
+            self._prior_boot = None
             self._selected_transaction = None
 
     def close(self):
         # No truncation or ownership transition: all present entries must
         # already be owned empty masks and all missing ones persistently masked.
         self.check()
+        if self._prior_boot is not None:
+            return  # check() proved the exact prior-boot journal and no entry.
         if self._store.load().phase not in {"withdrawing", "closed"}:
             raise ApprovalRefused("resumed closure phase refused")
 
@@ -179,6 +236,8 @@ class BootstrapWithdrawalFiles:
             path = Path(self._path_args[name + "_path"])
             bind_directory_path(path, self._args[name + "_fd"])
         current = self._store.load()
+        if self._prior_boot is not None:
+            return self._check_prior_boot(current)
         if (current.intent != self._intent or current.phase not in {"closing", "withdrawing", "closed"}
                 or (current.phase != "closed" and current.owned_files != self._owned)
                 or _withdraw_paths(**self._args) != self._stamps):
@@ -206,7 +265,8 @@ class BootstrapWithdrawalFiles:
         return tuple(fragments)
 
     def withdraw(self, check_contained):
-        if type(self._selected_transaction) is not GrantTransaction:
+        if (type(self._selected_transaction) is not GrantTransaction
+                or self._prior_boot is not None):
             raise ApprovalRefused("withdrawal requires explicit grant selection")
         self.check()
         if self._store.load().phase != "closed":
