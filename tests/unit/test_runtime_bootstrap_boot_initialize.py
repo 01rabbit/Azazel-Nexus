@@ -143,7 +143,7 @@ def test_install_verifies_then_places_private_pair_and_records(node, monkeypatch
         info = (node.root / name).stat()
         assert info.st_mode & 0o777 == 0o600 and info.st_nlink == 1
     [event] = node.events
-    assert event == {"event_type": "bootstrap.approval_installed", "operator": OPERATOR,
+    assert event == {"event_type": "activation.bootstrap_approval_installed", "operator": OPERATOR,
                      "granted_at": GRANTED, "expires_at": EXPIRES,
                      "payload_sha256": "sha256:" + sha256(payload).hexdigest()}
     assert "NOT admission" in output
@@ -211,7 +211,7 @@ def test_prior_boot_pair_is_recorded_then_moved_aside(node, monkeypatch):
     assert (retire["event_type"], retire["record"], retire["boot_id"], retire["current_boot_id"]) == (
         EVENT_TYPE, "approval", PRIOR, BOOT)
     assert sorted(retire["files"]) == ["approval.json", "approval.sig"]
-    assert installed["event_type"] == "bootstrap.approval_installed"
+    assert installed["event_type"] == "activation.bootstrap_approval_installed"
 
 
 @pytest.mark.parametrize("case", [
@@ -251,7 +251,7 @@ def test_existing_state_refusal_changes_nothing(node, monkeypatch, case):
 
     assert code == 1, output
     assert _snapshot(node.root) == before
-    assert [e for e in node.events if e["event_type"] == "bootstrap.approval_installed"] == []
+    assert [e for e in node.events if e["event_type"] == "activation.bootstrap_approval_installed"] == []
     if case != "record-fails":
         assert node.events == []
 
@@ -266,6 +266,23 @@ def test_verification_lost_before_rename_removes_partials(node, monkeypatch):
     assert code == 1, output
     assert _snapshot(node.root) == {}
     assert node.events == []
+
+
+def test_refusal_after_prior_pair_moved_aside_says_so_and_exits_two(node, monkeypatch):
+    prior_payload, prior_signature = _pair(replace(CONTEXT, boot_id=PRIOR))
+    _write(node.root / "approval.json", prior_payload)
+    _write(node.root / "approval.sig", prior_signature)
+    node.fail_verification_at = 3  # the verification before the rename
+
+    code, output = _run_install(node, *_pair(), monkeypatch)
+
+    assert code == 2, output
+    assert "AFTER the prior boot's approval pair was recorded as retiring" in output
+    assert _snapshot(node.root) == {
+        retired_name(PRIOR, "approval.json"): prior_payload,
+        retired_name(PRIOR, "approval.sig"): prior_signature,
+    }
+    assert [e["event_type"] for e in node.events] == [EVENT_TYPE]
 
 
 def test_verification_failure_before_change_leaves_prior_pair(node, monkeypatch):

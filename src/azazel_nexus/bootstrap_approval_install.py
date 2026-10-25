@@ -1,8 +1,9 @@
 """Place an already verified bootstrap approval pair; never sign or admit.
 
 The caller (``az-nexus-bootstrap approval-install``) verifies the pair with the
-same ``verify_bootstrap_approval`` the bootstrap admission uses and passes that
-verification as ``recheck``, which runs again before the pair is renamed into
+same ``verify_bootstrap_approval`` the bootstrap admission uses, against the
+declared context (without the live package/closure/systemd observations the
+entrypoint takes), and passes that verification as ``recheck``, which runs again before the pair is renamed into
 place. A pair of the current boot is never replaced; a canonical pair of a prior
 boot is recorded and moved aside first. Placement is not admission: the
 bootstrap entrypoint verifies the installed pair again against its own fresh
@@ -128,7 +129,12 @@ def _install_at(fd, payload, signature, *, owner, recheck, record_prior_boot):
 
 def install_bootstrap_approval(payload: bytes, signature: bytes, *, recheck,
                                record_prior_boot):
-    """Fixed protected directory; no path, owner or verification override."""
+    """Fixed protected directory; no path or owner override.
+
+    ``recheck`` and ``record_prior_boot`` are callbacks supplied by the trusted
+    composition (``az-nexus-bootstrap approval-install``); they are not exposed
+    to CLI arguments or RPC input.
+    """
     try:
         if type(payload) is not bytes or type(signature) is not bytes:
             raise ApprovalRefused("approval bytes required")

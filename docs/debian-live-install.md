@@ -310,26 +310,45 @@ and `approval-install`), an existing `selection.json`, `time.json` or
 its boot id differs from the current boot, no `*.pending` marker (or
 interrupted `.approval.*.partial` file) is present, and it decodes in its
 canonical form. The move is recorded first as
-`bootstrap.prior_boot_record_retiring` in `/var/lib/azazel/state/activation.jsonl`
+`activation.bootstrap_prior_boot_record_retiring` in `/var/lib/azazel/state/activation.jsonl`
 (record kind, both boot ids, SHA-256 of each file and its new name); if the
 record cannot be confirmed nothing is moved. The file is then renamed in place
 to `retired-<boot id>-<name>` (same owner and mode). A record of the current
 boot, expired or not, is never replaced and still refuses. The controller at
 boot time never moves anything: a stale selection still makes the boot-time run
 narrow and fail as before. Review and remove `retired-*` files yourself.
+Records moved aside by Nexus are under `/etc/azazel/bootstrap/retired-*` (these
+commands) or in an `archive/` directory (the controller's retirement of
+`initial.json`, `checkpoint.json` and grants proposed in #337, not merged at the
+time of writing).
+
+Ordering with observe-baseline activation: these events (like the bootstrap
+controller's own records) create `/var/lib/azazel/state/activation.jsonl`. On a
+node with that ledger and no `high-water.json`, every activation pass refuses
+(`high-water absent on a node with an activation ledger`). They are not floor
+events, so `az-activation install` still initializes the floor; on a node that
+also uses observe-baseline activation, run `az-activation install` (§3.1 of
+[activation-observe-baseline](activation-observe-baseline.md)) before relying on
+the activation pass, ideally before the first bootstrap command here.
 
 `approval-install` (root) reads the payload and the 64-byte signature
 (regular, single-link, not followed links), requires `--confirm-sha256` to
 equal the payload SHA-256, and verifies the pair with the same
-`verify_bootstrap_approval` the bootstrap admission uses: the protected declared
-context and operator, the approval policy, the enrolled operator trust, and both
-bounds of this boot's administrator time window. Any refusal changes nothing.
-It then refuses if a pair for this boot is already installed, moves a prior
-boot's pair aside as above, verifies again, writes private `0600` temporary
-files, renames them into place, reads them back and records
-`bootstrap.approval_installed`. Exit 2 means a step after the first change did
-not complete; inspect `/etc/azazel/bootstrap` before retrying. Placement is not
-admission: the bootstrap entrypoint verifies the pair again on every attempt.
+`verify_bootstrap_approval` the bootstrap admission uses, with the protected
+*declared* context and operator, the approval policy, the enrolled operator
+trust, and both bounds of this boot's administrator time window. It does not
+take the live package, installed-closure or systemd observations; the bootstrap
+entrypoint takes them and verifies the placed pair again on every attempt.
+A refusal by this first verification (or any earlier input check) changes
+nothing. The command then verifies once more, refuses if a pair for this boot is
+already installed, moves a prior boot's pair aside as above, writes private
+`0600` temporary files, verifies again, renames them into place, reads them back
+and records `activation.bootstrap_approval_installed`. A refusal after the prior
+pair was moved aside (writing the temporary files, or the last verification)
+removes the temporary files but leaves the prior pair under `retired-*` with no
+new pair placed; the output says so and exits 2. Exit 2 always means a step
+after the first change did not complete; inspect `/etc/azazel/bootstrap` before
+retrying. Placement is not admission.
 `initial.json` and `checkpoint.json` from a previous run, and admission pins
 that a longer audit ledger has outdated, are not handled by these commands.
 

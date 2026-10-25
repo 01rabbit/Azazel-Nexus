@@ -12,7 +12,7 @@ import os
 
 from .operator_trust import ApprovalRefused
 
-EVENT_TYPE = "bootstrap.prior_boot_record_retiring"
+EVENT_TYPE = "activation.bootstrap_prior_boot_record_retiring"
 
 
 def retired_name(prior_boot: str, name: str) -> str:

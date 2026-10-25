@@ -339,9 +339,11 @@ def _read_supplied_file(path, *, limit):
 def _verify_supplied_approval(payload, signature):
     """The bootstrap admission's verifier over this boot's whole trusted window.
 
-    Context and operator come from protected declarations, trust from the
+    Context and operator come from the protected *declarations*, trust from the
     enrolled operator store, time from this boot's administrator time record
-    (both bounds, as the entrypoint verifies). Nothing here is relaxed.
+    (both bounds, as the entrypoint verifies). The live package, installed
+    closure and systemd observations the entrypoint takes are NOT taken here;
+    the entrypoint verifies the placed pair again against them.
     """
     selected = load_declared_bootstrap_context()
     policy = _load_approval_policy()
@@ -369,11 +371,19 @@ def _is_root():
 def run_approval_install(*, payload_path, signature_path, confirm_sha256, out):
     """Verify a signed pair with the existing verifier, then place it (root).
 
-    A verifier refusal changes nothing. A prior boot's pair is recorded in the
-    activation ledger and moved aside; a pair of this boot is never replaced.
+    A refusal by the first verification changes nothing. A prior boot's pair is
+    recorded in the activation ledger and moved aside; a pair of this boot is
+    never replaced. A later refusal (temporary file write or the verification
+    before the rename) leaves a pair already moved aside, and says so.
     Placement is not admission: the bootstrap entrypoint verifies it again.
     """
     stage = "nothing changed"
+    retiring = []
+
+    def record_prior_boot(event):
+        confirmed = _record_prior_boot(event)
+        retiring.append(confirmed)
+        return confirmed
     try:
         if not _is_root():
             raise ApprovalRefused("approval-install requires root")
@@ -391,14 +401,16 @@ def run_approval_install(*, payload_path, signature_path, confirm_sha256, out):
             if _verify_supplied_approval(payload, signature) != verified:
                 raise ApprovalRefused("bootstrap approval verification changed")
 
-        print(f"Verified bootstrap approval: operator {verified.operator}, valid "
-              f"{verified.granted_at} .. {verified.expires_at}.", file=out)
+        print(f"Verified bootstrap approval against the declared context: operator "
+              f"{verified.operator}, valid {verified.granted_at} .. {verified.expires_at}. "
+              "Live package, closure and systemd observations are not taken here; the "
+              "bootstrap entrypoint verifies again with them.", file=out)
         stage = "approval placement may be incomplete"
         install_bootstrap_approval(payload, signature, recheck=recheck,
-                                   record_prior_boot=_record_prior_boot)
+                                   record_prior_boot=record_prior_boot)
         stage = "approval placed; activation ledger record missing"
         _record_activation_event({
-            "event_type": "bootstrap.approval_installed",
+            "event_type": "activation.bootstrap_approval_installed",
             "operator": verified.operator,
             "granted_at": verified.granted_at,
             "expires_at": verified.expires_at,
@@ -412,6 +424,12 @@ def run_approval_install(*, payload_path, signature_path, confirm_sha256, out):
         if stage == "approval placed; activation ledger record missing":
             print(f"Approval install stopped ({stage}). Inspect before retrying. "
                   "Nothing admitted.", file=out)
+            return 2
+        if retiring:
+            print("Approval install refused AFTER the prior boot's approval pair was recorded "
+                  "as retiring (activation.bootstrap_prior_boot_record_retiring): it is under "
+                  "retired-* in /etc/azazel/bootstrap unless the move itself failed, and no new "
+                  "pair was placed. Inspect before retrying. Nothing admitted.", file=out)
             return 2
         print("Approval install refused; inspect retained state before retry. "
               "Nothing admitted.", file=out)
