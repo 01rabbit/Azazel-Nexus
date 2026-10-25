@@ -227,34 +227,81 @@ state, M.I.O. route and failure codes, and one call per explanation at each
 boundary. A fault that did not arrive, or a changed client mapping, makes
 `expected_behaviour: false`.
 
-Two paths are now driven: **`evidence_records`** (the intake's evidence
+Two paths are always driven: **`evidence_records`** (the intake's evidence
 store) and **`audit_chain`** (input events, then the forwarded incident
 transitions). Every fault run is compared with the healthy run, and a driven
 path must have records in the healthy run. Tests show a decoy interaction
 stored as Edge evidence, or an audit record that depends on Knowledge, being
-reported as dropped or divergent. The bundle records this as `evidence_source`:
-the evidence comes from the golden fixture, and Edge itself is not executed.
+reported as dropped or divergent. The bundle records where the observations
+came from as `evidence_source`.
 
-**Two paths remain `not_driven`, with a reason in every run.** A `not_driven`
-path must be empty and the same in every run, and `audit_chain` can never be
-`not_driven`.
+### `evaluation_outcomes`: the real Edge Core on a pinned clock
 
-- `evaluation_outcomes`: no Edge evaluator runs here. Nexus records Edge's
-  decision verbatim and does not evaluate. The real observe-only Edge Core
-  binary (as used by the I5 harness) stamps wall-clock
-  `normalized.ingest_epoch` and `enforcement.metadata.release_due_epoch` into
-  every observation. Two runs on the same `eve.json` therefore differ in
-  exactly those fields. Byte identity across runs would need a pinned Edge
-  clock or a declared exclusion, and neither is decided.
+With `--edge-core PATH` (a built `azazel-edge-core`; test tooling only, Linux
+with a C compiler), every run, healthy and each of the 15 faults, also executes
+the real observe-only Edge Core once on fresh state (`tools/so06_edge.py`). It
+gets the shipped unit's `Environment=` (only the socket, `eve.json` and release
+ledger paths are relocated) and the `eve_events()` of the integrated loop: two
+alerts and a flow. The observations it forwards, notify then isolate, are the
+run's **`evaluation_outcomes`**, and they are what the loop's intake reads in
+place of the golden fixture. Its forward-count reports are not observations.
+
+Edge stamps its own wall clock into `normalized.ingest_epoch` and
+`enforcement.metadata.release_due_epoch` (the release it would schedule,
+`now + 300 s`). The comparison still excludes only the two advisory fields
+below, so the harness **pins Edge's clock** instead:
+
+- The Edge binary has no clock argument, and none is added. The shipped
+  entrypoint has no way, by environment or configuration, to be told the time.
+- The pin is a small preload library that the harness compiles with the
+  instant fixed at compile time (`PINNED_EPOCH`, the intake's and explainer's
+  `FIXED_NOW`) and sets for the Edge process it starts. It answers
+  `CLOCK_REALTIME`, `gettimeofday` and `time` with that instant and reads no
+  environment variable. `CLOCK_MONOTONIC` and every other clock are real, so
+  Edge's polling and report timers run as shipped.
+- A pin that did not take effect is refused, never compared: every
+  observation must carry exactly `PINNED_EPOCH` and either no release or
+  `PINNED_EPOCH + 300`.
+
+**The clock is recorded, not decided.** Edge's action, policy reason, plans,
+trace id and posture do not read it; `decisions_ignore_clock` checks that the
+pinned and the wall-clock runs agree on everything except the two fields
+(`python -m tools.so06_edge --edge-core PATH` checks a binary: pinned runs
+identical, wall-clock runs not, decisions unchanged). Two places in Edge do
+compare times, and neither is reached here: a release task is not built at all
+for a negative or non-finite instant (the pinned one is valid), and release
+reconciliation acts on ledger tasks whose `due_epoch` has passed. An
+observe-only Edge only plans (`planned_only`) and writes no ledger, so there is
+nothing to release. Under a pinned clock a release would never fall due; that
+matters only once Edge enforces (Azazel-Edge#412), and intake refuses that
+posture.
+
+Unit tests in CI run a stand-in producer with the same wire shape, because CI
+has no Edge binary: two pinned runs are byte-identical, two unpinned runs differ
+in the two fields only (the mutation), and an unpinned capture diverges in all
+15 samples. They also check the validator on the driven path: an empty healthy
+path, a run that alone declares it `not_driven`, a dropped record and a changed
+nested clock field are each refused or reported.
+
+Without `--edge-core`, `evaluation_outcomes` stays `not_driven` and the
+evidence comes from the golden fixture, as before.
+
+### Still `not_driven`
+
+A `not_driven` path has a reason in every run, must be empty and the same in
+every run, and `audit_chain` can never be `not_driven`.
+
 - `enforcement_lease_records`: the shipped Edge Core is observe-only
   (`ENFORCE=false`, `DRY_RUN=true`), and intake refuses any other posture
   (`EDGE_NOT_OBSERVE_ONLY`). Nothing issues an enforcement lease until
   Azazel-Edge#412 declares the single enforcement path.
+- `evaluation_outcomes`, when no Edge binary is supplied.
 
 So every sample still fails, and all current in-repo records say
-`execution_result: FAIL`. This is partial consumer execution coverage, not a
-completed SO-06 gate. A failed run is retained. Container runs are not
-hardware evidence.
+`execution_result: FAIL`. With `--edge-core`, the other three paths are
+byte-identical with nothing dropped in all 15 samples, and the lease path is
+the only reason. This is partial consumer execution coverage, not a completed
+SO-06 gate. A failed run is retained. Container runs are not hardware evidence.
 
 Input JSON contains a nonempty `scenarios` array; each entry has a unique `id`
 and nonempty `inputs` array of event objects. For example:
@@ -265,7 +312,8 @@ and nonempty `inputs` array of event objects. For example:
 
 ```sh
 PYTHONPATH=src:runtime/src python3 -m tools.so06_replay inputs.json record.json \
-  --commit FULL_MEASURED_COMMIT --configuration 'exact scenario/product declaration'
+  --commit FULL_MEASURED_COMMIT --configuration 'exact scenario/product declaration' \
+  [--edge-core /path/to/azazel-edge-core]
 PYTHONPATH=src python3 -m tools.service_objectives record.json
 ```
 

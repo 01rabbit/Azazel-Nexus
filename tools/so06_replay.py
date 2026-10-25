@@ -1,7 +1,10 @@
 """Drive Nexus consumer policy, integration reporting and durable audit for SO-06.
 
 Evidence records and the audit chain come from the real consumer loop in
-`tools.so06_loop`. Paths that need Edge execution are explicitly not_driven
+`tools.so06_loop`. With `--edge-core`, every run also executes the real
+observe-only Edge Core on a pinned clock (`tools.so06_edge`): its forwarded
+observations are `evaluation_outcomes` and are what the loop's intake reads.
+Paths that need Edge execution and are not executed are explicitly not_driven
 and cannot pass.
 """
 
@@ -18,7 +21,7 @@ from azazel_nexus import degradation, integration
 from azazel_nexus.audit import AuditLedger, canonical_event_bytes
 from azazel_nexus.capability import CORE_CAPABILITIES
 from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
-from tools import so06_loop
+from tools import so06_edge, so06_loop
 from tools.service_objectives import (
     CASES,
     PATHS,
@@ -44,13 +47,17 @@ EVIDENCE_SOURCE = (
     "golden fixture replay: tests/fixtures/edge/rust_event_engine_v1.jsonl lines 4 and 6, "
     "hand-derived Edge observations; Edge is not executed"
 )
+EDGE_EVIDENCE_SOURCE = (
+    "real observe-only Edge Core binary, run once per case on fresh state with the "
+    "shipped unit environment, on tools.e2e_loop.eve_events(); its CLOCK_REALTIME is "
+    f"pinned to {so06_edge.PINNED_EPOCH} by a harness-only preload library; the "
+    "forwarded observations are evaluation_outcomes and the intake's input"
+)
 NOT_DRIVEN = {
     "evaluation_outcomes": (
-        "Edge's evaluator is not executed here: the observations are the hand-derived "
-        "golden fixture and Nexus records Edge's decision without evaluating. The real "
-        "observe-only Edge binary stamps wall-clock normalized.ingest_epoch and "
-        "enforcement.metadata.release_due_epoch into every observation, so two separate "
-        "runs are not byte-identical without a pinned Edge clock or a declared exclusion"
+        "Edge's evaluator is not executed here: no --edge-core binary was supplied, the "
+        "observations are the hand-derived golden fixture, and Nexus records Edge's "
+        "decision without evaluating"
     ),
     "enforcement_lease_records": (
         "the shipped Edge Core is observe-only (ENFORCE=false, DRY_RUN=true) and intake "
@@ -110,7 +117,18 @@ def observe_fault(mode: str, clock: FaultClock) -> degradation.FailureMode:
     raise ValueError("fault injection unexpectedly returned a healthy response")
 
 
-def nexus_adapter(events: list, case: str) -> dict:
+def edge_observations(edge: tuple[Path, Path | None]) -> list[bytes]:
+    """One fresh run of the real Edge Core; `edge` is (binary, pinned-clock shim)."""
+    from tools.e2e_loop import eve_events
+
+    events = eve_events()
+    binary, shim = edge
+    return so06_edge.run_edge(binary, events, shim=shim,
+                              expected=sum(e["event_type"] == "alert" for e in events))
+
+
+def nexus_adapter(events: list, case: str,
+                  edge: tuple[Path, Path | None] | None = None) -> dict:
     """Execute real Nexus modules afresh, without fabricating Edge outputs."""
     failures = {}
     mode = None
@@ -148,9 +166,12 @@ def nexus_adapter(events: list, case: str) -> dict:
         ledger = AuditLedger(Path(temporary) / "audit.jsonl")
         for event in events:
             ledger.append(event)
+        lines = edge_observations(edge) if edge else None
         # The explainer forwards incident transitions into the same ledger.
-        loop = so06_loop.run_loop(case, audit=ledger.append)
+        loop = so06_loop.run_loop(case, audit=ledger.append, lines=lines)
         ledger.verify()
+        if lines is not None:
+            paths["evaluation_outcomes"] = [json.loads(line) for line in lines]
         paths["evidence_records"] = loop["evidence_records"]
         paths["audit_chain"] = [
             {
@@ -185,7 +206,8 @@ def nexus_adapter(events: list, case: str) -> dict:
             "integration_rows": [row.as_event() for row in view.rows],
             "consumer_loop": loop["observed"],
         },
-        "not_driven": dict(NOT_DRIVEN),
+        "not_driven": {k: v for k, v in NOT_DRIVEN.items()
+                       if not (edge and k == "evaluation_outcomes")},
     }
 
 
@@ -193,8 +215,20 @@ def capture_replays(
     scenarios: list[dict],
     *,
     clock: Callable[[], int] = time.monotonic_ns,
+    edge_core: Path | None = None,
 ) -> dict:
-    """Measure each real adapter invocation; arbitrary runners are unsupported."""
+    """Measure each real adapter invocation; arbitrary runners are unsupported.
+
+    `edge_core` executes that Edge binary in every run, on the pinned clock.
+    """
+    with tempfile.TemporaryDirectory(prefix="azso06s-") as temporary:
+        edge = None
+        if edge_core is not None:
+            edge = (edge_core, so06_edge.build_shim(Path(temporary)))
+        return _capture(scenarios, clock, edge)
+
+
+def _capture(scenarios, clock, edge) -> dict:
     captured = []
     for scenario in scenarios:
         inputs = scenario["inputs"]
@@ -203,7 +237,7 @@ def capture_replays(
         for case in CASES:
             copied_inputs = json.loads(canonical_event_bytes(inputs))
             start = clock()
-            observation = nexus_adapter(copied_inputs, case)
+            observation = nexus_adapter(copied_inputs, case, edge)
             end = clock()
             require(digest(copied_inputs) == expected_digest, "adapter mutated inputs")
             runs[case] = {
@@ -213,7 +247,8 @@ def capture_replays(
                 **observation,
             }
         captured.append({"id": scenario["id"], "inputs": inputs, "runs": runs})
-    bundle = {"schema": INPUT_SCHEMA, "evidence_source": EVIDENCE_SOURCE,
+    bundle = {"schema": INPUT_SCHEMA,
+              "evidence_source": EDGE_EVIDENCE_SOURCE if edge else EVIDENCE_SOURCE,
               "scenarios": captured}
     replay_samples(bundle)
     return bundle
@@ -250,11 +285,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--configuration", required=True)
+    parser.add_argument("--edge-core", type=Path,
+                        help="built azazel-edge-core binary to execute on a pinned clock "
+                             "(test tooling only; Linux and a C compiler)")
     args = parser.parse_args(argv)
     try:
         source = json.loads(args.inputs.read_text())
         record = replay(
-            capture_replays(source["scenarios"]),
+            capture_replays(source["scenarios"], edge_core=args.edge_core),
             commit=args.commit,
             product_configuration=args.configuration,
         )

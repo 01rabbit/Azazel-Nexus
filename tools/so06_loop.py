@@ -12,9 +12,11 @@ loop calls for it:
 
 Only the socket transport under the two clients is replaced, because the real
 one verifies service accounts this harness does not have. Their deadline
-argument, error classification and reply validation run unchanged. Nothing
-here executes Edge: the observations are the hand-derived golden fixture, so
-this drives Nexus's consumer paths and never Edge's evaluator.
+argument, error classification and reply validation run unchanged. By
+default the observations are the hand-derived golden fixture and nothing here
+executes Edge. `tools.so06_replay --edge-core` instead passes the lines the
+real observe-only Edge Core forwarded on a pinned clock (`tools.so06_edge`);
+this loop consumes them the same way.
 """
 
 from __future__ import annotations
@@ -220,11 +222,13 @@ def _send_crossed(path: Path, lines: list[bytes], stack: ExitStack) -> None:
     early.shutdown(socket.SHUT_WR)
 
 
-def run_loop(case: str, audit, *, paced: bool = True) -> dict:
+def run_loop(case: str, audit, *, paced: bool = True,
+             lines: list[bytes] | None = None) -> dict:
     """Run intake then the explainer once; `audit` receives forwarded events.
 
     `paced` sends each line after the one before is processed; otherwise the
     two lines go without waiting, the later one read first by the intake.
+    `lines` are Edge observations to send instead of the golden fixture.
     """
     from azazel_nexus_runtime import edge_intaked, incident_explaind, knowledge_client
 
@@ -265,7 +269,7 @@ def run_loop(case: str, audit, *, paced: bool = True) -> dict:
                 raise RuntimeError(f"intake did not start: {errors}")
             with ExitStack() as held:
                 _decoy_fault(server, decoy_mode, held)
-                lines = golden_lines()
+                lines = golden_lines() if lines is None else list(lines)
                 # Each fixture line is a later observation than the one before
                 # (notify, then isolate), each on its own connection. The
                 # intake processes them in accept order (#327) even when it

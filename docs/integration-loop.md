@@ -241,8 +241,10 @@ Concrete I1 limits and paths:
   - The order key is the intake's own accept sequence. Edge's clock
     (`normalized.ts`, `ingest_epoch`) is not used for ordering or for any
     decision: it is Edge's claim, two observations may carry the same time
-    (the SO-06 golden pair does), and #17 leaves Edge's clock unfixed. With
-    no time involved there are no ties and no missing values.
+    (the SO-06 golden pair does, and so does every observation of the SO-06
+    replay, which pins Edge's clock inside its harness only; #17), and the
+    shipped Edge's clock is not fixed. With no time involved there are no
+    ties and no missing values.
   - The wait is bounded: a line waits at most 250 ms (`REORDER_WAIT_S`) for
     each earlier unfinished connection, never past that connection's read
     deadline, and never with more than 1024 lines held behind one
