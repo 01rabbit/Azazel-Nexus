@@ -173,3 +173,129 @@ def test_watchdog_guard_resamples_after_transaction_validation(
     assert continuation == []
     assert len(guard_calls) == (1 if guard_call == "before-notify" else 2)
     assert len(notifications) == (0 if guard_call == "before-notify" else 1)
+
+
+# --- Post-READY ping spacing (Nexus#324 VM watchdog kill) -----------------
+# Synthetic step accounting with fake callbacks; this is not PID 1 evidence.
+
+_BLOCKING = ("check", "fsync", "append")
+
+
+def _instrumented(evidence, fail_at=None, receipt_override=None):
+    """Log each blocking step after it returns, and each WATCHDOG=1 ping.
+
+    ``fail_at`` refuses the n-th blocking step after READY (0-based).
+    """
+    log = []
+    h = Harness(evidence)
+    supervisor = h.supervisor
+    state = {"ready": False, "post_ready_steps": 0}
+
+    def wrap(kind, original):
+        def step(*args, **kwargs):
+            index = None
+            if state["ready"]:
+                index = state["post_ready_steps"]
+                state["post_ready_steps"] += 1
+            if fail_at is not None and index == fail_at:
+                log.append(kind + "-failed")
+                raise ApprovalRefused(f"synthetic {kind} refusal")
+            result = original(*args, **kwargs)
+            if kind == "append" and receipt_override is not None:
+                result = receipt_override(args, result)
+            log.append(kind)
+            return result
+        return step
+
+    supervisor._check = wrap("check", supervisor._check)
+    supervisor._advance_grant = wrap("fsync", supervisor._advance_grant)
+    supervisor._record = wrap("append", supervisor._record)
+
+    def ready():
+        state["ready"] = True
+        log.append("ready")
+
+    def wait(seconds):
+        log.append("wait")
+        h.stop = True
+
+    supervisor.controller_ready = ready
+    supervisor.controller_watchdog = lambda: log.append("ping")
+    supervisor.wait = wait
+    return h, log, state
+
+
+def _startup_segments(log):
+    """Blocking-step counts between consecutive pings, READY .. first wait."""
+    first = log.index("ping")
+    end = log.index("wait")
+    segments, count = [], 0
+    for entry in log[first + 1:end]:
+        if entry == "ping":
+            segments.append(count)
+            count = 0
+        elif entry in _BLOCKING:
+            count += 1
+    assert count == 0, "a blocking step precedes the steady wait without a ping"
+    return segments
+
+
+def test_post_ready_startup_has_at_most_one_blocking_step_between_pings(evidence):
+    h, log, _ = _instrumented(evidence)
+    assert h.supervisor.run().state == "stopped"
+
+    assert log.index("ready") < log.index("ping")
+    segments = _startup_segments(log)
+    assert segments and max(segments) <= 1
+    # The two helper starts, the grant journal and the audit intents all
+    # happen inside the measured window.
+    window = log[log.index("ping"):log.index("wait")]
+    assert window.count("fsync") == 5
+    assert window.count("append") == 6
+    assert [unit for op, unit in h.manager.calls if op == "start_and_wait"] == [
+        UnitKey.AUDITD, UnitKey.COMMISSIOND,
+    ]
+
+
+def test_every_post_ready_ping_directly_follows_a_completed_step(evidence):
+    h, log, _ = _instrumented(evidence)
+    assert h.supervisor.run().state == "stopped"
+
+    pings = [i for i, entry in enumerate(log) if entry == "ping"]
+    assert log[pings[0] - 1] in {"ready", *_BLOCKING}
+    for index in pings[1:]:
+        assert log[index - 1] in _BLOCKING, log[index - 3:index + 1]
+
+
+def test_no_ping_after_any_failed_post_ready_step(evidence):
+    h, log, state = _instrumented(evidence)
+    assert h.supervisor.run().state == "stopped"
+    steps_before_wait = sum(
+        1 for entry in log[log.index("ready"):log.index("wait")]
+        if entry in _BLOCKING
+    )
+    assert steps_before_wait >= 20
+
+    for fail_at in range(steps_before_wait):
+        h, log, _ = _instrumented(evidence, fail_at=fail_at)
+        with pytest.raises(ApprovalRefused):
+            h.supervisor.run()
+        failed = next(i for i, e in enumerate(log) if e.endswith("-failed"))
+        assert "ping" not in log[failed:], (fail_at, log[failed - 1])
+        assert all(h.manager.inactive.values())
+        assert all(h.manager.masked.values())
+
+
+def test_unconfirmed_audit_receipt_is_not_renewed(evidence):
+    def drop_controller_ready_receipt(args, result):
+        return None if args[0] == "bootstrap.controller_ready_intent" else result
+
+    h, log, _ = _instrumented(
+        evidence, receipt_override=drop_controller_ready_receipt
+    )
+    h.supervisor.run()
+
+    appends = [i for i, e in enumerate(log) if e == "append"]
+    events = [e["event_type"] for e in h.events]
+    dropped = appends[events.index("bootstrap.controller_ready_intent")]
+    assert log[dropped + 1] != "ping"

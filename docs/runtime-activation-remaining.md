@@ -5145,6 +5145,25 @@ are capped at 10 seconds and the post-notification approval remainder.
 Astra review identified stale wait/guard sampling risks; both are corrected
 and covered by slow-notifier and guard-time expiry/cancellation tests.
 
+Update (Nexus#324, 2026-10-25): between auditd's last start checkpoint and
+commissiond's first, the supervisor used to run 12 blocking steps (4 full
+`_check()`, 3 grant-journal fsync writes, 5 audit appends) with no renewal,
+an estimated 15-20 s on a healthy disk; a VM run was killed by the watchdog
+there during a ~30 s virtual-disk stall. Every post-READY startup step in
+`_supervise` (full `_check()`, confirmed grant advance, confirmed audit
+receipt) is now followed by a renewal (`_renew_after_step`,
+`_record_and_renew`), so at most one blocking step lies between two pings
+from READY to the steady loop. A renewal still runs only on the success path
+after the step returned: never before a check, from another thread, after a
+refusal, for an unconfirmed receipt or once cancellation is seen. WatchdogSec,
+TimeoutStartSec and every check are unchanged. Two stretches are not covered:
+inside `start_and_wait`, the manager's retained-publication checks between
+consecutive `check_start` callbacks; and the stop/teardown path, which by
+design never renews after cancellation or failure. A single step stalling for
+30 s is still killed. `tests/unit/test_runtime_bootstrap_watchdog.py` counts
+the steps between pings with synthetic callbacks; this is not PID 1 or
+hardware evidence.
+
 This wires a running-system hang backstop, not complete lifetime admission.
 Startup and helper stop bounds, actual system-manager failure behavior,
 suspend-inclusive expiry enforcement and executable/import closure remain
