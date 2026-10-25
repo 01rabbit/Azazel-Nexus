@@ -1,20 +1,37 @@
 """Administrator provisioning command, never a service activation entrypoint."""
 
 import argparse
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
+from pathlib import Path
 import re
+import stat
 import sys
 
 from azazel_nexus.bootstrap_generation import verify_bootstrap_generation
 from azazel_nexus.bootstrap_prestart_policy import decode_pinned_prestart_policy
 from azazel_nexus.bootstrap_generation_publish import BootstrapGenerationDurabilityUncertain
-from azazel_nexus.bootstrap_approval import bootstrap_payload, parse_bootstrap_time
-from azazel_nexus.bootstrap_clock_store import TimeDurabilityUncertain
-from azazel_nexus.bootstrap_store import read_bootstrap_approval_policy
+from azazel_nexus.bootstrap_approval import (
+    bootstrap_payload, parse_bootstrap_time, verify_bootstrap_approval,
+)
+from azazel_nexus.bootstrap_approval_install import (
+    ApprovalPlacementUncertain, install_bootstrap_approval,
+)
+from azazel_nexus.bootstrap_clock_store import (
+    TimeDurabilityUncertain, load_administrator_time_window,
+)
+from azazel_nexus.bootstrap_selection import decode_bootstrap_selection
+from azazel_nexus.bootstrap_selection_store import (
+    SelectionDurabilityUncertain, SelectionReadRefused, initialize_bootstrap_selection,
+    load_bootstrap_selection,
+)
+from azazel_nexus.bootstrap_store import load_bootstrap_approval, read_bootstrap_approval_policy
 from azazel_nexus.generation import GenerationRefused
+from azazel_nexus.operator_store import load_operator_trust
 from azazel_nexus.operator_trust import (
-    ApprovalPurpose, ApprovalRefused, approval_message,
+    MAX_APPROVAL_BYTES, ApprovalPurpose, ApprovalRefused, approval_message,
 )
 
 from .bootstrap_loaded_policy import decode_loaded_bootstrap_policy
@@ -45,33 +62,76 @@ def run_package_observation(*, out):
     return 0
 
 
+_ACTOR = "az-nexus-bootstrap"
+
+
+def _record_activation_event(event):
+    """Durable, hash-chained record in the activation ledger (as #335 does).
+
+    Returns True only after a confirmed append; anything else raises, so a
+    store that requires ``is True`` changes nothing. ``occurred_at`` is the OS
+    clock as a label only, never trusted time.
+    """
+    from azazel_nexus.audit import AuditEntry
+    from .activated import _activation_ledger  # lazy: same ledger as the controller
+
+    entry = _activation_ledger(Path("/")).append({
+        **event,
+        "occurred_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+            "+00:00", "Z"),
+        "actor": _ACTOR,
+    })
+    if type(entry) is not AuditEntry:
+        raise ApprovalRefused("activation ledger record unconfirmed")
+    return True
+
+
+def _record_prior_boot(event):
+    """Trusted composition callback for the owner's confirmed operations only."""
+    return _record_activation_event(event)
+
+
+def _terminal_reader(source, out):
+    def line(prompt, limit):
+        print(prompt, file=out, flush=True)
+        raw = source.buffer.readline(limit + 2)
+        if not raw.endswith(b"\n") or len(raw) > limit + 1:
+            raise ApprovalRefused("bounded complete input lines required")
+        return raw[:-1]
+
+    return line
+
+
+def _time_publication(line, out, *, recovery):
+    """The time-record interaction; raises on refusal, publishes on success."""
+    raw = line("Enter canonical administrator-confirmed UTC anchor JSON (one line):", 4096)
+    selected = load_declared_bootstrap_context()
+    digest = selected_time_digest(raw=raw, selected=selected, recovery=recovery)
+    if load_declared_bootstrap_context() != selected:
+        raise ApprovalRefused("administrator selection changed")
+    print("Selected time publication digest: " + digest, file=out)
+    print("Administrator-asserted UTC bounds; NOT authenticated network time or runtime admission.", file=out)
+    if line("Re-enter the reviewed selected time digest (sha256:...):", 71).decode("ascii") != digest:
+        raise ApprovalRefused("time confirmation differs")
+    word = b"RECOVER" if recovery else b"INITIALIZE"
+    if line("Type " + word.decode() + " to confirm this time-record operation:", 16) != word:
+        raise ApprovalRefused("operation not confirmed")
+    if recovery:
+        publish_selected_administrator_time(raw=raw, confirmed_digest=digest,
+                                            confirmed_operation=True, recovery=True)
+    else:
+        # A time record of a previous boot is recorded and moved aside first.
+        publish_selected_administrator_time(raw=raw, confirmed_digest=digest,
+                                            confirmed_operation=True, recovery=False,
+                                            record_prior_boot=_record_prior_boot)
+
+
 def run_time(*, source, out, recovery):
     """Explicit terminal confirmation; never obtain UTC from the OS clock."""
     try:
         if type(recovery) is not bool or not source.isatty():
             raise ApprovalRefused("interactive exact operation required")
-
-        def line(prompt, limit):
-            print(prompt, file=out, flush=True)
-            raw = source.buffer.readline(limit + 2)
-            if not raw.endswith(b"\n") or len(raw) > limit + 1:
-                raise ApprovalRefused("bounded complete input lines required")
-            return raw[:-1]
-
-        raw = line("Enter canonical administrator-confirmed UTC anchor JSON (one line):", 4096)
-        selected = load_declared_bootstrap_context()
-        digest = selected_time_digest(raw=raw, selected=selected, recovery=recovery)
-        if load_declared_bootstrap_context() != selected:
-            raise ApprovalRefused("administrator selection changed")
-        print("Selected time publication digest: " + digest, file=out)
-        print("Administrator-asserted UTC bounds; NOT authenticated network time or runtime admission.", file=out)
-        if line("Re-enter the reviewed selected time digest (sha256:...):", 71).decode("ascii") != digest:
-            raise ApprovalRefused("time confirmation differs")
-        word = b"RECOVER" if recovery else b"INITIALIZE"
-        if line("Type " + word.decode() + " to confirm this time-record operation:", 16) != word:
-            raise ApprovalRefused("operation not confirmed")
-        publish_selected_administrator_time(raw=raw, confirmed_digest=digest,
-                                            confirmed_operation=True, recovery=recovery)
+        _time_publication(_terminal_reader(source, out), out, recovery=recovery)
     except TimeDurabilityUncertain:
         print("Time record may be published; durability UNCONFIRMED. Inspect retained state; do not retry automatically.", file=out)
         return 2
@@ -195,6 +255,44 @@ def _request_times(raw):
     return granted, expires
 
 
+def _approval_request(raw):
+    """Payload bytes for owner-chosen validity bounds; signs and writes nothing."""
+    granted, expires = _request_times(raw)
+    selected = load_declared_bootstrap_context()
+    policy = _load_approval_policy()
+    if selected.operator not in policy.operators:
+        raise ApprovalRefused("operator not authorized for bootstrap purpose")
+    if selected.context.approval_policy_digest != policy.digest():
+        raise ApprovalRefused("bootstrap approval policy binding mismatch")
+    payload = bootstrap_payload(context=selected.context, operator=selected.operator,
+                                granted_at=granted, expires_at=expires)
+    # bootstrap_payload already refuses expires <= granted.
+    if ((parse_bootstrap_time(expires) - parse_bootstrap_time(granted)).total_seconds()
+            > policy.max_seconds):
+        raise ApprovalRefused("validity exceeds policy")
+    message = approval_message(ApprovalPurpose.SUPPORTING_BOOTSTRAP, payload)
+    if load_declared_bootstrap_context() != selected:
+        raise ApprovalRefused("administrator selection changed")
+    return payload, message
+
+
+def _print_approval_request(payload, message, out):
+    print(payload.decode("ascii"), file=out)
+    print("Payload SHA-256: sha256:" + sha256(payload).hexdigest(), file=out)
+    print("Signed message = b'azazel-nexus/operator-approval/v1\\x00supporting-bootstrap\\x00' "
+          "+ payload; SHA-256: sha256:" + sha256(message).hexdigest(), file=out)
+    print("Sign the message off-host with the enrolled operator's Ed25519 key; save the payload "
+          "bytes (without a trailing newline) as approval.json and the 64-byte raw signature as "
+          "approval.sig, then run: sudo az-nexus-bootstrap approval-install --payload "
+          "approval.json --signature approval.sig --confirm-sha256 "
+          + sha256(payload).hexdigest() + ". "
+          "This command signs nothing and authorizes nothing.", file=out)
+    print("Built from the declared context only: package/closure/systemd drift, operator "
+          "enrollment or revocation, the trusted time window and a kernel reboot (new boot_id; "
+          "soft-reboot keeps the boot_id) "
+          "can still make admission refuse a correctly signed approval.", file=out)
+
+
 def run_approval_request(*, source, out):
     """Print the exact bytes an operator must sign off-host; signs and authorizes nothing.
 
@@ -209,38 +307,245 @@ def run_approval_request(*, source, out):
             raise ApprovalRefused("bounded complete input line required")
         if source.buffer.read(1):
             raise ApprovalRefused("unexpected request input")
-        granted, expires = _request_times(raw[:-1])
-        selected = load_declared_bootstrap_context()
-        policy = _load_approval_policy()
-        if selected.operator not in policy.operators:
-            raise ApprovalRefused("operator not authorized for bootstrap purpose")
-        if selected.context.approval_policy_digest != policy.digest():
-            raise ApprovalRefused("bootstrap approval policy binding mismatch")
-        payload = bootstrap_payload(context=selected.context, operator=selected.operator,
-                                    granted_at=granted, expires_at=expires)
-        # bootstrap_payload already refuses expires <= granted.
-        if ((parse_bootstrap_time(expires) - parse_bootstrap_time(granted)).total_seconds()
-                > policy.max_seconds):
-            raise ApprovalRefused("validity exceeds policy")
-        message = approval_message(ApprovalPurpose.SUPPORTING_BOOTSTRAP, payload)
-        if load_declared_bootstrap_context() != selected:
-            raise ApprovalRefused("administrator selection changed")
-        text = payload.decode("ascii")
+        payload, message = _approval_request(raw[:-1])
     except (ApprovalRefused, GenerationRefused, OSError, AttributeError, ValueError,
             RecursionError, TypeError):
         print("Approval request refused; no changes made.", file=out)
         return 1
-    print(text, file=out)
-    print("Payload SHA-256: sha256:" + sha256(payload).hexdigest(), file=out)
-    print("Signed message = b'azazel-nexus/operator-approval/v1\\x00supporting-bootstrap\\x00' "
-          "+ payload; SHA-256: sha256:" + sha256(message).hexdigest(), file=out)
-    print("Sign the message off-host with the enrolled operator's Ed25519 key; place the payload "
-          "bytes as approval.json and the 64-byte raw signature as approval.sig. "
-          "This command signs nothing and authorizes nothing.", file=out)
-    print("Built from the declared context only: package/closure/systemd drift, operator "
-          "enrollment or revocation, the trusted time window and a kernel reboot (new boot_id; "
-          "soft-reboot keeps the boot_id) "
-          "can still make admission refuse a correctly signed approval.", file=out)
+    _print_approval_request(payload, message, out)
+    return 0
+
+
+def _read_supplied_file(path, *, limit):
+    """An owner-supplied input: a regular single-link file, never a followed link."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= limit:
+            raise ApprovalRefused("supplied file refused")
+        chunks = bytearray()
+        while len(chunks) <= limit:
+            part = os.read(fd, limit + 1 - len(chunks))
+            if not part:
+                break
+            chunks.extend(part)
+        if len(chunks) != info.st_size:
+            raise ApprovalRefused("supplied file changed while reading")
+        return bytes(chunks)
+    finally:
+        os.close(fd)
+
+
+def _verify_supplied_approval(payload, signature):
+    """The bootstrap admission's verifier over this boot's whole trusted window.
+
+    Context and operator come from the protected *declarations*, trust from the
+    enrolled operator store, time from this boot's administrator time record
+    (both bounds, as the entrypoint verifies). The live package, installed
+    closure and systemd observations the entrypoint takes are NOT taken here;
+    the entrypoint verifies the placed pair again against them.
+    """
+    selected = load_declared_bootstrap_context()
+    policy = _load_approval_policy()
+    trust = load_operator_trust()
+    window = load_administrator_time_window(expected=selected.context)
+    results = [verify_bootstrap_approval(trust=trust, expected=selected.context, policy=policy,
+                                         operator=selected.operator, payload=payload,
+                                         signature=signature, now=now)
+               for now in (window.earliest_utc, window.latest_utc)]
+    if results[0] != results[1]:
+        raise ApprovalRefused("bootstrap approval differs across time bounds")
+    if (load_declared_bootstrap_context() != selected or _load_approval_policy() != policy
+            or load_operator_trust() != trust):
+        raise ApprovalRefused("bootstrap inputs changed during verification")
+    return results[0]
+
+
+_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _is_root():
+    return os.geteuid() == 0
+
+
+def run_approval_install(*, payload_path, signature_path, confirm_sha256, out):
+    """Verify a signed pair with the existing verifier, then place it (root).
+
+    A refusal by the first verification changes nothing. A prior boot's pair is
+    recorded in the activation ledger and moved aside; a pair of this boot is
+    never replaced. A later refusal (temporary file write or the verification
+    before the rename) leaves a pair already moved aside, and says so.
+    Placement is not admission: the bootstrap entrypoint verifies it again.
+    """
+    stage = "nothing changed"
+    retiring = []
+
+    def record_prior_boot(event):
+        confirmed = _record_prior_boot(event)
+        retiring.append(confirmed)
+        return confirmed
+    try:
+        if not _is_root():
+            raise ApprovalRefused("approval-install requires root")
+        if type(confirm_sha256) is not str or _HEX.fullmatch(confirm_sha256) is None:
+            raise ApprovalRefused("--confirm-sha256 must be 64 lowercase hex characters")
+        payload = _read_supplied_file(payload_path, limit=MAX_APPROVAL_BYTES)
+        signature = _read_supplied_file(signature_path, limit=64)
+        if len(signature) != 64:
+            raise ApprovalRefused("approval signature must be 64 raw bytes")
+        if sha256(payload).hexdigest() != confirm_sha256:
+            raise ApprovalRefused("payload SHA-256 differs from --confirm-sha256")
+        verified = _verify_supplied_approval(payload, signature)
+
+        def recheck():
+            if _verify_supplied_approval(payload, signature) != verified:
+                raise ApprovalRefused("bootstrap approval verification changed")
+
+        print(f"Verified bootstrap approval against the declared context: operator "
+              f"{verified.operator}, valid {verified.granted_at} .. {verified.expires_at}. "
+              "Live package, closure and systemd observations are not taken here; the "
+              "bootstrap entrypoint verifies again with them.", file=out)
+        stage = "approval placement may be incomplete"
+        install_bootstrap_approval(payload, signature, recheck=recheck,
+                                   record_prior_boot=record_prior_boot)
+        stage = "approval placed; activation ledger record missing"
+        _record_activation_event({
+            "event_type": "activation.bootstrap_approval_installed",
+            "operator": verified.operator,
+            "granted_at": verified.granted_at,
+            "expires_at": verified.expires_at,
+            "payload_sha256": verified.payload_digest,
+        })
+    except ApprovalPlacementUncertain:
+        print("Approval placement durability UNCONFIRMED. Inspect /etc/azazel/bootstrap; "
+              "do not retry automatically. Nothing admitted.", file=out)
+        return 2
+    except Exception:  # noqa: BLE001 - redacted labels only
+        if stage == "approval placed; activation ledger record missing":
+            print(f"Approval install stopped ({stage}). Inspect before retrying. "
+                  "Nothing admitted.", file=out)
+            return 2
+        if retiring:
+            print("Approval install refused AFTER the prior boot's approval pair was recorded "
+                  "as retiring (activation.bootstrap_prior_boot_record_retiring): it is under "
+                  "retired-* in /etc/azazel/bootstrap unless the move itself failed, and no new "
+                  "pair was placed. Inspect before retrying. Nothing admitted.", file=out)
+            return 2
+        print("Approval install refused; inspect retained state before retry. "
+              "Nothing admitted.", file=out)
+        return 1
+    print("Approval installed. This is NOT admission: the bootstrap entrypoint verifies it "
+          "again with its own fresh observation.", file=out)
+    return 0
+
+
+_RESUMABLE_SELECTION = frozenset({"required bootstrap input missing",
+                                  "boot binding differs from the current boot"})
+_STEPS = ("selection", "time", "approval request")
+
+
+def _selection_current():
+    """True when this boot's selection is readable; False when it can be created."""
+    try:
+        load_bootstrap_selection()
+    except SelectionReadRefused as refusal:
+        if refusal.reason in _RESUMABLE_SELECTION:
+            return False
+        raise
+    return True
+
+
+def _selection_publication(line, out):
+    raw = line("Enter canonical per-boot selection JSON (not secrets):", 4096)
+    decode_bootstrap_selection(raw)
+    print("Selection is NOT approval, admission or activation. No deadline is reset.", file=out)
+    print("Selection SHA-256: " + sha256(raw).hexdigest(), file=out)
+    digest = line("Re-enter the reviewed SHA-256:", 64).decode("ascii")
+    if digest != sha256(raw).hexdigest():
+        raise ApprovalRefused("digest confirmation differs")
+    if line("Type INITIALIZE to confirm this operation:", 16) != b"INITIALIZE":
+        raise ApprovalRefused("operation not confirmed")
+    # A selection of a previous boot is recorded and moved aside first.
+    initialize_bootstrap_selection(raw, confirmed_sha256=digest, confirmed_initialize=True,
+                                   record_prior_boot=_record_prior_boot)
+
+
+def _time_current(selected):
+    try:
+        load_administrator_time_window(expected=selected.context)
+    except ApprovalRefused:
+        return False
+    return True
+
+
+def _approval_current(selected):
+    try:
+        window = load_administrator_time_window(expected=selected.context)
+        for now in (window.earliest_utc, window.latest_utc):
+            load_bootstrap_approval(expected=selected.context, operator=selected.operator, now=now)
+    except ApprovalRefused:
+        return False
+    return True
+
+
+def run_boot_initialize(*, source, out):
+    """One terminal session for the per-boot records, in order, resumable.
+
+    Every step keeps its own confirmations (digest re-entry and INITIALIZE for
+    selection and time; owner-chosen validity for the request). A step already
+    complete for this boot is detected from the protected readers and skipped,
+    so a re-run continues where a refusal stopped. It signs nothing and places
+    no approval: run ``approval-install`` with the signed pair.
+    """
+    done = []
+    step = _STEPS[0]
+
+    def report(outcome):
+        print(f"Stopped at step '{step}' ({outcome}). Completed for this boot: "
+              + (", ".join(done) if done else "none")
+              + ". Re-run az-nexus-bootstrap boot-initialize to continue; completed "
+              "steps are skipped.", file=out)
+
+    try:
+        if not source.isatty():
+            raise ApprovalRefused("interactive confirmation required")
+        line = _terminal_reader(source, out)
+        print("Step 1/3: per-boot selection", file=out)
+        if _selection_current():
+            print("Selection for this boot already published; skipped.", file=out)
+        else:
+            _selection_publication(line, out)
+            print("Selection published; NOT approval, admission or activation.", file=out)
+        done.append(step)
+        step = _STEPS[1]
+        print("Step 2/3: administrator time record", file=out)
+        selected = load_declared_bootstrap_context()
+        if _time_current(selected):
+            print("Time record for this boot already valid; skipped.", file=out)
+        else:
+            _time_publication(line, out, recovery=False)
+            print("Time record published; no OS clock change, deadline reset or activation "
+                  "performed.", file=out)
+        done.append(step)
+        step = _STEPS[2]
+        print("Step 3/3: approval request", file=out)
+        if _approval_current(selected):
+            print("A verified approval for this boot is already installed; skipped.", file=out)
+        else:
+            raw = line('Enter validity JSON {"expires_at":"...","granted_at":"..."} '
+                       "(one line, whole-second UTC):", 256)
+            payload, message = _approval_request(raw)
+            _print_approval_request(payload, message, out)
+        done.append(step)
+    except (SelectionDurabilityUncertain, TimeDurabilityUncertain):
+        report("durability UNCONFIRMED; inspect retained state, do not retry automatically")
+        return 2
+    except (ApprovalRefused, GenerationRefused, OSError, AttributeError, ValueError,
+            RecursionError, TypeError):
+        report("refused; inspect retained state")
+        return 1
+    print("Per-boot records ready. No approval was signed or placed and nothing was "
+          "activated.", file=out)
     return 0
 
 
@@ -249,8 +554,22 @@ def main(argv=None):
     parser.add_argument("operation", choices=("generation-preview", "generation-publish",
                                                "time-initialize", "time-recover",
                                                "observe-packages", "loaded-units-preview",
-                                               "approval-request"))
+                                               "approval-request", "approval-install",
+                                               "boot-initialize"))
+    parser.add_argument("--payload")
+    parser.add_argument("--signature")
+    parser.add_argument("--confirm-sha256")
     args = parser.parse_args(argv)
+    install_options = (args.payload, args.signature, args.confirm_sha256)
+    if args.operation == "approval-install":
+        if any(value is None for value in install_options):
+            parser.error("approval-install requires --payload, --signature and --confirm-sha256")
+        return run_approval_install(payload_path=args.payload, signature_path=args.signature,
+                                    confirm_sha256=args.confirm_sha256, out=sys.stdout)
+    if any(value is not None for value in install_options):
+        parser.error("--payload, --signature and --confirm-sha256 apply to approval-install only")
+    if args.operation == "boot-initialize":
+        return run_boot_initialize(source=sys.stdin, out=sys.stdout)
     if args.operation == "observe-packages":
         return run_package_observation(out=sys.stdout)
     if args.operation == "approval-request":

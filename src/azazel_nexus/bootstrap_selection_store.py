@@ -6,6 +6,7 @@ from hashlib import sha256
 
 from .activation_store import _private_directory, _read_file_at
 from .bootstrap_deployment_store import load_bootstrap_deployment
+from .bootstrap_prior_boot import retire_prior_boot_records
 from .bootstrap_selection import decode_bootstrap_selection, bind_bootstrap_selection
 from .bootstrap_store import _bootstrap_directory
 from .hil_preflight import read_boot_id
@@ -63,10 +64,19 @@ def _write_new(fd, name, raw):
         os.close(output)
 
 
+def _prior_boot(raws):
+    return decode_bootstrap_selection(raws[0]).boot_id
+
+
 def _publish_at(fd, raw, *, owner, confirmed_sha256, confirmed_operation,
-                recovery, recheck):
-    """Ordinary-file seam. No overwrite, repair, renewal or new identifier."""
-    decode_bootstrap_selection(raw)
+                recovery, recheck, record_prior_boot=None):
+    """Ordinary-file seam. No overwrite, repair, renewal or new identifier.
+
+    With ``record_prior_boot`` (initialization only), an existing canonical
+    selection of another boot with no pending marker is recorded and moved aside
+    first; a selection of the current boot still refuses.
+    """
+    selected = decode_bootstrap_selection(raw)
     if (confirmed_operation is not True or type(confirmed_sha256) is not str
             or confirmed_sha256 != sha256(raw).hexdigest() or type(recovery) is not bool):
         raise ApprovalRefused("separate digest and exact operation confirmation required")
@@ -82,7 +92,14 @@ def _publish_at(fd, raw, *, owner, confirmed_sha256, confirmed_operation,
     try:
         if not recovery:
             if any(_exists(fd, name) for name in ("selection.json", "selection.pending")):
-                raise ApprovalRefused("existing selection cannot be replaced")
+                if record_prior_boot is None:
+                    raise ApprovalRefused("existing selection cannot be replaced")
+                # recheck() bound the new bytes to the current boot.
+                retire_prior_boot_records(
+                    fd, kind="selection", names=("selection.json",), limits=(4096,),
+                    pending=("selection.pending",), owner=owner, read_file=_read_file_at,
+                    boot_of=_prior_boot, current_boot=selected.boot_id,
+                    record=record_prior_boot)
             _write_new(fd, "selection.pending", _PENDING)
             os.fsync(fd)
             _write_new(fd, "selection.json", raw)
@@ -107,7 +124,7 @@ def _publish_at(fd, raw, *, owner, confirmed_sha256, confirmed_operation,
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def _publish(raw, *, confirmed_sha256, confirmation, recovery):
+def _publish(raw, *, confirmed_sha256, confirmation, recovery, record_prior_boot=None):
     try:
         selection = decode_bootstrap_selection(raw)
         declaration = load_bootstrap_deployment()
@@ -124,16 +141,24 @@ def _publish(raw, *, confirmed_sha256, confirmation, recovery):
                         raise ApprovalRefused("selection directory changed")
 
             _publish_at(fd, raw, owner=0, confirmed_sha256=confirmed_sha256,
-                        confirmed_operation=confirmation, recovery=recovery, recheck=recheck)
+                        confirmed_operation=confirmation, recovery=recovery, recheck=recheck,
+                        record_prior_boot=record_prior_boot)
     except SelectionDurabilityUncertain:
         raise
     except Exception:
         raise ApprovalRefused("selection publication refused; inspect retained state") from None
 
 
-def initialize_bootstrap_selection(raw: bytes, *, confirmed_sha256: str, confirmed_initialize: bool):
-    """Explicit initial per-boot intent. No approval or retained deadline reset."""
-    _publish(raw, confirmed_sha256=confirmed_sha256, confirmation=confirmed_initialize, recovery=False)
+def initialize_bootstrap_selection(raw: bytes, *, confirmed_sha256: str, confirmed_initialize: bool,
+                                   record_prior_boot=None):
+    """Explicit initial per-boot intent. No approval or retained deadline reset.
+
+    ``record_prior_boot`` is a trusted composition callback for the owner's
+    confirmed operation only (never startup): it must durably record the prior
+    boot selection's retirement and return exactly True before it is moved aside.
+    """
+    _publish(raw, confirmed_sha256=confirmed_sha256, confirmation=confirmed_initialize,
+             recovery=False, record_prior_boot=record_prior_boot)
 
 
 def recover_bootstrap_selection(raw: bytes, *, confirmed_sha256: str, confirmed_recovery: bool):

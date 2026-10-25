@@ -14,6 +14,7 @@ from .bootstrap_approval import BootstrapContext
 from .bootstrap_clock import decode_administrator_anchor, project_administrator_window
 from .bootstrap_deadline import read_boottime_ns
 from .bootstrap_prestart_store import load_bootstrap_prestart_policy
+from .bootstrap_prior_boot import retire_prior_boot_records
 from .bootstrap_store import _bootstrap_directory
 from .hil_preflight import read_boot_id
 from .operator_trust import ApprovalRefused
@@ -54,10 +55,19 @@ def _write_new(fd, name, raw):
         os.close(output)
 
 
+def _prior_boot(raws):
+    return decode_administrator_anchor(raws[0]).boot_id
+
+
 def _initialize_at(fd, raw, *, owner, confirmed_sha256, confirmed_initialize,
-                   validate_current):
-    """Private ordinary-file seam; interrupted/existing records are never replaced."""
-    decode_administrator_anchor(raw)
+                   validate_current, record_prior_boot=None):
+    """Private ordinary-file seam; interrupted/existing records are never replaced.
+
+    With ``record_prior_boot``, an existing canonical record of another boot with
+    no pending marker is recorded and moved aside first; a record of the current
+    boot (expired or not) and a pending publication still refuse.
+    """
+    anchor = decode_administrator_anchor(raw)
     if (confirmed_initialize is not True or type(confirmed_sha256) is not str
             or sha256(raw).hexdigest() != confirmed_sha256):
         raise ApprovalRefused("separate digest and publication confirmation required")
@@ -66,7 +76,13 @@ def _initialize_at(fd, raw, *, owner, confirmed_sha256, confirmed_initialize,
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         if any(_exists(fd, name) for name in ("time.json", "time.pending")):
-            raise ApprovalRefused("existing time state requires administrator review")
+            if record_prior_boot is None:
+                raise ApprovalRefused("existing time state requires administrator review")
+            # validate_current() bound the new anchor to the current boot.
+            retire_prior_boot_records(
+                fd, kind="time", names=("time.json",), limits=(4096,),
+                pending=("time.pending",), owner=owner, read_file=_read_file_at,
+                boot_of=_prior_boot, current_boot=anchor.boot_id, record=record_prior_boot)
         _write_new(fd, "time.pending", _PENDING)
         os.fsync(fd)
         _write_new(fd, "time.json", raw)
@@ -130,7 +146,7 @@ def _recover_at(fd, raw, *, owner, confirmed_sha256, confirmed_recovery,
 
 def initialize_administrator_time(raw: bytes, *, expected: BootstrapContext,
                                   confirmed_sha256: str, confirmed_initialize: bool,
-                                  revalidate_selection=None):
+                                  revalidate_selection=None, record_prior_boot=None):
     """Publish explicitly supplied UTC bounds, never infer them from OS wall time.
 
     Independent context and its protected policy are mandatory. This operation
@@ -138,9 +154,13 @@ def initialize_administrator_time(raw: bytes, *, expected: BootstrapContext,
     renewal, implicit directory creation or automatic recovery is performed.
     Optional selection revalidation is a trusted composition callback, not RPC
     input. It must return exactly None or raise; it runs before completion.
+    ``record_prior_boot`` is the same kind of trusted callback for the owner's
+    confirmed operation only: it durably records a prior-boot record's
+    retirement and returns exactly True before that record is moved aside.
     """
     _publish(raw, expected=expected, confirmed_sha256=confirmed_sha256,
-             confirmation=confirmed_initialize, recovery=False, revalidate_selection=revalidate_selection)
+             confirmation=confirmed_initialize, recovery=False, revalidate_selection=revalidate_selection,
+             record_prior_boot=record_prior_boot)
 
 
 def recover_administrator_time(raw: bytes, *, expected: BootstrapContext,
@@ -155,10 +175,13 @@ def recover_administrator_time(raw: bytes, *, expected: BootstrapContext,
              confirmation=confirmed_recovery, recovery=True, revalidate_selection=revalidate_selection)
 
 
-def _publish(raw, *, expected, confirmed_sha256, confirmation, recovery, revalidate_selection):
+def _publish(raw, *, expected, confirmed_sha256, confirmation, recovery, revalidate_selection,
+             record_prior_boot=None):
     try:
         if revalidate_selection is not None and not callable(revalidate_selection):
             raise ApprovalRefused("selection revalidation callback required")
+        if record_prior_boot is not None and not callable(record_prior_boot):
+            raise ApprovalRefused("prior boot record callback required")
         if type(expected) is not BootstrapContext:
             raise ApprovalRefused("independent bootstrap context required")
         anchor = decode_administrator_anchor(raw)
@@ -191,7 +214,8 @@ def _publish(raw, *, expected, confirmed_sha256, confirmation, recovery, revalid
                             confirmed_recovery=confirmation, validate_current=validate_current)
             else:
                 _initialize_at(fd, raw, owner=0, confirmed_sha256=confirmed_sha256,
-                               confirmed_initialize=confirmation, validate_current=validate_current)
+                               confirmed_initialize=confirmation, validate_current=validate_current,
+                               record_prior_boot=record_prior_boot)
     except TimeDurabilityUncertain:
         raise
     except Exception:

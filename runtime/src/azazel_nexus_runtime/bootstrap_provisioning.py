@@ -36,11 +36,14 @@ def selected_time_digest(*, raw: bytes, selected: DeclaredBootstrapContext, reco
 
 
 def publish_selected_administrator_time(*, raw: bytes, confirmed_digest: str,
-                                        confirmed_operation: bool, recovery: bool):
+                                        confirmed_operation: bool, recovery: bool,
+                                        record_prior_boot=None):
     """Use protected selection, not caller context, for explicit time publication.
 
     Does not calibrate UTC, set OS clocks, renew records, reset deadlines or start.
     The existing clock store checks current boot, policy, expiry and drift bounds.
+    ``record_prior_boot`` (initialization only) lets the store record and move
+    aside a record of another boot; a record of this boot still refuses.
     """
     try:
         selected = load_declared_bootstrap_context()
@@ -59,7 +62,8 @@ def publish_selected_administrator_time(*, raw: bytes, confirmed_digest: str,
         else:
             initialize_administrator_time(raw, expected=selected.context,
                                           confirmed_sha256=sha256(raw).hexdigest(),
-                                          confirmed_initialize=True, revalidate_selection=recheck)
+                                          confirmed_initialize=True, revalidate_selection=recheck,
+                                          record_prior_boot=record_prior_boot)
     except TimeDurabilityUncertain:
         raise
     except Exception:
