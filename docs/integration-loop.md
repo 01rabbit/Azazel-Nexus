@@ -253,9 +253,17 @@ Concrete I1 limits and paths:
     processed when read, so it may come after later ones, as before #327.
     Nothing is dropped for ordering: accepted equals processed.
   - At shutdown, lines already read are queued in accept order before the
-    writer finishes.
+    writer finishes. They go through the same bounded queue, so a queue
+    already full at that moment still counts them as `queue_full`.
   - Each record's `received_at` is the intake time its connection was
-    accepted, so it follows the processing order too.
+    accepted (it was the time the line was read). For lines released in
+    accept order it therefore follows the processing order. A late line
+    (its connection unfinished past the wait) is the exception: it is
+    processed after lines accepted later, so its `received_at` is earlier
+    than theirs, by at most the read deadline (2 s), and the incident's
+    `last_seen` can step back by as much. Severity, escalation and the
+    explanation do not depend on it; the only effect is that an idle close
+    (after 900 s) can come up to 2 s sooner.
   - Order between two different senders (two Edge processes, or a restart
     overlapping its predecessor) is the order their connections reached the
     kernel; nothing beyond that is promised. Consumers still treat an

@@ -1448,3 +1448,38 @@ def test_lines_held_behind_an_unfinished_connection_are_kept_at_shutdown(tmp_pat
     assert not thread.is_alive()
     assert server.accepted == server.processed == 1
     assert transitions(server)[0] == ("edge.incident.opened", 1, "isolate")
+
+
+def test_lines_held_behind_one_connection_are_bounded(running):
+    # Past REORDER_HELD lines behind one unfinished connection, the lines go
+    # without waiting for the (here very long) reorder wait.
+    # Reader slots for all, so a line accepted before its bytes is not refused.
+    total = daemon.REORDER_HELD + 1
+    server = running(read_deadline=60, reorder_wait=60, max_connections=2 * total)
+    line = observation("isolate", 1)
+    with connect(server):
+        for _ in range(total):
+            for _ in range(500):
+                try:
+                    send(server, line)
+                    break
+                except BlockingIOError:  # listen backlog full for a moment
+                    time.sleep(0.01)
+            else:
+                raise AssertionError("listen backlog stayed full")
+        wait_for(lambda: server.processed >= 1, timeout=10)
+        wait_for(lambda: server.processed == total, timeout=60)
+    assert server.accepted == total and server.refused["queue_full"] == 0
+
+
+def test_received_at_is_the_accept_time(running):
+    now = [100.0]
+    server = running(read_deadline=3, reorder_wait=3, clock=lambda: now[0])
+    with connect(server) as client:
+        time.sleep(0.3)  # accepted, with no line yet
+        now[0] = 200.0
+        client.sendall(observation("isolate", 1))
+    wait_for(lambda: server.processed == 1)
+    (path,) = (server.state / "evidence").glob("*.jsonl")
+    assert json.loads(path.read_text())["received_at"] == 100.0
+    assert server.last_processed_at == 100.0
