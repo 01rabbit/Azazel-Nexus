@@ -144,7 +144,10 @@ Changes:
 3. Record before unlink. az-auditd is stopped and masked at this point: the stopped-writer rule starts it only after READY. Its shared chain cannot take a record before the unlink. The record is therefore appended, through the existing `AuditLedger` of `_activation_ledger`, to the controller's own local ledger `/var/lib/azazel/state/activation.jsonl`, which is hash-chained and fsynced:
    - event `activation.overlay_journal_retiring`: phase, boot_id, grant_id, context_digest, journal_sha256, grant_phase, current_boot_id, occurred_at, actor; no payload.
    - The append runs before the reset and before the unlink. If it raises or returns anything other than a confirmed append, nothing is changed.
-   - The ledger is local, neither signed nor anchored (runtime/README.md). The event is not a floor event. If the ledger did not exist, this creates it, and `activation_high_water` then treats the node as having history. That only narrows.
+   - The ledger is local, neither signed nor anchored (runtime/README.md).
+   - The event is not one of `FLOOR_EVENTS`, so the operator install and §7 recovery path (`activation_cli`) does not count it as a floor or history.
+   - If the ledger did not exist, the append creates it. One check sees that: `require_high_water_for_pass` refuses a missing high-water file when a ledger exists ("node with history"). That only narrows the ordinary pass, and the install path is not affected.
+   - The success contract is explicit: `_append_retirement_record` returns `True` only when the append returns an `AuditEntry`, and raises otherwise. The manager proceeds only on `is True`.
    - A record on the az-auditd chain would need a new bootstrap event schema, replayed after auditd starts. That was not added.
 4. Order inside `retire_prior_boot` (unchanged): guard, exact journal, boot id, stamps, phase, binding, stability, record, stability, `replace(current, closed)` with read-back (only if not `closed`), stability, `remove`. In `finally`, the bound intent, owned files, stamps and prior-boot fence are cleared, so a later `_contain` in this process takes the initial-baseline path.
 

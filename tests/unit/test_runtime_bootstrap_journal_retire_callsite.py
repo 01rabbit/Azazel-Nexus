@@ -52,7 +52,12 @@ def _manager(env, grants, boot=NEW_BOOT, monkeypatch=None):
     )
     manager._boot_id_reader = lambda: boot
     manager.records = []
-    manager._retirement_record = manager.records.append
+
+    def record(event):
+        manager.records.append(event)
+        return True  # confirmed append
+
+    manager._retirement_record = record
     store = GrantStore(grants)
 
     @contextmanager
@@ -120,7 +125,7 @@ def test_closed_retirement_appends_ledger_record_before_unlink(tmp_path):
         manager, _ = _manager(env, {OLD_BOOT: _grant_for(closed)})
         seen = []
         manager._retirement_record = lambda event: seen.append(
-            (event, env["store"].load_optional()))
+            (event, env["store"].load_optional())) or True
         manager._retire_prior_boot_journal(env["store"], env["guard"])
         (event, still_there), = seen
         assert still_there == closed
@@ -184,7 +189,7 @@ def test_abandoned_journal_with_inconsistent_prior_grant_refuses(tmp_path, grant
 
 
 @pytest.mark.parametrize("phase", ["closed", "published"])
-@pytest.mark.parametrize("failure", ["raise", "returns"])
+@pytest.mark.parametrize("failure", ["raise", "returns", "none", "entry"])
 def test_retirement_record_failure_leaves_journal(tmp_path, phase, failure):
     with _withdraw_environment(tmp_path) as env:
         journal = _stage(env, phase)
@@ -196,7 +201,9 @@ def test_retirement_record_failure_leaves_journal(tmp_path, phase, failure):
         def record(_event):
             if failure == "raise":
                 raise OSError("ledger unwritable")
-            return object()  # anything but None is not a confirmed append
+            # Only `True` is a confirmed append; a raw entry, None or any
+            # other value refuses.
+            return {"returns": object(), "none": None, "entry": 1}[failure]
 
         manager._retirement_record = record
         calls = _spy_writes(env)
@@ -214,9 +221,52 @@ def test_default_retirement_record_appends_to_activation_ledger(tmp_path, monkey
     ledger = AuditLedger(tmp_path / "activation.jsonl")
     monkeypatch.setattr(activated, "_activation_ledger", lambda root: ledger)
     event = {"event_type": "activation.overlay_journal_retiring", "phase": "closed"}
-    assert module._append_retirement_record(event) is None
+    assert module._append_retirement_record(event) is True
     (entry,) = list(ledger)
     assert dict(entry.event) == event
+
+
+def test_default_record_unconfirmed_append_raises(monkeypatch):
+    from azazel_nexus_runtime import activated
+
+    class Ledger:
+        def append(self, event):
+            return None  # not an AuditEntry
+
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: Ledger())
+    with pytest.raises(UnitOperationFailed, match="record unconfirmed"):
+        module._append_retirement_record({"event_type": "x"})
+
+
+@pytest.mark.parametrize("ledger_ok", [True, False])
+def test_retirement_through_default_ledger_record(tmp_path, monkeypatch, ledger_ok):
+    """The production record seam end to end: a confirmed append proceeds,
+    an unwritable ledger refuses before any journal write."""
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime import activated
+
+    path = tmp_path / "activation.jsonl"
+    if not ledger_ok:
+        path.mkdir()  # a directory where the ledger file should be: append fails
+    monkeypatch.setattr(activated, "_activation_ledger", lambda root: AuditLedger(path))
+    (tmp_path / "env").mkdir()
+    with _withdraw_environment(tmp_path / "env") as env:
+        journal = _stage(env, "published")
+        manager, _ = _manager(env, {OLD_BOOT: _abandoned_grant(journal)})
+        manager._retirement_record = module._append_retirement_record
+        _fenced(manager)
+        calls = _spy_writes(env)
+        if ledger_ok:
+            manager._retire_prior_boot_journal(env["store"], env["guard"])
+            assert calls == ["replace", "remove"]
+            assert env["store"].load_optional() is None
+            (entry,) = list(AuditLedger(path))
+            assert entry.event["event_type"] == "activation.overlay_journal_retiring"
+            assert entry.event["phase"] == "published"
+        else:
+            with pytest.raises(ApprovalRefused, match="audit record refused"):
+                manager._retire_prior_boot_journal(env["store"], env["guard"])
+            assert calls == [] and env["store"].load() == journal
 
 
 @pytest.mark.parametrize(

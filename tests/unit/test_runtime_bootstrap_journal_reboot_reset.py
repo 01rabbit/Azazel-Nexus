@@ -77,7 +77,8 @@ def _host(tmp_path, phase, *, boot=NEW_BOOT, files_absent=True, grant_phase=None
 
             manager._grant_store_opener = opener
             manager.records = []
-            manager._retirement_record = manager.records.append
+            manager._retirement_record = lambda event: (
+                manager.records.append(event) or True)
             yield env, manager, journal
         finally:
             os.close(root_fd)
@@ -166,6 +167,19 @@ def test_prior_boot_fence_check_refuses_after_change(tmp_path, change):
             mask.symlink_to("/dev/null")
         with pytest.raises(ApprovalRefused):
             files.check()
+
+
+@pytest.mark.parametrize("unit", PAIR)
+def test_prior_boot_fence_refuses_entry_appearing_before_close(tmp_path, unit):
+    """Second check of the pair rule: an entry between bind and close()."""
+    with _withdraw_environment(tmp_path) as env:
+        journal = _stage(env, "closing")
+        files = _withdrawal(env)
+        assert files.resume_closure(boot_id_reader=lambda: NEW_BOOT) is True
+        (env["overlay_path"] / unit).write_bytes(b"")
+        with pytest.raises(ApprovalRefused, match="overlay entry present"):
+            files.close()
+        assert env["store"].load() == journal
 
 
 @pytest.mark.parametrize("phase", ABANDONED)

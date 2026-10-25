@@ -137,10 +137,17 @@ def _append_retirement_record(event):
     az-auditd is stopped and masked at this point (stopped-writer rule), so
     its shared chain cannot take the record before the unlink. The
     controller's local ledger can; any failure raises and nothing is removed.
+
+    Contract: returns True only after a confirmed append (an AuditEntry back
+    from the durable, fsynced append); anything else raises. The caller
+    proceeds on `is True` alone.
     """
+    from azazel_nexus.audit import AuditEntry
     from .activated import _activation_ledger  # lazy: activated composes bootstrap
 
-    _activation_ledger(Path("/")).append(event)
+    if type(_activation_ledger(Path("/")).append(event)) is not AuditEntry:
+        raise UnitOperationFailed("prior boot journal retirement record unconfirmed")
+    return True
 
 
 class BootstrapNarrowingManager:
@@ -890,7 +897,7 @@ class BootstrapNarrowingManager:
                     timespec="seconds").replace("+00:00", "Z"),
                 "actor": "azazel-activated",
             }
-            if self._retirement_record(event) is None:
+            if self._retirement_record(event) is True:
                 return
             raise ApprovalRefused("prior boot journal retirement record unconfirmed")
 
