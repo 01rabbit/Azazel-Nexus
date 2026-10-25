@@ -346,6 +346,27 @@ reported as closed: the grant and journal stay `recovery_required`/`closing`,
 and the next boot's controller handles that journal as an earlier boot's
 (#335) before it admits again.
 
+One shutdown race remains (#339): systemd stops `azazel-commissiond` and
+`azazel-auditd` before it signals the controller, and if the controller's
+supervision wakes in that window its helper check fails (`loaded unit changed
+during inspection`, or the audit head is unavailable) instead of seeing the
+stop. The controller still contains the pair and closes the overlay journal,
+but the grant stays `recovery_required`; it is never reported as closed in
+that boot. Only when all of the following held does the controller label the
+grant's recovery evidence as a manager stop with an unrecorded close: the
+close intent was recorded, `bootstrap.stopping` was refused only because
+auditd was gone, systemd was observed stopping the controller, containment
+was confirmed and the stopped-writer audit chain was intact. The next boot
+retires that boot's closed journal only for that exact label, bound to the
+journal's grant id, context digest and payload digests, and appends
+`activation.overlay_journal_retiring` with `grant_phase` `recovery_required`,
+`recovery_reason` `manager-stop-close-unrecorded` and the supervision failure
+type. Any other `recovery_required` grant behind a closed journal (generic
+recovery evidence, another grant's label, a containment or chain failure, a
+failure of another type, or no observed stop) still refuses every boot until
+you recover it by hand. The label is not an approval: the next boot still
+needs this boot's records, a fresh signed approval and the full admission.
+
 Ordering with observe-baseline activation: these events (like the bootstrap
 controller's own records) create `/var/lib/azazel/state/activation.jsonl`. On a
 node with that ledger and no `high-water.json`, every activation pass refuses

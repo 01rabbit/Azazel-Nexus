@@ -398,6 +398,11 @@ avoid pulling `sysinit.target` into their START transactions. Ordering after
 also ordered (ordering only) after `dbus.socket` and `dbus.service`: its close
 at shutdown is a sequence of system-bus calls, and stop order is the reverse
 of start order, so the bus stays up until the controller has stopped (#324).
+A helper check that fails while systemd stops the pair ahead of the
+controller keeps `recovery_required` in that boot; with a proven manager stop,
+confirmed containment and an intact stopped-writer chain the grant's recovery
+evidence carries the `manager-stop-close-unrecorded` label, and only that
+label lets a later boot retire the earlier boot's closed journal (#339).
 Controller and loaded helper inspection require the effective boolean value
 to be false.
 After Reload and around pair inspection, and again at retained start checks,

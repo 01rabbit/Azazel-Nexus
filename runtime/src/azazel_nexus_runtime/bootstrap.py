@@ -28,15 +28,20 @@ from azazel_nexus.bootstrap_lock import bootstrap_transaction
 from azazel_nexus.hil_preflight import read_boot_id
 from azazel_nexus.operator_trust import ApprovalRefused
 
-from .units import UnitKey
+from .units import UnitKey, UnitOperationFailed
 from .bootstrap_audit import AuditObservation
 from .bootstrap_audit_client import AuditAppendReceipt, BootstrapAuditClient
 from .bootstrap_audit_live import BootstrapLiveAuditHead, WriterHead
 from .bootstrap_overlay_files import new_overlay_intent
+from .bootstrap_recovery_evidence import unrecorded_manager_stop_digest
 from .bootstrap_prestart import inspect_bootstrap_prestart, check_bootstrap_audit_extension
 
 _ORDER = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
 _READINESS_LOST = "bootstrap helper readiness lost"
+# Supervision failures of the helper observations themselves (loaded-unit
+# recheck, audit head read) that a systemd stop of the pair can cause before
+# this controller is signalled. Exact types only; see _finish_transaction.
+_MANAGER_STOP_SUPERVISION_FAILURES = (UnitOperationFailed, AuditUnavailable)
 
 
 def _new_grant_transaction(deadline, generation) -> GrantTransaction:
@@ -590,14 +595,15 @@ class BootstrapSupervisor:
         ).encode("ascii")
         return "sha256:" + sha256(raw).hexdigest()
 
-    def _mark_recovery(self, failure: BaseException) -> None:
+    def _mark_recovery(self, failure: BaseException, *, evidence_digest: str | None = None) -> None:
         journal = self._grant_transaction
         if (type(journal) is GrantTransaction and self._grant_store is not None
                 and journal.phase not in {"closed", "recovery_required"}):
             try:
                 self._advance_grant(
                     "recovery_required",
-                    evidence_digest=self._recovery_digest(failure),
+                    evidence_digest=(self._recovery_digest(failure)
+                                     if evidence_digest is None else evidence_digest),
                 )
             except Exception:
                 pass  # Retain the original containment/store failure.
@@ -627,15 +633,22 @@ class BootstrapSupervisor:
 
         audit_error = None
         manager_stop = False
+        # Nexus#324/#339: name of a helper observation failure that ended
+        # supervision while systemd was stopping this controller. It never
+        # closes the grant; it only labels recovery_required (see below).
+        unrecorded_stop = None
         if self._live_audit is not None:
             try:
                 self._record("bootstrap.stopping")
             except Exception as exc:
                 audit_error = exc
                 if (type(exc) is AuditUnavailable and close_error is None
-                        and journal.phase == "closing"
-                        and self._stop_cause_eligible(cause)):
-                    manager_stop = self._observe_manager_stop()
+                        and journal.phase == "closing"):
+                    if self._stop_cause_eligible(cause):
+                        manager_stop = self._observe_manager_stop()
+                    elif (type(cause) in _MANAGER_STOP_SUPERVISION_FAILURES
+                            and self._observe_manager_stop()):
+                        unrecorded_stop = type(cause).__name__
 
         try:
             close_evidence = self._contain()
@@ -653,9 +666,21 @@ class BootstrapSupervisor:
                 audit_error = None
                 stopping_record = "absent-manager-stop"
 
+        recovery_evidence = None
+        if unrecorded_stop is not None and close_error is None and audit_error is not None:
+            # Same proof as absent-manager-stop (confirmed containment, last
+            # head and receipt, intact stopped-writer chain); the digest itself
+            # is not used. The grant still becomes recovery_required; only a
+            # later boot may retire this boot's closed journal (Nexus#339).
+            try:
+                self._manager_stop_digest(close_evidence)
+                recovery_evidence = unrecorded_manager_stop_digest(journal, unrecorded_stop)
+            except Exception:
+                recovery_evidence = None  # Unprovable: the generic evidence stays.
+
         failure = close_error or audit_error
         if failure is not None:
-            self._mark_recovery(failure)
+            self._mark_recovery(failure, evidence_digest=recovery_evidence)
             raise ApprovalRefused("bootstrap transaction close was not fully recorded") from None
         if journal.phase == "recovery_required":
             raise ApprovalRefused("bootstrap transaction requires recovery")
