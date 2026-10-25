@@ -336,6 +336,16 @@ The bootstrap controller (#337) puts them in
 
 Review the archive yourself as well.
 
+A READY bootstrap controller stopped by an ordinary `systemctl reboot` or
+shutdown closes its grant and overlay journal over the system bus, so
+`azazel-activated.service` is ordered after `dbus.socket` and `dbus.service`
+(ordering only; #324). Without that ordering the shutdown stopped the bus in
+parallel and the close ended in `emergency narrowing unconfirmed` or a
+`TimeoutStopSec` SIGKILL. A close that still cannot be confirmed is not
+reported as closed: the grant and journal stay `recovery_required`/`closing`,
+and the next boot's controller handles that journal as an earlier boot's
+(#335) before it admits again.
+
 Ordering with observe-baseline activation: these events (like the bootstrap
 controller's own records) create `/var/lib/azazel/state/activation.jsonl`. On a
 node with that ledger and no `high-water.json`, every activation pass refuses

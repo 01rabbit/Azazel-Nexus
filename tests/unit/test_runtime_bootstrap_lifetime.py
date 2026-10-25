@@ -55,6 +55,10 @@ def test_controller_requires_explicit_readiness_and_kills_its_control_group():
         # synchronization only when a wait-sync service holds it.
         "data.mount",
         "time-sync.target",
+        # The system bus its close at shutdown speaks through (#324): stop
+        # order is the reverse of start order, so the bus outlives the close.
+        "dbus.socket",
+        "dbus.service",
     ]
     assert not any(
         key in settings for key in ("Requires", "BindsTo", "Wants")

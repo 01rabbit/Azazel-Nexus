@@ -790,6 +790,24 @@ MISSION_STORAGE_MOUNTS = ("data.mount",)
 TIME_SYNC_TARGET = "time-sync.target"
 
 
+#: The system bus the controller's close path speaks to systemd through
+#: (#324). Every unit operation of the bootstrap containment -- the start
+#: fence's Reload, mask, StopUnit, the inactivity and mask observations and
+#: the withdrawal -- is a call over `/run/dbus/system_bus_socket`
+#: (`systemd_socket.SYSTEM_BUS_SOCKET`). With `DefaultDependencies=no` and no
+#: ordering on the bus, a shutdown stops `dbus.service` in parallel with the
+#: controller, so a READY controller stopped by a reboot lost the bus in the
+#: middle of its close (EOF, then "emergency narrowing unconfirmed", or a
+#: hang to TimeoutStopSec and SIGKILL), leaving the grant and journal for the
+#: next boot's recovery. Stop order is the reverse of start order, so
+#: `After=` here keeps the bus up until the controller has stopped. The
+#: 2026-10-26 VM rehearsal (not hardware evidence) showed the calls failing
+#: with "Transport endpoint is not connected" without it and succeeding with
+#: it. Ordering only: no `Wants=`/`Requires=`, so a node without the bus is
+#: not changed by this line and the controller still fails closed there.
+SYSTEM_BUS_UNITS = ("dbus.socket", "dbus.service")
+
+
 #: The accounts the installer creates. `root` is not among them: it exists.
 SYSTEM_ACCOUNTS = (
     "azcommission",
@@ -1126,7 +1144,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/IMPLEMENTATION_SPEC.md",
         after=("systemd-tmpfiles-setup.service", "sysinit.target", "basic.target",
                *COMMISSIONING_STORAGE_MOUNTS, *MISSION_STORAGE_MOUNTS,
-               TIME_SYNC_TARGET),
+               TIME_SYNC_TARGET, *SYSTEM_BUS_UNITS),
         address_families=("AF_UNIX", "AF_NETLINK"),
         read_write_paths=(
             "/var/lib/azazel",

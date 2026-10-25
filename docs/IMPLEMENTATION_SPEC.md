@@ -394,8 +394,12 @@ hermeticity or hostile privileged/in-process defense is claimed. See
 The three bootstrap-related units explicitly disable `DefaultDependencies` to
 avoid pulling `sysinit.target` into their START transactions. Ordering after
 `sysinit.target`/`basic.target` and before shutdown is declared explicitly;
-`Conflicts=shutdown.target` preserves shutdown behavior. Controller and loaded
-helper inspection require the effective boolean value to be false.
+`Conflicts=shutdown.target` preserves shutdown behavior. The controller is
+also ordered (ordering only) after `dbus.socket` and `dbus.service`: its close
+at shutdown is a sequence of system-bus calls, and stop order is the reverse
+of start order, so the bus stays up until the controller has stopped (#324).
+Controller and loaded helper inspection require the effective boolean value
+to be false.
 After Reload and around pair inspection, and again at retained start checks,
 a bounded inspector traverses effective `Requires`/`Wants`/`BindsTo` from all
 three roots. It rejects any external service, socket, timer, path, automount,
