@@ -4,8 +4,10 @@ Evidence records and the audit chain come from the real consumer loop in
 `tools.so06_loop`. With `--edge-core`, every run also executes the real
 observe-only Edge Core on a pinned clock (`tools.so06_edge`): its forwarded
 observations are `evaluation_outcomes` and are what the loop's intake reads.
-Paths that need Edge execution and are not executed are explicitly not_driven
-and cannot pass.
+With `--lease-netns` as well, every run also executes the same binary enforcing,
+inside a network namespace the harness creates (`tools.so06_lease`); the
+release ledger it writes is `enforcement_lease_records`. Paths that need Edge
+execution and are not executed are explicitly not_driven and cannot pass.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from azazel_nexus import degradation, integration
 from azazel_nexus.audit import AuditLedger, canonical_event_bytes
 from azazel_nexus.capability import CORE_CAPABILITIES
 from azazel_nexus.cognition import CognitionReading, CognitionState, RemoteState
-from tools import so06_edge, so06_loop
+from tools import so06_edge, so06_lease, so06_loop
 from tools.service_objectives import (
     CASES,
     PATHS,
@@ -53,6 +55,13 @@ EDGE_EVIDENCE_SOURCE = (
     f"pinned to {so06_edge.PINNED_EPOCH} by a harness-only preload library; the "
     "forwarded observations are evaluation_outcomes and the intake's input"
 )
+LEASE_EVIDENCE_SOURCE = EDGE_EVIDENCE_SOURCE + (
+    "; the same binary is run a second time per case, enforcing (enforce on, dry run "
+    "off, full-auto) only inside a harness-created network namespace with a dummy "
+    "interface and an empty azazel_edge table, on the same pinned clock; its release "
+    "ledger tasks are enforcement_lease_records, and its observations, which the "
+    "intake refuses (EDGE_NOT_OBSERVE_ONLY), are not evidence"
+)
 NOT_DRIVEN = {
     "evaluation_outcomes": (
         "Edge's evaluator is not executed here: no --edge-core binary was supplied, the "
@@ -61,8 +70,9 @@ NOT_DRIVEN = {
     ),
     "enforcement_lease_records": (
         "the shipped Edge Core is observe-only (ENFORCE=false, DRY_RUN=true) and intake "
-        "refuses any other posture (EDGE_NOT_OBSERVE_ONLY); nothing issues an enforcement "
-        "lease until Azazel-Edge#412 declares the single enforcement path"
+        "refuses any other posture (EDGE_NOT_OBSERVE_ONLY), so no lease is issued in the "
+        "consumer loop; an enforcing Edge in a harness network namespace was not run "
+        "(needs --edge-core and --lease-netns, as root with CAP_NET_ADMIN)"
     ),
 }
 
@@ -117,15 +127,15 @@ def observe_fault(mode: str, clock: FaultClock) -> degradation.FailureMode:
     raise ValueError("fault injection unexpectedly returned a healthy response")
 
 
-def edge_observations(edge: tuple[Path, Path]) -> list[bytes]:
-    """One fresh run of the real Edge Core; `edge` is (binary, pinned-clock shim).
+def edge_observations(edge: tuple) -> list[bytes]:
+    """One fresh run of the real Edge Core; `edge` is (binary, pinned-clock shim, lease).
 
     The shim is required: a wall-clock Edge run is for the mutation check only
     and is never captured as SO-06 evidence.
     """
     from tools.e2e_loop import eve_events
 
-    binary, shim = edge
+    binary, shim = edge[:2]
     if not isinstance(shim, Path):
         raise so06_edge.EdgeUnavailable("SO-06 runs Edge only on the pinned clock")
     events = eve_events()
@@ -133,8 +143,23 @@ def edge_observations(edge: tuple[Path, Path]) -> list[bytes]:
                               expected=sum(e["event_type"] == "alert" for e in events))
 
 
-def nexus_adapter(events: list, case: str,
-                  edge: tuple[Path, Path] | None = None) -> dict:
+def edge_lease(edge: tuple) -> dict:
+    """One fresh enforcing run of the same binary in its own network namespace.
+
+    The same pinned-clock requirement; the run's observations are only checked
+    (the intake must refuse them), never fed to the loop.
+    """
+    from tools.e2e_loop import eve_events
+
+    binary, shim = edge[:2]
+    if not isinstance(shim, Path):
+        raise so06_edge.EdgeUnavailable("SO-06 runs Edge only on the pinned clock")
+    events = eve_events()
+    return so06_lease.run_lease(binary, events, shim=shim,
+                                expected=sum(e["event_type"] == "alert" for e in events))
+
+
+def nexus_adapter(events: list, case: str, edge: tuple | None = None) -> dict:
     """Execute real Nexus modules afresh, without fabricating Edge outputs."""
     failures = {}
     mode = None
@@ -173,11 +198,14 @@ def nexus_adapter(events: list, case: str,
         for event in events:
             ledger.append(event)
         lines = edge_observations(edge) if edge else None
+        lease = edge_lease(edge) if edge and edge[2] else None
         # The explainer forwards incident transitions into the same ledger.
         loop = so06_loop.run_loop(case, audit=ledger.append, lines=lines)
         ledger.verify()
         if lines is not None:
             paths["evaluation_outcomes"] = [json.loads(line) for line in lines]
+        if lease is not None:
+            paths["enforcement_lease_records"] = lease["tasks"]
         paths["evidence_records"] = loop["evidence_records"]
         paths["audit_chain"] = [
             {
@@ -201,7 +229,11 @@ def nexus_adapter(events: list, case: str,
         and (view.row("deception_supplier").value == "AZ-06 peer")
         == ("full_host_redirect" in outcome.retained)
         and loop["expected_behaviour"]
+        and (lease is None or so06_lease.lease_expected(lease))
     )
+    observed_lease = {} if lease is None else {
+        "lease": {"states": so06_lease.lease_states(lease["tasks"]),
+                  "intake_refused": so06_lease.refused_by_intake(lease["observations"])}}
     return {
         "paths": paths,
         "observed": {
@@ -211,9 +243,11 @@ def nexus_adapter(events: list, case: str,
             "expected_behaviour": expected,
             "integration_rows": [row.as_event() for row in view.rows],
             "consumer_loop": loop["observed"],
+            **observed_lease,
         },
         "not_driven": {k: v for k, v in NOT_DRIVEN.items()
-                       if not (edge and k == "evaluation_outcomes")},
+                       if not (edge and k == "evaluation_outcomes")
+                       and not (lease is not None and k == "enforcement_lease_records")},
     }
 
 
@@ -222,16 +256,48 @@ def capture_replays(
     *,
     clock: Callable[[], int] = time.monotonic_ns,
     edge_core: Path | None = None,
+    lease_netns: bool = False,
 ) -> dict:
     """Measure each real adapter invocation; arbitrary runners are unsupported.
 
     `edge_core` executes that Edge binary in every run, on the pinned clock.
+    `lease_netns` also runs it enforcing in a harness network namespace; it
+    needs `edge_core`, and a host that cannot provide the namespace refuses.
     """
+    if lease_netns and edge_core is None:
+        raise so06_edge.EdgeUnavailable("--lease-netns needs --edge-core")
+    if lease_netns:
+        so06_lease.sweep_stale_netns()
     with tempfile.TemporaryDirectory(prefix="azso06s-") as temporary:
         edge = None
         if edge_core is not None:
-            edge = (edge_core, so06_edge.build_shim(Path(temporary)))
-        return _capture(scenarios, clock, edge)
+            edge = (edge_core, so06_edge.build_shim(Path(temporary)), lease_netns)
+        bundle = _capture(scenarios, clock, edge)
+    if edge_core is not None:
+        bundle["edge_core"] = so06_lease.edge_core_identity(edge_core)
+    return bundle
+
+
+def require_active_lease(captured: list[dict]) -> None:
+    """Count the lease path as driven only if every run held an `active` lease.
+
+    Edge may write a lease and cancel it (its apply failed): that run compared
+    a lease nobody held. The comparison rule is unchanged; the path is then
+    `not_driven` with the reason, its tasks kept under `observed.lease`, so
+    the sample cannot pass.
+    """
+    runs = [run for scenario in captured for run in scenario["runs"].values()]
+    tasks = [run["paths"]["enforcement_lease_records"] for run in runs]
+    if all(so06_lease.has_active_lease(t) for t in tasks):
+        return
+    states = sorted({status for t in tasks for status in (x["status"] for x in t)})
+    reason = (f"{so06_lease.NO_ACTIVE_LEASE}: Edge wrote leases in the enforcing run, but not "
+              f"every run held one active (states seen: {states or ['none']}); a lease that "
+              "was never held is not counted as driven")
+    for run, held in zip(runs, tasks):
+        run["observed"]["lease"]["records"] = held
+        run["paths"]["enforcement_lease_records"] = []
+        run["not_driven"]["enforcement_lease_records"] = reason
 
 
 def _capture(scenarios, clock, edge) -> dict:
@@ -253,8 +319,11 @@ def _capture(scenarios, clock, edge) -> dict:
                 **observation,
             }
         captured.append({"id": scenario["id"], "inputs": inputs, "runs": runs})
+    if edge and edge[2]:
+        require_active_lease(captured)
     bundle = {"schema": INPUT_SCHEMA,
-              "evidence_source": EDGE_EVIDENCE_SOURCE if edge else EVIDENCE_SOURCE,
+              "evidence_source": (LEASE_EVIDENCE_SOURCE if edge and edge[2]
+                                  else EDGE_EVIDENCE_SOURCE if edge else EVIDENCE_SOURCE),
               "scenarios": captured}
     replay_samples(bundle)
     return bundle
@@ -294,14 +363,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--edge-core", type=Path,
                         help="built azazel-edge-core binary to execute on a pinned clock "
                              "(test tooling only; Linux and a C compiler)")
+    parser.add_argument("--lease-netns", action="store_true",
+                        help="also run that binary enforcing inside a network namespace this "
+                             "harness creates, to drive enforcement_lease_records (test "
+                             "tooling only; root, CAP_NET_ADMIN, ip and nft)")
     args = parser.parse_args(argv)
     try:
         source = json.loads(args.inputs.read_text())
-        record = replay(
-            capture_replays(source["scenarios"], edge_core=args.edge_core),
-            commit=args.commit,
-            product_configuration=args.configuration,
-        )
+        # SIGTERM/SIGHUP unwind, so an enforcing Edge and its namespace are removed.
+        with so06_lease.signals_as_interrupt():
+            bundle = capture_replays(source["scenarios"], edge_core=args.edge_core,
+                                     lease_netns=args.lease_netns)
+        record = replay(bundle, commit=args.commit, product_configuration=args.configuration)
         args.output.write_bytes(canonical_event_bytes(record) + b"\n")
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
         parser.exit(2, f"replay refused: {exc}\n")

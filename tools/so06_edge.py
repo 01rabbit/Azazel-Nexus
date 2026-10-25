@@ -187,17 +187,35 @@ def run_edge(binary: Path, events: list[dict], *, expected: int,
     `shim=None` runs on the real wall clock. It exists only for the mutation
     check (`main`, tests); the SO-06 replay refuses it (`so06_replay`).
     """
+    return run_edge_in(binary, events, expected=expected, shim=shim)[0]
+
+
+def run_edge_in(binary: Path, events: list[dict], *, expected: int, shim: Path | None,
+                environment: dict | None = None, wrap=None, collect=None):
+    """`run_edge`, for a caller that runs Edge somewhere else (`so06_lease`).
+
+    `environment` is laid over the shipped unit's, `wrap(argv)` returns the
+    command that starts Edge, and `collect(directory)` reads what Edge left
+    in its state directory while Edge is still running and before it is
+    removed. Returns `(observations, collect(directory))`.
+    """
     if expected < 1:
         raise EdgeUnavailable("an Edge run must expect at least one observation")
+    if wrap is None and (environment or {}).get("AZAZEL_DEFENSE_ENFORCE", "false") != "false":
+        # An enforcing posture runs only inside isolation a caller provides.
+        raise EdgeUnavailable("an enforcing Edge runs only inside the harness's isolation")
     with tempfile.TemporaryDirectory(prefix="azso06e-", dir="/tmp") as temporary:
         directory = Path(temporary)
         (directory / "eve.json").write_text("".join(json.dumps(e) + "\n" for e in events))
-        environment = edge_environment(directory, directory / "intake.sock")
+        unit = edge_environment(directory, directory / "intake.sock")
+        unit.update(environment or {})
         if shim is not None:
-            environment["LD_PRELOAD"] = str(shim)
+            unit["LD_PRELOAD"] = str(shim)
+        argv = [str(binary)] if wrap is None else wrap([str(binary)])
         collector = Collector(directory / "intake.sock")
+        collected = None
         try:
-            process = subprocess.Popen([str(binary)], env=environment, cwd=directory,
+            process = subprocess.Popen(argv, env=unit, cwd=directory,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        start_new_session=True)
         except BaseException:
@@ -211,6 +229,8 @@ def run_edge(binary: Path, events: list[dict], *, expected: int,
                         f"Edge sent {len(observations(collector.lines))} of {expected} "
                         "observations")
                 time.sleep(0.02)
+            if collect is not None:
+                collected = collect(directory)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -225,7 +245,7 @@ def run_edge(binary: Path, events: list[dict], *, expected: int,
         raise EdgeUnavailable(f"Edge sent {len(found)} observations, expected {expected}")
     if shim is not None:
         require_pinned(found)
-    return found
+    return found, collected
 
 
 def without_clock(lines: list[bytes]) -> list[dict]:
