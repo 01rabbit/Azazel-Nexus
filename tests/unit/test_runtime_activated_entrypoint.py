@@ -328,7 +328,8 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
     root = Path(activated.__file__).parent
     modules = ("bootstrap", "bootstrap_controller", "bootstrap_entrypoint",
                "bootstrap_manager", "bootstrap_loaded", "bootstrap_resources",
-               "bootstrap_restore", "units", "systemd_socket")
+               "bootstrap_restore", "bootstrap_withdrawal", "bootstrap_withdraw_files",
+               "bootstrap_restore_files", "units", "systemd_socket")
     found: set[str] = set()
     for module in modules:
         for node in ast.walk(ast.parse((root / f"{module}.py").read_text())):
@@ -395,6 +396,46 @@ def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys) -> None:
     assert activated.main([]) == 1
     assert ("failed before completing a safe pass: UnitOperationFailed: "
             "controller one-use start condition refused") in capsys.readouterr().err
+
+
+def test_entrypoint_logs_prior_boot_refusal_reason(monkeypatch, capsys) -> None:
+    """A refused prior boot journal names why, not only the class (Nexus#324)."""
+    from azazel_nexus.operator_trust import ApprovalRefused
+
+    _arrange_bus_failure(monkeypatch, ApprovalRefused("prior boot overlay entry present"))
+    assert activated.main([]) == 1
+    assert ("failed before completing a safe pass: ApprovalRefused: "
+            "prior boot overlay entry present") in capsys.readouterr().err
+
+
+def test_failure_label_names_withdrawal_and_retirement_reasons() -> None:
+    from azazel_nexus.operator_trust import ApprovalRefused
+    from azazel_nexus_runtime.bootstrap_withdrawal import BootstrapWithdrawalFiles
+    from azazel_nexus_runtime.units import UnitOperationFailed
+
+    label = activated._failure_label
+    for message in ("prior boot journal or paths changed",
+                    "prior boot journal not bound by this boot's containment",
+                    "withdrawal journal or paths changed",
+                    "overlay entry remains after withdrawal"):
+        assert label(ApprovalRefused(message)) == f"ApprovalRefused: {message}"
+    # Raised by the real module, not a hand-built exception.
+    with pytest.raises(ApprovalRefused) as raised:
+        BootstrapWithdrawalFiles(
+            overlay_fd=-1, masks_fd=-1, higher_priority_fd=-1, transient_fd=-1,
+            generator_early_fd=-1, overlay_path="/x", masks_path="/x",
+            higher_priority_path="/x", transient_path="/x", generator_early_path="/x",
+            journal_store=None, guard=None, owner_uid=0)
+    assert label(raised.value) == "ApprovalRefused: held withdrawal guard required"
+    # The manager's outer refusal keeps the suppressed root reason visible.
+    try:
+        try:
+            raise ApprovalRefused("withdrawal observation changed")
+        except ApprovalRefused:
+            raise UnitOperationFailed("bootstrap owned withdrawal unconfirmed") from None
+    except UnitOperationFailed as exc:
+        assert label(exc) == ("UnitOperationFailed: bootstrap owned withdrawal unconfirmed"
+                              " <- withdrawal observation changed")
 
 
 def test_failure_label_follows_reviewed_causes() -> None:
