@@ -967,3 +967,18 @@ def test_an_argument_with_a_trailing_line_ending_is_refused(kind, valid, suffix)
     with pytest.raises(RequestRefused) as refused:
         argument.coerce(valid + suffix)
     assert refused.value.refusal is Refusal.ARGUMENT_RANGE
+
+
+@pytest.mark.parametrize(
+    "kind, rejected",
+    [
+        (ArgumentKind.TIMESTAMP, "２０２６-09-20T12:00:00Z"),
+        (ArgumentKind.TIMESTAMP, "2026-09-20T12:00:0٠Z"),
+        (ArgumentKind.IDENTIFIER, "operator１"),
+        (ArgumentKind.DIGEST, "sha256:" + "ab" * 31 + "ａｂ"),
+    ],
+)
+def test_an_argument_in_digits_or_letters_that_are_not_ascii_is_refused(kind, rejected):
+    with pytest.raises(RequestRefused) as refused:
+        Argument("value", kind).coerce(rejected)
+    assert refused.value.refusal is Refusal.ARGUMENT_RANGE

@@ -473,3 +473,31 @@ def test_an_instant_with_a_trailing_line_ending_is_refused_as_such(
 
     with pytest.raises(SanitizerRefused):
         time_bucket(instant + suffix)
+
+
+#: Each passes the grammar's shape and fails as a calendar, or is spelt in
+#: digits that are not ASCII. `sanitize` catches only `SanitizerRefused`, so
+#: any other exception from `time_bucket` would escape a function that must
+#: never raise.
+NOT_AN_INSTANT = (
+    "2026-13-45T00:00:00Z",
+    "２０２６-09-20T12:00:00Z",
+    "2026-09-20T12:00:00+24:00",
+    "0001-01-01T00:00:00+01:00",
+)
+
+
+@pytest.mark.parametrize("instant", NOT_AN_INSTANT)
+def test_an_instant_that_is_not_one_is_refused_as_such(instant: str) -> None:
+    with pytest.raises(SanitizerRefused):
+        time_bucket(instant)
+
+
+@pytest.mark.parametrize("instant", NOT_AN_INSTANT)
+def test_an_instant_that_is_not_one_denies_the_frame_rather_than_raising(
+    instant: str, policy
+) -> None:
+    decision = run({"time_bucket": instant}, policy)
+    assert decision.allowed is False
+    assert decision.frame is None
+    assert "could not be coarsened" in decision.reason

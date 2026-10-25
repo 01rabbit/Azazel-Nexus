@@ -253,7 +253,11 @@ class SanitizerDecision:
         }
 
 
-_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\Z")
+#: ASCII digits only: without `re.ASCII`, `\d` also matches full-width and
+#: other Unicode digits, which the grammar never meant to admit.
+_INSTANT = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\Z", re.ASCII
+)
 
 #: Coarse count buckets, low to high. The boundaries are inclusive floors.
 _COUNT_BUCKETS = ((0, "0"), (1, "1"), (2, "2-5"), (6, "6-20"), (21, "21-100"), (101, ">100"))
@@ -265,7 +269,14 @@ def time_bucket(instant: str) -> str:
     if not _INSTANT.fullmatch(instant):
         raise SanitizerRefused(f"{instant!r} is not an instant this can coarsen")
     text = instant[:-1] + "+00:00" if instant.endswith("Z") else instant
-    parsed = datetime.fromisoformat(text).astimezone(timezone.utc)
+    # The grammar is a shape, not a calendar: month 13, day 45, an offset of
+    # 24 hours or an instant at the edge of the representable range all pass
+    # it. Each is refused here as `SanitizerRefused`, because `sanitize`
+    # catches only that and must never raise for its caller.
+    try:
+        parsed = datetime.fromisoformat(text).astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise SanitizerRefused(f"{instant!r} is not an instant this can coarsen") from exc
     return parsed.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00:00Z")
 
 

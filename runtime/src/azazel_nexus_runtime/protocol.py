@@ -49,7 +49,8 @@ __all__ = [
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 #: An RFC3339 instant in UTC. A fixed grammar, not a date parser.
-_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\Z")
+#: `re.ASCII`, because `\d` would otherwise also match full-width digits.
+_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\Z", re.ASCII)
 
 #: A name: an operator, a service account, a host-local identity.
 #:
