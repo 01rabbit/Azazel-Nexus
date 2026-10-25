@@ -35,6 +35,7 @@ pytestmark = pytest.mark.skipif(
 LEASE = "enforcement_lease_records"
 PINNED = so06_edge.PINNED_EPOCH
 DUE = PINNED + so06_edge.EDGE_ACTION_TTL_S
+DUE_BOOTTIME = so06_edge.PINNED_BOOTTIME_NS + so06_edge.EDGE_ACTION_TTL_S * 1_000_000_000
 
 from tests.unit.test_so06_edge import producer  # noqa: E402,F401  (fixture)
 
@@ -210,10 +211,44 @@ def test_an_unpinned_ledger_is_refused():
     del missing["owner_token"]
     with pytest.raises(so06_edge.EdgeUnavailable, match="lacks"):
         so06_lease.require_pinned_ledger([missing])
-    # A later Edge's CLOCK_BOOTTIME deadline is not fixed by the pin: refused,
-    # never compared, and no exclusion is added for it.
-    with pytest.raises(so06_edge.EdgeUnavailable, match="due_boottime_ns"):
-        so06_lease.require_pinned_ledger([{**task(), "due_boottime_ns": 1, "due_boot_id": "b"}])
+    # A retry's monotonic deadline is not known to be fixed: refused.
+    with pytest.raises(so06_edge.EdgeUnavailable, match="next_attempt_boottime_ns"):
+        so06_lease.require_pinned_ledger([{**booted(), "next_attempt_boottime_ns": DUE_BOOTTIME}])
+
+
+def booted(**fields):
+    """A lease from Edge after Azazel-Edge#439, written under the pin."""
+    return {**task(), "due_boottime_ns": DUE_BOOTTIME,
+            "due_boot_id": so06_lease.host_boot_id(), **fields}
+
+
+def test_the_pinned_boottime_deadline_is_accepted_only_at_the_pinned_value():
+    so06_lease.require_pinned_ledger([booted()])
+    # A deadline from the real CLOCK_BOOTTIME (a preload that did not reach
+    # it): refused, never compared, and the comparison excludes nothing.
+    real = time.clock_gettime_ns(time.CLOCK_BOOTTIME) + 300 * 1_000_000_000
+    for value in (real, DUE_BOOTTIME + 1, DUE_BOOTTIME - 1, so06_edge.PINNED_BOOTTIME_NS):
+        with pytest.raises(so06_edge.EdgeUnavailable, match="CLOCK_BOOTTIME was not pinned"):
+            so06_lease.require_pinned_ledger([booted(due_boottime_ns=value)])
+    # The boot it belongs to is this host's, or the lease is refused.
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not this host's boot"):
+        so06_lease.require_pinned_ledger([booted(due_boot_id="0" * 8)])
+    # Edge writes both fields or neither.
+    for field in ("due_boottime_ns", "due_boot_id"):
+        half = booted()
+        del half[field]
+        with pytest.raises(so06_edge.EdgeUnavailable, match="without"):
+            so06_lease.require_pinned_ledger([half])
+    # The wall epochs are still checked on such a lease.
+    with pytest.raises(so06_edge.EdgeUnavailable, match="clock was not pinned"):
+        so06_lease.require_pinned_ledger([booted(created_epoch=PINNED + 1)])
+
+
+def test_the_boottime_deadline_differs_from_a_wall_clock_run_only_in_clocks():
+    wall = {**task(now=time.time()), "due_boottime_ns": 7, "due_boot_id": so06_lease.host_boot_id()}
+    assert so06_lease.lease_ignores_clock([booted()], [wall])
+    # The boot id is not a clock field: a different one is a difference.
+    assert not so06_lease.lease_ignores_clock([booted()], [{**wall, "due_boot_id": "x"}])
 
 
 def test_lease_expected_needs_the_intake_refusal(monkeypatch):
@@ -404,7 +439,8 @@ def test_the_netns_is_built_used_and_removed_without_touching_the_host():
 
 
 #: A producer shaped like an enforcing Edge Core: per disruptive alert it
-#: writes the release task (from this process's wall clock) to the ledger,
+#: writes the release task (from this process's wall clock and CLOCK_BOOTTIME,
+#: as Edge after Azazel-Edge#439 does) to the ledger,
 #: inserts the owned rule with `nft` -- quoting the comment, so the apply
 #: succeeds -- marks the task active and reports `enforced`.
 ENFORCING = """\
@@ -436,7 +472,9 @@ for observation in golden:
                 "expected_rate_bps": 0, "expected_burst_bytes": 0, "expected_latency_us": 0,
                 "due_epoch": now + 300, "next_attempt_epoch": now + 300,
                 "created_epoch": now, "updated_epoch": now, "status": "active",
-                "attempts": 0, "last_error": ""}
+                "attempts": 0, "last_error": "",
+                "due_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME) + 300 * 10**9,
+                "due_boot_id": open("/proc/sys/kernel/random/boot_id").read().strip()}
         subprocess.run(["nft", "insert", "rule", "inet", "azazel_edge", "input", "ip", "saddr",
                         "192.0.2.1", "drop", "comment", '"' + task["owner_token"] + '"'],
                        check=True)
@@ -479,6 +517,7 @@ def test_an_enforcing_run_in_the_netns_records_its_lease(enforcing_producer, shi
             for _ in range(2)]
     assert runs[0]["tasks"] == runs[1]["tasks"]
     assert [t["status"] for t in runs[0]["tasks"]] == ["active"]
+    assert runs[0]["tasks"][0]["due_boottime_ns"] == DUE_BOOTTIME
     assert runs[0]["owned"] == [runs[0]["tasks"][0]["owner_token"]]
     assert all(so06_lease.lease_expected(run) for run in runs)
     # The enforcing posture reached only the netns.
@@ -488,10 +527,30 @@ def test_an_enforcing_run_in_the_netns_records_its_lease(enforcing_producer, shi
     wall = so06_lease.run_lease(enforcing_producer, events, expected=expected, shim=None)
     assert wall["tasks"] != runs[0]["tasks"]
     assert so06_lease.lease_ignores_clock(runs[0]["tasks"], wall["tasks"])
+    assert wall["tasks"][0]["due_boottime_ns"] != DUE_BOOTTIME
     # A preload that does not reach the clock is refused, never compared.
     with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
         so06_lease.run_lease(enforcing_producer, events, expected=expected,
                              shim=Path("/nonexistent.so"))
+
+
+@needs_netns
+def test_mutation_a_wall_only_preload_leaves_the_boottime_lease_refused(
+        enforcing_producer, tmp_path, monkeypatch):
+    # The preload as it was before CLOCK_BOOTTIME was pinned: the wall epochs
+    # are pinned, the monotonic deadline is not, and the ledger is refused.
+    from tools.e2e_loop import eve_events
+
+    source = so06_edge.SHIM_SOURCE.replace(
+        "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM;", "return 0;")
+    assert source != so06_edge.SHIM_SOURCE
+    monkeypatch.setattr(so06_edge, "SHIM_SOURCE", source)
+    monkeypatch.setattr(so06_edge, "require_shim_pins", lambda library: None)
+    wall_only = so06_edge.build_shim(tmp_path)
+    events = eve_events()
+    expected = sum(e["event_type"] == "alert" for e in events)
+    with pytest.raises(so06_edge.EdgeUnavailable, match="CLOCK_BOOTTIME was not pinned"):
+        so06_lease.run_lease(enforcing_producer, events, expected=expected, shim=wall_only)
 
 
 #: Stands in for an Edge that never reports: the harness waits on it.

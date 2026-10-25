@@ -93,12 +93,15 @@ def alerts():
     return events, sum(e["event_type"] == "alert" for e in events)
 
 
-def test_preload_pins_only_the_wall_clock(shim):
+def test_preload_pins_the_wall_clock_and_boottime_only(shim):
     code = ("import time; a = time.monotonic(); time.sleep(0.05); "
-            "print(time.time(), int(time.monotonic() > a), time.strftime('%Y', time.gmtime()))")
+            "print(time.time(), int(time.monotonic() > a), time.strftime('%Y', time.gmtime()), "
+            "time.clock_gettime_ns(time.CLOCK_BOOTTIME), "
+            "time.clock_gettime_ns(getattr(time, 'CLOCK_BOOTTIME_ALARM', 9)))")
     pinned = subprocess.run([sys.executable, "-c", code], env={"LD_PRELOAD": str(shim)},
                             capture_output=True, text=True, check=True).stdout.split()
-    assert pinned == [f"{so06_edge.PINNED_EPOCH}.0", "1", "2026"]
+    boottime = str(so06_edge.PINNED_BOOTTIME_NS)
+    assert pinned == [f"{so06_edge.PINNED_EPOCH}.0", "1", "2026", boottime, boottime]
     wall = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                           check=True).stdout.split()
     assert float(wall[0]) != so06_edge.PINNED_EPOCH
@@ -119,6 +122,25 @@ def test_mutation_unpinned_runs_differ(producer):
     assert runs[0] != runs[1]
     # ... in the two clock fields only.
     assert so06_edge.without_clock(runs[0]) == so06_edge.without_clock(runs[1])
+
+
+@pytest.mark.parametrize("unpinned", [
+    "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM;",
+    "return id == CLOCK_REALTIME || id == CLOCK_REALTIME_COARSE;",
+])
+def test_a_library_that_does_not_pin_both_clocks_is_refused(tmp_path, monkeypatch, unpinned):
+    monkeypatch.setattr(so06_edge, "SHIM_SOURCE",
+                        so06_edge.SHIM_SOURCE.replace(unpinned, "return 0;"))
+    with pytest.raises(so06_edge.EdgeUnavailable, match="does not pin"):
+        so06_edge.build_shim(tmp_path)
+
+
+def test_a_library_that_freezes_the_monotonic_clock_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(so06_edge, "SHIM_SOURCE", so06_edge.SHIM_SOURCE.replace(
+        "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM;",
+        "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM || id == CLOCK_MONOTONIC;"))
+    with pytest.raises(so06_edge.EdgeUnavailable, match="does not pin"):
+        so06_edge.build_shim(tmp_path)
 
 
 def test_a_pin_that_did_not_take_effect_is_refused(producer):
