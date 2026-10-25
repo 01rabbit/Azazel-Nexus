@@ -238,7 +238,8 @@ def initial(monkeypatch, protected):
     )
     monkeypatch.setattr(
         inputs, "retain_initial_deadline",
-        lambda s: calls["retain"].append(s) or deadline,
+        lambda s, **kw: calls["retain"].append(s) or calls.setdefault(
+            "retain_kw", []).append(kw) or deadline,
     )
 
     def forbid(**_kw):
@@ -264,6 +265,8 @@ def test_retain_happy_path_begins_from_current_observation_and_retains_once(init
         "boot_id": BOOT, "now": NOW, "boottime_ns": 11 * NS, "clock_trusted": True,
     })]
     assert calls["retain"] == [state]
+    # The only prior-boot seam is the fixed activation-ledger record.
+    assert calls["retain_kw"] == [{"record_prior_boot": inputs._record_prior_boot_deadline}]
     assert len(calls["load"]) == 2
 
 
@@ -338,7 +341,7 @@ def test_retain_errors_are_redacted(monkeypatch, initial):
     _c, approval, _d, _s, calls, observation = initial
     secret = "/sensitive/path"
 
-    def exists(_state):
+    def exists(_state, **_kw):
         raise ApprovalRefused(f"initial exists at {secret}")
 
     monkeypatch.setattr(inputs, "retain_initial_deadline", exists)
@@ -382,7 +385,7 @@ def test_real_store_first_admission_then_refresh_returns_same_admitted_fields(
     retain_at, advance_at = deadline_store._retain_initial_at, deadline_store._advance_at
     monkeypatch.setattr(
         deadline_store, "_retain_initial_at",
-        lambda fd, state, *, owner: retain_at(fd, state, owner=uid),
+        lambda fd, state, *, owner, **kw: retain_at(fd, state, owner=uid, **kw),
     )
     monkeypatch.setattr(
         deadline_store, "_advance_at",
@@ -420,3 +423,67 @@ def test_real_store_first_admission_then_refresh_returns_same_admitted_fields(
         retained.approval, retained.admitted_at, retained.admitted_boottime_ns,
         retained.deadline_boottime_ns)
     assert refreshed.last_boottime_ns == 110 * NS
+
+
+def test_real_store_next_boot_first_admission_archives_the_prior_boot_deadline(
+    monkeypatch, state_store, tmp_path,  # noqa: F811
+):
+    """Reboot: a new owner-signed approval for the new boot admits once (Nexus#324).
+
+    The earlier boot's records are recorded in the activation ledger, moved to
+    archive/, and the new boot's deadline is created; the same boot still
+    refuses a second first admission.
+    """
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus_runtime import activated
+    from test_bootstrap_prior_boot_archive import _approval
+
+    directory, verified, _expected, _owner = state_store
+    uid = os.getuid()
+    retain_at = deadline_store._retain_initial_at
+    monkeypatch.setattr(
+        deadline_store, "_retain_initial_at",
+        lambda fd, state, *, owner, **kw: retain_at(fd, state, owner=uid, **kw),
+    )
+    ledger = AuditLedger(tmp_path / "activation.jsonl")
+    monkeypatch.setattr(activated, "_activation_ledger", lambda _root: ledger)
+    current = {"approval": verified, "ns": 100 * NS}
+    monkeypatch.setattr(inputs, "read_boot_id",
+                        lambda: current["approval"].context.boot_id)
+    monkeypatch.setattr(inputs, "read_boottime_ns", lambda: current["ns"])
+    monkeypatch.setattr(inputs, "load_bootstrap_approval",
+                        lambda **_kw: current["approval"])
+
+    def admission():
+        approval = current["approval"]
+        observation = inputs.BootstrapObservation(
+            approval.context, approval.operator, "2026-10-13T00:00:00Z", True)
+        return inputs.ProtectedBootstrapInitialAdmission(lambda: observation)
+
+    admission().retain(verified)
+    first = {name: (directory / name).read_bytes()
+             for name in ("initial.json", "checkpoint.json")}
+    assert list(ledger) == []
+
+    # Next boot: new kernel boot id, boot clock restarted, new signed approval.
+    rebooted = _approval("33333333-3333-4333-8333-333333333333")
+    current.update(approval=rebooted, ns=5 * NS)
+    retained = admission().retain(rebooted)
+    assert retained.approval == rebooted
+    assert retained.admitted_boottime_ns == 5 * NS
+    archived = directory / "archive"
+    old_boot = verified.context.boot_id
+    assert (archived / f"initial-{old_boot}.json").read_bytes() == first["initial.json"]
+    assert (archived / f"checkpoint-{old_boot}.json").read_bytes() == first["checkpoint.json"]
+    assert (directory / "initial.json").read_bytes() == deadline_store._encode(retained)
+    (entry,) = list(ledger)
+    assert entry.event["event_type"] == "activation.bootstrap_deadline_retiring"
+    assert entry.event["boot_id"] == old_boot
+    assert entry.event["current_boot_id"] == rebooted.context.boot_id
+
+    # The same boot (also after a soft reboot) never admits again.
+    before = {str(p): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+    with pytest.raises(ApprovalRefused, match="protected bootstrap runtime inputs refused"):
+        admission().retain(rebooted)
+    assert {str(p): p.read_bytes() for p in directory.rglob("*") if p.is_file()} == before
+    assert len(list(ledger)) == 1

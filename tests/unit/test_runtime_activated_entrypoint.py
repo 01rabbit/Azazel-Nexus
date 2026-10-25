@@ -345,7 +345,8 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
         import azazel_nexus
         library = Path(azazel_nexus.__file__).parent
     for module in ("bootstrap_selection", "bootstrap_selection_optional",
-                   "bootstrap_selection_store"):
+                   "bootstrap_selection_store", "bootstrap_deadline_store",
+                   "bootstrap_grant_store"):
         for node in ast.walk(ast.parse((library / f"{module}.py").read_text())):
             if (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
                     and isinstance(node.exc.func, ast.Name)
@@ -357,6 +358,8 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
     from azazel_nexus.bootstrap_selection_store import SELECTION_READ_REASONS
     found.update("protected bootstrap selection refused: " + reason for reason in SELECTION_READ_REASONS)
     found.add("bootstrap helper readiness lost")  # bootstrap._READINESS_LOST
+    # ProtectedBootstrapInitialAdmission.retain's wrapper (bootstrap_inputs).
+    found.add("protected bootstrap runtime inputs refused")
     found = {m for m in found if "/" not in m and "{" not in m}
     assert activated._STATIC_FAILURE_MESSAGES == found
     assert all("/" not in m and "{" not in m and m.isascii() and m.isprintable()

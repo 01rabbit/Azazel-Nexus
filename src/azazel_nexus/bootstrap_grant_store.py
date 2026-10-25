@@ -3,12 +3,16 @@
 The record is crash-recovery evidence, not authorization or an audit chain.
 An unfinished marker, ambiguous durability result, or unknown boot-bound record
 refuses; this module never repairs, resets, deletes, or opens a systemd grant.
+`archive_prior` only renames another, finished boot's record into the
+same-filesystem archive after a confirmed ledger record (Nexus#324).
 """
 
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
+import re
 import stat
 import uuid
 from contextlib import contextmanager
@@ -20,7 +24,7 @@ from .bootstrap_grant_transaction import (
     encode_transaction,
 )
 from .bootstrap_lock import BootstrapTransactionGuard
-from .bootstrap_deadline_store import _state_directory
+from .bootstrap_deadline_store import _exists, _open_archive, _state_directory
 from .activation_store import _private_directory
 from .operator_trust import ApprovalRefused
 
@@ -30,6 +34,7 @@ _CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _OWNER = 0
 _MARKER = b"bootstrap grant transaction pending\n"
 _LIMIT = 4096
+_GRANT_NAME = re.compile(r"grant-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json")
 
 
 class GrantTransactionDurabilityUncertain(ApprovalRefused):
@@ -273,6 +278,96 @@ class GrantTransactionStore:
             raise
         except Exception:
             raise ApprovalRefused("bootstrap transaction update refused; inspect retained state") from None
+
+    def _prior_candidates(self, current_boot_id: str, referenced_boot_id):
+        """Other boots' finished records, each proven or skipped (never refused)."""
+        found = []
+        for entry in sorted(os.listdir(self._fd)):
+            match = _GRANT_NAME.fullmatch(entry)
+            if match is None:
+                continue
+            boot_id = match.group(1)
+            if (boot_id in (current_boot_id, referenced_boot_id)
+                    or _exists(self._fd, f".{entry}.pending")
+                    or _exists(self._fd, f".{entry}.next")):
+                continue
+            try:
+                raw = _read(self._fd, entry, owner=self._owner)
+                journal = decode_transaction(raw)
+            except Exception:
+                continue  # Not provable: stays where it is.
+            if journal.boot_id != boot_id:
+                continue
+            found.append((boot_id, entry, raw, journal.phase))
+        return found
+
+    def archive_prior(self, *, current_boot_id: str, referenced_boot_id, record) -> tuple[str, ...]:
+        """Move earlier boots' grant records into ``archive/``; never delete.
+
+        Only a ``grant-<boot>.json`` whose name is another boot than
+        `current_boot_id` and than `referenced_boot_id` (the boot the retained
+        overlay journal still names, or None), with no ``.pending``/``.next``
+        marker, that decodes with the same boot id, is moved. Anything else
+        is left in place. `record` (a durable ledger append) is called once
+        with the identities before any rename and must return exactly True;
+        otherwise nothing changes. Returns the archived boot ids.
+        """
+        _filename(current_boot_id)
+        if referenced_boot_id is not None:
+            _filename(referenced_boot_id)
+        if not callable(record):
+            raise ApprovalRefused("prior boot grant archive record required")
+        try:
+            return self._archive_prior_locked(current_boot_id, referenced_boot_id, record)
+        except ApprovalRefused:
+            raise
+        except Exception:
+            raise ApprovalRefused("prior boot grant archive refused") from None
+
+    def _archive_prior_locked(self, current_boot_id, referenced_boot_id, record):
+        self._check_directory()
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise ApprovalRefused("bootstrap transaction store busy") from None
+        try:
+            self._check_directory()
+            candidates = self._prior_candidates(current_boot_id, referenced_boot_id)
+            archive = _open_archive(self._fd, owner=self._owner, create=False)
+            if archive is not None:
+                try:
+                    candidates = [row for row in candidates if not _exists(archive, row[1])]
+                finally:
+                    os.close(archive)
+            if not candidates:
+                return ()
+            summary = {
+                "current_boot_id": current_boot_id,
+                "grants": [{"boot_id": boot_id, "phase": phase,
+                            "sha256": hashlib.sha256(raw).hexdigest()}
+                           for boot_id, _name, raw, phase in candidates],
+            }
+            if record(summary) is not True:
+                raise ApprovalRefused("prior boot grant archive record unconfirmed")
+            archive = _open_archive(self._fd, owner=self._owner, create=True)
+            try:
+                for _boot, name, raw, _phase in candidates:
+                    if _read(self._fd, name, owner=self._owner) != raw:
+                        raise ApprovalRefused("prior boot grant changed before archive")
+                    if _exists(archive, name):
+                        raise ApprovalRefused("prior boot record already archived")
+                    os.rename(name, name, src_dir_fd=self._fd, dst_dir_fd=archive)
+                os.fsync(archive)
+                if any(_read(archive, name, owner=self._owner) != raw
+                       for _boot, name, raw, _phase in candidates):
+                    raise ApprovalRefused("archived prior boot grant changed")
+            finally:
+                os.close(archive)
+            os.fsync(self._fd)
+            self._check_directory()
+            return tuple(boot_id for boot_id, _name, _raw, _phase in candidates)
+        finally:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
 
 
 @contextmanager

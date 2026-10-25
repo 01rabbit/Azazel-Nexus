@@ -2,6 +2,53 @@
 
 Date: 2026-10-16. Basis: static reading of the tree at HEAD c79291b (commit id taken from the task; no git used to re-check it). Nothing was run.
 
+## Update 2026-10-26 (Nexus#324): deadline and grant records of an earlier boot
+
+This finding was correct for the tree it read. The deadline row and the
+grant/journal notes below have since changed. Selection, time anchor and
+approval are still bound to one boot and must be renewed by the owner for each
+boot, and nothing below creates or renews them.
+
+- Deadline (`initial.json`/`checkpoint.json`). Each boot's first admission
+  brings a new owner-signed approval for that boot, and that approval carries
+  its own deadline. Within one boot the deadline is still never extended or
+  replaced. A restart, or a soft reboot (which keeps the kernel boot id),
+  still refuses with "bootstrap deadline was already initialized".
+  `_retain_initial_at` (`src/azazel_nexus/bootstrap_deadline_store.py`)
+  archives existing records only when all of these hold:
+  - it is called from `ProtectedBootstrapInitialAdmission.retain`, after this
+    boot's approval is freshly verified and prestart has passed;
+  - it holds the store lock;
+  - there is no `transaction.pending` or `checkpoint.next`;
+  - both records are present, protected and canonical, and name the same boot
+    id and approval digest;
+  - that boot id differs from the current boot id, and that approval digest
+    differs from the new approval's.
+
+  Before anything changes, an `activation.bootstrap_deadline_retiring` record
+  is appended to the activation ledger. If the append is not confirmed,
+  nothing changes. Under a `transaction.pending` marker, the records are then
+  renamed into `archive/` on the same filesystem (never deleted, never
+  overwritten) and fsynced. The new records are then created create-only, as
+  before. Any missing condition refuses, and the reason is on the journal's
+  static allowlist.
+- Grants (`grant-<boot>.json`). After READY, `GrantTransactionStore.archive_prior`
+  (`src/azazel_nexus/bootstrap_grant_store.py`) moves another boot's grant
+  record into the same `archive/`. It skips this boot's record, the boot the
+  retained overlay journal still names, and any record with a
+  `.pending`/`.next` marker or a decoded boot id that differs from its name.
+  An `activation.bootstrap_grants_archiving` ledger record comes first.
+- The prior-boot overlay journal retirement (b1a99d7, extended by #335) now
+  appends `activation.overlay_journal_retiring` to the same ledger. It also
+  handles a journal abandoned in `published`/`closing`/`withdrawing`. Owner
+  decisions 1, 4 and 5 in §4 were taken that way. The archive for decision 2 is
+  `/var/lib/azazel/state/bootstrap/archive/`, and the evidence is the
+  controller's activation ledger.
+
+The VM rehearsal's manual quarantine of the deadline records (§2) is therefore
+no longer needed for them. Unit tests only; this is not VM or hardware
+evidence.
+
 ## 1. Verified finding
 
 After a reboot the bootstrap cannot run again on the same deployment without manual intervention. Several records are bound to the old boot or are create-only. Line numbers are as read.

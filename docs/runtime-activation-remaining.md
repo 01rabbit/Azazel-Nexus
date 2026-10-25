@@ -6042,9 +6042,35 @@ never initializes, a refused retain never falls back to advance, and the legacy
 order is kept when no initializer is supplied. Two consequences are stated
 rather than hidden: prestart and generation admission now run before the kernel
 guard is armed (still pre-READY, so the controller unit's `TimeoutStartSec=30s`
-with `TimeoutStartFailureMode=kill` bounds them), and until cross-boot renewal
-exists a node bootstraps once — retrying needs clean state (a VM snapshot
-revert), never deletion of retained records.
+with `TimeoutStartFailureMode=kill` bounds them), and a deadline is never
+extended within one boot: a second first admission on the same kernel boot id
+(a restart, or a soft reboot, which keeps the boot id) refuses with "bootstrap
+deadline was already initialized". Across a reboot (Nexus#324) each boot's
+first admission carries its own owner-signed approval for that boot, and that
+approval brings its own deadline. Only inside `ProtectedBootstrapInitialAdmission.retain`,
+after this boot's approval is freshly verified, the generation is admitted and
+prestart has passed, does the create-only store accept existing records. It
+archives them, and only when all of these hold under the store lock: no
+`transaction.pending` or `checkpoint.next`; both `initial.json` and
+`checkpoint.json` present, protected and canonical; the two records name the
+same boot id and approval digest; that boot id differs from the current one;
+and that digest differs from the new approval's. Before anything changes, an
+`activation.bootstrap_deadline_retiring` record (old boot id, approval digest,
+both record hashes, current boot id) is appended to the controller's activation
+ledger, the same path the prior-boot overlay journal retirement uses. If the
+append is not confirmed, nothing changes. Inside a `transaction.pending`
+marker, both records are then renamed into `archive/` (same directory tree and
+filesystem, never deleted, never overwritten) and fsynced, and the new boot's
+records are created as before. Any missing condition refuses as before, and the
+refusal reason is on the static allowlist, so it appears in the journal. An
+interrupted archive leaves the marker, and the marker refuses until reviewed.
+After READY, the controller also moves earlier boots' `grant-<boot>.json`
+records into the same `archive/`. It skips this boot's record, the boot the
+retained overlay journal still names, any record with a `.pending`/`.next`
+marker, and any record whose decoded boot id differs from its name. It first
+appends `activation.bootstrap_grants_archiving` to the same ledger. Selection,
+time anchor and approval remain owner-renewed per boot; none of this creates or
+renews them.
 
 No tool produced the canonical approval payload the owner must sign: only the
 verifier called `bootstrap_payload`. `az-nexus-bootstrap approval-request` now
