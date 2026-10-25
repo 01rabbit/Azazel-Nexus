@@ -205,7 +205,8 @@ def nexus_adapter(events: list, case: str, edge: tuple | None = None) -> dict:
         if lines is not None:
             paths["evaluation_outcomes"] = [json.loads(line) for line in lines]
         if lease is not None:
-            paths["enforcement_lease_records"] = lease["tasks"]
+            # `run_lease` checked the ledger (boot id included) before this.
+            paths["enforcement_lease_records"] = so06_lease.recorded_tasks(lease["tasks"])
         paths["evidence_records"] = loop["evidence_records"]
         paths["audit_chain"] = [
             {

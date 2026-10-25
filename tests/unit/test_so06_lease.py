@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -242,6 +243,28 @@ def test_the_pinned_boottime_deadline_is_accepted_only_at_the_pinned_value():
     # The wall epochs are still checked on such a lease.
     with pytest.raises(so06_edge.EdgeUnavailable, match="clock was not pinned"):
         so06_lease.require_pinned_ledger([booted(created_epoch=PINNED + 1)])
+
+
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def test_a_record_carries_no_host_boot_id(monkeypatch, producer):  # noqa: F811
+    # Leases checked against this host's boot id; the record names none.
+    assert UUID.fullmatch(so06_lease.host_boot_id())
+
+    def make(n):
+        return {**lease(), "tasks": [booted()]}
+
+    bundle = capture(monkeypatch, producer, make)
+    text = json.dumps(bundle)
+    assert so06_lease.host_boot_id() not in text and not UUID.search(text)
+    runs = bundle["scenarios"][0]["runs"]
+    assert {t["due_boot_id"] for run in runs.values()
+            for t in run["paths"][LEASE]} == {so06_lease.BOOT_ID_PLACEHOLDER}
+    record = emit(bundle)
+    assert not UUID.search(json.dumps(record))
+    # Every run carries the same placeholder: the comparison still holds.
+    assert record["execution_result"] == "PASS"
 
 
 def test_the_boottime_deadline_differs_from_a_wall_clock_run_only_in_clocks():

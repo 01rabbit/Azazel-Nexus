@@ -135,6 +135,8 @@ LEDGER_FIELDS = frozenset(LEASE_CLOCK_FIELDS) | {
 #: Edge writes both or neither: neither on a lease from before #439, or when
 #: Edge could not read the clock or the boot.
 BOOT_FIELDS = frozenset({BOOT_CLOCK_FIELD, BOOT_ID_FIELD})
+#: What a record says in place of the host's boot id (`recorded_tasks`).
+BOOT_ID_PLACEHOLDER = "<host-boot-id>"
 
 
 class Netns:
@@ -311,6 +313,17 @@ def require_pinned_ledger(tasks: list[dict]) -> None:
                 or task["due_epoch"] != due or task["next_attempt_epoch"] != due):
             raise so06_edge.EdgeUnavailable(
                 "Edge's clock was not pinned in the lease run: the ledger carries another instant")
+
+
+def recorded_tasks(tasks: list[dict]) -> list[dict]:
+    """The tasks as a record carries them: the host's boot id replaced.
+
+    Only for tasks `require_pinned_ledger` already accepted, so each boot id
+    was this host's; every run then carries the same placeholder and the
+    comparison is unchanged. A record can be shared without the boot id.
+    """
+    return [{**task, BOOT_ID_FIELD: BOOT_ID_PLACEHOLDER} if BOOT_ID_FIELD in task else task
+            for task in tasks]
 
 
 def run_lease(binary: Path, events: list[dict], *, expected: int, shim: Path | None,

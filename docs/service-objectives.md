@@ -390,7 +390,10 @@ excludes nothing new.
   from a preload that reaches only the wall clock, is refused, never compared.
 - `due_boot_id` is not a clock. It is this host's boot id, the same in every
   run of one replay, and a lease is accepted only if it names the boot the
-  harness reads. The record therefore carries the host's boot id.
+  harness reads. Only after that check does the record replace it with
+  `<host-boot-id>` (`so06_lease.recorded_tasks`), the same in every run, so
+  the comparison is unchanged and a record can be shared without the host's
+  boot id.
 - Edge writes both fields or neither; a lease with one of them is refused.
   A retry's `next_attempt_boottime_ns` is not known to be fixed and is
   refused; no retry is scheduled inside a run.
@@ -410,10 +413,12 @@ every run, and `audit_chain` can never be `not_driven`.
 - `evaluation_outcomes`, when no Edge binary is supplied.
 
 A record can pass only with an Edge whose lease is held `active` in every run
-and whose ledger the pin fixes. Even then it is consumer-side execution in a
-container, not a completed SO-06 gate and not hardware evidence, and the
-validator still checks only the record's shape: a hand-made bundle can claim
-the same. A failed run is retained.
+and whose ledger the pin fixes. A `PASS` with `edge_core.pinned_edge: false`
+does not verify the Edge `PROVENANCE.md` names: no binary digest is pinned,
+so the record does not show that it ran that Edge. Even then it is
+consumer-side execution in a container, not a completed SO-06 gate and not
+hardware evidence, and the validator still checks only the record's shape: a
+hand-made bundle can claim the same. A failed run is retained.
 
 Input JSON contains a nonempty `scenarios` array; each entry has a unique `id`
 and nonempty `inputs` array of event objects. For example:
