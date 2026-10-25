@@ -251,10 +251,10 @@ def _archive_prior_deadline(fd: int, prior: dict, *, owner: int) -> None:
 
 
 def _retain_initial_at(fd: int, state: BootstrapDeadline, *, owner: int,
-                       record_prior_boot=None) -> BootstrapDeadline:
+                       record_deadline_retirement=None) -> BootstrapDeadline:
     """No overwrites, even when a previous initialization was incomplete.
 
-    `record_prior_boot` is the caller's durable ledger append, called once
+    `record_deadline_retirement` is the caller's durable ledger append, called once
     with the retiring record's identity; anything other than ``True`` (or
     an exception) leaves every file as it was. Without it an existing record
     always refuses, as before.
@@ -265,11 +265,11 @@ def _retain_initial_at(fd: int, state: BootstrapDeadline, *, owner: int,
     with _locked(fd, owner=owner):
         prior = None
         if _exists(fd, _INITIAL) or _exists(fd, _CURRENT):
-            if record_prior_boot is None:
+            if record_deadline_retirement is None:
                 raise ApprovalRefused("bootstrap deadline was already initialized")
             prior = _prior_boot_deadline(fd, state, owner=owner)
             summary = {key: value for key, value in prior.items() if key != "_raw"}
-            if record_prior_boot(summary) is not True:
+            if record_deadline_retirement(summary) is not True:
                 raise ApprovalRefused("prior boot deadline retirement record unconfirmed")
         _begin_transaction(fd)
         if prior is not None:
@@ -344,17 +344,17 @@ def _state_directory():
 
 
 def retain_initial_deadline(state: BootstrapDeadline, *,
-                            record_prior_boot=None) -> BootstrapDeadline:
+                            record_deadline_retirement=None) -> BootstrapDeadline:
     """Persist before first start; does not establish eligibility to start.
 
-    `record_prior_boot` (the first-admission composition's ledger append) is
+    `record_deadline_retirement` (the first-admission composition's ledger append) is
     what lets a provably earlier boot's record be archived; see
     `_retain_initial_at`. It is never an approval or a selection.
     """
     try:
         with _state_directory() as fd:
             return _retain_initial_at(fd, state, owner=0,
-                                      record_prior_boot=record_prior_boot)
+                                      record_deadline_retirement=record_deadline_retirement)
     except Exception:
         raise ApprovalRefused("protected bootstrap state refused") from None
 

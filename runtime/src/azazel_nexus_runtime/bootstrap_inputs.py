@@ -617,7 +617,7 @@ class ProtectedBootstrapInputs:
             ) from None
 
 
-def _record_prior_boot_deadline(summary) -> bool:
+def _record_deadline_retirement(summary) -> bool:
     """Durable activation-ledger record before an earlier boot's deadline moves.
 
     Same ledger and contract as the prior-boot overlay journal retirement
@@ -691,7 +691,7 @@ class ProtectedBootstrapInitialAdmission:
                 clock_trusted=current.clock_trusted,
             )
             retained = retain_initial_deadline(
-                state, record_prior_boot=_record_prior_boot_deadline,
+                state, record_deadline_retirement=_record_deadline_retirement,
             )
             _require_stable_after_retention(current, elapsed)
             return retained

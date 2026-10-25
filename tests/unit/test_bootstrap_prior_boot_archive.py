@@ -129,7 +129,7 @@ class Recorder:
 def _retain(directory, state, record):
     with _fd(directory) as fd:
         return store._retain_initial_at(fd, state, owner=os.getuid(),
-                                        record_prior_boot=record)
+                                        record_deadline_retirement=record)
 
 
 def _forge(state, **changes):
@@ -383,7 +383,7 @@ def test_public_retain_refusal_reason_reaches_the_journal_label(deadline_dir, mo
     monkeypatch.setattr(store, "_state_directory", opened)
     with pytest.raises(ApprovalRefused) as exc:
         try:
-            store.retain_initial_deadline(_state(CURRENT), record_prior_boot=Recorder())
+            store.retain_initial_deadline(_state(CURRENT), record_deadline_retirement=Recorder())
         except Exception:
             # The same wrapper as ProtectedBootstrapInitialAdmission.retain.
             raise ApprovalRefused("protected bootstrap runtime inputs refused") from None
@@ -400,7 +400,7 @@ def test_runtime_deadline_record_appends_one_confirmed_ledger_entry(tmp_path, mo
     monkeypatch.setattr(activated, "_activation_ledger", lambda _root: ledger)
     summary = {"boot_id": PRIOR, "approval_digest": DIGEST, "initial_sha256": "1" * 64,
                "checkpoint_sha256": "2" * 64, "current_boot_id": CURRENT}
-    assert bootstrap_inputs._record_prior_boot_deadline(summary) is True
+    assert bootstrap_inputs._record_deadline_retirement(summary) is True
     (entry,) = list(ledger)
     event = dict(entry.event)
     assert event.pop("occurred_at").endswith("Z")
@@ -412,7 +412,7 @@ def test_runtime_deadline_record_appends_one_confirmed_ledger_entry(tmp_path, mo
             return object()
 
     monkeypatch.setattr(activated, "_activation_ledger", lambda _root: Unconfirmed())
-    assert bootstrap_inputs._record_prior_boot_deadline(summary) is False
+    assert bootstrap_inputs._record_deadline_retirement(summary) is False
 
 
 # --- D: grant records of earlier boots ---------------------------------------

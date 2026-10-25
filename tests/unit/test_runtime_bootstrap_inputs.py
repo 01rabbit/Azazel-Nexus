@@ -266,7 +266,7 @@ def test_retain_happy_path_begins_from_current_observation_and_retains_once(init
     })]
     assert calls["retain"] == [state]
     # The only prior-boot seam is the fixed activation-ledger record.
-    assert calls["retain_kw"] == [{"record_prior_boot": inputs._record_prior_boot_deadline}]
+    assert calls["retain_kw"] == [{"record_deadline_retirement": inputs._record_deadline_retirement}]
     assert len(calls["load"]) == 2
 
 
