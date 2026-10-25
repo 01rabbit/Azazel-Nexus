@@ -32,12 +32,20 @@ unquoted `comment` argument fails the apply and cancels the lease
 enforcing run does not depend on the fault injected into Nexus, so identical
 leases across runs show Edge's determinism, not fault isolation.
 
-The clock is the `so06_edge` pin. A pinned clock never lets a release fall due,
-and nothing here needs it to: every run lasts seconds and the lease is
-300 s, so on the real clock no release falls due inside a run either.
-`lease_ignores_clock` checks that on a real binary: pinned and wall-clock
-ledgers agree on everything but the four epoch fields, with no release
-attempted in either.
+The clock is the `so06_edge` pin: the wall clock and `CLOCK_BOOTTIME`. An
+Edge after Azazel-Edge#439 gives every lease a `CLOCK_BOOTTIME` deadline
+(`due_boottime_ns`) beside its wall one, with the boot it belongs to
+(`due_boot_id`). Under the pin the deadline is exactly
+`PINNED_BOOTTIME_NS + TTL`; a ledger with any other value is refused, never
+compared, and so is one with the field from a run without the pin. The boot
+id is no clock: it is this host's, the same in every run, and is accepted
+only if it is (`host_boot_id`). The comparison excludes neither field.
+
+A pinned clock never lets a release fall due, on either deadline, and nothing
+here needs it to: every run lasts seconds and the lease is 300 s, so on the
+real clocks no release falls due inside a run either. `lease_ignores_clock`
+checks that on a real binary: pinned and wall-clock ledgers agree on
+everything but the clock fields, with no release attempted in either.
 """
 
 from __future__ import annotations
@@ -112,17 +120,23 @@ PINNED_EDGE_SHA256: frozenset[str] = frozenset()
 NO_ACTIVE_LEASE = "driven_but_no_active_lease"
 #: The ledger fields that read the wall clock.
 LEASE_CLOCK_FIELDS = ("due_epoch", "next_attempt_epoch", "created_epoch", "updated_epoch")
+#: The ledger field that reads `CLOCK_BOOTTIME` (Azazel-Edge#439), which the
+#: pin fixes too, and the boot it belongs to.
+BOOT_CLOCK_FIELD, BOOT_ID_FIELD = "due_boottime_ns", "due_boot_id"
 #: Every field of a release task this harness knows: the clock fields above,
 #: which the pin fixes, and fields no clock reaches. A task with any other
-#: field is refused, not compared: a later Edge adds a `CLOCK_BOOTTIME`
-#: deadline (`due_boottime_ns`, Azazel-Edge#439), which the pin does not fix
-#: and which would differ in every run. Whether to pin that clock too or to
-#: exclude the field is the owner's decision; neither is made here.
+#: field is refused, not compared (the retry's `next_attempt_boottime_ns`
+#: among them: no retry is scheduled in a run, and none is known to be fixed).
 LEDGER_FIELDS = frozenset(LEASE_CLOCK_FIELDS) | {
     "task_id", "trace_id", "action", "resource_key", "owner_token", "iface", "tc_handle",
     "source_ip", "destination_port", "redirect_port", "expected_rate_bps",
     "expected_burst_bytes", "expected_latency_us", "status", "attempts", "last_error",
 }
+#: Edge writes both or neither: neither on a lease from before #439, or when
+#: Edge could not read the clock or the boot.
+BOOT_FIELDS = frozenset({BOOT_CLOCK_FIELD, BOOT_ID_FIELD})
+#: What a record says in place of the host's boot id (`recorded_tasks`).
+BOOT_ID_PLACEHOLDER = "<host-boot-id>"
 
 
 class Netns:
@@ -253,14 +267,40 @@ def read_ledger(directory: Path) -> list[dict]:
     return ledger["tasks"]
 
 
-def require_pinned_ledger(tasks: list[dict]) -> None:
-    """Refuse a ledger whose epochs are not the pinned instant (and its TTL).
+def host_boot_id() -> str:
+    """This boot's id, as Edge reads it (`audit_chain::boot_id`)."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError as exc:
+        raise so06_edge.EdgeUnavailable(f"cannot read this host's boot id: {exc}") from exc
 
-    And one with a field the pin is not known to fix (`LEDGER_FIELDS`).
+
+def require_pinned_ledger(tasks: list[dict]) -> None:
+    """Refuse a ledger whose clocks are not the pinned instants (and its TTL).
+
+    And one with a field the pin is not known to fix (`LEDGER_FIELDS`). The
+    `CLOCK_BOOTTIME` deadline is accepted only at exactly the pinned value:
+    a real reading never lands there, so a run whose preload did not reach
+    that clock is refused, as one whose wall clock was not pinned is.
     """
     now, due = so06_edge.PINNED_EPOCH, so06_edge.PINNED_EPOCH + so06_edge.EDGE_ACTION_TTL_S
+    due_boottime = so06_edge.PINNED_BOOTTIME_NS + so06_edge.EDGE_ACTION_TTL_S * 1_000_000_000
     for task in tasks:
-        unknown = sorted(set(task) - LEDGER_FIELDS)
+        boot = BOOT_FIELDS & set(task)
+        if boot and boot != BOOT_FIELDS:
+            raise so06_edge.EdgeUnavailable(
+                f"the lease carries {sorted(boot)} without {sorted(BOOT_FIELDS - boot)}; "
+                "it is refused rather than compared")
+        if boot:
+            if task[BOOT_CLOCK_FIELD] != due_boottime:
+                raise so06_edge.EdgeUnavailable(
+                    "Edge's CLOCK_BOOTTIME was not pinned in the lease run: the ledger "
+                    f"carries another {BOOT_CLOCK_FIELD}; it is refused rather than compared")
+            if task[BOOT_ID_FIELD] != host_boot_id():
+                raise so06_edge.EdgeUnavailable(
+                    f"the lease's {BOOT_ID_FIELD} is not this host's boot; "
+                    "it is refused rather than compared")
+        unknown = sorted(set(task) - LEDGER_FIELDS - BOOT_FIELDS)
         if unknown:
             raise so06_edge.EdgeUnavailable(
                 f"the lease carries {unknown}, which the pinned clock does not fix; "
@@ -273,6 +313,17 @@ def require_pinned_ledger(tasks: list[dict]) -> None:
                 or task["due_epoch"] != due or task["next_attempt_epoch"] != due):
             raise so06_edge.EdgeUnavailable(
                 "Edge's clock was not pinned in the lease run: the ledger carries another instant")
+
+
+def recorded_tasks(tasks: list[dict]) -> list[dict]:
+    """The tasks as a record carries them: the host's boot id replaced.
+
+    Only for tasks `require_pinned_ledger` already accepted, so each boot id
+    was this host's; every run then carries the same placeholder and the
+    comparison is unchanged. A record can be shared without the boot id.
+    """
+    return [{**task, BOOT_ID_FIELD: BOOT_ID_PLACEHOLDER} if BOOT_ID_FIELD in task else task
+            for task in tasks]
 
 
 def run_lease(binary: Path, events: list[dict], *, expected: int, shim: Path | None,
@@ -342,11 +393,13 @@ def lease_states(tasks: list[dict]) -> list[list[str]]:
 
 
 def without_lease_clock(tasks: list[dict]) -> list[dict]:
-    return [{k: v for k, v in task.items() if k not in LEASE_CLOCK_FIELDS} for task in tasks]
+    """For `lease_ignores_clock` only; the SO-06 comparison excludes nothing here."""
+    clocks = {*LEASE_CLOCK_FIELDS, BOOT_CLOCK_FIELD}
+    return [{k: v for k, v in task.items() if k not in clocks} for task in tasks]
 
 
 def lease_ignores_clock(pinned: list[dict], wall: list[dict]) -> bool:
-    """The pinned and the wall-clock ledgers differ only in their epochs.
+    """The pinned and the wall-clock ledgers differ only in their clock fields.
 
     In particular no release was attempted in either (`attempts` 0, nothing
     `released`): no lease fell due inside a run on the real clock, so the pin

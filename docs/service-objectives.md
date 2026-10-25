@@ -256,9 +256,15 @@ below, so the harness **pins Edge's clock** instead:
 - The pin is a small preload library that the harness compiles with the
   instant fixed at compile time (`PINNED_EPOCH`, the intake's and explainer's
   `FIXED_NOW`) and sets for the Edge process it starts. It answers
-  `CLOCK_REALTIME`, `gettimeofday` and `time` with that instant and reads no
-  environment variable. `CLOCK_MONOTONIC` and every other clock are real, so
-  Edge's polling and report timers run as shipped.
+  `CLOCK_REALTIME`, `gettimeofday` and `time` with that instant, and
+  `CLOCK_BOOTTIME` (and `CLOCK_BOOTTIME_ALARM`) with `PINNED_BOOTTIME_NS`,
+  also fixed at compile time; it reads no environment variable. Edge reads
+  `CLOCK_BOOTTIME` only for a lease's monotonic deadline (below), through
+  libc's `clock_gettime`, which the preload interposes. `CLOCK_MONOTONIC`
+  and every other clock are real, so Edge's polling and report timers run as
+  shipped. The harness checks the library it built before using it: a child
+  process under it must read exactly both pinned instants and a
+  `CLOCK_MONOTONIC` that advances, or the library is refused.
 - A pin that did not take effect is refused, never compared: every
   observation must carry exactly `PINNED_EPOCH` and either no release or
   `PINNED_EPOCH + 300`.
@@ -306,9 +312,10 @@ enforcing, on fresh state (`tools/so06_lease.py`):
   `inet azazel_edge` table for Edge to insert into. No rule reaches the
   host's stack; a test checks the host table is unchanged.
 - The clock is the same pin. A ledger whose epochs are not the pinned instant
-  (and `+ 300 s`), whose top level is not `schema_version` and `tasks`, or
-  whose tasks carry a field the pin is not known to fix or lack a known one,
-  is refused, never compared.
+  (and `+ 300 s`), whose `CLOCK_BOOTTIME` deadline is not exactly
+  `PINNED_BOOTTIME_NS + 300 s`, whose top level is not `schema_version` and
+  `tasks`, or whose tasks carry a field the pin is not known to fix or lack a
+  known one, is refused, never compared.
 - The ledger's tasks are the run's **`enforcement_lease_records`**. The run's
   observations are not evidence and never reach the loop's intake; the
   adapter checks that the production parser refuses every one of them with
@@ -354,28 +361,45 @@ it.
   `FAIL`.
 - Edge with that fixed (Azazel-Edge#465) holds the lease `active` with its rule
   in the namespace, and the ledger, report and namespace agree. That Edge
-  also carries the `CLOCK_BOOTTIME` deadline below, so its ledger is refused:
-  the replay exits 2 and produces no record.
-
-So no record produced here passes today.
+  also carries the `CLOCK_BOOTTIME` deadline below. The pin now fixes it, so
+  its ledger is compared: the four paths are byte-identical in all 15
+  samples, every run holds the lease `active`, `expected_behaviour` holds in
+  each, and the record is `PASS`. That Edge is Azazel-Edge main after #465,
+  not the commit `PROVENANCE.md` names, and the record says
+  `pinned_edge: false`.
 
 **The pinned clock does not change the comparison.** A pinned clock never
 lets a release fall due, but nothing here needs one to: a run lasts seconds
 and the lease is 300 s, so on the real clock no release falls due inside a run
 either. `python -m tools.so06_lease --edge-core PATH` checks a binary: two
 pinned enforcing runs write identical ledgers, two wall-clock runs do not, and
-pinned and wall-clock ledgers differ only in the four epoch fields, with no
-release attempted in either. The ledger's temporary file name (`temp_path`,
+pinned and wall-clock ledgers differ only in the four epoch fields and
+`due_boottime_ns`, with no release attempted in either. The ledger's temporary file name (`temp_path`,
 process id plus wall-clock nanoseconds) repeats under the pin but is renamed
 away before the next write and never reaches a record.
 
-**A later Edge is refused, not compared.** Edge after Azazel-Edge#439 adds a
-`CLOCK_BOOTTIME` deadline (`due_boottime_ns`, with `due_boot_id`) to every
-lease. The preload does not pin that clock, so the field differs in every run
-(and it is the only field that does). The comparison does not exclude it and
-the harness does not pin it: either would change what the owner approved (the
-wall clock only, `CLOCK_MONOTONIC` real), so a ledger with that field is
-refused until the owner decides.
+**The `CLOCK_BOOTTIME` deadline is pinned, not excluded.** Edge after
+Azazel-Edge#439 adds a `CLOCK_BOOTTIME` deadline (`due_boottime_ns`, with the
+boot it belongs to, `due_boot_id`) to every lease. On the real clock the field
+differs in every run, and it is the only field that does. The owner chose to
+pin that clock as well (Azazel-Nexus#17, option (a)); the comparison still
+excludes nothing new.
+
+- Under the pin the deadline is exactly `PINNED_BOOTTIME_NS + 300 s`. A real
+  reading never lands there, so a ledger with any other value, for instance
+  from a preload that reaches only the wall clock, is refused, never compared.
+- `due_boot_id` is not a clock. It is this host's boot id, the same in every
+  run of one replay, and a lease is accepted only if it names the boot the
+  harness reads. Only after that check does the record replace it with
+  `<host-boot-id>` (`so06_lease.recorded_tasks`), the same in every run, so
+  the comparison is unchanged and a record can be shared without the host's
+  boot id.
+- Edge writes both fields or neither; a lease with one of them is refused.
+  A retry's `next_attempt_boottime_ns` is not known to be fixed and is
+  refused; no retry is scheduled inside a run.
+- The pinned `CLOCK_BOOTTIME` is frozen, like the wall clock, so the
+  monotonic deadline never falls due either; that hides nothing, for the
+  reason above. `CLOCK_MONOTONIC` stays real.
 
 Without `--lease-netns`, `enforcement_lease_records` stays `not_driven`.
 
@@ -388,13 +412,13 @@ every run, and `audit_chain` can never be `not_driven`.
   `--lease-netns`), or when it ran and not every run held an `active` lease.
 - `evaluation_outcomes`, when no Edge binary is supplied.
 
-So every sample still fails, and all current in-repo records say
-`execution_result: FAIL`. A record could pass only with an Edge whose lease is
-held `active` and whose ledger the pin fixes, which no Edge built here is.
-Even then it would be consumer-side execution in a container, not a completed
-SO-06 gate and not hardware evidence, and the validator still checks only the
-record's shape: a hand-made bundle can claim the same. A failed run is
-retained.
+A record can pass only with an Edge whose lease is held `active` in every run
+and whose ledger the pin fixes. A `PASS` with `edge_core.pinned_edge: false`
+does not verify the Edge `PROVENANCE.md` names: no binary digest is pinned,
+so the record does not show that it ran that Edge. Even then it is
+consumer-side execution in a container, not a completed SO-06 gate and not
+hardware evidence, and the validator still checks only the record's shape: a
+hand-made bundle can claim the same. A failed run is retained.
 
 Input JSON contains a nonempty `scenarios` array; each entry has a unique `id`
 and nonempty `inputs` array of event objects. For example:

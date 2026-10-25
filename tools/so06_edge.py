@@ -10,10 +10,14 @@ The Edge binary has no clock argument and none is added: the shipped
 entrypoint must not have a way to be told the time. The pin lives entirely in
 this test process. A small preload library, compiled here with the instant
 fixed at compile time, answers `CLOCK_REALTIME` (and `gettimeofday`/`time`)
-with `PINNED_EPOCH`; every other clock, `CLOCK_MONOTONIC` included, is the
-real one, so Edge's polling and forward-report timers run as shipped. The
-library reads no environment variable and nothing outside this file chooses
-the instant.
+with `PINNED_EPOCH` and `CLOCK_BOOTTIME` (and `CLOCK_BOOTTIME_ALARM`, the same
+clock) with `PINNED_BOOTTIME_NS`. Edge reads `CLOCK_BOOTTIME` only for the
+monotonic deadline of a lease (`audit_chain::boottime_ns`, a libc
+`clock_gettime(7)` call, so the preload reaches it). Every other clock,
+`CLOCK_MONOTONIC` included, is the real one, so Edge's polling and
+forward-report timers (`Instant`) run as shipped. The library reads no
+environment variable and nothing outside this file chooses either instant;
+`build_shim` refuses a library that does not answer both.
 
 A pin that did not take effect is refused, never compared: every observation
 must carry exactly the pinned instant. Edge's decision fields never come from
@@ -38,6 +42,10 @@ from tools import so06_loop
 
 #: One instant for Edge, intake and explainer.
 PINNED_EPOCH = int(so06_loop.FIXED_NOW)
+#: The one `CLOCK_BOOTTIME` reading Edge gets: one hour after boot. Frozen, as
+#: the wall clock is, so a lease's monotonic deadline is always
+#: `PINNED_BOOTTIME_NS + TTL` and, like its wall deadline, never falls due.
+PINNED_BOOTTIME_NS = 3600 * 1_000_000_000
 #: Edge's `AZAZEL_DEFENSE_ACTION_TTL_SEC` default; the unit does not set it.
 EDGE_ACTION_TTL_S = 300
 #: The only two Edge fields that read the wall clock.
@@ -51,8 +59,8 @@ SHIM_SOURCE = r"""
 #include <sys/time.h>
 #include <time.h>
 
-#ifndef AZ_PINNED_EPOCH
-#error "the instant is fixed at compile time"
+#if !defined(AZ_PINNED_EPOCH) || !defined(AZ_PINNED_BOOTTIME_S)
+#error "the instants are fixed at compile time"
 #endif
 
 typedef int (*clock_fn)(clockid_t, struct timespec *);
@@ -61,9 +69,18 @@ static int wall(clockid_t id) {
     return id == CLOCK_REALTIME || id == CLOCK_REALTIME_COARSE;
 }
 
+static int boot(clockid_t id) {
+    return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM;
+}
+
 int clock_gettime(clockid_t id, struct timespec *ts) {
     if (wall(id)) {
         ts->tv_sec = AZ_PINNED_EPOCH;
+        ts->tv_nsec = 0;
+        return 0;
+    }
+    if (boot(id)) {
+        ts->tv_sec = AZ_PINNED_BOOTTIME_S;
         ts->tv_nsec = 0;
         return 0;
     }
@@ -102,11 +119,42 @@ def build_shim(directory: Path) -> Path:
     try:
         subprocess.run(
             [compiler, "-shared", "-fPIC", "-O2", f"-DAZ_PINNED_EPOCH={PINNED_EPOCH}L",
+             f"-DAZ_PINNED_BOOTTIME_S={PINNED_BOOTTIME_NS // 1_000_000_000}L",
              "-o", str(library), str(source), "-ldl"],
             check=True, capture_output=True, timeout=60)
     except subprocess.SubprocessError as exc:
         raise EdgeUnavailable(f"the pinned-clock library did not build: {exc}") from exc
+    require_shim_pins(library)
     return library
+
+
+#: Read through the preload in a child process: the wall clock, `CLOCK_BOOTTIME`
+#: and whether `CLOCK_MONOTONIC` still advances.
+PROBE = ("import time; a = time.monotonic_ns(); time.sleep(0.02); "
+         "print(time.time_ns(), time.clock_gettime_ns(time.CLOCK_BOOTTIME), "
+         "int(time.monotonic_ns() > a))")
+
+
+def require_shim_pins(library: Path) -> None:
+    """Refuse a library that does not pin both clocks, or that pins the monotonic one.
+
+    This is the library's attestation: a lease's `CLOCK_BOOTTIME` deadline is
+    accepted only from a run under a library that passed it, and then only
+    at exactly `PINNED_BOOTTIME_NS + TTL` (`so06_lease.require_pinned_ledger`).
+    """
+    import sys
+
+    try:
+        out = subprocess.run([sys.executable, "-I", "-c", PROBE],
+                             env={"LD_PRELOAD": str(library), "PATH": os.defpath},
+                             capture_output=True, text=True, timeout=60, check=True)
+    except subprocess.SubprocessError as exc:
+        raise EdgeUnavailable(f"the pinned-clock library could not be checked: {exc}") from exc
+    expected = [str(PINNED_EPOCH * 1_000_000_000), str(PINNED_BOOTTIME_NS), "1"]
+    if out.stdout.split() != expected:
+        raise EdgeUnavailable(
+            "the preload does not pin the wall clock and CLOCK_BOOTTIME, with CLOCK_MONOTONIC "
+            "real; it is refused")
 
 
 def edge_environment(directory: Path, intake: Path) -> dict:
