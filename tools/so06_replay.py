@@ -266,11 +266,38 @@ def capture_replays(
     """
     if lease_netns and edge_core is None:
         raise so06_edge.EdgeUnavailable("--lease-netns needs --edge-core")
+    if lease_netns:
+        so06_lease.sweep_stale_netns()
     with tempfile.TemporaryDirectory(prefix="azso06s-") as temporary:
         edge = None
         if edge_core is not None:
             edge = (edge_core, so06_edge.build_shim(Path(temporary)), lease_netns)
-        return _capture(scenarios, clock, edge)
+        bundle = _capture(scenarios, clock, edge)
+    if edge_core is not None:
+        bundle["edge_core"] = so06_lease.edge_core_identity(edge_core)
+    return bundle
+
+
+def require_active_lease(captured: list[dict]) -> None:
+    """Count the lease path as driven only if every run held an `active` lease.
+
+    Edge may write a lease and cancel it (its apply failed): that run compared
+    a lease nobody held. The comparison rule is unchanged; the path is then
+    `not_driven` with the reason, its tasks kept under `observed.lease`, so
+    the sample cannot pass.
+    """
+    runs = [run for scenario in captured for run in scenario["runs"].values()]
+    tasks = [run["paths"]["enforcement_lease_records"] for run in runs]
+    if all(so06_lease.has_active_lease(t) for t in tasks):
+        return
+    states = sorted({status for t in tasks for status in (x["status"] for x in t)})
+    reason = (f"{so06_lease.NO_ACTIVE_LEASE}: Edge wrote leases in the enforcing run, but not "
+              f"every run held one active (states seen: {states or ['none']}); a lease that "
+              "was never held is not counted as driven")
+    for run, held in zip(runs, tasks):
+        run["observed"]["lease"]["records"] = held
+        run["paths"]["enforcement_lease_records"] = []
+        run["not_driven"]["enforcement_lease_records"] = reason
 
 
 def _capture(scenarios, clock, edge) -> dict:
@@ -292,6 +319,8 @@ def _capture(scenarios, clock, edge) -> dict:
                 **observation,
             }
         captured.append({"id": scenario["id"], "inputs": inputs, "runs": runs})
+    if edge and edge[2]:
+        require_active_lease(captured)
     bundle = {"schema": INPUT_SCHEMA,
               "evidence_source": (LEASE_EVIDENCE_SOURCE if edge and edge[2]
                                   else EDGE_EVIDENCE_SOURCE if edge else EVIDENCE_SOURCE),
@@ -341,12 +370,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         source = json.loads(args.inputs.read_text())
-        record = replay(
-            capture_replays(source["scenarios"], edge_core=args.edge_core,
-                            lease_netns=args.lease_netns),
-            commit=args.commit,
-            product_configuration=args.configuration,
-        )
+        # SIGTERM/SIGHUP unwind, so an enforcing Edge and its namespace are removed.
+        with so06_lease.signals_as_interrupt():
+            bundle = capture_replays(source["scenarios"], edge_core=args.edge_core,
+                                     lease_netns=args.lease_netns)
+        record = replay(bundle, commit=args.commit, product_configuration=args.configuration)
         args.output.write_bytes(canonical_event_bytes(record) + b"\n")
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
         parser.exit(2, f"replay refused: {exc}\n")

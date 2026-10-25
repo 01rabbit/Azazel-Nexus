@@ -24,30 +24,33 @@ The lease run's observations are not evidence and do not reach the intake:
 `refused_by_intake` checks that the production parser still rejects every one
 of them with `EDGE_NOT_OBSERVE_ONLY`. What the path records is the ledger.
 
-What Edge does with the lease is recorded, not required (`lease_states`).
-On nftables 1.1 (Debian 13) the apply of an isolate or redirect lease fails:
-Edge passes the owner token to `nft` as an unquoted `comment` argument, which
-nft does not parse (`unexpected colon`), so Edge cancels the lease
-(`cancelled`, `provider_apply_failed`) and nothing is installed. That is Edge's
-outcome on this host, the same in every run; `lease_expected` checks that the
-ledger, Edge's report and the netns agree on it, and an `active` lease is held
-to its rule being in the netns.
+A lease counts as driven only once Edge held it (`has_active_lease`); the
+replay leaves the path `not_driven` (`NO_ACTIVE_LEASE`) otherwise. On
+nftables 1.1 (Debian 13) an Edge that passes the owner token to `nft` as an
+unquoted `comment` argument fails the apply and cancels the lease
+(`cancelled`, `provider_apply_failed`); Azazel-Edge#465 quotes it. The
+enforcing run does not depend on the fault injected into Nexus, so identical
+leases across runs show Edge's determinism, not fault isolation.
 
 The clock is the `so06_edge` pin. A pinned clock never lets a release fall due,
 and nothing here needs it to: every run lasts seconds and the lease is
 300 s, so on the real clock no release falls due inside a run either.
 `lease_ignores_clock` checks that on a real binary: pinned and wall-clock
-ledgers agree on everything but the four epoch fields, every task still
-`active`.
+ledgers agree on everything but the four epoch fields, with no release
+attempted in either.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -74,6 +77,16 @@ table inet azazel_edge {
 }
 """
 LEDGER = "release-ledger.json"
+#: The ledger's top level. Anything else is refused, not compared.
+LEDGER_KEYS = frozenset({"schema_version", "tasks"})
+#: A namespace this harness made; one left by a killed run is swept.
+NETNS_NAME = re.compile(r"azso06l-[0-9a-f]{8}")
+#: SHA-256 of the Edge Core binaries Nexus pins. Empty: Nexus pins the
+#: package contract (`contract/azazel-edge-core`, PROVENANCE.md names an Edge
+#: commit), not a binary, and a binary does not carry its commit. So no binary
+#: is recorded as pinned until a binary digest is pinned here.
+PINNED_EDGE_SHA256: frozenset[str] = frozenset()
+NO_ACTIVE_LEASE = "driven_but_no_active_lease"
 #: The ledger fields that read the wall clock.
 LEASE_CLOCK_FIELDS = ("due_epoch", "next_attempt_epoch", "created_epoch", "updated_epoch")
 #: Every field of a release task this harness knows: the clock fields above,
@@ -139,8 +152,65 @@ class Netns:
 
     def __exit__(self, *exc) -> None:
         if self.created:
-            self._run([self.ip, "netns", "del", self.name])
             self.created = False
+            delete_netns(self.ip, self.name)
+
+
+def delete_netns(ip: str, name: str) -> None:
+    """Kill whatever still runs in the namespace, delete it, and check it went."""
+    pids = subprocess.run([ip, "netns", "pids", name], capture_output=True, text=True,
+                          timeout=30).stdout.split()
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, ValueError):
+            os.kill(int(pid), signal.SIGKILL)
+    out = subprocess.run([ip, "netns", "del", name], capture_output=True, text=True, timeout=30)
+    listed = subprocess.run([ip, "netns", "list"], capture_output=True, text=True,
+                            timeout=30).stdout.split()
+    if out.returncode != 0 or name in listed:
+        raise so06_edge.EdgeUnavailable(
+            f"the lease run's network namespace was not deleted: {out.stderr.strip()[:200]}")
+
+
+def sweep_stale_netns() -> list[str]:
+    """Delete namespaces an earlier, killed run of this harness left behind."""
+    ip = shutil.which("ip")
+    if ip is None or os.geteuid() != 0:
+        return []
+    listed = subprocess.run([ip, "netns", "list"], capture_output=True, text=True,
+                            timeout=30).stdout.split()
+    stale = [name for name in listed if NETNS_NAME.fullmatch(name)]
+    for name in stale:
+        delete_netns(ip, name)
+    return stale
+
+
+@contextlib.contextmanager
+def signals_as_interrupt():
+    """SIGTERM and SIGHUP unwind like Ctrl-C, so every `finally` runs.
+
+    Without this either signal ends the process where it stands, leaving the
+    enforcing Edge running in its namespace and the namespace in place.
+    """
+    def interrupt(signum, _frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def edge_core_identity(binary: Path) -> dict:
+    """What the record says about the binary: its digest and whether Nexus pins it."""
+    digest = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
+    return {"sha256": digest, "pinned_edge": digest in PINNED_EDGE_SHA256}
+
+
+def has_active_lease(tasks: list[dict]) -> bool:
+    """A lease counts as driven only once Edge held it: `active`."""
+    return any(t["status"] == "active" for t in tasks)
 
 
 def read_ledger(directory: Path) -> list[dict]:
@@ -148,7 +218,12 @@ def read_ledger(directory: Path) -> list[dict]:
     path = directory / LEDGER
     if not path.is_file():
         return []
-    return json.loads(path.read_bytes())["tasks"]
+    ledger = json.loads(path.read_bytes())
+    if set(ledger) != LEDGER_KEYS:
+        raise so06_edge.EdgeUnavailable(
+            f"the release ledger's top level is {sorted(ledger)}, not {sorted(LEDGER_KEYS)}; "
+            "it is refused rather than compared")
+    return ledger["tasks"]
 
 
 def require_pinned_ledger(tasks: list[dict]) -> None:
@@ -163,6 +238,10 @@ def require_pinned_ledger(tasks: list[dict]) -> None:
             raise so06_edge.EdgeUnavailable(
                 f"the lease carries {unknown}, which the pinned clock does not fix; "
                 "it is refused rather than compared")
+        missing = sorted(LEDGER_FIELDS - set(task))
+        if missing:
+            raise so06_edge.EdgeUnavailable(
+                f"the lease lacks {missing}; it is refused rather than compared")
         if (task["created_epoch"] != now or task["updated_epoch"] != now
                 or task["due_epoch"] != due or task["next_attempt_epoch"] != due):
             raise so06_edge.EdgeUnavailable(
@@ -259,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     events = eve_events()
     alerts = sum(e["event_type"] == "alert" for e in events)
-    with tempfile.TemporaryDirectory(prefix="azso06l-") as temporary:
+    with signals_as_interrupt(), tempfile.TemporaryDirectory(prefix="azso06l-") as temporary:
+        sweep_stale_netns()
         shim = so06_edge.build_shim(Path(temporary))
         pinned = [run_lease(args.edge_core, events, expected=alerts, shim=shim) for _ in range(2)]
         wall = [run_lease(args.edge_core, events, expected=alerts, shim=None) for _ in range(2)]

@@ -306,8 +306,9 @@ enforcing, on fresh state (`tools/so06_lease.py`):
   `inet azazel_edge` table for Edge to insert into. No rule reaches the
   host's stack; a test checks the host table is unchanged.
 - The clock is the same pin. A ledger whose epochs are not the pinned instant
-  (and `+ 300 s`), or that carries a field the pin is not known to fix, is
-  refused, never compared.
+  (and `+ 300 s`), whose top level is not `schema_version` and `tasks`, or
+  whose tasks carry a field the pin is not known to fix or lack a known one,
+  is refused, never compared.
 - The ledger's tasks are the run's **`enforcement_lease_records`**. The run's
   observations are not evidence and never reach the loop's intake; the
   adapter checks that the production parser refuses every one of them with
@@ -315,17 +316,45 @@ enforcing, on fresh state (`tools/so06_lease.py`):
 - `expected_behaviour` also requires that the ledger, Edge's report and the
   namespace agree: every lease an observation names is in the ledger in the
   state the observation reports and nothing else is, and the owner tokens on
-  rules in the namespace are exactly those of the `active` leases. What became
-  of each lease is recorded (`observed.lease.states`), not required.
+  rules in the namespace are exactly those of the `active` leases.
+- **The path counts as driven only if every run held an `active` lease.** A
+  lease Edge wrote and then cancelled (its apply failed) was never held. The
+  comparison rule does not change; the path is then `not_driven` with the
+  reason `driven_but_no_active_lease`, the tasks are kept under
+  `observed.lease.records`, and no sample can pass.
+- The bundle records the binary it ran: `edge_core.sha256`, and
+  `edge_core.pinned_edge`, true only for a digest Nexus pins
+  (`so06_lease.PINNED_EDGE_SHA256`). Nexus pins the package contract and an
+  Edge commit (`contract/azazel-edge-core/PROVENANCE.md`), not a binary
+  digest, and a binary does not carry its commit, so today every binary is
+  recorded `pinned_edge: false`. That is a statement about the record, not a
+  gate.
+- SIGTERM and SIGHUP unwind the harness like an interrupt, so the enforcing
+  Edge is stopped and its namespace deleted; a deletion that fails is an
+  error, and a namespace an earlier killed run left behind is swept at start.
 
-**What the real binary does with the lease.** On nftables 1.1 (Debian 13) the
-isolate apply fails: Edge passes the owner token to `nft` as an unquoted
-`comment` argument, which nft does not parse, so Edge cancels the lease
-(`cancelled`, `provider_apply_failed`) and installs nothing. That is the same
-in every run, so it does not make a sample diverge, but the lease compared is a
-cancelled one: no `active` lease and no release is exercised by the real
-binary here. The harness already holds an `active` lease to its rule in the
-namespace (a stand-in producer that quotes the comment checks that).
+**What the lease comparison shows.** The enforcing run does not depend on the
+injected fault: Edge reads the same `eve.json` in every run, and the faults
+are Nexus's dependencies, which the enforcing Edge never calls. Fifteen
+byte-identical lease samples therefore show that Edge's enforcing run is
+deterministic on a pinned clock and that the harness reproduces it; they do
+not show that a Nexus fault leaves enforcement alone, because no fault reaches
+it.
+
+**What real binaries do here** (container results, not hardware evidence):
+
+- The Edge Core of #332: on nftables 1.1 (Debian 13) the isolate apply fails,
+  because Edge passes the owner token to `nft` as an unquoted `comment`
+  argument, so Edge cancels the lease (`cancelled`, `provider_apply_failed`)
+  and installs nothing. The four paths are byte-identical in all 15 samples,
+  and the lease path is `not_driven` (`driven_but_no_active_lease`):
+  `FAIL`.
+- Edge with that fixed (Azazel-Edge#465) holds the lease `active` with its rule
+  in the namespace, and the ledger, report and namespace agree. That Edge
+  also carries the `CLOCK_BOOTTIME` deadline below, so its ledger is refused:
+  the replay exits 2 and produces no record.
+
+So no record produced here passes today.
 
 **The pinned clock does not change the comparison.** A pinned clock never
 lets a release fall due, but nothing here needs one to: a run lasts seconds
@@ -339,10 +368,11 @@ away before the next write and never reaches a record.
 
 **A later Edge is refused, not compared.** Edge after Azazel-Edge#439 adds a
 `CLOCK_BOOTTIME` deadline (`due_boottime_ns`, with `due_boot_id`) to every
-lease. The preload does not pin that clock, so the field differs in every run.
-The comparison does not exclude it and the harness does not pin it: either
-would change what the owner approved (the wall clock only, `CLOCK_MONOTONIC`
-real), so a ledger with that field is refused until the owner decides.
+lease. The preload does not pin that clock, so the field differs in every run
+(and it is the only field that does). The comparison does not exclude it and
+the harness does not pin it: either would change what the owner approved (the
+wall clock only, `CLOCK_MONOTONIC` real), so a ledger with that field is
+refused until the owner decides.
 
 Without `--lease-netns`, `enforcement_lease_records` stays `not_driven`.
 
@@ -352,17 +382,16 @@ A `not_driven` path has a reason in every run, must be empty and the same in
 every run, and `audit_chain` can never be `not_driven`.
 
 - `enforcement_lease_records`, when the enforcing run is not executed (no
-  `--lease-netns`).
+  `--lease-netns`), or when it ran and not every run held an `active` lease.
 - `evaluation_outcomes`, when no Edge binary is supplied.
 
-So a run without both options fails every sample, and all current in-repo
-records say `execution_result: FAIL`. With `--edge-core` and `--lease-netns`,
-the four paths can be byte-identical with nothing dropped in all 15 samples,
-and the execution result is `PASS`; in a container, with the Edge Core of
-#332, it is (the lease being the cancelled one above). That is consumer-side
-execution in a container, not a completed SO-06 gate and not hardware
-evidence, and the validator still checks only the record's shape: a
-hand-made bundle can claim the same. A failed run is retained.
+So every sample still fails, and all current in-repo records say
+`execution_result: FAIL`. A record could pass only with an Edge whose lease is
+held `active` and whose ledger the pin fixes, which no Edge built here is.
+Even then it would be consumer-side execution in a container, not a completed
+SO-06 gate and not hardware evidence, and the validator still checks only the
+record's shape: a hand-made bundle can claim the same. A failed run is
+retained.
 
 Input JSON contains a nonempty `scenarios` array; each entry has a unique `id`
 and nonempty `inputs` array of event objects. For example:

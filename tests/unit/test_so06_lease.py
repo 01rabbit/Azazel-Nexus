@@ -9,6 +9,7 @@ tests skip, as the root E2E stages do.
 """
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -82,6 +83,15 @@ def lease(status="active", now=PINNED):
             "owned": [t["owner_token"] for t in tasks if t["status"] == "active"]}
 
 
+def two_leases(keep=2):
+    """Two active leases, one enforced observation naming each; `keep` of them held."""
+    isolate = so06_loop.golden_lines()[1]
+    tasks = [{**task(), "task_id": f"release-{i}", "owner_token": f"azazel-edge:release-{i}"}
+             for i in range(keep)]
+    lines = [enforcing([isolate], task_id=t["task_id"])[0] for t in tasks]
+    return {"observations": lines, "tasks": tasks, "owned": sorted(t["owner_token"] for t in tasks)}
+
+
 def capture(monkeypatch, producer, make):  # noqa: F811
     """A replay whose enforcing run returns `make(call_number)`."""
     calls = []
@@ -109,13 +119,33 @@ def test_a_driven_lease_path_passes_when_all_four_paths_match(monkeypatch, produ
     assert validate_record(record) == "shape_only"
     assert all(s["passed"] and s["not_driven"] == {} for s in record["samples"])
     assert record["execution_result"] == "PASS"
+    # The record names the binary it ran; no binary digest is pinned by Nexus.
+    identity = record["configuration"]["replay_inputs"]["edge_core"]
+    assert identity == {"sha256": hashlib.sha256(producer.read_bytes()).hexdigest(),
+                        "pinned_edge": False}
 
 
-def test_a_lease_edge_cancelled_is_recorded_not_required(monkeypatch, producer):  # noqa: F811
+def test_a_lease_never_held_active_is_not_driven(monkeypatch, producer):  # noqa: F811
+    # What the real binary does on nftables 1.1: it writes the lease, the apply
+    # fails, it cancels it. Byte-identical in every run, and still not driven.
     bundle = capture(monkeypatch, producer, lambda n: lease("cancelled"))
-    run = bundle["scenarios"][0]["runs"]["healthy"]
-    assert run["observed"]["lease"]["states"] == [["isolate", "cancelled", "provider_apply_failed"]]
-    assert emit(bundle)["execution_result"] == "PASS"
+    for run in bundle["scenarios"][0]["runs"].values():
+        assert run["paths"][LEASE] == []
+        assert run["not_driven"][LEASE].startswith(so06_lease.NO_ACTIVE_LEASE)
+        assert run["observed"]["lease"]["records"] == [task("cancelled")]
+        assert run["observed"]["lease"]["states"] == [
+            ["isolate", "cancelled", "provider_apply_failed"]]
+        assert run["observed"]["expected_behaviour"]
+    record = emit(bundle)
+    assert not any(s["passed"] for s in record["samples"])
+    assert record["execution_result"] == "FAIL"
+
+
+def test_one_run_without_an_active_lease_undrives_the_path(monkeypatch, producer):  # noqa: F811
+    bundle = capture(monkeypatch, producer, lambda n: lease("cancelled" if n == 9 else "active"))
+    runs = bundle["scenarios"][0]["runs"].values()
+    assert all(set(run["not_driven"]) == {LEASE} for run in runs)
+    assert emit(bundle)["execution_result"] == "FAIL"
 
 
 def test_mutation_without_the_lease_run_the_path_is_not_driven(producer):  # noqa: F811
@@ -138,17 +168,24 @@ def test_mutation_an_unpinned_lease_diverges_in_every_sample(monkeypatch, produc
 
 
 def test_mutation_a_lost_lease_is_a_dropped_record(monkeypatch, producer):  # noqa: F811
-    def make(n):
-        run = lease()
-        if n == 5:  # one fault run whose ledger lost the lease
-            run["tasks"], run["owned"] = [], []
-        return run
-
-    record = emit(capture(monkeypatch, producer, make))
+    # One fault run whose ledger, report and netns all lost one of two leases.
+    record = emit(capture(monkeypatch, producer, lambda n: two_leases(1 if n == 5 else 2)))
     failed = [s for s in record["samples"] if not s["passed"]]
     assert len(failed) == 1
     assert failed[0]["paths"][LEASE]["dropped_records"] == 1
-    assert not failed[0]["expected_behaviour"]
+    assert record["execution_result"] == "FAIL"
+
+
+def test_a_lease_the_netns_disagrees_with_is_not_expected_behaviour(monkeypatch, producer):  # noqa: F811
+    # One fault run whose ledger says active while its netns holds no rule:
+    # the records still match byte for byte, the behaviour does not.
+    def make(n):
+        return {**lease(), "owned": []} if n == 7 else lease()
+
+    record = emit(capture(monkeypatch, producer, make))
+    failed = [s for s in record["samples"] if not s["passed"]]
+    assert len(failed) == 1 and not failed[0]["expected_behaviour"]
+    assert all(p["byte_identical"] for p in failed[0]["paths"].values())
     assert record["execution_result"] == "FAIL"
 
 
@@ -169,10 +206,124 @@ def test_an_unpinned_ledger_is_refused():
                          ("due_epoch", PINNED), ("next_attempt_epoch", DUE + 1)):
         with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
             so06_lease.require_pinned_ledger([{**task(), field: value}])
+    missing = task()
+    del missing["owner_token"]
+    with pytest.raises(so06_edge.EdgeUnavailable, match="lacks"):
+        so06_lease.require_pinned_ledger([missing])
     # A later Edge's CLOCK_BOOTTIME deadline is not fixed by the pin: refused,
     # never compared, and no exclusion is added for it.
     with pytest.raises(so06_edge.EdgeUnavailable, match="due_boottime_ns"):
         so06_lease.require_pinned_ledger([{**task(), "due_boottime_ns": 1, "due_boot_id": "b"}])
+
+
+def test_lease_expected_needs_the_intake_refusal(monkeypatch):
+    assert so06_lease.lease_expected(lease())
+    monkeypatch.setattr(so06_lease, "refused_by_intake", lambda lines: False)
+    assert not so06_lease.lease_expected(lease())
+
+
+def test_a_refusal_for_another_reason_is_not_the_posture_refusal():
+    from azazel_nexus.edge_intake import EdgeEventRefused, parse_edge_event
+
+    line = json.loads(lease()["observations"][1])
+    del line["defense"]
+    raw = json.dumps(line).encode()
+    with pytest.raises(EdgeEventRefused) as refused:
+        parse_edge_event(raw)
+    assert "EDGE_NOT_OBSERVE_ONLY" not in str(refused.value)
+    assert not so06_lease.refused_by_intake([raw])
+    assert not so06_lease.refused_by_intake([lease()["observations"][0], raw])
+
+
+def test_a_lease_named_by_an_unenforced_observation_is_not_expected():
+    run = lease()
+    line = json.loads(run["observations"][1])
+    line["enforcement"]["mode"] = "dry_run"
+    run["observations"][1] = json.dumps(line).encode()
+    assert so06_lease.refused_by_intake(run["observations"])
+    assert not so06_lease.lease_expected(run)
+
+
+def test_the_ledger_holds_exactly_one_task_per_named_lease():
+    run = lease()
+    run["tasks"] = [task(), task()]
+    run["owned"] = [task()["owner_token"]] * 2
+    assert not so06_lease.lease_expected(run)
+
+
+def test_the_ledger_state_is_the_one_edge_reported():
+    # Edge reports it active; the ledger says cancelled and nothing is owned.
+    run = {**lease(), "tasks": [task("cancelled")], "owned": []}
+    assert not so06_lease.lease_expected(run)
+
+
+def test_no_named_lease_is_not_an_expected_lease():
+    notify = so06_loop.golden_lines()[0]
+    run = {"observations": enforcing([notify]), "tasks": [], "owned": []}
+    assert so06_lease.refused_by_intake(run["observations"])
+    assert not so06_lease.lease_expected(run)
+
+
+def test_the_enforcing_posture_is_the_one_edge_applies_under():
+    # Edge applies only with enforce on, dry run off and a level that permits
+    # the action (`should_execute_action`); dry run on only plans.
+    posture = so06_lease.ENFORCE_POSTURE
+    assert posture["AZAZEL_DEFENSE_ENFORCE"] == "true"
+    assert posture["AZAZEL_DEFENSE_DRY_RUN"] == "false"
+    assert posture["AZAZEL_DEFENSE_ENFORCE_LEVEL"] == "full-auto"
+    assert "AZAZEL_DEFENSE_ALLOW_HIGH_IMPACT_AUTO" not in posture
+
+
+class FakeIsolation:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def wrap(self, argv):
+        return argv
+
+    def owned_tokens(self):
+        return []
+
+
+def test_run_lease_refuses_an_unpinned_ledger(monkeypatch):
+    lines = lease()["observations"]
+    monkeypatch.setattr(so06_edge, "run_edge_in", lambda *a, **k: (
+        lines, ([task(now=PINNED + 1)], [])))
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
+        so06_lease.run_lease(Path("/x"), [], expected=2, shim=Path("/x.so"),
+                             isolation=FakeIsolation())
+    # The wall-clock run (mutation checks only) is returned, not refused.
+    assert so06_lease.run_lease(Path("/x"), [], expected=2, shim=None,
+                                isolation=FakeIsolation())["tasks"] == [task(now=PINNED + 1)]
+
+
+def test_an_enforcing_posture_outside_isolation_is_refused():
+    with pytest.raises(so06_edge.EdgeUnavailable, match="inside the harness's isolation"):
+        so06_edge.run_edge_in(Path("/nonexistent"), [], expected=1, shim=None,
+                              environment=so06_lease.ENFORCE_POSTURE)
+
+
+def test_a_ledger_with_another_top_level_is_refused(tmp_path):
+    ledger = tmp_path / so06_lease.LEDGER
+    ledger.write_text(json.dumps({"schema_version": "v", "tasks": [task()]}))
+    assert so06_lease.read_ledger(tmp_path) == [task()]
+    ledger.write_text(json.dumps({"schema_version": "v", "tasks": [], "extra": 1}))
+    with pytest.raises(so06_edge.EdgeUnavailable, match="top level"):
+        so06_lease.read_ledger(tmp_path)
+    assert so06_lease.read_ledger(tmp_path / "absent") == []
+
+
+def test_signals_unwind_like_an_interrupt():
+    import signal
+
+    before = signal.getsignal(signal.SIGTERM)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        with pytest.raises(KeyboardInterrupt), so06_lease.signals_as_interrupt():
+            os.kill(os.getpid(), sig)
+    assert signal.getsignal(signal.SIGTERM) == before
 
 
 def test_lease_expected_checks_ledger_report_and_owned_state():
@@ -264,6 +415,7 @@ def send(value):
         connection.connect(os.environ["AZAZEL_AI_SOCKET"])
         connection.sendall(json.dumps(value).encode() + b"\\n")
 enforce = os.environ["AZAZEL_DEFENSE_ENFORCE"] == "true"
+applies = enforce and os.environ["AZAZEL_DEFENSE_DRY_RUN"] == "false"
 tasks = []
 for observation in golden:
     now = time.time()
@@ -273,7 +425,7 @@ for observation in golden:
         enforce_level=os.environ["AZAZEL_DEFENSE_ENFORCE_LEVEL"])
     enforcement = observation["enforcement"]
     metadata = enforcement["metadata"]
-    if metadata["release_task_id"] is not None:
+    if metadata["release_task_id"] is not None and applies:
         metadata["release_due_epoch"] = now + 300
         task = {"task_id": metadata["release_task_id"], "trace_id": enforcement["trace_id"],
                 "action": enforcement["selected_action"],
@@ -340,3 +492,73 @@ def test_an_enforcing_run_in_the_netns_records_its_lease(enforcing_producer, shi
     with pytest.raises(so06_edge.EdgeUnavailable, match="not pinned"):
         so06_lease.run_lease(enforcing_producer, events, expected=expected,
                              shim=Path("/nonexistent.so"))
+
+
+#: Stands in for an Edge that never reports: the harness waits on it.
+HANGING = """\
+import time
+while True:
+    time.sleep(1)
+"""
+
+
+def _azso06l_netns():
+    listed = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout
+    return sorted(n for n in listed.split() if so06_lease.NETNS_NAME.fullmatch(n))
+
+
+def _running(path):
+    for proc in Path("/proc").iterdir():
+        try:
+            if str(path) in (proc / "cmdline").read_bytes().decode(errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+@needs_netns
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP"])
+def test_a_terminated_lease_run_leaves_no_namespace_or_edge(tmp_path, sig):
+    import signal
+
+    script = tmp_path / "edge-core"
+    script.write_text(f"#!{sys.executable}\n" + HANGING)
+    script.chmod(0o755)
+    before = _azso06l_netns()
+    harness = subprocess.Popen([sys.executable, "-m", "tools.so06_lease", "--edge-core",
+                                str(script)], cwd=ROOT, env=dict(os.environ),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        until = time.monotonic() + 30
+        while not (set(_azso06l_netns()) - set(before) and _running(script)):
+            assert harness.poll() is None and time.monotonic() < until
+            time.sleep(0.05)
+        harness.send_signal(getattr(signal, sig))
+        harness.wait(30)
+    finally:
+        if harness.poll() is None:
+            harness.kill()
+    assert _azso06l_netns() == before
+    assert not _running(script)
+
+
+@needs_netns
+def test_a_namespace_left_by_a_killed_run_is_swept():
+    stale = "azso06l-0badc0de"
+    subprocess.run(["ip", "netns", "add", stale], check=True)
+    sleeper = subprocess.Popen(["ip", "netns", "exec", stale, "sleep", "300"])
+    try:
+        assert stale in so06_lease.sweep_stale_netns()
+        assert stale not in _azso06l_netns()
+        assert sleeper.wait(10) is not None
+    finally:
+        if sleeper.poll() is None:
+            sleeper.kill()
+        subprocess.run(["ip", "netns", "del", stale], capture_output=True)
+
+
+@needs_netns
+def test_a_namespace_that_cannot_be_deleted_is_an_error():
+    with pytest.raises(so06_edge.EdgeUnavailable, match="not deleted"):
+        so06_lease.delete_netns(shutil.which("ip"), "azso06l-notthere")

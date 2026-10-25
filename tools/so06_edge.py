@@ -201,6 +201,9 @@ def run_edge_in(binary: Path, events: list[dict], *, expected: int, shim: Path |
     """
     if expected < 1:
         raise EdgeUnavailable("an Edge run must expect at least one observation")
+    if wrap is None and (environment or {}).get("AZAZEL_DEFENSE_ENFORCE", "false") != "false":
+        # An enforcing posture runs only inside isolation a caller provides.
+        raise EdgeUnavailable("an enforcing Edge runs only inside the harness's isolation")
     with tempfile.TemporaryDirectory(prefix="azso06e-", dir="/tmp") as temporary:
         directory = Path(temporary)
         (directory / "eve.json").write_text("".join(json.dumps(e) + "\n" for e in events))
