@@ -332,6 +332,9 @@ enforcing, on fresh state (`tools/so06_lease.py`):
 - SIGTERM and SIGHUP unwind the harness like an interrupt, so the enforcing
   Edge is stopped and its namespace deleted; a deletion that fails is an
   error, and a namespace an earlier killed run left behind is swept at start.
+  A namespace is named for the process that made it (pid and start time);
+  the sweep deletes only names of that exact form whose maker is no longer
+  running, so a run in progress elsewhere on the host is left alone.
 
 **What the lease comparison shows.** The enforcing run does not depend on the
 injected fault: Edge reads the same `eve.json` in every run, and the faults

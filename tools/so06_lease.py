@@ -79,8 +79,31 @@ table inet azazel_edge {
 LEDGER = "release-ledger.json"
 #: The ledger's top level. Anything else is refused, not compared.
 LEDGER_KEYS = frozenset({"schema_version", "tasks"})
-#: A namespace this harness made; one left by a killed run is swept.
-NETNS_NAME = re.compile(r"azso06l-[0-9a-f]{8}")
+#: A namespace this harness made, named for the process that made it (its pid
+#: and its start time, so a reused pid is not mistaken for it). One whose
+#: maker is gone is swept; one whose maker still runs is left alone.
+NETNS_NAME = re.compile(r"azso06l-([0-9]{1,10})-([0-9]{1,20})-[0-9a-f]{8}")
+
+
+def process_start(pid: int) -> int | None:
+    """The process's start time in clock ticks since boot, or None if it is gone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # The command name is parenthesised and may contain spaces; field 22 is
+    # the start time, the 20th after the closing parenthesis.
+    return int(stat.rsplit(")", 1)[1].split()[19])
+
+
+def netns_name() -> str:
+    pid = os.getpid()
+    return f"azso06l-{pid}-{process_start(pid)}-{secrets.token_hex(4)}"
+
+
+def maker_alive(name: str) -> bool:
+    match = NETNS_NAME.fullmatch(name)
+    return bool(match) and process_start(int(match[1])) == int(match[2])
 #: SHA-256 of the Edge Core binaries Nexus pins. Empty: Nexus pins the
 #: package contract (`contract/azazel-edge-core`, PROVENANCE.md names an Edge
 #: commit), not a binary, and a binary does not carry its commit. So no binary
@@ -108,7 +131,7 @@ class Netns:
     def __init__(self):
         self.ip = shutil.which("ip")
         self.nft = shutil.which("nft")
-        self.name = f"azso06l-{secrets.token_hex(4)}"
+        self.name = netns_name()
         self.created = False
 
     def _run(self, argv: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -172,13 +195,17 @@ def delete_netns(ip: str, name: str) -> None:
 
 
 def sweep_stale_netns() -> list[str]:
-    """Delete namespaces an earlier, killed run of this harness left behind."""
+    """Delete namespaces an earlier, killed run of this harness left behind.
+
+    Only names this harness gives, and only those whose maker is no longer
+    running: a namespace of a run still in progress is never touched.
+    """
     ip = shutil.which("ip")
     if ip is None or os.geteuid() != 0:
         return []
     listed = subprocess.run([ip, "netns", "list"], capture_output=True, text=True,
                             timeout=30).stdout.split()
-    stale = [name for name in listed if NETNS_NAME.fullmatch(name)]
+    stale = [name for name in listed if NETNS_NAME.fullmatch(name) and not maker_alive(name)]
     for name in stale:
         delete_netns(ip, name)
     return stale

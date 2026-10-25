@@ -543,19 +543,74 @@ def test_a_terminated_lease_run_leaves_no_namespace_or_edge(tmp_path, sig):
     assert not _running(script)
 
 
+def _dead_pid():
+    done = subprocess.Popen(["true"])
+    pid = done.pid
+    start = so06_lease.process_start(pid)
+    done.wait()
+    return pid, start
+
+
+def test_a_namespace_name_names_its_maker():
+    name = so06_lease.netns_name()
+    assert so06_lease.NETNS_NAME.fullmatch(name)
+    assert so06_lease.maker_alive(name)
+    pid, start = _dead_pid()
+    assert not so06_lease.maker_alive(f"azso06l-{pid}-{start}-0badc0de")
+    # A reused pid with another start time is not the maker.
+    me = os.getpid()
+    assert not so06_lease.maker_alive(
+        f"azso06l-{me}-{so06_lease.process_start(me) + 1}-0badc0de")
+
+
 @needs_netns
-def test_a_namespace_left_by_a_killed_run_is_swept():
-    stale = "azso06l-0badc0de"
-    subprocess.run(["ip", "netns", "add", stale], check=True)
-    sleeper = subprocess.Popen(["ip", "netns", "exec", stale, "sleep", "300"])
+def test_only_a_dead_runs_namespace_is_swept():
+    me = os.getpid()
+    pid, start = _dead_pid()
+    live = f"azso06l-{me}-{so06_lease.process_start(me)}-0badc0de"
+    dead = f"azso06l-{pid}-{start}-0badc0de"
+    reused = f"azso06l-{me}-{so06_lease.process_start(me) + 1}-0badc0de"
+    names = [live, dead, reused]
+    for name in names:
+        subprocess.run(["ip", "netns", "add", name], check=True)
+    sleeper = subprocess.Popen(["ip", "netns", "exec", dead, "sleep", "300"])
     try:
-        assert stale in so06_lease.sweep_stale_netns()
-        assert stale not in _azso06l_netns()
+        swept = so06_lease.sweep_stale_netns()
+        assert sorted(swept) == sorted([dead, reused])
+        assert live in _listed_netns() and dead not in _listed_netns()
+        # Whatever ran in the swept namespace is stopped.
         assert sleeper.wait(10) is not None
     finally:
         if sleeper.poll() is None:
             sleeper.kill()
-        subprocess.run(["ip", "netns", "del", stale], capture_output=True)
+        for name in names:
+            subprocess.run(["ip", "netns", "del", name], capture_output=True)
+
+
+@needs_netns
+def test_the_sweep_leaves_names_it_did_not_give_alone():
+    pid, start = _dead_pid()
+    others = [
+        "azother-1",                                  # another harness's prefix
+        f"az{pid}-{start}-0badc0de",                  # starts with az only
+        "azso06l-0badc0de",                           # no maker
+        f"azso06l-{pid}-{start}-0badc0dz",            # not hex
+        f"azso06l-{pid}-{start}-0badc0de0",           # too long
+        f"azso06l-{pid}-{start}-0badc0de-x",          # a suffix
+        f"xazso06l-{pid}-{start}-0badc0de",           # a prefix
+    ]
+    for name in others:
+        subprocess.run(["ip", "netns", "add", name], check=True)
+    try:
+        so06_lease.sweep_stale_netns()
+        assert set(others) <= set(_listed_netns())
+    finally:
+        for name in others:
+            subprocess.run(["ip", "netns", "del", name], capture_output=True)
+
+
+def _listed_netns():
+    return subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.split()
 
 
 @needs_netns
