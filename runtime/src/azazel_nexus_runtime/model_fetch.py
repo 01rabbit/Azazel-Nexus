@@ -113,7 +113,7 @@ class Endpoint:
     path_template: str
 
     def __post_init__(self) -> None:
-        if not _HOSTNAME.match(self.host) or _ADDRESS_LITERAL.match(self.host):
+        if not _HOSTNAME.fullmatch(self.host) or _ADDRESS_LITERAL.match(self.host):
             raise ValueError(
                 f"{self.host!r} is not a hostname. A scheme, a port, a path, "
                 "a query, userinfo or an address literal are separate fields "
@@ -130,7 +130,7 @@ class Endpoint:
 #: A hostname, and nothing that could carry a scheme, a port, a path, a
 #: query or userinfo. Those are separate fields or they do not exist.
 _HOSTNAME = re.compile(
-    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+    r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z"
 )
 #: An address literal would let this table both name a source and pick its
 #: address, skipping the commissioned address allowlist that exists because a

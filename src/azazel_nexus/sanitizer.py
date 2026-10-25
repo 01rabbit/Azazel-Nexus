@@ -253,7 +253,7 @@ class SanitizerDecision:
         }
 
 
-_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\Z")
 
 #: Coarse count buckets, low to high. The boundaries are inclusive floors.
 _COUNT_BUCKETS = ((0, "0"), (1, "1"), (2, "2-5"), (6, "6-20"), (21, "21-100"), (101, ">100"))
@@ -262,7 +262,7 @@ _COUNT_BUCKETS = ((0, "0"), (1, "1"), (2, "2-5"), (6, "6-20"), (21, "21-100"), (
 def time_bucket(instant: str) -> str:
     """Round an instant down to its UTC hour. Coarse, and never a clock read."""
 
-    if not _INSTANT.match(instant):
+    if not _INSTANT.fullmatch(instant):
         raise SanitizerRefused(f"{instant!r} is not an instant this can coarsen")
     text = instant[:-1] + "+00:00" if instant.endswith("Z") else instant
     parsed = datetime.fromisoformat(text).astimezone(timezone.utc)

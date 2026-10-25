@@ -469,3 +469,28 @@ def test_no_registry_is_committed_to_the_repository() -> None:
         if ".git" not in path.parts and ".venv" not in path.parts
     ]
     assert found == [], f"{found} ship a source registry"
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize(
+    "field, valid",
+    [
+        ("source_id", "vendor-mirror"),
+        ("host", "models-mirror.azazel.invalid"),
+        ("certificate_pin", "sha256:" + "a" * 64),
+        ("client_identity", "node-client"),
+    ],
+)
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_a_source_field_with_a_trailing_line_ending_is_refused(
+    field: str, valid: str, suffix: str
+) -> None:
+    a_record(**{field: valid})
+    with pytest.raises(RegistryRefused) as caught:
+        a_record(**{field: valid + suffix})
+    assert caught.value.cause is Refusal.REGISTRY_INVALID

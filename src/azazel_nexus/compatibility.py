@@ -58,7 +58,7 @@ ADMITTED_ARCHITECTURE = "x86_64"
 #: tested.
 _RANGE = re.compile(r"[*^~]|[<>]=?|\s-\s|\|\||,|\bx\b|\.\*")
 
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class CompatibilityRefused(Exception):
@@ -128,7 +128,7 @@ class TestedTuple:
             raise CompatibilityRefused("unknown model role")
         for name in self._DIGESTS:
             value = getattr(self, name)
-            if not _DIGEST.match(value or ""):
+            if not _DIGEST.fullmatch(value or ""):
                 raise CompatibilityRefused(
                     f"{name} is an immutable digest as sha256:<64 hex>; got {value!r}"
                 )

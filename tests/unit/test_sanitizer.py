@@ -456,3 +456,20 @@ def test_the_redaction_event_names_what_went_and_not_what_it_was(policy) -> None
     assert event["bucketed"] == ["count"]
     assert "hunter2" not in json.dumps(event)
     assert "workstation-7" not in json.dumps(event)
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize("instant", ["2026-09-20T23:47:13Z", "2026-09-21T01:30:00+02:00"])
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_an_instant_with_a_trailing_line_ending_is_refused_as_such(
+    instant: str, suffix: str
+) -> None:
+    """Refused by the grammar, as `SanitizerRefused` -- not by a parser later."""
+
+    with pytest.raises(SanitizerRefused):
+        time_bucket(instant + suffix)

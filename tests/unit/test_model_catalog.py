@@ -802,3 +802,26 @@ def test_no_reading_moves_the_edge_answer(tmp_path) -> None:
             assert edge_answer() == baseline
     absent_reading()
     assert edge_answer() == baseline
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize(
+    "field, valid",
+    [
+        ("model_id", "small-advisor"),
+        ("digest", "sha256:" + "0" * 64),
+        ("source_id", "vendor-mirror"),
+    ],
+)
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_an_entry_symbol_with_a_trailing_line_ending_is_refused(
+    field: str, valid: str, suffix: str
+) -> None:
+    an_entry(**{field: valid})
+    with pytest.raises(CatalogRefused):
+        an_entry(**{field: valid + suffix})

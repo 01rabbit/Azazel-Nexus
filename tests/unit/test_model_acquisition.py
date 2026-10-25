@@ -790,3 +790,20 @@ def test_no_acquisition_state_moves_the_edge_answer() -> None:
             drive_fetch(plan)
             _driven([WEIGHTS], plan=plan)
             assert edge_answer() == baseline
+
+
+#: A trailing line ending, blank or NUL after a valid value. `$` matches before
+#: a final `\n`, so a grammar closed with `$` and used with `match` admitted
+#: the first of these (Azazel-Fabric#65). Each must be refused.
+TRAILING = ("\n", "\r\n", " ", "\x00")
+
+
+@pytest.mark.parametrize("suffix", TRAILING)
+def test_an_endpoint_host_with_a_trailing_line_ending_is_refused(suffix: str) -> None:
+    Endpoint(host="models-primary.test.example", port=443, path_template="/artifacts/{digest}")
+    with pytest.raises(ValueError):
+        Endpoint(
+            host="models-primary.test.example" + suffix,
+            port=443,
+            path_template="/artifacts/{digest}",
+        )

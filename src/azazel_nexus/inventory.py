@@ -93,7 +93,7 @@ REQUIRED_IDENTITY_FIELDS = ("bus_path", "permanent_mac")
 #: And at least one of these, for the same reason.
 DISCRIMINATOR_FIELDS = ("pci_id", "usb_vid_pid", "serial")
 
-_MAC = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+_MAC = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}\Z")
 
 #: A MAC of all zeroes is what a driver reports when it has **no** permanent
 #: address to give. It is an absence, not an address: treating it as one would
@@ -169,7 +169,7 @@ def normalize_permanent_mac(raw: str | None) -> str | None:
     if not raw:
         return None
     mac = raw.strip().lower()
-    if mac == _NULL_MAC or not _MAC.match(mac):
+    if mac == _NULL_MAC or not _MAC.fullmatch(mac):
         return None
     return mac
 

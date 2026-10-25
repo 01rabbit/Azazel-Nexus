@@ -83,25 +83,25 @@ MAX_PROVIDER_REGISTRY_BYTES = 64 * 1024
 
 #: A provider id: a symbol, never a location. Same alphabet discipline as a
 #: model id -- no separator a filesystem or a URL parser would read.
-_PROVIDER_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
+_PROVIDER_ID = re.compile(r"[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?\Z")
 
 #: A hostname by grammar. Refuses a scheme, a port, a path, userinfo and a
 #: query by having nowhere to put them.
 _HOSTNAME = re.compile(
-    r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
-    r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+    r"(?=.{1,253}\Z)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+    r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z"
 )
 
 #: An address literal, refused: a pin and a hostname check are the two things
 #: an address bypasses.
 _ADDRESS_LITERAL = re.compile(r"^(\d{1,3}(\.\d{1,3}){3}|\[?[0-9a-f:]+\]?)$")
 
-_PIN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PIN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 #: A client identity is a **name**, never key material. The name says which
 #: commissioned identity to present; the key lives where only the transport's
 #: account can read it, and never passes through this document.
-_IDENTITY = re.compile(r"^[A-Za-z0-9._@:+-]{1,64}$")
+_IDENTITY = re.compile(r"[A-Za-z0-9._@:+-]{1,64}\Z")
 
 
 class ProviderRefusal(str, Enum):
@@ -155,13 +155,13 @@ class ProviderRecord:
     allowed_privacy_classes: tuple
 
     def __post_init__(self) -> None:
-        if not _PROVIDER_ID.match(self.provider_id):
+        if not _PROVIDER_ID.fullmatch(self.provider_id):
             raise ProviderRefused(
                 ProviderRefusal.REGISTRY_INVALID,
                 f"{self.provider_id!r} is not a provider symbol; a provider id "
                 "names an entry, never a location",
             )
-        if not _HOSTNAME.match(self.host) or _ADDRESS_LITERAL.match(self.host):
+        if not _HOSTNAME.fullmatch(self.host) or _ADDRESS_LITERAL.match(self.host):
             raise ProviderRefused(
                 ProviderRefusal.REGISTRY_INVALID,
                 f"{self.host!r} is not a hostname. A scheme, a port, a path, a "
@@ -186,18 +186,18 @@ class ProviderRecord:
                 "template with a hole nobody fills is a template something else "
                 "fills",
             )
-        if not _PIN.match(self.certificate_pin):
+        if not _PIN.fullmatch(self.certificate_pin):
             raise ProviderRefused(
                 ProviderRefusal.REGISTRY_INVALID,
                 "a certificate pin is sha256: and sixty-four hex digits",
             )
-        if not _IDENTITY.match(self.client_identity):
+        if not _IDENTITY.fullmatch(self.client_identity):
             raise ProviderRefused(
                 ProviderRefusal.REGISTRY_INVALID,
                 "a client identity is a bounded name. Key material is not a "
                 "name and does not belong in a document that is read aloud",
             )
-        if not _PROVIDER_ID.match(self.model_id):
+        if not _PROVIDER_ID.fullmatch(self.model_id):
             raise ProviderRefused(
                 ProviderRefusal.REGISTRY_INVALID,
                 f"{self.model_id!r} is not a model symbol",
