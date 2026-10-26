@@ -235,8 +235,10 @@ def test_supervisor_receives_exactly_the_fixed_composition_callbacks(monkeypatch
         "manager", "refresh", "initial_admission", "admit_generation",
         "deadline_guard", "record", "audit_head_reader", "controller_ready",
         "controller_watchdog", "transaction", "emergency_narrow", "stopped",
-        "wait", "poll_seconds",
+        "wait", "poll_seconds", "recovery_label_record",
     }
+    # Nexus#339: the fixed activation-ledger appender, never a caller input.
+    assert captured["recovery_label_record"] is entrypoint.append_label_record
     assert captured["controller_ready"] is entrypoint.notify_ready
     assert captured["controller_watchdog"] is entrypoint.notify_watchdog
     assert captured["poll_seconds"] == entrypoint._POLL_SECONDS
