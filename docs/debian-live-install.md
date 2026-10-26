@@ -367,6 +367,27 @@ failure of another type, or no observed stop) still refuses every boot until
 you recover it by hand. The label is not an approval: the next boot still
 needs this boot's records, a fresh signed approval and the full admission.
 
+Both boots leave a trace in `/var/lib/azazel/state/activation.jsonl`. The
+failing boot appends `activation.bootstrap_recovery_labelled` (boot id, grant
+id, `recovery_reason`, supervision failure type and the recovery evidence
+digest) right after the grant takes the label. That is the controller's own
+local ledger, not az-auditd's chain, so it is normally writable even though
+auditd has already stopped; if the append fails, the controller prints
+`az-activated could not record the recovery label in the activation ledger`
+and the outcome is unchanged. The next boot's
+`activation.overlay_journal_retiring` repeats `recovery_reason`, the failure
+type and the same `recovery_evidence_digest`. Search the ledger for
+`recovery_reason` to see every automatic recovery and why it happened.
+
+The stop observation is not specific to reboot: any stop job on
+`azazel-activated.service`, including a manual `systemctl stop`, counts. A
+root attacker who changes a helper unit at runtime and then stops the
+controller can therefore get the label and an automatic retirement on the
+next boot. A change that persists on disk is still refused by the next
+boot's admission (the loaded-unit check against the declared policy), and a
+new signed approval and the full admission are still required; what the
+runtime change leaves behind is the ledger's `recovery_reason` and digest.
+
 Ordering with observe-baseline activation: these events (like the bootstrap
 controller's own records) create `/var/lib/azazel/state/activation.jsonl`. On a
 node with that ledger and no `high-water.json`, every activation pass refuses

@@ -403,6 +403,9 @@ controller keeps `recovery_required` in that boot; with a proven manager stop,
 confirmed containment and an intact stopped-writer chain the grant's recovery
 evidence carries the `manager-stop-close-unrecorded` label, and only that
 label lets a later boot retire the earlier boot's closed journal (#339).
+Both boots record the label and its digest in the activation ledger. The
+stop observation counts any stop job on the controller (also a manual
+`systemctl stop`), so it is evidence of a manager stop, not of a reboot.
 Controller and loaded helper inspection require the effective boolean value
 to be false.
 After Reload and around pair inspection, and again at retained start checks,

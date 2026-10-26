@@ -26,8 +26,10 @@ recovery.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from pathlib import Path
 
 from azazel_nexus.bootstrap_grant_transaction import GrantTransaction
 
@@ -62,6 +64,38 @@ def unrecorded_manager_stop_digest(transaction: GrantTransaction, supervision_fa
         separators=(",", ":"),
     ).encode("ascii")
     return "sha256:" + sha256(raw).hexdigest()
+
+
+LABEL_EVENT = "activation.bootstrap_recovery_labelled"
+
+
+def label_event(transaction: GrantTransaction, supervision_failure: str) -> dict:
+    """Activation-ledger line for the failing boot (no payload, no secrets)."""
+    return {
+        "event_type": LABEL_EVENT,
+        "boot_id": transaction.boot_id,
+        "grant_id": transaction.grant_id,
+        "grant_phase": transaction.phase,
+        "recovery_reason": UNRECORDED_MANAGER_STOP,
+        "supervision_failure": supervision_failure,
+        "recovery_evidence_digest": transaction.recovery_evidence_digest,
+        "occurred_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds").replace("+00:00", "Z"),
+        "actor": "azazel-activated",
+    }
+
+
+def append_label_record(event: dict) -> bool:
+    """Append to the controller's own activation ledger; True only if confirmed.
+
+    This is the controller's local hash-chained ledger, not az-auditd's chain,
+    so it is normally writable even though auditd is already stopped. It is
+    evidence only: the caller treats any failure as best effort.
+    """
+    from azazel_nexus.audit import AuditEntry
+    from .activated import _activation_ledger  # lazy: activated composes bootstrap
+
+    return type(_activation_ledger(Path("/")).append(event)) is AuditEntry
 
 
 def unrecorded_manager_stop_failure(transaction: object) -> str | None:

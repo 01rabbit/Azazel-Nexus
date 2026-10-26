@@ -27,7 +27,7 @@ from azazel_nexus_runtime.bootstrap_recovery_evidence import (
 from azazel_nexus_runtime.units import UnitOperationFailed
 
 from test_runtime_bootstrap import evidence  # noqa: F401,F811
-from test_runtime_bootstrap_journal_retire import NEW_BOOT, OLD_BOOT, _entries, _stage
+from test_runtime_bootstrap_journal_retire import NEW_BOOT, OLD_BOOT, _entries, _intent, _stage
 from test_runtime_bootstrap_journal_retire_callsite import (
     _abandoned_grant,
     _fenced,
@@ -42,6 +42,7 @@ from test_runtime_bootstrap_operator_stop import (
     _harness,
 )
 from test_runtime_bootstrap_overlay_withdraw import _withdraw_environment
+from test_runtime_bootstrap_withdrawal_binding import _transaction
 
 
 def _label(grant, failure):
@@ -89,6 +90,8 @@ def _stop_window_failure(evidence, cause, *, observed=True, manager=None,
     manager = manager if manager is not None else StopObservingManager(observed)
     h = _harness(evidence, manager, tip=tip)
     _fail_stopping(h, record_error)
+    h.label_events = []
+    h.supervisor.recovery_label_record = lambda event: h.label_events.append(event) or True
 
     def wait(seconds):
         h.waits.append(seconds)
@@ -115,9 +118,80 @@ def test_helper_observation_failure_under_manager_stop_is_labelled(evidence, cau
     assert h.manager.observe_calls == 1
     assert all(h.manager.inactive.values()) and all(h.manager.masked.values())
     assert "bootstrap.stopped" not in _event_types(h)
+    (event,) = h.label_events  # one activation-ledger line in the failing boot
+    assert event["event_type"] == "activation.bootstrap_recovery_labelled"
+    assert not event["event_type"].startswith("bootstrap.")
+    assert (event["boot_id"], event["grant_id"]) == (grant.boot_id, grant.grant_id)
+    assert event["grant_phase"] == "recovery_required"
+    assert event["recovery_reason"] == UNRECORDED_MANAGER_STOP
+    assert event["supervision_failure"] == type(cause).__name__
+    assert event["recovery_evidence_digest"] == grant.recovery_evidence_digest
+    assert set(event) == {"event_type", "boot_id", "grant_id", "grant_phase",
+                          "recovery_reason", "supervision_failure",
+                          "recovery_evidence_digest", "occurred_at", "actor"}
+
+
+@pytest.mark.parametrize("failure", ["raises", "false"])
+def test_label_ledger_failure_changes_nothing_but_is_reported(evidence, capsys, failure):
+    h = _stop_window_failure(evidence, UnitOperationFailed("x"))
+
+    def record(event):
+        if failure == "raises":
+            raise OSError("ledger unavailable")
+        return False
+
+    h.supervisor.recovery_label_record = record
+    with pytest.raises(ApprovalRefused, match="not fully recorded"):
+        h.supervisor.run()
+    assert unrecorded_manager_stop_failure(h.grant_journal) == "UnitOperationFailed"
+    assert "could not record the recovery label" in capsys.readouterr().err
+
+
+def test_no_label_line_when_the_grant_did_not_take_the_label(evidence):
+    h = _stop_window_failure(evidence, UnitOperationFailed("x"))
+    store = h.grant_store
+    original = store.advance
+
+    def advance(expected, action, *, evidence_digest=None):
+        if action == "recovery_required":
+            raise ApprovalRefused("store down")
+        return original(expected, action, evidence_digest=evidence_digest)
+
+    store.advance = advance
+    with pytest.raises(ApprovalRefused, match="not fully recorded"):
+        h.supervisor.run()
+    assert h.grant_journal.phase == "closing"
+    assert h.label_events == []
+
+
+def test_no_label_record_without_composed_ledger(evidence):
+    h = _stop_window_failure(evidence, UnitOperationFailed("x"))
+    h.supervisor.recovery_label_record = None
+    with pytest.raises(ApprovalRefused, match="not fully recorded"):
+        h.supervisor.run()
+    assert unrecorded_manager_stop_failure(h.grant_journal) == "UnitOperationFailed"
+
+
+def test_grant_already_recovery_required_is_not_relabelled(evidence):
+    """journal.phase != "closing": a grant marked during supervision keeps its evidence."""
+    h = _stop_window_failure(evidence, UnitOperationFailed("x"))
+    earlier = "sha256:" + "a" * 64
+
+    def wait(seconds):
+        h.waits.append(seconds)
+        h.supervisor._advance_grant("recovery_required", evidence_digest=earlier)
+        raise UnitOperationFailed("x")
+
+    h.supervisor.wait = wait
+    with pytest.raises(ApprovalRefused, match="not fully recorded"):
+        h.supervisor.run()
+    assert h.grant_journal.recovery_evidence_digest == earlier
+    assert h.manager.observe_calls == 0
+    assert h.label_events == []
 
 
 def _assert_generic(h):
+    assert getattr(h, "label_events", []) == []
     grant = h.grant_journal
     assert grant.phase == "recovery_required"
     assert unrecorded_manager_stop_failure(grant) is None
@@ -241,6 +315,23 @@ def test_eligible_manager_stop_still_closes_unlabelled(evidence):
     assert h.grant_journal.recovery_evidence_digest is None
 
 
+def test_admitted_failure_names_are_exactly_the_two_helper_observations():
+    assert MANAGER_STOP_SUPERVISION_FAILURES == ("UnitOperationFailed", "AuditUnavailable")
+
+
+@pytest.mark.parametrize("name", [
+    "ApprovalRefused", "BootstrapContainmentFailed", "RuntimeError", "Exception",
+    "AuditChainBroken", "unitoperationfailed", "", None, 1,
+])
+def test_digest_rejects_failure_names_outside_the_admitted_set(name):
+    grant = replace(_transaction(_intent()), phase="recovery_required",
+                    recovery_evidence_digest="sha256:" + "a" * 64)
+    with pytest.raises(ValueError):
+        unrecorded_manager_stop_digest(grant, name)
+    for admitted in MANAGER_STOP_SUPERVISION_FAILURES:
+        assert unrecorded_manager_stop_digest(grant, admitted) == _label(grant, admitted)
+
+
 def test_label_helpers_refuse_other_inputs(evidence):
     h = _stop_window_failure(evidence, UnitOperationFailed("x"))
     with pytest.raises(ApprovalRefused):
@@ -282,6 +373,7 @@ def test_closed_journal_with_labelled_recovery_grant_is_retired(tmp_path, failur
         assert (event["phase"], event["grant_phase"]) == ("closed", "recovery_required")
         assert event["recovery_reason"] == UNRECORDED_MANAGER_STOP
         assert event["supervision_failure"] == failure
+        assert event["recovery_evidence_digest"] == _label(grants.grants[OLD_BOOT], failure)
         assert (event["boot_id"], event["current_boot_id"]) == (OLD_BOOT, NEW_BOOT)
 
 
@@ -293,7 +385,8 @@ def test_closed_grant_event_has_no_recovery_reason(tmp_path):
         manager._retirement_record = lambda event: seen.append(event) or True
         manager._retire_prior_boot_journal(env["store"], env["guard"])
         (event,) = seen
-        assert "recovery_reason" not in event and "supervision_failure" not in event
+        assert not {"recovery_reason", "supervision_failure",
+                    "recovery_evidence_digest"} & set(event)
 
 
 def _refused(env, grant, closed):

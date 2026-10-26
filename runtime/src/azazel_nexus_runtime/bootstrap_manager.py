@@ -952,6 +952,7 @@ class BootstrapNarrowingManager:
             if unrecorded is not None:
                 event["recovery_reason"] = UNRECORDED_MANAGER_STOP
                 event["supervision_failure"] = unrecorded
+                event["recovery_evidence_digest"] = prior.recovery_evidence_digest
             if self._retirement_record(event) is True:
                 return
             raise ApprovalRefused("prior boot journal retirement record unconfirmed")

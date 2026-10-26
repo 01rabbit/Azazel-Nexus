@@ -33,7 +33,7 @@ from .bootstrap_audit import AuditObservation
 from .bootstrap_audit_client import AuditAppendReceipt, BootstrapAuditClient
 from .bootstrap_audit_live import BootstrapLiveAuditHead, WriterHead
 from .bootstrap_overlay_files import new_overlay_intent
-from .bootstrap_recovery_evidence import unrecorded_manager_stop_digest
+from .bootstrap_recovery_evidence import label_event, unrecorded_manager_stop_digest
 from .bootstrap_prestart import inspect_bootstrap_prestart, check_bootstrap_audit_extension
 
 _ORDER = (UnitKey.AUDITD, UnitKey.COMMISSIOND)
@@ -235,6 +235,7 @@ class BootstrapSupervisor:
         grant_transaction_factory=None,
         boot_id_reader: Callable[[], str] = read_boot_id,
         initial_admission=None,
+        recovery_label_record: Callable[[dict], object] | None = None,
     ) -> None:
         if (
             type(poll_seconds) not in (int, float)
@@ -250,6 +251,8 @@ class BootstrapSupervisor:
             raise ValueError("required bootstrap kernel deadline guard")
         self.deadline_guard = deadline_guard
         self.record = record
+        # Best-effort activation-ledger line when the Nexus#339 label is applied.
+        self.recovery_label_record = recovery_label_record
         self.audit_head_reader = (
             audit_head_reader if audit_head_reader is not None else
             record if type(record) is BootstrapAuditClient else BootstrapAuditClient()
@@ -681,6 +684,8 @@ class BootstrapSupervisor:
         failure = close_error or audit_error
         if failure is not None:
             self._mark_recovery(failure, evidence_digest=recovery_evidence)
+            if recovery_evidence is not None:
+                self._record_recovery_label(unrecorded_stop, recovery_evidence)
             raise ApprovalRefused("bootstrap transaction close was not fully recorded") from None
         if journal.phase == "recovery_required":
             raise ApprovalRefused("bootstrap transaction requires recovery")
@@ -690,6 +695,30 @@ class BootstrapSupervisor:
             self._mark_recovery(exc)
             raise
         return stopping_record
+
+    def _record_recovery_label(self, supervision_failure: str, label: str) -> None:
+        """Note the applied label in the activation ledger; never a gate.
+
+        Only after the durable grant really carries the label. A failure here
+        changes nothing about the outcome (still recovery_required and a
+        refusal); it is reported on stderr, and the next boot's retirement
+        record repeats the reason and the digest.
+        """
+        journal = self._grant_transaction
+        record = self.recovery_label_record
+        if (record is None or type(journal) is not GrantTransaction
+                or journal.phase != "recovery_required"
+                or journal.recovery_evidence_digest != label):
+            return
+        try:
+            if record(label_event(journal, supervision_failure)) is True:
+                return
+        except Exception:  # noqa: BLE001 - evidence only, reported below
+            pass
+        import sys
+
+        print("az-activated could not record the recovery label in the activation ledger",
+              file=sys.stderr)
 
     def _stop_cause_eligible(self, cause: BaseException | None) -> bool:
         if cause is None:
