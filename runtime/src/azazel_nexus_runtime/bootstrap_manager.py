@@ -49,6 +49,7 @@ from .bootstrap_close import BootstrapCloseSequence
 from .bootstrap_close_files import BootstrapClosedOverlayFiles
 from .bootstrap_restore import BootstrapRestoreSequence
 from .bootstrap_withdrawal import BootstrapWithdrawalFiles
+from .bootstrap_recovery_evidence import UNRECORDED_MANAGER_STOP, unrecorded_manager_stop_failure
 from .bootstrap_stopped import BootstrapStoppedPairInspector, StoppedBootstrapPair
 from .bootstrap_cgroup import validate_cgroup_root
 from .bootstrap_cgroup_mount import BootstrapCgroupMount, open_bootstrap_cgroup_mount
@@ -882,7 +883,10 @@ class BootstrapNarrowingManager:
         Only a journal whose intent boot id differs from the current kernel boot
         id is touched. Before any mutation the prior boot's preserved grant
         transaction must exist with the same grant id, context digest and
-        payload digests: phase "closed" for a closed journal; for a journal
+        payload digests: phase "closed" for a closed journal, or (Nexus#339)
+        "recovery_required" whose recovery evidence is exactly the
+        unrecorded-manager-stop label of bootstrap_recovery_evidence (any other
+        recovery evidence still refuses); for a journal
         abandoned in published/closing/withdrawing (Nexus#324 owner decision)
         a phase from _ABANDONED_GRANT_PHASES, and this boot's containment must
         have used exactly that journal as its fence (the withdrawal files
@@ -920,9 +924,14 @@ class BootstrapNarrowingManager:
         def record_retirement(summary):
             with self._grant_store_opener(guard) as grants:
                 prior = grants.load(boot_id=summary["boot_id"])
+            # Closed journal + recovery_required grant: only the label the
+            # earlier boot wrote after proving a systemd stop with confirmed
+            # containment and an intact chain (Nexus#339).
+            unrecorded = (unrecorded_manager_stop_failure(prior)
+                          if journal.phase == "closed" else None)
             if (type(prior) is not GrantTransaction
                     or prior.boot_id != summary["boot_id"]
-                    or prior.phase not in allowed
+                    or (prior.phase not in allowed and unrecorded is None)
                     or prior.grant_id != summary["grant_id"]
                     or prior.unit_payload_digests != journal.intent.payload_digests
                     or prior.context_digest != "sha256:" + summary["context_digest"]):
@@ -940,6 +949,10 @@ class BootstrapNarrowingManager:
                     timespec="seconds").replace("+00:00", "Z"),
                 "actor": "azazel-activated",
             }
+            if unrecorded is not None:
+                event["recovery_reason"] = UNRECORDED_MANAGER_STOP
+                event["supervision_failure"] = unrecorded
+                event["recovery_evidence_digest"] = prior.recovery_evidence_digest
             if self._retirement_record(event) is True:
                 return
             raise ApprovalRefused("prior boot journal retirement record unconfirmed")

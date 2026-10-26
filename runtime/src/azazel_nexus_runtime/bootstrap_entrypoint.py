@@ -21,6 +21,7 @@ from .bootstrap_inputs import (
 )
 from .bootstrap_lifetime import BootstrapProcessLifetime
 from .bootstrap_manager import bootstrap_narrowing_manager_in_transaction
+from .bootstrap_recovery_evidence import append_label_record
 from .systemd_notify import notify_ready, notify_watchdog
 
 # Per-operation transport budget, not a claim about native service stop bounds.
@@ -114,6 +115,7 @@ def _run_selected_locked(selection, *, narrow, guard):
                 admit_generation=protected_bootstrap_generation_admission(),
                 deadline_guard=lifetime.deadline_guard,
                 record=client, audit_head_reader=client,
+                recovery_label_record=append_label_record,
                 controller_ready=notify_ready, controller_watchdog=notify_watchdog,
                 transaction=lambda: _retained_transaction(guard),
                 emergency_narrow=narrow, stopped=lifetime.stopped,
