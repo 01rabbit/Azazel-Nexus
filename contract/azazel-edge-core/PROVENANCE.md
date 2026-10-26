@@ -6,8 +6,10 @@ Copied verbatim from `packaging/nexus-core/contract/` in
 [Azazel-Edge#465](https://github.com/01rabbit/Azazel-Edge/pull/465) and
 [Azazel-Edge#468](https://github.com/01rabbit/Azazel-Edge/pull/468)).
 
-The files were first copied at `f44a66835eb55aa9c0196f0ec6964e6361606eab`
-([Azazel-Edge#426](https://github.com/01rabbit/Azazel-Edge/pull/426)). At
+The files were first copied at `f44a66835eb55aa9c0196f0ec6964e6361606eab`,
+a commit on the branch of
+[Azazel-Edge#426](https://github.com/01rabbit/Azazel-Edge/pull/426); on
+Edge main that PR is `2a3e42d653f6be148fd010bc18e2afc77aaa78d7`. At
 `ae9557d` they were regenerated from a release build
 (`nexus_core_package.py --emit-contract`) and are byte-identical to that
 copy: the contract has not changed between the two commits, so only this
