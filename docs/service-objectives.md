@@ -364,9 +364,10 @@ it.
   also carries the `CLOCK_BOOTTIME` deadline below. The pin now fixes it, so
   its ledger is compared: the four paths are byte-identical in all 15
   samples, every run holds the lease `active`, `expected_behaviour` holds in
-  each, and the record is `PASS`. That Edge is Azazel-Edge main after #465,
-  not the commit `PROVENANCE.md` names, and the record says
-  `pinned_edge: false`.
+  each, and the record is `PASS`. That Edge is Azazel-Edge main after #465.
+  `PROVENANCE.md` now names a main commit after #465 too, but that ties the
+  package contract to a commit, not this binary: no binary digest is pinned,
+  so the record still says `pinned_edge: false`.
 
 **The pinned clock does not change the comparison.** A pinned clock never
 lets a release fall due, but nothing here needs one to: a run lasts seconds
