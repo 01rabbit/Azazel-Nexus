@@ -1,8 +1,10 @@
 # Update Channel
 
 Status: **target contract**. Azazel-Nexus has **no update channel**. There is
-no release, no signing key, no published manifest, no offline bundle, and no
-code to update. This document states what a channel will have to carry when one
+no release, no signing key, no published manifest, and no released offline
+bundle. An unsigned, unencrypted offline install bundle *format* is
+implemented for building and rehearsal (§2.1); it is not a channel and carries
+no release authority. This document states what a channel will have to carry when one
 becomes possible, and marks what nobody has decided.
 
 Nothing below may be cited as evidence that Azazel-Nexus has been built,
@@ -79,6 +81,37 @@ for installing or updating a node.
 
 Asset acquisition never assigns a role and never grants a capability. Obtaining
 an update is not a step toward being allowed to run it.
+
+### 2.1 Offline install bundle — implementation status
+
+`tools/build_wheelhouse.py`, `tools/build_offline_bundle.py --wheelhouse` and
+`tools/offline_bundle.py` implement the integrity half of the offline
+transport for a first install; the procedure is in
+[Debian Live install](debian-live-install.md#offline-install-bundle). They do
+not implement the admission sequence of §3, and they change no acceptance
+policy: an unsigned bundle is handled exactly as before, and every report says
+`bundle_authenticated: false`.
+
+| Requirement (§2 offline transport) | Status |
+| --- | --- |
+| One manifest listing every artifact with sha256, size, kind and source | **implemented** — `MANIFEST.json`, first member of the bundle |
+| Declared regular files only; no traversal, links or devices | **implemented** — refused before anything is promoted |
+| Size and count limits enforced while hashing | **implemented** — caps can be lowered by the operator, never raised |
+| Promote only a complete tree | **implemented** — private staging directory, renamed into place after every check |
+| No nested archives | **partly** — wheels, the Edge package and `.deb` files are archives by nature; the extractor carries them as opaque files checked by sha256 and never unpacks them. Their consumers (pip, `edge_package`, `.deb` control check) read them with their own bounds |
+| Depth and quota limits | depth and path length **implemented**; disk quota **not implemented** |
+| Hash-pinned dependencies, installed with no index | **implemented** — `--require-hashes --no-index --find-links`; container-rehearsed with `--network none`, not hardware |
+| Signature over the manifest | **not implemented** — integration point `verify_bundle_signature`; waits for the issuer/operator signing work and a key (§8) |
+| Encryption | **not implemented** — format and key distribution are open (§8) |
+| Exact tested compatibility tuple, release-admission gates | **not implemented** — §3 |
+| Debian package set from a pinned apt snapshot | **slot only** — `.deb` files can be carried and checked against the manifest; the set and its source are not decided |
+| Python interpreter provisioning on the target | **not carried** — the target must already have `python3` and `python3-venv` |
+| Edge-side sensor packaging | **not here** — Azazel-Edge's; the bundle carries the pinned Edge Core package only |
+| Install on x86_64 hardware | **not done** |
+
+Container evidence for the wheelhouse build and the offline install:
+[offline-install-container-2026-10-28.json](evidence/offline-install-container-2026-10-28.json).
+It is a rehearsal under emulation and is not hardware evidence.
 
 ## 3. Release admission is product-local
 
@@ -214,21 +247,24 @@ required to meet. See [support matrix](support-matrix.md) §7.
 | SBOM format | **open.** The plan requires "SBOM references" (§4 rule 6) and "SBOMs" (§5 R8) and names no format |
 | Provenance attestation format | **open.** Required as completion evidence (§6) without a named scheme |
 | Manifest format, transport, and endpoint identity | **open**, and constrained by the `ASSET_ACQUISITION` bounds in §2 |
-| Offline bundle format, encryption, and key distribution | **open** |
+| Offline bundle format, encryption, and key distribution | **open** for the release format, encryption, and keys. The unsigned prototype format of §2.1 is an implementation, not a decision on the release format |
 | Soak-window duration and the health/segmentation tests that gate promotion | **undeclared** |
 | Security epoch numbering and `max_rollback_version` policy | **undeclared** — see [support matrix](support-matrix.md) §7 |
-| Reproducibility of a Nexus artifact | **untried.** R8 requires two independent builders to reproduce an unsigned payload digest; no Nexus build has ever been performed |
+| Reproducibility of a Nexus artifact | **untried.** R8 requires two independent builders to reproduce an unsigned payload digest; Nexus wheels have only been built by single prototype builders (§2.1), and no second builder has compared digests |
 
 These are decided in their own records, by the owner, not inside the first
 implementation pull request that needs an answer.
 
 ## 9. What this document does not establish
 
-- That Azazel-Nexus can be released or updated. It cannot: there is no code, no
-  builder, and no key.
-- That any SBOM, provenance, signing, or bundle mechanism has been selected,
-  prototyped, or evaluated. The Edge package verifier in §1a verifies
-  signatures nobody produces yet; it selects no signing mechanism for Nexus.
+- That Azazel-Nexus can be released or updated. It cannot: there is no
+  release, no signing key, and no admission policy. The offline bundle tools of
+  §2.1 build and install an unsigned bundle; they do not release anything.
+- That any SBOM, provenance, signing, or bundle mechanism has been selected or
+  evaluated. The unsigned offline bundle of §2.1 is a prototype implementation;
+  it does not select the release format. The Edge package verifier in §1a
+  verifies signatures nobody produces yet; it selects no signing mechanism for
+  Nexus.
 - That the update path described in §5 has ever been executed or tested.
 - That an update channel, once it exists, makes a configuration *supported*.
   That additionally requires operational evidence for a declared environment,

@@ -93,7 +93,8 @@ TARGETS = {
     },
 }
 
-_COMPONENT = re.compile(r"[A-Za-z0-9_+~=-][A-Za-z0-9._+~=-]*\Z")
+# `%` because apt names an epoch `1%3a` in a .deb file name.
+_COMPONENT = re.compile(r"[A-Za-z0-9_+~=%-][A-Za-z0-9._+~=%-]*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WHEEL = re.compile(
     r"(?P<name>[A-Za-z0-9_.]+)-(?P<version>[A-Za-z0-9_.!+]+)"

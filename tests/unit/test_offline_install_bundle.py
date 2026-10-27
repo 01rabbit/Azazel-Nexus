@@ -228,6 +228,7 @@ def test_manifest_round_trip_lists_every_member_with_hash_size_kind_source(built
 
 def test_the_same_inputs_make_identical_bundle_bytes(built, tmp_path):
     root, wheelhouse, bundle, _ = built
+    assert bundle.stat().st_mode & 0o777 == 0o644
     again = build_install_bundle(root, tmp_path / "again.tar.gz", wheelhouse=wheelhouse)
     assert (tmp_path / "again.tar.gz").read_bytes() == bundle.read_bytes()
     assert again == json.loads(_members(bundle)[0][1])
@@ -533,13 +534,17 @@ def test_deb_slot_records_and_rechecks_control_fields(tmp_path):
     debs = tmp_path / "debs"
     debs.mkdir()
     _deb(debs / "iproute2_6.15.0-1_amd64.deb")
+    # apt writes an epoch as %3a in the file name.
+    _deb(debs / "suricata_1%3a7.0.10-1+deb13u4_amd64.deb", package="suricata",
+         version="1:7.0.10-1+deb13u4")
     document = build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse,
                                     debs=debs, deb_source="test snapshot")
-    entry = next(e for e in document["artifacts"] if e["kind"] == "deb")
-    assert (entry["package"], entry["version"], entry["architecture"]) == ("iproute2", "6.15.0-1", "amd64")
+    entries = [e for e in document["artifacts"] if e["kind"] == "deb"]
+    assert [(e["package"], e["version"], e["architecture"]) for e in entries] == [
+        ("iproute2", "6.15.0-1", "amd64"), ("suricata", "1:7.0.10-1+deb13u4", "amd64")]
     report = verify_extracted(extract_bundle(tmp_path / "b.tar.gz", tmp_path / "out"))
     assert report["slots"]["deb"]["installed"] is False
-    assert report["slots"]["deb"]["packages"][0]["package"] == "iproute2"
+    assert [p["package"] for p in report["slots"]["deb"]["packages"]] == ["iproute2", "suricata"]
 
 
 def test_a_deb_whose_control_disagrees_with_the_manifest_is_refused(tmp_path):

@@ -424,8 +424,9 @@ The installer does **not** create the Python environment, install packages,
 download inputs, or configure Live persistence. Provision the venv separately
 with a Python 3.11+ interpreter and its venv/pip support, then install both
 verified distributions and their dependencies into it. On an offline target,
-carry the verified wheelhouse to the Live system and confirm imports before
-running the installer. For example, create the environment with
+carry the [offline install bundle](#offline-install-bundle) to the Live system;
+its installer creates the venv and confirms imports before you run this
+installer. For example, create the environment with
 `python3 -m venv /opt/azazel-nexus/venv` only if that interpreter's venv module
 is available; Debian Live images may differ in which Python support packages
 they include.
@@ -496,39 +497,109 @@ required runtime entrypoint is missing. `--without-service-manager` and
 their messages do not establish a complete installation and they are not
 substitutes for missing Debian Live prerequisites.
 
-The offline source bundle built by `tools/build_offline_bundle.py` contains
-both distributions' declared source, README/license build metadata, installer,
-and wrapper-staging tool. It is **not** a wheelhouse and does not contain built
-distributions or the setuptools build backend (`setuptools>=68`). This
-repository currently has no published, signed Nexus wheel set. To install from
-source offline, the operator must independently provide and verify a compatible
-build backend and pinned `dbus-next==0.2.3` and `PyYAML==6.0.3` wheels; the bundle itself does
-not establish authenticity or provenance for generated wheels. Do not infer a
-ready-to-install package from the source bundle.
+### Offline install bundle
 
-For a **local, unreleased prototype only**, this source bundle was successfully
-built on the preparation host with `uv build` and its isolated PEP 517 backend:
+Status: **implemented** (code and focused tests), **container-rehearsed** on
+emulated x86_64; **not verified** on x86_64 hardware and **not signed**. Two
+artifacts come out of the offline path, both unsigned:
 
-```sh
-cd /path/to/extracted/Azazel-Nexus-source
-uv build --wheel --out-dir /path/to/wheelhouse .
-uv build --wheel --out-dir /path/to/wheelhouse ./runtime
-```
+- the **source bundle** (`tools/build_offline_bundle.py --output X`): the two
+  distributions' declared source, README/license build metadata, installer,
+  wrapper-staging tool and the offline verifier. It is not a wheelhouse.
+- the **install bundle** (`tools/build_offline_bundle.py --output X
+  --wheelhouse W`): one `.tar.gz` whose first member is `MANIFEST.json`. The
+  manifest lists every other member with its sha256, size, kind and source:
+  the same source files, the hash-pinned wheelhouse, and four optional slots
+  (Edge package, Debian `.deb` set, model, Knowledge).
 
-The target's Python installer can then be pointed only at those local files:
+The build runs **online on a build host**; the install runs **offline** on the
+target:
 
 ```sh
-/opt/azazel-nexus/venv/bin/python -m pip install \
-  --no-index --find-links /path/to/wheelhouse \
-  azazel-nexus==0.0.1.dev0 azazel-nexus-runtime==0.0.1.dev0
+# Build host: Debian 13, x86_64, Debian's CPython 3.13, python3-dev and a C
+# compiler, from a clean checkout. Refuses any other architecture or Python,
+# because the runtime's native extension is compiled for the build host's ABI.
+python3 tools/build_wheelhouse.py --output /path/to/wheelhouse
+python3 tools/build_offline_bundle.py --output /path/to/azazel-nexus-offline.tar.gz \
+  --wheelhouse /path/to/wheelhouse \
+  [--edge-package DIR --edge-source TEXT] [--deb DIR --deb-source TEXT] \
+  [--model FILE] [--knowledge FILE] [--assets-source TEXT]
+
+# Target, no network. Run the verifier from a reviewed checkout, not from the
+# bundle it verifies.
+python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
+  --bundle /path/to/azazel-nexus-offline.tar.gz \
+  --into /var/lib/azazel-offline/bundle \
+  --venv /opt/azazel-nexus/venv --python /usr/bin/python3
+sudo env PYTHON=/opt/azazel-nexus/venv/bin/python \
+  sh /var/lib/azazel-offline/bundle/source/packaging/install.sh
 ```
 
-This demonstrates a prototype source-to-wheel route, not reproducible or
-authenticated publication: `setuptools>=68` is not pinned, the temporary
-build selected a host-resolved backend, and `uv` is not a production builder
-selection. Record and independently verify the source bundle, build backend,
-and wheel hashes for each preparation; do not treat local hashes as a
-signature or product release approval.
+`build_wheelhouse.py` installs the build backend from
+`packaging/offline/build-backend.lock` (`setuptools==84.0.0`, by file hash),
+downloads the third-party wheels named in
+`packaging/offline/requirements-x86_64-cp313.lock` with `--require-hashes
+--only-binary=:all: --no-deps`, and builds both Nexus wheels from the source
+bundle with `--no-build-isolation --no-index`. The lock's names and versions
+are tested against `runtime/pyproject.toml`; `uv.lock` is not used because it
+does not cover the runtime distribution. The two Nexus wheels are recorded by
+the hash this build produced; reproducibility across builders is not measured.
+
+`offline_bundle.py install` extracts into a private staging directory beside
+`--into` and renames it into place only after every check passed; it refuses
+absolute paths, `..`, links of any kind, device files, FIFOs and directory
+members, member counts or byte totals above the caps, a member the manifest
+does not declare or a declared one that is missing, and any size or sha256
+mismatch. It then runs the Edge slot through the existing `edge_package`
+checks (package present, version, digest, bound components) and re-reads each
+`.deb`'s control fields against the manifest, creates a **fresh** venv with
+the given interpreter, and installs with `pip --no-index --find-links
+--require-hashes --only-binary=:all:` from a requirements file generated from
+the manifest hashes. It does not run `install.sh`; it prints that next step.
+
+Every report carries `bundle_authenticated: false`. The integration point for
+the issuer/operator bundle signature is `verify_bundle_signature` in
+`tools/offline_bundle.py`, which receives the exact `MANIFEST.json` bytes and
+an optional `MANIFEST.sig` member; no verifier is wired in, so a present
+signature is carried and not checked. A sha256 match against an unsigned
+manifest is integrity against accidental change, not authenticity: whoever
+can rewrite the bundle can rewrite the manifest with it. Carrying an Edge
+package, a `.deb`, a model or a Knowledge bundle admits none of them; their
+own admission paths are unchanged, and `.deb` files are verified and carried
+but never installed by this tool.
+
+| Item | Status | Evidence / what is missing |
+| --- | --- | --- |
+| Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
+| Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
+| Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
+| Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container; `pip check` and imports passed |
+| Edge package slot | implemented; container-rehearsed with an Edge packager build | `edge_package` checks only; health/running stay `not-checked`; not admitted |
+| Debian `.deb` slot | implemented (slot and control-field check only) | no pinned package set or source exists; no `.deb` was carried |
+| Model / Knowledge slots | implemented (carry and hash only) | not admitted; admission paths unchanged |
+| Bundle signing | **not implemented** — hook only | needs the issuer/operator signing work and a key |
+| Bundle encryption ([update channel](update-channel.md) §2) | **not implemented** | format and key distribution open |
+| Python interpreter on the target | **not provided by the bundle** | the target must already have Debian's `python3` and `python3-venv` |
+| x86_64 hardware install | **not done** | requires an owner-run install on target hardware |
+
+Still needed from the owner or hardware:
+
+- a bundle signing key and the issuer/operator signature format (the hook is
+  `verify_bundle_signature`);
+- the Debian package set to carry (for example `suricata`, `iproute2`) and its
+  pinned source, such as a dated `snapshot.debian.org` archive;
+- provisioning of the Python interpreter and `python3-venv` on the target,
+  which this bundle assumes and does not carry;
+- Edge-side sensor packaging (Suricata rules/config and their owner), which
+  belongs to Azazel-Edge;
+- an install of a bundle on x86_64 hardware, which is the only confirmation
+  of the target ABI; the container rehearsal ran under Rosetta emulation.
+
+The [2026-10-13 prototype](#fresh-offline-installation-check-2026-10-13)
+predates this path: it downloaded dependency wheels online and used an
+unpinned, host-resolved build backend. It is kept as history;
+[its evidence](evidence/offline-install-2026-10-13.json) still applies only to
+what it recorded.
 
 ## Paths created or required
 

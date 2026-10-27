@@ -393,6 +393,7 @@ def build_install_bundle(
                         if reader.digest.hexdigest() != entry["sha256"]:
                             raise RuntimeError(f"{path} changed while the bundle was being built")
             raw.flush()
+            os.fchmod(raw.fileno(), 0o644)
             os.fsync(raw.fileno())
         if repository_identity(root) != identity:
             raise RuntimeError("source checkout changed while the bundle was being built")
