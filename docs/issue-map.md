@@ -69,9 +69,9 @@ repository can settle by code alone:
 
 | Waits on | Owner / when | Where it is recorded |
 | --- | --- | --- |
-| Adopting Fabric `mio_contracts` (published in the pinned Fabric, not adopted here) | owner decision | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §6.3, [contract ownership](contract-ownership.md) §3.3 |
+| Adopting Fabric `mio_contracts` (published in the pinned Fabric, not adopted here) | undecided: adoption needs a conformance attestation and none has been made; no document names who decides to adopt | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §6.3, [contract ownership](contract-ownership.md) §2, §3.3, §6, [support matrix](support-matrix.md) §4 |
 | Commissioning the sanitizer signer and the Provider Registry | after the target hardware; #115 lists both as not to be created or installed until then | [remote commissioning](remote-commissioning.md) §3 (decisions 1–9, sanitizer key = decision 7) |
-| The form in which the runtime reads the operator's remote consent | owner decision; today `az-mio-entryd` always passes `NO_OPT_IN` | `mio_profile.py`, `mio_entryd.py` |
+| The form in which the runtime reads the operator's remote consent | undecided: no document defines a persisted opt-in or names who decides its form ([route policy](mio-route-policy.md) fixes withdrawal semantics only); today `az-mio-entryd` always passes `NO_OPT_IN`, so even a FULL ceiling (`mio_profile: FULL` in the commissioning proposal, i.e. `MioProfile.FASTEST_PERMITTED`) yields no remote route | `mio_profile.py`, `mio_entryd.py`, `remote_trust.remote_admission` |
 
 Until all three exist, the shipped `mio_remoted.TRANSPORT` stays `None` and
 nothing can be sent (see [the sanitizer](mio-sanitizer.md) §5 and

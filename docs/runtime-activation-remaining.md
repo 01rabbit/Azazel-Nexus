@@ -19,7 +19,8 @@ as `LoadCredential=` inputs of `azazel-mio-entryd.service`. A missing
 credential, a failed verification, an unknown schema, inputs that change
 during verification, or a lab host select CORE. The profile is a ceiling,
 not admission: remote opt-in has no persisted reader (`az-mio-entryd` always
-passes `NO_OPT_IN`), so a FULL ceiling still yields no remote route.
+passes `NO_OPT_IN`), so a FULL ceiling (`mio_profile: FULL`, which maps to
+`MioProfile.FASTEST_PERMITTED`) still yields no remote route.
 HG-05 remains unmeasured and provider admission remains fail-closed.
 
 `az-knowledge-lited` serves only `knowledge.status` from

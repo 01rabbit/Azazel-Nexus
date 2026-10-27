@@ -21,7 +21,9 @@ effective capability = resource profile
 
 `ResourceProfile`, `TopologyProfile`, `InterfaceAssignment`, and
 `CommissioningRecord` are assigned to Azazel-Fabric `provisioning_contracts`,
-which is **not released yet**; the verified-asset set and the trust/health
+which is **published in the pinned Fabric and not adopted here** for these
+records (only `InterfaceIdentity` is consumed; §3.4 lists the tested
+projections and what production still lacks); the verified-asset set and the trust/health
 evaluation are Nexus-local. See [contract ownership](contract-ownership.md)
 §3.4.
 

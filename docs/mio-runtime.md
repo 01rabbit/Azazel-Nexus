@@ -708,8 +708,9 @@ until the following exist:**
 3. adoption of Fabric `mio_contracts`, which is **published in the pinned
    Fabric and not adopted here** — nothing in Nexus imports it and no Nexus
    frame or advisory result has been reconciled against its records, so the
-   remote path is not implemented against that contract (adopting it is an
-   owner decision; see [contract ownership](contract-ownership.md) §3.3);
+   remote path is not implemented against that contract (adoption needs a
+   conformance attestation and none has been made, and no document names who
+   decides; see [contract ownership](contract-ownership.md) §2, §3.3);
 4. a test harness capable of resource, timeout, restart, and failure injection.
 
 This document specifies the control plane so that implementation has something

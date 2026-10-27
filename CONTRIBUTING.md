@@ -124,9 +124,11 @@ owns, including the service objectives in program plan §8.
   every record that crosses a product boundary, with its serialization,
   digests, validation, and fixtures. Nexus may describe an adapter; it may not
   fork a Fabric model or publish a Nexus-local wire shape. Where a Fabric
-  contract does not exist yet — `provisioning_contracts`, `mio_contracts` —
-  the dependent work waits for the Fabric release rather than inventing a local
-  canonical form. See [contract ownership](docs/contract-ownership.md) §1, §3.
+  contract is published in the pinned Fabric but not adopted here —
+  `mio_contracts`, and `provisioning_contracts` apart from `InterfaceIdentity`
+  — the dependent work waits for adoption against a conformance attestation
+  rather than inventing a local canonical form. See
+  [contract ownership](docs/contract-ownership.md) §1, §2, §3.
 - **Do not inherit Azazel-Edge's device-specific network installer**, its fixed
   NIC values, or its unit defaults. Nexus's interface layout is unknown until
   inventory, so an inherited fixed value would be a guess presented as a fact.
