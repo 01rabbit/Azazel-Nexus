@@ -1408,3 +1408,187 @@ def test_the_pass_checks_a_decoded_policy_against_the_narrower_scope(world):
     object.__setattr__(forged, "units", tuple(sorted(SCOPE + (DECOY_UNITS[1],))))
     world.policy = forged
     _assert_refused(world, world.run(), ["activation_policy"])
+
+
+# -- Edge issuer authentication and the rollback floor ------------------------
+
+
+@pytest.fixture
+def floor_state(tmp_path, monkeypatch):
+    """The floor writer against a temporary state directory owned by the test."""
+    from contextlib import contextmanager
+
+    from azazel_nexus_runtime import edge_issuer_floor
+
+    directory = tmp_path / "floor-state"
+    directory.mkdir(mode=0o711)
+    directory.chmod(0o711)
+
+    @contextmanager
+    def state_directory():
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(edge_issuer_floor, "_state_directory", state_directory)
+    monkeypatch.setattr(edge_issuer_floor, "_OWNER", os.getuid())
+    return edge_issuer_floor
+
+
+def _floor_events(world):
+    return [e["edge_issuer_floor"] for e in world.events()
+            if e["event_type"] == "activation.edge_issuer_floor"]
+
+
+def test_a_grant_withdrawn_because_its_record_failed_never_raises_the_floor(
+        edge_world, floor_state, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.inputs_incomplete":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    with pytest.raises(RuntimeError, match="activation pass record could not be appended"):
+        edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert edge_world.markers() is None
+    assert floor_state.read_edge_floor() is None
+
+
+def test_a_floor_record_that_cannot_be_appended_withdraws_nothing(
+        edge_world, floor_state, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.edge_issuer_floor":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    assert floor_state.read_edge_floor() is not None
+
+
+def _issuer(digest, *, authenticated=True):
+    from azazel_nexus.edge_issuer import IssuerVerification
+
+    if not authenticated:
+        return IssuerVerification(digest_verified=True, issuer_authenticated=False,
+                                  issuer_status="not_configured")
+    return IssuerVerification(
+        digest_verified=True, issuer_authenticated=True, issuer_status="authenticated",
+        issuer="edge-release", revocation_status="none", revoked="none",
+        floor_status="absent", version=PIN.version, package_digest=digest)
+
+
+def _ledger_shape(world):
+    """Event types, and the recorded input keys, of one pass: what main records."""
+    return ([e["event_type"] for e in world.events()],
+            sorted(world.inputs_event()["observed_inputs"]))
+
+
+def test_a_node_without_an_issuer_records_exactly_what_main_records(
+        edge_world, floor_state, tmp_path):
+    """Not configured and nothing noted: the ledger has main's shape, byte for byte in keys."""
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(None, authenticated=False))
+    assert EDGE in outcome.granted
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert "edge_issuer" not in observed
+    assert _floor_events(edge_world) == []
+    assert floor_state.read_edge_floor() is None
+    # The same node with no issuer producer at all -- the path main runs.
+    main_like = World(tmp_path / "main-like", units=EDGE_SCOPE)
+    main_like.run(edge_issuer=None)
+    assert _ledger_shape(edge_world) == _ledger_shape(main_like)
+    assert observed == main_like.inputs_event()["observed_inputs"]
+
+
+def test_an_unconfigured_issuer_with_a_note_records_both_facts(edge_world, floor_state):
+    from azazel_nexus.edge_issuer import IssuerVerification
+
+    noted = IssuerVerification(digest_verified=True, issuer_authenticated=False,
+                               issuer_status="not_configured",
+                               notes=("revocations_present_without_anchor",))
+    edge_world.run(edge_issuer=lambda: noted)
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert observed["edge_issuer"]["digest_verified"] is True
+    assert observed["edge_issuer"]["issuer_authenticated"] is False
+    assert observed["edge_issuer"]["notes"] == ["revocations_present_without_anchor"]
+
+
+def test_a_floor_raise_that_raises_escapes_nothing(edge_world, floor_state, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(floor_state, "raise_floor_after_grant", broken)
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    assert _floor_events(edge_world) == ["failed"]
+    assert "edge issuer floor failed" in capsys.readouterr().err
+
+
+def test_an_unrecorded_floor_outcome_is_visible_in_the_journal(edge_world, floor_state,
+                                                              monkeypatch, capsys):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.edge_issuer_floor":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert ("edge issuer floor raised; its ledger record was not appended"
+            in capsys.readouterr().err)
+
+
+def test_an_authenticated_edge_grant_raises_the_floor_after_the_marker(edge_world, floor_state):
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert observed["edge_issuer"]["issuer_authenticated"] is True
+    assert _floor_events(edge_world) == ["raised"]
+    # Raised after, and only after, the pass record that completes the grant.
+    kinds = [e["event_type"] for e in edge_world.events()]
+    assert kinds.index("activation.inputs_incomplete") < kinds.index(
+        "activation.edge_issuer_floor")
+    floor = floor_state.read_edge_floor()
+    assert (floor.version, floor.package_digest) == (PIN.version, edge_world.package_digest)
+    # Labels only: no digest reaches the recorded inputs.
+    assert edge_world.package_digest not in json.dumps(observed)
+
+
+def test_a_withheld_edge_core_never_raises_the_floor(edge_world, floor_state):
+    def refused():
+        raise edge_package.EdgePackageRefused("synthetic")
+    outcome = edge_world.run(edge_package_digest=refused,
+                             edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE not in outcome.granted
+    assert _floor_events(edge_world) == []
+    assert floor_state.read_edge_floor() is None
+
+
+def test_an_issuer_reader_that_raises_authenticates_nothing(edge_world, floor_state):
+    def broken():
+        raise OSError("unreadable")
+    outcome = edge_world.run(edge_issuer=broken)
+    assert EDGE in outcome.granted  # issuer authentication is not required to admit
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert "edge_issuer" not in observed
+    assert _floor_events(edge_world) == []  # unauthenticated: the ledger is unchanged
+    assert floor_state.read_edge_floor() is None
+
+
+def test_the_production_pass_reads_the_issuer_at_the_fixed_paths():
+    producers = activation_pass.production_producers(commissioning_evidence=lambda: None)
+    assert producers.edge_issuer is edge_package.installed_issuer_verification

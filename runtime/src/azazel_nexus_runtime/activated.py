@@ -698,6 +698,7 @@ def _run_once(
                 pass
             _emergency_narrow(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
+    recorded = False
     # From the first marker to the final record, any failure (writing a
     # marker, assembling the diagnostic record, appending it) withdraws:
     # markers removed, every governed unit remasked, then it raises (#251 L-2).
@@ -733,6 +734,14 @@ def _run_once(
             # Fixed labels and check names only; no digest or probe text.
             observed["edge_package_binding"] = inputs.edge_package_binding
             observed["edge_evidence"] = inputs.edge_evidence
+            # Two separate facts and the floor label; labels only.
+            # Only where an issuer is configured or something was noted: a
+            # node with no issuer anchor and nothing to report records exactly
+            # what it recorded before issuer verification existed.
+            if inputs.edge_issuer is not None and (
+                    inputs.edge_issuer.issuer_status != "not_configured"
+                    or inputs.edge_issuer.notes):
+                observed["edge_issuer"] = inputs.edge_issuer.labels()
             # Only when the policy requires synchronization and the floor
             # check passed (#251 M-1): tells an unproven synchronization from
             # a clock below the floor. Absent otherwise, as before the field.
@@ -749,13 +758,57 @@ def _run_once(
             "occurred_at": now,
             "actor": actor,
         })
+        recorded = True
     except _MarkersUnwritten:
         _emergency_narrow(manager, root, "activation grant markers could not be written")
     except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
         # The record is what makes this a completed pass: the markers it
         # wrote and the units it enabled are withdrawn first.
         _emergency_narrow(manager, root, "activation pass record could not be appended")
+    if recorded and markers and EDGE_CORE_UNIT in granted and inputs is not None:
+        _raise_edge_floor(daemon, inputs, now=now, actor=actor)
     return outcome
+
+
+def _raise_edge_floor(daemon, inputs, *, now: str, actor: str) -> None:
+    """The Edge rollback floor, after a recorded edge-core grant (`edge_issuer_floor`).
+
+    Only here, after the pass record that completes the grant: a grant
+    withdrawn because its record failed never raises it. It raises only for
+    an issuer-authenticated, unrevoked package bound to the launch evidence,
+    so it never moves on any node without an issuer anchor. Neither the raise
+    nor its record can grant or withdraw anything, so a failure of either is
+    left at that -- visibly: a raise or record that fails prints a fixed label
+    to the journal. Nothing escapes this function.
+
+    A crash between the pass record and this raise leaves the floor where it
+    was until the next recorded authenticated pass raises it. That is safe:
+    the floor only narrows, and an un-raised floor admits nothing the checks
+    did not already admit.
+    """
+    try:
+        from .edge_issuer_floor import raise_floor_after_grant
+        label = raise_floor_after_grant(
+            inputs.edge_issuer,
+            launched_digest=inputs.edge.package_digest if inputs.edge else None)
+    except Exception:  # noqa: BLE001 - the floor is not a grant; nothing to withdraw
+        label = "failed"
+    if label == "not_authenticated":
+        # Every node without an issuer anchor: nothing was attempted, and the
+        # ledger stays exactly as it was before this floor existed.
+        return
+    try:
+        daemon.ledger.append({
+            "event_type": "activation.edge_issuer_floor",
+            "edge_issuer_floor": label,
+            "occurred_at": now, "actor": actor,
+        })
+    except Exception:  # noqa: BLE001 - the floor is not a grant; nothing to withdraw
+        print(f"az-activated edge issuer floor {label}; its ledger record was not appended",
+              file=sys.stderr)
+        return
+    if label in ("failed", "refused", "uncertain"):
+        print(f"az-activated edge issuer floor {label}", file=sys.stderr)
 
 
 class _MarkersUnwritten(Exception):

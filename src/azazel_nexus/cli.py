@@ -506,6 +506,30 @@ def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
         mark = "  SECURITY FINDING" if finding.security else ""
         print(f"    {finding.check}: {finding.evidence.value}{mark}", file=out)
         print(f"        {finding.reason}", file=out)
+    # Two separate facts, printed on two lines so that neither can be read as
+    # the other (`edge_issuer`): an intact artifact says nothing about who
+    # issued it, and a valid signature says nothing about the bytes on disk.
+    issuer = inspection.issuer
+    if issuer is not None:
+        print("    digest_verified: " + ("yes" if issuer.digest_verified else "no"), file=out)
+        named = f", issuer {issuer.issuer}" if issuer.issuer else ""
+        print(
+            "    issuer_authenticated: "
+            + ("yes" if issuer.issuer_authenticated else "no")
+            + f" ({issuer.issuer_status}{named})",
+            file=out,
+        )
+        print(f"        {issuer.issuer_reason}", file=out)
+        sequence = (f", sequence {issuer.revocation_sequence}"
+                    if issuer.revocation_sequence is not None else "")
+        print(f"    revocation: {issuer.revocation_status}{sequence}"
+              f" (revoked: {issuer.revoked})", file=out)
+        floor = f", floor {issuer.floor_version}" if issuer.floor_version else ""
+        print(f"    rollback floor: {issuer.floor_status}{floor}", file=out)
+        if issuer.notes:
+            # Reported, and by design without effect on any check.
+            print("    issuer notes (no effect on acceptance): "
+                  + ", ".join(issuer.notes), file=out)
     for caveat in inspection.caveats:
         print(f"    caveat: {caveat}", file=out)
 
