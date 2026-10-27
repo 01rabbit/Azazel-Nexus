@@ -35,8 +35,13 @@ from .mio_route_ledger import (
     UNATTRIBUTED,
     RouteSegmentFull,
 )
-from .mio_router import MioRouter
-from .mio_socket_client import LocalSocketClient, ReferenceSocketClient, RemoteSocketClient
+from .mio_router import HANDOFF_RESERVE_MS, MIN_AI_ATTEMPT_MS, MioRouter
+from .mio_socket_client import (
+    PROBE_MAX_S,
+    LocalSocketClient,
+    ReferenceSocketClient,
+    RemoteSocketClient,
+)
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import (
     Argument,
@@ -90,6 +95,17 @@ CONTROL_EVENTS = CAPABILITY_EVENTS | {"mio.entry.started"}
 #: Opens each request's records and names whose share they are charged to,
 #: so a restart can recount today's shares from today's segment.
 REQUEST_MARKER = "mio.entry.request"
+#: Kept after the playbook-reference fetch for validating, recording and
+#: delivering the handoff reply before the request's deadline. Software budget.
+ENTRY_DELIVERY_RESERVE_MS = 30
+#: A reference fetch is not started with less than this left of its share;
+#: the handoff is then delivered at once with `reference_reason: deadline`.
+MIN_REFERENCE_FETCH_MS = 50
+#: Readiness probes taken for a request come out of its one deadline: each may
+#: use at most half of what is left after the handoff reserve and one minimal
+#: AI attempt (and never more than `PROBE_MAX_S`). Below this, nothing is
+#: probed for the request and the availability record says so.
+MIN_PROBE_S = 0.01
 
 
 class PrincipalRate:
@@ -131,7 +147,7 @@ class MioEntryService:
         #: The model-free reference service. Separate from `local`: a node with
         #: no admitted model still reaches it, and it can reach no model verb.
         #: It reads the router's clock, the one the request's deadline is on.
-        self.reference = ReferenceSocketClient(clock=lambda: self.router._monotonic())
+        self.reference = ReferenceSocketClient(clock=lambda: self.router.monotonic())
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader
@@ -435,7 +451,13 @@ class MioEntryService:
         depends on Edge detection, decision or evidence, and nothing here is
         an AI answer: the reply names its kind.
         """
-        document, missing = self.reference.reference(frame, deadline_at=deadline_at)
+        # The fetch ends early enough that the reply is still delivered before
+        # the deadline the caller is counting down to.
+        fetch_deadline = deadline_at - ENTRY_DELIVERY_RESERVE_MS / 1000
+        if (fetch_deadline - self.router.monotonic()) * 1000 < MIN_REFERENCE_FETCH_MS:
+            document, missing = None, "deadline"
+        else:
+            document, missing = self.reference.reference(frame, deadline_at=fetch_deadline)
         if document is not None:
             try:
                 document = read_reference(document)
@@ -457,6 +479,24 @@ class MioEntryService:
         return {"reference_status": "unavailable", "reference_reason": missing,
                 "handoff": handoff}
 
+    def _observe_within(self, deadline_at: float) -> tuple[str, str]:
+        left_ms = ((deadline_at - self.router.monotonic()) * 1000
+                   - HANDOFF_RESERVE_MS - MIN_AI_ATTEMPT_MS)
+        budget = min(PROBE_MAX_S, left_ms / 2000)
+        if budget < MIN_PROBE_S:
+            # No probe fits; the periodic tick keeps the capability record.
+            return "not_observed_deadline", "not_observed_deadline"
+        clients = (self.local, self.remote)
+        for client in clients:
+            client.probe_deadline_s = budget
+        try:
+            local, remote = self.reconcile_capability() or (None, None)
+            return (local if local is not None else self.local.observe(),
+                    remote if remote is not None else self.remote.observe())
+        finally:
+            for client in clients:
+                client.probe_deadline_s = PROBE_MAX_S
+
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
             self.router._record({"event_type": REQUEST_MARKER, "caller": key})
@@ -466,7 +506,7 @@ class MioEntryService:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "deadline_ms")
         # The request's one deadline, on the router's monotonic clock. The
         # route, any fallback and the reference all take what is left of it.
-        deadline_at = self.router._monotonic() + request.arguments["deadline_ms"] / 1000
+        deadline_at = self.router.monotonic() + request.arguments["deadline_ms"] / 1000
         is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
         explainer = (principal is not None and self._explainer_uid is not None
                      and principal.uid == self._explainer_uid
@@ -495,17 +535,17 @@ class MioEntryService:
         else:
             privacy = PrivacyClass(request.arguments["privacy_class"])
             self._mark(key)
-        sampled = self.reconcile_capability() or (None, None)
-        profile = self._profile_reader()
         # Observations remain separate from admission and prediction. Even a
         # reachable daemon cannot lift HG-05 or establish remote trust. A
         # capability sample taken for this request is reused, so both records
         # describe the same observation and the request probes each daemon once.
-        local, remote = sampled
+        # Probe time comes out of this request's deadline (`MIN_PROBE_S`).
+        local, remote = self._observe_within(deadline_at)
+        profile = self._profile_reader()
         self.router._record({
             "event_type": "mio.entry.availability",
-            "local": local if local is not None else self.local.observe(),
-            "remote": remote if remote is not None else self.remote.observe(),
+            "local": local,
+            "remote": remote,
             "local_refusal": LOCAL_REFUSAL,
             "remote_trust": "unchecked",
         })

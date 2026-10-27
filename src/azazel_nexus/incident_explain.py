@@ -291,14 +291,16 @@ def read_mio_reply(reply):
             and reply["fields"] == {}):
         _text(reply["advice"], 4096)
         _int(reply["ledger_seq"], 2**63-1)
-        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None}
+        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
+                "content_kind": "none"}
     if reply["route"] not in {"local", "deterministic handoff"} or reply["outcome"] not in {o.value for o in RequestOutcome}:
         raise ValueError("mio_reply_refused")
     _text(reply["reason"], 2048)
     _int(reply["ledger_seq"], 2**63-1)
     advice = None
     if set(reply) == base and reply["route"] == "local" and reply["outcome"] != "answered":
-        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory", "text": None}
+        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
+                "text": None, "content_kind": "none"}
     if reply["route"] == "local":
         body_keys = {"advice", "fields", "knowledge", *MACHINE_FIELDS}
         if not set(reply) <= base | body_keys:
@@ -315,7 +317,12 @@ def read_mio_reply(reply):
         elif reply["reference_status"] != "unavailable" or "reference" in reply:
             raise ValueError("mio_reply_refused")
     reason = "mio_handoff" if reply["route"] == "deterministic handoff" else reply["reason"]
-    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice}
+    if reply["route"] == "local":
+        kind = "ai_advice"
+    else:
+        kind = "deterministic_reference" if advice is not None else "none"
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice,
+            "content_kind": kind}
 
 
 _REASON_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -364,7 +371,42 @@ def _read_handoff(reply, base):
         reason = "mio_handoff:" + reply["reference_reason"]
     else:
         raise ValueError("mio_reply_refused")
-    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": text}
+    # The fixed notice is kept with its language; `content_kind` labels what
+    # `text` is, so a reader never shows a reference as if it were AI advice.
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": text,
+            "content_kind": handoff["kind"], "notice": handoff["notice"]}
+
+
+#: What a record's `mio.text` is. Only `ai_advice` is an AI's output; both
+#: deterministic kinds are fixed or verified material and say so.
+CONTENT_KINDS = ("ai_advice", "deterministic_reference", "deterministic_notice", "none")
+CONTENT_LABELS = {
+    "ai_advice": "AI advice (local model)",
+    "deterministic_reference": "deterministic playbook reference (not AI)",
+    "deterministic_notice": "deterministic handoff notice (not AI)",
+    "none": "no content",
+}
+
+
+def _read_content(m):
+    """Optional on read, so records written before the label still read."""
+    kind = m.get("content_kind")
+    if kind is None:
+        if "notice" in m:
+            raise ValueError("record_refused")
+        return
+    if kind not in CONTENT_KINDS:
+        raise ValueError("record_refused")
+    notice = m.get("notice")
+    if notice is not None and notice not in HANDOFF_NOTICE.values():
+        raise ValueError("record_refused")
+    handoff = kind in ("deterministic_reference", "deterministic_notice")
+    if handoff != (notice is not None) or (handoff and m["route"] != "deterministic handoff"):
+        raise ValueError("record_refused")
+    if (m["text"] is None) != (kind in ("deterministic_notice", "none")):
+        raise ValueError("record_refused")
+    if kind == "ai_advice" and m["route"] != "local":
+        raise ValueError("record_refused")
 
 
 RECORD_FIELDS = {"incident_id", "explained_at", "transition", "edge_would", "policy_reason",
@@ -395,12 +437,13 @@ def read_record(value):
     if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
         raise ValueError("record_refused")
     m = value["mio"]
-    _shape(m, ("route", "outcome", "reason", "text"))
+    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice"))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
     if m["text"] is not None:
         _text(m["text"], 4096)
+    _read_content(m)
     return json.loads(json.dumps(value, allow_nan=False))
 
 
@@ -446,10 +489,14 @@ def explanation_summary(record):
         except ValueError:
             continue
         refs.append(citation)
-    return {"state": "explained" if r["mio"]["text"] else "unavailable",
-            "route": r["mio"]["route"], "outcome": r["mio"]["outcome"],
-            "summary": private_text(r["mio"]["text"][:280], 280) if r["mio"]["text"] else "",
-            "knowledge_refs": refs, "failure_codes": r["failure_codes"]}
+    summary = {"state": "explained" if r["mio"]["text"] else "unavailable",
+               "route": r["mio"]["route"], "outcome": r["mio"]["outcome"],
+               "summary": private_text(r["mio"]["text"][:280], 280) if r["mio"]["text"] else "",
+               "knowledge_refs": refs, "failure_codes": r["failure_codes"]}
+    for key in ("content_kind", "notice"):
+        if key in r["mio"]:
+            summary[key] = r["mio"][key]
+    return summary
 
 
 def build_recent_incidents(incidents, written_at):
@@ -513,7 +560,11 @@ def read_recent_incidents(raw):
             if type(ids) is not list or len(ids) > 8 or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids):
                 return None
             e = row["explanation"]
-            _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"))
+            _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
+                   ("content_kind", "notice"))
+            if ("content_kind" in e and e["content_kind"] not in CONTENT_KINDS) or (
+                    "notice" in e and e["notice"] not in HANDOFF_NOTICE.values()):
+                return None
             if (e["state"] not in {"pending", "explained", "unavailable"}
                     or e["route"] not in {"local", "deterministic handoff", "unavailable"}
                     or e["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}):

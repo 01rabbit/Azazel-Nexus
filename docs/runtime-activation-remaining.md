@@ -34,7 +34,8 @@ evidence):
 | --- | --- | --- |
 | Playbook reference without an admitted model | implemented: model-free `azazel-mio-referenced.service` (`mio_referenced.py`, verb `mio.reference`); locald no longer serves references and its wiring and admission are unchanged | `tests/unit/test_mio_reference.py`, `tests/unit/test_mio_reference_socket.py` |
 | Fixed notice and missing reason when no playbook is usable | implemented: `handoff.kind`, `handoff.notice`, `reference_reason` | same |
-| One deadline per request | implemented: entry measures it once; route, fallback, reply validation and reference share it | `tests/unit/test_mio_router_deadline.py` |
+| One deadline per request | implemented: entry measures it once; probes, route, fallback (local and remote), reply validation and reference share it; the reply is delivered before it and the explainer waits longer | `tests/unit/test_mio_router_deadline.py`, `tests/unit/test_mio_reference.py` |
+| Notice and content kind kept in the incident record | implemented: `mio.content_kind`, `mio.notice`; labelled in status | `tests/unit/test_mio_reference.py` |
 | Deterministic terminal step after AI failure | implemented: at most two AI attempts, then `mio.route.handoff` with causes and failures; no AI is called after it | same |
 | Loop scope including the reference unit | proposed, pending owner ratification ([§6](activation-observe-baseline.md#6-owner-decisions)) | `tests/unit/test_activation_policy.py` |
 | Installed systemd lifecycle on target hardware | not established | — |

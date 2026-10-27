@@ -69,7 +69,7 @@ def test_confirmed_profile_reader_is_used_without_admitting_a_provider(service, 
 @pytest.mark.parametrize("failure", [FileNotFoundError(), ConnectionRefusedError(),
                                        TimeoutError(), ValueError("refused")])
 def test_client_failures_are_unavailable(monkeypatch, failure):
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise failure
 
     monkeypatch.setattr(client, "_exchange", fail)
@@ -80,15 +80,16 @@ def test_client_failures_are_unavailable(monkeypatch, failure):
 def test_fixed_probe_never_supplies_payload_or_accepts_response_text(monkeypatch):
     calls = []
 
-    def exchange(*args):
-        calls.append(args)
+    def exchange(*args, **kwargs):
+        calls.append((args, kwargs))
         return {"readiness": "refused", "reason": "PROMPT_SENTINEL"}
 
     monkeypatch.setattr(client, "_exchange", exchange)
     assert client.LocalSocketClient().observe() == "local_not_admitted"
-    assert calls == [("mio", "azmio", "model.activate", {
+    # A bounded probe: never longer than PROBE_MAX_S, and no payload.
+    assert calls == [(("mio", "azmio", "model.activate", {
         "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-    })]
+    }), {"deadline_s": client.PROBE_MAX_S})]
 
 
 def test_metadata_vocabulary_and_principals():

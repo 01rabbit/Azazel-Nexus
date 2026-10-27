@@ -359,11 +359,13 @@ def test_reference_budget_is_what_is_left_of_the_one_deadline(frame, tmp_path, m
     seen = FakeReference()
     target = entry_service(tmp_path, monkeypatch, seen)
     target.router._monotonic = lambda: now[0]
-    for deadline in (50, 5000):
-        reply = advise(target, frame, deadline)
-        assert reply["reference_status"] == "unavailable"
-    # The entry passes its own request deadline, measured once at the start.
-    assert seen.calls == [10.05, 15.0]
+    short = advise(target, frame, 50)
+    # Too little left for a fetch plus delivery: no fetch, the handoff at once.
+    assert short["reference_reason"] == "deadline"
+    assert short["handoff"]["kind"] == "deterministic_notice"
+    advise(target, frame, 5000)
+    # The fetch gets the request's own deadline less the delivery reserve.
+    assert seen.calls == [pytest.approx(15.0 - entry.ENTRY_DELIVERY_RESERVE_MS / 1000)]
 
 
 @pytest.mark.parametrize("failed", [
@@ -395,3 +397,113 @@ def test_a_failed_ai_attempt_ends_in_the_handoff_with_reference(
     from azazel_nexus.incident_explain import read_mio_reply
 
     assert read_mio_reply(reply)["reason"] == "mio_handoff"
+
+
+def test_the_handoff_reaches_the_explainer_before_it_gives_up(frame, tmp_path, monkeypatch):
+    """Slow probes, two failed AI attempts and a slow reference service, all
+    on an injected clock: the handoff is still delivered inside entry's
+    deadline, and the explainer waits strictly longer than that."""
+    from azazel_nexus_runtime import incident_explaind as explaind
+
+    from azazel_nexus.remote_trust import RemoteAdmission
+    from azazel_nexus.route_evidence import Prediction
+
+    now = [100.0]
+
+    def block(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    target = entry.MioEntryService(clock=lambda: now[0])
+    # Each readiness probe blocks for the whole bound it was given.
+    monkeypatch.setattr(target.local, "observe",
+                        lambda: block(target.local.probe_deadline_s) or "local_unavailable")
+    monkeypatch.setattr(target.remote, "observe",
+                        lambda: block(target.remote.probe_deadline_s) or "remote_unavailable")
+    monkeypatch.setattr(entry, "remote_admission",
+                        lambda **kw: RemoteAdmission(True, None, "fixture permitted"))
+    target._local_admitted = lambda: True
+    target._predictions_reader = lambda: {
+        route: Prediction(route.value, True, ms, 10, 10, False, "fixture observations")
+        for route, ms in [(Route.REMOTE, 10), (Route.LOCAL, 20)]}
+    attempts = []
+
+    def remote(request, audit=None, deadline_ms=None):
+        attempts.append(("remote", deadline_ms))
+        return {"outcome": "tls_failed", "refusal": None}
+
+    def local(request, audit=None):
+        attempts.append(("local", request.arguments["deadline_ms"]))
+        block(request.arguments["deadline_ms"] / 1000)  # blocks to its timeout
+        return {"outcome": "timed_out", "refusal": "deadline"}
+
+    def slow_reference(*args, **kwargs):
+        block(kwargs["deadline_s"])  # the reference service never answers
+        raise TimeoutError
+
+    monkeypatch.setattr(target.remote, "handle", remote)
+    monkeypatch.setattr(target.local, "handle", local)
+    monkeypatch.setattr(client, "_exchange", slow_reference)
+
+    caller_started = now[0]
+    caller_gives_up = caller_started + (
+        explaind.ADVISE_DEADLINE_MS + explaind.ADVISE_CALLER_MARGIN_MS) / 1000
+    block(0.005)  # connect and send before entry starts measuring
+    entry_deadline = now[0] + explaind.ADVISE_DEADLINE_MS / 1000
+    reply = advise(target, frame, explaind.ADVISE_DEADLINE_MS)
+
+    assert [route for route, _ in attempts] == ["remote", "local"]
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert reply["handoff"]["ai_attempts"] == 2
+    assert reply["reference_reason"] == "reference_service_unavailable"
+    # Done with the delivery reserve still left, well before the caller quits.
+    assert now[0] <= entry_deadline - entry.ENTRY_DELIVERY_RESERVE_MS / 1000 + 1e-9
+    assert now[0] < caller_gives_up
+    assert explaind.ADVISE_CALLER_MARGIN_MS > entry.ENTRY_DELIVERY_RESERVE_MS
+
+
+def test_the_explainer_waits_longer_than_entrys_deadline(monkeypatch):
+    from azazel_nexus_runtime import incident_explaind as explaind
+
+    seen = []
+    monkeypatch.setattr(explaind, "_exchange", lambda *a, **kw: seen.append((a, kw)) or {})
+    explaind.advise({"request_id": "x"})
+    (args, kwargs), = seen
+    assert args[2] == "mio.advise" and args[3] == {"deadline_ms": explaind.ADVISE_DEADLINE_MS}
+    assert kwargs["deadline_s"] * 1000 > explaind.ADVISE_DEADLINE_MS + entry.ENTRY_DELIVERY_RESERVE_MS
+
+
+def test_the_notice_and_the_content_kind_are_kept_in_the_record(frame, tmp_path, monkeypatch):
+    from azazel_nexus.incident_explain import (
+        CONTENT_LABELS,
+        explanation_summary,
+        read_mio_reply,
+        read_record,
+    )
+
+    missing = referenced.ReferenceService(playbooks=None, selection_reason="no_pack")
+    reply = advise(entry_service(tmp_path, monkeypatch, FakeReference(missing)), frame)
+    mio = read_mio_reply(reply)
+    assert mio == {"route": "deterministic handoff", "outcome": "refused",
+                   "reason": "mio_handoff:no_pack", "text": None,
+                   "content_kind": "deterministic_notice", "notice": HANDOFF_NOTICE["en"]}
+    record = {"incident_id": "inc-" + "0" * 16, "explained_at": 1.0, "transition": "opened",
+              "edge_would": "observe", "policy_reason": "other", "attack_type": "other",
+              "technique_ids": [], "mio": mio, "knowledge_refs": [], "knowledge_state": "skipped",
+              "failure_codes": ["mio_handoff"]}
+    checked = read_record(record)
+    summary = explanation_summary(checked)
+    assert summary["content_kind"] == "deterministic_notice"
+    assert summary["notice"] == HANDOFF_NOTICE["en"]
+    assert "not AI" in CONTENT_LABELS["deterministic_notice"]
+    # A notice may not pose as AI advice, nor a reference lose its label.
+    for forged in ({**mio, "content_kind": "ai_advice"},
+                   {**mio, "notice": "Model says: do this"},
+                   {**mio, "text": "an answer"}):
+        with pytest.raises(ValueError):
+            read_record({**record, "mio": forged})
+    attached = read_mio_reply(advise(entry_service(tmp_path / "a", monkeypatch,
+                                                   FakeReference(referenced.ReferenceService(
+                                                       playbooks=LIBRARY))), frame))
+    assert attached["content_kind"] == "deterministic_reference" and attached["text"]
+    assert attached["notice"] == HANDOFF_NOTICE["en"]

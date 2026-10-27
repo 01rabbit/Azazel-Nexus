@@ -14,6 +14,7 @@ deterministic handoff, which calls no AI and records why it was reached.
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -48,9 +49,11 @@ from .runtime_paths import mio_state_dir
 #: At most two AI attempts per request: the selected route and one fallback.
 MAX_AI_ATTEMPTS = 2
 #: Kept back from every AI attempt for the deterministic terminal step: its
-#: ledger records and the entry's validation of the reply. A software budget,
-#: not measured hardware latency.
-HANDOFF_RESERVE_MS = 50
+#: ledger records, the entry's bounded playbook-reference fetch, and the
+#: validation and delivery of the reply before the deadline. After two AI
+#: failures this is what the reference still has. A software budget, not
+#: measured hardware latency.
+HANDOFF_RESERVE_MS = 200
 #: An AI attempt is not started with less than this left after the reserve.
 #: Below it a provider cannot even return and validate a bounded reply, so
 #: starting one would only spend the time the handoff needs.
@@ -122,9 +125,15 @@ class MioRouter:
         else:
             self.ledger.append(dated)
 
+    def monotonic(self) -> float:
+        """The clock every deadline of a request is measured on."""
+        return self._monotonic()
+
     def remaining_ms(self, deadline_at: float) -> int:
         """Whole milliseconds left before `deadline_at`; never negative."""
-        return max(0, int((deadline_at - self._monotonic()) * 1000))
+        # Floored, with a nanosecond allowance so float noise in a difference
+        # of two clock readings never costs a whole millisecond.
+        return max(0, math.floor((deadline_at - self._monotonic()) * 1000 + 1e-6))
 
     @staticmethod
     def _bounded(local_request: Any, budget_ms: int) -> Any:
@@ -144,7 +153,12 @@ class MioRouter:
     def _attempt(self, route: Route, local_request: Any, remote_request: Any,
                  budget_ms: int) -> dict:
         if route is Route.REMOTE:
-            reply = self._remote.handle(remote_request, audit=self._record)
+            # The remote attempt is bounded by the same share of the one
+            # deadline: the service hands it to its transport, and the socket
+            # client uses it as its socket timeout. Nothing it does can wait
+            # past the deadline on the remote side's own clock alone.
+            reply = self._remote.handle(remote_request, audit=self._record,
+                                        deadline_ms=budget_ms)
             self._record({
                 "event_type": "mio.remote.response",
                 "outcome": reply["outcome"],

@@ -377,3 +377,27 @@ def test_every_reader_in_the_package_accepts_the_decoy_key(tmp_path, monkeypatch
         else:
             assert "decoy (Deception Lite): not listening (decoy socket not open); refused " in text
     assert "decoy (Deception Lite; Nexus's own observation" in _status(tmp_path)
+
+
+@pytest.mark.parametrize("kind,summary,label", [
+    ("deterministic_notice", "", "deterministic handoff notice (not AI)"),
+    ("deterministic_reference", "Reference banner text", "deterministic playbook reference (not AI)"),
+    ("ai_advice", "Inspect the incident", "AI advice (local model)"),
+])
+def test_explanations_are_labelled_by_content_kind(tmp_path, monkeypatch, kind, summary, label):
+    from azazel_nexus.local_advisory import HANDOFF_NOTICE
+
+    _, _, recent = fixtures(tmp_path, monkeypatch)
+    explanation = recent["incidents"][0]["explanation"]
+    explanation.update(content_kind=kind, summary=summary,
+                       state="explained" if summary else "unavailable",
+                       route="local" if kind == "ai_advice" else "deterministic handoff")
+    if kind != "ai_advice":
+        explanation["notice"] = HANDOFF_NOTICE["en"]
+    runtime_paths.incident_recent_path().write_text(json.dumps(recent))
+    text = render()
+    assert f"[{label}]" in text
+    assert ("notice: " + HANDOFF_NOTICE["en"] in text) is (kind != "ai_advice")
+    explanation["content_kind"] = "advice"  # an unknown kind refuses the snapshot
+    runtime_paths.incident_recent_path().write_text(json.dumps(recent))
+    assert "recent incidents: unavailable" in render()

@@ -84,18 +84,23 @@ def _exchange(
     return response["result"]
 
 
-def _probe(leaf: str) -> str:
+#: The longest a readiness probe may take. A request that probes passes a
+#: smaller bound: probe time comes out of that request's one deadline.
+PROBE_MAX_S = 0.5
+
+
+def _probe(leaf: str, deadline_s: float = PROBE_MAX_S) -> str:
     try:
         if leaf == "mio":
             reply = _exchange("mio", "azmio", "model.activate", {
                 "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-            })
+            }, deadline_s=deadline_s)
             if reply.get("readiness") == "refused":
                 return "local_not_admitted"
             return "local_no_admission_evidence"
         reply = _exchange("remote", "azremote", "remote.infer", {
             "provider_id": "uncommissioned", "request_id": "route-probe",
-        })
+        }, deadline_s=deadline_s)
         if reply.get("outcome") == "not_sent":
             return "remote_not_admitted"
         return "remote_no_admission_evidence"
@@ -111,8 +116,11 @@ def _reply_metadata(reply: dict) -> dict:
 
 
 class LocalSocketClient:
+    #: Set by the entry for the duration of one request (see `PROBE_MAX_S`).
+    probe_deadline_s = PROBE_MAX_S
+
     def observe(self) -> str:
-        return _probe("mio")
+        return _probe("mio", self.probe_deadline_s)
 
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
@@ -183,8 +191,20 @@ class ReferenceSocketClient:
 
 
 class RemoteSocketClient:
-    def observe(self) -> str:
-        return _probe("remote")
+    #: Set by the entry for the duration of one request (see `PROBE_MAX_S`).
+    probe_deadline_s = PROBE_MAX_S
 
-    def handle(self, request, *, audit=None) -> dict:
-        return {"outcome": "unavailable", "refusal": self.observe()}
+    def observe(self) -> str:
+        return _probe("remote", self.probe_deadline_s)
+
+    def handle(self, request, *, audit=None, deadline_ms=None) -> dict:
+        """No transport is reachable from here; the probe is still bounded.
+
+        `deadline_ms` is the attempt's share of the request's one deadline and
+        is the socket timeout of the exchange, so a remote daemon that accepts
+        and never answers cannot hold the request past it.
+        """
+        bound = PROBE_MAX_S if deadline_ms is None else min(PROBE_MAX_S, deadline_ms / 1000)
+        if bound <= 0:
+            return {"outcome": "timed_out", "refusal": "deadline"}
+        return {"outcome": "unavailable", "refusal": _probe("remote", bound)}

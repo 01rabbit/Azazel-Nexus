@@ -93,14 +93,29 @@ class ExplanationStore(EvidenceStore):
             raise SegmentFull("explanation_segment_full") from None
 
 
+#: The deadline the explainer gives entry for one `mio.advise`.
+ADVISE_DEADLINE_MS = REFERENCE_DEADLINE_MS
+#: How much longer the explainer waits than that. Entry measures its deadline
+#: after this client has connected and sent, and delivers the reply (with the
+#: deterministic handoff and any reference) before that deadline; this margin
+#: covers the connect, the framing and the delivery on either side of it, so
+#: the explainer never gives up before entry has answered. Software budget.
+ADVISE_CALLER_MARGIN_MS = 250
+
+
+def advise(frame):
+    """One `mio.advise`; the caller waits strictly longer than entry's deadline."""
+    return _exchange(
+        "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": ADVISE_DEADLINE_MS},
+        payload=frame, deadline_s=(ADVISE_DEADLINE_MS + ADVISE_CALLER_MARGIN_MS) / 1000)
+
+
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         self.clock, self.monotonic = clock, monotonic
-        self.mio = mio or (lambda frame: _exchange(
-            "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": REFERENCE_DEADLINE_MS},
-            payload=frame, deadline_s=REFERENCE_DEADLINE_MS / 1000))
+        self.mio = mio or advise
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}
         self.recent = []

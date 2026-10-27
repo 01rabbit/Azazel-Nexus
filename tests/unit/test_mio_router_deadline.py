@@ -36,12 +36,25 @@ class Provider:
 
     def __init__(self, clock, name, reply, cost=0.0):
         self.clock, self.name, self.reply, self.cost = clock, name, reply, cost
-        self.calls = []
+        self.calls, self.deadlines = [], []
 
-    def handle(self, request, audit=None):
+    def handle(self, request, audit=None, deadline_ms=None):
         self.calls.append(request)
+        self.deadlines.append(deadline_ms)
         self.clock.now += self.cost
         return dict(self.reply)
+
+
+class BlockingRemote(Provider):
+    """A remote that never answers on its own: it blocks until the timeout it
+    was given (as a socket timeout would), then reports the time-out."""
+
+    def handle(self, request, audit=None, deadline_ms=None):
+        self.calls.append(request)
+        self.deadlines.append(deadline_ms)
+        assert deadline_ms is not None, "a remote attempt without a deadline could block forever"
+        self.clock.now += deadline_ms / 1000
+        return {"outcome": "timed_out", "refusal": None}
 
 
 def router(tmp_path, monkeypatch, clock, *, remote, local):
@@ -285,3 +298,39 @@ def test_the_router_and_entry_import_no_edge_module():
                 names.update(alias.name for alias in node.names)
         edge = {name for name in names if re.search(r"(^|\.)edge", name)}
         assert not edge, (module.__name__, edge)
+
+
+def test_a_blocking_remote_is_bounded_by_the_one_deadline(tmp_path, monkeypatch):
+    clock = Clock()
+    remote = BlockingRemote(clock, "remote", None)
+    local = Provider(clock, "local", FAILED, cost=0.0)
+    target = router(tmp_path, monkeypatch, clock, remote=remote, local=local)
+    result = invoke(target, deadline_ms=1000)
+    # The remote got the attempt's share, not an unbounded call.
+    assert remote.deadlines == [1000 - mio_router.HANDOFF_RESERVE_MS]
+    # It blocked for all of it, so no fallback had room to start ...
+    assert local.calls == []
+    # ... and the request still ends in the handoff with the reserve intact.
+    assert clock.now <= START + 1.0 - mio_router.HANDOFF_RESERVE_MS / 1000
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    assert result.failures[0] == {"route": "remote", "terminal_event": "timed out"}
+
+
+def test_the_remote_service_hands_the_deadline_to_its_transport():
+    from test_mio_remoted import FRAME, Request, _seal, _service
+
+    seen = []
+
+    def transport(**kwargs):
+        seen.append(kwargs.get("deadline_s"))
+        from azazel_nexus_runtime.inference_egress import EgressReport, TransportOutcome
+        return EgressReport(TransportOutcome.TIMED_OUT, 0, None, "fixture timeout"), b""
+
+    frame = FRAME
+    reply = _service(transport=transport).handle(
+        Request(frame=frame, envelope=_seal(frame=frame)), deadline_ms=250)
+    assert seen == [0.25]
+    assert reply["outcome"] == "timed_out"
+    nothing = _service(transport=lambda **kw: pytest.fail("sent with no time left")).handle(
+        Request(frame=frame, envelope=_seal(frame=frame)), deadline_ms=0)
+    assert nothing["outcome"] == "not_sent" and nothing["refusal"] == "deadline"

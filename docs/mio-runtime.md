@@ -626,16 +626,30 @@ the fixed `malformed_payload` reason, never parser exception text.
 measures the request's deadline once, on the monotonic clock, when the request
 arrives, and passes it to the router (`deadline_at`). Selection compares
 predictions with what is left of it, not with the caller's original budget. Each
-AI attempt receives the remaining time minus `HANDOFF_RESERVE_MS` (50 ms, kept for
-the terminal step); the fallback never receives a fresh copy of the original
-`deadline_ms`. An AI attempt is not started when less than `MIN_AI_ATTEMPT_MS`
+AI attempt receives the remaining time minus `HANDOFF_RESERVE_MS` (200 ms, kept for
+the terminal step, the playbook-reference fetch and the reply's delivery); the
+fallback never receives a fresh copy of the original `deadline_ms`. An AI attempt is not started when less than `MIN_AI_ATTEMPT_MS`
 (100 ms) would be left for it; that records `mio.route.not_started` with
 `deadline_budget_insufficient`. A reply that arrives at or after the deadline is
 discarded (`mio.route.late_reply`) and classified `TIMED_OUT`, never `ANSWERED`.
-Both constants are software budgets, not measured hardware latency. The remote
-transport keeps its own commissioned deadline; the router bounds it from outside
-(not started without room, discarded when late) because the remote verb carries
-no deadline argument.
+All of these constants are software budgets, not measured hardware latency.
+The remote attempt receives the same share as `deadline_ms`: the in-process
+remote service hands it to its transport as `deadline_s` (and sends nothing with
+none left), and entry's remote socket client uses it as the socket timeout of the
+exchange, so a remote daemon that accepts and never answers cannot hold the
+request past it. The remote verb's arguments are unchanged.
+
+Readiness probes taken for a request come out of the same deadline: each probe
+gets at most half of what is left after `HANDOFF_RESERVE_MS` and one minimal AI
+attempt, never more than `PROBE_MAX_S` (0.5 s); with less than `MIN_PROBE_S` left
+nothing is probed and the availability record reads `not_observed_deadline` (the
+periodic tick keeps the capability record). After the routing decision, entry
+keeps `ENTRY_DELIVERY_RESERVE_MS` (30 ms) for validating, recording and delivering
+the reply: the playbook-reference fetch ends that much before the deadline, and
+is not started with less than `MIN_REFERENCE_FETCH_MS` (50 ms) for it, in which
+case the handoff is delivered at once with `reference_reason: deadline`. The
+incident explainer asks with a 500 ms deadline and waits 750 ms
+(`ADVISE_CALLER_MARGIN_MS`), so it does not give up before entry has answered.
 
 **A deterministic terminal step** (implemented). At most two AI attempts are made
 (`MAX_AI_ATTEMPTS`): the selected route and the one fallback from the original
@@ -729,6 +743,15 @@ Absent, slow, refused or malformed reference replies leave the handoff intact an
 name their reason; the reply's routing reason is kept. Route and outcome do not
 depend on reference availability. The insufficient-information gate retains its
 fixed response. No reference grants Edge authority or provider admission.
+
+The explainer's incident record keeps what kind of content it holds:
+`mio.content_kind` is `ai_advice` (a local model's validated advice),
+`deterministic_reference` (verified playbook text), `deterministic_notice` (the
+fixed notice only) or `none`, and a handoff record keeps the fixed `notice` in
+its language. Older records without these fields still read. The recent-incident
+view and `azazel-nexus status` label each explanation by that kind ("not AI" for
+both deterministic kinds) and print the notice, so a reference or a notice is
+never shown as AI advice.
 
 Evidence: `tests/unit/test_mio_reference.py` (in-process, mocks),
 `tests/unit/test_mio_reference_socket.py` (real daemons over real `SO_PEERCRED`

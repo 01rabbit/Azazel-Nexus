@@ -201,3 +201,40 @@ def test_the_activation_library_grants_the_reference_without_model_wiring(tmp_pa
     assert units.state("azazel-mio-locald.service") is UnitState.MASKED
     verdict = next(v for v in outcome.verdicts if v.unit == "azazel-mio-locald.service")
     assert verdict.reason.startswith("wiring_absent") and LOCAL_MODEL_PROVIDER in verdict.reason
+
+
+def test_a_remote_daemon_that_never_answers_cannot_hold_the_request(root):
+    """Real socket: accepts, reads, never replies. The attempt's share of the
+    one deadline is the socket timeout, not the 0.5 s probe default."""
+    import time
+
+    from azazel_nexus_runtime.transport import bind_socket
+
+    listener = bind_socket(runtime_paths.socket_path("remote"), expected_gid=os.getgid())
+    held = []
+    stop = threading.Event()
+
+    def accept():
+        listener.settimeout(0.05)
+        while not stop.is_set():
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                continue
+            held.append(connection)  # never answered, never closed
+
+    thread = threading.Thread(target=accept)
+    thread.start()
+    try:
+        began = time.monotonic()
+        reply = client.RemoteSocketClient().handle(None, deadline_ms=120)
+        elapsed = time.monotonic() - began
+    finally:
+        stop.set()
+        thread.join(5)
+        for connection in held:
+            connection.close()
+        listener.close()
+    assert reply == {"outcome": "unavailable", "refusal": "remote_unavailable"}
+    assert held, "the daemon accepted the connection"
+    assert 0.1 <= elapsed < 0.4
