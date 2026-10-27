@@ -52,9 +52,11 @@ no owner decision ([§3c](../edge-package-verification.md#3c-what-still-needs-th
 2. Nexus installed from a reviewed checkout containing #345. `PYTHON` below is
    `/opt/azazel-nexus/venv/bin/python`; commands spell the full path.
 3. **The test issuer key.** Generate it on an offline workstation, never on
-   the DUT, with OpenSSL 3:
+   the DUT, with OpenSSL 3, inside a directory on a memory-backed file system
+   (tmpfs) so that it never reaches a disk:
 
    ```sh
+   KEYDIR=$(mktemp -d -p /dev/shm hil-issuer.XXXXXX) && chmod 0700 "$KEYDIR" && cd "$KEYDIR"
    openssl genpkey -algorithm ed25519 -out test-issuer.pem
    openssl pkey -in test-issuer.pem -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n'
    ```
@@ -95,11 +97,14 @@ changes.
 ## 3. Place the test anchor, signature and revocation list
 
 On the DUT, compute what the issuer signs, carry it to the workstation, sign
-it there, and carry back only the 64-byte signatures. With `MANIFEST` the
-installed manifest `/opt/azazel/edge-core/azazel-edge-core-0.1.0-x86_64.manifest.json`:
+it there, and carry back only the 64-byte signatures. First set two shell
+variables on the DUT, used by every later step that names the manifest or its
+signature (`<manifest>.sig` beside the installed manifest):
 
 ```sh
-/opt/azazel-nexus/venv/bin/python -I -c 'import sys; from azazel_nexus.edge_issuer import manifest_signature_target; sys.stdout.buffer.write(manifest_signature_target(open(sys.argv[1], "rb").read()))' MANIFEST > manifest-target.bin
+MANIFEST=/opt/azazel/edge-core/azazel-edge-core-0.1.0-x86_64.manifest.json
+SIG="$MANIFEST.sig"
+/opt/azazel-nexus/venv/bin/python -I -c 'import sys; from azazel_nexus.edge_issuer import manifest_signature_target; sys.stdout.buffer.write(manifest_signature_target(open(sys.argv[1], "rb").read()))' "$MANIFEST" > manifest-target.bin
 printf '%s' '{"issued_at": "2026-10-28T00:00:00Z", "package": "azazel-edge-core", "revoked_digests": [], "revoked_versions": [], "schema": "azazel-nexus/edge-package-revocation/v1", "sequence": 2}' | /opt/azazel-nexus/venv/bin/python -I -c 'import sys; from azazel_nexus.edge_issuer import canonical_json; sys.stdout.buffer.write(canonical_json(sys.stdin.buffer.read()))' > revocations-2.payload
 printf 'azazel-nexus/edge-package-revocation/v1\000' | cat - revocations-2.payload > revocations-2.target
 ```
@@ -118,12 +123,11 @@ sudo install -d -m 0755 -o root -g root /etc/azazel/edge-issuer
 printf '{"issuer": "hil-test-only", "public_key": "%s", "schema": "azazel-nexus/edge-issuer-anchor/v1"}' "$PUBLIC_HEX" > issuer.json
 cat revocations-2.sig revocations-2.payload > revocations.signed
 sudo install -m 0644 -o root -g root issuer.json revocations.signed /etc/azazel/edge-issuer/
-sudo install -m 0644 -o root -g root manifest.sig MANIFEST.sig
+sudo install -m 0644 -o root -g root manifest.sig "$SIG"
 sudo /opt/azazel-nexus/venv/bin/azazel-nexus status
 ```
 
-(The shell variable PUBLIC_HEX holds the key printed in §1; `MANIFEST.sig`
-is the manifest path with `.sig` appended.) Expect `digest_verified: yes`,
+(The shell variable PUBLIC_HEX holds the key printed in §1.) Expect `digest_verified: yes`,
 `issuer_authenticated: yes (authenticated, issuer hil-test-only)`,
 `revocation: in_force, sequence 2 (revoked: none)`, `rollback floor: absent`,
 the five package checks unchanged and no issuer notes. A sequence-2 list is
@@ -178,7 +182,7 @@ issuer line and stops the floor from being raised.
 | 5.1 revoked version | sign a sequence-3 list with `"revoked_versions": ["0.1.0"]` and place it | `revocation: in_force, sequence 3 (revoked: revoked_version)`; `version_matches` fails |
 | 5.2 revoked digest | sign a sequence-3 list whose `revoked_digests` holds the installed artifact's `sha256:` digest (from the manifest, on the DUT only) | `revoked: revoked_digest`; `digest_matches` fails although `digest_verified: yes` |
 | 5.3 older list replayed | after §4 raised the floor at sequence 2, place a validly signed sequence-1 list; then remove the list entirely | `revocation: rolled_back`; `digest_matches` fails, in both variants |
-| 5.4 signature invalid | flip one byte of `MANIFEST.sig` | `issuer_authenticated: no (signature_invalid)` |
+| 5.4 signature invalid | flip one bit: `sudo /opt/azazel-nexus/venv/bin/python -I -c 'import sys; p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[0] ^= 1; open(p, "wb").write(b)' "$SIG"`; restore with the §3 `install` of `manifest.sig` | `issuer_authenticated: no (signature_invalid)` |
 | 5.5 anchor unsafe | `sudo chmod 0666 /etc/azazel/edge-issuer/issuer.json` | `issuer_authenticated: no (trust_refused)`; `digest_matches` fails as a `SECURITY FINDING` |
 | 5.6 same version, other digest | only if a second, different `0.1.0` artifact is available through the approved deployment path: install it with its own signed manifest | `rollback floor: replayed, floor 0.1.0`; `version_matches` fails |
 | 5.7 below the floor | **not-run**: the pin admits exactly `0.1.0`, so no lower version can reach the floor check today | — |
@@ -193,22 +197,40 @@ evidence only; do not hand-edit the floor on a DUT to produce it.
 
 As root, with nothing being activated, follow the
 [floor recovery procedure](../edge-package-verification.md#3d-recovering-from-a-wrongly-raised-floor-root-manual)
-and remove every test file:
+and remove every test file (in a shell where `MANIFEST` and `SIG` are set
+as in §3):
 
 ```sh
 sudo rm /var/lib/azazel/state/edge-issuer/floor.json
 sudo rm /etc/azazel/edge-issuer/issuer.json /etc/azazel/edge-issuer/revocations.signed
-sudo rm MANIFEST.sig
+sudo rm "$SIG"
 sudo rmdir /etc/azazel/edge-issuer /var/lib/azazel/state/edge-issuer
 sudo /opt/azazel-nexus/venv/bin/azazel-nexus status
 ```
 
 Status must again print `issuer_authenticated: no (not_configured)` and
 `rollback floor: absent`. Restore any artifact changed in 5.6 through the
-approved deployment path. Record in the operations log that a test-only floor
-was raised and removed, by whom and when (no audit event is written for the
-removal). On the workstation, destroy `test-issuer.pem` and every signature
-and target file. A DUT that leaves this runbook with a test anchor, list,
+approved deployment path.
+
+**The activation ledger keeps the test.** `/var/lib/azazel/state/activation.jsonl`
+is an append-only, hash-chained ledger: the pass records of this run, with
+`observed_inputs.edge_issuer` showing `authenticated` under the test anchor,
+and the `activation.edge_issuer_floor` events (`raised`, `held`) stay on the
+node permanently. Never edit or truncate the ledger to remove them. Instead,
+write in the operations log, for anyone who later reads that ledger: that
+these records were produced by a test-only issuer key during this runbook
+(name the run and the time window), that the key was not a real issuer and
+authenticated nothing, and that the floor was raised and removed by whom and
+when (no audit event is written for the removal).
+
+On the workstation, destroy the key and every signature and target file, then
+the tmpfs directory: `shred -u "$KEYDIR"/*` and `rmdir "$KEYDIR"`, and power
+the workstation off so that nothing of the tmpfs remains in memory. Do the
+same with the copies of `manifest-target.bin`, the payloads and the
+signatures on the DUT and on the transfer medium. A key that touched a
+persistent disk cannot be shredded reliably (journaling and flash
+remapping); if that happened, record it, and treat the key as exposed even
+though it is a test key. A DUT that leaves this runbook with a test anchor, list,
 signature or floor in place is not at baseline and must not proceed to any
 other exercise.
 

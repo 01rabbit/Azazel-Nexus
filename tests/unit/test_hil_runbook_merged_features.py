@@ -297,3 +297,92 @@ def test_offline_runbook_states_the_report_and_the_systemd_stage():
     for flag in ("--output", "--wheelhouse", "--edge-package", "--edge-source"):
         assert flag in _literals(REPO / "tools" / "build_offline_bundle.py")
     assert "--output" in _literals(REPO / "tools" / "build_wheelhouse.py")
+
+
+# -- review follow-ups: values the operator compares byte for byte -----------
+
+
+def _closing_echoes(script: str) -> list[str]:
+    """The lines `install.sh` prints after its last other command, in order."""
+
+    lines = [line.strip() for line in script.splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    closing = []
+    for line in reversed(lines):
+        match = re.fullmatch(r'echo "([^"]*)"', line)
+        if match is None:
+            break
+        closing.append(match.group(1))
+    return closing[::-1]
+
+
+def test_offline_runbook_states_where_the_installed_line_is_in_the_tail():
+    installer = (REPO / "packaging" / "install.sh").read_text(encoding="utf-8")
+    closing = _closing_echoes(installer)
+    installed = "Azazel-Nexus installed. Operational units are masked."
+    assert closing and installed in closing
+    after = len(closing) - 1 - closing.index(installed)
+    tool = (REPO / "tools" / "offline_bundle.py").read_text(encoding="utf-8")
+    kept = int(re.search(r'"stdout_tail": result\.stdout\.strip\(\)\.splitlines\(\)\[-(\d+):\]',
+                         tool).group(1))
+    # The report keeps enough lines to hold the installed line and what follows it.
+    assert after + 1 <= kept
+    text = _flat(_text("offline-install.md"))
+    words = {0: "no", 1: "one", 2: "two", 3: "three"}
+    assert f"follows it with {words[after]} more lines, the last being `{closing[-1]}`" in text
+    raw = _text("offline-install.md")
+    assert f'"{installed}" in t' in raw
+    assert "stdout_tail[-1:]" not in raw
+
+
+def test_offline_runbook_reads_only_report_keys_the_code_writes():
+    tree = ast.parse((REPO / "tools" / "offline_bundle.py").read_text(encoding="utf-8"))
+    keys = {key.value for node in ast.walk(tree) if isinstance(node, ast.Dict)
+            for key in node.keys if isinstance(key, ast.Constant)}
+    keys |= {node.slice.value for node in ast.walk(tree) if isinstance(node, ast.Subscript)
+             and isinstance(node.ctx, ast.Store) and isinstance(node.slice, ast.Constant)}
+    raw = _text("offline-install.md")
+    script = next(line for line in raw.splitlines() if "offline-install-report.json\"))" in line)
+    used = set(re.findall(r'\["(\w+)"\]', script))
+    assert {"schema", "bundle_authenticated", "signature", "present", "install", "pip_check",
+            "imports", "recheck", "installer", "exit", "slots", "state", "stdout_tail"} <= used
+    assert used <= keys, sorted(used - keys)
+    values = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)}
+    for value in ("pass", "empty"):
+        assert value in values
+    install = next(node for node in ast.walk(tree) if isinstance(node, ast.Dict)
+                   and any(isinstance(k, ast.Constant) and k.value == "pip_check" for k in node.keys))
+    fields = {k.value: v for k, v in zip(install.keys, install.values) if isinstance(k, ast.Constant)}
+    assert fields["pip_check"].value == "pass" and fields["imports"].value == "pass"
+
+
+def test_issuer_runbook_states_the_floor_modes_the_writer_sets():
+    source = (REPO / "runtime" / "src" / "azazel_nexus_runtime" / "edge_issuer_floor.py").read_text(
+        encoding="utf-8")
+    leaf = re.search(r"os\.mkdir\(_LEAF, 0o(\d+)", source).group(1)
+    assert f"os.fchmod(fd, 0o{leaf})" in source
+    floor = re.search(r"0o(\d+), dir_fd=leaf_fd\)", source).group(1)
+    assert f"os.fchmod(fd, 0o{floor})" in source
+    text = _text("edge-issuer.md")
+    assert f"`root:root {leaf}`" in text and f"`root:root {floor} 1`" in text
+
+
+def test_issuer_runbook_names_the_manifest_and_signature_by_variable():
+    from azazel_nexus.edge_issuer import SIGNATURE_SUFFIX
+    from azazel_nexus.edge_package import EDGE_PACKAGE_ROOT, PIN
+
+    raw = _text("edge-issuer.md")
+    assert f"MANIFEST={EDGE_PACKAGE_ROOT / PIN.manifest_name}\n" in raw
+    assert f'SIG="$MANIFEST{SIGNATURE_SUFFIX}"' in raw
+    assert "MANIFEST.sig" not in raw.replace('"$MANIFEST.sig"', "")
+    assert 'sudo rm "$SIG"' in raw and '"$SIG"`' in raw
+
+
+def test_noc_runbook_ties_the_runs_to_the_recorders_stress_events():
+    events = _literals(REPO / "tools" / "service_objectives.py")
+    text = _flat(_text("noc-observation.md"))
+    for event in ("independent-capture-stress-start", "independent-capture-stress-stop"):
+        assert event in events and f"`{event}`" in text
+    assert '"runs", n, "failed", f + 0, "max_gap_s"' in _text("noc-observation.md")
+    assert "`failed` is `0`: **every** run of the command exited 0" in text
+    assert "**inconclusive**" in text

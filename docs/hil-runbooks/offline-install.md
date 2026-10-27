@@ -57,7 +57,7 @@ x86_64 CPython 3.13 (target `debian-13-x86_64-cp313`). Keep the bundle's
 sha256 in the protected record only; it identifies the bundle you will carry,
 it does not authenticate it.
 
-For §4 only, build a **second** bundle that carries an Edge slot. The build
+For §3.2 only, build a **second** bundle that carries an Edge slot. The build
 itself verifies the slot against the checkout's Edge pin, so this needs a
 **throwaway copy** of the checkout with a rehearsal-only pin file added
 (packaging/offline/edge-artifact.sha256 holding one `<sha256>  <name>` line
@@ -132,7 +132,7 @@ As root, from the reviewed checkout, with the capture of §2 running:
 ```sh
 sudo sh -c 'umask 022; python3 -I CHECKOUT/tools/offline_bundle.py install --bundle /path/to/azazel-nexus-offline.tar.gz --into /var/lib/azazel-offline/bundle --venv /opt/azazel-nexus/venv --python /usr/bin/python3 --run-installer > /root/offline-install-report.json'
 echo "exit=$?"
-sudo /opt/azazel-nexus/venv/bin/python -I -c 'import json; r = json.load(open("/root/offline-install-report.json")); print(r["schema"], r["bundle_authenticated"], r["signature"]["present"], r["install"]["pip_check"], r["install"]["imports"], r["recheck"]["recheck"], r["installer"]["exit"], [k for k, v in r["slots"].items() if v["state"] != "empty"]); print(r["installer"]["stdout_tail"][-1:])'
+sudo /opt/azazel-nexus/venv/bin/python -I -c 'import json; r = json.load(open("/root/offline-install-report.json")); print(r["schema"], r["bundle_authenticated"], r["signature"]["present"], r["install"]["pip_check"], r["install"]["imports"], r["recheck"]["recheck"], r["installer"]["exit"], [k for k, v in r["slots"].items() if v["state"] != "empty"]); t = r["installer"]["stdout_tail"]; print("installed" if "Azazel-Nexus installed. Operational units are masked." in t else "NOT INSTALLED", "stage-skipped" if any(l.startswith("SERVICE-MANAGER STAGE NOT EXECUTED") for l in t) else "stage-ran", repr(t[-1:]))'
 ```
 
 Pass for this step needs, all of:
@@ -144,9 +144,15 @@ Pass for this step needs, all of:
 - the interpreter probe passed (a mismatch refuses with
   `'x86_64 cpython 3 13'` in the message; that is a failed target ABI, not a
   skipped step);
-- the installer's last line `Azazel-Nexus installed. Operational units are masked.`
-  and **no** line `SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled.`
-  (that line means the systemd stage did not run, which fails this runbook).
+- the installer's closing output (the report keeps the last lines of its
+  standard output as `stdout_tail`): it contains
+  `Azazel-Nexus installed. Operational units are masked.`, which `install.sh`
+  prints after the systemd stage and follows it with two more lines, the
+  last being `admitted until the required admission and health evidence is available.`;
+  the script prints `installed`, `stage-ran` and that last line. **No** line
+  `SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled.` may
+  appear (`stage-skipped`): it means the systemd stage did not run, which
+  fails this runbook.
 
 Then read the systemd state the stage left:
 

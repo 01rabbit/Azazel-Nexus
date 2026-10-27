@@ -104,7 +104,7 @@ list:
 
 ```sh
 sudo install -d -m 0700 /root/noc-check
-sudo sh -c 'ip -o link show | awk -F": " "{print \$2}" | cut -d@ -f1; cat /sys/class/net/*/address; ip -o addr show | awk "{print \$4}" | cut -d/ -f1; ip -o route show | awk "\$2 == \"via\" {print \$3}"; awk "/^nameserver/ {print \$2}" /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null; awk "/^search|^domain/ {for (i = 2; i <= NF; i++) print \$i}" /etc/resolv.conf' | sort -u | sudo tee /root/noc-check/identifiers >/dev/null
+sudo sh -c 'ip -o link show | awk -F": " "{print \$2}" | cut -d@ -f1; cat /sys/class/net/*/address; ip -o addr show | awk "{print \$4}" | cut -d/ -f1; ip -o route show | awk "\$2 == \"via\" {print \$3}"; awk "/^nameserver/ {print \$2}" /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null; awk "/^search|^domain/ {for (i = 2; i <= NF; i++) print \$i}" /etc/resolv.conf' | grep -v '^$' | sort -u | sudo tee /root/noc-check/identifiers >/dev/null
 /opt/azazel-nexus/venv/bin/az-nexus-noc --interval 1 | sudo tee /root/noc-check/output.json >/dev/null
 sudo grep -cwFf /root/noc-check/identifiers /root/noc-check/output.json
 ```
@@ -116,6 +116,12 @@ an ordinary word can match the command's fixed text; attribute such a match
 from the protected output before classifying it. Remove
 `/root/noc-check` after the run.
 
+This search finds the identifiers only in the form the tools above print
+them. A MAC or address rendered in another form (upper case, without
+separators, an IPv6 address written differently, a reversed or encoded form)
+would not match, so a `0` here is evidence against the plain forms only; the
+code's guarantee rests on what it parses past (§0), not on this search.
+
 ## 3. No frame on the observation link while it runs
 
 Run inside an SO-10 run, so that the stress, timing and attribution rules of
@@ -123,16 +129,23 @@ Run inside an SO-10 run, so that the stress, timing and attribution rules of
 unchanged:
 
 1. Start the independent capture first (SO-10 step 4).
-2. On the DUT, run the command repeatedly through the whole stress interval,
-   discarding its output:
+2. On the DUT, as the account of §1, start the command in a loop **before**
+   the recorder marks `independent-capture-stress-start`. It logs each run's
+   wall-clock start, end and exit status and runs until a stop file appears;
+   its output is discarded:
 
    ```sh
-   end=$(( $(date +%s) + 660 )); n=0
-   while [ "$(date +%s)" -lt "$end" ]; do /opt/azazel-nexus/venv/bin/az-nexus-noc --interval 1 >/dev/null || echo "noc exit $?"; n=$((n + 1)); done; echo "runs=$n"
+   rm -f ~/noc-stop; : > ~/noc-runs.log
+   while [ ! -e ~/noc-stop ]; do s=$(date +%s.%N); /opt/azazel-nexus/venv/bin/az-nexus-noc --interval 1 >/dev/null 2>&1; rc=$?; echo "$s $(date +%s.%N) $rc" >> ~/noc-runs.log; done
    ```
 
-   Record the number of runs and any non-zero exit; note the run's start and
-   end in the stress event log.
+   Create the stop file (`touch ~/noc-stop`) only **after** the recorder marks
+   `independent-capture-stress-stop`. Record both moments, and the loop's
+   start and stop, in the stress event log in that order. Then summarise:
+
+   ```sh
+   awk '{n++; if ($3 != 0) f++} NR > 1 {g = $1 - e; if (g > m) m = g} {e = $2} END {print "runs", n, "failed", f + 0, "max_gap_s", m + 0}' ~/noc-runs.log
+   ```
 3. Drive the SO-10 stress operations (link up/down, IPv6 RA, DHCP
    offers/requests, a DUT suspend/resume) as SO-10 step 5 requires; HG-03
    adds a driver reload. The command keeps running across them.
@@ -140,9 +153,22 @@ unchanged:
    observation interface's outgoing link over the interval, including ARP,
    DHCP, IPv6 RS/NS/NA, mDNS, LLDP and 802.1X (SO-10 step 6).
 
-Pass only if the count is exactly `0` with a healthy, non-dropping capture.
-One frame fails, whatever its apparent origin: attribute it from the capture
-and keep it. This run is an SO-10 run with the command added, not a separate
+Pass only if, all of:
+
+- the count is exactly `0` with a healthy, non-dropping capture;
+- `failed` is `0`: **every** run of the command exited 0. A run that failed
+  did not observe anything, so a silence over failed runs says nothing about
+  the command;
+- the runs **cover the whole stress interval**: the loop started before
+  `independent-capture-stress-start` and stopped after
+  `independent-capture-stress-stop` (from the event log), and `max_gap_s` is
+  below one second except for gaps that the event log matches to the DUT's
+  own suspend (the command cannot run while the DUT is suspended).
+
+A loop that did not cover the interval, or a gap that the event log does not
+explain, makes the run **inconclusive** for the command (the SO-10 silence
+result itself is unaffected). One frame fails, whatever its apparent origin:
+attribute it from the capture and keep it. This run is an SO-10 run with the command added, not a separate
 claim: its silence result counts for SO-10/HG-03 only through the SO-10
 record and validator (`python -m tools.service_objectives`), with all three
 runs per class. Add to that record's manifest that `az-nexus-noc` ran during

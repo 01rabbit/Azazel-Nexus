@@ -264,7 +264,10 @@ latency until this section has been run.
    `mio_unavailable` (the explainer did not get a reply within 750 ms).
 
 Pass only if every measured figure is below 500 ms **and** no record of the
-window has `mio_unavailable`. One figure at or above 500 ms, or one
+window has `mio_unavailable`. Because each figure is a lower bound of the
+in-daemon time (step 3), a figure below 500 ms does not show that the
+deadline was met end to end; the pass says only that no overrun was seen by
+this approximation and that the caller never gave up. One figure at or above 500 ms, or one
 `mio_unavailable`, fails the check: keep it, and record the load at the time.
 Record the count, the maximum and the median, the reference status split,
 and the hardware class. These numbers are measurements of this class, image
