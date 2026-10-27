@@ -525,17 +525,14 @@ python3 tools/build_offline_bundle.py --output /path/to/azazel-nexus-offline.tar
   [--edge-package DIR --edge-source TEXT] [--deb DIR --deb-source TEXT] \
   [--model FILE] [--knowledge FILE] [--assets-source TEXT]
 
-# Target, no network. Run the verifier from a reviewed checkout, not from the
-# bundle it verifies.
-python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
+# Target, no network, as root. Run the verifier from a reviewed checkout,
+# never from the bundle it verifies (it refuses to run from inside one).
+# /var/lib/azazel-offline and /opt must be root-owned and not group/other-writable.
+sudo python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
   --bundle /path/to/azazel-nexus-offline.tar.gz \
   --into /var/lib/azazel-offline/bundle \
-  --venv /opt/azazel-nexus/venv --python /usr/bin/python3
-# Immediately before the privileged step, re-hash the extracted tree.
-python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py recheck \
-  --tree /var/lib/azazel-offline/bundle
-sudo env PYTHON=/opt/azazel-nexus/venv/bin/python \
-  sh /var/lib/azazel-offline/bundle/source/packaging/install.sh
+  --venv /opt/azazel-nexus/venv --python /usr/bin/python3 \
+  --run-installer
 ```
 
 `build_wheelhouse.py` installs the build backend from
@@ -548,42 +545,74 @@ are tested against `runtime/pyproject.toml`; `uv.lock` is not used because it
 does not cover the runtime distribution. The two Nexus wheels are recorded by
 the hash this build produced; reproducibility across builders is not measured.
 
-`offline_bundle.py install` extracts into a private staging directory beside
-`--into` and renames it into place only after every check passed. It refuses:
+The bundle is **POSIX ustar only**: the builder writes no pax records, GNU
+long names or sparse members, and a path that does not fit the ustar
+name/prefix fields is a build error. `offline_bundle.py` parses the 512-byte
+headers itself (fixed-size fields, checksum verified, typeflag `0` only) and
+never hands the bundle to Python's `tarfile`, whose pax/GNU/sparse header
+processing can allocate in proportion to attacker data before any caller check
+runs. The gzip layer is streamed with a cap on decompressed bytes.
 
-- absolute paths, `..`, links of any kind, device files, FIFOs, GNU sparse
-  members and directory members; paths that differ only in case, and a path
-  that is both a file and another path's directory;
-- a PAX or GNU long-name header above 64 KiB, before `tarfile` reads it into
-  memory; a manifest above 8 MiB or nested deeper than 16 levels;
-- member counts or byte totals above the caps, a declared total more than 200
+`offline_bundle.py install` must run as root, so that the extracted tree, the
+venv and everything `install.sh` later runs are root-owned and no
+unprivileged account can change them in between. Its sequence is:
+
+1. extract into a private staging directory beside `--into` and rename it into
+   place only after every check passed;
+2. check every third-party wheel against the reviewed lock, and the two Nexus
+   wheels against the reviewed `pyproject.toml` versions;
+3. run the Edge slot and `.deb` checks;
+4. create a **fresh** root-owned venv with the given interpreter, install with
+   `pip --no-index --find-links --require-hashes --only-binary=:all:`, and run
+   `pip check` and the imports;
+5. recheck the tree against the `manifest_sha256` extraction reported (not
+   against the in-tree `MANIFEST.json`), re-run the lock check, and check that
+   the venv is root-owned and not group/other-writable;
+6. with `--run-installer` only, run `packaging/install.sh` from the tree with
+   `PYTHON` set to that venv (`--installer-option` passes only
+   `--without-service-manager` or `--without-accounts`).
+
+On any refusal before step 6 the extracted tree and the venv are removed. If
+`install.sh` itself fails, both are kept for inspection and the host may be
+partly changed. Without `--run-installer` the report prints the two remaining
+commands: `sudo ... recheck --tree DIR --expect-manifest-sha256 DIGEST`, then
+`sudo env PYTHON=... sh .../install.sh`; run them back to back.
+
+Extraction refuses:
+
+- every typeflag but a regular file: links, devices, FIFOs, directories,
+  contiguous files, pax headers (including `GNU.sparse.*`), GNU long names,
+  sparse and multi-volume members; a bad header checksum, non-ustar magic,
+  base-256 sizes, and data after the end marker or the gzip stream;
+- absolute paths, `..`, paths that differ only in case, and a path that is
+  both a file and another path's directory;
+- a manifest above 8 MiB or nested deeper than 16 levels;
+- member counts or byte totals above the caps, decompressed bytes beyond what
+  the manifest declares plus header overhead, a declared total more than 200
   times the archive size, and a filesystem without the declared total plus a
   64 MiB margin free;
 - a member the manifest does not declare or a declared one that is missing,
   and any size or sha256 mismatch (writing stops at the declared size);
-- a destination whose parent directory is group- or other-writable or owned
-  by another user.
+- a destination whose parent directory is owned by another user (by anyone
+  but root, when run as root) or is group/other-writable without the sticky
+  bit. A home directory created with umask 002 (mode 0775) is refused; use a
+  0755 directory.
 
-A staging directory that a killed earlier run left behind (same destination,
-owned by this user) is removed on the next run. Every third-party wheel must
-match the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock`
-by name, version and sha256; a wheel the lock does not pin, such as an extra
+A staging directory is named `.<dest>.staging-<pid>-<random>`; one whose
+process no longer exists, owned by this user, is removed on the next run, and
+a concurrent run's staging is left alone. Every third-party wheel must match
+the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock` by
+name, version and sha256; a wheel the lock does not pin, such as an extra
 `evil==1.0` with a self-consistent manifest hash, is refused. The two Nexus
-wheels must carry the reviewed `pyproject.toml` versions; their content is
-built per bundle and is covered only by a future bundle signature. The Edge
-slot then goes through the existing `edge_package` checks (package present,
-version, digest, bound components), and each `.deb`'s control fields are
-re-read against the manifest. Only then does it create a **fresh** venv with
-the given interpreter and install with `pip --no-index --find-links
---require-hashes --only-binary=:all:` from a requirements file generated from
-the manifest hashes. On any refusal after extraction the extracted tree and
-the venv it created are removed, so nothing half-verified is left in place.
-
-It does not run `install.sh`. The extracted tree is not authenticated, and
-`sudo install.sh` runs code from it, so run `offline_bundle.py recheck` right
-before that step: it re-hashes the tree against its `MANIFEST.json` and
-refuses changed, extra or missing files, links, and anything owned by another
-user or writable by group/others.
+wheels are pinned **by version only** (an exact string compare with the
+reviewed `pyproject.toml`); their content is built per bundle and is
+unauthenticated until bundle signing exists, and every report says so. The
+verifier refuses to run when its own checkout is inside `--into` or inside any
+extracted bundle tree, so a bundle's copy of the verifier and lock cannot
+vouch for that bundle. Nested archives that are inspected (the Edge package
+and `.deb` control archives) are walked with the same header parser first:
+only regular files and directories, and pax headers only with plain keys such
+as `path` and `mtime`, are allowed before anything else reads them.
 
 Every report carries `bundle_authenticated: false`. The integration point for
 the issuer/operator bundle signature is `verify_bundle_signature` in

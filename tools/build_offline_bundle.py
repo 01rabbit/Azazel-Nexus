@@ -382,7 +382,10 @@ def build_install_bundle(
         with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.name}.", delete=False) as raw:
             temporary_name = raw.name
             with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0, compresslevel=6) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as archive:
+                # Strict POSIX ustar: tools/offline_bundle.py refuses pax and GNU
+                # extensions, and tarfile raises ValueError for a path that does
+                # not fit the ustar name/prefix fields -- a build error.
+                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
                     archive.addfile(_tar_info(offline_bundle.MANIFEST_NAME, len(manifest), 0o644),
                                     io.BytesIO(manifest))
                     for entry, path in entries:

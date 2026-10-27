@@ -8,6 +8,12 @@ its sha256, size, kind and source. ``tools/build_offline_bundle.py`` writes it.
 What this module establishes, and what it does not
 ==================================================
 
+* **A strict format.** The bundle is POSIX ustar only: no pax records, no GNU
+  long names or sparse members. This module parses the 512-byte headers itself
+  (fixed fields, checksum verified, typeflag ``0`` only) and never hands the
+  bundle to ``tarfile``, whose header processing can allocate in proportion to
+  attacker data before a caller sees a member. The gzip layer is streamed with
+  a cap on decompressed bytes.
 * **Integrity against the manifest.** Extraction refuses absolute paths,
   ``..``, links of any kind, device files, FIFOs and directory members; a
   member count or byte total above the caps; a member that the manifest does
@@ -36,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import gzip
 import hashlib
 import io
 import json
@@ -47,7 +52,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import zlib
 from dataclasses import dataclass
@@ -146,33 +150,256 @@ class Limits:
 
 DEFAULT_LIMITS = Limits()
 
-#: A PAX or GNU long-name/long-link header is read whole into memory by
-#: ``tarfile`` before any member check runs, so its size is capped here, when
-#: the header block is parsed and before the payload is read.
-EXTENDED_HEADER_MAX_BYTES = 64 << 10
 #: Nesting depth of the manifest JSON; the real manifest needs 3.
 MANIFEST_MAX_NESTING = 16
 #: Free space kept beyond the declared total when extracting.
 FREE_SPACE_MARGIN_BYTES = 64 << 20
 
-_EXTENDED_TYPES = (
-    tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
-    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
-)
+
+# --------------------------------------------------------------------------
+# A self-contained tar reader. ``tarfile``'s header processing (pax records,
+# GNU long names, sparse maps) runs before any caller can look at a member and
+# can allocate in proportion to attacker data, so untrusted archives are read
+# here instead, with fixed-size fields and every extension refused or bounded
+# before a byte of its body is read. ``tarfile`` is used only to *write*.
+# --------------------------------------------------------------------------
+
+BLOCK = 512
+_USTAR_MAGIC = b"ustar\x0000"
+_GNU_MAGIC = b"ustar  \x00"
+#: Body of one nested pax extended header (Edge archive / .deb control only).
+PAX_MAX_BYTES = 64 << 10
+#: pax keys a nested archive may carry. Anything else -- ``size``,
+#: ``GNU.sparse.*``, ``hdrcharset`` -- is refused, so a later ``tarfile`` read
+#: of the same bytes cannot be driven into sparse-map or size processing.
+NESTED_PAX_KEYS = frozenset({"path", "linkpath", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
+_TYPE_NAMES = {
+    b"1": "a hardlink", b"2": "a symlink", b"3": "a device file", b"4": "a device file",
+    b"5": "a directory entry", b"6": "a FIFO", b"7": "a contiguous file",
+    b"x": "a pax extended header", b"g": "a pax global header",
+    b"L": "a GNU long-name header", b"K": "a GNU long-link header", b"S": "a GNU sparse member",
+    b"X": "a Solaris extended header", b"V": "a GNU volume header", b"M": "a GNU multi-volume member",
+    b"N": "a GNU long-name header", b"D": "a GNU dump directory", b"\0": "an old-style (pre-POSIX) member",
+}
 
 
-class _BoundedTarInfo(tarfile.TarInfo):
-    """Refuse oversized extended headers and GNU sparse members before reading them."""
+class _Gunzip:
+    """A gzip stream read in bounded steps, with a hard cap on decompressed bytes."""
 
-    def _proc_member(self, tarfile_obj):  # noqa: D401 - tarfile hook
-        if self.type in _EXTENDED_TYPES and self.size > EXTENDED_HEADER_MAX_BYTES:
-            raise BundleRefused(
-                f"an extended tar header declares {self.size} bytes; the cap is "
-                f"{EXTENDED_HEADER_MAX_BYTES}"
-            )
-        if self.type == tarfile.GNUTYPE_SPARSE:
-            raise BundleRefused("a GNU sparse member is refused")
-        return super()._proc_member(tarfile_obj)
+    def __init__(self, raw: BinaryIO, cap: int) -> None:
+        self._raw = raw
+        self.cap = cap
+        self._produced = 0
+        self._z = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        self._buffer = bytearray()
+        self._done = False
+
+    def _fill(self, want: int) -> None:
+        step = max(want, 1 << 16)
+        if self._z.unconsumed_tail:
+            chunk = self._z.decompress(self._z.unconsumed_tail, step)
+        else:
+            raw = self._raw.read(1 << 16)
+            if not raw:
+                if not self._z.eof:
+                    raise BundleRefused("the gzip stream is truncated")
+                self._done = True
+                return
+            if self._z.eof:
+                raise BundleRefused("data follows the end of the gzip stream")
+            chunk = self._z.decompress(raw, step)
+        if self._z.eof and self._z.unused_data:
+            raise BundleRefused("data follows the end of the gzip stream")
+        self._produced += len(chunk)
+        if self._produced > self.cap:
+            raise BundleRefused(f"the archive decompresses beyond {self.cap} bytes")
+        self._buffer += chunk
+
+    def read(self, size: int) -> bytes:
+        while len(self._buffer) < size and not self._done:
+            self._fill(size - len(self._buffer))
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    def read_exact(self, size: int) -> bytes:
+        data = self.read(size)
+        if len(data) != size:
+            raise BundleRefused("the archive ends inside a member")
+        return data
+
+
+class _Plain:
+    """The same interface over bytes already in memory (a .deb control archive)."""
+
+    def __init__(self, data: bytes) -> None:
+        self._stream = io.BytesIO(data)
+
+    def read(self, size: int) -> bytes:
+        return self._stream.read(size)
+
+    def read_exact(self, size: int) -> bytes:
+        data = self._stream.read(size)
+        if len(data) != size:
+            raise BundleRefused("the archive ends inside a member")
+        return data
+
+
+@dataclass(frozen=True)
+class TarHeader:
+    name: str
+    size: int
+    typeflag: bytes
+    linkname: str
+
+
+def _octal(field: bytes, what: str) -> int:
+    text = field.replace(b"\0", b" ").strip(b" ")
+    if not text:
+        return 0
+    if not re.fullmatch(rb"[0-7]+", text):
+        raise BundleRefused(f"tar header field {what} is not plain octal")
+    return int(text, 8)
+
+
+def _text(field: bytes) -> str:
+    end = field.find(b"\0")
+    raw = field if end < 0 else field[:end]
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise BundleRefused("a tar header name is not ASCII") from exc
+
+
+def read_tar_header(stream, *, strict: bool) -> Optional[TarHeader]:
+    """The next header, or None at the first all-zero block. Checksum always verified.
+
+    ``strict`` accepts only POSIX ustar magic; otherwise the GNU magic of
+    older writers (dpkg) is accepted too, without its extensions.
+    """
+
+    block = stream.read_exact(BLOCK)
+    if block == bytes(BLOCK):
+        return None
+    stored = _octal(block[148:156], "checksum")
+    if stored != sum(block[:148]) + 8 * 0x20 + sum(block[156:]):
+        raise BundleRefused("a tar header checksum does not match")
+    magic = block[257:265]
+    if magic != _USTAR_MAGIC and (strict or magic != _GNU_MAGIC):
+        raise BundleRefused("a tar header is not POSIX ustar")
+    name = _text(block[0:100])
+    prefix = _text(block[345:500]) if magic == _USTAR_MAGIC else ""
+    return TarHeader(
+        name=f"{prefix}/{name}" if prefix else name,
+        size=_octal(block[124:136], "size"),
+        typeflag=block[156:157],
+        linkname=_text(block[157:257]),
+    )
+
+
+def type_refusal(header: TarHeader, allowed: tuple[bytes, ...]) -> Optional[str]:
+    if header.typeflag in allowed:
+        if header.linkname:
+            return f"member {header.name!r} names a link target"
+        return None
+    kind = _TYPE_NAMES.get(header.typeflag, f"of type {header.typeflag!r}")
+    target = f" (to {header.linkname!r})" if header.linkname else ""
+    return f"member {header.name!r} is {kind}{target}; only regular files are carried"
+
+
+class _Body:
+    """Exactly ``size`` bytes of one member, then its block padding is consumed."""
+
+    def __init__(self, stream, size: int) -> None:
+        self._stream = stream
+        self._left = size
+        self._padding = -size % BLOCK
+
+    def read(self, size: int = -1) -> bytes:
+        want = self._left if size < 0 else min(size, self._left)
+        data = self._stream.read_exact(want) if want else b""
+        self._left -= len(data)
+        if not self._left and self._padding:
+            self._stream.read_exact(self._padding)
+            self._padding = 0
+        return data
+
+    def skip(self) -> None:
+        while self._left or self._padding:
+            self.read(1 << 20)
+
+
+def read_end_of_archive(stream) -> None:
+    """After the first zero block: a second one, then only zero padding to EOF."""
+
+    if stream.read_exact(BLOCK) != bytes(BLOCK):
+        raise BundleRefused("the tar end marker is incomplete")
+    while chunk := stream.read(1 << 16):
+        if chunk.count(0) != len(chunk):
+            raise BundleRefused("data follows the tar end marker")
+
+
+def _pax_records(data: bytes) -> dict[str, str]:
+    records: dict[str, str] = {}
+    position = 0
+    while position < len(data):
+        space = data.find(b" ", position, position + 21)
+        if space < 0 or not data[position:space].isdigit():
+            raise BundleRefused("a pax record is malformed")
+        length = int(data[position:space])
+        record = data[space + 1:position + length]
+        if length <= 0 or position + length > len(data) or not record.endswith(b"\n") or b"=" not in record:
+            raise BundleRefused("a pax record is malformed")
+        key, _, value = record[:-1].partition(b"=")
+        try:
+            key_text, value_text = key.decode("utf-8"), value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BundleRefused("a pax record is not UTF-8") from exc
+        if key_text not in NESTED_PAX_KEYS:
+            raise BundleRefused(f"pax key {key_text!r} is refused")
+        records[key_text] = value_text
+        position += length
+    return records
+
+
+def scan_nested_tar(stream, *, want: frozenset[str] = frozenset(), max_members: int = 4096,
+                    max_wanted_bytes: int = 1 << 20) -> dict[str, bytes]:
+    """Walk a nested archive (Edge package, .deb control) with every extension refused.
+
+    Regular files, old-style regular files and directories are allowed; a pax
+    ``x`` header is allowed only with ``NESTED_PAX_KEYS`` and only directly
+    before the member it describes. Returns the bodies of ``want`` members.
+    """
+
+    found: dict[str, bytes] = {}
+    pending: Optional[dict[str, str]] = None
+    for _count in range(max_members + 1):
+        header = read_tar_header(stream, strict=False)
+        if header is None:
+            if pending is not None:
+                raise BundleRefused("a pax header describes no member")
+            return found
+        body = _Body(stream, header.size)
+        if header.typeflag == b"x":
+            if pending is not None:
+                raise BundleRefused("chained pax extended headers are refused")
+            if header.size > PAX_MAX_BYTES:
+                raise BundleRefused(f"a pax header declares {header.size} bytes; the cap is {PAX_MAX_BYTES}")
+            pending = _pax_records(body.read())
+            continue
+        refusal = type_refusal(header, (b"0", b"\0", b"5"))
+        if refusal:
+            raise BundleRefused(refusal)
+        name = (pending or {}).get("path", header.name)
+        pending = None
+        normal = name[2:] if name.startswith("./") else name
+        if header.typeflag != b"5" and normal in want:
+            if header.size > max_wanted_bytes:
+                raise BundleRefused(f"{normal} is larger than {max_wanted_bytes} bytes")
+            found[normal] = body.read()
+        else:
+            body.skip()
+    raise BundleRefused(f"the nested archive has more than {max_members} members")
 
 
 # --------------------------------------------------------------------------
@@ -535,7 +762,10 @@ def check_wheels_against_lock(
     """Refuse any bundled wheel the reviewed checkout does not pin.
 
     A third-party wheel must match a lock entry by name, version and sha256.
-    The two Nexus wheels must carry the reviewed pyproject versions; their
+    The two Nexus wheels must carry the reviewed pyproject versions (an exact
+    string compare, deliberately stricter than PEP 440 equivalence: the builder
+    takes both from the same pyproject, so a differently spelled equivalent
+    version is a different build and is refused); their
     content is built per bundle and is covered only by a future bundle
     signature, not by this check.
     """
@@ -587,32 +817,14 @@ class Extracted:
     signature: Optional[bytes]
 
 
-def _member_type_refusal(member: tarfile.TarInfo) -> Optional[str]:
-    if member.issym():
-        return f"member {member.name!r} is a symlink (to {member.linkname!r}); links are refused"
-    if member.islnk():
-        return f"member {member.name!r} is a hardlink (to {member.linkname!r}); links are refused"
-    if member.ischr() or member.isblk():
-        return f"member {member.name!r} is a device file"
-    if member.isfifo():
-        return f"member {member.name!r} is a FIFO"
-    if member.isdir():
-        return f"member {member.name!r} is a directory entry; only declared regular files are carried"
-    if not member.isreg() or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
-        return f"member {member.name!r} is not a plain regular file"
-    if member.sparse is not None:
-        return f"member {member.name!r} is a sparse file"
-    return None
-
-
-def _read_bounded(stream: BinaryIO, size: int) -> bytes:
+def _read_bounded(stream, size: int) -> bytes:
     data = stream.read(size + 1)
     if len(data) != size:
         raise BundleRefused("a member's data does not match its header size")
     return data
 
 
-def _write_member(staging: Path, path: str, stream: BinaryIO, entry: dict) -> None:
+def _write_member(staging: Path, path: str, stream, entry: dict) -> None:
     destination = staging.joinpath(*path.split("/"))
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -654,6 +866,44 @@ def _fsync_tree(root: Path) -> None:
             os.close(fd)
 
 
+def _owner_ok(uid: int) -> bool:
+    """Root may trust only root-owned paths; another user, root's or its own."""
+
+    euid = os.geteuid()
+    return uid == 0 if euid == 0 else uid in (0, euid)
+
+
+def _check_destination_parent(parent: Path) -> None:
+    info = os.stat(parent)
+    shared = info.st_mode & 0o022
+    sticky = info.st_mode & stat.S_ISVTX
+    if (shared and not sticky) or not _owner_ok(info.st_uid):
+        raise BundleRefused(
+            f"{parent} is writable by group/others without the sticky bit, or owned by another "
+            "user; another account could replace the extracted tree"
+        )
+
+
+def refuse_self_vouching(*trees: Path) -> None:
+    """Refuse when the verifier's own checkout is, or is inside, a tree it verifies.
+
+    A bundle's copy of this file and its lock would otherwise vouch for the
+    bundle that carried them.
+    """
+
+    reviewed = REVIEWED_ROOT.resolve()
+    for tree in trees:
+        resolved = Path(os.path.abspath(tree)).resolve()
+        if reviewed == resolved or resolved in reviewed.parents:
+            raise BundleRefused(f"the verifier's checkout {reviewed} is inside {resolved}")
+    for ancestor in (reviewed, *reviewed.parents):
+        if (ancestor / MANIFEST_NAME).is_file():
+            raise BundleRefused(
+                f"the verifier runs from inside an extracted bundle ({ancestor}); run it from a "
+                "reviewed checkout"
+            )
+
+
 def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT_LIMITS) -> Extracted:
     """Extract ``archive`` into ``destination`` atomically, or refuse and leave nothing.
 
@@ -669,12 +919,7 @@ def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT
     parent = destination.parent
     if not parent.is_dir() or parent.is_symlink():
         raise BundleRefused(f"{parent} is not a directory")
-    parent_info = os.stat(parent)
-    if parent_info.st_mode & 0o022 or parent_info.st_uid not in (0, os.geteuid()):
-        raise BundleRefused(
-            f"{parent} is writable by group/others or owned by another user; another "
-            "account could replace the extracted tree"
-        )
+    _check_destination_parent(parent)
     _remove_stale_staging(parent, destination.name)
     info = os.lstat(archive)
     if not stat.S_ISREG(info.st_mode):
@@ -682,7 +927,7 @@ def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT
     if info.st_size > limits.max_total_bytes + limits.max_manifest_bytes + (64 << 20):
         raise BundleRefused(f"{archive} is larger than the extraction cap")
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=parent))
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-{os.getpid()}-", dir=parent))
     try:
         result = _extract_into(archive, staging, limits)
         _fsync_tree(staging)
@@ -700,16 +945,34 @@ def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT
     return dataclasses.replace(result, root=destination)
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _remove_stale_staging(parent: Path, name: str) -> None:
     """Remove staging directories a killed earlier run left beside the destination.
 
-    Only real directories owned by this user and matching this destination's
-    staging prefix are removed; a symlink or another user's entry is left.
+    A staging name records the pid of the run that made it
+    (``.<name>.staging-<pid>-<random>``). Only real directories owned by this
+    user whose recorded process no longer exists are removed, so a concurrent
+    run's staging, a symlink, or another user's entry is left alone.
     """
 
     prefix = f".{name}.staging-"
     for entry in os.scandir(parent):
         if not entry.name.startswith(prefix):
+            continue
+        pid_text, sep, token = entry.name[len(prefix):].partition("-")
+        if not sep or not token or not pid_text.isdigit():
+            continue
+        pid = int(pid_text)
+        if pid == os.getpid() or _pid_alive(pid):
             continue
         info = entry.stat(follow_symlinks=False)
         if stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid():
@@ -731,67 +994,74 @@ def _check_capacity(archive: Path, staging: Path, document: dict, limits: Limits
         raise BundleRefused(f"{staging.parent} has {free} bytes free; extraction needs {needed}")
 
 
+def _stream_cap(limits: Limits, members: int, payload: int) -> int:
+    """Decompressed bytes a well-formed bundle can need: payload, headers, padding, end."""
+
+    return payload + limits.max_manifest_bytes + SIGNATURE_MAX_BYTES + 2 * BLOCK * (members + 3) + 20 * BLOCK
+
+
 def _extract_into(archive: Path, staging: Path, limits: Limits) -> Extracted:
     try:
-        with open(archive, "rb") as raw, tarfile.open(
-            fileobj=raw, mode="r|gz", tarinfo=_BoundedTarInfo
-        ) as tar:
-            members = iter(tar)
-            first = next(members, None)
-            if first is None or first.name != MANIFEST_NAME:
+        with open(archive, "rb") as raw:
+            stream = _Gunzip(raw, _stream_cap(limits, limits.max_members, limits.max_total_bytes))
+            first = read_tar_header(stream, strict=True)
+            if first is None:
                 raise BundleRefused(f"the first member is not {MANIFEST_NAME}")
-            refusal = _member_type_refusal(first)
+            refusal = type_refusal(first, (b"0",))
             if refusal:
                 raise BundleRefused(refusal)
+            if first.name != MANIFEST_NAME:
+                raise BundleRefused(f"the first member is not {MANIFEST_NAME}")
             if first.size > limits.max_manifest_bytes:
                 raise BundleRefused("the manifest is larger than its cap")
-            stream = tar.extractfile(first)
-            assert stream is not None
-            raw_manifest = _read_bounded(stream, first.size)
+            raw_manifest = _read_bounded(_Body(stream, first.size), first.size)
             document = load_manifest(raw_manifest, limits)
             _check_capacity(archive, staging, document, limits)
+            stream.cap = _stream_cap(limits, document["totals"]["count"], document["totals"]["bytes"])
             declared = {entry["path"]: entry for entry in document["artifacts"]}
             seen: set[str] = set()
             signature: Optional[bytes] = None
             count = 1
             total = 0
-            for member in members:
+            while True:
+                header = read_tar_header(stream, strict=True)
+                if header is None:
+                    read_end_of_archive(stream)
+                    break
                 count += 1
                 if count > limits.max_members + 2:
                     raise BundleRefused(f"the archive has more than {limits.max_members} members")
-                name = safe_member_path(member.name, limits)
-                refusal = _member_type_refusal(member)
+                refusal = type_refusal(header, (b"0",))
                 if refusal:
                     raise BundleRefused(refusal)
+                name = safe_member_path(header.name, limits)
+                body = _Body(stream, header.size)
                 if name == SIGNATURE_NAME:
-                    if signature is not None or seen or member.size > SIGNATURE_MAX_BYTES:
+                    if signature is not None or seen or header.size > SIGNATURE_MAX_BYTES:
                         raise BundleRefused(f"{SIGNATURE_NAME} is duplicated, misplaced or too large")
-                    stream = tar.extractfile(member)
-                    assert stream is not None
-                    signature = _read_bounded(stream, member.size)
+                    signature = _read_bounded(body, header.size)
                     continue
                 if name not in declared:
                     raise BundleRefused(f"member {name!r} is not declared in the manifest")
                 if name in seen:
                     raise BundleRefused(f"member {name!r} appears twice")
                 entry = declared[name]
-                if member.size != entry["size"]:
+                if header.size != entry["size"]:
                     raise BundleRefused(
-                        f"member {name!r} is {member.size} bytes; the manifest declares {entry['size']}"
+                        f"member {name!r} is {header.size} bytes; the manifest declares {entry['size']}"
                     )
-                total += member.size
+                total += header.size
                 if total > limits.max_total_bytes:
                     raise BundleRefused(f"the archive exceeds {limits.max_total_bytes} bytes")
-                stream = tar.extractfile(member)
-                assert stream is not None
-                _write_member(staging, name, stream, entry)
+                _write_member(staging, name, body, entry)
+                body.skip()
                 seen.add(name)
             missing = sorted(set(declared) - seen)
             if missing:
                 raise BundleRefused(f"declared members are missing from the archive: {missing[:5]}")
     except BundleRefused:
         raise
-    except (OSError, EOFError, tarfile.TarError, gzip.BadGzipFile, zlib.error, RecursionError) as exc:
+    except (OSError, EOFError, ValueError, zlib.error, RecursionError, MemoryError) as exc:
         raise BundleRefused(f"the archive could not be read ({type(exc).__name__}: {exc})") from exc
     (staging / MANIFEST_NAME).write_bytes(raw_manifest)
     os.chmod(staging / MANIFEST_NAME, 0o644)
@@ -834,6 +1104,15 @@ def verify_edge_slot(directory: Path) -> dict[str, Any]:
         finding = findings[check]
         if finding.evidence is not edge.Evidence.PASSED:
             raise BundleRefused(f"Edge {check} is {finding.evidence.value}: {finding.reason}")
+    try:
+        with open(directory / edge.PIN.artifact_name, "rb") as raw:
+            # Refuses every tar extension before edge_package reads the same
+            # bytes with tarfile, so its header processing sees plain members only.
+            scan_nested_tar(_Gunzip(raw, EDGE_ARCHIVE_MAX_UNPACKED))
+    except BundleRefused as exc:
+        raise BundleRefused(f"the Edge archive is refused: {exc}") from exc
+    except (OSError, EOFError, ValueError, zlib.error) as exc:
+        raise BundleRefused(f"the Edge archive could not be read ({type(exc).__name__}: {exc})") from exc
     manifest = json.loads((directory / edge.PIN.manifest_name).read_text(encoding="utf-8"))
     try:
         declared = edge._manifest_components(manifest)
@@ -850,6 +1129,7 @@ def verify_edge_slot(directory: Path) -> dict[str, Any]:
     }
 
 
+EDGE_ARCHIVE_MAX_UNPACKED = 2 << 30
 _AR_MAGIC = b"!<arch>\n"
 _CONTROL_MAX_BYTES = 16 << 20
 
@@ -888,24 +1168,22 @@ def deb_control_fields(path: Path) -> dict[str, str]:
     name, data = control
     try:
         if name == "control.tar.gz":
-            data = gzip.decompress(data)
+            stream = _Gunzip(io.BytesIO(data), _CONTROL_MAX_BYTES)
         elif name == "control.tar.xz":
-            data = lzma.decompress(data, memlimit=64 << 20)
-        elif name != "control.tar":
+            decompressor = lzma.LZMADecompressor(memlimit=64 << 20)
+            data = decompressor.decompress(data, max_length=_CONTROL_MAX_BYTES + 1)
+            if len(data) > _CONTROL_MAX_BYTES:
+                raise BundleRefused(f"{path.name} has an oversized control archive")
+            stream = _Plain(data)
+        elif name == "control.tar":
+            stream = _Plain(data)
+        else:
             raise BundleRefused(f"{path.name} uses {name}; this verifier cannot read it")
-        if len(data) > _CONTROL_MAX_BYTES:
-            raise BundleRefused(f"{path.name} has an oversized control archive")
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
-            text = None
-            for member in tar:
-                if member.name in ("control", "./control") and member.isreg() and member.size <= 1 << 20:
-                    stream = tar.extractfile(member)
-                    assert stream is not None
-                    text = stream.read().decode("utf-8")
-                    break
+        found = scan_nested_tar(stream, want=frozenset({"control"}))
+        text = found["control"].decode("utf-8") if "control" in found else None
     except BundleRefused:
         raise
-    except (OSError, EOFError, lzma.LZMAError, tarfile.TarError, UnicodeDecodeError) as exc:
+    except (OSError, EOFError, ValueError, lzma.LZMAError, zlib.error, UnicodeDecodeError) as exc:
         raise BundleRefused(f"{path.name} control archive could not be read ({exc})") from exc
     if text is None:
         raise BundleRefused(f"{path.name} has no control file")
@@ -975,8 +1253,16 @@ def verify_extracted(
         "signature": {"present": verdict.signature_present, "reason": verdict.reason},
         "counts": {kind: sum(1 for e in document["artifacts"] if e["kind"] == kind) for kind in KIND_PREFIX},
         "wheels": wheels,
+        "own_wheels": OWN_WHEELS_NOTE,
         "slots": slots,
     }
+
+
+OWN_WHEELS_NOTE = (
+    "azazel-nexus and azazel-nexus-runtime are pinned by version only (exact string match "
+    "against the reviewed pyproject files); their content is built per bundle and is "
+    "unauthenticated until bundle signing exists"
+)
 
 
 def extract_and_verify(
@@ -988,6 +1274,7 @@ def extract_and_verify(
 ) -> tuple[Extracted, dict[str, Any]]:
     """Extract, then verify; a tree that fails verification is removed, not left."""
 
+    refuse_self_vouching(into)
     extracted = extract_bundle(bundle, into, limits=limits)
     try:
         return extracted, verify_extracted(extracted, pins=pins)
@@ -996,29 +1283,56 @@ def extract_and_verify(
         raise
 
 
-def recheck_tree(root: Path, *, limits: Limits = DEFAULT_LIMITS) -> dict[str, Any]:
-    """Re-hash an extracted tree against its own MANIFEST.json, immediately before use.
-
-    Run this right before ``sudo install.sh``: it refuses a file that changed,
-    appeared or went missing since extraction, any link, and any file or
-    directory that is not owned by root or this user or that group/others
-    could write. It re-establishes integrity against the manifest, which is
-    still unsigned.
-    """
-
-    root = Path(os.path.abspath(root))
-    raw = (root / MANIFEST_NAME).read_bytes()
-    document = load_manifest(raw, limits)
-    declared = {entry["path"]: entry for entry in document["artifacts"]}
-    found: set[str] = set()
+def _check_owned_tree(root: Path, *, allow_links: bool) -> None:
     for directory, dirnames, filenames in os.walk(root):
         for name in dirnames + filenames + [""]:
             path = os.path.join(directory, name) if name else directory
             info = os.lstat(path)
             if stat.S_ISLNK(info.st_mode):
-                raise BundleRefused(f"{path} is a link")
-            if info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022:
+                if not allow_links:
+                    raise BundleRefused(f"{path} is a link")
+                if not _owner_ok(info.st_uid):
+                    raise BundleRefused(f"{path} is owned by another user")
+                continue
+            if not _owner_ok(info.st_uid) or info.st_mode & 0o022:
                 raise BundleRefused(f"{path} is owned by another user or writable by group/others")
+            if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                raise BundleRefused(f"{path} has {info.st_nlink} hard links")
+
+
+def recheck_tree(
+    root: Path,
+    *,
+    expected_manifest_sha256: str,
+    limits: Limits = DEFAULT_LIMITS,
+    pins: Optional[tuple[dict[str, list[str]], dict[str, str]]] = None,
+) -> dict[str, Any]:
+    """Re-verify an extracted tree immediately before the privileged step.
+
+    ``expected_manifest_sha256`` is the value extraction reported; the
+    in-tree ``MANIFEST.json`` is compared against it rather than trusted. The
+    wheel lock check runs again, every file is re-hashed, and the tree may
+    hold no link, no hard-linked file, nothing undeclared or missing, and
+    nothing group/other-writable or owned by another user -- by anyone but
+    root when run as root. Integrity against an unsigned manifest only.
+    """
+
+    root = Path(os.path.abspath(root))
+    refuse_self_vouching(root)
+    if type(expected_manifest_sha256) is not str or not _SHA256.match(expected_manifest_sha256):
+        raise BundleRefused("--expect-manifest-sha256 must be the 64-hex value extraction reported")
+    _check_owned_tree(root, allow_links=False)
+    manifest_path = root / MANIFEST_NAME
+    if os.lstat(manifest_path).st_size > limits.max_manifest_bytes:
+        raise BundleRefused("the manifest is larger than its cap")
+    raw = manifest_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_manifest_sha256:
+        raise BundleRefused("MANIFEST.json is not the manifest extraction verified")
+    document = load_manifest(raw, limits)
+    check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
+    declared = {entry["path"]: entry for entry in document["artifacts"]}
+    found: set[str] = set()
+    for directory, _dirnames, filenames in os.walk(root):
         for name in filenames:
             relative = os.path.relpath(os.path.join(directory, name), root).replace(os.sep, "/")
             if relative == MANIFEST_NAME:
@@ -1039,7 +1353,8 @@ def recheck_tree(root: Path, *, limits: Limits = DEFAULT_LIMITS) -> dict[str, An
     return {
         "recheck": "pass",
         "files": len(found),
-        "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+        "manifest_sha256": expected_manifest_sha256,
+        "own_wheels": OWN_WHEELS_NOTE,
         "bundle_authenticated": False,
     }
 
@@ -1051,6 +1366,8 @@ def recheck_tree(root: Path, *, limits: Limits = DEFAULT_LIMITS) -> dict[str, An
 
 _FIXED_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
               "PIP_CONFIG_FILE": os.devnull, "PIP_NO_INPUT": "1"}
+#: The only installer options ``install --run-installer`` passes through.
+INSTALLER_OPTIONS = ("--without-service-manager", "--without-accounts")
 
 
 def _run(argv: list[str]) -> None:
@@ -1072,6 +1389,14 @@ def pip_install_offline(python: Path, wheels: Path, requirements: Path) -> None:
     ])
 
 
+def _require_root() -> None:
+    if os.geteuid() != 0:
+        raise BundleRefused(
+            "install runs as root, so the extracted tree, the venv and everything install.sh "
+            "later runs are root-owned and no unprivileged account can change them in between"
+        )
+
+
 def install(
     bundle: Path,
     into: Path,
@@ -1080,26 +1405,69 @@ def install(
     *,
     limits: Limits = DEFAULT_LIMITS,
     pins: Optional[tuple[dict[str, list[str]], dict[str, str]]] = None,
+    run_installer: bool = False,
+    installer_options: tuple[str, ...] = (),
 ) -> dict:
-    """Extract, verify, then install both distributions into a fresh venv, offline.
+    """Extract, verify and install offline as root; optionally run install.sh last.
 
-    On any refusal after extraction, the extracted tree and the venv this call
-    created are removed: a half-installed state is not left to be mistaken for
-    a verified one.
+    The sequence is: extract (root-owned staging, atomic rename) -> verify
+    (lock, slots) -> fresh root-owned venv -> ``pip --no-index
+    --require-hashes`` -> ``pip check`` and imports -> recheck of the tree
+    against the manifest sha256 extraction reported, and of the venv's
+    ownership -> ``install.sh`` (only with ``run_installer``). On any refusal
+    before ``install.sh`` the extracted tree and the venv are removed.
     """
 
+    _require_root()
+    for option in installer_options:
+        if option not in INSTALLER_OPTIONS:
+            raise BundleRefused(f"installer option {option!r} is not one of {list(INSTALLER_OPTIONS)}")
     if os.path.lexists(venv):
         raise BundleRefused(f"{venv} already exists; the offline install creates a fresh venv")
+    venv_parent = Path(os.path.abspath(venv)).parent
+    if not venv_parent.is_dir():
+        raise BundleRefused(f"{venv_parent} is not a directory")
+    _check_destination_parent(venv_parent)
     extracted, report = extract_and_verify(bundle, into, limits=limits, pins=pins)
     try:
-        return _install_verified(extracted, report, into, venv, python)
+        _install_verified(extracted, report, into, venv, python)
+        report["recheck"] = recheck_tree(
+            into, expected_manifest_sha256=report["manifest_sha256"], limits=limits, pins=pins
+        )
+        _check_owned_tree(venv, allow_links=True)
     except BaseException:
         shutil.rmtree(venv, ignore_errors=True)
         shutil.rmtree(into, ignore_errors=True)
         raise
+    venv_python = venv / "bin" / "python"
+    installer = into / "source" / "packaging" / "install.sh"
+    if not run_installer:
+        report["install"]["next"] = [
+            f"sudo python3 -I {Path(__file__).resolve()} recheck --tree {into} "
+            f"--expect-manifest-sha256 {report['manifest_sha256']}",
+            f"sudo env PYTHON={venv_python} sh {installer}",
+        ]
+        return report
+    result = subprocess.run(
+        ["/bin/sh", str(installer), *installer_options],
+        env={**_FIXED_ENV, "PYTHON": str(venv_python)},
+        cwd=str(into / "source"), capture_output=True, text=True, check=False,
+    )
+    report["installer"] = {
+        "command": ["/bin/sh", str(installer), *installer_options],
+        "exit": result.returncode,
+        "stdout_tail": result.stdout.strip().splitlines()[-8:],
+        "stderr_tail": result.stderr.strip().splitlines()[-8:],
+    }
+    if result.returncode != 0:
+        raise BundleRefused(
+            f"install.sh exited {result.returncode}; the host may be partly changed, and the "
+            f"tree and venv are kept for inspection: {result.stderr.strip()[-1000:]}"
+        )
+    return report
 
 
-def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path) -> dict:
+def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path) -> None:
     target = TARGETS[extracted.manifest["target"]]
     probe = subprocess.run(
         [str(python), "-I", "-c",
@@ -1129,13 +1497,8 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
         "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
         "pip_check": "pass",
         "imports": "pass",
-        "next": [
-            f"python3 -I {Path(__file__).resolve()} recheck --tree {into}",
-            f"sudo env PYTHON={venv_python} sh {into / 'source' / 'packaging' / 'install.sh'}",
-        ],
         "not_done": "accounts, units and activation are packaging/install.sh's and the operator's steps",
     }
-    return report
 
 
 # --------------------------------------------------------------------------
@@ -1155,8 +1518,10 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    recheck = sub.add_parser("recheck", help="re-hash an extracted tree right before install.sh")
+    recheck = sub.add_parser("recheck", help="re-verify an extracted tree right before install.sh")
     recheck.add_argument("--tree", required=True, type=Path)
+    recheck.add_argument("--expect-manifest-sha256", required=True,
+                         help="the manifest_sha256 that extraction reported")
     for name in ("verify", "install"):
         command = sub.add_parser(name)
         command.add_argument("--bundle", required=True, type=Path)
@@ -1167,16 +1532,22 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if name == "install":
             command.add_argument("--venv", required=True, type=Path)
             command.add_argument("--python", type=Path, default=Path("/usr/bin/python3"))
+            command.add_argument("--run-installer", action="store_true",
+                                 help="run packaging/install.sh after the final recheck")
+            command.add_argument("--installer-option", action="append", default=[],
+                                 choices=INSTALLER_OPTIONS)
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.command == "recheck":
-            report = recheck_tree(args.tree)
+            report = recheck_tree(args.tree, expected_manifest_sha256=args.expect_manifest_sha256)
         else:
             limits = _limits_from(args)
             if args.command == "verify":
                 report = extract_and_verify(args.bundle, args.into, limits=limits)[1]
             else:
-                report = install(args.bundle, args.into, args.venv, args.python, limits=limits)
+                report = install(args.bundle, args.into, args.venv, args.python, limits=limits,
+                                 run_installer=args.run_installer,
+                                 installer_options=tuple(args.installer_option))
     except Exception as exc:  # noqa: BLE001 - every failure is a refusal, never a traceback
         reason = str(exc) if isinstance(exc, BundleRefused) else f"{type(exc).__name__}: {exc}"
         print(json.dumps({"refused": reason, "bundle_authenticated": False}), file=sys.stderr)

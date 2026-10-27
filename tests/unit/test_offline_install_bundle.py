@@ -181,7 +181,7 @@ def _members(bundle: Path) -> list[tuple[tarfile.TarInfo, bytes | None]]:
 
 
 def _write(path: Path, members: list[tuple[tarfile.TarInfo, bytes | None]]) -> Path:
-    with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+    with tarfile.open(path, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
         for info, data in members:
             if data is not None:
                 info.size = len(data)
@@ -459,7 +459,7 @@ def test_a_corrupt_archive_is_refused(built, tmp_path):
     data = built[2].read_bytes()
     corrupt = tmp_path / "corrupt.tar.gz"
     corrupt.write_bytes(data[: len(data) // 2])
-    _refused(tmp_path, corrupt, "could not be read|missing")
+    _refused(tmp_path, corrupt, "could not be read|missing|truncated|ends inside")
 
 
 # -- the signing hook ---------------------------------------------------------
@@ -711,7 +711,8 @@ def test_the_pip_argv_forbids_an_index_and_requires_hashes(monkeypatch, tmp_path
     assert "--index-url" not in argv and "--extra-index-url" not in argv
 
 
-def test_install_refuses_an_interpreter_that_is_not_the_target(built, tmp_path):
+def test_install_refuses_an_interpreter_that_is_not_the_target(built, tmp_path, monkeypatch):
+    monkeypatch.setattr(offline_bundle, "_require_root", lambda: None)
     probe = (offline_bundle.TARGETS[build_wheelhouse.TARGET]["architecture"],
              offline_bundle.TARGETS[build_wheelhouse.TARGET]["python_version"])
     import platform
@@ -724,7 +725,23 @@ def test_install_refuses_an_interpreter_that_is_not_the_target(built, tmp_path):
     assert not (tmp_path / "out").exists(), "a refused install left its extracted tree"
 
 
-def test_install_refuses_an_existing_venv(built, tmp_path):
+def test_install_refuses_when_not_root(built, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("running as root")
+    with pytest.raises(BundleRefused, match="install runs as root"):
+        offline_bundle.install(built[2], tmp_path / "out", tmp_path / "venv", Path(sys.executable))
+    assert not (tmp_path / "out").exists()
+
+
+def test_install_refuses_an_installer_option_outside_the_allowlist(built, tmp_path, monkeypatch):
+    monkeypatch.setattr(offline_bundle, "_require_root", lambda: None)
+    with pytest.raises(BundleRefused, match="installer option"):
+        offline_bundle.install(built[2], tmp_path / "out", tmp_path / "venv", Path(sys.executable),
+                               run_installer=True, installer_options=("--llama-runtime",))
+
+
+def test_install_refuses_an_existing_venv(built, tmp_path, monkeypatch):
+    monkeypatch.setattr(offline_bundle, "_require_root", lambda: None)
     (tmp_path / "venv").mkdir()
     with pytest.raises(BundleRefused, match="fresh venv"):
         offline_bundle.install(built[2], tmp_path / "out", tmp_path / "venv", Path(sys.executable))
@@ -755,7 +772,7 @@ def test_the_cli_runs_as_an_isolated_script_against_a_bundle(built, tmp_path):
 def test_gzip_and_tar_noise_is_not_read_as_a_manifest(tmp_path):
     bundle = tmp_path / "noise.tar.gz"
     bundle.write_bytes(gzip.compress(os.urandom(4096)))
-    _refused(tmp_path, bundle, "could not be read|first member")
+    _refused(tmp_path, bundle, "could not be read|first member|checksum|ustar")
 
 
 # -- review follow-ups: wheels against the reviewed lock (S2) -----------------
@@ -811,33 +828,69 @@ def test_a_verifier_without_a_reviewed_lock_refuses(built, tmp_path, monkeypatch
         offline_bundle.extract_and_verify(built[2], tmp_path / "out")
 
 
-# -- oversized extended headers (S1) ------------------------------------------
+# -- the strict ustar reader (B1) ---------------------------------------------
 
 
-def _extended_header_bomb(path: Path, kind: bytes, size: int) -> Path:
-    info = tarfile.TarInfo("././@LongLink" if kind == tarfile.GNUTYPE_LONGNAME else "././@PaxHeader")
-    info.type = kind
-    info.size = size
-    header = info.tobuf(format=tarfile.GNU_FORMAT if kind == tarfile.GNUTYPE_LONGNAME else tarfile.USTAR_FORMAT)
-    chunk = (b"9 a=b\n" if kind == tarfile.XHDTYPE else b"a") * (1 << 20)
-    chunk = chunk[: 1 << 20]
+def _raw_header(name: str, size: int, typeflag: bytes = b"0", *, magic: bytes = b"ustar\x0000",
+                linkname: str = "", checksum_delta: int = 0, size_field: bytes | None = None) -> bytes:
+    block = bytearray(512)
+    block[0:len(name)] = name.encode()
+    block[100:108] = b"0000644\0"
+    block[108:116] = b"0000000\0"
+    block[116:124] = b"0000000\0"
+    block[124:136] = size_field if size_field is not None else b"%011o\0" % size
+    block[136:148] = b"00000000000\0"
+    block[156:157] = typeflag
+    block[157:157 + len(linkname)] = linkname.encode()
+    block[257:265] = magic
+    block[148:156] = b" " * 8
+    block[148:156] = b"%06o\0 " % (sum(block) + checksum_delta)
+    return bytes(block)
+
+
+def _pax(records: dict[str, str]) -> bytes:
+    out = b""
+    for key, value in records.items():
+        body = f" {key}={value}\n".encode()
+        length = len(body) + 1
+        while len(str(length)) + len(body) != length:
+            length = len(str(length)) + len(body)
+        out += str(length).encode() + body
+    return out
+
+
+def _stream_bundle(path: Path, parts) -> Path:
+    """Write gzip(tar) from raw blocks and (size, chunk) bodies without holding them."""
+
     with gzip.open(path, "wb", compresslevel=1) as stream:
-        stream.write(header)
-        for _ in range(size >> 20):
-            stream.write(chunk)
-        stream.write(b"\0" * (-size % 512) + b"\0" * 1024)
+        for part in parts:
+            if isinstance(part, bytes):
+                stream.write(part)
+            else:
+                size, chunk = part
+                written = 0
+                while written < size:
+                    piece = chunk[: size - written]
+                    stream.write(piece)
+                    written += len(piece)
+                stream.write(b"\0" * (-size % 512))
+        stream.write(b"\0" * 1024)
     return path
 
 
-@pytest.mark.real_process
-@pytest.mark.parametrize("kind", [tarfile.GNUTYPE_LONGNAME, tarfile.XHDTYPE])
-def test_an_oversized_extended_header_is_refused_in_bounded_memory(tmp_path, kind):
-    # VmHWM, not ru_maxrss: Linux carries ru_maxrss across exec, so a child of a
-    # large pytest process would report the parent's peak.
+def _padded(data: bytes) -> bytes:
+    return data + b"\0" * (-len(data) % 512)
+
+
+def _vmhwm_extract(tmp_path: Path, bundle: Path) -> dict:
+    """Extract in a child process; report its outcome and its own peak RSS (VmHWM).
+
+    VmHWM, not ru_maxrss: Linux carries ru_maxrss across exec, so a child of a
+    large pytest process would report the parent's peak.
+    """
+
     if not Path("/proc/self/status").exists():
         pytest.skip("VmHWM needs Linux /proc")
-    size = 256 << 20
-    bomb = _extended_header_bomb(tmp_path / "bomb.tar.gz", kind, size)
     probe = (
         "import json, sys\n"
         "sys.path.insert(0, sys.argv[1])\n"
@@ -852,42 +905,192 @@ def test_an_oversized_extended_header_is_refused_in_bounded_memory(tmp_path, kin
         "print(json.dumps({'outcome': outcome, 'maxrss_kib': int(hwm.split()[1])}))\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe, str(ROOT), str(bomb), str(tmp_path / "out")],
+        [sys.executable, "-c", probe, str(ROOT), str(bundle), str(tmp_path / "out")],
         capture_output=True, text=True, check=False, timeout=300,
     )
     assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout)
+    assert [p.name for p in tmp_path.iterdir() if ".staging-" in p.name] == []
+    return json.loads(result.stdout)
+
+
+_BIG = 256 << 20
+
+
+@pytest.mark.real_process
+@pytest.mark.parametrize("kind", [b"L", b"x", b"K", b"g"])
+def test_an_oversized_extended_header_is_refused_in_bounded_memory(tmp_path, kind):
+    bomb = _stream_bundle(tmp_path / "bomb.tar.gz", [
+        _raw_header("././@LongLink", _BIG, kind), (_BIG, b"9 a=bbb\n" * (1 << 17)),
+    ])
+    report = _vmhwm_extract(tmp_path, bomb)
     assert bomb.stat().st_size < 4 << 20  # a small file on the medium...
     assert report["maxrss_kib"] < 128 * 1024, report  # ...is never inflated in memory
-    assert "extended tar header" in report["outcome"]
-    assert [p.name for p in tmp_path.iterdir() if ".staging-" in p.name] == []
+    assert "only regular files are carried" in report["outcome"]
 
 
-def test_a_gnu_sparse_member_is_refused(built, tmp_path):
+@pytest.mark.real_process
+def test_a_pax_gnu_sparse_1_0_map_bomb_is_refused_in_bounded_memory(tmp_path):
+    pax = _pax({"GNU.sparse.major": "1", "GNU.sparse.minor": "0",
+                "GNU.sparse.name": "MANIFEST.json", "GNU.sparse.realsize": str(_BIG)})
+    bomb = _stream_bundle(tmp_path / "sparse10.tar.gz", [
+        _raw_header("././@PaxHeader", len(pax), b"x"), _padded(pax),
+        _raw_header("MANIFEST.json", _BIG), (_BIG, b"1\n" * (1 << 19)),
+    ])
+    report = _vmhwm_extract(tmp_path, bomb)
+    assert report["maxrss_kib"] < 128 * 1024, report
+    assert "pax extended header" in report["outcome"]
+
+
+@pytest.mark.parametrize("records", [
+    {"GNU.sparse.offset": "0", "GNU.sparse.numbytes": "1"},           # sparse 0.0
+    {"GNU.sparse.numblocks": "1", "GNU.sparse.map": "0,1"},           # sparse 0.1
+    {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"},               # sparse 1.0
+    {"path": "MANIFEST.json"},                                        # even a harmless one
+])
+def test_every_pax_header_in_the_bundle_is_refused(tmp_path, records):
+    pax = _pax(records)
+    bundle = _stream_bundle(tmp_path / "pax.tar.gz", [
+        _raw_header("././@PaxHeader", len(pax), b"x"), _padded(pax),
+        _raw_header("MANIFEST.json", 2), _padded(b"{}"),
+    ])
+    _refused(tmp_path, bundle, "pax extended header")
+
+
+def test_chained_extended_headers_are_refused_at_the_first(tmp_path):
+    pax = _pax({"path": "a"})
+    bundle = _stream_bundle(tmp_path / "chain.tar.gz", [
+        _raw_header("p1", len(pax), b"x"), _padded(pax),
+        _raw_header("p2", len(pax), b"x"), _padded(pax),
+        _raw_header("././@LongLink", 4, b"L"), _padded(b"abc\0"),
+        _raw_header("MANIFEST.json", 2), _padded(b"{}"),
+    ])
+    _refused(tmp_path, bundle, "pax extended header")
+
+
+@pytest.mark.parametrize("typeflag", [
+    b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"x", b"g", b"L", b"K", b"S", b"X", b"V", b"M", b"N",
+    b"D", b"\0", b"Z",
+])
+def test_each_non_regular_typeflag_is_refused_before_its_body(built, tmp_path, typeflag):
     members = _members(built[2])
-    info, data = members[2]
-    sparse = copy.copy(info)
-    sparse.type = tarfile.GNUTYPE_SPARSE
-    members[2] = (sparse, data)
-    bundle = tmp_path / "sparse.tar.gz"
-    with tarfile.open(bundle, "w:gz", format=tarfile.GNU_FORMAT) as archive:
-        for member, payload in members:
-            member.size = len(payload) if payload is not None else 0
-            archive.addfile(member, io.BytesIO(payload) if payload is not None else None)
-    _refused(tmp_path, bundle, "sparse|not a plain regular file")
+    manifest = members[0][1]
+    bundle = _stream_bundle(tmp_path / "t.tar.gz", [
+        _raw_header("MANIFEST.json", len(manifest)), _padded(manifest),
+        _raw_header("source/evil", 1 << 20, typeflag), (1 << 20, b"\xff" * (1 << 20)),
+    ])
+    _refused(tmp_path, bundle, "only regular files are carried")
 
 
-def test_a_stale_staging_directory_of_ours_is_removed_on_the_next_run(built, tmp_path):
-    stale = tmp_path / ".out.staging-killed"
+@pytest.mark.parametrize("header, match", [
+    (_raw_header("MANIFEST.json", 2, checksum_delta=1), "checksum"),
+    (_raw_header("MANIFEST.json", 2, magic=b"ustar  \0"), "not POSIX ustar"),
+    (_raw_header("MANIFEST.json", 2, size_field=b"\x80" + b"\0" * 10 + b"\x02"), "not plain octal"),
+    (_raw_header("MANIFEST.json", 2, linkname="x"), "link target"),
+])
+def test_malformed_headers_are_refused(tmp_path, header, match):
+    bundle = _stream_bundle(tmp_path / "h.tar.gz", [header, _padded(b"{}")])
+    _refused(tmp_path, bundle, match)
+
+
+def test_data_after_the_end_marker_is_refused(built, tmp_path):
+    with gzip.open(built[2], "rb") as stream:
+        data = stream.read()
+    bad = tmp_path / "trailing.tar.gz"
+    bad.write_bytes(gzip.compress(data + b"\x01" * 512))
+    _refused(tmp_path, bad, "after|follows")
+
+
+def test_data_after_the_gzip_stream_is_refused(built, tmp_path):
+    bad = tmp_path / "gztrail.tar.gz"
+    bad.write_bytes(built[2].read_bytes() + b"junk")
+    _refused(tmp_path, bad, "follows the end of the gzip stream")
+
+
+def test_the_decompressed_stream_is_capped(built, tmp_path):
+    with gzip.open(built[2], "rb") as stream:
+        data = stream.read()
+    padded = tmp_path / "zeros.tar.gz"
+    with gzip.open(padded, "wb", compresslevel=1) as out:
+        out.write(data)
+        for _ in range(64):
+            out.write(bytes(1 << 20))
+    _refused(tmp_path, padded, "decompresses beyond")
+
+
+def test_the_builder_writes_plain_ustar(built):
+    with gzip.open(built[2], "rb") as stream:
+        first = stream.read(512)
+    assert first[257:265] == b"ustar\x0000" and first[156:157] == b"0"
+
+
+def test_a_path_that_does_not_fit_ustar_is_a_build_error(tmp_path):
+    root = _repo(tmp_path / "repo")
+    wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
+    model = tmp_path / ("m" * 150 + ".gguf")
+    model.write_bytes(b"GGUF")
+    with pytest.raises(ValueError):
+        build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse,
+                             models=[model], assets_source="test")
+    assert not (tmp_path / "b.tar.gz").exists()
+
+
+def test_a_nested_edge_archive_with_a_sparse_pax_key_is_refused(tmp_path):
+    from azazel_nexus.edge_package import PIN
+
+    edge = _edge_package(tmp_path / "edge")
+    pax = _pax({"GNU.sparse.major": "1", "GNU.sparse.minor": "0"})
+    (edge / PIN.artifact_name).write_bytes(gzip.compress(
+        _raw_header("p", len(pax), b"x") + _padded(pax) + _raw_header("bin/azazel-edge-core", 1)
+        + _padded(b"x") + bytes(1024)))
+    manifest = json.loads((edge / PIN.manifest_name).read_text())
+    manifest["digest"] = "sha256:" + hashlib.sha256((edge / PIN.artifact_name).read_bytes()).hexdigest()
+    (edge / PIN.manifest_name).write_text(json.dumps(manifest))
+    with pytest.raises(BundleRefused, match="pax key"):
+        offline_bundle.verify_edge_slot(edge)
+
+
+@pytest.mark.parametrize("blocks, match", [
+    (lambda: _raw_header("p", len(_pax({"a": "b"})), b"x") + _padded(_pax({"a": "b"}))
+     + _raw_header("c", 0), "pax key"),
+    (lambda: _raw_header("././@LongLink", 4, b"L") + _padded(b"abc\0"), "GNU long-name"),
+    (lambda: _raw_header("s", 0, b"S"), "sparse"),
+    (lambda: (_raw_header("p", len(_pax({"path": "a"})), b"x") + _padded(_pax({"path": "a"}))) * 2,
+     "chained"),
+])
+def test_the_nested_scanner_refuses_extensions(blocks, match):
+    stream = offline_bundle._Plain(blocks() + bytes(1024))
+    with pytest.raises(BundleRefused, match=match):
+        offline_bundle.scan_nested_tar(stream)
+
+
+def test_the_nested_scanner_reads_a_gnu_magic_control_file():
+    data = b"Package: x\n"
+    blocks = _raw_header("./control", len(data), magic=b"ustar  \0") + _padded(data) + bytes(1024)
+    found = offline_bundle.scan_nested_tar(offline_bundle._Plain(blocks), want=frozenset({"control"}))
+    assert found == {"control": data}
+
+
+def _dead_pid() -> int:
+    child = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                           capture_output=True, text=True, check=True)
+    return int(child.stdout)
+
+
+def test_a_stale_staging_directory_of_a_dead_run_is_removed(built, tmp_path):
+    stale = tmp_path / f".out.staging-{_dead_pid()}-abc123"
     stale.mkdir()
     (stale / "partial").write_bytes(b"x")
-    keep = tmp_path / ".other.staging-killed"
-    keep.mkdir()
-    link = tmp_path / ".out.staging-link"
-    link.symlink_to(keep)
+    live = tmp_path / f".out.staging-{os.getppid()}-def456"
+    live.mkdir()
+    unrecorded = tmp_path / ".out.staging-killed"
+    unrecorded.mkdir()
+    other = tmp_path / ".other.staging-1-x"
+    other.mkdir()
+    link = tmp_path / f".out.staging-{_dead_pid()}-link"
+    link.symlink_to(other)
     extract_bundle(built[2], tmp_path / "out")
     assert not stale.exists()
-    assert keep.exists() and link.is_symlink()
+    assert live.exists() and unrecorded.exists() and other.exists() and link.is_symlink()
 
 
 # -- ratio, free space and the per-member write cap (S3) ----------------------
@@ -996,6 +1199,14 @@ def test_a_file_that_is_also_a_directory_prefix_is_refused(built):
         offline_bundle.validate_manifest(_resorted(document))
 
 
+def test_a_sticky_world_writable_parent_is_accepted(built, tmp_path):
+    parent = tmp_path / "sticky"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    extract_bundle(built[2], parent / "out")
+    assert (parent / "out" / "MANIFEST.json").is_file()
+
+
 def test_a_group_writable_destination_parent_is_refused(built, tmp_path):
     parent = tmp_path / "shared"
     parent.mkdir()
@@ -1005,14 +1216,48 @@ def test_a_group_writable_destination_parent_is_refused(built, tmp_path):
     assert list(parent.iterdir()) == []
 
 
-# -- recheck before install.sh (N3/N4) ----------------------------------------
+# -- recheck before install.sh -------------------------------------------------
+
+
+def _extracted(built, tmp_path):
+    extracted = extract_bundle(built[2], tmp_path / "out")
+    return extracted, hashlib.sha256(extracted.manifest_bytes).hexdigest()
 
 
 def test_recheck_passes_on_an_untouched_tree(built, tmp_path):
-    extract_bundle(built[2], tmp_path / "out")
-    report = offline_bundle.recheck_tree(tmp_path / "out")
+    _, digest = _extracted(built, tmp_path)
+    report = offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256=digest)
     assert report["recheck"] == "pass" and report["bundle_authenticated"] is False
     assert report["files"] == len(built[3]["artifacts"])
+    assert "unauthenticated until bundle signing" in report["own_wheels"]
+
+
+def test_recheck_compares_the_manifest_with_the_extraction_digest(built, tmp_path):
+    _extracted(built, tmp_path)
+    with pytest.raises(BundleRefused, match="not the manifest extraction verified"):
+        offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256="0" * 64)
+
+
+def test_a_rewritten_tree_and_manifest_fail_recheck(built, tmp_path):
+    _, digest = _extracted(built, tmp_path)
+    root = tmp_path / "out"
+    document = json.loads((root / "MANIFEST.json").read_bytes())
+    target = next(e for e in document["artifacts"] if e["path"] == "source/README.md")
+    (root / "source/README.md").write_bytes(b"evil\n")
+    target["sha256"] = hashlib.sha256(b"evil\n").hexdigest()
+    target["size"] = 5
+    document["totals"]["bytes"] = sum(e["size"] for e in document["artifacts"])
+    (root / "MANIFEST.json").write_bytes(offline_bundle.manifest_bytes(document))
+    with pytest.raises(BundleRefused, match="not the manifest extraction verified"):
+        offline_bundle.recheck_tree(root, expected_manifest_sha256=digest)
+
+
+def test_recheck_runs_the_lock_check_again(built, tmp_path, monkeypatch):
+    _, digest = _extracted(built, tmp_path)
+    lock, _ = offline_bundle.reviewed_pins()
+    with pytest.raises(BundleRefused, match="reviewed checkout builds"):
+        offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256=digest,
+                                    pins=(lock, {"azazel-nexus": "9", "azazel-nexus-runtime": "9"}))
 
 
 @pytest.mark.parametrize("tamper, match", [
@@ -1021,15 +1266,44 @@ def test_recheck_passes_on_an_untouched_tree(built, tmp_path):
     (lambda root: (root / "source/README.md").unlink(), "missing"),
     (lambda root: (root / "source/README.md").chmod(0o666), "writable by group/others"),
     (lambda root: (root / "source/tools/link").symlink_to("/etc/passwd"), "is a link"),
+    (lambda root: os.link(root / "source/README.md", root.parent / "outside-link"), "hard links"),
 ])
 def test_recheck_refuses_a_tree_changed_after_extraction(built, tmp_path, tamper, match):
-    extract_bundle(built[2], tmp_path / "out")
+    _, digest = _extracted(built, tmp_path)
     tamper(tmp_path / "out")
     with pytest.raises(BundleRefused, match=match):
-        offline_bundle.recheck_tree(tmp_path / "out")
+        offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256=digest)
 
 
-def test_recheck_is_a_cli_command(built, tmp_path, capsys):
-    extract_bundle(built[2], tmp_path / "out")
-    assert offline_bundle.main(["recheck", "--tree", str(tmp_path / "out")]) == 0
+def test_recheck_is_a_cli_command_that_needs_the_digest(built, tmp_path, capsys):
+    _, digest = _extracted(built, tmp_path)
+    assert offline_bundle.main(["recheck", "--tree", str(tmp_path / "out"),
+                                "--expect-manifest-sha256", digest]) == 0
     assert json.loads(capsys.readouterr().out)["recheck"] == "pass"
+    with pytest.raises(SystemExit):
+        offline_bundle.main(["recheck", "--tree", str(tmp_path / "out")])
+
+
+# -- the verifier must not vouch for itself (S3) --------------------------------
+
+
+def test_a_verifier_inside_the_destination_is_refused(built, tmp_path, monkeypatch):
+    monkeypatch.setattr(offline_bundle, "REVIEWED_ROOT", tmp_path / "out" / "source")
+    with pytest.raises(BundleRefused, match="is inside"):
+        offline_bundle.extract_and_verify(built[2], tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_verifier_inside_an_extracted_bundle_is_refused(built, tmp_path, monkeypatch):
+    _, digest = _extracted(built, tmp_path)
+    monkeypatch.setattr(offline_bundle, "REVIEWED_ROOT", tmp_path / "out" / "source")
+    with pytest.raises(BundleRefused, match="inside an extracted bundle"):
+        offline_bundle.extract_and_verify(built[2], tmp_path / "other")
+    with pytest.raises(BundleRefused, match="inside"):
+        offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256=digest)
+
+
+def test_the_report_says_own_wheels_are_version_pinned_only(built, tmp_path):
+    _, report = offline_bundle.extract_and_verify(built[2], tmp_path / "out")
+    assert "pinned by version only" in report["own_wheels"]
+    assert "unauthenticated" in report["own_wheels"]
