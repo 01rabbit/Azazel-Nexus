@@ -1437,6 +1437,46 @@ def floor_state(tmp_path, monkeypatch):
     return edge_issuer_floor
 
 
+def _floor_events(world):
+    return [e["edge_issuer_floor"] for e in world.events()
+            if e["event_type"] == "activation.edge_issuer_floor"]
+
+
+def test_a_grant_withdrawn_because_its_record_failed_never_raises_the_floor(
+        edge_world, floor_state, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.inputs_incomplete":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    with pytest.raises(RuntimeError, match="activation pass record could not be appended"):
+        edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert edge_world.markers() is None
+    assert floor_state.read_edge_floor() is None
+
+
+def test_a_floor_record_that_cannot_be_appended_withdraws_nothing(
+        edge_world, floor_state, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.edge_issuer_floor":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    assert floor_state.read_edge_floor() is not None
+
+
 def _issuer(digest, *, authenticated=True):
     from azazel_nexus.edge_issuer import IssuerVerification
 
@@ -1457,7 +1497,7 @@ def test_an_unauthenticated_edge_grant_records_both_facts_and_leaves_the_floor(
     assert observed["edge_issuer"]["digest_verified"] is True
     assert observed["edge_issuer"]["issuer_authenticated"] is False
     assert observed["edge_issuer"]["issuer_status"] == "not_configured"
-    assert observed["edge_issuer_floor"] == "not_authenticated"
+    assert _floor_events(edge_world) == []  # unauthenticated: the ledger is unchanged
     assert floor_state.read_edge_floor() is None
 
 
@@ -1466,7 +1506,11 @@ def test_an_authenticated_edge_grant_raises_the_floor_after_the_marker(edge_worl
     assert EDGE in outcome.granted and EDGE in edge_world.markers()
     observed = edge_world.inputs_event()["observed_inputs"]
     assert observed["edge_issuer"]["issuer_authenticated"] is True
-    assert observed["edge_issuer_floor"] == "raised"
+    assert _floor_events(edge_world) == ["raised"]
+    # Raised after, and only after, the pass record that completes the grant.
+    kinds = [e["event_type"] for e in edge_world.events()]
+    assert kinds.index("activation.inputs_incomplete") < kinds.index(
+        "activation.edge_issuer_floor")
     floor = floor_state.read_edge_floor()
     assert (floor.version, floor.package_digest) == (PIN.version, edge_world.package_digest)
     # Labels only: no digest reaches the recorded inputs.
@@ -1479,7 +1523,7 @@ def test_a_withheld_edge_core_never_raises_the_floor(edge_world, floor_state):
     outcome = edge_world.run(edge_package_digest=refused,
                              edge_issuer=lambda: _issuer(edge_world.package_digest))
     assert EDGE not in outcome.granted
-    assert edge_world.inputs_event()["observed_inputs"]["edge_issuer_floor"] == "not_attempted"
+    assert _floor_events(edge_world) == []
     assert floor_state.read_edge_floor() is None
 
 
@@ -1490,7 +1534,7 @@ def test_an_issuer_reader_that_raises_authenticates_nothing(edge_world, floor_st
     assert EDGE in outcome.granted  # issuer authentication is not required to admit
     observed = edge_world.inputs_event()["observed_inputs"]
     assert "edge_issuer" not in observed
-    assert observed["edge_issuer_floor"] == "not_authenticated"
+    assert _floor_events(edge_world) == []  # unauthenticated: the ledger is unchanged
     assert floor_state.read_edge_floor() is None
 
 

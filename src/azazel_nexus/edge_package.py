@@ -1195,6 +1195,7 @@ def _unexamined(trust: IssuerTrust, status: str) -> IssuerVerification:
         revocation_status=trust.revocation_status,
         floor_status=trust.floor_status if trust.floor_status != "present" else "not_evaluated",
         floor_version=trust.floor.version if trust.floor is not None else None,
+        notes=trust.notes,
     )
 
 
@@ -1261,7 +1262,13 @@ def _issuer_gate(
         else:
             status, issuer = verify_issuer(raw, signature_raw, trust)
 
+    # The package checks compare these with `==` and fail anything that is
+    # not the pinned string; here they are also used as set members and
+    # parsed, so a value of any other type is narrowed to "matches nothing"
+    # rather than allowed to raise.
     version, digest = manifest["version"], manifest["digest"]
+    version_text = version if type(version) is str else None
+    digest_text = digest if type(digest) is str else None
     floor = trust.floor
 
     # Revocation. Not configured, with no revocation sequence held: nothing to
@@ -1280,14 +1287,18 @@ def _issuer_gate(
             "refused rather than assumed unrevoked",
             unreadable=unreadable,
         )
-    elif held_sequence > 0 and (revocations is None or revocations.sequence < held_sequence):
+    elif held_sequence > 0 and (
+            revocations is None or revocations.sequence < held_sequence
+            or (revocations.sequence == held_sequence
+                and revocations.content_digest != floor.revocation_digest)):
         revocation_status = "rolled_back"
         digest_finding = _narrowed(
             digest_finding,
             f"the rollback floor holds revocation sequence {held_sequence}, and "
-            "the revocation list in force is older or missing. A replayed or "
-            "removed revocation list could re-admit a revoked package, so the "
-            "package is refused",
+            "the revocation list in force is older, missing, or a different "
+            "list at that sequence. A replayed, substituted or removed "
+            "revocation list could re-admit a revoked package, so the package "
+            "is refused",
         )
     elif revocations is not None and revocations.package != pin.package:
         revocation_status = "refused"
@@ -1298,7 +1309,7 @@ def _issuer_gate(
         )
     elif revocations is not None:
         revoked = "none"
-        if digest in revocations.revoked_digests:
+        if digest_text is not None and digest_text in revocations.revoked_digests:
             revoked = "revoked_digest"
             digest_finding = _narrowed(
                 digest_finding,
@@ -1306,7 +1317,7 @@ def _issuer_gate(
                 f"(sequence {revocations.sequence}). A matching digest does not "
                 "re-admit a revoked package",
             )
-        if version in revocations.revoked_versions:
+        if version_text is not None and version_text in revocations.revoked_versions:
             revoked = "revoked_version"
             version_finding = _narrowed(
                 version_finding,
@@ -1333,10 +1344,11 @@ def _issuer_gate(
             unreadable=True,
         )
     elif floor is not None:
+        theirs = parse_version(floor.version)  # a decoded floor always parses
         try:
-            ours, theirs = parse_version(version), parse_version(floor.version)
+            ours = parse_version(version_text)
         except IssuerRefused:
-            ours, theirs = None, None
+            ours = None
         if ours is None or ours < theirs:
             floor_status = "below_floor"
             version_finding = _narrowed(
@@ -1367,8 +1379,10 @@ def _issuer_gate(
         revoked=revoked,
         floor_status=floor_status,
         floor_version=floor.version if floor is not None else None,
-        version=version if authenticated and type(version) is str else None,
-        package_digest=digest if authenticated and type(digest) is str else None,
+        version=version_text if authenticated else None,
+        package_digest=digest_text if authenticated else None,
+        revocation_digest=revocations.content_digest if revocations is not None else None,
+        notes=trust.notes,
     )
     return version_finding, digest_finding, verification
 
@@ -1635,8 +1649,9 @@ def _digest_finding(artifact_path: Path, manifest: dict) -> Finding:
             evidence=Evidence.PASSED,
             reason=(
                 f"re-derived {actual} from {artifact_path.name} and it matches "
-                "the manifest. Integrity against accidental change; nothing "
-                "here is signed, so this is not authenticity"
+                "the manifest. Integrity against accidental change, which is "
+                "not authenticity; whether the manifest's issuer is "
+                "authenticated is a separate fact, reported separately"
             ),
         )
     return Finding(

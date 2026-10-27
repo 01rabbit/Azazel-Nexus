@@ -698,6 +698,7 @@ def _run_once(
                 pass
             _emergency_narrow(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
+    recorded = False
     # From the first marker to the final record, any failure (writing a
     # marker, assembling the diagnostic record, appending it) withdraws:
     # markers removed, every governed unit remasked, then it raises (#251 L-2).
@@ -715,15 +716,6 @@ def _run_once(
                 except Exception:  # noqa: BLE001 - narrowing below is unconditional
                     pass
                 raise _MarkersUnwritten() from None
-        # The Edge rollback floor (`edge_issuer_floor`): raised only after
-        # edge-core was granted and its marker written, and only for an
-        # issuer-authenticated package. Never raises; grants nothing.
-        edge_floor = "not_attempted"
-        if markers and EDGE_CORE_UNIT in granted and inputs is not None:
-            from .edge_issuer_floor import raise_floor_after_grant
-            edge_floor = raise_floor_after_grant(
-                inputs.edge_issuer,
-                launched_digest=inputs.edge.package_digest if inputs.edge else None)
         # Do not gather optional diagnostic inputs before mandatory narrowing.
         # Merely loading an enrolled key or observing a boot is not admission.
         observed = _collect_input_status(root)
@@ -745,7 +737,6 @@ def _run_once(
             # Two separate facts and the floor label; labels only.
             if inputs.edge_issuer is not None:
                 observed["edge_issuer"] = inputs.edge_issuer.labels()
-            observed["edge_issuer_floor"] = edge_floor
             # Only when the policy requires synchronization and the floor
             # check passed (#251 M-1): tells an unproven synchronization from
             # a clock below the floor. Absent otherwise, as before the field.
@@ -762,13 +753,45 @@ def _run_once(
             "occurred_at": now,
             "actor": actor,
         })
+        recorded = True
     except _MarkersUnwritten:
         _emergency_narrow(manager, root, "activation grant markers could not be written")
     except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
         # The record is what makes this a completed pass: the markers it
         # wrote and the units it enabled are withdrawn first.
         _emergency_narrow(manager, root, "activation pass record could not be appended")
+    if recorded and markers and EDGE_CORE_UNIT in granted and inputs is not None:
+        _raise_edge_floor(daemon, inputs, now=now, actor=actor)
     return outcome
+
+
+def _raise_edge_floor(daemon, inputs, *, now: str, actor: str) -> None:
+    """The Edge rollback floor, after a recorded edge-core grant (`edge_issuer_floor`).
+
+    Only here, after the pass record that completes the grant: a grant
+    withdrawn because its record failed never raises it. It raises only for
+    an issuer-authenticated, unrevoked package bound to the launch evidence,
+    so it never moves on any node without an issuer anchor. Neither the raise
+    nor its record can grant or withdraw anything, so a failure of either is
+    left at that.
+    """
+    from .edge_issuer_floor import raise_floor_after_grant
+    label = raise_floor_after_grant(
+        inputs.edge_issuer,
+        launched_digest=inputs.edge.package_digest if inputs.edge else None)
+    if label == "not_authenticated":
+        # Every node without an issuer anchor: nothing was attempted, and the
+        # ledger stays exactly as it was before this floor existed (the
+        # labels are already in `observed_inputs.edge_issuer`).
+        return
+    try:
+        daemon.ledger.append({
+            "event_type": "activation.edge_issuer_floor",
+            "edge_issuer_floor": label,
+            "occurred_at": now, "actor": actor,
+        })
+    except Exception:  # noqa: BLE001 - the floor is not a grant; nothing to withdraw
+        pass
 
 
 class _MarkersUnwritten(Exception):

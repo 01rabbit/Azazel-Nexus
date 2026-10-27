@@ -25,6 +25,8 @@ from azazel_nexus_runtime.edge_issuer_floor import (
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
+LIST_1 = "sha256:" + "1" * 64
+LIST_2 = "sha256:" + "2" * 64
 
 
 @pytest.fixture
@@ -92,20 +94,22 @@ def test_an_ineligible_grant_never_moves_the_floor(state, overrides, launched):
 
 
 def test_the_floor_only_rises(state):
-    raise_edge_floor(EdgeFloor("0.2.0", DIGEST_A, 3))
-    for lower in (EdgeFloor("0.1.9", DIGEST_A, 3),      # rollback
-                  EdgeFloor("0.2.0", DIGEST_B, 3),      # replay at the same version
-                  EdgeFloor("0.2.0", DIGEST_A, 2)):     # older revocation sequence
+    raise_edge_floor(EdgeFloor("0.2.0", DIGEST_A, 3, LIST_1))
+    for lower in (EdgeFloor("0.1.9", DIGEST_A, 3, LIST_1),      # rollback
+                  EdgeFloor("0.2.0", DIGEST_B, 3, LIST_1),      # replay at the same version
+                  EdgeFloor("0.2.0", DIGEST_A, 2, LIST_1),      # older revocation sequence
+                  EdgeFloor("0.2.0", DIGEST_A, 3, LIST_2)):     # another list, same sequence
         with pytest.raises(EdgeFloorRefused):
             raise_edge_floor(lower)
-    assert read_edge_floor() == EdgeFloor("0.2.0", DIGEST_A, 3)
+    assert read_edge_floor() == EdgeFloor("0.2.0", DIGEST_A, 3, LIST_1)
     assert raise_floor_after_grant(_authenticated("0.2.0", DIGEST_A, revocation_sequence=3,
+                                                  revocation_digest=LIST_1,
                                                   revocation_status="in_force",
                                                   floor_status="held"),
                                    launched_digest=DIGEST_A) == "held"
     assert raise_floor_after_grant(_authenticated("0.1.0", DIGEST_B),
                                    launched_digest=DIGEST_B) == "refused"
-    raise_edge_floor(EdgeFloor("0.10.0", DIGEST_B, 3))  # numeric, not lexical
+    raise_edge_floor(EdgeFloor("0.10.0", DIGEST_B, 4, LIST_2))  # numeric, not lexical
     assert read_edge_floor().version == "0.10.0"
 
 
@@ -117,6 +121,26 @@ def test_a_corrupt_floor_is_refused_and_never_overwritten(state):
         read_edge_floor()
     assert raise_floor_after_grant(_authenticated("0.2.0"), launched_digest=DIGEST_A) == "refused"
     assert path.read_bytes() == b"{corrupt"
+
+
+def test_a_floor_record_names_its_list_exactly_when_it_has_a_sequence():
+    from azazel_nexus.edge_issuer import IssuerRefused
+
+    with pytest.raises(IssuerRefused):
+        EdgeFloor("0.1.0", DIGEST_A, 1)
+    with pytest.raises(IssuerRefused):
+        EdgeFloor("0.1.0", DIGEST_A, 0, LIST_1)
+
+
+def test_the_leaf_is_readable_whatever_the_umask(state):
+    previous = os.umask(0o077)
+    try:
+        raise_edge_floor(EdgeFloor("0.1.0", DIGEST_A))
+    finally:
+        os.umask(previous)
+    leaf = state / "edge-issuer"
+    assert oct(leaf.stat().st_mode & 0o777) == "0o755"
+    assert oct((leaf / FLOOR_FILENAME).stat().st_mode & 0o777) == "0o644"
 
 
 def test_a_floor_with_unsafe_mode_is_refused(state):

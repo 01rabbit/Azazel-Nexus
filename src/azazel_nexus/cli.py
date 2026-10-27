@@ -526,6 +526,10 @@ def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
               f" (revoked: {issuer.revoked})", file=out)
         floor = f", floor {issuer.floor_version}" if issuer.floor_version else ""
         print(f"    rollback floor: {issuer.floor_status}{floor}", file=out)
+        if issuer.notes:
+            # Reported, and by design without effect on any check.
+            print("    issuer notes (no effect on acceptance): "
+                  + ", ".join(issuer.notes), file=out)
     for caveat in inspection.caveats:
         print(f"    caveat: {caveat}", file=out)
 

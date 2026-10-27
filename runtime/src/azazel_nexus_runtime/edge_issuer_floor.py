@@ -4,15 +4,17 @@
 on every inspection and refuses a package below it, a replayed manifest at its
 version, and a revocation list older than the sequence it holds. This module
 is the only writer, and it writes in one situation: the activation controller
-has just enabled `azazel-edge-core.service` (grant markers written, nothing
-rolled back) for a package whose issuer was authenticated, whose digest was
-verified, which no revocation names and which is at or above the floor.
+has enabled `azazel-edge-core.service` (grant markers written, nothing rolled
+back) and the pass record was appended -- so a grant withdrawn because its
+record failed never raises it -- for a package whose issuer was
+authenticated, whose digest was verified, which no revocation names and which
+is at or above the floor.
 
 The same four properties as `activation_high_water`, each a refusal:
 
 *Raise-only.* A value below the stored one in any field -- a lower version,
-the same version with another digest, or a lower revocation sequence -- is
-refused as a whole. Nothing lowers it and there is no reset here.
+the same version with another digest, a lower revocation sequence, or the same
+sequence naming another list -- is refused as a whole. Nothing lowers it and there is no reset here.
 
 *Fail-closed.* A floor that exists and is not exactly one canonical record is
 refused, by the reader (the package with it) and here (no raise over it).
@@ -108,8 +110,11 @@ def _open_leaf(state_fd: int, *, create: bool) -> int | None:
         if not create:
             return None
         os.mkdir(_LEAF, 0o755, dir_fd=state_fd)
-        os.fsync(state_fd)
         fd = os.open(_LEAF, _DIR_FLAGS, dir_fd=state_fd)
+        # Explicit, so that a umask of 077 cannot leave the floor unreadable
+        # to the operator who runs `status`.
+        os.fchmod(fd, 0o755)
+        os.fsync(state_fd)
     try:
         _protected(fd, directory=True)
     except BaseException:
@@ -263,6 +268,8 @@ def raise_floor_after_grant(
         value = EdgeFloor(
             version=issuer.version, package_digest=issuer.package_digest,
             revocation_sequence=issuer.revocation_sequence or 0,
+            revocation_digest=(issuer.revocation_digest or "")
+            if issuer.revocation_sequence else "",
         )
     except IssuerRefused:
         return "not_eligible"

@@ -111,6 +111,7 @@ def _revocations(seed: bytes, *, sequence: int = 1, versions=(), digests=(),
 
 def _trust(tmp_path: Path, *, anchor: bytes | None = None,
            revocations: bytes | None = None, floor: bytes | None = None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config, state = tmp_path / "etc-edge-issuer", tmp_path / "state-edge-issuer"
     config.mkdir(mode=0o755, exist_ok=True)
     state.mkdir(mode=0o755, exist_ok=True)
@@ -400,17 +401,139 @@ def test_a_revocation_list_for_another_package_is_refused(package, tmp_path, see
     assert found.finding("digest_matches").evidence is Evidence.FAILED
 
 
-def test_a_revocation_list_with_no_anchor_is_refused(package, tmp_path, seed, owner):
+def _baseline(root):
+    return [f.as_event() for f in inspect(root, trust=NOT_CONFIGURED).findings]
+
+
+def test_a_revocation_list_with_no_anchor_carries_no_authority(package, tmp_path, seed, owner):
+    root, digest = package
+    trust = _trust(tmp_path, revocations=_revocations(seed, digests=[digest],
+                                                     versions=[PIN.version]))
+    assert trust.config == "not_configured"
+    assert trust.notes == (edge_issuer.NOTE_REVOCATIONS_WITHOUT_ANCHOR,)
+    found = inspect(root, trust=trust)
+    assert [f.as_event() for f in found.findings] == _baseline(root)
+    assert found.issuer.issuer_status == "not_configured"
+    assert found.issuer.labels()["notes"] == ["revocations_present_without_anchor"]
+    assert installed_package_digest(package_root=root, trust=trust) == digest
+
+
+def test_an_unprotected_config_directory_without_an_anchor_changes_nothing(
+        package, tmp_path, seed, owner):
+    root, digest = package
+    _trust(tmp_path)
+    (tmp_path / "etc-edge-issuer").chmod(0o775)
+    trust = _trust(tmp_path)
+    assert trust.config == "not_configured"
+    assert trust.notes == (edge_issuer.NOTE_CONFIG_UNPROTECTED,)
+    assert [f.as_event() for f in inspect(root, trust=trust).findings] == _baseline(root)
+    assert installed_package_digest(package_root=root, trust=trust) == digest
+
+
+def test_an_anchor_in_an_unprotected_directory_is_refused(package, tmp_path, seed, owner):
     root, _ = package
-    trust = _trust(tmp_path, revocations=_revocations(seed))
+    _trust(tmp_path, anchor=_anchor(seed))
+    (tmp_path / "etc-edge-issuer").chmod(0o777)
+    trust = _trust(tmp_path)
     assert trust.config == "refused"
-    assert inspect(root, trust=trust).finding("digest_matches").evidence is Evidence.FAILED
+    found = inspect(root, trust=trust)
+    assert found.issuer.issuer_status == "trust_refused"
+    assert found.finding("digest_matches").evidence is Evidence.FAILED
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_an_unlistable_config_directory_is_not_checked_for_this_user(package, tmp_path, owner):
+    root, _ = package
+    _trust(tmp_path)
+    config = tmp_path / "etc-edge-issuer"
+    config.chmod(0o311)  # traversable, not listable: like a 0711 root directory to an operator
+    try:
+        trust = _trust(tmp_path)
+        assert trust.config == "unreadable"
+        found = inspect(root, trust=trust)
+        assert found.issuer.issuer_status == "trust_unreadable"
+        assert found.finding("digest_matches").evidence is Evidence.NOT_CHECKED
+        assert found.finding("digest_matches").security is False
+        assert found.ready is False
+    finally:
+        config.chmod(0o755)
+
+
+def test_an_unprotected_state_directory_without_a_floor_changes_nothing(package, tmp_path, owner):
+    root, digest = package
+    _trust(tmp_path)
+    (tmp_path / "state-edge-issuer").chmod(0o777)
+    trust = _trust(tmp_path)
+    assert trust.floor_status == "absent"
+    assert trust.notes == (edge_issuer.NOTE_STATE_UNPROTECTED,)
+    assert [f.as_event() for f in inspect(root, trust=trust).findings] == _baseline(root)
+    _write(tmp_path / "state-edge-issuer" / FLOOR_FILENAME, _floor(PIN.version, digest))
+    (tmp_path / "state-edge-issuer").chmod(0o777)
+    assert _trust(tmp_path).floor_status == "refused"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("version", ["x"]), ("version", 1), ("version", {"a": 1}),
+    ("digest", ["y"]), ("digest", 7), ("digest", None),
+])
+def test_a_malformed_version_or_digest_is_refused_not_raised(tmp_path, seed, owner, field, value):
+    root = tmp_path / "edge-core"
+    real_digest, _ = write_package(root)
+    path = _manifest_path(root)
+    manifest = json.loads(path.read_text())
+    manifest[field] = value
+    path.write_text(json.dumps(manifest))
+    _sign_manifest(root, seed)
+    for name, trust in (
+        ("none", _trust(tmp_path / "a")),
+        ("anchored", _trust(tmp_path / "b",
+                            anchor=_anchor(seed),
+                            revocations=_revocations(seed, versions=[PIN.version],
+                                                     digests=[real_digest]),
+                            floor=_floor(PIN.version, real_digest, 1,
+                                         _revocations(seed, versions=[PIN.version],
+                                                      digests=[real_digest])))),
+    ):
+        found = inspect(root, trust=trust)  # must not raise
+        assert found.ready is False, name
+        assert not (found.finding("version_matches").held
+                    and found.finding("digest_matches").held), name
+        with pytest.raises(EdgePackageRefused):
+            installed_package_digest(package_root=root, trust=trust)
+        installed_issuer_verification(package_root=root, trust=trust)
+
+
+def test_status_prints_notes_as_without_effect(package, tmp_path, seed, owner):
+    from azazel_nexus.cli import _render_edge
+
+    root, _ = package
+    out = io.StringIO()
+    _render_edge(inspect(root, trust=_trust(tmp_path, revocations=_revocations(seed))), out)
+    assert ("    issuer notes (no effect on acceptance): "
+            "revocations_present_without_anchor\n") in out.getvalue()
+
+
+def test_a_list_at_the_floors_sequence_with_other_content_is_refused(package, tmp_path, seed,
+                                                                   owner):
+    root, digest = package
+    accepted = _revocations(seed, sequence=3, versions=["0.0.1"])
+    substituted = _revocations(seed, sequence=3, versions=["0.0.2"])
+    floor = _floor(PIN.version, digest, 3, accepted)
+    held = inspect(root, trust=_trust(tmp_path / "held", anchor=_anchor(seed), revocations=accepted,
+                                      floor=floor))
+    assert held.issuer.revocation_status == "in_force"
+    assert held.finding("digest_matches").held
+    swapped = inspect(root, trust=_trust(tmp_path / "swap", anchor=_anchor(seed),
+                                         revocations=substituted, floor=floor))
+    assert swapped.issuer.revocation_status == "rolled_back"
+    assert swapped.finding("digest_matches").evidence is Evidence.FAILED
 
 
 def test_a_replayed_older_revocation_list_is_refused(package, tmp_path, seed, owner):
     root, digest = package
     floor = encode_floor(EdgeFloor(version=PIN.version, package_digest=digest,
-                                   revocation_sequence=5))
+                                   revocation_sequence=5,
+                                   revocation_digest="sha256:" + "5" * 64))
     trust = _trust(tmp_path, anchor=_anchor(seed),
                    revocations=_revocations(seed, sequence=4), floor=floor)
     found = inspect(root, trust=trust)
@@ -422,7 +545,8 @@ def test_a_removed_revocation_list_is_refused_once_a_sequence_is_held(package, t
                                                                       owner):
     root, digest = package
     floor = encode_floor(EdgeFloor(version=PIN.version, package_digest=digest,
-                                   revocation_sequence=2))
+                                   revocation_sequence=2,
+                                   revocation_digest="sha256:" + "2" * 64))
     for anchor in (_anchor(seed), None):
         sub = tmp_path / ("with" if anchor else "without")
         sub.mkdir()
@@ -433,9 +557,15 @@ def test_a_removed_revocation_list_is_refused_once_a_sequence_is_held(package, t
 # -- the rollback floor ----------------------------------------------------
 
 
-def _floor(version: str, digest: str, sequence: int = 0) -> bytes:
+def _floor(version: str, digest: str, sequence: int = 0, listed: bytes | None = None) -> bytes:
+    """A floor record; `listed` is the signed list whose payload it remembers."""
+    payload_digest = ""
+    if sequence:
+        payload = listed[64:] if listed is not None else b"{}"
+        payload_digest = "sha256:" + __import__("hashlib").sha256(payload).hexdigest()
     return encode_floor(EdgeFloor(version=version, package_digest=digest,
-                                  revocation_sequence=sequence))
+                                  revocation_sequence=sequence,
+                                  revocation_digest=payload_digest))
 
 
 def test_a_version_below_the_floor_is_refused(package, tmp_path, owner):

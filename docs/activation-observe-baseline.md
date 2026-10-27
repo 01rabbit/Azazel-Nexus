@@ -743,12 +743,14 @@ intact.
 The same step reads `edge_package.installed_issuer_verification` and records
 its fixed labels as `observed_inputs.edge_issuer` (`digest_verified` and
 `issuer_authenticated` separately). Issuer authentication is not required to
-grant edge-core. After edge-core is granted and its marker written, the
-daemon passes it to `edge_issuer_floor.raise_floor_after_grant`, which raises
-the rollback floor only for an issuer-authenticated, digest-verified,
-unrevoked package bound to the launch evidence, and records
-`observed_inputs.edge_issuer_floor`; a failure to raise grants and withdraws
-nothing.
+grant edge-core. After edge-core is granted, its marker written and the pass
+record appended, the daemon passes it to
+`edge_issuer_floor.raise_floor_after_grant`, which raises the rollback floor
+only for an issuer-authenticated, digest-verified, unrevoked package bound to
+the launch evidence, and records the outcome as an
+`activation.edge_issuer_floor` event; a failure to raise or to record grants
+and withdraws nothing, and a grant withdrawn because its record failed never
+raises the floor.
 
 The edge-core unit file, with its observe-only `Environment=` lines, is in
 the measured set like every scoped unit; a changed line refuses the

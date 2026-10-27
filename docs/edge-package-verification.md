@@ -123,17 +123,28 @@ and at most 64 KiB, the key a canonical, non-small-order Ed25519 point
 the files `0644`: they hold nothing secret, and `status` reads them as the
 operator. The installer does not create the directory.
 
-**No anchor (every node today).** `issuer_authenticated` is false with the
-fixed reason `not_configured`, the caveat is the unsigned one above, and the
-five checks accept and refuse exactly what they did before. Requiring issuer
-authentication for admission would refuse every package that ships today
-(Edge's packager writes no signature), so it is **not** a setting here; it is
-an owner decision (§3c).
+**The anchor file decides whether anything changes.** Exactly:
+
+| situation | effect on accept/refuse |
+| --- | --- |
+| no `issuer.json` and no floor (every node today) | **none**: `issuer_authenticated` is false with the fixed reason `not_configured`, the caveat is the unsigned one above, and the five checks accept and refuse exactly what they did before |
+| no `issuer.json`, and a `revocations.signed` beside it | **none**: nothing can verify the list, so it carries no authority; reported as the note `revocations_present_without_anchor` |
+| no `issuer.json`, and `/etc/azazel/edge-issuer` or a directory above it group/other writable, not root-owned or a link | **none**; reported as the note `config_directory_unprotected` |
+| `issuer.json` present, and it or a directory above it unsafe, or it malformed | **refused** (`trust_refused`): `digest_matches` fails as a security finding, because the revocation state cannot be established |
+| `/etc/azazel/edge-issuer` exists and this user cannot list it | `trust_unreadable`: whether an anchor is there is unknown, so `digest_matches` is `not-checked` *for this user* (an operator's `status`); root, which the activation pass runs as, reads the real state. Keep the directory `0755` |
+| a floor is present, with or without an anchor | the floor is **enforced** (§3b). Removing the anchor does not remove the floor |
+
+Notes appear on the status screen (`issuer notes (no effect on acceptance)`)
+and in the inspection and activation records as fixed labels.
+
+Requiring issuer authentication for admission would refuse every package that
+ships today (Edge's packager writes no signature), so it is **not** a setting
+here; it is an owner decision (§3c).
 
 | `issuer_status` | when |
 | --- | --- |
-| `not_configured` | no anchor and no revocation list |
-| `trust_refused` / `trust_unreadable` | the anchor or list exists and is unsafe or malformed / not readable by this user |
+| `not_configured` | no anchor file (whatever else is there; see the table above) |
+| `trust_refused` / `trust_unreadable` | the anchor file is unsafe or malformed / the configuration directory is not readable by this user |
 | `not_inspected` / `package_refused` | no package root / the package check failed, so no manifest was examined |
 | `manifest_refused` | the manifest has no canonical form, or changed between reads |
 | `no_signature` | an anchor is configured and there is no `<manifest>.sig` |
@@ -164,33 +175,44 @@ payload, signed by the configured issuer key over its own domain
 
 A revoked digest fails `digest_matches` even when the artifact matches (and
 `digest_verified` stays true: the refusal is the revocation's). A revoked
-version fails `version_matches`. A list that does not verify, names another
-package, or exists with no anchor fails `digest_matches`: an unreadable
-revocation state is not "nothing revoked".
+version fails `version_matches`. With an anchor configured, a list that does
+not verify or names another package fails `digest_matches`: an unreadable
+revocation state is not "nothing revoked". With no anchor, a list changes
+nothing (§3a).
 
 **The rollback floor.** `/var/lib/azazel/state/edge-issuer/floor.json`
-(`root 0755` leaf, `0644` file, one canonical record of `version`,
-`package_digest` and `revocation_sequence`). It is checked on every
+(`root:root 0755` leaf, `root:root 0644` file, one canonical record of
+`version`, `package_digest`, `revocation_sequence` and `revocation_digest`,
+the SHA-256 of the accepted list's canonical payload). It is checked on every
 inspection, with or without an anchor:
 
 - a version below the floor fails `version_matches` (`below_floor`);
 - the floor's version with a different digest fails `version_matches`
   (`replayed`): an older, validly signed manifest of the same version put
   back;
-- a revocation list older than the floor's `revocation_sequence`, or missing
-  once one is held, fails `digest_matches` (`rolled_back`);
+- a revocation list older than the floor's `revocation_sequence`, missing
+  once one is held, or at that sequence with a different payload, fails
+  `digest_matches` (`rolled_back`);
 - a floor that exists and is not exactly one canonical, root-owned record
   fails `version_matches`; one this user may not read is `not-checked`.
 
 Only `azazel_nexus_runtime/edge_issuer_floor.py` writes it, raise-only,
 through a private temporary file, fsync, rename, directory fsync and
-read-back. The activation controller calls it after it has granted
-`azazel-edge-core.service` and written its marker, and it raises the floor
-only when the installed package's issuer is authenticated, its digest
-verified, no revocation names it, the floor held, and its digest is the one
-the activation evidence was bound to. An unauthenticated activation — every
-activation today — never moves it, and failing to raise grants and withdraws
-nothing (`observed_inputs.edge_issuer_floor` records the label).
+read-back; the leaf's mode is set explicitly, so a restrictive umask does not
+hide it from the operator. The activation controller calls it only after it
+has granted `azazel-edge-core.service`, written its marker **and appended the
+pass record** — a grant withdrawn because its record failed never raises the
+floor — and it raises the floor only when the installed package's issuer is
+authenticated, its digest verified, no revocation names it, the floor held,
+and its digest is the one the activation evidence was bound to. An
+unauthenticated activation — every activation today — never moves it and
+adds nothing to the ledger. Otherwise the outcome is recorded as its own
+`activation.edge_issuer_floor` event; failing to raise, or to record that,
+grants and withdraws nothing.
+
+**Before the first authenticated activation there is no floor**, so
+replaying an older, validly signed revocation list cannot be detected until
+then: only the floor remembers which list was in force.
 
 The version in force is still pinned exactly (`0.1.0`), so today the floor
 can only ever hold that version; it starts to matter when the pin moves.
@@ -216,8 +238,39 @@ administrator.
 - **Whether issuer authentication becomes required** for admission, and how
   a node is moved from "not configured" to "required" without refusing the
   package it runs.
-- **Recovery** from a floor that is wrong (for example after a mistaken
-  activation): there is no lowering path in code, by design.
+- **Whether a recovery tool is wanted.** Today recovery is the manual root
+  procedure in §3d, like the activation high-water recovery; there is no
+  lowering path in code, by design.
+
+### 3d. Recovering from a wrongly raised floor (root, manual)
+
+There is no command that lowers or clears the floor. If it was raised wrongly
+(for example by an activation of a package that should not have been
+admitted), an administrator does this as root, on the node, with nothing
+being activated at the time:
+
+1. Read what is there and keep it with the incident record:
+   `stat -c '%U:%G %a %h' /var/lib/azazel/state/edge-issuer /var/lib/azazel/state/edge-issuer/floor.json`
+   (expected: `root:root 755` and `root:root 644 1`) and
+   `cat /var/lib/azazel/state/edge-issuer/floor.json`. Anything else in the
+   leaf (a `.floor.json.partial` left by a crash) may be removed with it.
+2. Remove the file: `rm /var/lib/azazel/state/edge-issuer/floor.json`.
+   Do not hand-edit it to a lower value: a hand-written record is either
+   refused (not canonical) or is a silent lowering nobody can tell from an
+   attack.
+3. Record why, by whom and when in the operations log. No audit event is
+   written for this; the floor's absence is visible in `status`
+   (`rollback floor: absent`).
+
+Effects, all until the next recorded, authenticated edge-core activation
+raises the floor again:
+
+- any version and digest the exact pin admits is accepted again — rollback
+  protection is off;
+- the revocation sequence and list digest are forgotten, so an older, validly
+  signed revocation list is accepted again (§3b);
+- the issuer anchor, the revocation list in force and everything else are
+  unchanged.
 
 ## 4. A digest mismatch is a finding, not a failed step
 
