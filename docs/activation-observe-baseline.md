@@ -446,6 +446,21 @@ A later change to one of them is recorded here with its date.
    Answered by the VM on 2026-10-20: masking does not stop a queued start;
    P4 uses the per-boot grant marker of §5 instead.
 
+**Proposed change to decision 2, 2026-10-28 (pending owner ratification in
+review; not yet accepted).** Add `azazel-mio-referenced.service`, the model-free
+playbook reference service, to the scope (`ACTIVATION_UNIT_ALLOWLIST` and
+`activation_markers.GRANTABLE_UNITS`). Reason: the deterministic handoff's
+playbook reference was served by `azazel-mio-locald.service`, which this decision
+excludes and which is withheld anyway without `local_model_provider` wiring, so no
+node in the loop could show verified playbook text when no AI answered. The new
+unit runs no model, holds no model path, needs no wiring and is SUPPORTING; locald
+and remoted stay excluded, and no enforcement, commissioning, watchdog or fetch
+unit is added. A policy still has to name the unit for a pass to grant it: an
+existing policy file is unchanged by this, and a node whose policy does not name
+it keeps working without references (the handoff then reports
+`reference_service_unavailable`). If the owner declines, the allowlist and grantable
+set revert and the service stays installed, masked and unused.
+
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports

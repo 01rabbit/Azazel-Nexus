@@ -19,14 +19,15 @@ from azazel_nexus.edge_intake import canonical
 from azazel_nexus.incident_explain import (
     CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
-    closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
+    SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
 
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
 from .knowledge_client import lookup_context
-from .mio_locald import REFERENCE_DEADLINE_MS, KNOWLEDGE_MAX_S
+from .mio_locald import KNOWLEDGE_MAX_S
+from .mio_referenced import REFERENCE_DEADLINE_MS
 from .mio_socket_client import ServiceRefused, _exchange
 
 POLL_SECONDS = 1
@@ -92,14 +93,29 @@ class ExplanationStore(EvidenceStore):
             raise SegmentFull("explanation_segment_full") from None
 
 
+#: The deadline the explainer gives entry for one `mio.advise`.
+ADVISE_DEADLINE_MS = REFERENCE_DEADLINE_MS
+#: How much longer the explainer waits than that. Entry measures its deadline
+#: after this client has connected and sent, and delivers the reply (with the
+#: deterministic handoff and any reference) before that deadline; this margin
+#: covers the connect, the framing and the delivery on either side of it, so
+#: the explainer never gives up before entry has answered. Software budget.
+ADVISE_CALLER_MARGIN_MS = 250
+
+
+def advise(frame):
+    """One `mio.advise`; the caller waits strictly longer than entry's deadline."""
+    return _exchange(
+        "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": ADVISE_DEADLINE_MS},
+        payload=frame, deadline_s=(ADVISE_DEADLINE_MS + ADVISE_CALLER_MARGIN_MS) / 1000)
+
+
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         self.clock, self.monotonic = clock, monotonic
-        self.mio = mio or (lambda frame: _exchange(
-            "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": REFERENCE_DEADLINE_MS},
-            payload=frame, deadline_s=REFERENCE_DEADLINE_MS / 1000))
+        self.mio = mio or advise
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}
         self.recent = []
@@ -203,7 +219,7 @@ class Explainer:
         """
         for row in self.recent:
             if row["incident_id"] == ident:
-                if displaced and row["explanation"]["state"] == "explained":
+                if displaced and row["explanation"]["state"] in SHOWN_STATES:
                     continue
                 row["explanation"] = {"state": "unavailable", "route": "unavailable",
                                       "outcome": "unavailable", "summary": "",
@@ -481,6 +497,10 @@ class Explainer:
                 self.mio_available = True
                 if mio["reason"] in {"mio_gated", "mio_handoff", "mio_local_non_advisory"}:
                     codes.append(mio["reason"])
+                elif mio["reason"].startswith("mio_handoff:"):
+                    # A handoff whose reference is missing keeps the reason
+                    # in the record; the failure code stays the fixed word.
+                    codes.append("mio_handoff")
             except Exception:  # noqa: BLE001 - refuse entire reply
                 codes.append("mio_reply_refused")
                 mio["reason"] = "mio_reply_refused"
@@ -504,12 +524,24 @@ class Explainer:
                 except Exception:  # noqa: BLE001 - caller cannot inject partial refs
                     refs, state = [], "unavailable"
                     codes.append("knowledge_reply_refused")
-        value = read_record({"incident_id": t["incident_id"], "explained_at": self.clock(),
-                             "transition": t["event_type"].removeprefix("edge.incident."),
-                             "edge_would": t["edge_would"], "policy_reason": t["policy_reason"],
-                             "attack_type": t["attack_type"],
-                             "technique_ids": t["technique_ids"], "mio": mio,
-                             "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes})
+        record = {"incident_id": t["incident_id"], "explained_at": self.clock(),
+                  "transition": t["event_type"].removeprefix("edge.incident."),
+                  "edge_would": t["edge_would"], "policy_reason": t["policy_reason"],
+                  "attack_type": t["attack_type"],
+                  "technique_ids": t["technique_ids"], "mio": mio,
+                  "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes}
+        try:
+            value = read_record(record)
+        except ValueError:
+            # A reply that passed its own reader but does not make a valid
+            # record is still refused as a reply: the incident is recorded
+            # with no M.I.O. content rather than raising out of the loop.
+            codes = [c for c in codes if not c.startswith("mio_")] + ["mio_reply_refused"]
+            record.update(failure_codes=codes, mio={
+                "route": "unavailable", "outcome": "unavailable",
+                "reason": "mio_reply_refused", "text": None})
+            self.mio_available = False
+            value = read_record(record)
         self.store.append_record(value)
         self._future()
         for row in self.recent:

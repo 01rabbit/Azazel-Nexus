@@ -40,6 +40,7 @@ __all__ = [
     "ledger_dir",
     "lite_trust_root",
     "mio_local_state_dir",
+    "mio_reference_state_dir",
     "mio_state_dir",
     "mission_pack_config",
     "mission_pack_root",
@@ -61,6 +62,9 @@ _SOCKET_LEAVES = {
     "mio-entry": "mio-entry",
     "mio-advise": "mio-advise",
     "mio": "mio",
+    # The model-free playbook reference service: its own leaf, never the
+    # model host's, so reaching references never reaches a model verb.
+    "mio-reference": "mio-reference",
     "remote": "remote",
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
@@ -84,6 +88,7 @@ _STATE_LEAVES = {
     "mio-entry": "mio",
     "knowledge": "knowledge",
     "mio": "mio",
+    "mio-reference": "mio-reference",
     "audit": "auditd",
     "commission": "commission",
     "watchdog": "watchdog",
@@ -173,6 +178,11 @@ def mio_state_dir() -> Path:
 def mio_local_state_dir() -> Path:
     """The locald-owned cache/socket/ledger leaf, separate from entryd."""
     return _under("/var/lib/azazel/mio")
+
+
+def mio_reference_state_dir() -> Path:
+    """The reference service's own ledger leaf; no model or entry state."""
+    return state_dir() / _STATE_LEAVES["mio-reference"]
 
 
 def knowledge_state_dir() -> Path:

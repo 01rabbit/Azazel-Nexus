@@ -134,8 +134,8 @@ def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch
             Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture'),
         },
     )
-    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
-    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.local, 'observe', lambda **_: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda **_: 'fixture')
     reply = entry.handle(SimpleNamespace(
         verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=frame(privacy),
     ))
@@ -361,8 +361,8 @@ def test_router_keeps_local_advisory_after_explanation_failure(
 def test_entry_advisory_defaults_to_refused_and_malformed_payload_is_safe(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
     entry = mio_entryd.MioEntryService()
-    monkeypatch.setattr(entry.local, 'observe', lambda: 'local_unavailable')
-    monkeypatch.setattr(entry.remote, 'observe', lambda: 'remote_unavailable')
+    monkeypatch.setattr(entry.local, 'observe', lambda **_: 'local_unavailable')
+    monkeypatch.setattr(entry.remote, 'observe', lambda **_: 'remote_unavailable')
     req = SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
                           arguments={'deadline_ms': 1000}, payload=frame())
     result = entry.handle(req)
@@ -465,7 +465,7 @@ def test_gates_skip_provider_and_audit_fixed_reason(
     if entry_boundary:
         monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
         entry = mio_entryd.MioEntryService()
-        monkeypatch.setattr(entry.local, 'observe', lambda: pytest.fail('provider observation'))
+        monkeypatch.setattr(entry.local, 'observe', lambda **_: pytest.fail('provider observation'))
         reply = entry.handle(SimpleNamespace(
             verb=mio_entryd.ADVISE_VERB, arguments={'deadline_ms': 1000}, payload=payload,
         ))
@@ -666,8 +666,8 @@ def test_metadata_crosses_socket_router_and_operator_entry(tmp_path, monkeypatch
         profile_reader=lambda: MioProfile.FASTEST_PERMITTED, local_admitted=lambda: True,
         predictions_reader=lambda: {
             Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture')})
-    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
-    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.local, 'observe', lambda **_: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda **_: 'fixture')
     reply = entry.handle(SimpleNamespace(verb=mio_entryd.ADVISE_VERB,
                          arguments={'deadline_ms': 1000}, payload=frame()))
     assert reply['outcome'] == 'answered'
@@ -730,8 +730,8 @@ def test_metadata_maximum_and_absence(monkeypatch):
 def test_remote_entry_has_null_playbook_and_no_knowledge(tmp_path, monkeypatch, trusted_metadata):
     monkeypatch.setattr(runtime_paths, 'ROOT', tmp_path)
     entry = mio_entryd.MioEntryService()
-    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
-    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.local, 'observe', lambda **_: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda **_: 'fixture')
     monkeypatch.setattr(entry.router, 'handle', lambda **kw: SimpleNamespace(
         route=Route.REMOTE, outcome=SimpleNamespace(value='answered'),
         selection=SimpleNamespace(reason='fixture'),

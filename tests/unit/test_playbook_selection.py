@@ -145,16 +145,16 @@ def test_config_reader_existing_schema_and_ownership(selection_node, tmp_path, m
 
 
 def test_holder_generation_reload_cache_damage_and_expiry(selection_node, monkeypatch):
-    from azazel_nexus_runtime import mio_locald
+    from azazel_nexus_runtime import mio_playbooks
 
     ctx = activate(selection_node)
     _, doc, media, add, baseline = selection_node
     config = ctx.root.parent / 'config.json'
     config.write_text('{}')  # Reader is injected; real config ownership is tested above.
     reads = []
-    monkeypatch.setattr(mio_locald, 'selection_context', lambda *args: reads.append(args) or ctx)
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: reads.append(args) or ctx)
     clock = [NOW]
-    holder = mio_locald.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: clock[0])
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: clock[0])
     events = []
     first = holder.refresh(audit=events.append)
     assert first is not None
@@ -174,11 +174,11 @@ def test_holder_generation_reload_cache_damage_and_expiry(selection_node, monkey
     assert holder.refresh(audit=events.append) is second
     assert len(events) == event_count
     # A changed inventory/trust config rechecks current trust with no pointer change.
-    monkeypatch.setattr(mio_locald, 'selection_context', lambda *args: replace(ctx, signing_epoch=99))
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: replace(ctx, signing_epoch=99))
     config.write_text('{"changed":true}')
     assert holder.refresh(audit=events.append) is None
     assert events[-1]['reason'] == 'pack_degraded'
-    monkeypatch.setattr(mio_locald, 'selection_context', lambda *args: ctx)
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: ctx)
     config.write_text('{}')
     assert holder.refresh(audit=events.append) is not None
     asset = next(v for k, v in ctx.assets.items() if k[1] == 'disable-all')
@@ -224,7 +224,7 @@ def test_retained_integrity_alone_does_not_replace_signature_check(selection_nod
 
 @pytest.mark.parametrize('failure', ['missing', 'degraded', 'tree', 'no_pack', 'expired'])
 def test_holder_caches_failures_and_recovers_on_metadata_change(selection_node, monkeypatch, failure):
-    from azazel_nexus_runtime import mio_locald
+    from azazel_nexus_runtime import mio_playbooks
 
     ctx = activate(selection_node)
     config = ctx.root.parent / 'config.json'
@@ -243,10 +243,10 @@ def test_holder_caches_failures_and_recovers_on_metadata_change(selection_node, 
         target.write_bytes(original + b' ')
     reads = []
     active_context = [replace(ctx, signing_epoch=99) if failure == 'degraded' else ctx]
-    monkeypatch.setattr(mio_locald, 'selection_context',
+    monkeypatch.setattr(mio_playbooks, 'selection_context',
                         lambda *args: reads.append(args) or active_context[0])
     clock = ['2026-11-01T00:00:00Z' if failure == 'expired' else NOW]
-    holder = mio_locald.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: clock[0])
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: clock[0])
     events = []
     assert holder.refresh(audit=events.append) is None
     count = len(reads)
@@ -266,7 +266,7 @@ def test_holder_caches_failures_and_recovers_on_metadata_change(selection_node, 
 
 @pytest.mark.parametrize('location', ['current', 'generation', 'pack', 'config'])
 def test_permission_failures_are_store_unreadable(selection_node, monkeypatch, location):
-    from azazel_nexus_runtime import mio_locald
+    from azazel_nexus_runtime import mio_playbooks
 
     ctx = activate(selection_node)
     generation = mp.MissionPack(ctx).current()
@@ -292,8 +292,8 @@ def test_permission_failures_are_store_unreadable(selection_node, monkeypatch, l
             raise PermissionError('test denial')
         return ctx
 
-    monkeypatch.setattr(mio_locald, 'selection_context', context)
-    holder = mio_locald.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
+    monkeypatch.setattr(mio_playbooks, 'selection_context', context)
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
     events = []
     assert holder.refresh(audit=events.append) is None
     assert events[-1]['reason'] == 'store_unreadable'

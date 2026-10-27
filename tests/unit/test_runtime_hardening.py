@@ -365,6 +365,9 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
             assert settings["SupplementaryGroups"] == ["azazel-operator"]
         elif profile.unit == "azazel-mio-locald.service":
             assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+        elif profile.unit == "azazel-mio-referenced.service":
+            # Verified playbooks only: no Knowledge, model or operator group.
+            assert settings["SupplementaryGroups"] == ["azmission-read"]
         elif profile.unit == "azazel-incident-explaind.service":
             assert settings["SupplementaryGroups"] == [
                 "azincident-read azknowledge-read azaudit-submit azmio-advise"]
@@ -386,6 +389,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     assert widened == {
         "azazel-activated.service", "azazel-commissiond.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
+        "azazel-mio-referenced.service",
         "azazel-incident-explaind.service", "azazel-decoy-netd.service",
         "azazel-decoy-nsd.service",
     }
@@ -489,6 +493,7 @@ GRANT_LOOP_UNITS = frozenset({
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",
+    "azazel-mio-referenced.service",
     "azazel-mio-remoted.service",
     "azazel-model-fetchd.service",
     "azazel-watchdog.service",

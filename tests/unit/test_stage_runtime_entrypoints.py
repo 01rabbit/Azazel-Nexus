@@ -430,7 +430,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     entrypoints = (
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
         "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
-        "az-mio-entryd", "az-knowledge-lited", "az-decoy-netd", "az-decoyd",
+        "az-mio-entryd", "az-mio-referenced", "az-knowledge-lited", "az-decoy-netd", "az-decoyd",
     )
     stager = tools / "stage_runtime_entrypoints.py"
     stager.write_text(
@@ -532,6 +532,7 @@ def test_new_daemon_entrypoints_import_in_isolated_staging_check():
     daemons = declared_daemons()
     targets = {
         "az-mio-entryd": "azazel_nexus_runtime.mio_entryd:main",
+        "az-mio-referenced": "azazel_nexus_runtime.mio_referenced:main",
         "az-edge-intaked": "azazel_nexus_runtime.edge_intaked:main",
         "az-incident-explaind": "azazel_nexus_runtime.incident_explaind:main",
         "az-knowledge-lited": "azazel_nexus_runtime.knowledge_lited:main",

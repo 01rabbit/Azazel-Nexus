@@ -1071,3 +1071,50 @@ def test_a_segment_vanishing_during_seeding_is_not_a_broken_chain(tmp_path, monk
     e.seed()
     assert not e.chain_broken and not e.cursor["broken"]
     assert e.refused["read_failed"] == 1
+
+
+def _reference_document():
+    from test_incident_explain import transition as _transition
+
+    from azazel_nexus.incident_explain import build_frame
+    from azazel_nexus.local_advisory import build_options, delivered_document
+
+    frame = build_frame(_transition(), 1)
+    options = build_options(frame)
+    body = delivered_document(frame, (), options,
+                              {"option_id": "other_suspicious", "kind": "other_suspicious"},
+                              list(options), None, "deterministic")
+    return {"banner": body["advice"], **{k: v for k, v in body.items() if k != "advice"}}
+
+
+@pytest.mark.parametrize("reply", [
+    # The pre-handoff shape with a reference: no notice to record it with.
+    lambda: {"route": "deterministic handoff", "outcome": "refused", "reason": "r",
+             "ledger_seq": 1, "reference_status": "attached", "reference": _reference_document()},
+    # A shape that passes nothing at all.
+    lambda: {"route": "deterministic handoff", "outcome": "refused", "reason": "r",
+             "ledger_seq": 1, "reference_status": "attached"},
+])
+def test_a_malformed_reply_never_raises_out_of_explain(tmp_path, reply):
+    e = make(tmp_path)
+    e.mio = lambda _: reply()
+    append(e)
+    e.poll()  # must not raise
+    (record,) = records(e)
+    assert record["mio"]["reason"] == "mio_reply_refused"
+    assert record["mio"]["text"] is None and "mio_reply_refused" in record["failure_codes"]
+
+
+def test_a_record_that_read_mio_reply_accepted_but_read_record_refuses_is_contained(
+    tmp_path, monkeypatch,
+):
+    e = make(tmp_path)
+    # A reader defect: an AI kind on the handoff route, which no record may hold.
+    monkeypatch.setattr(daemon, "read_mio_reply", lambda reply: {
+        "route": "deterministic handoff", "outcome": "refused", "reason": "x",
+        "text": "free text", "content_kind": "ai_advice"})
+    append(e)
+    e.poll()
+    (record,) = records(e)
+    assert record["mio"]["route"] == "unavailable"
+    assert record["failure_codes"][-1] == "mio_reply_refused"

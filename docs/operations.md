@@ -429,7 +429,12 @@ The UI groups information by mission state rather than by internal service. Ever
 
 The boot-time `az-activated` pass can grant the five SUPPORTING loop units
 (`azazel-edge-intaked`, `azazel-incident-explaind`, `azazel-edge-probed`,
-`azazel-mio-entryd`, `azazel-knowledge-lited`) when every input of
+`azazel-mio-entryd`, `azazel-knowledge-lited`) and, when the policy, generation
+and approval name it, the model-free playbook reference service
+`azazel-mio-referenced` (proposed 2026-10-28,
+[§6](activation-observe-baseline.md#6-owner-decisions); without it a deterministic
+handoff reports `reference_service_unavailable` and shows the fixed notice only)
+when every input of
 [§8 of the design](activation-observe-baseline.md#8-p4-supporting-wired-into-the-pass)
 verifies: full commissioning evidence, the declared node and epoch from the
 deployment declaration, `/etc/azazel/activation/policy.json`, the high-water

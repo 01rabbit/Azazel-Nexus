@@ -8,8 +8,15 @@ from collections import deque
 
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import TECHNIQUE_ID, read_knowledge_refs
-from .local_advisory import MACHINE_FIELDS, read_delivered, read_frame, read_reference
-from .route_selection import RequestOutcome
+from .local_advisory import (
+    HANDOFF_NOTICE,
+    MACHINE_FIELDS,
+    REFERENCE_BANNERS,
+    read_delivered,
+    read_frame,
+    read_reference,
+)
+from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
 
 MAX_PENDING = 64
@@ -291,14 +298,16 @@ def read_mio_reply(reply):
             and reply["fields"] == {}):
         _text(reply["advice"], 4096)
         _int(reply["ledger_seq"], 2**63-1)
-        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None}
+        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
+                "content_kind": "none"}
     if reply["route"] not in {"local", "deterministic handoff"} or reply["outcome"] not in {o.value for o in RequestOutcome}:
         raise ValueError("mio_reply_refused")
     _text(reply["reason"], 2048)
     _int(reply["ledger_seq"], 2**63-1)
     advice = None
     if set(reply) == base and reply["route"] == "local" and reply["outcome"] != "answered":
-        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory", "text": None}
+        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
+                "text": None, "content_kind": "none"}
     if reply["route"] == "local":
         body_keys = {"advice", "fields", "knowledge", *MACHINE_FIELDS}
         if not set(reply) <= base | body_keys:
@@ -306,14 +315,143 @@ def read_mio_reply(reply):
         body = read_delivered({k: v for k, v in reply.items() if k in body_keys})
         advice = body["advice"]
     else:
-        if set(reply) not in (base | {"reference_status"}, base | {"reference_status", "reference"}):
-            raise ValueError("mio_reply_refused")
-        if reply["reference_status"] == "attached" and "reference" in reply:
-            advice = read_reference(reply["reference"])["banner"]
-        elif reply["reference_status"] != "unavailable" or "reference" in reply:
+        if "handoff" in reply:
+            return _read_handoff(reply, base)
+        # The pre-handoff shape carries no fixed notice, so a reference in it
+        # could not be recorded with its label: it is refused, not guessed.
+        # Only the bare "no reference" form of that shape is still read.
+        if set(reply) != base | {"reference_status"} or reply["reference_status"] != "unavailable":
             raise ValueError("mio_reply_refused")
     reason = "mio_handoff" if reply["route"] == "deterministic handoff" else reply["reason"]
-    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice}
+    kind = "ai_advice" if reply["route"] == "local" else "none"
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice,
+            "content_kind": kind}
+
+
+_REASON_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_HANDOFF_FAILURE_ROUTES = {"local", "remote"}
+
+
+def _read_handoff(reply, base):
+    """The deterministic terminal step's reply: a reference or a fixed notice.
+
+    Neither is an AI answer. A reference keeps its fixed banner as the text;
+    a notice-only handoff carries no text, and the missing reason is kept in
+    the record's reason so the operator sees why there was no reference.
+    """
+    if reply["route"] != "deterministic handoff":
+        raise ValueError("mio_reply_refused")
+    handoff = reply["handoff"]
+    _shape(handoff, ("kind", "notice", "ai_attempts", "failures"))
+    if handoff["notice"] not in HANDOFF_NOTICE.values():
+        raise ValueError("mio_reply_refused")
+    _int(handoff["ai_attempts"], 2)
+    failures = handoff["failures"]
+    if type(failures) is not list or len(failures) > handoff["ai_attempts"]:
+        raise ValueError("mio_reply_refused")
+    terminals = {event.value for event in TerminalEvent}
+    for failure in failures:
+        if (type(failure) is not dict or not {"route", "terminal_event"} <= set(failure)
+                or not set(failure) <= {"route", "terminal_event", "refusal"}
+                or failure["route"] not in _HANDOFF_FAILURE_ROUTES
+                or failure["terminal_event"] not in terminals
+                or ("refusal" in failure and (type(failure["refusal"]) is not str
+                                              or not _REASON_WORD.fullmatch(failure["refusal"])))):
+            raise ValueError("mio_reply_refused")
+    if handoff["kind"] == "deterministic_reference":
+        if (set(reply) != base | {"reference_status", "reference", "handoff"}
+                or reply["reference_status"] != "attached"):
+            raise ValueError("mio_reply_refused")
+        text = read_reference(reply["reference"])["banner"]
+        reason = "mio_handoff"
+    elif handoff["kind"] == "deterministic_notice":
+        if (set(reply) != base | {"reference_status", "reference_reason", "handoff"}
+                or reply["reference_status"] != "unavailable"
+                or type(reply["reference_reason"]) is not str
+                or not _REASON_WORD.fullmatch(reply["reference_reason"])):
+            raise ValueError("mio_reply_refused")
+        text = None
+        reason = "mio_handoff:" + reply["reference_reason"]
+    else:
+        raise ValueError("mio_reply_refused")
+    # The fixed notice is kept with its language; `content_kind` labels what
+    # `text` is, so a reader never shows a reference as if it were AI advice.
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": text,
+            "content_kind": handoff["kind"], "notice": handoff["notice"]}
+
+
+#: What a record's `mio.text` is. Only `ai_advice` is an AI's output; both
+#: deterministic kinds are fixed or verified material and say so.
+CONTENT_KINDS = ("ai_advice", "deterministic_reference", "deterministic_notice", "none")
+#: Derived on read, never written: a handoff record from before the label.
+LEGACY_HANDOFF = "legacy_handoff"
+CONTENT_LABELS = {
+    "ai_advice": "AI advice (local model)",
+    "deterministic_reference": "deterministic playbook reference (not AI)",
+    "deterministic_notice": "deterministic handoff notice (not AI)",
+    LEGACY_HANDOFF: "legacy unlabeled deterministic handoff (not AI)",
+    "none": "no content",
+}
+#: The display state for each kind. Only an AI's advice is "explained".
+CONTENT_STATES = {
+    "ai_advice": "explained",
+    "deterministic_reference": "reference_shown",
+    "deterministic_notice": "notice_shown",
+    "none": "unavailable",
+}
+#: States in which an explanation (of any kind) is on display.
+SHOWN_STATES = frozenset({"explained", "reference_shown", "notice_shown"})
+_HANDOFF_KINDS = frozenset({"deterministic_reference", "deterministic_notice", LEGACY_HANDOFF})
+
+
+def content_kind(m):
+    """The kind of a record's `mio`, derived from the route when unlabeled."""
+    kind = m.get("content_kind")
+    if kind is not None:
+        return kind
+    if m["route"] == "deterministic handoff":
+        return LEGACY_HANDOFF
+    return "ai_advice" if m["route"] == "local" and m["text"] else "none"
+
+
+def content_state(kind, has_text):
+    if kind == LEGACY_HANDOFF:
+        return "reference_shown" if has_text else "unavailable"
+    return CONTENT_STATES[kind]
+
+
+def _check_content(kind, route, text, notice, *, banners=REFERENCE_BANNERS):
+    """One consistency rule for records and snapshots; raises ValueError.
+
+    `text` is the stored text (a record) or its summary (a snapshot), `""`
+    or None meaning none. `banners` is the set a reference text must be in.
+    """
+    if kind not in CONTENT_STATES and kind != LEGACY_HANDOFF:
+        raise ValueError("content_refused")
+    if notice is not None and notice not in HANDOFF_NOTICE.values():
+        raise ValueError("content_refused")
+    if (notice is not None) != (kind in ("deterministic_reference", "deterministic_notice")):
+        raise ValueError("content_refused")
+    if kind in _HANDOFF_KINDS and route != "deterministic handoff":
+        raise ValueError("content_refused")
+    if kind == "ai_advice" and (route != "local" or not text):
+        raise ValueError("content_refused")
+    if kind in ("deterministic_notice", "none") and text:
+        raise ValueError("content_refused")
+    if kind == "deterministic_reference" and text not in banners:
+        raise ValueError("content_refused")
+    if kind == LEGACY_HANDOFF and text and text not in banners:
+        raise ValueError("content_refused")
+
+
+def _read_content(m):
+    """Labelled records are checked as written; unlabeled ones as derived."""
+    if m.get("content_kind") == LEGACY_HANDOFF or ("notice" in m and "content_kind" not in m):
+        raise ValueError("record_refused")
+    try:
+        _check_content(content_kind(m), m["route"], m["text"], m.get("notice"))
+    except ValueError:
+        raise ValueError("record_refused") from None
 
 
 RECORD_FIELDS = {"incident_id", "explained_at", "transition", "edge_would", "policy_reason",
@@ -344,12 +482,13 @@ def read_record(value):
     if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
         raise ValueError("record_refused")
     m = value["mio"]
-    _shape(m, ("route", "outcome", "reason", "text"))
+    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice"))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
     if m["text"] is not None:
         _text(m["text"], 4096)
+    _read_content(m)
     return json.loads(json.dumps(value, allow_nan=False))
 
 
@@ -395,10 +534,20 @@ def explanation_summary(record):
         except ValueError:
             continue
         refs.append(citation)
-    return {"state": "explained" if r["mio"]["text"] else "unavailable",
-            "route": r["mio"]["route"], "outcome": r["mio"]["outcome"],
-            "summary": private_text(r["mio"]["text"][:280], 280) if r["mio"]["text"] else "",
-            "knowledge_refs": refs, "failure_codes": r["failure_codes"]}
+    m = r["mio"]
+    kind = content_kind(m)
+    summary = {"state": content_state(kind, bool(m["text"])),
+               "route": m["route"], "outcome": m["outcome"],
+               "summary": private_text(m["text"][:280], 280) if m["text"] else "",
+               "knowledge_refs": refs, "failure_codes": r["failure_codes"],
+               "content_kind": kind}
+    if "notice" in m:
+        summary["notice"] = m["notice"]
+    return summary
+
+
+def _summary_banners():
+    return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
 
 def build_recent_incidents(incidents, written_at):
@@ -462,8 +611,24 @@ def read_recent_incidents(raw):
             if type(ids) is not list or len(ids) > 8 or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids):
                 return None
             e = row["explanation"]
-            _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"))
-            if (e["state"] not in {"pending", "explained", "unavailable"}
+            _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
+                   ("content_kind", "notice"))
+            # The same consistency rule as a record, applied to the summary.
+            if "content_kind" in e:
+                try:
+                    _check_content(e["content_kind"], e["route"], e["summary"], e.get("notice"),
+                                   banners=_summary_banners())
+                except ValueError:
+                    return None
+                if e["state"] != content_state(e["content_kind"], bool(e["summary"])):
+                    return None
+            elif "notice" in e or (e["state"] not in {"pending", "unavailable"}
+                                   and not (e["state"] == "explained" and e["route"] == "local")):
+                # Unlabeled rows (older snapshots, pending and unavailable
+                # rows) may claim nothing but an AI explanation on the local
+                # route; a handoff is never shown unlabeled.
+                return None
+            if (e["state"] not in {"pending", "unavailable"} | SHOWN_STATES
                     or e["route"] not in {"local", "deterministic handoff", "unavailable"}
                     or e["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}):
                 return None

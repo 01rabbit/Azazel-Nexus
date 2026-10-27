@@ -1152,6 +1152,8 @@ EXPECTED_SCRIPTS = (
     "az-commissiond",
     "az-edge-probed", "az-edge-intaked", "az-incident-explaind",
     "az-mio-entryd",
+    # The model-free playbook reference for the deterministic handoff.
+    "az-mio-referenced",
     "az-knowledge-lited",
     "az-mio-locald",
     "az-mio-remoted",

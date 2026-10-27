@@ -31,7 +31,6 @@ from azazel_nexus.local_advisory import (
     read_delivered,
     read_explanation,
     read_frame,
-    read_reference,
     request_event,
     retrieval_decision,
 )
@@ -43,15 +42,10 @@ from azazel_nexus.model_runtime import (
     readiness,
     resolve_runtime,
 )
-from azazel_nexus.playbook_selection import (
-    PlaybookSelection,
-    active_playbooks,
-    retained_paths,
-    selection_context,
-)
-from azazel_nexus.reasoning_playbook import Library, match, technique_ids
+from azazel_nexus.reasoning_playbook import Library, technique_ids
 
 from .knowledge_client import KnowledgeUnavailable, lookup_context
+from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import (
@@ -66,7 +60,6 @@ from .systemd_notify import runtime_ready_callback
 __all__ = [
     "ACTIVATE_VERB",
     "INFER_VERB",
-    "REFERENCE_VERB",
     "REGISTRY",
     "SOCKET_NAME",
     "STAGING",
@@ -103,16 +96,10 @@ INFER_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-# Separate from the route/advisory budget; callers cannot extend this ceiling.
-REFERENCE_DEADLINE_MS = 500
-REFERENCE_VERB = Verb(
-    name="mio.local.reference",
-    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=REFERENCE_DEADLINE_MS),),
-    admits=frozenset({PrincipalClass.SERVICE}),
-    accepts_payload=True,
-    payload_contract="azazel_nexus.local_advisory.read_frame",
-)
-REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB, REFERENCE_VERB])
+#: No reference verb: verified playbook references are served by the
+#: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
+#: on a node with no admitted model. This host serves only model verbs.
+REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB])
 
 
 @dataclass(frozen=True)
@@ -177,8 +164,6 @@ class LocalRuntimeService:
         self._playbooks = library
 
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
-        if getattr(getattr(request, "verb", None), "name", None) == REFERENCE_VERB.name:
-            return self._reference(request)
         if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
             return self._infer(request, audit=audit)
         arguments = request.arguments
@@ -209,35 +194,6 @@ class LocalRuntimeService:
             readiness=verdict.readiness.value,
             reason=verdict.reason,
         ).as_document()
-
-    def _reference(self, request: Any) -> dict:
-        """Playbooks only: no provider, admission, runtime or Knowledge calls."""
-        began = time.monotonic()
-        unavailable = {"outcome": "failed", "refusal": "reference_unavailable"}
-        deadline_ms = request.arguments["deadline_ms"]
-        if not 0 < deadline_ms <= REFERENCE_DEADLINE_MS:
-            return unavailable
-        end = began + deadline_ms / 1000
-        try:
-            frame = read_frame(request.payload)
-            if self._playbooks is None or gate_frame(frame) is not None:
-                return unavailable
-            books = match(frame, self._playbooks)
-            if time.monotonic() >= end - DELIVERY_RESERVE_S:
-                return unavailable
-            options = build_options(frame, books)
-            candidate, state, support, record = retrieval_decision(frame, books, ())
-            body = delivered_document(
-                frame, books, options, candidate, options, None, "deterministic",
-                state=state, benign_evidence=support, system_record=record,
-                provenance="keyword",
-            )
-            document = read_reference({"banner": body.pop("advice"), **body})
-            if time.monotonic() >= end - DELIVERY_RESERVE_S:
-                return unavailable
-            return {"outcome": "reference", "reference": document}
-        except (FrameRefused, ValueError):
-            return unavailable
 
     def _infer(self, request: Any, *, audit: Callable[[dict], None]) -> dict:
         began = time.monotonic()
@@ -417,75 +373,6 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
                    "retrieval": retrieval, "benign_evidence": support}
 
 
-class PlaybookSelectionHolder:
-    """Cache verified layers; inspect only file metadata until state changes.
-
-    Trust/config, pointer, retained bytes and selected assets invalidate the
-    cache, including failures. Expiry removes references even if no files
-    change; restored files or permissions invalidate failed selections.
-    """
-
-    def __init__(self, *, config: Path, root: Path, clock=None):
-        self.config = config
-        self.root = root
-        self.clock = clock or (lambda: datetime.now(UTC).isoformat().replace('+00:00', 'Z'))
-        self.selection = PlaybookSelection(None, 'no_pack')
-        self._revision = None
-        self._watch_paths = ()
-        self._audited = False
-
-    def _fingerprint(self, watch_paths):
-        result = []
-        for path in (self.config, self.root, self.root / 'generations',
-                     self.root / 'current', *watch_paths):
-            try:
-                info = path.lstat()
-                result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-                               info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid))
-            except OSError as error:
-                result.append((type(error).__name__, error.errno))
-        return tuple(result)
-
-    def refresh(self, *, audit: Callable[[dict], None]) -> Library | None:
-        now = self.clock()
-        revision = self._fingerprint(self._watch_paths)
-        expired = (self.selection.expires_at is not None
-                   and datetime.fromisoformat(now) >= datetime.fromisoformat(self.selection.expires_at))
-        if (self._revision == revision and not expired):
-            return self.selection.library
-        watch_paths = ()
-        before = None
-        try:
-            watch_paths = retained_paths(self.root)
-            if not watch_paths:
-                selection = PlaybookSelection(None, 'no_pack')
-            else:
-                context = selection_context(self.config, self.root)
-                watch_paths += tuple(asset.path for key, asset in context.assets.items()
-                                     if key[0] == 'reasoning_playbook')
-                before = self._fingerprint(watch_paths)
-                selection = active_playbooks(context, now=now)
-        except PermissionError:
-            selection = PlaybookSelection(None, 'store_unreadable')
-        except Exception as error:
-            if isinstance(error, AuditUnavailable):
-                raise
-            selection = PlaybookSelection(None, 'pack_degraded')
-        previous = self.selection
-        after = self._fingerprint(watch_paths)
-        # Compare the NEW paths on both sides of verification. The old paths
-        # also cover config/pointer changes during discovery or config reads.
-        stable = (revision == self._fingerprint(self._watch_paths)
-                  and (before is None or before == after))
-        self.selection = selection
-        self._watch_paths = watch_paths
-        self._revision = after if stable else None
-        if not self._audited or selection != previous or self._revision is None:
-            audit(selection.as_event())
-            self._audited = True
-        return selection.library
-
-
 def prepare_local_models(candidates, *, staging, audit):
     """Only loader-minted embedding evidence can reach a supervised process."""
     from azazel_nexus.runtime_lifecycle import BudgetLedger
@@ -606,8 +493,7 @@ def main(
         return stop()
 
     def handle(request):
-        if getattr(getattr(request, "verb", None), "name", None) != REFERENCE_VERB.name:
-            admissions.refresh(withdraw=withdraw, audit=ledger.append)
+        admissions.refresh(withdraw=withdraw, audit=ledger.append)
         service.set_playbooks(selection.refresh(audit=ledger.append))
         return service.handle(request, audit=ledger.append)
 

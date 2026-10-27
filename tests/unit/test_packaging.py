@@ -368,6 +368,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/mio-entry",
         "/var/lib/azazel/run/mio-advise",
         "/var/lib/azazel/run/mio",
+        "/var/lib/azazel/run/mio-reference",
         "/var/lib/azazel/run/remote",
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
@@ -407,6 +408,7 @@ def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
     expected_owner = {
         "audit": "azaudit", "audit-submit": "azaudit", "commission": "azcommission", "watchdog": "azwatch",
         "fetch": "azfetch", "mio-entry": "azmioentry", "mio-advise": "azmioentry", "mio": "azmio",
+        "mio-reference": "azmioref",
         "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge", "edge-intake": "azintake",
         "decoy-intake": "azintake",
     }

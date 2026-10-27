@@ -84,18 +84,23 @@ def _exchange(
     return response["result"]
 
 
-def _probe(leaf: str) -> str:
+#: The longest a readiness probe may take. A request that probes passes a
+#: smaller bound: probe time comes out of that request's one deadline.
+PROBE_MAX_S = 0.5
+
+
+def _probe(leaf: str, deadline_s: float = PROBE_MAX_S) -> str:
     try:
         if leaf == "mio":
             reply = _exchange("mio", "azmio", "model.activate", {
                 "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-            })
+            }, deadline_s=deadline_s)
             if reply.get("readiness") == "refused":
                 return "local_not_admitted"
             return "local_no_admission_evidence"
         reply = _exchange("remote", "azremote", "remote.infer", {
             "provider_id": "uncommissioned", "request_id": "route-probe",
-        })
+        }, deadline_s=deadline_s)
         if reply.get("outcome") == "not_sent":
             return "remote_not_admitted"
         return "remote_no_admission_evidence"
@@ -111,24 +116,8 @@ def _reply_metadata(reply: dict) -> dict:
 
 
 class LocalSocketClient:
-    def observe(self) -> str:
-        return _probe("mio")
-
-    def reference(self, frame: dict, *, deadline_ms: int) -> dict | None:
-        began = time.monotonic()
-        try:
-            reply = _exchange(
-                "mio", "azmio", "mio.local.reference", {"deadline_ms": deadline_ms},
-                payload=frame, deadline_s=deadline_ms / 1000,
-            )
-            if set(reply) != {"outcome", "reference"} or reply["outcome"] != "reference":
-                return None
-            document = read_reference(reply["reference"])
-            if time.monotonic() - began >= deadline_ms / 1000:
-                return None
-            return document
-        except Exception:  # noqa: BLE001 - optional reference; any reply defect means none
-            return None
+    def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
+        return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
@@ -158,9 +147,58 @@ class LocalSocketClient:
             return {"outcome": "failed", "refusal": "local_unavailable"}
 
 
-class RemoteSocketClient:
-    def observe(self) -> str:
-        return _probe("remote")
+class ReferenceSocketClient:
+    """The model-free reference service (`mio_referenced`); never a model verb.
 
-    def handle(self, request, *, audit=None) -> dict:
-        return {"outcome": "unavailable", "refusal": self.observe()}
+    Returns `(document, None)` or `(None, reason)`, where `reason` is a fixed
+    word. The deadline is the caller's remaining share of the request's one
+    deadline, measured on the same monotonic clock; a document that arrives
+    at or after it is discarded, never attached late.
+    """
+
+    def __init__(self, *, clock=time.monotonic) -> None:
+        self._clock = clock
+
+    def reference(self, frame: dict, *, deadline_at: float) -> tuple[dict | None, str | None]:
+        from .mio_referenced import ACCOUNT, REFERENCE_DEADLINE_MS, REFERENCE_REASONS
+
+        remaining_ms = min(REFERENCE_DEADLINE_MS, int((deadline_at - self._clock()) * 1000))
+        if remaining_ms <= 0:
+            return None, "deadline"
+        try:
+            reply = _exchange(
+                "mio-reference", ACCOUNT, "mio.reference", {"deadline_ms": remaining_ms},
+                payload=frame, deadline_s=remaining_ms / 1000,
+            )
+        except ServiceRefused:
+            return None, "reference_refused"
+        except Exception:  # noqa: BLE001 - optional reference; never the request's failure
+            return None, "reference_service_unavailable"
+        if self._clock() >= deadline_at:
+            return None, "deadline"
+        if (set(reply) == {"outcome", "reason"} and reply["outcome"] == "unavailable"
+                and reply["reason"] in REFERENCE_REASONS):
+            return None, reply["reason"]
+        if set(reply) != {"outcome", "reference"} or reply["outcome"] != "reference":
+            return None, "reference_refused"
+        try:
+            return read_reference(reply["reference"]), None
+        except Exception:  # noqa: BLE001 - a malformed reference is no reference
+            return None, "reference_refused"
+
+
+class RemoteSocketClient:
+    def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
+        return _probe("remote", min(PROBE_MAX_S, deadline_s))
+
+    def handle(self, request, *, audit=None, deadline_ms=None) -> dict:
+        """No transport is reachable from here; the probe is still bounded.
+
+        `deadline_ms` is the attempt's share of the request's one deadline and
+        is the socket timeout of the exchange, so a remote daemon that accepts
+        and never answers cannot hold the request past it.
+        """
+        bound = PROBE_MAX_S if deadline_ms is None else min(PROBE_MAX_S, deadline_ms / 1000)
+        if bound <= 0:
+            return {"outcome": "timed_out", "refusal": "deadline"}
+        return {"outcome": "unavailable", "refusal": _probe("remote", bound)}

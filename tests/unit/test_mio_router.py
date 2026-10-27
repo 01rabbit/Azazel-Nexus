@@ -66,6 +66,11 @@ def invoke(
     )
 
 
+def local_terminal(recorded):
+    return next(e for e in recorded if e['event_type'] == 'mio.route.terminal'
+                and e['route'] == Route.LOCAL.value)
+
+
 def events(router):
     # The whole retained chain, so a run across UTC midnight still verifies.
     ledger = RouteChain(router.ledger.directory)
@@ -103,12 +108,18 @@ def test_local_selected_records_real_readiness_without_claiming_an_answer(
     assert result.selection.route is Route.LOCAL
     assert recorded[0]['candidates'][0]['reason']
     assert any(e['event_type'] == 'mio.local.readiness' and e['readiness'] == 'ready' for e in recorded)
-    assert result.reply['readiness'] == 'ready'
-    assert result.route is Route.LOCAL
+    # Readiness is no answer: the request ends in the deterministic handoff,
+    # with the local attempt's own terminal record kept.
+    assert result.route is Route.DETERMINISTIC_HANDOFF
     assert result.outcome is RequestOutcome.REFUSED
-    assert recorded[-1]['terminal_event'] == TerminalEvent.NO_ANSWER.value
-    assert recorded[-1]['reason'] == 'local_ready_no_answer'
-    assert recorded[-1]['fallback_available'] is False
+    assert result.ai_attempts == 1
+    assert result.failures == ({'route': 'local', 'terminal_event': 'no answer',
+                                'refusal': 'local_ready_no_answer'},)
+    local = local_terminal(recorded)
+    assert local['terminal_event'] == TerminalEvent.NO_ANSWER.value
+    assert local['reason'] == 'local_ready_no_answer'
+    assert local['fallback_available'] is False
+    assert recorded[-1]['route'] == Route.DETERMINISTIC_HANDOFF.value
     assert not any(e['event_type'] == 'mio.route.fallback' for e in recorded)
     assert calls == []
 
@@ -135,8 +146,11 @@ def test_timeout_records_one_fallback_and_no_retry(setup_router):
     result = invoke(router)
     recorded = events(router)
     assert calls == ['remote']
-    assert result.route is Route.LOCAL
+    # Both AI routes failed; the terminal step is the deterministic handoff.
+    assert result.route is Route.DETERMINISTIC_HANDOFF
     assert result.outcome is RequestOutcome.REFUSED
+    assert result.ai_attempts == 2
+    assert [f['route'] for f in result.failures] == ['remote', 'local']
     fallbacks = [e for e in recorded if e['event_type'] == 'mio.route.fallback']
     assert len(fallbacks) == 1
     assert fallbacks[0]['reason'] and fallbacks[0]['spent']
@@ -153,8 +167,12 @@ def test_mismatch_records_exact_refusal_and_does_not_send(setup_router):
     refusal = next(e for e in recorded if e['event_type'] == 'mio.remote.refused')
     assert refusal['refusal'] == 'content_mismatch'
     assert refusal['reason']
-    assert recorded[-1]['terminal_event'] == TerminalEvent.SANITIZER_FAILED.value
+    remote = next(e for e in recorded if e['event_type'] == 'mio.route.terminal'
+                  and e['route'] == Route.REMOTE.value)
+    assert remote['terminal_event'] == TerminalEvent.SANITIZER_FAILED.value
+    # No fallback and no other AI: the handoff ends it.
     assert not any(e['event_type'] == 'mio.route.fallback' for e in recorded)
+    assert result.route is Route.DETERMINISTIC_HANDOFF and result.ai_attempts == 1
 
 
 def test_unwritable_ledger_dispatches_nothing(setup_router, monkeypatch, tmp_path):
@@ -219,13 +237,19 @@ def test_real_local_refusal_falls_back_to_remote_once(setup_router, remote_outco
     assert readiness['readiness'] == 'refused'
     assert 'Core reserve is unmeasured' in readiness['reason']
     assert Route.REMOTE in result.selection.permitted
-    assert result.route is Route.REMOTE
+    # Answered by the fallback, or -- when it timed out too -- handed to the
+    # deterministic path. Never a third attempt.
+    expected = (Route.REMOTE if remote_outcome is TransportOutcome.RECEIVED
+                else Route.DETERMINISTIC_HANDOFF)
+    assert result.route is expected
     assert calls == ['remote']
     fallbacks = [e for e in recorded if e['event_type'] == 'mio.route.fallback']
     assert len(fallbacks) == 1
     assert fallbacks[0]['failed_route'] == Route.LOCAL.value
     assert readiness['reason'] in fallbacks[0]['reason']
-    assert recorded[-1]['fallback_available'] is False
+    remote = next(e for e in recorded if e['event_type'] == 'mio.route.terminal'
+                  and e['route'] == Route.REMOTE.value)
+    assert remote['fallback_available'] is False
 
 
 @pytest.mark.parametrize('privacy_class', [PrivacyClass.P2_MISSION, PrivacyClass.P3_RESTRICTED])
@@ -254,10 +278,12 @@ def test_local_without_a_failure_does_not_trigger_remote(setup_router, monkeypat
     result = invoke(router, local=True)
     recorded = events(router)
     assert result.outcome is RequestOutcome.REFUSED
-    assert recorded[-1]['terminal_event'] == TerminalEvent.NO_ANSWER.value
-    assert recorded[-1]['reason'] == reason
-    assert recorded[-1]['fallback_available'] is False
+    local = local_terminal(recorded)
+    assert local['terminal_event'] == TerminalEvent.NO_ANSWER.value
+    assert local['reason'] == reason
+    assert local['fallback_available'] is False
     assert not any(e['event_type'] == 'mio.route.fallback' for e in recorded)
+    assert result.route is Route.DETERMINISTIC_HANDOFF
     assert calls == []
 
 
@@ -274,7 +300,8 @@ def test_malformed_payload_audits_only_fixed_reason(setup_router, payload):
     recorded = events(router)
     assert calls == []
     assert result.outcome is RequestOutcome.REFUSED
-    assert result.reply['reason'] == 'malformed_payload'
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    assert result.failures[0]['refusal'] == 'malformed_payload'
     refusal = next(e for e in recorded if e['event_type'] == 'mio.remote.refused')
     assert refusal['refusal'] == refusal['reason'] == 'malformed_payload'
 

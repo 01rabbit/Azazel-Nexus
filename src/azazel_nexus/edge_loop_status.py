@@ -8,7 +8,7 @@ import stat
 from datetime import UTC, datetime
 
 from .edge_intake import DECOY_REFUSAL_CODES, read_intake_status
-from .incident_explain import RECENT_BYTES, read_explainer_status, read_recent_incidents
+from .incident_explain import CONTENT_LABELS, RECENT_BYTES, read_explainer_status, read_recent_incidents
 
 #: Edge reports its forward counts when they change and at least every five
 #: minutes; a report older than three of those is no longer current.
@@ -111,7 +111,11 @@ def _render_edge_loop(out, now):
         e = row["explanation"]
         codes = " (" + ", ".join(e["failure_codes"]) + ")" if e["failure_codes"] else ""
         summary = e["summary"] or ("awaiting explanation" if e["state"] == "pending" else "no summary")
-        print(f"            {e['state']}{codes}: {summary}", file=out)
+        # The label says what the text is: only AI advice came from a model.
+        label = f" [{CONTENT_LABELS[e['content_kind']]}]" if "content_kind" in e else ""
+        print(f"            {e['state']}{codes}{label}: {summary}", file=out)
+        if "notice" in e:
+            print(f"            notice: {e['notice']}", file=out)
         for ref in e["knowledge_refs"]:
             print(f"            {ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]", file=out)
 

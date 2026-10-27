@@ -69,7 +69,7 @@ def test_confirmed_profile_reader_is_used_without_admitting_a_provider(service, 
 @pytest.mark.parametrize("failure", [FileNotFoundError(), ConnectionRefusedError(),
                                        TimeoutError(), ValueError("refused")])
 def test_client_failures_are_unavailable(monkeypatch, failure):
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise failure
 
     monkeypatch.setattr(client, "_exchange", fail)
@@ -80,15 +80,16 @@ def test_client_failures_are_unavailable(monkeypatch, failure):
 def test_fixed_probe_never_supplies_payload_or_accepts_response_text(monkeypatch):
     calls = []
 
-    def exchange(*args):
-        calls.append(args)
+    def exchange(*args, **kwargs):
+        calls.append((args, kwargs))
         return {"readiness": "refused", "reason": "PROMPT_SENTINEL"}
 
     monkeypatch.setattr(client, "_exchange", exchange)
     assert client.LocalSocketClient().observe() == "local_not_admitted"
-    assert calls == [("mio", "azmio", "model.activate", {
+    # A bounded probe: never longer than PROBE_MAX_S, and no payload.
+    assert calls == [(("mio", "azmio", "model.activate", {
         "model_id": "uncommissioned", "runtime_id": "uncommissioned",
-    })]
+    }), {"deadline_s": client.PROBE_MAX_S})]
 
 
 def test_metadata_vocabulary_and_principals():
@@ -146,8 +147,8 @@ def test_main_unwritable_ledger_does_not_bind(tmp_path, monkeypatch):
 
 
 def test_selection_audit_failure_propagates(service, monkeypatch):
-    monkeypatch.setattr(service.local, "observe", lambda: "local_unavailable")
-    monkeypatch.setattr(service.remote, "observe", lambda: "remote_unavailable")
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
     original = service.router.ledger.append
 
     def append(event, **kwargs):
@@ -207,10 +208,10 @@ def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypat
     principal = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))
     service._profile_reader = lambda: profile
     service._local_admitted = lambda: local_admitted
-    monkeypatch.setattr(service.local, "observe", lambda: "local_not_admitted")
-    monkeypatch.setattr(service.remote, "observe", lambda: "remote_not_admitted")
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_not_admitted")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_not_admitted")
     monkeypatch.setattr(service.remote, "handle", lambda *a, **kw: pytest.fail("remote request"))
-    monkeypatch.setattr(service.local, "reference", lambda *a, **kw: None)
+    monkeypatch.setattr(service.reference, "reference", lambda *a, **kw: (None, "no_pack"))
     monkeypatch.setattr(service.local, "handle", lambda *a, **kw: {"outcome": "not_advice", "refusal": "not_advice"})
     frame = build_frame(transition(), 1)
     req = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500},

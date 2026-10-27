@@ -247,8 +247,12 @@ class RemoteInferenceService:
         self._clock = clock
 
     def handle(
-        self, request: Any, *, audit: Callable[[dict], None] | None = None
+        self, request: Any, *, audit: Callable[[dict], None] | None = None,
+        deadline_ms: int | None = None,
     ) -> dict:
+        """`deadline_ms`, when given, is the caller's remaining share of one
+        request deadline. It reaches the transport as `deadline_s`; with none
+        left nothing is sent."""
         arguments = request.arguments
         provider_id = arguments["provider_id"]
         request_id = arguments["request_id"]
@@ -326,9 +330,15 @@ class RemoteInferenceService:
                 "turns it on",
             )
 
+        bounded = {}
+        if deadline_ms is not None:
+            if type(deadline_ms) is not int or deadline_ms <= 0:
+                return refuse("deadline", "no time is left of the request's deadline; nothing is sent")
+            bounded["deadline_s"] = deadline_ms / 1000
+
         # 4. One attempt. No loop, no retry: the router decides fallback once.
         report, body = self._transport(
-            record=record, frame=frame, path=record.path_for()
+            record=record, frame=frame, path=record.path_for(), **bounded
         )
         if audit is not None:
             audit(report.as_event())

@@ -278,24 +278,42 @@ fixed symbols, IDs, digests and counts, never situation or generated prose.
 
 ### Deterministic reference on handoff
 
-`mio.local.reference` is a separate payload verb for SERVICE `azmioentry` only,
-using the existing PrincipalPolicy and framing. Its `deadline_ms` is 1–500 ms,
-with 20 ms reserved for delivery. The handler calls the existing keyword matcher
-and deterministic delivery builder directly, without accessing a model, embedding
-retriever, server, admission gate or Knowledge client. The verified playbook
-selection remains the source of trusted procedures. Missing playbooks, gated
-frames or an exhausted deadline return fixed `reference_unavailable` refusal.
+The playbook reference is **not** served by this model host any more. It moved to
+the model-free reference service `azazel-mio-referenced.service`
+(`runtime/src/azazel_nexus_runtime/mio_referenced.py`, verb `mio.reference`), so
+that a node whose `local_model_provider` wiring is absent — every node while
+model admission is closed — can still show verified playbook text on a
+deterministic handoff. Locald's registry is `mio.local.infer` and
+`model.activate` only; its wiring gate, admission and kill switch are unchanged.
+
+The reference service runs as its own account `azmioref`, with
+`SupplementaryGroups=azmission-read` only (no Knowledge, model or operator
+group), `PrivateNetwork=yes`, `AF_UNIX` only, read-only Mission Pack paths, its
+own ledger leaf `/var/lib/azazel/state/mio-reference` and socket leaf
+`/var/lib/azazel/run/mio-reference`. Its SERVICE policy admits only
+`azmioentry`. It is SUPPORTING with no wiring requirement and is grantable in the
+observe-baseline loop (proposed 2026-10-28, see
+[observe-baseline activation](activation-observe-baseline.md) §6). Its
+`deadline_ms` is 1–500 ms, with 20 ms reserved for delivery. The handler calls the
+existing keyword matcher and deterministic delivery builder directly, without a
+model, embedding retriever, server, admission gate or Knowledge client; the
+verified playbook selection (`mio_playbooks.PlaybookSelectionHolder`, shared with
+this host) remains the source of trusted procedures. When nothing can be
+referenced it answers `{outcome: unavailable, reason: <fixed word>}`; the words
+are listed in [M.I.O. runtime](mio-runtime.md#what-an-operator-receives-today).
 
 A successful reply is `{outcome: reference, reference: {...}}`. Its document has
 `banner`, `fields` and the same strict machine metadata as delivery, with
 `provenance.source: keyword`, `model_id: deterministic` and
-`explanation_source: trusted`. Both the local socket client and entryd validate
-these constraints. Entry requests this only after a deterministic handoff, under
-a deadline of at most 500 ms and never more than the caller's `deadline_ms`, and
-attaches it under `reference`, never `advice`, with `reference_status: attached`.
-Failure preserves the handoff and its routing reason, omits `reference` and sets
-`reference_status: unavailable`. Neither success nor failure changes route, outcome, route-ledger
-records, Edge authority or `LOCAL_MODEL_ADMISSION_ENABLED = False`.
+`explanation_source: trusted`. Both the socket client and entryd validate these
+constraints. Entry requests it only after a deterministic handoff, with what is
+left of the request's one deadline (capped at 500 ms), and attaches it under
+`reference`, never `advice`, with `reference_status: attached` and
+`handoff.kind: deterministic_reference`. Failure preserves the handoff and its
+routing reason, omits `reference`, and sets `reference_status: unavailable` with a
+fixed `reference_reason` next to the fixed handoff notice. Neither success nor
+failure changes route, outcome, Edge authority or
+`LOCAL_MODEL_ADMISSION_ENABLED = False`.
 
 ## 10. Evaluation limits
 
