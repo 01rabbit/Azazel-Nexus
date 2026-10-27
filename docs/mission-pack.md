@@ -203,8 +203,19 @@ and the signed component digest required when loading their installed bytes.
 
 ## Local advisory consumption
 
-Locald now reads the active `reasoning_playbook` selection using the existing
-commissioned configuration and encrypted store paths. The read-only
+Two services read the active `reasoning_playbook` selection, through the same
+`PlaybookSelectionHolder` (`runtime/src/azazel_nexus_runtime/mio_playbooks.py`),
+using the existing commissioned configuration and encrypted store paths:
+
+- `azazel-mio-referenced.service` (`mio_referenced.py`, since #343) serves the
+  verified playbook reference of the deterministic handoff. It runs no model,
+  so it is the consumer on a node with no admitted model, which is every node
+  while model admission is closed;
+- `azazel-mio-locald.service` uses the same selection as retrieval context for
+  an admitted local model. It no longer serves references (it has no reference
+  verb), and its wiring and admission are unchanged.
+
+The read-only
 `playbook_selection.active_playbooks` resolver accepts a commissioned PackContext
 (or its read-only selection subset), requires active status, verifies retained
 generation/admission integrity, and additionally verifies the retained signature,
@@ -213,14 +224,15 @@ installed inventory paths and loads the exact selected digest, size and version.
 It composes one baseline followed by site layers in manifest order; no baseline,
 multiple baselines, missing assets or verification failures remove all playbooks.
 
-Locald caches successful composition and stable failures, checks pointer/configuration/retained-file/
+The holder caches successful composition and stable failures, checks pointer/configuration/retained-file/
 asset metadata on each request and reloads on changes or expiry. Failures discard
 the cached library; verification retries when watched metadata changes. Audits report fixed reason
-and ordered library IDs/versions/digests only. This consumer never writes pack
-state or promotes a generation; existing model admission remains closed.
+and ordered library IDs/versions/digests only (`mio.local.playbook_selection`).
+Neither consumer writes pack state or promotes a generation; existing model
+admission remains closed.
 
-Packaging creates the dedicated `azmission-read` group and grants it to locald
-through the generated unit's supplementary groups. The existing commissioned
+Packaging creates the dedicated `azmission-read` group and grants it to
+referenced and locald through the generated units' supplementary groups. The existing commissioned
 configuration becomes `0640 root:azmission-read`; the reader still rejects
 non-root ownership and all group/other write bits. Installed inventory
 `reasoning_playbook` files must live under `/var/lib/azazel/playbooks`, created
