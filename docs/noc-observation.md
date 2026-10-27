@@ -28,6 +28,9 @@ was derived from, when it was read, and how fresh the reading is:
 ```
 
 A reading older than `FRESH_WITHIN_SECONDS` (10 s) at render time is `stale`.
+The collection reads a first link dump and the first counter values, waits
+the counter interval (`--interval`, 0.2 to 10 s), and only then reads the
+whole snapshot, so the interval itself never makes the output stale.
 An item that could not be read is `unknown`, with a fixed reason code and a
 fixed phrase (`UNKNOWN_REASONS`), never a guess and never a value read from
 the host.
@@ -49,16 +52,32 @@ The output is Nexus-local operator output. It is **not** a Fabric record and
 | read systemd-networkd and dhclient lease files | talk to a DHCP server |
 
 A netlink request goes to the local kernel; it is not bound to an interface
-and nothing it carries leaves the host.
+and nothing it carries leaves the host. Reading sysfs is not entirely inert:
+a driver may query its own hardware to answer (an MDIO or USB control
+transfer, for example). That puts no frame on the wire, but "touches
+nothing" would overstate it.
 
-This is enforced in `tests/unit/test_noc_observe.py` three ways: an AST scan of
-the module (imports are an allowlist with no process or network-client
-module; no `connect`, `bind`, `sendto`, `sendmsg`, `getaddrinfo`, spawn or
-`AF_INET*` name; exactly one `send`, inside the netlink dump, of a message
-built by the function that admits only the three dump types; exactly one socket
-constructor, `AF_NETLINK`), an in-process collection against the kernel with
-`socket.socket` replaced by a guard that fails any non-netlink family, and a
-real-process run of the command under the same guard.
+**What enforces this at run time** is the module itself: the family check
+that refuses any socket other than `AF_NETLINK` before the one send, and
+`_request`, which builds only the three dump types and refuses any other.
+
+**What guards it against regression** is `tests/unit/test_noc_observe.py`:
+
+- an AST scan of the module: imports are an allowlist with no process or
+  network-client module, and nothing is imported from `socket` under another
+  name; no `connect`, `bind`, `sendto`, `sendmsg`, `getaddrinfo`, spawn or
+  `AF_INET*` name, and no `getattr`, `__import__`, `importlib`, `eval` or
+  `exec` that could reach one indirectly; no `async def`; exactly one `send`,
+  inside the netlink dump (functions, async functions and lambdas are all
+  scanned), of a message built by `_request`; exactly one socket constructor,
+  `AF_NETLINK`;
+- an in-process collection against the kernel, with `socket.socket` replaced
+  by a guard that fails any non-netlink family;
+- a real-process run of the command under the same guard.
+
+The scan is a regression guard over this source, not a proof: Python can
+reach an API by routes no scan models, which is why the run-time checks above
+exist.
 
 Azazel-Edge's `noc_monitor` sends ICMP, DNS, TCP and HTTP probes. That is
 why it is not reused here.
@@ -69,14 +88,21 @@ why it is not reused here.
 | --- | --- | --- |
 | interfaces: admin up, lower up, loopback, operstate, carrier, MTU | `RTM_GETLINK` dump | read as reported |
 | interfaces: address count by family and scope | `RTM_GETADDR` dump | counted; no address kept |
-| interfaces: link speed | `/sys/class/net/{ifname}/speed` | as reported; `-1` or `EINVAL` is `speed_not_reported` |
-| interfaces: counters | `/sys/class/net/{ifname}/statistics/*` | second read |
-| quality and capacity | the two counter reads | deltas over the monotonic interval: bit rates, error and drop deltas, utilisation against link speed; a counter that went backwards is `counter_reset` |
-| uplink | `RTM_GETROUTE` dump, main table | default route present, count, egress ifindex, whether it has a gateway; a nexthop-object default is `nexthop_object_not_resolved` |
-| routes | `RTM_GETROUTE` dump, main table | counted per family |
+| interfaces: link speed | `/sys/class/net/{ifname}/speed` | as reported; `-1`, `0` or `EINVAL` is `speed_not_reported`, any other read error `read_failed` |
+| interfaces: counters | `/sys/class/net/{ifname}/statistics/*` | second read; a value that is not a non-negative decimal of at most 20 digits is `file_unparsable` |
+| quality and capacity | the two counter reads | deltas over the monotonic interval: bit rates, error and drop deltas, utilisation against link speed. Each counter is judged on its own: one that went backwards (reset or wrap) is listed in `reset_counters` and has no delta, and the rates that depend on it are `null` |
+| uplink | `RTM_GETROUTE` dump, **every table** | default routes in the main table and in all other tables, kept apart: count, egress ifindex, gateway present, and the kernel's `linkdown` and `dead` flags. A nexthop-object default is `nexthop_object_not_resolved`. Policy rules are not read (`policy_rules_evaluated: false`), so the output does not say which default a packet would take, and "none in `table_main`" does not mean "no default" |
+| routes | `RTM_GETROUTE` dump, every table | counted per family, main table and other tables apart |
 | DNS | `/etc/resolv.conf`, `/run/systemd/resolve/resolv.conf` | nameservers counted, loopback (stub) nameservers counted, search domains counted, whether the file is systemd-resolved's link |
-| DHCP | `/run/systemd/netif/leases/{ifindex}`, `/var/lib/dhcp/*.leases`, `/var/lib/dhclient/*.leases` | remaining lease time against the wall clock (networkd: file mtime + `LIFETIME`) |
+| DHCP | `/run/systemd/netif/leases/{ifindex}`, `/var/lib/dhcp/*.leases`, `/var/lib/dhclient/*.leases` | remaining lease time against the wall clock (networkd: file mtime + `LIFETIME`; dhclient: the lease with the latest expiry, not the last in the file), with `expired` marked. A wall clock earlier than `WALL_CLOCK_FLOOR_S` (no RTC, no NTP yet) gives `wall_clock_implausible`. A lease block that cannot be read (an impossible date, an over-long epoch) is `file_unparsable` for its own interface only, and only if no readable lease exists for it |
 | uplink reachability, DNS resolution | — | always `unknown`, `active_check_not_performed` (§7) |
+
+Files are opened non-blocking and read only if they are regular files
+(`file_not_regular` otherwise). The kernel's own operstate "unknown" is shown
+as `kernel_unknown`, so it is not read as this tool's `unknown` state. If the
+collection itself fails, the command prints only the fixed line
+`az-nexus-noc: collection_failed` to standard error and exits 1: never an
+exception's text, which could carry a lease line, a path or a name.
 
 The interface `tx_packets_delta` is shown because an operator will look for it.
 It is a host counter on the device under test, and

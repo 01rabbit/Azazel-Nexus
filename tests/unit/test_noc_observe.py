@@ -17,6 +17,7 @@ target device (`docs/service-objectives.md`), and no test here can stand in.
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import os
 import socket
@@ -29,7 +30,10 @@ import pytest
 
 from azazel_nexus_runtime import noc_observe
 from azazel_nexus_runtime.noc_observe import (
+    COLLECTION_FAILED,
     FRESH_WITHIN_SECONDS,
+    MAX_INTERVAL_SECONDS,
+    MIN_INTERVAL_SECONDS,
     REQUEST_TYPES,
     UNKNOWN_REASONS,
     Clock,
@@ -84,8 +88,8 @@ def _address(index: int, family: int, scope: int, address: bytes) -> bytes:
 
 
 def _route(family: int, dst_len: int, oif: int, gateway: bytes | None, table: int = 254,
-           kind: int = 1) -> bytes:
-    body = struct.pack("=BBBBBBBBI", family, dst_len, 0, 0, table, 4, 0, kind, 0)
+           kind: int = 1, flags: int = 0) -> bytes:
+    body = struct.pack("=BBBBBBBBI", family, dst_len, 0, 0, min(table, 252), 4, 0, kind, flags)
     body += _attr(15, struct.pack("=I", table)) + _attr(4, struct.pack("=I", oif))
     if gateway is not None:
         body += _attr(5, gateway)
@@ -107,7 +111,9 @@ def _standard_replies() -> dict[int, list[bytes]]:
         24: [_route(2, 0, 2, bytes([192, 0, 2, 1])),
              _route(2, 24, 2, None),
              _route(10, 64, 2, None),
-             _route(2, 32, 1, None, table=255, kind=2)],
+             _route(2, 32, 1, None, table=255, kind=2),
+             # A policy-routing default in table 100, with its link down.
+             _route(2, 0, 3, bytes([192, 0, 2, 1]), table=100, flags=0x10)],
     }
 
 
@@ -269,9 +275,9 @@ def test_every_item_carries_its_evidence_and_freshness(host):
     assert eth["speed_mbps"]["value"] == 1000
     assert eth["speed_mbps"]["evidence"]["source"] == "file:/sys/class/net/{ifname}/speed"
     quality = eth["quality"]["value"]
-    assert quality["interval_s"] == pytest.approx(1.0, abs=0.01)
-    assert quality["rx_bps"] == pytest.approx(1_000_000, rel=0.01)
-    assert quality["rx_utilisation"] == pytest.approx(0.001, rel=0.01)
+    assert quality["interval_s"] == pytest.approx(1.0, abs=0.05)
+    assert quality["rx_bps"] == pytest.approx(1_000_000, rel=0.05)
+    assert quality["rx_utilisation"] == pytest.approx(0.001, rel=0.05)
     assert quality["tx_bps"] == 0 and quality["tx_packets_delta"] == 0
     assert (quality["rx_errors_delta"], quality["rx_dropped_delta"]) == (2, 1)
     assert eth["quality"]["evidence"]["source"] == "derived:delta of two sysfs statistics reads"
@@ -283,7 +289,9 @@ def test_every_item_carries_its_evidence_and_freshness(host):
 
     lo = _by_index(result, 1)
     assert lo["loopback"]["value"] is True
-    assert lo["operstate"]["value"] == "unknown"   # what the kernel reports for lo
+    # The kernel's own "unknown" for lo, renamed so it is not read as ours.
+    assert lo["operstate"]["state"] == "observed"
+    assert lo["operstate"]["value"] == "kernel_unknown"
 
     wan = _by_index(result, 3)
     assert wan["operstate"]["value"] == "down" and wan["carrier"]["value"] is False
@@ -291,19 +299,27 @@ def test_every_item_carries_its_evidence_and_freshness(host):
     assert wan["speed_mbps"]["reason"] == "speed_not_reported"
     assert wan["quality"]["value"]["rx_utilisation"] is None
     assert wan["quality"]["value"]["utilisation_unknown_reason"] == "speed_not_reported"
-    assert wan["dhcp"]["value"] == {"client": "dhclient", "expires_never": False,
-                                    "remaining_s": wan["dhcp"]["value"]["remaining_s"],
-                                    "remaining_basis": "lease expire line, against the wall clock"}
+    assert wan["dhcp"]["value"] == {
+        "client": "dhclient", "expires_never": False, "expired": False,
+        "remaining_s": wan["dhcp"]["value"]["remaining_s"],
+        "remaining_basis": "latest lease expire line, against the wall clock"}
     assert wan["dhcp"]["value"]["remaining_s"] > 0
     assert wan["dhcp"]["evidence"]["source"] == "file:/var/lib/dhcp/<dhclient lease file>"
 
     uplink = result["uplink"]
-    assert uplink["ipv4"]["value"] == {"default_route_present": True, "default_routes": 1,
-                                       "egress_ifindex": [2], "via_gateway": True}
-    assert uplink["ipv6"]["value"]["default_route_present"] is False
+    assert uplink["ipv4"]["value"] == {
+        "table_main": {"default_routes": 1, "egress_ifindex": [2], "via_gateway": True,
+                       "linkdown": False, "dead": False},
+        "other_tables": {"default_routes": 1, "egress_ifindex": [3], "via_gateway": True,
+                         "linkdown": True, "dead": False, "tables": 1},
+        "policy_rules_evaluated": False,
+    }
+    assert uplink["ipv6"]["value"]["table_main"]["default_routes"] == 0
+    assert uplink["ipv6"]["value"]["other_tables"]["default_routes"] == 0
     assert uplink["reachability"]["state"] == "unknown"
     assert uplink["reachability"]["reason"] == "active_check_not_performed"
-    assert result["routes_main_table"]["value"] == {"ipv4": 2, "ipv6": 1}
+    assert result["routes"]["value"] == {"table_main": {"ipv4": 2, "ipv6": 1},
+                                         "other_tables": {"ipv4": 2, "ipv6": 0}}
 
     dns = result["dns"]
     assert dns["resolv_conf"]["value"] == {"kind": "symlink_systemd_resolved_stub",
@@ -328,15 +344,24 @@ def test_the_two_counter_reads_are_separated_by_the_interval(host):
     assert clock.slept == [0.5]
 
 
-def test_a_reading_older_than_the_window_is_stale(host):
-    """The interval sleep is stretched past the freshness window: the
-    netlink reads, taken before it, render stale; the second counter read,
-    taken after it, renders fresh."""
+def test_the_longest_interval_leaves_every_snapshot_field_fresh(host):
+    """Every rendered field is read after the interval, so the interval the
+    command accepts at most cannot make its own output stale."""
 
-    result = _run(host, interval=FRESH_WITHIN_SECONDS + 5)
+    text = json.dumps(_run(host, interval=MAX_INTERVAL_SECONDS))
+    assert '"freshness": "stale"' not in text
+    assert text.count('"freshness": "fresh"') > 20
+
+
+def test_a_reading_older_than_the_window_is_stale(host):
+    """A slow collection (each clock read 6 s after the last): readings
+    taken early render stale, the last ones fresh."""
+
+    clock = FakeClock(step_ns=6_000_000_000)
+    result = _run(host, clock=clock)
     eth = _by_index(result, 2)
     assert eth["operstate"]["evidence"]["freshness"] == "stale"
-    assert eth["counters"]["evidence"]["freshness"] == "fresh"
+    assert result["dns"]["resolution"]["evidence"]["freshness"] == "fresh"
 
 
 def test_unknown_carries_a_fixed_reason_and_never_a_value(host):
@@ -349,7 +374,7 @@ def test_unknown_carries_a_fixed_reason_and_never_a_value(host):
     assert result["interfaces"]["value"] is None
     assert result["interfaces"]["reason_text"] == UNKNOWN_REASONS["netlink_unavailable"]
     assert result["uplink"]["ipv4"]["reason"] == "netlink_unavailable"
-    assert result["routes_main_table"]["reason"] == "netlink_unavailable"
+    assert result["routes"]["reason"] == "netlink_unavailable"
     # The files are still read.
     assert result["dns"]["resolv_conf"]["state"] == "observed"
 
@@ -386,20 +411,52 @@ def test_only_dump_requests_of_the_three_types_are_sent(host):
     factory = _factory()
     _run(host, factory=factory)
     kinds = sorted(_HEADER.unpack_from(message)[1] for message in factory.sent)
-    assert kinds == [18, 22, 26]
+    # The first link dump only locates the counters; the snapshot follows.
+    assert kinds == [18, 18, 22, 26]
     for message in factory.sent:
         assert _HEADER.unpack_from(message)[2] == 0x301  # NLM_F_REQUEST | NLM_F_DUMP
     with pytest.raises(ValueError):
         noc_observe._request(19, 1)  # RTM_SETLINK
 
 
-def test_a_counter_that_goes_backwards_is_a_reset(host):
+def test_a_counter_that_goes_backwards_is_reset_on_its_own(host):
     def reset():
-        _counters(host, "eth9", rx_bytes=5)
+        _counters(host, "eth9", rx_bytes=5, tx_bytes=2_500, tx_packets=10)
 
-    eth = _by_index(_run(host, on_sleep=reset), 2)
-    assert eth["quality"]["state"] == "unknown"
-    assert eth["quality"]["reason"] == "counter_reset"
+    quality = _by_index(_run(host, on_sleep=reset), 2)["quality"]
+    assert quality["state"] == "observed"
+    assert quality["value"]["reset_counters"] == ["rx_bytes"]
+    assert quality["value"]["rx_bps"] is None and quality["value"]["rx_utilisation"] is None
+    assert quality["value"]["tx_bps"] == pytest.approx(4_000, rel=0.05)
+
+
+@pytest.mark.parametrize("text", ["-9", "12abc", "9" * 21, ""])
+def test_a_counter_that_is_not_a_bounded_non_negative_number_is_unparsable(host, text):
+    _write(host / "sys/class/net/eth9/statistics/rx_bytes", text + "\n")
+    assert _by_index(_run(host), 2)["counters"]["reason"] == "file_unparsable"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
+def test_a_non_regular_file_is_refused_without_blocking(host):
+    path = host / "sys/class/net/eth9/statistics/rx_errors"
+    path.unlink()
+    os.mkfifo(path)
+    assert _by_index(_run(host), 2)["counters"]["reason"] == "file_not_regular"
+
+
+@pytest.mark.parametrize("error, reason", [(errno.EINVAL, "speed_not_reported"),
+                                           (errno.EIO, "read_failed"),
+                                           (errno.EACCES, "read_failed")])
+def test_only_einval_means_no_speed(host, monkeypatch, error, reason):
+    real = noc_observe._read_text
+
+    def failing(path):
+        if path.name == "speed":
+            return None, "read_failed", error
+        return real(path)
+
+    monkeypatch.setattr(noc_observe, "_read_text", failing)
+    assert _by_index(_run(host), 2)["speed_mbps"]["reason"] == reason
 
 
 def test_missing_sysfs_files_are_unknown(host):
@@ -433,6 +490,68 @@ def test_absent_resolver_files_are_unknown(host):
     assert dns["systemd_resolved_upstream"]["reason"] == "file_absent"
 
 
+# --- DHCP leases: bad input, the latest lease, the wall clock --------------
+
+_EPOCH_2100 = 4102444800
+
+
+def _dhclient(host: Path, *blocks: str) -> None:
+    _write(host / "var/lib/dhcp/dhclient.wan7.leases",
+           "".join("lease {\n  interface \"%s\";\n  %s\n}\n" % block for block in blocks))
+
+
+@pytest.mark.parametrize("expire", ["expire 3 2024/13/45 99:99:99;",
+                                    "expire epoch " + "9" * 5000 + ";",
+                                    "expire someday;"])
+def test_a_malformed_lease_is_unparsable_for_its_interface_only(host, expire):
+    _dhclient(host, ("wan7", expire))
+    result = _run(host)
+    wan = _by_index(result, 3)
+    assert wan["dhcp"]["state"] == "unknown" and wan["dhcp"]["reason"] == "file_unparsable"
+    # The rest of the report is untouched.
+    assert _by_index(result, 2)["dhcp"]["state"] == "observed"
+    assert result["dns"]["resolv_conf"]["state"] == "observed"
+    assert "2024/13/45" not in json.dumps(result)
+
+
+def test_a_malformed_lease_beside_a_good_one_does_not_hide_it(host):
+    _dhclient(host, ("wan7", "expire 3 2024/13/45 99:99:99;"),
+              ("wan7", f"expire epoch {_EPOCH_2100};"))
+    assert _by_index(_run(host), 3)["dhcp"]["value"]["remaining_s"] > 0
+
+
+def test_the_lease_with_the_latest_expiry_wins_and_expired_is_marked(host):
+    # File order puts the old lease last; it must not win.
+    _dhclient(host, ("wan7", f"expire epoch {_EPOCH_2100};"), ("wan7", "expire epoch 1000;"))
+    assert _by_index(_run(host), 3)["dhcp"]["value"]["expired"] is False
+    _dhclient(host, ("wan7", "expire epoch 1000;"))
+    value = _by_index(_run(host), 3)["dhcp"]["value"]
+    assert value["expired"] is True and value["remaining_s"] < 0
+
+
+def test_a_never_expiring_lease(host):
+    _dhclient(host, ("wan7", "expire never;"))
+    value = _by_index(_run(host), 3)["dhcp"]["value"]
+    assert value["expires_never"] is True and value["remaining_s"] is None
+
+
+def test_an_implausible_wall_clock_gives_no_remaining_time(host):
+    """No RTC, no NTP yet: the wall clock reads 2001. No remaining lease time
+    is computed from it, for either client."""
+
+    clock = FakeClock(wall_origin_ns=1_000_000_000 * 10**9)
+    result = _run(host, clock=clock)
+    for index in (2, 3):
+        dhcp = _by_index(result, index)["dhcp"]
+        assert dhcp["state"] == "unknown" and dhcp["reason"] == "wall_clock_implausible"
+
+
+def test_a_networkd_lifetime_that_is_not_a_bounded_number_is_unparsable(host):
+    for lifetime in ("-5", "9" * 11, "soon"):
+        _write(host / "run/systemd/netif/leases/2", f"LIFETIME={lifetime}\n")
+        assert _by_index(_run(host), 2)["dhcp"]["reason"] == "file_unparsable"
+
+
 # --- roles ---------------------------------------------------------------
 
 
@@ -450,7 +569,7 @@ def test_roles_come_only_from_the_resolved_commissioning_answer(host):
     assert _by_index(result, 2)["role"]["evidence"]["source"] == \
         "commissioning:caller-supplied verified role resolution"
     # A default route on an interface does not make it anything.
-    assert result["uplink"]["ipv4"]["value"]["egress_ifindex"] == [2]
+    assert result["uplink"]["ipv4"]["value"]["table_main"]["egress_ifindex"] == [2]
     assert "uplink" not in json.dumps([e["role"] for e in result["interfaces"]])
 
 
@@ -483,15 +602,18 @@ def test_a_recorded_kernel_route_dump_parses():
     payloads = noc_observe._replies(data, 24, sequence=2, port=450)
     routes = parse_routes(payloads)
     printed = json.loads((ROUTE_DUMP / "full-ip-routes.json").read_text())
-    assert len([r for r in routes if r.family == "ipv4"]) == len(printed)
-    defaults = [r for r in routes if r.default]
+    main = [r for r in routes if r.table == 254]
+    assert len([r for r in main if r.family == "ipv4"]) == len(printed)
+    # The recording also holds a route of another table; it is read, not dropped.
+    assert any(r.table != 254 for r in routes)
+    defaults = [r for r in main if r.default]
     assert len(defaults) == 1 and defaults[0].via_gateway
     assert any(r.nexthop_object for r in routes)
 
 
 # --- structural: what the source can express ------------------------------
 
-ALLOWED_IMPORTS = {"__future__", "argparse", "ipaddress", "json", "os", "re", "secrets",
+ALLOWED_IMPORTS = {"__future__", "argparse", "errno", "stat", "ipaddress", "json", "os", "re", "secrets",
                    "socket", "struct", "sys", "time", "dataclasses", "datetime", "pathlib",
                    "typing"}
 FORBIDDEN_ATTRIBUTES = {
@@ -501,7 +623,12 @@ FORBIDDEN_ATTRIBUTES = {
     "fromfd", "AF_INET", "AF_INET6", "AF_PACKET", "SOCK_DGRAM", "SOCK_STREAM",
     "system", "popen", "spawnl", "spawnv", "posix_spawn", "posix_spawnp", "execv",
     "execve", "execvp", "fork", "Popen", "run", "check_output", "urlopen",
+    # Indirection a name scan would otherwise not see.
+    "getattr", "setattr", "__import__", "importlib", "import_module", "eval", "exec",
+    "globals", "__dict__", "__getattribute__",
 }
+#: Builtins refused as bare names only (`re.compile` is an attribute and fine).
+FORBIDDEN_NAMES = FORBIDDEN_ATTRIBUTES | {"compile", "vars", "open_code"}
 
 
 def _tree():
@@ -517,6 +644,9 @@ def test_the_module_imports_no_network_sending_or_process_api():
             assert node.level == 0, "no relative import"
             imported.add(node.module.split(".")[0])
             assert all(alias.name != "*" for alias in node.names)
+            # No socket member under another name: `socket` is reached only
+            # as `_socket.<member>`, which the attribute scan sees.
+            assert node.module.split(".")[0] not in {"socket", "_socket"}, node.module
     assert imported <= ALLOWED_IMPORTS, imported - ALLOWED_IMPORTS
     for banned in ("subprocess", "urllib", "http", "ssl", "asyncio", "ctypes", "selectors",
                    "shutil", "multiprocessing", "azazel_nexus"):
@@ -527,20 +657,45 @@ def test_the_module_names_no_send_connect_bind_resolve_or_spawn():
     found = {node.attr for node in ast.walk(_tree())
              if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRIBUTES}
     names = {node.id for node in ast.walk(_tree())
-             if isinstance(node, ast.Name) and node.id in FORBIDDEN_ATTRIBUTES | {"exec", "eval",
-                                                                                  "__import__"}}
-    assert found == set() and names == set()
+             if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES}
+    aliases = {alias.asname or alias.name for node in ast.walk(_tree())
+               if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names
+               if (alias.asname or alias.name) in FORBIDDEN_ATTRIBUTES}
+    assert found == set() and names == set() and aliases == set()
+    # The only alias of the socket module is `_socket`, bound once.
+    socket_aliases = [alias.asname for node in ast.walk(_tree()) if isinstance(node, ast.Import)
+                      for alias in node.names if alias.name == "socket"]
+    assert socket_aliases == ["_socket"]
     for word in ("ping", "dig", "nslookup", "arping", "dhclient -", "resolvectl query"):
         for node in ast.walk(_tree()):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 assert not node.value.startswith(word + " "), node.value
 
 
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
 def _enclosing_functions(tree):
-    for function in ast.walk(tree):
-        if isinstance(function, ast.FunctionDef):
-            for node in ast.walk(function):
-                yield function.name, node
+    """(innermost enclosing def, async def or lambda, node) for every node;
+    module level is `<module>`, a lambda `<lambda>`."""
+
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(tree):
+        scope = parents.get(node)
+        while scope is not None and not isinstance(scope, _SCOPES):
+            scope = parents.get(scope)
+        if scope is None:
+            name = "<module>"
+        elif isinstance(scope, ast.Lambda):
+            name = "<lambda>"
+        else:
+            name = ("async " if isinstance(scope, ast.AsyncFunctionDef) else "") + scope.name
+        yield name, node
+
+
+def test_there_is_no_async_function():
+    assert not [node for node in ast.walk(_tree()) if isinstance(node, ast.AsyncFunctionDef)]
 
 
 def test_send_happens_once_in_the_netlink_dump_and_nowhere_else():
@@ -605,7 +760,7 @@ def test_a_real_collection_creates_only_netlink_sockets(monkeypatch):
 
     result = collect(interval=0.2)
     assert created and set(created) == {socket.AF_NETLINK}
-    assert len(created) == 3
+    assert len(created) == 4   # the locating link dump, then link, address, route
     assert isinstance(result["interfaces"], list)
 
 
@@ -641,16 +796,34 @@ def test_container_evidence_the_cli_reads_this_containers_netlink_state():
     assert loopback[0]["counters"]["state"] == "observed"
     assert loopback[0]["role"]["reason"] == "role_evidence_not_provided"
     assert result["uplink"]["ipv4"]["state"] == "observed"
-    assert result["routes_main_table"]["state"] == "observed"
+    assert result["routes"]["state"] == "observed"
     for entry in interfaces:
         assert entry["operstate"]["evidence"]["source"].startswith("netlink:RTM_GETLINK")
 
 
 def test_the_cli_bounds_the_interval(capsys):
-    for value in ("0", "11"):
+    for value in ("0", "0.19", "10.01", "11"):
         with pytest.raises(SystemExit) as exited:
             noc_observe.main(["--interval", value])
         assert exited.value.code == 2
+
+
+@pytest.mark.parametrize("value", [MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS])
+def test_the_cli_accepts_both_interval_bounds(monkeypatch, capsys, value):
+    seen = []
+    monkeypatch.setattr(noc_observe, "collect", lambda interval: seen.append(interval) or {})
+    assert noc_observe.main(["--interval", str(value)]) == 0
+    assert seen == [value]
+
+
+def test_a_failed_collection_prints_a_fixed_code_and_no_host_data(monkeypatch, capsys):
+    def explode(interval):
+        raise ValueError("lease line for wan7 192.0.2.10 expire 3 2024/13/45")
+
+    monkeypatch.setattr(noc_observe, "collect", explode)
+    assert noc_observe.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == COLLECTION_FAILED and captured.out == ""
 
 
 def test_the_cli_is_an_operator_tool_without_a_unit():
