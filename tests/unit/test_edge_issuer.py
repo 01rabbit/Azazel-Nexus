@@ -675,3 +675,108 @@ def test_a_narrowed_finding_never_becomes_a_pass(package, tmp_path, seed, owner)
     assert finding.evidence is Evidence.FAILED
     assert "re-derives" in finding.reason  # the original mismatch, not the revocation
     assert replace(found.issuer).digest_verified is False
+
+
+# -- "present" is never read as "absent" -----------------------------------
+
+
+def _replace_with(path: Path, kind: str, tmp_path: Path, content: Path | None = None) -> None:
+    """Put something other than what belongs at `path`: a link, a file, a FIFO..."""
+    import shutil
+
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+    if kind == "symlink":
+        path.symlink_to(content)
+    elif kind == "dangling":
+        path.symlink_to(tmp_path / "nowhere")
+    elif kind == "file":
+        path.write_bytes(b"{}")
+        path.chmod(0o644)
+    elif kind == "directory":
+        path.mkdir(mode=0o755)
+    elif kind == "fifo":
+        os.mkfifo(path, 0o644)
+
+
+def _real_config(tmp_path: Path, seed: bytes) -> Path:
+    real = tmp_path / "real-config"
+    _write(real / ANCHOR_FILENAME, _anchor(seed))
+    return real
+
+
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "file"])
+def test_a_config_directory_that_is_not_a_directory_is_refused(package, tmp_path, seed, owner,
+                                                               kind):
+    root, _ = package
+    _trust(tmp_path)
+    _replace_with(tmp_path / "etc-edge-issuer", kind, tmp_path, _real_config(tmp_path, seed))
+    trust = _trust_without_creating(tmp_path)
+    assert trust.config == "refused"
+    found = inspect(root, trust=trust)
+    assert found.issuer.issuer_status == "trust_refused"
+    assert found.finding("digest_matches").evidence is Evidence.FAILED
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "dangling", "symlink"])
+def test_an_anchor_that_is_not_a_regular_file_is_refused(package, tmp_path, seed, owner, kind):
+    root, _ = package
+    _trust(tmp_path)
+    _replace_with(tmp_path / "etc-edge-issuer" / ANCHOR_FILENAME, kind, tmp_path,
+                  _real_config(tmp_path, seed) / ANCHOR_FILENAME)
+    assert _trust_without_creating(tmp_path).config == "refused"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "file"])
+def test_a_state_directory_that_is_not_a_directory_is_refused(package, tmp_path, owner, kind):
+    root, digest = package
+    real = tmp_path / "real-state"
+    _write(real / FLOOR_FILENAME, _floor("9.9.9", digest))
+    _trust(tmp_path)
+    _replace_with(tmp_path / "state-edge-issuer", kind, tmp_path, real)
+    trust = _trust_without_creating(tmp_path)
+    assert trust.floor_status == "refused"
+    found = inspect(root, trust=trust)
+    assert found.finding("version_matches").evidence is Evidence.FAILED
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root, trust=trust)
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "dangling", "symlink"])
+def test_a_floor_that_is_not_a_regular_file_is_refused(package, tmp_path, owner, kind):
+    root, digest = package
+    real = tmp_path / "real-state"
+    _write(real / FLOOR_FILENAME, _floor("9.9.9", digest))
+    _trust(tmp_path)
+    _replace_with(tmp_path / "state-edge-issuer" / FLOOR_FILENAME, kind, tmp_path,
+                  real / FLOOR_FILENAME)
+    trust = _trust_without_creating(tmp_path)
+    assert trust.floor_status == "refused"
+    assert inspect(root, trust=trust).finding("version_matches").evidence is Evidence.FAILED
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_the_production_traversal_refuses_a_link_or_file_partway(tmp_path, seed, owner, kind):
+    """`_open_chain` from `/`: only ENOENT is absent, for the anchor and the floor."""
+    base = tmp_path / "chain"
+    base.mkdir(mode=0o755)
+    real = _real_config(tmp_path, seed)
+    _replace_with(base / "edge-issuer", kind, tmp_path, real)
+    components = tuple((base / "edge-issuer").parts[1:])
+    config = edge_issuer._read_config(
+        lambda: edge_issuer._open_chain(components, owner=os.getuid()))
+    floor = edge_issuer._read_floor(
+        lambda: edge_issuer._open_chain(components, owner=os.getuid()))
+    assert config[0] == "refused" and floor[0] == "refused"
+    absent = tuple((base / "missing" / "edge-issuer").parts[1:])
+    assert edge_issuer._read_config(
+        lambda: edge_issuer._open_chain(absent, owner=os.getuid()))[0] == "not_configured"
+    assert edge_issuer._read_floor(
+        lambda: edge_issuer._open_chain(absent, owner=os.getuid()))[0] == "absent"
+
+
+def _trust_without_creating(tmp_path: Path):
+    return edge_issuer._load_issuer_trust_at(tmp_path / "etc-edge-issuer",
+                                             tmp_path / "state-edge-issuer")

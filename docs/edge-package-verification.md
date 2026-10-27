@@ -129,7 +129,8 @@ operator. The installer does not create the directory.
 | --- | --- |
 | no `issuer.json` and no floor (every node today) | **none**: `issuer_authenticated` is false with the fixed reason `not_configured`, the caveat is the unsigned one above, and the five checks accept and refuse exactly what they did before |
 | no `issuer.json`, and a `revocations.signed` beside it | **none**: nothing can verify the list, so it carries no authority; reported as the note `revocations_present_without_anchor` |
-| no `issuer.json`, and `/etc/azazel/edge-issuer` or a directory above it group/other writable, not root-owned or a link | **none**; reported as the note `config_directory_unprotected` |
+| no `issuer.json`, and `/etc/azazel/edge-issuer` or a directory above it group/other writable or not root-owned | **none**; reported as the note `config_directory_unprotected` |
+| `/etc/azazel/edge-issuer` or a directory above it is a symlink or not a directory, or `issuer.json` is a symlink, directory, FIFO or anything but a regular file | **refused** (`trust_refused`): something is there, and only a component that genuinely does not exist (`ENOENT`) reads as absent |
 | `issuer.json` present, and it or a directory above it unsafe, or it malformed | **refused** (`trust_refused`): `digest_matches` fails as a security finding, because the revocation state cannot be established |
 | `/etc/azazel/edge-issuer` exists and this user cannot list it | `trust_unreadable`: whether an anchor is there is unknown, so `digest_matches` is `not-checked` *for this user* (an operator's `status`); root, which the activation pass runs as, reads the real state. Keep the directory `0755` |
 | a floor is present, with or without an anchor | the floor is **enforced** (§3b). Removing the anchor does not remove the floor |
@@ -194,7 +195,10 @@ inspection, with or without an anchor:
   once one is held, or at that sequence with a different payload, fails
   `digest_matches` (`rolled_back`);
 - a floor that exists and is not exactly one canonical, root-owned record
-  fails `version_matches`; one this user may not read is `not-checked`.
+  fails `version_matches`, and so does a floor path where the leaf or a
+  directory above it is a symlink or not a directory, or where `floor.json`
+  is not a regular file — only `ENOENT` reads as "no floor", so a link put in
+  place cannot unbind it; one this user may not read is `not-checked`.
 
 Only `azazel_nexus_runtime/edge_issuer_floor.py` writes it, raise-only,
 through a private temporary file, fsync, rename, directory fsync and
@@ -206,9 +210,15 @@ floor — and it raises the floor only when the installed package's issuer is
 authenticated, its digest verified, no revocation names it, the floor held,
 and its digest is the one the activation evidence was bound to. An
 unauthenticated activation — every activation today — never moves it and
-adds nothing to the ledger. Otherwise the outcome is recorded as its own
+adds nothing to the ledger: with no anchor and nothing noted, the pass record
+is exactly what it was before this verifier existed (`observed_inputs.edge_issuer`
+appears only when an anchor is configured or a note was made). Otherwise the outcome is recorded as its own
 `activation.edge_issuer_floor` event; failing to raise, or to record that,
-grants and withdraws nothing.
+grants and withdraws nothing; a failure to raise or to record the outcome
+also prints a fixed label to the journal (`az-activated edge issuer floor
+<label>`). A crash between the pass record and the raise leaves the floor
+un-raised until the next recorded authenticated pass, which is safe: the
+floor only narrows.
 
 **Before the first authenticated activation there is no floor**, so
 replaying an older, validly signed revocation list cannot be detected until

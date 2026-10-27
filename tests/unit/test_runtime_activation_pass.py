@@ -1489,16 +1489,67 @@ def _issuer(digest, *, authenticated=True):
         floor_status="absent", version=PIN.version, package_digest=digest)
 
 
-def test_an_unauthenticated_edge_grant_records_both_facts_and_leaves_the_floor(
-        edge_world, floor_state):
+def _ledger_shape(world):
+    """Event types, and the recorded input keys, of one pass: what main records."""
+    return ([e["event_type"] for e in world.events()],
+            sorted(world.inputs_event()["observed_inputs"]))
+
+
+def test_a_node_without_an_issuer_records_exactly_what_main_records(
+        edge_world, floor_state, tmp_path):
+    """Not configured and nothing noted: the ledger has main's shape, byte for byte in keys."""
     outcome = edge_world.run(edge_issuer=lambda: _issuer(None, authenticated=False))
     assert EDGE in outcome.granted
     observed = edge_world.inputs_event()["observed_inputs"]
+    assert "edge_issuer" not in observed
+    assert _floor_events(edge_world) == []
+    assert floor_state.read_edge_floor() is None
+    # The same node with no issuer producer at all -- the path main runs.
+    main_like = World(tmp_path / "main-like", units=EDGE_SCOPE)
+    main_like.run(edge_issuer=None)
+    assert _ledger_shape(edge_world) == _ledger_shape(main_like)
+    assert observed == main_like.inputs_event()["observed_inputs"]
+
+
+def test_an_unconfigured_issuer_with_a_note_records_both_facts(edge_world, floor_state):
+    from azazel_nexus.edge_issuer import IssuerVerification
+
+    noted = IssuerVerification(digest_verified=True, issuer_authenticated=False,
+                               issuer_status="not_configured",
+                               notes=("revocations_present_without_anchor",))
+    edge_world.run(edge_issuer=lambda: noted)
+    observed = edge_world.inputs_event()["observed_inputs"]
     assert observed["edge_issuer"]["digest_verified"] is True
     assert observed["edge_issuer"]["issuer_authenticated"] is False
-    assert observed["edge_issuer"]["issuer_status"] == "not_configured"
-    assert _floor_events(edge_world) == []  # unauthenticated: the ledger is unchanged
-    assert floor_state.read_edge_floor() is None
+    assert observed["edge_issuer"]["notes"] == ["revocations_present_without_anchor"]
+
+
+def test_a_floor_raise_that_raises_escapes_nothing(edge_world, floor_state, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(floor_state, "raise_floor_after_grant", broken)
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    assert _floor_events(edge_world) == ["failed"]
+    assert "edge issuer floor failed" in capsys.readouterr().err
+
+
+def test_an_unrecorded_floor_outcome_is_visible_in_the_journal(edge_world, floor_state,
+                                                              monkeypatch, capsys):
+    from azazel_nexus.audit import AuditUnavailable
+
+    original = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.edge_issuer_floor":
+            raise AuditUnavailable("synthetic")
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert ("edge issuer floor raised; its ledger record was not appended"
+            in capsys.readouterr().err)
 
 
 def test_an_authenticated_edge_grant_raises_the_floor_after_the_marker(edge_world, floor_state):

@@ -35,11 +35,15 @@ The anchor file is what makes this configured. Precisely:
   accept and refuse **exactly** what they did before this module existed.
   A `revocations.signed` with no anchor carries no authority -- nothing can
   verify it -- and an `/etc/azazel/edge-issuer` (or a parent) that is group or
-  other writable, with no anchor in it, changes nothing either; both are only
-  reported, as the fixed notes `revocations_present_without_anchor` and
+  other writable or not root-owned, with no anchor in it, changes nothing
+  either; both are only reported, as the fixed notes `revocations_present_without_anchor` and
   `config_directory_unprotected`. Requiring issuer authentication for
   admission is an owner decision that has not been made, so no knob for it
   exists here.
+* **Something other than a directory or a regular file where one belongs**
+  -- the directory or a parent a symlink or a file, the anchor or floor a
+  symlink, directory or FIFO -- is refused, for the anchor and the floor
+  alike. Only a component that genuinely does not exist (`ENOENT`) is absent.
 * **Anchor file present** and unsafe (a path component or the file group or
   other writable, not root-owned, linked) or malformed: refused, and the
   package with it, because the revocation state cannot be established.
@@ -481,12 +485,14 @@ def _is_protected(fd: int, *, owner: int, directory: bool) -> bool:
 def _open_chain(components: tuple[str, ...], *, owner: int) -> tuple[Optional[int], bool]:
     """Open `/<components...>` with no symlink anywhere.
 
-    `(None, True)` when a component is absent; `(None, False)` when one is a
-    link or not a directory, so nothing beneath it can be looked at safely;
-    otherwise the descriptor and whether every directory on the way is
-    root-owned and not group or other writable. `_Unreadable` on `EACCES`.
-    Protection is *reported*, not enforced, here: whether it matters depends
-    on what the directory turns out to hold.
+    `(None, True)` only when a component genuinely does not exist (`ENOENT`).
+    A component that is a symlink (`ELOOP`) or not a directory (`ENOTDIR`)
+    is `IssuerRefused`: something is there, and reading it as "absent" would
+    let a link or a file in place of the directory hide an anchor or unbind
+    the floor. Otherwise the descriptor and whether every directory on the
+    way is root-owned and not group or other writable. `_Unreadable` on
+    `EACCES`. Mode and ownership are *reported*, not enforced, here: whether
+    they matter depends on what the directory turns out to hold.
     """
 
     fd = os.open("/", _DIR_FLAGS)
@@ -503,9 +509,9 @@ def _open_chain(components: tuple[str, ...], *, owner: int) -> tuple[Optional[in
     except PermissionError:
         os.close(fd)
         raise _Unreadable() from None
-    except OSError:  # ELOOP (a link), ENOTDIR: nothing beneath can be trusted
+    except OSError:  # ELOOP (a link), ENOTDIR: present, and not a directory
         os.close(fd)
-        return None, False
+        raise IssuerRefused("an Edge issuer path component is a link or not a directory") from None
     except BaseException:
         os.close(fd)
         raise
@@ -522,7 +528,7 @@ def _open_leaf(directory: Path, *, owner: int) -> tuple[Optional[int], bool]:
     except PermissionError:
         raise _Unreadable() from None
     except OSError:
-        return None, False
+        raise IssuerRefused("an Edge issuer directory is a link or not a directory") from None
     return fd, _is_protected(fd, owner=owner, directory=True)
 
 
