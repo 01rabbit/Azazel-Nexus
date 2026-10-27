@@ -349,7 +349,7 @@ def test_extra_nexus_dependency_edge_refuses():
 
 
 @pytest.mark.parametrize("change", ["file", "directory", "prestart"])
-def test_protected_loader_rechecks_file_identity_bytes_and_prestart(change, monkeypatch):
+def test_protected_loader_rechecks_file_identity_bytes_and_prestart(change, monkeypatch, private_os):
     raw = _raw()
     prestart = _pinned(raw)
     calls = {"directory": 0, "read": 0, "policy": 0}
@@ -376,6 +376,7 @@ def test_protected_loader_rechecks_file_identity_bytes_and_prestart(change, monk
 
     monkeypatch.setattr(bootstrap_store, "_bootstrap_directory", directory)
     monkeypatch.setattr(bootstrap_store, "_read_file_at", read_at)
+    private_os(bootstrap_store)
     monkeypatch.setattr(bootstrap_store.os, "fstat", fstat)
     monkeypatch.setattr(loaded, "load_bootstrap_prestart_policy", read_prestart)
     with pytest.raises(ApprovalRefused):

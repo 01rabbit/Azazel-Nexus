@@ -223,7 +223,8 @@ def test_runtime_metadata_refuses_untrusted_file_and_parents(mode, uid, director
 
 
 @pytest.mark.parametrize("bad_index", range(5))
-def test_runtime_walk_checks_every_parent_and_file(monkeypatch, bad_index):
+def test_runtime_walk_checks_every_parent_and_file(monkeypatch, private_os, bad_index):
+    private_os(runtime)
     from pathlib import Path
 
     checked = []

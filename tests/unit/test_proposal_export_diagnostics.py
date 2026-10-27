@@ -54,7 +54,7 @@ def test_specific_refusal_without_writes_or_secret_output(tmp_path, monkeypatch,
     ("luks", "encrypted commissioning storage is required"),
     ("key", "commissioning protection key is unavailable"),
 ])
-def test_protection_refusals_precede_missing_draft(tmp_path, monkeypatch, capsys, case, expected):
+def test_protection_refusals_precede_missing_draft(tmp_path, monkeypatch, private_os, capsys, case, expected):
     # Exercise the real protection check against synthetic directory metadata.
     # No real protected files or key material are read.
     import stat
@@ -63,6 +63,7 @@ def test_protection_refusals_precede_missing_draft(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(export, "load_declared_node", lambda: SimpleNamespace(node_id="synthetic"))
     monkeypatch.setattr(export, "load_operator_trust", lambda: object())
     monkeypatch.setattr(draft, "COMMISSIONING_DIR", tmp_path)
+    private_os(draft)
     monkeypatch.setattr(draft.os, "fstat", lambda fd: SimpleNamespace(
         st_mode=stat.S_IFDIR | (0o777 if case == "mode" else 0o700),
         st_uid=-1 if case == "owner" else draft.os.geteuid()))

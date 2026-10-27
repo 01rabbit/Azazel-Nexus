@@ -22,7 +22,8 @@ def test_malformed_cpu_sets_refused(monkeypatch, text):
 
 
 @pytest.fixture
-def space(monkeypatch):
+def space(monkeypatch, private_os):
+    private_os(resources)
     opened, closed = [], []
     def open_directory(path, flags):
         opened.append((path, flags))

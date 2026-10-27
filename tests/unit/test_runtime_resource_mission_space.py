@@ -15,7 +15,8 @@ def line(majmin="8:1", mountpoint="/data", sb="rw,errors=remount-ro", mountopts=
 
 
 @pytest.fixture
-def setup(monkeypatch):
+def setup(monkeypatch, private_os):
+    private_os(resources)
     state = {"flag": RO, "dev": DEV, "root": 1, "mountinfo": line()}
     closed = []
     monkeypatch.setattr(resources.os, "open", lambda path, flags: 123)
@@ -107,7 +108,8 @@ def test_invalid_statvfs_refused_even_with_rw_superblock(setup, monkeypatch):
         resources._mission_space()
 
 
-def test_oversized_mountinfo_refused(monkeypatch):
+def test_oversized_mountinfo_refused(monkeypatch, private_os):
+    private_os(resources)
     reads = iter([b"x" * 65536] * 20)
     monkeypatch.setattr(resources.os, "open", lambda p, f: 9)
     monkeypatch.setattr(resources.os, "close", lambda fd: None)
@@ -149,7 +151,8 @@ def test_candidate_line_with_extra_super_option_fields_refused(setup):
         resources._mission_space()
 
 
-def test_mountinfo_decode_tolerates_non_utf8_mount_points(monkeypatch):
+def test_mountinfo_decode_tolerates_non_utf8_mount_points(monkeypatch, private_os):
+    private_os(resources)
     data = (b"90 30 0:77 / /mnt/\xff rw - tmpfs tmpfs rw\n"
             + VM_SANDBOX_LINE.encode() + b"\n")
     reads = iter([data, b""])
