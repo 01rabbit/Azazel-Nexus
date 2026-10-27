@@ -1408,3 +1408,92 @@ def test_the_pass_checks_a_decoded_policy_against_the_narrower_scope(world):
     object.__setattr__(forged, "units", tuple(sorted(SCOPE + (DECOY_UNITS[1],))))
     world.policy = forged
     _assert_refused(world, world.run(), ["activation_policy"])
+
+
+# -- Edge issuer authentication and the rollback floor ------------------------
+
+
+@pytest.fixture
+def floor_state(tmp_path, monkeypatch):
+    """The floor writer against a temporary state directory owned by the test."""
+    from contextlib import contextmanager
+
+    from azazel_nexus_runtime import edge_issuer_floor
+
+    directory = tmp_path / "floor-state"
+    directory.mkdir(mode=0o711)
+    directory.chmod(0o711)
+
+    @contextmanager
+    def state_directory():
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(edge_issuer_floor, "_state_directory", state_directory)
+    monkeypatch.setattr(edge_issuer_floor, "_OWNER", os.getuid())
+    return edge_issuer_floor
+
+
+def _issuer(digest, *, authenticated=True):
+    from azazel_nexus.edge_issuer import IssuerVerification
+
+    if not authenticated:
+        return IssuerVerification(digest_verified=True, issuer_authenticated=False,
+                                  issuer_status="not_configured")
+    return IssuerVerification(
+        digest_verified=True, issuer_authenticated=True, issuer_status="authenticated",
+        issuer="edge-release", revocation_status="none", revoked="none",
+        floor_status="absent", version=PIN.version, package_digest=digest)
+
+
+def test_an_unauthenticated_edge_grant_records_both_facts_and_leaves_the_floor(
+        edge_world, floor_state):
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(None, authenticated=False))
+    assert EDGE in outcome.granted
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert observed["edge_issuer"]["digest_verified"] is True
+    assert observed["edge_issuer"]["issuer_authenticated"] is False
+    assert observed["edge_issuer"]["issuer_status"] == "not_configured"
+    assert observed["edge_issuer_floor"] == "not_authenticated"
+    assert floor_state.read_edge_floor() is None
+
+
+def test_an_authenticated_edge_grant_raises_the_floor_after_the_marker(edge_world, floor_state):
+    outcome = edge_world.run(edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE in outcome.granted and EDGE in edge_world.markers()
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert observed["edge_issuer"]["issuer_authenticated"] is True
+    assert observed["edge_issuer_floor"] == "raised"
+    floor = floor_state.read_edge_floor()
+    assert (floor.version, floor.package_digest) == (PIN.version, edge_world.package_digest)
+    # Labels only: no digest reaches the recorded inputs.
+    assert edge_world.package_digest not in json.dumps(observed)
+
+
+def test_a_withheld_edge_core_never_raises_the_floor(edge_world, floor_state):
+    def refused():
+        raise edge_package.EdgePackageRefused("synthetic")
+    outcome = edge_world.run(edge_package_digest=refused,
+                             edge_issuer=lambda: _issuer(edge_world.package_digest))
+    assert EDGE not in outcome.granted
+    assert edge_world.inputs_event()["observed_inputs"]["edge_issuer_floor"] == "not_attempted"
+    assert floor_state.read_edge_floor() is None
+
+
+def test_an_issuer_reader_that_raises_authenticates_nothing(edge_world, floor_state):
+    def broken():
+        raise OSError("unreadable")
+    outcome = edge_world.run(edge_issuer=broken)
+    assert EDGE in outcome.granted  # issuer authentication is not required to admit
+    observed = edge_world.inputs_event()["observed_inputs"]
+    assert "edge_issuer" not in observed
+    assert observed["edge_issuer_floor"] == "not_authenticated"
+    assert floor_state.read_edge_floor() is None
+
+
+def test_the_production_pass_reads_the_issuer_at_the_fixed_paths():
+    producers = activation_pass.production_producers(commissioning_evidence=lambda: None)
+    assert producers.edge_issuer is edge_package.installed_issuer_verification

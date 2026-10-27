@@ -734,7 +734,21 @@ intact.
 - unreadable (the package checks fail, the package is absent, or an extracted
   component is missing, a link or not protected): the tree is verified
   against its own pin so the SUPPORTING units can still be granted, and
-  edge-core is withheld (`package_refused`).
+  edge-core is withheld (`package_refused`). A revoked version or digest, a
+  version below the Edge rollback floor, a replayed manifest at the floor's
+  version, or a revocation state that cannot be established makes the
+  package checks fail here too
+  ([Edge package verification](edge-package-verification.md) §3b).
+
+The same step reads `edge_package.installed_issuer_verification` and records
+its fixed labels as `observed_inputs.edge_issuer` (`digest_verified` and
+`issuer_authenticated` separately). Issuer authentication is not required to
+grant edge-core. After edge-core is granted and its marker written, the
+daemon passes it to `edge_issuer_floor.raise_floor_after_grant`, which raises
+the rollback floor only for an issuer-authenticated, digest-verified,
+unrevoked package bound to the launch evidence, and records
+`observed_inputs.edge_issuer_floor`; a failure to raise grants and withdraws
+nothing.
 
 The edge-core unit file, with its observe-only `Environment=` lines, is in
 the measured set like every scoped unit; a changed line refuses the

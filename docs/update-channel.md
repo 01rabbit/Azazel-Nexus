@@ -8,6 +8,11 @@ becomes possible, and marks what nobody has decided.
 Nothing below may be cited as evidence that Azazel-Nexus has been built,
 signed, published, or updated. None of that has happened.
 
+One consumer-side piece exists: Nexus can **verify** an issuer signature,
+a signed revocation list and a rollback floor for the one released component
+it installs, the Edge Core package (§1a). That is a verifier with no issuer
+key behind it, not a channel, and it does not change any row of §1.
+
 Related: [Contract ownership](contract-ownership.md) §4, §5 ·
 [Commissioning and activation](commissioning.md) §6, §7 ·
 [Support matrix](support-matrix.md) · [Recovery](recovery.md) ·
@@ -32,6 +37,27 @@ The R0 exit criteria require that Nexus "publish their own security policy,
 support matrix, license, update channel, and recovery procedure before a
 release is called supported". This document is that publication. It describes a
 channel; it does not open one.
+
+## 1a. Edge package issuer verification (consumer side)
+
+Status: **implemented, unit tested, not configured on any node**
+([Edge package verification](edge-package-verification.md) §3a–§3c,
+`src/azazel_nexus/edge_issuer.py`,
+`runtime/src/azazel_nexus_runtime/edge_issuer_floor.py`).
+
+| Thing | State |
+| --- | --- |
+| Verifying a detached Ed25519 signature over the canonical Edge manifest under an administrator-configured issuer key | **implemented**; reported as `issuer_authenticated`, separately from `digest_verified` |
+| A signed revocation list of Edge package versions and digests | **implemented**; a revoked package is refused even when its digest matches |
+| A raise-only rollback floor, raised only after an authenticated activation | **implemented**; refuses a lower version, a replayed manifest at the floor version and an older revocation list |
+| An Edge issuer, an issuer key, or a signed Edge package | **none** |
+| A requirement that an Edge package be issuer-authenticated to be admitted | **none**; with no anchor configured, acceptance is exactly as before. Requiring it is an owner decision |
+| A path that fetches or installs an Edge package update | **none** |
+
+This is the *authenticity* and *obsolete artifact* half of §3 for one
+artifact class, verified locally and offline. It is not a release-admission
+policy, it grants no authority, and nothing here moves the pinned Edge
+version (`0.1.0`, exact).
 
 ## 2. Both transports are required
 
@@ -182,6 +208,7 @@ required to meet. See [support matrix](support-matrix.md) §7.
 
 | Question | State |
 | --- | --- |
+| The Edge package issuer: who it is, how its key is created and held, rotation and compromise, whether revocation uses the issuer key (as implemented) or a separate role, whether issuer authentication becomes required for admission, and the Edge-side change that signs packages (Azazel-Edge `packaging/nexus-core/nexus_core_package.py` hard-codes `signed: False` today) | **open** — §1a; the verifier exists and nothing is configured |
 | Signing key hierarchy: which roots exist, who holds them, threshold rules, rotation, revocation, custody, and the ceremony that provisions any of it | **open.** The program fixes the *shape* — separately provisioned offline roots, delegated roles per artifact class, recorded threshold/rotation/revocation (§4.1) — and no concrete hierarchy anywhere |
 | Signature envelope and algorithms | **open** |
 | SBOM format | **open.** The plan requires "SBOM references" (§4 rule 6) and "SBOMs" (§5 R8) and names no format |
@@ -200,7 +227,8 @@ implementation pull request that needs an answer.
 - That Azazel-Nexus can be released or updated. It cannot: there is no code, no
   builder, and no key.
 - That any SBOM, provenance, signing, or bundle mechanism has been selected,
-  prototyped, or evaluated.
+  prototyped, or evaluated. The Edge package verifier in §1a verifies
+  signatures nobody produces yet; it selects no signing mechanism for Nexus.
 - That the update path described in §5 has ever been executed or tested.
 - That an update channel, once it exists, makes a configuration *supported*.
   That additionally requires operational evidence for a declared environment,

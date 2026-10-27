@@ -1,7 +1,10 @@
 # Verifying the local Edge Core package
 
 Status: **implemented and wired** (`src/azazel_nexus/edge_package.py`,
-rendered by `azazel-nexus status`), unit tested and mutation checked.
+rendered by `azazel-nexus status`), unit tested and mutation checked. Issuer
+authentication, revocation and the rollback floor (§3a–§3c) are
+**implemented, unit tested, and not configured on any node**: no issuer key
+exists and Edge signs nothing yet.
 This is [#44](https://github.com/01rabbit/Azazel-Nexus/issues/44); the
 producing side is
 [Azazel-Edge#424](https://github.com/01rabbit/Azazel-Edge/issues/424).
@@ -57,7 +60,7 @@ When `package_present` fails, the other four are `not-checked` and say so —
 there was nothing to check them against. Four failures nobody attempted would
 be four faults nobody has.
 
-## 3. The digest is not signed, and a pass says so
+## 3. The digest is not authenticity, and issuer authentication is a separate fact
 
 `contract/azazel-edge-core/pin.json` carries `signed: false`. A matching
 digest establishes integrity **against accidental change** — a truncated copy,
@@ -65,13 +68,156 @@ a half-written file, the wrong build put in place. It does not establish
 integrity against an adversary who can rewrite the package, because that
 adversary rewrites the manifest and its digest with it.
 
-So every inspection — passing or not — carries that caveat, `as_event` carries
+So every inspection — passing or not — carries a caveat, `as_event` carries
 it, and `azazel-nexus status` prints it under the edge section. A limit
 recorded only in a design document is a limit nobody reads.
 
 A manifest that claims `signed: true` is **refused as a security finding**,
-not believed. This node can verify no signature on an Edge package. An absent
+not believed. The manifest's own claim is not what Nexus checks: an absent
 claim of authenticity denies reliance; a claim nothing checks invites it.
+That refusal is unchanged by §3a.
+
+### 3a. Two facts, reported side by side (`src/azazel_nexus/edge_issuer.py`)
+
+Status: **implemented, not configured on any node**. Unit tested with
+test-only keys; no issuer key exists, no Edge package has been signed, and
+nothing here has run against a real Edge deployment.
+
+Every inspection carries an `IssuerVerification` with two booleans that are
+never derived from each other:
+
+| field | established by |
+| --- | --- |
+| `digest_verified` | the artifact re-derives to the digest its manifest declares (the `digest_matches` comparison, taken *before* revocation narrows it) |
+| `issuer_authenticated` | a detached Ed25519 signature beside the manifest verifies over the canonical manifest under the administrator-configured issuer key |
+
+A matching digest with no signature reports `digest_verified: true,
+issuer_authenticated: false`; a valid signature over a manifest whose artifact
+was replaced reports the reverse. Both appear in the inspection event
+(`digest_verified`, `issuer_authenticated` and an `issuer` object), on the
+status screen (§8) and, as fixed labels with no digest, version or key, in
+the activation pass's `observed_inputs.edge_issuer`.
+
+**The signature.** `<manifest>.sig` beside the manifest, exactly 64 raw bytes,
+over `azazel-nexus/edge-package-manifest/v1\0` followed by the manifest's
+canonical JSON: sorted keys, no insignificant whitespace, UTF-8 without
+escaping; a duplicate key, a non-integer number, `NaN` or more than 64 KiB is
+refused rather than canonicalised. The signature file is opened without
+following links and must be a regular file of exactly that size. The bytes
+signed must parse to the same manifest the package checks read, so a manifest
+swapped between the two reads cannot have one version checked and another
+authenticated. Verification is `signature.verify_detached`, the
+standard-library verifier Knowledge Lite already uses; no dependency was
+added, and Nexus still holds no signing key.
+
+**The trust anchor.** `/etc/azazel/edge-issuer/issuer.json`:
+
+```json
+{"schema": "azazel-nexus/edge-issuer-anchor/v1", "issuer": "<name>", "public_key": "<64 lower-case hex>"}
+```
+
+Read from `/` through no-follow descriptors; every directory and the file
+must be root-owned and not group or other writable, the file a single link
+and at most 64 KiB, the key a canonical, non-small-order Ed25519 point
+(`signature.parse_public_key`). The directory is meant to be `root 0755` and
+the files `0644`: they hold nothing secret, and `status` reads them as the
+operator. The installer does not create the directory.
+
+**No anchor (every node today).** `issuer_authenticated` is false with the
+fixed reason `not_configured`, the caveat is the unsigned one above, and the
+five checks accept and refuse exactly what they did before. Requiring issuer
+authentication for admission would refuse every package that ships today
+(Edge's packager writes no signature), so it is **not** a setting here; it is
+an owner decision (§3c).
+
+| `issuer_status` | when |
+| --- | --- |
+| `not_configured` | no anchor and no revocation list |
+| `trust_refused` / `trust_unreadable` | the anchor or list exists and is unsafe or malformed / not readable by this user |
+| `not_inspected` / `package_refused` | no package root / the package check failed, so no manifest was examined |
+| `manifest_refused` | the manifest has no canonical form, or changed between reads |
+| `no_signature` | an anchor is configured and there is no `<manifest>.sig` |
+| `signature_unreadable` | linked, not a regular file, or not 64 bytes |
+| `signature_invalid` | the manifest changed after signing, or another key signed it |
+| `authenticated` | the signature verifies under the configured key |
+
+When the issuer is authenticated the caveat says what that does not add: it
+authenticates the issuer's statement about the package, not the package's
+behaviour, and it establishes no check on its own.
+
+### 3b. Revocation and the rollback floor only narrow
+
+Both apply whenever they are present, and each turns a check that would pass
+into a **security finding**; neither can turn any failure into a pass. Both
+are applied by `inspect` (so by `status` and by the activation pass's Edge
+state) and by `installed_package_digest` (so a revoked or rolled-back package
+is refused at `generation-publish` and binds nothing at activation).
+
+**Revocation.** `/etc/azazel/edge-issuer/revocations.signed`, the Knowledge
+Lite single-signature transport: 64 signature bytes, then the canonical
+payload, signed by the configured issuer key over its own domain
+(`azazel-nexus/edge-package-revocation/v1\0`):
+
+```json
+{"issued_at": "...", "package": "azazel-edge-core", "revoked_digests": ["sha256:..."], "revoked_versions": ["0.1.0"], "schema": "azazel-nexus/edge-package-revocation/v1", "sequence": 1}
+```
+
+A revoked digest fails `digest_matches` even when the artifact matches (and
+`digest_verified` stays true: the refusal is the revocation's). A revoked
+version fails `version_matches`. A list that does not verify, names another
+package, or exists with no anchor fails `digest_matches`: an unreadable
+revocation state is not "nothing revoked".
+
+**The rollback floor.** `/var/lib/azazel/state/edge-issuer/floor.json`
+(`root 0755` leaf, `0644` file, one canonical record of `version`,
+`package_digest` and `revocation_sequence`). It is checked on every
+inspection, with or without an anchor:
+
+- a version below the floor fails `version_matches` (`below_floor`);
+- the floor's version with a different digest fails `version_matches`
+  (`replayed`): an older, validly signed manifest of the same version put
+  back;
+- a revocation list older than the floor's `revocation_sequence`, or missing
+  once one is held, fails `digest_matches` (`rolled_back`);
+- a floor that exists and is not exactly one canonical, root-owned record
+  fails `version_matches`; one this user may not read is `not-checked`.
+
+Only `azazel_nexus_runtime/edge_issuer_floor.py` writes it, raise-only,
+through a private temporary file, fsync, rename, directory fsync and
+read-back. The activation controller calls it after it has granted
+`azazel-edge-core.service` and written its marker, and it raises the floor
+only when the installed package's issuer is authenticated, its digest
+verified, no revocation names it, the floor held, and its digest is the one
+the activation evidence was bound to. An unauthenticated activation — every
+activation today — never moves it, and failing to raise grants and withdraws
+nothing (`observed_inputs.edge_issuer_floor` records the label).
+
+The version in force is still pinned exactly (`0.1.0`), so today the floor
+can only ever hold that version; it starts to matter when the pin moves.
+
+This is local trust: root can replace or delete any of these files. The
+protection is against a rewritten package directory and against replaying
+an older package, manifest or revocation list, not against the node's
+administrator.
+
+### 3c. What still needs the owner
+
+- **Who the issuer is**, and whether revocation is signed by the issuer key
+  (as implemented) or by a separate revocation role as Knowledge Lite does.
+- **Issuer key creation and custody**: generation ceremony, where the private
+  key lives, rotation, and what happens on compromise. Nexus holds no signing
+  key and must not.
+- **Edge-side signing.** Azazel-Edge's
+  `packaging/nexus-core/nexus_core_package.py` hard-codes `signed: False` and
+  writes no detached signature. Producing `<manifest>.sig` is an Edge change,
+  out of scope here; so is any change to the manifest's own `signed` field,
+  which this node still refuses when true (a change to `pin.json` and this
+  refusal would have to land together).
+- **Whether issuer authentication becomes required** for admission, and how
+  a node is moved from "not configured" to "required" without refusing the
+  package it runs.
+- **Recovery** from a floor that is wrong (for example after a mistaken
+  activation): there is no lowering path in code, by design.
 
 ## 4. A digest mismatch is a finding, not a failed step
 
@@ -315,9 +461,17 @@ edge core (local): digest-mismatch  [/opt/azazel/edge-core]
         is not the same fact as an unhealthy answer
     running: not-checked
         this build speaks to no service manager ... (HG-01)
+    digest_verified: no
+    issuer_authenticated: no (not_configured)
+        no Edge issuer trust anchor is configured on this node ...
+    revocation: not_configured (revoked: not_evaluated)
+    rollback floor: absent
     caveat: the Edge manifest is not signed, so a matching digest establishes
         integrity against accidental change and not authenticity ...
 ```
+
+`digest_verified` and `issuer_authenticated` are two lines because they are
+two facts (§3a).
 
 All five are printed whatever the leading word says. Stopping at the first
 failure would leave an operator who fixed it guessing at what comes next —
@@ -333,7 +487,10 @@ screen cannot describe two nodes.
   CI exercises uses a fake health command and a fake unit reader; no real
   `azazel-edge-core --health` and no real systemd has answered. HG-01 through
   HG-07 stay open ([hardware gates](hardware-gates.md)).
-- **Authenticity of the package.** §3.
+- **Authenticity of the package.** No issuer is configured on any node and
+  Edge signs nothing, so `issuer_authenticated` is false everywhere today.
+  Even when it is true, it authenticates the issuer's statement, not the
+  package's behaviour (§3a–§3c).
 - **That the probe has run.** Until it does, health and running are
   `not-checked` and `edge-baseline-ready` is withheld. §7.
 - **Anything about enforcement.** Nexus verifies a package that declares

@@ -171,6 +171,11 @@ class PassProducers:
     #: boot's clock synchronization is proven; raises otherwise. Called only
     #: when the policy requires it (#251 M-1); None then refuses.
     clock_synchronized: Optional[Callable[[], bool]] = None
+    #: `edge_package.installed_issuer_verification`: `digest_verified` and
+    #: `issuer_authenticated` for the installed package, read when edge-core
+    #: is in scope. Recorded and handed to the floor raise; it decides
+    #: nothing here. None: not collected.
+    edge_issuer: Optional[Callable[[], object]] = None
 
 
 @dataclass
@@ -199,6 +204,10 @@ class PassInputs:
     #: omits `require_clock_synchronized` or sets it false), `synchronized`
     #: or `not_proven`.
     clock_synchronization: str = "not_attempted"
+    #: `edge_issuer.IssuerVerification` of the installed package, or None.
+    #: Only labels from it are recorded; only `edge_issuer_floor` acts on it,
+    #: after a grant, and only to raise the rollback floor.
+    edge_issuer: Optional[object] = None
 
     @property
     def complete(self) -> bool:
@@ -378,6 +387,11 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
                 raise _Refused("installed unit files changed during measurement")
             pinned[:] = [package_digest]
             result.edge_package_binding = binding
+            if edge_in_scope and producers.edge_issuer is not None:
+                try:
+                    result.edge_issuer = producers.edge_issuer()
+                except Exception:  # noqa: BLE001 - an unread issuer authenticates nothing
+                    result.edge_issuer = None
             return verified
         generation = attempt(("operational_generation_publisher",), current_generation)
     if generation is not None:
@@ -481,6 +495,7 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
     from azazel_nexus.bootstrap_deployment_store import load_bootstrap_deployment
     from azazel_nexus.edge_package import (
         installed_baseline_state,
+        installed_issuer_verification,
         installed_package_digest,
         measure_extracted_components,
     )
@@ -510,4 +525,5 @@ def production_producers(*, commissioning_evidence: Callable[[], CommissioningEv
         edge_components=measure_extracted_components,
         # Read only when the policy requires it: the fixed timesyncd marker.
         clock_synchronized=require_clock_synchronized,
+        edge_issuer=installed_issuer_verification,
     )

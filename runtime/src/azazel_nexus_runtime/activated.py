@@ -715,6 +715,15 @@ def _run_once(
                 except Exception:  # noqa: BLE001 - narrowing below is unconditional
                     pass
                 raise _MarkersUnwritten() from None
+        # The Edge rollback floor (`edge_issuer_floor`): raised only after
+        # edge-core was granted and its marker written, and only for an
+        # issuer-authenticated package. Never raises; grants nothing.
+        edge_floor = "not_attempted"
+        if markers and EDGE_CORE_UNIT in granted and inputs is not None:
+            from .edge_issuer_floor import raise_floor_after_grant
+            edge_floor = raise_floor_after_grant(
+                inputs.edge_issuer,
+                launched_digest=inputs.edge.package_digest if inputs.edge else None)
         # Do not gather optional diagnostic inputs before mandatory narrowing.
         # Merely loading an enrolled key or observing a boot is not admission.
         observed = _collect_input_status(root)
@@ -733,6 +742,10 @@ def _run_once(
             # Fixed labels and check names only; no digest or probe text.
             observed["edge_package_binding"] = inputs.edge_package_binding
             observed["edge_evidence"] = inputs.edge_evidence
+            # Two separate facts and the floor label; labels only.
+            if inputs.edge_issuer is not None:
+                observed["edge_issuer"] = inputs.edge_issuer.labels()
+            observed["edge_issuer_floor"] = edge_floor
             # Only when the policy requires synchronization and the floor
             # check passed (#251 M-1): tells an unproven synchronization from
             # a clock below the floor. Absent otherwise, as before the field.

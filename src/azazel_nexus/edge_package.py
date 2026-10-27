@@ -40,9 +40,28 @@ So even a fully passing inspection carries that caveat, `as_event` carries it,
 and the renderer prints it. A verification whose limits are recorded only in
 the design document is a verification whose limits nobody reads.
 
-A manifest that claims `signed: true` is **refused**, not believed: this node
-can verify no signature, and a claim of authenticity it cannot check is worse
-than an absent one, because it invites the reliance the absent one denies.
+A manifest that claims `signed: true` is **refused**, not believed: the
+manifest's own claim of authenticity is not something this node checks, and a
+claim it cannot check is worse than an absent one, because it invites the
+reliance the absent one denies.
+
+## Issuer authentication is a separate fact (`edge_issuer`)
+
+Every inspection also carries an `edge_issuer.IssuerVerification`:
+`digest_verified` (the artifact re-derives to the manifest's digest) and
+`issuer_authenticated` (a detached signature `<manifest>.sig` verifies over the
+canonical manifest under the administrator-configured issuer key), reported
+side by side and never derived from each other. With no issuer anchor
+configured -- every node today -- the second is false with a fixed reason and
+the five checks accept and refuse exactly what they did before. The caveat
+changes only when the issuer is authenticated.
+
+A revocation list signed by that issuer, and the rollback floor the runtime
+raises after an authenticated activation, can only **narrow**: a revoked
+version, a version below the floor or a replayed manifest at the floor's
+version fails `version_matches`; a revoked digest, or a revocation state that
+exists and cannot be established, fails `digest_matches`. Each such failure is
+a security finding. Nothing here passes a check that would otherwise fail.
 
 ## What this module never does
 
@@ -105,6 +124,16 @@ from typing import Callable, Optional, Sequence
 
 from . import boot_id as _boot_id
 from .activation import EDGE_CHECKS, EdgeBaselineState
+from .edge_issuer import (
+    IssuerRefused,
+    IssuerTrust,
+    IssuerVerification,
+    canonical_json,
+    load_issuer_trust,
+    parse_version,
+    read_detached_signature,
+    verify_issuer,
+)
 from .integration import EdgePresence
 
 __all__ = [
@@ -130,11 +159,14 @@ __all__ = [
     "HealthAnswer",
     "PIN",
     "UNSIGNED_CAVEAT",
+    "NOT_AUTHENTICATED_CAVEAT",
+    "AUTHENTICATED_CAVEAT",
     "BOUND_COMPONENTS",
     "bound_to_signed_package",
     "inspect",
     "installed_baseline_state",
     "installed_package_components",
+    "installed_issuer_verification",
     "installed_package_digest",
     "measure_extracted_components",
     "no_health_probe",
@@ -212,6 +244,23 @@ UNSIGNED_CAVEAT = (
     "the Edge manifest is not signed, so a matching digest establishes "
     "integrity against accidental change and not authenticity; an adversary "
     "who can rewrite the package can rewrite the manifest with it"
+)
+
+#: In place of `UNSIGNED_CAVEAT` when a signature or an anchor is there and the
+#: issuer still was not authenticated: the digest is then exactly as weak.
+NOT_AUTHENTICATED_CAVEAT = (
+    "the Edge manifest's issuer was not authenticated, so a matching digest "
+    "establishes integrity against accidental change and not authenticity; an "
+    "adversary who can rewrite the package can rewrite the manifest with it"
+)
+
+#: In place of `UNSIGNED_CAVEAT` when the issuer is authenticated. It says what
+#: the signature does not add, because that is the part nobody reads.
+AUTHENTICATED_CAVEAT = (
+    "the Edge manifest carries a valid signature under the configured issuer "
+    "key. That authenticates the issuer's statement about the package, and "
+    "only that: it is a separate fact from the digest, it says nothing about "
+    "the package's behaviour, and it establishes no check on its own"
 )
 
 
@@ -342,6 +391,10 @@ class EdgeInspection:
     caveats: tuple[str, ...] = ()
     root: str = ""
     probe: Optional["ProbeResult"] = None
+    #: The two separate facts, `digest_verified` and `issuer_authenticated`,
+    #: and what revocation and the rollback floor did. `None` only for an
+    #: inspection built by hand.
+    issuer: Optional[IssuerVerification] = None
 
     def __post_init__(self) -> None:
         seen = tuple(finding.check for finding in self.findings)
@@ -402,12 +455,23 @@ class EdgeInspection:
             package_digest=self.probe.package_digest if self.probe else None,
         )
 
+    @property
+    def digest_verified(self) -> bool:
+        return self.issuer is not None and self.issuer.digest_verified
+
+    @property
+    def issuer_authenticated(self) -> bool:
+        return self.issuer is not None and self.issuer.issuer_authenticated
+
     def as_event(self) -> dict:
         return {
             "event_type": "nexus.edge_package.inspection",
             "root": self.root,
             "presence": self.presence.value,
             "ready": self.ready,
+            "digest_verified": self.digest_verified,
+            "issuer_authenticated": self.issuer_authenticated,
+            "issuer": self.issuer.as_event() if self.issuer is not None else None,
             "caveats": list(self.caveats),
             "findings": [finding.as_event() for finding in self.findings],
         }
@@ -701,6 +765,7 @@ def load_probe_result(
 def installed_baseline_state(
     *, now: str, package_root: Path = EDGE_PACKAGE_ROOT,
     probe_path: Path = PROBE_STATE_PATH, boot_id_path: Path = BOOT_ID_PATH,
+    trust: Optional[IssuerTrust] = None,
 ) -> EdgeBaselineState:
     """Activation evidence from fixed installed paths, re-derived each pass.
 
@@ -716,7 +781,8 @@ def installed_baseline_state(
         except Exception:  # noqa: BLE001 - unreadable evidence never grants
             probe = None
         boot_id = _optional_boot_id(boot_id_path) if probe is not None else None
-        return inspect(package_root, probe=probe, now=now, boot_id=boot_id).state()
+        return inspect(package_root, probe=probe, now=now, boot_id=boot_id,
+                       trust=trust).state()
     except Exception:  # noqa: BLE001 - inspection failure establishes nothing
         return nothing_established()
 
@@ -878,6 +944,7 @@ def _archive_components(data: bytes) -> dict[str, str]:
 
 def installed_package_components(
     *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN, owner_uid: int = 0,
+    trust: Optional[IssuerTrust] = None,
 ) -> tuple[str, dict[str, str]]:
     """The archive digest and the bound components, only when all three agree.
 
@@ -891,7 +958,7 @@ def installed_package_components(
     signature over the generation is what binds the values afterwards.
     """
 
-    digest = installed_package_digest(package_root=package_root, pin=pin)
+    digest = installed_package_digest(package_root=package_root, pin=pin, trust=trust)
     manifest_path = package_root / pin.manifest_name
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -915,6 +982,7 @@ def installed_package_components(
 
 def installed_package_digest(
     *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN,
+    trust: Optional[IssuerTrust] = None,
 ) -> str:
     """The installed archive digest, only when the on-disk package checks pass.
 
@@ -926,6 +994,11 @@ def installed_package_digest(
     claimed. Integrity against accidental change, not authenticity
     (`UNSIGNED_CAVEAT`). The observe-baseline generation (#206) binds this
     value so an operator's signature names one specific Edge package.
+
+    A revoked version or digest, a version below the rollback floor, a replay
+    at the floor's version, or a revocation state that cannot be established
+    refuses here too (`edge_issuer`); issuer authentication itself is not
+    required, because requiring it is an owner decision not yet made.
     """
 
     manifest_path = package_root / pin.manifest_name
@@ -933,8 +1006,12 @@ def installed_package_digest(
     _, package, manifest = _read_package(package_root, manifest_path, artifact_path, pin)
     if not package.held or manifest is None:
         raise EdgePackageRefused("the installed Edge package check did not pass")
-    if (not _version_finding(manifest, pin).held
-            or not _digest_finding(artifact_path, manifest).held):
+    version, digest_finding, _ = _issuer_gate(
+        manifest, manifest_path, _version_finding(manifest, pin),
+        _digest_finding(artifact_path, manifest), pin,
+        load_issuer_trust() if trust is None else trust,
+    )
+    if not version.held or not digest_finding.held:
         raise EdgePackageRefused("the installed Edge package differs from its pin or manifest")
     digest = manifest["digest"]
     if type(digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
@@ -974,6 +1051,7 @@ def inspect(
     boot_id: Optional[str] = None,
     health: Callable[[], Optional[HealthAnswer]] = no_health_probe,
     running: Callable[[], Optional[bool]] = no_running_probe,
+    trust: Optional[IssuerTrust] = None,
 ) -> EdgeInspection:
     """Look at what is on disk and say what was established. Nothing more.
 
@@ -987,6 +1065,9 @@ def inspect(
 
     `now` is passed in rather than read: a verifier that read a clock would
     give two different answers about one unchanged node.
+
+    `trust` is the issuer anchor, revocation list and rollback floor;
+    `None` reads the fixed host locations (`edge_issuer.load_issuer_trust`).
     """
 
     if probe is not None:
@@ -1002,6 +1083,8 @@ def inspect(
                 "never goes stale"
             )
     caveats = (UNSIGNED_CAVEAT,)
+    if trust is None:
+        trust = load_issuer_trust()
     if root is None:
         return EdgeInspection(
             findings=tuple(
@@ -1019,6 +1102,7 @@ def inspect(
             presence=EdgePresence.UNKNOWN,
             caveats=caveats,
             root="",
+            issuer=_unexamined(trust, "not_inspected"),
         )
 
     manifest_path = root / pin.manifest_name
@@ -1040,11 +1124,15 @@ def inspect(
             presence=presence,
             caveats=caveats,
             root=str(root),
+            issuer=_unexamined(trust, "package_refused"),
         )
 
     assert manifest is not None  # _read_package holds this when the check passed
-    version_finding = _version_finding(manifest, pin)
-    digest_finding = _digest_finding(artifact_path, manifest)
+    version_finding, digest_finding, issuer = _issuer_gate(
+        manifest, manifest_path, _version_finding(manifest, pin),
+        _digest_finding(artifact_path, manifest), pin, trust,
+    )
+    caveats = (_caveat_for(issuer),)
     findings.append(version_finding)
     findings.append(digest_finding)
     if probe is None:
@@ -1068,7 +1156,221 @@ def inspect(
         caveats=caveats,
         root=str(root),
         probe=probe,
+        issuer=issuer,
     )
+
+
+def installed_issuer_verification(
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN,
+    trust: Optional[IssuerTrust] = None,
+) -> IssuerVerification:
+    """The two separate facts for the installed package, from the fixed paths.
+
+    For the activation pass, which records the labels and hands the result to
+    the runtime's floor raise. Reads files only; never raises.
+    """
+
+    try:
+        found = inspect(package_root, pin=pin, trust=trust).issuer
+    except Exception:  # noqa: BLE001 - an inspection that failed authenticated nothing
+        found = None
+    if found is None:
+        return IssuerVerification(
+            digest_verified=False, issuer_authenticated=False,
+            issuer_status="package_refused",
+        )
+    return found
+
+
+# -- issuer authentication, revocation and the rollback floor --------------
+
+
+def _unexamined(trust: IssuerTrust, status: str) -> IssuerVerification:
+    """No manifest was examined: nothing is verified, and "not configured" stays fixed."""
+
+    return IssuerVerification(
+        digest_verified=False,
+        issuer_authenticated=False,
+        issuer_status="not_configured" if trust.config == "not_configured" else status,
+        revocation_status=trust.revocation_status,
+        floor_status=trust.floor_status if trust.floor_status != "present" else "not_evaluated",
+        floor_version=trust.floor.version if trust.floor is not None else None,
+    )
+
+
+def _caveat_for(issuer: IssuerVerification) -> str:
+    if issuer.issuer_authenticated:
+        return AUTHENTICATED_CAVEAT
+    if issuer.issuer_status in ("not_configured", "no_signature"):
+        return UNSIGNED_CAVEAT
+    return NOT_AUTHENTICATED_CAVEAT
+
+
+def _narrowed(base: Finding, reason: str, *, unreadable: bool = False) -> Finding:
+    """`base` if it already did not pass; otherwise a failure (or not-checked) for `reason`.
+
+    Only ever narrows: a finding that failed keeps its own reason, and one
+    that passed can become `failed` or `not-checked`, never the reverse.
+    """
+
+    if not base.held:
+        return base
+    if unreadable:
+        return Finding(check=base.check, evidence=Evidence.NOT_CHECKED, reason=reason)
+    return Finding(check=base.check, evidence=Evidence.FAILED, reason=reason, security=True)
+
+
+def _manifest_bytes(manifest_path: Path, manifest: dict) -> Optional[bytes]:
+    """The manifest's bytes, only when they still parse to the dict just checked.
+
+    The checks above read the manifest once; the signature is verified over a
+    second read. Requiring the two to agree keeps a manifest swapped between
+    the reads from having one version checked and another one authenticated.
+    """
+
+    try:
+        raw = manifest_path.read_bytes()
+        if json.loads(canonical_json(raw)) != manifest:
+            return None
+    except (OSError, ValueError, IssuerRefused):
+        return None
+    return raw
+
+
+def _issuer_gate(
+    manifest: dict, manifest_path: Path, version_finding: Finding,
+    digest_finding: Finding, pin: EdgePin, trust: IssuerTrust,
+) -> tuple[Finding, Finding, IssuerVerification]:
+    """Authenticate the issuer, then narrow by revocation and the floor.
+
+    `digest_verified` is taken before any narrowing, so a revoked package
+    whose artifact matches its manifest still reports the match: the refusal
+    is the revocation's, and the two facts stay apart.
+    """
+
+    digest_verified = digest_finding.held
+    if trust.config != "configured":
+        status, issuer = verify_issuer(None, None, trust)
+    else:
+        raw = _manifest_bytes(manifest_path, manifest)
+        signature_state, signature_raw = read_detached_signature(manifest_path)
+        if raw is None:
+            status, issuer = "manifest_refused", None
+        elif signature_state == "unreadable":
+            status, issuer = "signature_unreadable", None
+        else:
+            status, issuer = verify_issuer(raw, signature_raw, trust)
+
+    version, digest = manifest["version"], manifest["digest"]
+    floor = trust.floor
+
+    # Revocation. Not configured, with no revocation sequence held: nothing to
+    # apply, exactly as before. Anything that exists and cannot be read as a
+    # verified list refuses the package rather than reading as "none revoked".
+    revocation_status, revoked = trust.revocation_status, "not_evaluated"
+    revocations = trust.revocations
+    held_sequence = floor.revocation_sequence if floor is not None else 0
+    if trust.config in ("refused", "unreadable") or revocation_status in ("refused", "unreadable"):
+        unreadable = trust.config == "unreadable"
+        digest_finding = _narrowed(
+            digest_finding,
+            "the Edge issuer revocation state exists and could not be "
+            + ("read by this user" if unreadable else "verified")
+            + ", so whether this package is revoked is not established. It is "
+            "refused rather than assumed unrevoked",
+            unreadable=unreadable,
+        )
+    elif held_sequence > 0 and (revocations is None or revocations.sequence < held_sequence):
+        revocation_status = "rolled_back"
+        digest_finding = _narrowed(
+            digest_finding,
+            f"the rollback floor holds revocation sequence {held_sequence}, and "
+            "the revocation list in force is older or missing. A replayed or "
+            "removed revocation list could re-admit a revoked package, so the "
+            "package is refused",
+        )
+    elif revocations is not None and revocations.package != pin.package:
+        revocation_status = "refused"
+        digest_finding = _narrowed(
+            digest_finding,
+            f"the revocation list names {revocations.package!r} and this node "
+            f"pins {pin.package!r}; it is refused, and the package with it",
+        )
+    elif revocations is not None:
+        revoked = "none"
+        if digest in revocations.revoked_digests:
+            revoked = "revoked_digest"
+            digest_finding = _narrowed(
+                digest_finding,
+                "the package digest is revoked by the issuer's revocation list "
+                f"(sequence {revocations.sequence}). A matching digest does not "
+                "re-admit a revoked package",
+            )
+        if version in revocations.revoked_versions:
+            revoked = "revoked_version"
+            version_finding = _narrowed(
+                version_finding,
+                f"version {version} is revoked by the issuer's revocation list "
+                f"(sequence {revocations.sequence})",
+            )
+    elif trust.config == "configured":
+        revoked = "none"
+
+    # The rollback floor: applies whenever one is held, anchor or not.
+    floor_status = trust.floor_status
+    if floor_status == "refused":
+        version_finding = _narrowed(
+            version_finding,
+            "the Edge rollback floor exists and is not a valid record, so "
+            "whether this version is a rollback is not established. Refused "
+            "rather than read as no floor",
+        )
+    elif floor_status == "unreadable":
+        version_finding = _narrowed(
+            version_finding,
+            "the Edge rollback floor could not be read by this user, so whether "
+            "this version is a rollback is not established",
+            unreadable=True,
+        )
+    elif floor is not None:
+        try:
+            ours, theirs = parse_version(version), parse_version(floor.version)
+        except IssuerRefused:
+            ours, theirs = None, None
+        if ours is None or ours < theirs:
+            floor_status = "below_floor"
+            version_finding = _narrowed(
+                version_finding,
+                f"version {version!r} is below the rollback floor "
+                f"{floor.version}, which an authenticated activation already "
+                "enabled (or cannot be compared with it). Rollback is refused",
+            )
+        elif ours == theirs and digest != floor.package_digest:
+            floor_status = "replayed"
+            version_finding = _narrowed(
+                version_finding,
+                f"version {version} is the rollback floor's version with a "
+                "different package digest than the one activated at it: an "
+                "older or substituted manifest for the same version. Refused",
+            )
+        else:
+            floor_status = "held"
+
+    authenticated = status == "authenticated"
+    verification = IssuerVerification(
+        digest_verified=digest_verified,
+        issuer_authenticated=authenticated,
+        issuer_status=status,
+        issuer=issuer,
+        revocation_status=revocation_status,
+        revocation_sequence=revocations.sequence if revocations is not None else None,
+        revoked=revoked,
+        floor_status=floor_status,
+        floor_version=floor.version if floor is not None else None,
+        version=version if authenticated and type(version) is str else None,
+        package_digest=digest if authenticated and type(digest) is str else None,
+    )
+    return version_finding, digest_finding, verification
 
 
 def _probe_findings(
