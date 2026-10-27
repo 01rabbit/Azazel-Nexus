@@ -640,7 +640,7 @@ archives have no reviewed pin and are read only by this module's own parser.
 That parser reads numeric fields exactly as `tarfile` does (cut at the first
 NUL, nothing but NUL or space after it, octal digits only) and refuses what
 the two could read differently; it allows regular files and directories, a
-GNU-magic header only with an empty extension area, and pax headers only with
+GNU-magic header only with an empty extension area (Debian 13's `dpkg` writes control archives that way), and pax headers only with
 the keys `path`, `mtime`, `atime`, `ctime`, `uid`, `gid`, `uname` and `gname`.
 
 Every report carries `bundle_authenticated: false`. The integration point for

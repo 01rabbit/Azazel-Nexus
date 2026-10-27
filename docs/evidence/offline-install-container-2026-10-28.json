@@ -1,13 +1,13 @@
 {
   "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
   "date": "2026-10-28",
-  "covers_commit": "a84e09cda3fe5bebf9998f2058dfb2ad473fa850",
-  "supersedes": "earlier records of this file for 1cba518d7320 and 59458cea8b2d (before the strict-ustar reader and the root-only install sequence)",
+  "covers_commit": "5c84a13ef02af5da760c6e9f3f9d333fdabfb78a",
+  "supersedes": "earlier records of this file for 1cba518d7320, 59458cea8b2d and a84e09cda3fe",
   "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/amd64 containers under Rosetta emulation on an aarch64 colima VM. Not hardware, not native x86_64, not production activation or admission.",
   "source": {
-    "commit": "a84e09cda3fe5bebf9998f2058dfb2ad473fa850",
+    "commit": "5c84a13ef02af5da760c6e9f3f9d333fdabfb78a",
     "worktree": "clean",
-    "selected_inputs_sha256": "95a689c8bc54c23a90c49e89017f370e374b5949649269a5b55a67e7d7d99d41"
+    "selected_inputs_sha256": "12c93294704cf7ae0e8069d72b556ae18304106fd29b6e21ff256c89bc617403"
   },
   "build_container": {
     "network": "online (per-container DNS resolver; VM configuration unchanged)",
@@ -23,11 +23,11 @@
     "wheels": {
       "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
         "sha256": "da7da5f2697c97554b42ce353362af86b60ef1e9df5835f189c4f718be7a95cc",
-        "source": "built:a84e09cda3fe5bebf9998f2058dfb2ad473fa850"
+        "source": "built:5c84a13ef02af5da760c6e9f3f9d333fdabfb78a"
       },
       "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_x86_64.whl": {
-        "sha256": "936525ba210950e7b0002f81eff10f0ca31c27bc29ced79bbbc02785064fcdc0",
-        "source": "built:a84e09cda3fe5bebf9998f2058dfb2ad473fa850"
+        "sha256": "8251082349f8ca49d8b87352dd7f04b916247a5b5ba52590bdddb1b177af030a",
+        "source": "built:5c84a13ef02af5da760c6e9f3f9d333fdabfb78a"
       },
       "dbus_next-0.2.3-py3-none-any.whl": {
         "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
@@ -44,7 +44,8 @@
       "files": {
         "edge/azazel-edge-core-0.1.0-x86_64.manifest.json": "d8737679bd27609d63d4ed019564fcaa6ad8606cc0fe3fc3a20d115ad632df99",
         "edge/azazel-edge-core-0.1.0-x86_64.tar.gz": "ff4d6bb433dd3b57e933c17da13010b9d0f0728edc5bd0c6b569b82fff4e30ff"
-      }
+      },
+      "rehearsal_pin": "packaging/offline/edge-artifact.sha256 written from the container-built artifact into the container's copies of the checkout only (git-excluded in the build clone, a copied checkout in the offline container). It stands in for an owner-reviewed pin, which this repository does not ship; it is not one"
     },
     "deb_parser_check_not_carried": [
       {
@@ -62,10 +63,10 @@
     ],
     "bundle": {
       "format": "POSIX ustar (first header magic 'ustar\\0' '00', typeflag '0')",
-      "sha256": "4977bcf0f57800f71816ffec4aa7c83d165d36da4b2a410d81e16e15f36d2242",
-      "manifest_sha256": "11f93114c22f05baa2704920eff80b7ef8b34bf4466887ed8394bd2457b2ef26",
+      "sha256": "6db7b553422e643216d6eceec3cb444ccd920635e659eec82810ebed2632e927",
+      "manifest_sha256": "a705c28b4b4aa80dbcf17e2762a48fdbeea4338965a180d836e5d35d60da1bba",
       "totals": {
-        "bytes": 6446521,
+        "bytes": 6450314,
         "count": 313
       },
       "slots": {
@@ -83,12 +84,16 @@
         "pynacl-1.6.2-cp38-abi3-manylinux_2_34_x86_64.whl": "c8a231e36ec2cab018c4ad4358c386e36eede0319a0c41fed24f840b1dac59f6"
       }
     },
-    "deb_parser_note": "control archives of real Debian 13 packages walked by the new ustar/GNU-magic scanner"
+    "deb_parser_note": "control archives of real Debian 13 packages walked by the new ustar/GNU-magic scanner",
+    "nested_archive_magic": {
+      "edge_artifact": "POSIX ustar (ustar\\0 00)",
+      "debian_control_archives": "GNU magic (ustar  \\0) with an empty extension area, for iproute2 and suricata from Debian 13; accepted by the nested parser only with that area empty"
+    }
   },
   "offline_container": {
     "network": "--network none (only lo; outbound TCP connect failed)",
     "image": "debian:trixie + python3 python3-venv only (prepared online beforehand, committed to a temporary image and removed afterwards; no compiler, no Nexus files)",
-    "verifier": "tools/offline_bundle.py from the reviewed checkout mounted read-only",
+    "verifier": "tools/offline_bundle.py from a copy of the reviewed checkout (mounted read-only, copied) carrying the rehearsal Edge pin",
     "tampered_copy": "refused (one byte flipped near the end; gzip CRC check failed in the streamed reader); destination not created, no staging left",
     "bundle_authenticated": false,
     "wheel_lock_check": [
@@ -148,14 +153,17 @@
       "note": "run after the first harness run in the same container",
       "not_executed_stage": "units masked and disabled (no systemd)"
     },
-    "sequence": "install as root with --run-installer --installer-option=--without-service-manager: extract -> lock check -> slots -> fresh root-owned venv -> pip --no-index --require-hashes -> pip check/imports -> recheck against the extraction's manifest_sha256 (lock re-checked, root ownership, no links/hard links) -> venv ownership -> install.sh",
+    "sequence": "install as root with --run-installer --installer-option=--without-service-manager: extract -> lock check -> Edge artifact hashed against the reviewed pin before any tar parsing -> slots -> venv directory created 0700 exclusively -> root-owned venv -> pip --no-index --require-hashes -> pip check/imports -> recheck against the extraction's manifest_sha256 -> venv ownership -> venv opened to 0755 -> install.sh",
     "own_wheels": "azazel-nexus and azazel-nexus-runtime are pinned by version only (exact string match against the reviewed pyproject files); their content is built per bundle and is unauthenticated until bundle signing exists",
     "recheck_before_install_sh": {
       "result": "pass",
       "files": 313,
       "bundle_authenticated": false
     },
-    "recheck_after_install_sh": "refused, as designed: install.sh byte-compiled Python from the tree (an undeclared __pycache__/*.pyc appeared). recheck is a pre-install gate only"
+    "without_edge_pin": "the unmodified checkout refused the bundle: the Edge slot is refused before parsing when no reviewed pin exists; nothing was left behind",
+    "venv_mode_after_install": "0755 root",
+    "recheck_after_install_sh": "not re-run in this record; on a84e09c it was refused as designed because install.sh byte-compiles Python inside the tree (recheck is a pre-install gate)",
+    "what_recheck_does_not_do": "recheck is TOCTOU protection only; until bundle signing exists the root install executes bundle-supplied code (the Nexus wheels, pinned by version only, and install.sh)"
   },
   "limitations": [
     "Rosetta emulation; x86_64 hardware install not performed",
@@ -163,8 +171,8 @@
     "Own Nexus wheels are checked only by version against the reviewed pyproject; their content is covered only by a future bundle signature",
     "Target Python interpreter and python3-venv were provisioned into the offline image online beforehand",
     "No .deb set carried; the deb parser was only exercised on two packages downloaded from the live trixie mirror (not snapshot-pinned)",
-    "Edge package built in a container from a fixed Edge commit; unsigned, health and running not checked, not admitted",
     "Harness-only PyNaCl wheels are not hash-pinned and are not part of the product path",
-    "systemd stage, activation and services not exercised"
+    "systemd stage, activation and services not exercised",
+    "Edge package built in a container from a fixed Edge commit and pinned by a rehearsal-only pin; unsigned, health and running not checked, not admitted"
   ]
 }
