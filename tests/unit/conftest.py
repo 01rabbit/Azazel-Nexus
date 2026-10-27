@@ -13,6 +13,7 @@ prove the library does not need it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,3 +46,23 @@ def cache_root(tmp_path) -> Path:
     root = tmp_path / "knowledge-lite-cache"
     root.mkdir()
     return root
+
+
+class _ModuleOs:
+    """A module's own ``os``; delegates to the real one until a test overrides it."""
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+@pytest.fixture
+def private_os(monkeypatch):
+    """Give a module its own ``os`` so overrides stay off the process-wide one.
+
+    pytest itself calls ``os.fstat`` (output capture) and ``os.stat``
+    (linecache) while a test runs; a fake on the shared module breaks it.
+    """
+    def isolate(module):
+        monkeypatch.setattr(module, "os", _ModuleOs())
+        return module.os
+    return isolate
