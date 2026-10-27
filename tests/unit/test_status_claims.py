@@ -338,6 +338,11 @@ SCANNED_PATHS = (
     "docs/inheritance-ledger.md",
     "docs/support-matrix.md",
     "docs/roadmap.md",
+    # The M.I.O. documents still called `mio_contracts` "not released" after
+    # the six above were corrected, because they were not in this list.
+    "docs/mio-runtime.md",
+    "docs/mio-sanitizer.md",
+    "docs/mio-dual-cognition.md",
 )
 
 

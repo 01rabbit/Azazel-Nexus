@@ -135,7 +135,7 @@ trust decision that Fabric MUST NOT make.
 | router state, request budget, deadline accounting | **Nexus-local** | — | product-local |
 | model asset layout, sandbox, and cgroup budgets | **Nexus-local** | — | product-local execution |
 
-Until `mio_contracts` is released, Nexus documentation MUST describe these
+Until `mio_contracts` is adopted, Nexus documentation MUST describe these
 frames as target contracts and MUST NOT publish a Nexus-local canonical JSON
 form as if it were the interoperable shape.
 

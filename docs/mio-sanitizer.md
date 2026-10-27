@@ -2,8 +2,12 @@
 
 Status: **implemented** (`src/azazel_nexus/sanitizer.py`), unit tested and
 mutation checked. This is `docs/mio-runtime.md` §6 and
-`docs/IMPLEMENTATION_SPEC.md` §6.3. **No egress path exists anywhere in this
-repository**, before or after this change.
+`docs/IMPLEMENTATION_SPEC.md` §6.3. This module and `cognition.py` contain no
+egress path. The repository does contain send-path code since #98
+(`runtime/src/azazel_nexus_runtime/mio_remoted.py`,
+`runtime/src/azazel_nexus_runtime/inference_egress.py`), but **nothing can be
+sent**: the shipped `TRANSPORT` is `None`, no Provider Registry is commissioned
+and no key holds the sanitizer role (§5).
 
 Related: [M.I.O. runtime control plane](mio-runtime.md) ·
 [M.I.O. dual cognition doctrine](mio-dual-cognition.md) ·
@@ -12,7 +16,8 @@ Related: [M.I.O. runtime control plane](mio-runtime.md) ·
 ## 1. Why this could be built before the remote path
 
 `IMPLEMENTATION_SPEC.md` §6.3 hands the frame's canonical **wire shape** to
-Fabric `mio_contracts`, which is not released — and in the same paragraph
+Fabric `mio_contracts`, which is published in the pinned Fabric and not
+adopted here — and in the same paragraph
 says:
 
 > Privacy classes, sanitizer policy, and alias key material are **Nexus-local**.
@@ -116,10 +121,24 @@ remote party counting, and a fine bucket does not.
 
 ## 5. What this does not establish
 
-- **No remote path.** No client, no socket, no endpoint, no egress function,
-  in this module or in `cognition.py`. Both are scanned for their absence.
-- **No response handling.** §6's *"a remote response cannot request or trigger
-  follow-up disclosure"* is a rule about a path that does not exist.
+- **No remote path in this module.** No client, no socket, no endpoint, no
+  egress function, in this module or in `cognition.py`. Both are scanned for
+  their absence.
+- **Send-path code exists elsewhere, and still cannot send.** Since #98 the
+  runtime distribution has `mio_remoted.py` (`az-mio-remoted`) and
+  `inference_egress.py`. The shipped `mio_remoted.TRANSPORT` is `None` — this
+  distribution contains no inference transport, so `activated` withholds the
+  unit rather than granting it, and there is no setting that turns it on. No
+  Provider Registry is commissioned and no key holds the sanitizer role, so no
+  envelope can be minted and none verifies. Each of the three refuses on its
+  own; commissioning the registry and the signer waits for the target hardware
+  (#115, [remote commissioning](remote-commissioning.md) §3). See
+  [remote inference](remote-inference.md) §12.
+- **No response handling here.** §6's *"a remote response cannot request or
+  trigger follow-up disclosure"* belongs to the response reader on the
+  remoted side (`advisory_response.py`, which builds only bounded advisory
+  text and fields), not to `sanitize`; with no transport, no response can
+  arrive.
 - **No rate or privacy budget is counted here.** §5's per-mission request rate
   and cumulative privacy budget need state across requests; `sanitize` is a
   pure function and holds none. `routing.Budgets` declares the limits and
@@ -128,4 +147,4 @@ remote party counting, and a fine bucket does not.
   forgetting to increment it.
 - **No wire shape.** The bytes here are canonical for *this* implementation.
   They are not an interoperable form and must not be treated as one until
-  Fabric `mio_contracts` is read.
+  Fabric `mio_contracts` is read and adopted.

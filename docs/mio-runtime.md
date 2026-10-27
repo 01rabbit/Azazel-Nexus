@@ -39,7 +39,7 @@ restate or modify Edge-owned cognitive semantics.
 | Concern | Owner |
 | --- | --- |
 | `MioSituationFrame`, hypothesis and grounding semantics, typed read-only evidence access, recommendation semantics, deterministic arbitration, canonical audit meaning | **Azazel-Edge** |
-| Canonical wire shape of the frames and advisory results (`mio_contracts`) | **Azazel-Fabric** — *target, not released* |
+| Canonical wire shape of the frames and advisory results (`mio_contracts`) | **Azazel-Fabric** — *published in the pinned Fabric, not adopted here* |
 | Provider admission, launch, confinement, resource measurement, route selection, sanitizer execution, merge presentation, capability-state publication | **Azazel-Nexus** (this document) |
 
 M.I.O., local models, remote assistance, Knowledge, and Deception are
@@ -705,9 +705,11 @@ until the following exist:**
    ([contract ownership](contract-ownership.md) §6, [roadmap](roadmap.md)
    Phase 0);
 2. an exact Azazel-Fabric pin;
-3. Fabric `mio_contracts`, which is **not released** — the remote frame and
-   advisory result have no canonical shape yet, so the remote path cannot be
-   implemented against a contract;
+3. adoption of Fabric `mio_contracts`, which is **published in the pinned
+   Fabric and not adopted here** — nothing in Nexus imports it and no Nexus
+   frame or advisory result has been reconciled against its records, so the
+   remote path is not implemented against that contract (adopting it is an
+   owner decision; see [contract ownership](contract-ownership.md) §3.3);
 4. a test harness capable of resource, timeout, restart, and failure injection.
 
 This document specifies the control plane so that implementation has something

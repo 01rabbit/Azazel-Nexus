@@ -106,7 +106,7 @@ Status: **target contract**. No phase below has started in this repository.
 
 ## Phase 5 — M.I.O. dual cognition
 
-- Add local cognition with a resource governor, using the Fabric `mio_contracts` advisory shape once it is released.
+- Add local cognition with a resource governor, using the Fabric `mio_contracts` advisory shape once it is adopted (it is published in the pinned Fabric, not adopted here).
 - Implement sanitizer policy, egress boundary, remote connector, request log, and deny-safe behavior.
 - Build the router and merger, including disagreement presentation and evidence citations.
 
