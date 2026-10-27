@@ -53,45 +53,8 @@ LOCK = Path("packaging/offline/requirements-x86_64-cp313.lock")
 BACKEND_LOCK = Path("packaging/offline/build-backend.lock")
 
 
-def parse_lock(path: Path) -> dict[str, list[str]]:
-    """``{canonical name: [sha256, ...]}`` from a pip ``--require-hashes`` file.
-
-    Only ``name==version \\ --hash=sha256:...`` entries are accepted; any other
-    requirement form is refused, so the lock cannot quietly widen into a range.
-    """
-
-    text = path.read_text(encoding="utf-8")
-    logical: list[str] = []
-    buffer = ""
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith("--hash") else raw.strip()
-        if not line:
-            continue
-        if line.endswith("\\"):
-            buffer += line[:-1] + " "
-            continue
-        logical.append(buffer + line)
-        buffer = ""
-    if buffer:
-        raise ValueError(f"{path}: a continuation line has no end")
-    pins: dict[str, list[str]] = {}
-    for entry in logical:
-        tokens = entry.split()
-        requirement, hashes = tokens[0], tokens[1:]
-        match = offline_bundle._REQUIREMENT.match(requirement)
-        if not match or not hashes:
-            raise ValueError(f"{path}: {entry!r} is not an exact pin with hashes")
-        digests = []
-        for token in hashes:
-            prefix = "--hash=sha256:"
-            if not token.startswith(prefix) or not offline_bundle._SHA256.match(token[len(prefix):]):
-                raise ValueError(f"{path}: {token!r} is not a sha256 hash option")
-            digests.append(token[len(prefix):])
-        name = offline_bundle.canonical_name(match.group("name"))
-        if any(key.partition("==")[0] == name for key in pins):
-            raise ValueError(f"{path}: {name} is pinned twice")
-        pins[f"{name}=={match.group('version')}"] = digests
-    return pins
+#: One lock parser, shared with the offline verifier that checks installs.
+parse_lock = offline_bundle.parse_lock
 
 
 def declared_runtime_dependencies(root: Path) -> set[str]:
@@ -128,8 +91,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run(argv: list[str], **kwargs) -> str:
-    result = subprocess.run(argv, capture_output=True, text=True, check=False, **kwargs)
+def _build_env() -> dict[str, str]:
+    """A fixed environment for every builder subprocess: no inherited PIP_* or config."""
+
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
+           "PIP_CONFIG_FILE": os.devnull, "PIP_NO_INPUT": "1",
+           "SOURCE_DATE_EPOCH": "315532800"}
+    if "HOME" in os.environ:
+        env["HOME"] = os.environ["HOME"]
+    return env
+
+
+def _run(argv: list[str]) -> str:
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=_build_env())
     if result.returncode != 0:
         raise RuntimeError(f"{argv[:5]} exited {result.returncode}:\n{result.stderr[-4000:]}")
     return result.stdout
@@ -183,9 +157,7 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
                 destination.write_bytes(stream.read())
                 destination.chmod(member.mode)
         _run([*pip, "wheel", "--no-build-isolation", "--no-deps", "--no-index",
-              "-w", str(staging), str(tree), str(tree / "runtime")],
-             env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
-                  "SOURCE_DATE_EPOCH": "315532800", "PIP_CONFIG_FILE": os.devnull})
+              "-w", str(staging), str(tree), str(tree / "runtime")])
         backend_versions = _run([backend_python, "-I", "-c",
                                  "import pip, setuptools; print(pip.__version__, setuptools.__version__)"]).split()
 

@@ -531,6 +531,9 @@ python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
   --bundle /path/to/azazel-nexus-offline.tar.gz \
   --into /var/lib/azazel-offline/bundle \
   --venv /opt/azazel-nexus/venv --python /usr/bin/python3
+# Immediately before the privileged step, re-hash the extracted tree.
+python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py recheck \
+  --tree /var/lib/azazel-offline/bundle
 sudo env PYTHON=/opt/azazel-nexus/venv/bin/python \
   sh /var/lib/azazel-offline/bundle/source/packaging/install.sh
 ```
@@ -546,16 +549,41 @@ does not cover the runtime distribution. The two Nexus wheels are recorded by
 the hash this build produced; reproducibility across builders is not measured.
 
 `offline_bundle.py install` extracts into a private staging directory beside
-`--into` and renames it into place only after every check passed; it refuses
-absolute paths, `..`, links of any kind, device files, FIFOs and directory
-members, member counts or byte totals above the caps, a member the manifest
-does not declare or a declared one that is missing, and any size or sha256
-mismatch. It then runs the Edge slot through the existing `edge_package`
-checks (package present, version, digest, bound components) and re-reads each
-`.deb`'s control fields against the manifest, creates a **fresh** venv with
-the given interpreter, and installs with `pip --no-index --find-links
+`--into` and renames it into place only after every check passed. It refuses:
+
+- absolute paths, `..`, links of any kind, device files, FIFOs, GNU sparse
+  members and directory members; paths that differ only in case, and a path
+  that is both a file and another path's directory;
+- a PAX or GNU long-name header above 64 KiB, before `tarfile` reads it into
+  memory; a manifest above 8 MiB or nested deeper than 16 levels;
+- member counts or byte totals above the caps, a declared total more than 200
+  times the archive size, and a filesystem without the declared total plus a
+  64 MiB margin free;
+- a member the manifest does not declare or a declared one that is missing,
+  and any size or sha256 mismatch (writing stops at the declared size);
+- a destination whose parent directory is group- or other-writable or owned
+  by another user.
+
+A staging directory that a killed earlier run left behind (same destination,
+owned by this user) is removed on the next run. Every third-party wheel must
+match the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock`
+by name, version and sha256; a wheel the lock does not pin, such as an extra
+`evil==1.0` with a self-consistent manifest hash, is refused. The two Nexus
+wheels must carry the reviewed `pyproject.toml` versions; their content is
+built per bundle and is covered only by a future bundle signature. The Edge
+slot then goes through the existing `edge_package` checks (package present,
+version, digest, bound components), and each `.deb`'s control fields are
+re-read against the manifest. Only then does it create a **fresh** venv with
+the given interpreter and install with `pip --no-index --find-links
 --require-hashes --only-binary=:all:` from a requirements file generated from
-the manifest hashes. It does not run `install.sh`; it prints that next step.
+the manifest hashes. On any refusal after extraction the extracted tree and
+the venv it created are removed, so nothing half-verified is left in place.
+
+It does not run `install.sh`. The extracted tree is not authenticated, and
+`sudo install.sh` runs code from it, so run `offline_bundle.py recheck` right
+before that step: it re-hashes the tree against its `MANIFEST.json` and
+refuses changed, extra or missing files, links, and anything owned by another
+user or writable by group/others.
 
 Every report carries `bundle_authenticated: false`. The integration point for
 the issuer/operator bundle signature is `verify_bundle_signature` in

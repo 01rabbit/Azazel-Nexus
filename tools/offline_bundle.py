@@ -108,6 +108,12 @@ _LEGACY_MANYLINUX = {"manylinux1": (2, 5), "manylinux2010": (2, 12), "manylinux2
 #: The two distributions this repository builds; every bundle carries both.
 OWN_DISTRIBUTIONS = ("azazel-nexus", "azazel-nexus-runtime")
 
+#: The reviewed checkout this file is run from. Third-party wheels are admitted
+#: only when their name, version and sha256 are in its lock; the two Nexus
+#: wheels only when their versions equal its pyproject files.
+REVIEWED_ROOT = Path(__file__).resolve().parents[1]
+WHEEL_LOCK = Path("packaging/offline/requirements-x86_64-cp313.lock")
+
 
 class BundleRefused(Exception):
     """The bundle, or one of its members, is refused. Nothing was promoted."""
@@ -123,6 +129,9 @@ class Limits:
     max_manifest_bytes: int = 8 << 20
     max_depth: int = 16
     max_path_bytes: int = 240
+    #: Declared uncompressed bytes per archive byte. Wheels, the Edge archive
+    #: and models are already compressed; source text compresses ~4:1.
+    max_ratio: int = 200
 
     def tighter(self, **overrides: int) -> "Limits":
         for key, value in overrides.items():
@@ -136,6 +145,34 @@ class Limits:
 
 
 DEFAULT_LIMITS = Limits()
+
+#: A PAX or GNU long-name/long-link header is read whole into memory by
+#: ``tarfile`` before any member check runs, so its size is capped here, when
+#: the header block is parsed and before the payload is read.
+EXTENDED_HEADER_MAX_BYTES = 64 << 10
+#: Nesting depth of the manifest JSON; the real manifest needs 3.
+MANIFEST_MAX_NESTING = 16
+#: Free space kept beyond the declared total when extracting.
+FREE_SPACE_MARGIN_BYTES = 64 << 20
+
+_EXTENDED_TYPES = (
+    tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+)
+
+
+class _BoundedTarInfo(tarfile.TarInfo):
+    """Refuse oversized extended headers and GNU sparse members before reading them."""
+
+    def _proc_member(self, tarfile_obj):  # noqa: D401 - tarfile hook
+        if self.type in _EXTENDED_TYPES and self.size > EXTENDED_HEADER_MAX_BYTES:
+            raise BundleRefused(
+                f"an extended tar header declares {self.size} bytes; the cap is "
+                f"{EXTENDED_HEADER_MAX_BYTES}"
+            )
+        if self.type == tarfile.GNUTYPE_SPARSE:
+            raise BundleRefused("a GNU sparse member is refused")
+        return super()._proc_member(tarfile_obj)
 
 
 # --------------------------------------------------------------------------
@@ -340,6 +377,19 @@ def validate_manifest(document: object, limits: Limits = DEFAULT_LIMITS) -> dict
         total += size
     if total > limits.max_total_bytes:
         raise BundleRefused(f"manifest declares {total} bytes; the cap is {limits.max_total_bytes}")
+    folded: dict[str, str] = {}
+    for path in seen:
+        other = folded.setdefault(path.casefold(), path)
+        if other != path:
+            raise BundleRefused(f"artifact paths {other!r} and {path!r} differ only in case")
+    for path in seen:
+        parts = path.split("/")
+        for depth in range(1, len(parts)):
+            prefix = "/".join(parts[:depth])
+            if prefix in seen or prefix.casefold() in folded:
+                raise BundleRefused(
+                    f"artifact {prefix!r} is a file and also the directory of {path!r}"
+                )
     for kind in REQUIRED_KINDS:
         if kind not in kinds_present:
             raise BundleRefused(f"manifest carries no {kind} artifact")
@@ -381,14 +431,137 @@ def manifest_bytes(document: dict) -> bytes:
     return (json.dumps(document, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
+def _json_nesting(text: str) -> int:
+    """The deepest bracket nesting outside strings, without recursing."""
+
+    depth = deepest = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char in "]}":
+            depth -= 1
+    return deepest
+
+
 def load_manifest(data: bytes, limits: Limits = DEFAULT_LIMITS) -> dict:
     if len(data) > limits.max_manifest_bytes:
         raise BundleRefused("the manifest is larger than its cap")
     try:
-        document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise BundleRefused(f"the manifest is not JSON ({exc})") from exc
+        text = data.decode("utf-8")
+        if _json_nesting(text) > MANIFEST_MAX_NESTING:
+            raise BundleRefused(f"the manifest nests deeper than {MANIFEST_MAX_NESTING}")
+        document = json.loads(text)
+    except BundleRefused:
+        raise
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise BundleRefused(f"the manifest is not JSON ({type(exc).__name__})") from exc
     return validate_manifest(document, limits)
+
+
+def parse_lock(path: Path) -> dict[str, list[str]]:
+    """``{"name==version": [sha256, ...]}`` from a pip ``--require-hashes`` file.
+
+    Only ``name==version \\ --hash=sha256:...`` entries are accepted; any other
+    requirement form is refused, so the lock cannot quietly widen into a range.
+    """
+
+    logical: list[str] = []
+    buffer = ""
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        line = stripped if stripped.startswith("--hash") else raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.endswith("\\"):
+            buffer += line[:-1] + " "
+            continue
+        logical.append(buffer + line)
+        buffer = ""
+    if buffer:
+        raise ValueError(f"{path}: a continuation line has no end")
+    pins: dict[str, list[str]] = {}
+    for entry in logical:
+        tokens = entry.split()
+        requirement, hashes = tokens[0], tokens[1:]
+        match = _REQUIREMENT.match(requirement)
+        if not match or not hashes:
+            raise ValueError(f"{path}: {entry!r} is not an exact pin with hashes")
+        digests = []
+        for token in hashes:
+            prefix = "--hash=sha256:"
+            if not token.startswith(prefix) or not _SHA256.match(token[len(prefix):]):
+                raise ValueError(f"{path}: {token!r} is not a sha256 hash option")
+            digests.append(token[len(prefix):])
+        name = canonical_name(match.group("name"))
+        if any(key.partition("==")[0] == name for key in pins):
+            raise ValueError(f"{path}: {name} is pinned twice")
+        pins[f"{name}=={match.group('version')}"] = digests
+    return pins
+
+
+def reviewed_pins(root: Path = REVIEWED_ROOT) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """The reviewed checkout's third-party lock and its own distributions' versions."""
+
+    import tomllib  # noqa: PLC0415 - stdlib from 3.11, the declared floor
+
+    try:
+        lock = parse_lock(root / WHEEL_LOCK)
+        versions = {}
+        for path in (root / "pyproject.toml", root / "runtime" / "pyproject.toml"):
+            project = tomllib.loads(path.read_text(encoding="utf-8"))["project"]
+            versions[canonical_name(project["name"])] = project["version"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise BundleRefused(
+            f"the reviewed lock or pyproject could not be read from {root} ({exc}); run this "
+            "verifier from a reviewed checkout"
+        ) from exc
+    return lock, versions
+
+
+def check_wheels_against_lock(
+    document: dict, pins: tuple[dict[str, list[str]], dict[str, str]]
+) -> list[dict[str, str]]:
+    """Refuse any bundled wheel the reviewed checkout does not pin.
+
+    A third-party wheel must match a lock entry by name, version and sha256.
+    The two Nexus wheels must carry the reviewed pyproject versions; their
+    content is built per bundle and is covered only by a future bundle
+    signature, not by this check.
+    """
+
+    lock, versions = pins
+    checked = []
+    for entry in document["artifacts"]:
+        if entry["kind"] != "wheel":
+            continue
+        name, _, version = entry["requirement"].partition("==")
+        name = canonical_name(name)
+        if name in OWN_DISTRIBUTIONS:
+            if versions.get(name) != version:
+                raise BundleRefused(
+                    f"{entry['path']} is {name} {version}; the reviewed checkout builds "
+                    f"{versions.get(name)!r}"
+                )
+            checked.append({"requirement": f"{name}=={version}", "pinned_by": "reviewed pyproject version only"})
+            continue
+        hashes = lock.get(f"{name}=={version}")
+        if hashes is None:
+            raise BundleRefused(f"{entry['path']} ({name}=={version}) is not in the reviewed lock")
+        if entry["sha256"] not in hashes:
+            raise BundleRefused(f"{entry['path']} does not have a sha256 the reviewed lock pins")
+        checked.append({"requirement": f"{name}=={version}", "pinned_by": WHEEL_LOCK.as_posix()})
+    return checked
 
 
 def wheel_requirements(document: dict) -> str:
@@ -427,6 +600,8 @@ def _member_type_refusal(member: tarfile.TarInfo) -> Optional[str]:
         return f"member {member.name!r} is a directory entry; only declared regular files are carried"
     if not member.isreg() or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
         return f"member {member.name!r} is not a plain regular file"
+    if member.sparse is not None:
+        return f"member {member.name!r} is a sparse file"
     return None
 
 
@@ -494,6 +669,13 @@ def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT
     parent = destination.parent
     if not parent.is_dir() or parent.is_symlink():
         raise BundleRefused(f"{parent} is not a directory")
+    parent_info = os.stat(parent)
+    if parent_info.st_mode & 0o022 or parent_info.st_uid not in (0, os.geteuid()):
+        raise BundleRefused(
+            f"{parent} is writable by group/others or owned by another user; another "
+            "account could replace the extracted tree"
+        )
+    _remove_stale_staging(parent, destination.name)
     info = os.lstat(archive)
     if not stat.S_ISREG(info.st_mode):
         raise BundleRefused(f"{archive} is not a regular file")
@@ -518,9 +700,42 @@ def extract_bundle(archive: Path, destination: Path, *, limits: Limits = DEFAULT
     return dataclasses.replace(result, root=destination)
 
 
+def _remove_stale_staging(parent: Path, name: str) -> None:
+    """Remove staging directories a killed earlier run left beside the destination.
+
+    Only real directories owned by this user and matching this destination's
+    staging prefix are removed; a symlink or another user's entry is left.
+    """
+
+    prefix = f".{name}.staging-"
+    for entry in os.scandir(parent):
+        if not entry.name.startswith(prefix):
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid():
+            shutil.rmtree(entry.path, ignore_errors=True)
+
+
+def _check_capacity(archive: Path, staging: Path, document: dict, limits: Limits) -> None:
+    declared = document["totals"]["bytes"]
+    archive_size = max(os.stat(archive).st_size, 1)
+    if declared > archive_size * limits.max_ratio:
+        raise BundleRefused(
+            f"the manifest declares {declared} bytes from a {archive_size}-byte archive; "
+            f"the ratio cap is {limits.max_ratio}"
+        )
+    fs = os.statvfs(staging)
+    free = fs.f_bavail * fs.f_frsize
+    needed = declared + limits.max_manifest_bytes + FREE_SPACE_MARGIN_BYTES
+    if free < needed:
+        raise BundleRefused(f"{staging.parent} has {free} bytes free; extraction needs {needed}")
+
+
 def _extract_into(archive: Path, staging: Path, limits: Limits) -> Extracted:
     try:
-        with open(archive, "rb") as raw, tarfile.open(fileobj=raw, mode="r|gz") as tar:
+        with open(archive, "rb") as raw, tarfile.open(
+            fileobj=raw, mode="r|gz", tarinfo=_BoundedTarInfo
+        ) as tar:
             members = iter(tar)
             first = next(members, None)
             if first is None or first.name != MANIFEST_NAME:
@@ -534,6 +749,7 @@ def _extract_into(archive: Path, staging: Path, limits: Limits) -> Extracted:
             assert stream is not None
             raw_manifest = _read_bounded(stream, first.size)
             document = load_manifest(raw_manifest, limits)
+            _check_capacity(archive, staging, document, limits)
             declared = {entry["path"]: entry for entry in document["artifacts"]}
             seen: set[str] = set()
             signature: Optional[bytes] = None
@@ -575,8 +791,8 @@ def _extract_into(archive: Path, staging: Path, limits: Limits) -> Extracted:
                 raise BundleRefused(f"declared members are missing from the archive: {missing[:5]}")
     except BundleRefused:
         raise
-    except (OSError, EOFError, tarfile.TarError, gzip.BadGzipFile, zlib.error) as exc:
-        raise BundleRefused(f"the archive could not be read ({exc})") from exc
+    except (OSError, EOFError, tarfile.TarError, gzip.BadGzipFile, zlib.error, RecursionError) as exc:
+        raise BundleRefused(f"the archive could not be read ({type(exc).__name__}: {exc})") from exc
     (staging / MANIFEST_NAME).write_bytes(raw_manifest)
     os.chmod(staging / MANIFEST_NAME, 0o644)
     return Extracted(root=staging, manifest=document, manifest_bytes=raw_manifest, signature=signature)
@@ -723,11 +939,16 @@ def verify_deb_slot(root: Path, document: dict) -> dict[str, Any]:
     }
 
 
-def verify_extracted(extracted: Extracted) -> dict[str, Any]:
-    """Slot checks over an extracted tree, and the report the installer prints."""
+def verify_extracted(
+    extracted: Extracted,
+    *,
+    pins: Optional[tuple[dict[str, list[str]], dict[str, str]]] = None,
+) -> dict[str, Any]:
+    """Wheel-lock and slot checks over an extracted tree; the report the installer prints."""
 
     document = extracted.manifest
     root = extracted.root
+    wheels = check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
     slots: dict[str, Any] = {}
     if document["slots"]["edge-package"] == "filled":
         slots["edge-package"] = verify_edge_slot(root / "edge")
@@ -753,7 +974,73 @@ def verify_extracted(extracted: Extracted) -> dict[str, Any]:
         "bundle_authenticated": verdict.authenticated,
         "signature": {"present": verdict.signature_present, "reason": verdict.reason},
         "counts": {kind: sum(1 for e in document["artifacts"] if e["kind"] == kind) for kind in KIND_PREFIX},
+        "wheels": wheels,
         "slots": slots,
+    }
+
+
+def extract_and_verify(
+    bundle: Path,
+    into: Path,
+    *,
+    limits: Limits = DEFAULT_LIMITS,
+    pins: Optional[tuple[dict[str, list[str]], dict[str, str]]] = None,
+) -> tuple[Extracted, dict[str, Any]]:
+    """Extract, then verify; a tree that fails verification is removed, not left."""
+
+    extracted = extract_bundle(bundle, into, limits=limits)
+    try:
+        return extracted, verify_extracted(extracted, pins=pins)
+    except BaseException:
+        shutil.rmtree(extracted.root, ignore_errors=True)
+        raise
+
+
+def recheck_tree(root: Path, *, limits: Limits = DEFAULT_LIMITS) -> dict[str, Any]:
+    """Re-hash an extracted tree against its own MANIFEST.json, immediately before use.
+
+    Run this right before ``sudo install.sh``: it refuses a file that changed,
+    appeared or went missing since extraction, any link, and any file or
+    directory that is not owned by root or this user or that group/others
+    could write. It re-establishes integrity against the manifest, which is
+    still unsigned.
+    """
+
+    root = Path(os.path.abspath(root))
+    raw = (root / MANIFEST_NAME).read_bytes()
+    document = load_manifest(raw, limits)
+    declared = {entry["path"]: entry for entry in document["artifacts"]}
+    found: set[str] = set()
+    for directory, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames + [""]:
+            path = os.path.join(directory, name) if name else directory
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                raise BundleRefused(f"{path} is a link")
+            if info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022:
+                raise BundleRefused(f"{path} is owned by another user or writable by group/others")
+        for name in filenames:
+            relative = os.path.relpath(os.path.join(directory, name), root).replace(os.sep, "/")
+            if relative == MANIFEST_NAME:
+                continue
+            entry = declared.get(relative)
+            if entry is None:
+                raise BundleRefused(f"{relative} is not declared in the manifest")
+            digest = hashlib.sha256()
+            with open(os.path.join(directory, name), "rb") as stream:
+                while chunk := stream.read(1 << 20):
+                    digest.update(chunk)
+            if digest.hexdigest() != entry["sha256"]:
+                raise BundleRefused(f"{relative} no longer matches its manifest sha256")
+            found.add(relative)
+    missing = sorted(set(declared) - found)
+    if missing:
+        raise BundleRefused(f"declared files are missing from the tree: {missing[:5]}")
+    return {
+        "recheck": "pass",
+        "files": len(found),
+        "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+        "bundle_authenticated": False,
     }
 
 
@@ -785,13 +1072,34 @@ def pip_install_offline(python: Path, wheels: Path, requirements: Path) -> None:
     ])
 
 
-def install(bundle: Path, into: Path, venv: Path, python: Path, *, limits: Limits = DEFAULT_LIMITS) -> dict:
-    """Extract, verify, then install both distributions into a fresh venv, offline."""
+def install(
+    bundle: Path,
+    into: Path,
+    venv: Path,
+    python: Path,
+    *,
+    limits: Limits = DEFAULT_LIMITS,
+    pins: Optional[tuple[dict[str, list[str]], dict[str, str]]] = None,
+) -> dict:
+    """Extract, verify, then install both distributions into a fresh venv, offline.
+
+    On any refusal after extraction, the extracted tree and the venv this call
+    created are removed: a half-installed state is not left to be mistaken for
+    a verified one.
+    """
 
     if os.path.lexists(venv):
         raise BundleRefused(f"{venv} already exists; the offline install creates a fresh venv")
-    extracted = extract_bundle(bundle, into, limits=limits)
-    report = verify_extracted(extracted)
+    extracted, report = extract_and_verify(bundle, into, limits=limits, pins=pins)
+    try:
+        return _install_verified(extracted, report, into, venv, python)
+    except BaseException:
+        shutil.rmtree(venv, ignore_errors=True)
+        shutil.rmtree(into, ignore_errors=True)
+        raise
+
+
+def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path) -> dict:
     target = TARGETS[extracted.manifest["target"]]
     probe = subprocess.run(
         [str(python), "-I", "-c",
@@ -821,9 +1129,10 @@ def install(bundle: Path, into: Path, venv: Path, python: Path, *, limits: Limit
         "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
         "pip_check": "pass",
         "imports": "pass",
-        "next": (
-            f"sudo env PYTHON={venv_python} sh {into / 'source' / 'packaging' / 'install.sh'}"
-        ),
+        "next": [
+            f"python3 -I {Path(__file__).resolve()} recheck --tree {into}",
+            f"sudo env PYTHON={venv_python} sh {into / 'source' / 'packaging' / 'install.sh'}",
+        ],
         "not_done": "accounts, units and activation are packaging/install.sh's and the operator's steps",
     }
     return report
@@ -846,6 +1155,8 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    recheck = sub.add_parser("recheck", help="re-hash an extracted tree right before install.sh")
+    recheck.add_argument("--tree", required=True, type=Path)
     for name in ("verify", "install"):
         command = sub.add_parser(name)
         command.add_argument("--bundle", required=True, type=Path)
@@ -858,13 +1169,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             command.add_argument("--python", type=Path, default=Path("/usr/bin/python3"))
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        limits = _limits_from(args)
-        if args.command == "verify":
-            report = verify_extracted(extract_bundle(args.bundle, args.into, limits=limits))
+        if args.command == "recheck":
+            report = recheck_tree(args.tree)
         else:
-            report = install(args.bundle, args.into, args.venv, args.python, limits=limits)
-    except (BundleRefused, OSError) as exc:
-        print(json.dumps({"refused": str(exc), "bundle_authenticated": False}), file=sys.stderr)
+            limits = _limits_from(args)
+            if args.command == "verify":
+                report = extract_and_verify(args.bundle, args.into, limits=limits)[1]
+            else:
+                report = install(args.bundle, args.into, args.venv, args.python, limits=limits)
+    except Exception as exc:  # noqa: BLE001 - every failure is a refusal, never a traceback
+        reason = str(exc) if isinstance(exc, BundleRefused) else f"{type(exc).__name__}: {exc}"
+        print(json.dumps({"refused": reason, "bundle_authenticated": False}), file=sys.stderr)
         return 2
     print(json.dumps(report, sort_keys=True, indent=2))
     return 0

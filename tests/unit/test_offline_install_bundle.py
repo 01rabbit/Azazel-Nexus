@@ -66,12 +66,21 @@ def _wheel(directory: Path, distribution: str, version: str, module: str) -> Pat
     return path
 
 
-def _wheelhouse(directory: Path, commit: str) -> Path:
+def _wheelhouse(directory: Path, commit: str, third_party: tuple[tuple[str, str], ...] = ()) -> Path:
+    """The two Nexus wheels, plus fake third-party wheels when asked for.
+
+    The fake third-party wheels cannot carry the hashes the real lock pins, so
+    a bundle with them is refused by the reviewed-lock check unless a test
+    supplies its own pins.
+    """
+
     directory.mkdir()
     wheels = [
         (_wheel(directory, "azazel-nexus", "0.0.1.dev0", "fake_azazel_nexus"), "built:test"),
         (_wheel(directory, "azazel-nexus-runtime", "0.0.1.dev0", "fake_azazel_runtime"), "built:test"),
-        (_wheel(directory, "dbus-next", "0.2.3", "fake_dbus_next"), "pypi:test"),
+    ] + [
+        (_wheel(directory, name, version, "fake_" + name.replace("-", "_")), "pypi:test")
+        for name, version in third_party
     ]
     record = {
         "schema": build_wheelhouse.WHEELHOUSE_SCHEMA,
@@ -223,7 +232,8 @@ def test_manifest_round_trip_lists_every_member_with_hash_size_kind_source(built
     report = verify_extracted(extracted)
     assert report["bundle_authenticated"] is False
     assert report["signature"]["present"] is False
-    assert report["counts"]["wheel"] == 3
+    assert report["counts"]["wheel"] == 2
+    assert {w["pinned_by"] for w in report["wheels"]} == {"reviewed pyproject version only"}
 
 
 def test_the_same_inputs_make_identical_bundle_bytes(built, tmp_path):
@@ -251,7 +261,7 @@ def test_a_wheelhouse_from_another_commit_is_refused(tmp_path):
 def test_a_wheelhouse_file_that_changed_is_refused(tmp_path):
     root = _repo(tmp_path / "repo")
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
-    victim = next(wheelhouse.glob("dbus_next*.whl"))
+    victim = next(wheelhouse.glob("azazel_nexus_runtime*.whl"))
     victim.write_bytes(victim.read_bytes() + b"x")
     with pytest.raises(ValueError, match="does not match wheelhouse.json"):
         build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse)
@@ -654,7 +664,7 @@ def test_pip_installs_only_the_bundled_wheels_with_every_hash_required(built, tm
     offline_bundle.pip_install_offline(venv_python, extracted.root / "wheels", requirements)
     result = subprocess.run(
         [str(venv_python), "-I", "-c",
-         "import fake_azazel_nexus, fake_azazel_runtime, fake_dbus_next; print('ok')"],
+         "import fake_azazel_nexus, fake_azazel_runtime; print('ok')"],
         capture_output=True, text=True, check=False,
     )
     assert result.stdout.strip() == "ok", result.stderr
@@ -687,8 +697,18 @@ def test_pip_finds_nothing_that_is_not_in_the_bundle(built, tmp_path, venv_pytho
     extracted = extract_bundle(built[2], tmp_path / "out")
     requirements = tmp_path / "req.txt"
     requirements.write_text("PyYAML==6.0.3 --hash=sha256:" + "0" * 64 + "\n")
-    with pytest.raises(BundleRefused, match="exited"):
+    with pytest.raises(BundleRefused, match="No matching distribution found"):
         offline_bundle.pip_install_offline(venv_python, extracted.root / "wheels", requirements)
+
+
+def test_the_pip_argv_forbids_an_index_and_requires_hashes(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(offline_bundle, "_run", seen.append)
+    offline_bundle.pip_install_offline(Path("/venv/bin/python"), tmp_path, tmp_path / "req.txt")
+    (argv,) = seen
+    for flag in ("--no-index", "--require-hashes", "--only-binary=:all:", "--find-links"):
+        assert flag in argv
+    assert "--index-url" not in argv and "--extra-index-url" not in argv
 
 
 def test_install_refuses_an_interpreter_that_is_not_the_target(built, tmp_path):
@@ -701,6 +721,7 @@ def test_install_refuses_an_interpreter_that_is_not_the_target(built, tmp_path):
     with pytest.raises(BundleRefused, match="the bundle targets"):
         offline_bundle.install(built[2], tmp_path / "out", tmp_path / "venv", Path(sys.executable))
     assert not (tmp_path / "venv").exists()
+    assert not (tmp_path / "out").exists(), "a refused install left its extracted tree"
 
 
 def test_install_refuses_an_existing_venv(built, tmp_path):
@@ -735,3 +756,280 @@ def test_gzip_and_tar_noise_is_not_read_as_a_manifest(tmp_path):
     bundle = tmp_path / "noise.tar.gz"
     bundle.write_bytes(gzip.compress(os.urandom(4096)))
     _refused(tmp_path, bundle, "could not be read|first member")
+
+
+# -- review follow-ups: wheels against the reviewed lock (S2) -----------------
+
+
+def _bundle_with(tmp_path: Path, third_party) -> Path:
+    root = _repo(tmp_path / "repo")
+    wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"], third_party)
+    build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse)
+    return tmp_path / "b.tar.gz"
+
+
+def test_a_third_party_wheel_not_in_the_reviewed_lock_is_refused_and_removed(tmp_path):
+    bundle = _bundle_with(tmp_path, (("evil", "1.0"),))
+    with pytest.raises(BundleRefused, match="not in the reviewed lock"):
+        offline_bundle.extract_and_verify(bundle, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_locked_name_and_version_with_another_hash_is_refused(tmp_path):
+    bundle = _bundle_with(tmp_path, (("dbus-next", "0.2.3"),))
+    with pytest.raises(BundleRefused, match="sha256 the reviewed lock pins"):
+        offline_bundle.extract_and_verify(bundle, tmp_path / "out")
+
+
+def test_a_third_party_wheel_matching_the_lock_is_accepted(tmp_path):
+    bundle = _bundle_with(tmp_path, (("dbus-next", "0.2.3"),))
+    digest = hashlib.sha256(next((tmp_path / "wheelhouse").glob("dbus_next*.whl")).read_bytes()).hexdigest()
+    _lock, versions = offline_bundle.reviewed_pins()
+    _, report = offline_bundle.extract_and_verify(
+        bundle, tmp_path / "out", pins=({"dbus-next==0.2.3": [digest]}, versions))
+    assert {"requirement": "dbus-next==0.2.3",
+            "pinned_by": "packaging/offline/requirements-x86_64-cp313.lock"} in report["wheels"]
+
+
+def test_an_own_wheel_at_another_version_is_refused(built, tmp_path):
+    lock, _versions = offline_bundle.reviewed_pins()
+    pins = (lock, {"azazel-nexus": "9.9", "azazel-nexus-runtime": "9.9"})
+    with pytest.raises(BundleRefused, match="reviewed checkout builds"):
+        offline_bundle.extract_and_verify(built[2], tmp_path / "out", pins=pins)
+
+
+def test_the_reviewed_lock_is_the_real_one():
+    lock, versions = offline_bundle.reviewed_pins()
+    assert set(lock) == {"dbus-next==0.2.3", "pyyaml==6.0.3"}
+    assert versions == {"azazel-nexus": "0.0.1.dev0", "azazel-nexus-runtime": "0.0.1.dev0"}
+
+
+def test_a_verifier_without_a_reviewed_lock_refuses(built, tmp_path, monkeypatch):
+    real = offline_bundle.reviewed_pins
+    monkeypatch.setattr(offline_bundle, "reviewed_pins", lambda: real(tmp_path / "nowhere"))
+    with pytest.raises(BundleRefused, match="reviewed checkout"):
+        offline_bundle.extract_and_verify(built[2], tmp_path / "out")
+
+
+# -- oversized extended headers (S1) ------------------------------------------
+
+
+def _extended_header_bomb(path: Path, kind: bytes, size: int) -> Path:
+    info = tarfile.TarInfo("././@LongLink" if kind == tarfile.GNUTYPE_LONGNAME else "././@PaxHeader")
+    info.type = kind
+    info.size = size
+    header = info.tobuf(format=tarfile.GNU_FORMAT if kind == tarfile.GNUTYPE_LONGNAME else tarfile.USTAR_FORMAT)
+    chunk = (b"9 a=b\n" if kind == tarfile.XHDTYPE else b"a") * (1 << 20)
+    chunk = chunk[: 1 << 20]
+    with gzip.open(path, "wb", compresslevel=1) as stream:
+        stream.write(header)
+        for _ in range(size >> 20):
+            stream.write(chunk)
+        stream.write(b"\0" * (-size % 512) + b"\0" * 1024)
+    return path
+
+
+@pytest.mark.real_process
+@pytest.mark.parametrize("kind", [tarfile.GNUTYPE_LONGNAME, tarfile.XHDTYPE])
+def test_an_oversized_extended_header_is_refused_in_bounded_memory(tmp_path, kind):
+    # VmHWM, not ru_maxrss: Linux carries ru_maxrss across exec, so a child of a
+    # large pytest process would report the parent's peak.
+    if not Path("/proc/self/status").exists():
+        pytest.skip("VmHWM needs Linux /proc")
+    size = 256 << 20
+    bomb = _extended_header_bomb(tmp_path / "bomb.tar.gz", kind, size)
+    probe = (
+        "import json, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from pathlib import Path\n"
+        "from tools import offline_bundle as ob\n"
+        "try:\n"
+        "    ob.extract_bundle(Path(sys.argv[2]), Path(sys.argv[3]))\n"
+        "    outcome = 'accepted'\n"
+        "except ob.BundleRefused as exc:\n"
+        "    outcome = str(exc)\n"
+        "hwm = [l for l in open('/proc/self/status') if l.startswith('VmHWM:')][0]\n"
+        "print(json.dumps({'outcome': outcome, 'maxrss_kib': int(hwm.split()[1])}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(ROOT), str(bomb), str(tmp_path / "out")],
+        capture_output=True, text=True, check=False, timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert bomb.stat().st_size < 4 << 20  # a small file on the medium...
+    assert report["maxrss_kib"] < 128 * 1024, report  # ...is never inflated in memory
+    assert "extended tar header" in report["outcome"]
+    assert [p.name for p in tmp_path.iterdir() if ".staging-" in p.name] == []
+
+
+def test_a_gnu_sparse_member_is_refused(built, tmp_path):
+    members = _members(built[2])
+    info, data = members[2]
+    sparse = copy.copy(info)
+    sparse.type = tarfile.GNUTYPE_SPARSE
+    members[2] = (sparse, data)
+    bundle = tmp_path / "sparse.tar.gz"
+    with tarfile.open(bundle, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+        for member, payload in members:
+            member.size = len(payload) if payload is not None else 0
+            archive.addfile(member, io.BytesIO(payload) if payload is not None else None)
+    _refused(tmp_path, bundle, "sparse|not a plain regular file")
+
+
+def test_a_stale_staging_directory_of_ours_is_removed_on_the_next_run(built, tmp_path):
+    stale = tmp_path / ".out.staging-killed"
+    stale.mkdir()
+    (stale / "partial").write_bytes(b"x")
+    keep = tmp_path / ".other.staging-killed"
+    keep.mkdir()
+    link = tmp_path / ".out.staging-link"
+    link.symlink_to(keep)
+    extract_bundle(built[2], tmp_path / "out")
+    assert not stale.exists()
+    assert keep.exists() and link.is_symlink()
+
+
+# -- ratio, free space and the per-member write cap (S3) ----------------------
+
+
+def test_a_high_compression_ratio_is_refused(tmp_path):
+    root = _repo(tmp_path / "repo")
+    wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
+    zeros = tmp_path / "zeros.gguf"
+    zeros.write_bytes(bytes(16 << 20))
+    build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse,
+                         models=[zeros], assets_source="test fixture")
+    _refused(tmp_path, tmp_path / "b.tar.gz", "ratio cap")
+
+
+def test_insufficient_free_space_is_refused_before_writing(built, tmp_path, monkeypatch):
+    real = os.statvfs
+
+    class Tiny:
+        def __init__(self, result):
+            self.f_frsize = result.f_frsize
+            self.f_bavail = 1
+
+    monkeypatch.setattr(offline_bundle.os, "statvfs", lambda path: Tiny(real(path)))
+    _refused(tmp_path, built[2], "bytes free")
+
+
+def test_a_member_stream_longer_than_declared_stops_at_the_declared_size(tmp_path):
+    entry = {"size": 4, "sha256": hashlib.sha256(b"abcd").hexdigest(), "mode": "0644"}
+    with pytest.raises(BundleRefused, match="larger than the manifest declares"):
+        offline_bundle._write_member(tmp_path, "source/x", io.BytesIO(b"abcd" + b"e" * (2 << 20)), entry)
+    assert (tmp_path / "source/x").stat().st_size <= 4 + (1 << 20)
+
+
+# -- manifest parsing (S4) ----------------------------------------------------
+
+
+def _manifest_only(tmp_path: Path, data: bytes) -> Path:
+    bundle = tmp_path / "m.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        info = tarfile.TarInfo(offline_bundle.MANIFEST_NAME)
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    return bundle
+
+
+def test_a_deeply_nested_manifest_is_refused_without_a_traceback(tmp_path, capsys):
+    bundle = _manifest_only(tmp_path, b"[" * 200_000 + b"]" * 200_000)
+    _refused(tmp_path, bundle, "nests deeper")
+    assert offline_bundle.main(["verify", "--bundle", str(bundle), "--into", str(tmp_path / "x")]) == 2
+    refusal = json.loads(capsys.readouterr().err)
+    assert refusal["bundle_authenticated"] is False and "nests deeper" in refusal["refused"]
+
+
+def test_a_recursion_error_while_parsing_is_a_refusal(monkeypatch):
+    monkeypatch.setattr(offline_bundle, "_json_nesting", lambda text: 0)
+    with pytest.raises(BundleRefused, match="RecursionError"):
+        offline_bundle.load_manifest(b"[" * 200_000 + b"]" * 200_000)
+
+
+@pytest.mark.parametrize("data", [b"\xff\xfe", b"{", b"null", b"[]"])
+def test_unparseable_manifests_are_refusals(data):
+    with pytest.raises(BundleRefused):
+        offline_bundle.load_manifest(data)
+
+
+def test_brackets_inside_strings_do_not_count_as_nesting():
+    assert offline_bundle._json_nesting('{"a": "[[[[\\"[[[[", "b": [1]}') == 2
+
+
+def test_the_cli_turns_any_exception_into_a_refusal(monkeypatch, tmp_path, capsys):
+    def boom(*args, **kwargs):
+        raise MemoryError("synthetic")
+
+    monkeypatch.setattr(offline_bundle, "extract_and_verify", boom)
+    assert offline_bundle.main(["verify", "--bundle", str(tmp_path / "b"), "--into", str(tmp_path / "o")]) == 2
+    refusal = json.loads(capsys.readouterr().err)
+    assert refusal == {"refused": "MemoryError: synthetic", "bundle_authenticated": False}
+
+
+# -- paths and the destination (N1-N3) ----------------------------------------
+
+
+def _resorted(document: dict) -> dict:
+    document["artifacts"].sort(key=lambda e: e["path"])
+    document["totals"] = {"count": len(document["artifacts"]),
+                          "bytes": sum(e["size"] for e in document["artifacts"])}
+    return document
+
+
+def test_paths_that_differ_only_in_case_are_refused(built):
+    document = _valid(built)
+    twin = copy.deepcopy(next(e for e in document["artifacts"] if e["path"] == "source/README.md"))
+    twin["path"] = "source/readme.md"
+    document["artifacts"].append(twin)
+    with pytest.raises(BundleRefused, match="differ only in case"):
+        offline_bundle.validate_manifest(_resorted(document))
+
+
+def test_a_file_that_is_also_a_directory_prefix_is_refused(built):
+    document = _valid(built)
+    child = copy.deepcopy(next(e for e in document["artifacts"] if e["path"] == "source/README.md"))
+    child["path"] = "source/README.md/inner"
+    document["artifacts"].append(child)
+    with pytest.raises(BundleRefused, match="also the directory of"):
+        offline_bundle.validate_manifest(_resorted(document))
+
+
+def test_a_group_writable_destination_parent_is_refused(built, tmp_path):
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    parent.chmod(0o775)
+    with pytest.raises(BundleRefused, match="writable by group/others"):
+        extract_bundle(built[2], parent / "out")
+    assert list(parent.iterdir()) == []
+
+
+# -- recheck before install.sh (N3/N4) ----------------------------------------
+
+
+def test_recheck_passes_on_an_untouched_tree(built, tmp_path):
+    extract_bundle(built[2], tmp_path / "out")
+    report = offline_bundle.recheck_tree(tmp_path / "out")
+    assert report["recheck"] == "pass" and report["bundle_authenticated"] is False
+    assert report["files"] == len(built[3]["artifacts"])
+
+
+@pytest.mark.parametrize("tamper, match", [
+    (lambda root: (root / "source/packaging/install.sh").write_bytes(b"#!/bin/sh\nevil\n"), "no longer matches"),
+    (lambda root: (root / "source/packaging/extra.sh").write_bytes(b"x"), "not declared"),
+    (lambda root: (root / "source/README.md").unlink(), "missing"),
+    (lambda root: (root / "source/README.md").chmod(0o666), "writable by group/others"),
+    (lambda root: (root / "source/tools/link").symlink_to("/etc/passwd"), "is a link"),
+])
+def test_recheck_refuses_a_tree_changed_after_extraction(built, tmp_path, tamper, match):
+    extract_bundle(built[2], tmp_path / "out")
+    tamper(tmp_path / "out")
+    with pytest.raises(BundleRefused, match=match):
+        offline_bundle.recheck_tree(tmp_path / "out")
+
+
+def test_recheck_is_a_cli_command(built, tmp_path, capsys):
+    extract_bundle(built[2], tmp_path / "out")
+    assert offline_bundle.main(["recheck", "--tree", str(tmp_path / "out")]) == 0
+    assert json.loads(capsys.readouterr().out)["recheck"] == "pass"

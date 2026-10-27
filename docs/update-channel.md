@@ -96,8 +96,9 @@ policy: an unsigned bundle is handled exactly as before, and every report says
 | --- | --- |
 | One manifest listing every artifact with sha256, size, kind and source | **implemented** — `MANIFEST.json`, first member of the bundle |
 | Declared regular files only; no traversal, links or devices | **implemented** — refused before anything is promoted |
-| Size and count limits enforced while hashing | **implemented** — caps can be lowered by the operator, never raised |
-| Promote only a complete tree | **implemented** — private staging directory, renamed into place after every check |
+| Size and count limits enforced while hashing | **implemented** — caps can be lowered by the operator, never raised; extended tar headers capped at 64 KiB before they are read; declared-to-archive ratio cap; free-space check before writing |
+| Promote only a complete tree | **implemented** — private staging directory, renamed into place after every check; stale staging from a killed run removed; tree removed when verification refuses; `recheck` re-hashes it before `install.sh` |
+| Third-party wheels limited to the reviewed lock | **implemented** — name, version and sha256 checked against the reviewed checkout's lock at install |
 | No nested archives | **partly** — wheels, the Edge package and `.deb` files are archives by nature; the extractor carries them as opaque files checked by sha256 and never unpacks them. Their consumers (pip, `edge_package`, `.deb` control check) read them with their own bounds |
 | Depth and quota limits | depth and path length **implemented**; disk quota **not implemented** |
 | Hash-pinned dependencies, installed with no index | **implemented** — `--require-hashes --no-index --find-links`; container-rehearsed with `--network none`, not hardware |
