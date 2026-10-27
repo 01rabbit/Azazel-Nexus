@@ -475,7 +475,7 @@ def test_narrowing_helpers_never_return_a_route_outside_the_selection(setup_rout
     for recheck in (None, Recheck(PERMITTED), Recheck(WITHDRAWN), Recheck(RuntimeError())):
         assert router._remote_recheck(selection, recheck) is not None
         for failed in (Route.LOCAL, Route.REMOTE):
-            narrowed = router._still_permitted(selection, failed, recheck)
+            narrowed, _ = router._still_permitted(selection, failed, recheck)
             assert set(narrowed) <= set(selection.permitted)
             assert Route.DETERMINISTIC_HANDOFF in narrowed
 
@@ -494,9 +494,43 @@ def test_withdrawal_at_local_fallback_lands_on_handoff(setup_router):
     fallback = next(e for e in recorded if e['event_type'] == 'mio.route.fallback')
     assert fallback['failed_route'] == Route.LOCAL.value
     assert fallback['route'] == Route.DETERMINISTIC_HANDOFF.value
+    assert fallback['reason'].endswith(
+        'remote removed by recheck: ' + mio_router.REMOTE_WITHDRAWN)
     assert result.route is Route.DETERMINISTIC_HANDOFF
+    # The audit says the withdrawal, not a missing route, is why it ended here.
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['reason'] == mio_router.REMOTE_WITHDRAWN
+    assert remote['outcome'] == RequestOutcome.REFUSED.value
+    assert remote['fallback_available'] is False
     handoff = next(e for e in recorded if e['event_type'] == 'mio.route.handoff')
-    assert handoff['cause'] == 'no_permitted_fallback'
+    assert handoff['cause'] == mio_router.REMOTE_WITHDRAWN
+    assert result.ai_attempts == 1
+
+
+@pytest.mark.parametrize('answer', [RuntimeError('fixture'), None])
+def test_unreadable_recheck_at_local_fallback_is_recorded(setup_router, answer):
+    router, calls = setup_router()
+    result = invoke(router, local=True, remote_recheck=Recheck(answer))
+    recorded = events(router)
+    assert calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['reason'] == mio_router.REMOTE_RECHECK_FAILED
+
+
+def test_remote_failure_fallback_neither_rechecks_nor_records_withdrawal(setup_router):
+    # Remote itself failed: it is no fallback target, so nothing is asked and
+    # no withdrawal is recorded for it.
+    router, calls = setup_router(TransportOutcome.TIMED_OUT)
+    recheck = Recheck(PERMITTED, WITHDRAWN)
+    invoke(router, remote_recheck=recheck)
+    recorded = events(router)
+    assert calls == ['remote']
+    assert recheck.calls == 1
+    assert not any(e.get('terminal_event') == TerminalEvent.OPT_IN_WITHDRAWN.value
+                   for e in recorded)
 
 
 def test_withdrawal_between_fallback_and_attempt_refuses(setup_router):

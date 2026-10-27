@@ -632,16 +632,25 @@ A remote attempt is then not made: the router records `OPT_IN_WITHDRAWN` on the
 remote route with the fixed reason `remote_opt_in_withdrawn` (or
 `remote_recheck_failed`) and follows `disposition_on_withdrawal`: one fallback
 to local when local was permitted and the fallback is unspent, otherwise
-refusal and the deterministic handoff (cause `remote_opt_in_withdrawn`). Every
-fallback passes the rechecked set to `fallback_once(still_permitted=...)`. A
-withdrawal spends the request's one fallback; it is not counted as an AI attempt.
+refusal and the deterministic handoff (cause `remote_opt_in_withdrawn`). When a
+local attempt fails and remote would be the fallback target, the rechecked set
+is passed to `fallback_once(still_permitted=...)`; if the recheck removed remote,
+the router records the same `OPT_IN_WITHDRAWN` terminal on the remote route
+(`fallback_available=False`, nothing sent), appends the fixed reason to the
+fallback record, and the handoff's cause is `remote_opt_in_withdrawn` rather than
+`no_permitted_fallback`. A fallback after a remote failure needs no recheck:
+`fallback_once` never targets the route that failed. A withdrawal spends the
+request's one fallback; it is not counted as an AI attempt.
 The recheck runs inside the request's one deadline: each attempt's budget is
 taken after it returns. `MAX_AI_ATTEMPTS`, the reserves and
 `InFlightDisposition` are unchanged. Entry passes a recheck that re-evaluates
 `remote_admission` with the same inputs as the selection (`NO_OPT_IN`,
 `unchecked_reading()`), so in this build remote is never selected and nothing
-changes in production. Cancelling a remote request already in flight is out of
-scope (no remote transport). Tests: `tests/unit/test_mio_router.py`,
+changes in production. Remaining: cancelling a remote request already in flight
+is out of scope (no remote transport); and `remote_recheck` is a synchronous call
+with no timeout of its own -- the current closure is a pure function and cannot
+block, but a real opt-in reader connected later must be bounded by the request's
+deadline before it is wired in. Tests: `tests/unit/test_mio_router.py`,
 `tests/unit/test_mio_router_deadline.py`, `tests/unit/test_mio_entryd.py` (mocks).
 
 **One deadline per request** (implemented; software evidence only). Entry
